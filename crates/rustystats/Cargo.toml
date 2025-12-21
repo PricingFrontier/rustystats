@@ -1,0 +1,41 @@
+# =============================================================================
+# RustyStats Python Bindings
+# =============================================================================
+# This crate is the "bridge" between Rust and Python.
+# It wraps the pure Rust code from `rustystats-core` and exposes it to Python.
+#
+# This uses PyO3, which lets us:
+#   - Call Rust functions from Python
+#   - Convert between Python/NumPy types and Rust types
+#   - Create Python classes backed by Rust structs
+#
+# BUILDING:
+# ---------
+# Use `maturin develop` to build and install locally for testing
+# Use `maturin build --release` to create distribution wheels
+# =============================================================================
+
+[package]
+name = "rustystats"
+version = "0.1.0"
+edition = "2021"
+description = "Python bindings for RustyStats GLM library"
+license = "MIT"
+
+[lib]
+# "cdylib" means we're building a C-compatible dynamic library
+# This is required for Python to load our Rust code
+crate-type = ["cdylib"]
+
+[dependencies]
+# Our core statistics library
+rustystats-core = { path = "../rustystats-core" }
+
+# Python bindings framework
+pyo3 = { workspace = true }
+
+# NumPy support - converts between NumPy arrays and Rust arrays
+numpy = { workspace = true }
+
+# For array operations
+ndarray = { workspace = true }

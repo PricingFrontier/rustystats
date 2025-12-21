@@ -1,0 +1,50 @@
+# =============================================================================
+# RustyStats - Rust Workspace Configuration
+# =============================================================================
+# This is the root configuration file for the Rust components of RustyStats.
+# 
+# The project is organized as a Cargo "workspace" with two main parts:
+#   1. rustystats-core: Pure Rust library with all the math/statistics logic
+#   2. rustystats:      Python bindings that expose the Rust code to Python
+#
+# This separation keeps the core logic clean and testable independently
+# from the Python integration layer.
+# =============================================================================
+
+[workspace]
+members = [
+    "crates/rustystats-core",  # Pure Rust statistics library
+    "crates/rustystats",       # Python bindings (PyO3)
+]
+resolver = "2"
+
+# =============================================================================
+# Shared Dependencies
+# =============================================================================
+# Dependencies listed here can be inherited by workspace members using:
+#   some-crate = { workspace = true }
+# This ensures all crates use the same versions, avoiding conflicts.
+# =============================================================================
+
+[workspace.dependencies]
+# --- Linear Algebra ---
+# ndarray: N-dimensional arrays, similar to NumPy for Python
+# We use this for all matrix and vector operations
+# The "approx" feature enables floating-point comparison support for tests
+ndarray = { version = "0.16", features = ["approx"] }
+
+# nalgebra: Pure Rust linear algebra library
+# Used for matrix operations in the IRLS solver (no system dependencies needed!)
+nalgebra = "0.33"
+
+# --- Python Integration ---
+pyo3 = { version = "0.22", features = ["extension-module"] }  # Rust <-> Python bridge
+numpy = "0.22"                             # NumPy array support for PyO3
+
+# --- Utilities ---
+thiserror = "2.0"                          # Easy error type definitions
+approx = "0.5"                             # Floating-point comparisons for tests
+
+# --- Statistical Functions ---
+# statrs provides probability distributions for p-value calculations
+statrs = "0.18"                            # Statistical distributions & functions

@@ -1,0 +1,94 @@
+# =============================================================================
+# RustyStats - Python Package Configuration
+# =============================================================================
+# This file configures how the Python package is built and what it depends on.
+#
+# We use "maturin" as our build backend, which:
+#   - Compiles the Rust code
+#   - Creates the Python bindings
+#   - Packages everything into a wheel (.whl) file
+#
+# INSTALLATION:
+# -------------
+# For development: pip install -e . (or: maturin develop)
+# For production:  pip install rustystats
+# =============================================================================
+
+[build-system]
+requires = ["maturin>=1.4,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "rustystats"
+version = "0.1.0"
+description = "Fast Generalized Linear Models with a Rust backend - statsmodels compatible"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Intended Audience :: Science/Research",
+]
+keywords = ["statistics", "glm", "actuarial", "regression", "modeling"]
+
+# Python package dependencies
+dependencies = [
+    "numpy>=1.20",
+    "pandas>=1.3",
+    "formulaic>=0.6",  # For R-style formulas like "y ~ x1 + x2"
+    "jupyter>=1.1.1",
+]
+
+[project.optional-dependencies]
+# Extra dependencies for development/testing
+dev = [
+    "pytest>=7.0",
+    "statsmodels>=0.14",  # For comparison testing
+    "maturin>=1.4",
+]
+
+[project.urls]
+Repository = "https://github.com/your-org/rustystats"
+Documentation = "https://rustystats.readthedocs.io"
+
+# =============================================================================
+# Maturin Configuration
+# =============================================================================
+[tool.maturin]
+# Path to the Rust crate that builds the Python extension
+manifest-path = "crates/rustystats/Cargo.toml"
+
+# Include Python source files in the package
+python-source = "python"
+
+# Which Python files to include
+module-name = "rustystats._rustystats"
+
+# Build features
+features = ["pyo3/extension-module"]
+
+# =============================================================================
+# Testing Configuration (pytest)
+# =============================================================================
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+# Show extra test summary info
+addopts = "-v --tb=short"
+
+[dependency-groups]
+dev = [
+    "maturin>=1.10.2",
+    "numpy>=2.0.2",
+    "pandas>=2.3.3",
+    "pytest>=8.4.2",
+]

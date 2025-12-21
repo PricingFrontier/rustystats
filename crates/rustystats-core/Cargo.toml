@@ -1,0 +1,40 @@
+# =============================================================================
+# RustyStats Core - Pure Rust Statistics Library
+# =============================================================================
+# This crate contains all the mathematical and statistical logic for GLMs.
+# It has NO Python dependencies - it's pure Rust, which means:
+#   - It can be tested independently with `cargo test`
+#   - It can be used in other Rust projects
+#   - The logic is separate from the Python "glue code"
+#
+# MAINTAINER NOTES:
+# -----------------
+# When adding new features, add them here first, test them thoroughly,
+# then expose them to Python via the `rustystats` crate.
+# =============================================================================
+
+[package]
+name = "rustystats-core"
+version = "0.1.0"
+edition = "2021"
+description = "Core statistical algorithms for GLM fitting"
+license = "MIT"
+
+[dependencies]
+# N-dimensional arrays - think of it like NumPy for Rust
+# We use this for all matrix and vector operations
+ndarray = { workspace = true }
+
+# Pure Rust linear algebra - used for IRLS solver
+# No system dependencies needed (unlike ndarray-linalg which needs BLAS)
+nalgebra = { workspace = true }
+
+# Nice error handling - makes error messages clear and helpful
+thiserror = { workspace = true }
+
+# Statistical distributions (Normal, Gamma, etc.) and functions
+statrs = { workspace = true }
+
+[dev-dependencies]
+# For comparing floating-point numbers in tests (handles rounding errors)
+approx = { workspace = true }
