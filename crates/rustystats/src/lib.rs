@@ -38,6 +38,12 @@ use rustystats_core::families::{Family, GaussianFamily, PoissonFamily, BinomialF
 use rustystats_core::links::{Link, IdentityLink, LogLink, LogitLink};
 use rustystats_core::solvers::{fit_glm_full, IRLSConfig, IRLSResult};
 use rustystats_core::inference::{pvalue_z, confidence_interval_z};
+use rustystats_core::diagnostics::{
+    resid_response, resid_pearson, resid_deviance, resid_working,
+    estimate_dispersion_pearson, pearson_chi2,
+    log_likelihood_gaussian, log_likelihood_poisson, log_likelihood_binomial, log_likelihood_gamma,
+    aic, bic, null_deviance,
+};
 
 // =============================================================================
 // Link Function Wrappers
@@ -416,6 +422,12 @@ pub struct PyGLMResults {
     n_obs: usize,
     /// Number of parameters
     n_params: usize,
+    /// Original response variable (for residuals)
+    y: Array1<f64>,
+    /// Family name (for diagnostics)
+    family_name: String,
+    /// Prior weights
+    prior_weights: Array1<f64>,
 }
 
 #[pymethods]
@@ -643,6 +655,187 @@ impl PyGLMResults {
             })
             .collect()
     }
+
+    // =========================================================================
+    // Residuals (statsmodels-compatible)
+    // =========================================================================
+
+    /// Get response residuals: y - μ
+    ///
+    /// Simple difference between observed and predicted values.
+    /// Not standardized.
+    fn resid_response<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        let resid = resid_response(&self.y, &self.fitted_values);
+        resid.into_pyarray_bound(py)
+    }
+
+    /// Get Pearson residuals: (y - μ) / √V(μ)
+    ///
+    /// Standardized residuals that account for the variance function.
+    /// For a well-specified model, should have approximately constant variance.
+    fn resid_pearson<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        let family: Box<dyn Family> = match self.family_name.as_str() {
+            "Gaussian" => Box::new(GaussianFamily),
+            "Poisson" => Box::new(PoissonFamily),
+            "Binomial" => Box::new(BinomialFamily),
+            "Gamma" => Box::new(GammaFamily),
+            _ => Box::new(GaussianFamily),
+        };
+        let resid = resid_pearson(&self.y, &self.fitted_values, family.as_ref());
+        resid.into_pyarray_bound(py)
+    }
+
+    /// Get deviance residuals: sign(y - μ) × √d_i
+    ///
+    /// Based on the unit deviance contributions. Often more normally
+    /// distributed than Pearson residuals for non-Gaussian families.
+    /// sum(resid_deviance²) = model deviance
+    fn resid_deviance<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        let family: Box<dyn Family> = match self.family_name.as_str() {
+            "Gaussian" => Box::new(GaussianFamily),
+            "Poisson" => Box::new(PoissonFamily),
+            "Binomial" => Box::new(BinomialFamily),
+            "Gamma" => Box::new(GammaFamily),
+            _ => Box::new(GaussianFamily),
+        };
+        let resid = resid_deviance(&self.y, &self.fitted_values, family.as_ref());
+        resid.into_pyarray_bound(py)
+    }
+
+    /// Get working residuals: (y - μ) × g'(μ)
+    ///
+    /// Used internally by IRLS. On the scale of the linear predictor.
+    /// Useful for understanding the fitting process.
+    fn resid_working<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        // Determine link from family (using default links)
+        let link: Box<dyn Link> = match self.family_name.as_str() {
+            "Gaussian" => Box::new(IdentityLink),
+            "Poisson" => Box::new(LogLink),
+            "Binomial" => Box::new(LogitLink),
+            "Gamma" => Box::new(LogLink),
+            _ => Box::new(IdentityLink),
+        };
+        let resid = resid_working(&self.y, &self.fitted_values, link.as_ref());
+        resid.into_pyarray_bound(py)
+    }
+
+    // =========================================================================
+    // Dispersion and Scale
+    // =========================================================================
+
+    /// Get Pearson chi-squared statistic.
+    ///
+    /// X² = Σ(y-μ)²/V(μ)
+    ///
+    /// For a well-specified model with known dispersion φ=1,
+    /// X² should be approximately chi-squared with (n-p) df.
+    fn pearson_chi2(&self) -> f64 {
+        let family: Box<dyn Family> = match self.family_name.as_str() {
+            "Gaussian" => Box::new(GaussianFamily),
+            "Poisson" => Box::new(PoissonFamily),
+            "Binomial" => Box::new(BinomialFamily),
+            "Gamma" => Box::new(GammaFamily),
+            _ => Box::new(GaussianFamily),
+        };
+        
+        let weights = if self.prior_weights.iter().all(|&w| (w - 1.0).abs() < 1e-10) {
+            None
+        } else {
+            Some(&self.prior_weights)
+        };
+        
+        pearson_chi2(&self.y, &self.fitted_values, family.as_ref(), weights)
+    }
+
+    /// Get dispersion estimated from Pearson residuals.
+    ///
+    /// φ_pearson = X² / (n - p)
+    fn scale_pearson(&self) -> f64 {
+        let family: Box<dyn Family> = match self.family_name.as_str() {
+            "Gaussian" => Box::new(GaussianFamily),
+            "Poisson" => Box::new(PoissonFamily),
+            "Binomial" => Box::new(BinomialFamily),
+            "Gamma" => Box::new(GammaFamily),
+            _ => Box::new(GaussianFamily),
+        };
+        
+        let weights = if self.prior_weights.iter().all(|&w| (w - 1.0).abs() < 1e-10) {
+            None
+        } else {
+            Some(&self.prior_weights)
+        };
+        
+        estimate_dispersion_pearson(
+            &self.y, 
+            &self.fitted_values, 
+            family.as_ref(), 
+            self.df_resid(),
+            weights,
+        )
+    }
+
+    // =========================================================================
+    // Log-Likelihood and Information Criteria
+    // =========================================================================
+
+    /// Get the log-likelihood value.
+    ///
+    /// This is the log of the probability of observing the data given
+    /// the fitted model. Higher (less negative) is better.
+    fn llf(&self) -> f64 {
+        let scale = self.scale();
+        let weights = if self.prior_weights.iter().all(|&w| (w - 1.0).abs() < 1e-10) {
+            None
+        } else {
+            Some(&self.prior_weights)
+        };
+        
+        match self.family_name.as_str() {
+            "Gaussian" => log_likelihood_gaussian(&self.y, &self.fitted_values, scale, weights),
+            "Poisson" => log_likelihood_poisson(&self.y, &self.fitted_values, weights),
+            "Binomial" => log_likelihood_binomial(&self.y, &self.fitted_values, weights),
+            "Gamma" => log_likelihood_gamma(&self.y, &self.fitted_values, scale, weights),
+            _ => log_likelihood_gaussian(&self.y, &self.fitted_values, scale, weights),
+        }
+    }
+
+    /// Get the Akaike Information Criterion.
+    ///
+    /// AIC = -2ℓ + 2p
+    ///
+    /// Lower is better. Use for model comparison.
+    fn aic(&self) -> f64 {
+        aic(self.llf(), self.n_params)
+    }
+
+    /// Get the Bayesian Information Criterion.
+    ///
+    /// BIC = -2ℓ + p×log(n)
+    ///
+    /// Lower is better. Penalizes complexity more than AIC for large n.
+    fn bic(&self) -> f64 {
+        bic(self.llf(), self.n_params, self.n_obs)
+    }
+
+    /// Get the null deviance (deviance of intercept-only model).
+    ///
+    /// Measures total variation in y before accounting for predictors.
+    /// Compare to residual deviance to assess explanatory power.
+    fn null_deviance(&self) -> f64 {
+        let weights = if self.prior_weights.iter().all(|&w| (w - 1.0).abs() < 1e-10) {
+            None
+        } else {
+            Some(&self.prior_weights)
+        };
+        
+        null_deviance(&self.y, &self.family_name, weights)
+    }
+
+    /// Get the family name.
+    #[getter]
+    fn family(&self) -> &str {
+        &self.family_name
+    }
 }
 
 // =============================================================================
@@ -775,6 +968,9 @@ fn fit_glm_py(
         covariance_unscaled: result.covariance_unscaled,
         n_obs,
         n_params,
+        y: result.y,
+        family_name: result.family_name,
+        prior_weights: result.prior_weights,
     })
 }
 

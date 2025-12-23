@@ -136,6 +136,12 @@ pub struct IRLSResult {
 
     /// Offset used in fitting (if any)
     pub offset: Array1<f64>,
+
+    /// Original response variable (needed for residuals/diagnostics)
+    pub y: Array1<f64>,
+
+    /// Family name (needed for computing log-likelihood)
+    pub family_name: String,
 }
 
 // =============================================================================
@@ -452,6 +458,8 @@ pub fn fit_glm_full(
         irls_weights: final_weights,
         prior_weights: prior_weights_vec,
         offset: offset_vec,
+        y: y.to_owned(),  // Only clone at the end, needed for diagnostics
+        family_name: family.name().to_string(),
     })
 }
 
@@ -462,6 +470,13 @@ pub fn fit_glm_full(
 /// Solve weighted least squares: minimize Σ w_i (z_i - x_i'β)²
 ///
 /// Returns (coefficients, (X'WX)⁻¹)
+/// 
+/// OPTIMIZATION NOTES:
+/// This is a hot path - called every IRLS iteration.
+/// Key optimizations:
+/// - Compute X'WX directly without forming weighted X matrix (O(n×p²) vs O(n×p) storage)
+/// - Reuse Cholesky factorization for both solve and inverse
+/// - Minimize allocations
 fn solve_weighted_least_squares(
     x: &Array2<f64>,
     z: &Array1<f64>,
@@ -470,44 +485,61 @@ fn solve_weighted_least_squares(
     let n = x.nrows();
     let p = x.ncols();
 
-    // Convert to nalgebra matrices for linear algebra
-    // X'WX and X'Wz
-
-    // Create diagonal weight matrix W^(1/2) and multiply into X
-    // This is more efficient than forming the full diagonal matrix
-    let sqrt_w: Vec<f64> = w.iter().map(|&wi| wi.sqrt()).collect();
-
-    // Form X_w = W^(1/2) X  (each row scaled by sqrt(w_i))
-    let mut x_weighted = DMatrix::zeros(n, p);
-    for i in 0..n {
-        for j in 0..p {
-            x_weighted[(i, j)] = x[[i, j]] * sqrt_w[i];
+    // -------------------------------------------------------------------------
+    // Compute X'WX directly (more cache-friendly than forming weighted X)
+    // X'WX[i,j] = Σ_k x[k,i] * w[k] * x[k,j]
+    // -------------------------------------------------------------------------
+    let mut xtx = DMatrix::zeros(p, p);
+    
+    // Outer product accumulation - better cache locality
+    for k in 0..n {
+        let wk = w[k];
+        for i in 0..p {
+            let xki_w = x[[k, i]] * wk;
+            for j in i..p {  // Only upper triangle, then symmetrize
+                xtx[(i, j)] += xki_w * x[[k, j]];
+            }
+        }
+    }
+    // Symmetrize
+    for i in 0..p {
+        for j in (i + 1)..p {
+            xtx[(j, i)] = xtx[(i, j)];
         }
     }
 
-    // Form z_w = W^(1/2) z
-    let z_weighted: DVector<f64> = DVector::from_iterator(
-        n,
-        z.iter().zip(sqrt_w.iter()).map(|(&zi, &swi)| zi * swi),
-    );
+    // -------------------------------------------------------------------------
+    // Compute X'Wz directly
+    // X'Wz[i] = Σ_k x[k,i] * w[k] * z[k]
+    // -------------------------------------------------------------------------
+    let mut xtz = DVector::zeros(p);
+    for k in 0..n {
+        let wz = w[k] * z[k];
+        for i in 0..p {
+            xtz[i] += x[[k, i]] * wz;
+        }
+    }
 
-    // Now solve: (X_w'X_w)β = X_w'z_w
-    // Which is equivalent to: (X'WX)β = X'Wz
-
-    // Compute X'WX = X_w'X_w
-    let xtx = x_weighted.transpose() * &x_weighted;
-
-    // Compute X'Wz = X_w'z_w
-    let xtz = x_weighted.transpose() * z_weighted;
-
-    // Solve the system using Cholesky decomposition (for positive definite matrices)
-    // If that fails, fall back to LU decomposition
-    let coefficients = match xtx.clone().cholesky() {
-        Some(chol) => chol.solve(&xtz),
+    // -------------------------------------------------------------------------
+    // Solve using Cholesky decomposition (reuse for inverse)
+    // -------------------------------------------------------------------------
+    let chol = match xtx.clone().cholesky() {
+        Some(c) => c,
         None => {
-            // Try LU decomposition as fallback
+            // Fall back to LU decomposition
             match xtx.clone().lu().solve(&xtz) {
-                Some(sol) => sol,
+                Some(sol) => {
+                    // LU worked for solve, try inverse
+                    let coef_array: Array1<f64> = sol.iter().copied().collect();
+                    let xtx_inv = xtx.try_inverse().unwrap_or_else(|| DMatrix::zeros(p, p));
+                    let mut cov_array = Array2::zeros((p, p));
+                    for i in 0..p {
+                        for j in 0..p {
+                            cov_array[[i, j]] = xtx_inv[(i, j)];
+                        }
+                    }
+                    return Ok((coef_array, cov_array));
+                }
                 None => {
                     return Err(RustyStatsError::LinearAlgebraError(
                         "Failed to solve weighted least squares - matrix may be singular. \
@@ -519,21 +551,12 @@ fn solve_weighted_least_squares(
         }
     };
 
-    // Compute (X'WX)⁻¹ for standard errors
-    let xtx_inv = match xtx.clone().cholesky() {
-        Some(chol) => {
-            let identity = DMatrix::identity(p, p);
-            chol.solve(&identity)
-        }
-        None => match xtx.try_inverse() {
-            Some(inv) => inv,
-            None => {
-                // Return zeros if we can't compute inverse
-                // Standard errors will be unreliable
-                DMatrix::zeros(p, p)
-            }
-        },
-    };
+    // Solve for coefficients
+    let coefficients = chol.solve(&xtz);
+
+    // Compute inverse using same Cholesky factorization
+    let identity = DMatrix::identity(p, p);
+    let xtx_inv = chol.solve(&identity);
 
     // Convert back to ndarray
     let coef_array: Array1<f64> = coefficients.iter().copied().collect();

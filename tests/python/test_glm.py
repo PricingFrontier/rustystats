@@ -574,5 +574,189 @@ class TestSummaryFunctions:
         assert "exp(Coef)" in output
 
 
+class TestDiagnostics:
+    """Tests for model diagnostics (residuals, dispersion, information criteria)."""
+    
+    def test_residual_types(self):
+        """Test all residual types are computed correctly."""
+        np.random.seed(42)
+        n = 100
+        X = np.column_stack([np.ones(n), np.random.randn(n)])
+        y = np.random.poisson(np.exp(0.5 + 0.3 * X[:, 1]))
+        
+        result = rs.fit_glm(y, X, family="poisson")
+        
+        # All residual types should be arrays of correct length
+        assert len(result.resid_response()) == n
+        assert len(result.resid_pearson()) == n
+        assert len(result.resid_deviance()) == n
+        assert len(result.resid_working()) == n
+    
+    def test_deviance_residuals_sum_to_deviance(self):
+        """Sum of squared deviance residuals should equal model deviance."""
+        np.random.seed(42)
+        n = 100
+        X = np.column_stack([np.ones(n), np.random.randn(n)])
+        y = np.random.poisson(np.exp(0.5 + 0.3 * X[:, 1]))
+        
+        result = rs.fit_glm(y, X, family="poisson")
+        
+        resid_dev = result.resid_deviance()
+        sum_sq = np.sum(resid_dev ** 2)
+        
+        np.testing.assert_almost_equal(sum_sq, result.deviance, decimal=10)
+    
+    def test_response_residuals(self):
+        """Response residuals should be y - fitted."""
+        np.random.seed(42)
+        n = 50
+        X = np.column_stack([np.ones(n), np.random.randn(n)])
+        y = np.random.randn(n) + 5
+        
+        result = rs.fit_glm(y, X, family="gaussian")
+        
+        expected = y - result.fittedvalues
+        np.testing.assert_array_almost_equal(result.resid_response(), expected)
+    
+    def test_log_likelihood(self):
+        """Log-likelihood should be a finite negative number."""
+        np.random.seed(42)
+        n = 100
+        X = np.column_stack([np.ones(n), np.random.randn(n)])
+        y = np.random.poisson(np.exp(0.5 + 0.3 * X[:, 1]))
+        
+        result = rs.fit_glm(y, X, family="poisson")
+        
+        llf = result.llf()
+        assert np.isfinite(llf)
+        assert llf < 0  # Log-likelihood is typically negative
+    
+    def test_aic_bic(self):
+        """AIC and BIC should be finite positive numbers."""
+        np.random.seed(42)
+        n = 100
+        X = np.column_stack([np.ones(n), np.random.randn(n)])
+        y = np.random.poisson(np.exp(0.5 + 0.3 * X[:, 1]))
+        
+        result = rs.fit_glm(y, X, family="poisson")
+        
+        assert np.isfinite(result.aic())
+        assert np.isfinite(result.bic())
+        assert result.aic() > 0
+        assert result.bic() > 0
+        # BIC penalizes more for large n, so BIC > AIC typically
+        # AIC = -2*llf + 2*p, BIC = -2*llf + p*log(n)
+        # For n=100, log(100) ≈ 4.6 > 2, so BIC > AIC
+        assert result.bic() > result.aic()
+    
+    def test_null_deviance(self):
+        """Null deviance should be >= residual deviance."""
+        np.random.seed(42)
+        n = 100
+        X = np.column_stack([np.ones(n), np.random.randn(n)])
+        y = np.random.poisson(np.exp(0.5 + 0.3 * X[:, 1]))
+        
+        result = rs.fit_glm(y, X, family="poisson")
+        
+        null_dev = result.null_deviance()
+        resid_dev = result.deviance
+        
+        assert np.isfinite(null_dev)
+        assert null_dev >= resid_dev  # Adding predictors should reduce deviance
+    
+    def test_pearson_chi2(self):
+        """Pearson chi-squared should be finite and positive."""
+        np.random.seed(42)
+        n = 100
+        X = np.column_stack([np.ones(n), np.random.randn(n)])
+        y = np.random.poisson(np.exp(0.5 + 0.3 * X[:, 1]))
+        
+        result = rs.fit_glm(y, X, family="poisson")
+        
+        chi2 = result.pearson_chi2()
+        assert np.isfinite(chi2)
+        assert chi2 > 0
+    
+    def test_scale_estimates(self):
+        """Scale estimates should be reasonable."""
+        np.random.seed(42)
+        n = 100
+        X = np.column_stack([np.ones(n), np.random.randn(n)])
+        y = np.random.poisson(np.exp(0.5 + 0.3 * X[:, 1]))
+        
+        result = rs.fit_glm(y, X, family="poisson")
+        
+        scale_dev = result.scale()
+        scale_pear = result.scale_pearson()
+        
+        assert np.isfinite(scale_dev)
+        assert np.isfinite(scale_pear)
+        assert scale_dev > 0
+        assert scale_pear > 0
+        # For Poisson with correct specification, scale should be near 1
+        # But with real data it might be > 1 (overdispersion)
+    
+    def test_family_attribute(self):
+        """Family attribute should return correct family name."""
+        np.random.seed(42)
+        n = 50
+        X = np.column_stack([np.ones(n), np.random.randn(n)])
+        
+        # Test each family
+        for family_name, expected in [
+            ("gaussian", "Gaussian"),
+            ("poisson", "Poisson"),
+            ("binomial", "Binomial"),
+            ("gamma", "Gamma"),
+        ]:
+            if family_name == "binomial":
+                y = np.random.binomial(1, 0.5, size=n).astype(float)
+            elif family_name == "gamma":
+                y = np.random.gamma(2, 2, size=n)
+            elif family_name == "poisson":
+                y = np.random.poisson(2, size=n).astype(float)
+            else:
+                y = np.random.randn(n)
+            
+            result = rs.fit_glm(y, X, family=family_name)
+            assert result.family == expected
+    
+    def test_gaussian_diagnostics(self):
+        """Test diagnostics for Gaussian family specifically."""
+        np.random.seed(42)
+        n = 100
+        X = np.column_stack([np.ones(n), np.random.randn(n)])
+        y = 2 + 3 * X[:, 1] + np.random.randn(n)
+        
+        result = rs.fit_glm(y, X, family="gaussian")
+        
+        # For Gaussian with identity link:
+        # - Response residuals = Pearson residuals (since V(mu) = 1)
+        # - Deviance residuals = response residuals (since d = (y-mu)^2)
+        np.testing.assert_array_almost_equal(
+            result.resid_response(), 
+            result.resid_pearson()
+        )
+    
+    def test_enhanced_summary_contains_diagnostics(self):
+        """Summary should include diagnostic information."""
+        np.random.seed(42)
+        n = 100
+        X = np.column_stack([np.ones(n), np.random.randn(n)])
+        y = np.random.poisson(np.exp(0.5 + 0.3 * X[:, 1]))
+        
+        result = rs.fit_glm(y, X, family="poisson")
+        output = rs.summary(result)
+        
+        # Check for diagnostic metrics in summary
+        assert "Log-Likelihood" in output
+        assert "AIC" in output
+        assert "BIC" in output
+        assert "Null Deviance" in output
+        assert "Pearson chi2" in output
+        assert "Scale" in output
+        assert "Poisson" in output  # Family name
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

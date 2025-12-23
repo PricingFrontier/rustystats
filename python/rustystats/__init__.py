@@ -88,6 +88,9 @@ from rustystats import families
 from rustystats import links
 from rustystats.glm import GLM, fit_glm, summary, summary_relativities
 
+# Formula-based API (works with DataFrames)
+from rustystats.formula import glm, FormulaGLM, FormulaGLMResults
+
 # What gets exported when someone does `from rustystats import *`
 __all__ = [
     # Version
@@ -95,7 +98,10 @@ __all__ = [
     # Main API
     "GLM",
     "fit_glm",
+    "glm",  # Formula-based API
     "GLMResults",
+    "FormulaGLM",
+    "FormulaGLMResults",
     "summary",
     "summary_relativities",
     # Sub-modules

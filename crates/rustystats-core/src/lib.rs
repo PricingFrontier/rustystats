@@ -32,6 +32,7 @@ pub mod families;
 pub mod inference;
 pub mod links;
 pub mod solvers;
+pub mod diagnostics;
 
 // Re-export commonly used items at the top level for convenience
 // Users can write `use rustystats_core::GaussianFamily` instead of

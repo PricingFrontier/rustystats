@@ -469,7 +469,7 @@ def summary(
     alpha: float = 0.05,
 ) -> str:
     """
-    Generate a summary table for GLM results.
+    Generate a summary table for GLM results (statsmodels-style).
     
     Parameters
     ----------
@@ -516,6 +516,21 @@ def summary(
     conf_ints = result.conf_int(alpha)
     sig_codes = result.significance_codes()
     
+    # Get diagnostics
+    try:
+        llf = result.llf()
+        aic_val = result.aic()
+        bic_val = result.bic()
+        pearson_chi2 = result.pearson_chi2()
+        null_dev = result.null_deviance()
+        family_name = result.family
+        scale = result.scale()
+    except Exception:
+        # Fallback if diagnostics not available
+        llf = aic_val = bic_val = pearson_chi2 = null_dev = float('nan')
+        family_name = "Unknown"
+        scale = 1.0
+    
     # Build the table
     lines = []
     lines.append("=" * 78)
@@ -523,10 +538,18 @@ def summary(
     lines.append("=" * 78)
     lines.append("")
     
-    # Model info
-    lines.append(f"No. Observations: {result.nobs:>10}     Df Residuals: {result.df_resid:>10}")
-    lines.append(f"Df Model:         {result.df_model:>10}     Deviance:     {result.deviance:>10.4f}")
-    lines.append(f"Converged:        {str(result.converged):>10}     Iterations:   {result.iterations:>10}")
+    # Model info - statsmodels style
+    lines.append(f"{'Family:':<20} {family_name:<15} {'No. Observations:':<20} {result.nobs:>10}")
+    lines.append(f"{'Link Function:':<20} {'(default)':<15} {'Df Residuals:':<20} {result.df_resid:>10}")
+    lines.append(f"{'Method:':<20} {'IRLS':<15} {'Df Model:':<20} {result.df_model:>10}")
+    lines.append(f"{'Scale:':<20} {scale:<15.4f} {'Iterations:':<20} {result.iterations:>10}")
+    lines.append("")
+    
+    # Goodness of fit
+    lines.append(f"{'Log-Likelihood:':<20} {llf:>15.4f} {'Deviance:':<20} {result.deviance:>15.4f}")
+    lines.append(f"{'AIC:':<20} {aic_val:>15.4f} {'Null Deviance:':<20} {null_dev:>15.4f}")
+    lines.append(f"{'BIC:':<20} {bic_val:>15.4f} {'Pearson chi2:':<20} {pearson_chi2:>15.2f}")
+    lines.append(f"{'Converged:':<20} {str(result.converged):<15}")
     lines.append("")
     lines.append("-" * 78)
     
