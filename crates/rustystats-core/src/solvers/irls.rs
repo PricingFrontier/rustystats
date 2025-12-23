@@ -48,6 +48,7 @@
 // =============================================================================
 
 use ndarray::{Array1, Array2};
+use rayon::prelude::*;
 use nalgebra::{DMatrix, DVector};
 
 use crate::error::{RustyStatsError, Result};
@@ -334,44 +335,43 @@ pub fn fit_glm_full(
         let variance = family.variance(&mu);
         let link_deriv = link.derivative(&mu);
 
-        let irls_weights: Array1<f64> = variance
-            .iter()
-            .zip(link_deriv.iter())
-            .map(|(&v, &d)| {
-                let w = 1.0 / (v * d * d);
-                // Clip weights to avoid numerical issues
-                w.max(config.min_weight).min(1e10)
+        // PARALLEL: Compute IRLS weights, combined weights, and working response
+        // in a single parallel pass to minimize allocation overhead
+        let n = y.len();
+        let min_weight = config.min_weight;
+        
+        let results: Vec<(f64, f64, f64)> = (0..n)
+            .into_par_iter()
+            .map(|i| {
+                let v = variance[i];
+                let d = link_deriv[i];
+                
+                // IRLS weight
+                let iw = (1.0 / (v * d * d)).max(min_weight).min(1e10);
+                
+                // Combined weight
+                let cw = prior_weights_vec[i] * iw;
+                
+                // Working response: z = (η - offset) + (y - μ) × g'(μ)
+                let e = eta[i] - offset_vec[i];
+                let wr = e + (y[i] - mu[i]) * d;
+                
+                (iw, cw, wr)
             })
             .collect();
-
-        // Combined weights = prior_weights × irls_weights
-        let combined_weights: Array1<f64> = prior_weights_vec
-            .iter()
-            .zip(irls_weights.iter())
-            .map(|(&pw, &iw)| pw * iw)
-            .collect();
-
-        // ---------------------------------------------------------------------
-        // Step 4b: Compute working response z
-        // ---------------------------------------------------------------------
-        // z_i = (η_i - offset_i) + (y_i - μ_i) × g'(μ_i)
-        //
-        // Note: We subtract offset because we're solving for Xβ, not Xβ + offset
-        // This is the "linearized" response that we'll regress on.
-        // ---------------------------------------------------------------------
-        let eta_no_offset: Array1<f64> = eta
-            .iter()
-            .zip(offset_vec.iter())
-            .map(|(&e, &o)| e - o)
-            .collect();
-
-        let working_response: Array1<f64> = eta_no_offset
-            .iter()
-            .zip(y.iter())
-            .zip(mu.iter())
-            .zip(link_deriv.iter())
-            .map(|(((&e, &yi), &mui), &d)| e + (yi - mui) * d)
-            .collect();
+        
+        let mut irls_weights_vec = Vec::with_capacity(n);
+        let mut combined_weights_vec = Vec::with_capacity(n);
+        let mut working_response_vec = Vec::with_capacity(n);
+        for (iw, cw, wr) in results {
+            irls_weights_vec.push(iw);
+            combined_weights_vec.push(cw);
+            working_response_vec.push(wr);
+        }
+        
+        let irls_weights = Array1::from_vec(irls_weights_vec);
+        let combined_weights = Array1::from_vec(combined_weights_vec);
+        let working_response = Array1::from_vec(working_response_vec);
 
         // ---------------------------------------------------------------------
         // Step 4c: Solve weighted least squares: (X'WX)β = X'Wz
@@ -474,9 +474,10 @@ pub fn fit_glm_full(
 /// OPTIMIZATION NOTES:
 /// This is a hot path - called every IRLS iteration.
 /// Key optimizations:
-/// - Compute X'WX directly without forming weighted X matrix (O(n×p²) vs O(n×p) storage)
+/// - PARALLEL: Split rows across threads for X'WX and X'Wz computation
+/// - Compute X'WX directly without forming weighted X matrix
 /// - Reuse Cholesky factorization for both solve and inverse
-/// - Minimize allocations
+/// - Use chunk-based parallelism to reduce synchronization overhead
 fn solve_weighted_least_squares(
     x: &Array2<f64>,
     z: &Array1<f64>,
@@ -486,39 +487,61 @@ fn solve_weighted_least_squares(
     let p = x.ncols();
 
     // -------------------------------------------------------------------------
-    // Compute X'WX directly (more cache-friendly than forming weighted X)
-    // X'WX[i,j] = Σ_k x[k,i] * w[k] * x[k,j]
+    // PARALLEL: Compute X'WX and X'Wz using parallel chunk processing
+    // Each thread computes partial sums, then we reduce to final result
     // -------------------------------------------------------------------------
-    let mut xtx = DMatrix::zeros(p, p);
     
-    // Outer product accumulation - better cache locality
-    for k in 0..n {
-        let wk = w[k];
-        for i in 0..p {
-            let xki_w = x[[k, i]] * wk;
-            for j in i..p {  // Only upper triangle, then symmetrize
-                xtx[(i, j)] += xki_w * x[[k, j]];
-            }
-        }
-    }
-    // Symmetrize
-    for i in 0..p {
-        for j in (i + 1)..p {
-            xtx[(j, i)] = xtx[(i, j)];
-        }
-    }
+    // Parallel computation of X'WX and X'Wz
+    // Each chunk returns (partial_xtx as Vec<f64>, partial_xtz as Vec<f64>)
+    let (xtx_data, xtz_data): (Vec<f64>, Vec<f64>) = (0..n)
+        .into_par_iter()
+        .fold(
+            || (vec![0.0; p * p], vec![0.0; p]),
+            |(mut xtx_local, mut xtz_local), k| {
+                let wk = w[k];
+                let wz = wk * z[k];
+                
+                // Accumulate X'WX (upper triangle only)
+                for i in 0..p {
+                    let xki = x[[k, i]];
+                    let xki_w = xki * wk;
+                    
+                    // X'Wz
+                    xtz_local[i] += xki * wz;
+                    
+                    // X'WX upper triangle
+                    for j in i..p {
+                        xtx_local[i * p + j] += xki_w * x[[k, j]];
+                    }
+                }
+                
+                (xtx_local, xtz_local)
+            },
+        )
+        .reduce(
+            || (vec![0.0; p * p], vec![0.0; p]),
+            |(mut a_xtx, mut a_xtz), (b_xtx, b_xtz)| {
+                for i in 0..a_xtx.len() {
+                    a_xtx[i] += b_xtx[i];
+                }
+                for i in 0..a_xtz.len() {
+                    a_xtz[i] += b_xtz[i];
+                }
+                (a_xtx, a_xtz)
+            },
+        );
 
-    // -------------------------------------------------------------------------
-    // Compute X'Wz directly
-    // X'Wz[i] = Σ_k x[k,i] * w[k] * z[k]
-    // -------------------------------------------------------------------------
-    let mut xtz = DVector::zeros(p);
-    for k in 0..n {
-        let wz = w[k] * z[k];
-        for i in 0..p {
-            xtz[i] += x[[k, i]] * wz;
+    // Convert to nalgebra types
+    let mut xtx = DMatrix::zeros(p, p);
+    for i in 0..p {
+        for j in i..p {
+            let val = xtx_data[i * p + j];
+            xtx[(i, j)] = val;
+            xtx[(j, i)] = val;  // Symmetrize
         }
     }
+    
+    let xtz = DVector::from_vec(xtz_data);
 
     // -------------------------------------------------------------------------
     // Solve using Cholesky decomposition (reuse for inverse)

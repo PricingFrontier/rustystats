@@ -181,6 +181,7 @@ class FormulaGLM:
         data: Union["pl.DataFrame", "pd.DataFrame"],
         family: str = "gaussian",
         link: Optional[str] = None,
+        var_power: float = 1.5,
         offset: Optional[Union[str, np.ndarray]] = None,
         weights: Optional[Union[str, np.ndarray]] = None,
     ):
@@ -188,6 +189,7 @@ class FormulaGLM:
         self.data = data
         self.family = family.lower()
         self.link = link
+        self.var_power = var_power
         self._offset_spec = offset
         self._weights_spec = weights
         
@@ -275,6 +277,7 @@ class FormulaGLM:
             self.X,
             self.family,
             self.link,
+            self.var_power,
             self.offset,
             self.weights,
             max_iter,
@@ -511,6 +514,7 @@ def glm(
     data: Union["pl.DataFrame", "pd.DataFrame"],
     family: str = "gaussian",
     link: Optional[str] = None,
+    var_power: float = 1.5,
     offset: Optional[Union[str, np.ndarray]] = None,
     weights: Optional[Union[str, np.ndarray]] = None,
 ) -> FormulaGLM:
@@ -528,10 +532,13 @@ def glm(
         Polars or Pandas DataFrame containing the variables.
         
     family : str, default="gaussian"
-        Distribution family: "gaussian", "poisson", "binomial", "gamma"
+        Distribution family: "gaussian", "poisson", "binomial", "gamma", "tweedie"
         
     link : str, optional
         Link function. If None, uses canonical link.
+        
+    var_power : float, default=1.5
+        Variance power for Tweedie family (ignored for others).
         
     offset : str or array-like, optional
         Offset term. If string, treated as column name.
@@ -571,6 +578,7 @@ def glm(
         data=data,
         family=family,
         link=link,
+        var_power=var_power,
         offset=offset,
         weights=weights,
     )

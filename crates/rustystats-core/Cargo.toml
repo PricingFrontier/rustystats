@@ -35,6 +35,9 @@ thiserror = { workspace = true }
 # Statistical distributions (Normal, Gamma, etc.) and functions
 statrs = { workspace = true }
 
+# Parallel computation - for multi-threaded IRLS
+rayon = { workspace = true }
+
 [dev-dependencies]
 # For comparing floating-point numbers in tests (handles rounding errors)
 approx = { workspace = true }

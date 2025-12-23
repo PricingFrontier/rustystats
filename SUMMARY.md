@@ -10,7 +10,7 @@ A high-performance Generalized Linear Models (GLM) library with a Rust backend a
 |-----------|--------|-------------|
 | **Link Functions** | ✅ Complete | Identity, Log, Logit |
 | **Distribution Families** | ✅ Complete | Gaussian, Poisson, Binomial, Gamma, Tweedie |
-| **IRLS Solver** | ✅ Complete | Iteratively Reweighted Least Squares fitting algorithm |
+| **IRLS Solver** | ✅ Complete | Multi-threaded Iteratively Reweighted Least Squares (parallel) |
 | **Offset Support** | ✅ Complete | For exposure-based rate models |
 | **Prior Weights** | ✅ Complete | For grouped/aggregated data |
 | **Statistical Inference** | ✅ Complete | Standard errors, z-values, p-values, confidence intervals |
@@ -146,7 +146,6 @@ result.family              # Family name
 | Feature | Description |
 |---------|-------------|
 | **GPU Acceleration** | CUDA/Metal for large datasets |
-| **Parallel Fitting** | Multi-threaded IRLS |
 | **Streaming/Chunked Data** | Handle datasets larger than memory |
 | **Model Serialization** | Save/load fitted models |
 | **ONNX Export** | Deploy models in production |

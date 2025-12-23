@@ -44,6 +44,7 @@ numpy = "0.22"                             # NumPy array support for PyO3
 # --- Utilities ---
 thiserror = "2.0"                          # Easy error type definitions
 approx = "0.5"                             # Floating-point comparisons for tests
+rayon = "1.10"                             # Data parallelism for multi-threaded computation
 
 # --- Statistical Functions ---
 # statrs provides probability distributions for p-value calculations
