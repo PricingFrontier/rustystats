@@ -589,17 +589,25 @@ impl PyGLMResults {
         self.covariance_unscaled.clone().into_pyarray_bound(py)
     }
 
-    /// Estimate the dispersion parameter φ.
+    /// Get the dispersion parameter φ.
     ///
-    /// For Gaussian: φ = deviance / df_resid
-    /// For Poisson/Binomial: φ = 1 (by assumption)
-    /// For Gamma: φ = deviance / df_resid (approximately)
+    /// For Poisson/Binomial: φ = 1 (fixed by assumption)
+    /// For Gaussian/Gamma/Tweedie: φ = deviance / df_resid (estimated)
+    ///
+    /// This matches statsmodels behavior.
     fn scale(&self) -> f64 {
-        let df = self.df_resid() as f64;
-        if df > 0.0 {
-            self.deviance / df
-        } else {
-            1.0
+        // Poisson and Binomial have fixed dispersion = 1
+        match self.family_name.as_str() {
+            "Poisson" | "Binomial" => 1.0,
+            _ => {
+                // Estimate dispersion for Gaussian, Gamma, Tweedie
+                let df = self.df_resid() as f64;
+                if df > 0.0 {
+                    self.deviance / df
+                } else {
+                    1.0
+                }
+            }
         }
     }
 
