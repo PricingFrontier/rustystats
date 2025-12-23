@@ -9,7 +9,7 @@ A high-performance Generalized Linear Models (GLM) library with a Rust backend a
 | Component | Status | Description |
 |-----------|--------|-------------|
 | **Link Functions** | ✅ Complete | Identity, Log, Logit |
-| **Distribution Families** | ✅ Complete | Gaussian, Poisson, Binomial, Gamma |
+| **Distribution Families** | ✅ Complete | Gaussian, Poisson, Binomial, Gamma, Tweedie |
 | **IRLS Solver** | ✅ Complete | Iteratively Reweighted Least Squares fitting algorithm |
 | **Offset Support** | ✅ Complete | For exposure-based rate models |
 | **Prior Weights** | ✅ Complete | For grouped/aggregated data |
@@ -41,7 +41,7 @@ A high-performance Generalized Linear Models (GLM) library with a Rust backend a
 
 | Component | Count | Description |
 |-----------|-------|-------------|
-| **Rust Unit Tests** | 78 | Core library tests (including diagnostics) |
+| **Rust Unit Tests** | 89 | Core library tests (families, diagnostics, solvers) |
 | **Python Tests** | 88 | API and integration tests |
 
 ### Examples
@@ -119,12 +119,6 @@ result.family              # Family name
 ---
 
 ## Features To Be Added
-
-### High Priority
-
-| Feature | Description | Use Case |
-|---------|-------------|----------|
-| **Tweedie Family** | Compound Poisson-Gamma distribution | Pure premium modeling (frequency × severity) |
 
 ### Medium Priority
 

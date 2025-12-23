@@ -34,7 +34,7 @@ use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2}
 use ndarray::{Array1, Array2};
 
 // Import our core library
-use rustystats_core::families::{Family, GaussianFamily, PoissonFamily, BinomialFamily, GammaFamily};
+use rustystats_core::families::{Family, GaussianFamily, PoissonFamily, BinomialFamily, GammaFamily, TweedieFamily};
 use rustystats_core::links::{Link, IdentityLink, LogLink, LogitLink};
 use rustystats_core::solvers::{fit_glm_full, IRLSConfig, IRLSResult};
 use rustystats_core::inference::{pvalue_z, confidence_interval_z};
@@ -358,6 +358,84 @@ impl PyGammaFamily {
     
     fn name(&self) -> &str {
         self.inner.name()
+    }
+    
+    fn variance<'py>(&self, py: Python<'py>, mu: PyReadonlyArray1<f64>) -> Bound<'py, PyArray1<f64>> {
+        let mu_array = mu.as_array().to_owned();
+        let result = self.inner.variance(&mu_array);
+        result.into_pyarray_bound(py)
+    }
+    
+    fn unit_deviance<'py>(
+        &self,
+        py: Python<'py>,
+        y: PyReadonlyArray1<f64>,
+        mu: PyReadonlyArray1<f64>,
+    ) -> Bound<'py, PyArray1<f64>> {
+        let y_array = y.as_array().to_owned();
+        let mu_array = mu.as_array().to_owned();
+        let result = self.inner.unit_deviance(&y_array, &mu_array);
+        result.into_pyarray_bound(py)
+    }
+    
+    fn deviance(&self, y: PyReadonlyArray1<f64>, mu: PyReadonlyArray1<f64>) -> f64 {
+        let y_array = y.as_array().to_owned();
+        let mu_array = mu.as_array().to_owned();
+        self.inner.deviance(&y_array, &mu_array, None)
+    }
+    
+    fn default_link(&self) -> PyLogLink {
+        PyLogLink::new()
+    }
+}
+
+/// Tweedie family for mixed zeros and positive continuous data.
+/// 
+/// Essential for insurance pure premium modeling (frequency × severity in one model).
+/// Variance function: V(μ) = μ^p where p is the variance power.
+///
+/// Parameters
+/// ----------
+/// var_power : float
+///     The variance power parameter p. Must be <= 0 or >= 1.
+///     - p = 0: Gaussian
+///     - p = 1: Poisson  
+///     - 1 < p < 2: Compound Poisson-Gamma (insurance use case)
+///     - p = 2: Gamma
+///     - p = 3: Inverse Gaussian
+///
+/// Examples
+/// --------
+/// >>> import rustystats as rs
+/// >>> # Fit Tweedie with p=1.5 for pure premium
+/// >>> result = rs.fit_glm(y, X, family="tweedie", var_power=1.5)
+#[pyclass(name = "TweedieFamily")]
+#[derive(Clone)]
+pub struct PyTweedieFamily {
+    inner: TweedieFamily,
+}
+
+#[pymethods]
+impl PyTweedieFamily {
+    #[new]
+    #[pyo3(signature = (var_power=1.5))]
+    fn new(var_power: f64) -> PyResult<Self> {
+        if var_power > 0.0 && var_power < 1.0 {
+            return Err(PyValueError::new_err(
+                format!("var_power must be <= 0 or >= 1, got {}", var_power)
+            ));
+        }
+        Ok(Self { inner: TweedieFamily::new(var_power) })
+    }
+    
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+    
+    /// Get the variance power parameter
+    #[getter]
+    fn var_power(&self) -> f64 {
+        self.inner.var_power
     }
     
     fn variance<'py>(&self, py: Python<'py>, mu: PyReadonlyArray1<f64>) -> Bound<'py, PyArray1<f64>> {
@@ -855,10 +933,13 @@ impl PyGLMResults {
 ///     Design matrix (2D array of shape n × p)
 ///     Should include a column of 1s for intercept if desired
 /// family : str
-///     Distribution family: "gaussian", "poisson", "binomial", "gamma"
+///     Distribution family: "gaussian", "poisson", "binomial", "gamma", "tweedie"
 /// link : str, optional
 ///     Link function: "identity", "log", "logit"
 ///     If None, uses the canonical link for the family
+/// var_power : float, optional
+///     Variance power for Tweedie family (default: 1.5)
+///     Must be <= 0 or >= 1. Common values: 1.5-1.9 for insurance
 /// offset : array-like, optional
 ///     Offset term added to linear predictor (e.g., log(exposure))
 /// weights : array-like, optional
@@ -873,12 +954,13 @@ impl PyGLMResults {
 /// GLMResults
 ///     Object containing fitted coefficients, deviance, etc.
 #[pyfunction]
-#[pyo3(signature = (y, x, family, link=None, offset=None, weights=None, max_iter=25, tol=1e-8))]
+#[pyo3(signature = (y, x, family, link=None, var_power=1.5, offset=None, weights=None, max_iter=25, tol=1e-8))]
 fn fit_glm_py(
     y: PyReadonlyArray1<f64>,
     x: PyReadonlyArray2<f64>,
     family: &str,
     link: Option<&str>,
+    var_power: f64,
     offset: Option<PyReadonlyArray1<f64>>,
     weights: Option<PyReadonlyArray1<f64>>,
     max_iter: usize,
@@ -953,8 +1035,25 @@ fn fit_glm_py(
                 ))),
             }
         }
+        "tweedie" => {
+            if var_power > 0.0 && var_power < 1.0 {
+                return Err(PyValueError::new_err(
+                    format!("var_power must be <= 0 or >= 1, got {}", var_power)
+                ));
+            }
+            let fam = TweedieFamily::new(var_power);
+            match link.unwrap_or("log") {
+                "log" => fit_glm_full(&y_array, &x_array, &fam, &LogLink, &config,
+                    offset_array.as_ref(), weights_array.as_ref()),
+                "identity" => fit_glm_full(&y_array, &x_array, &fam, &IdentityLink, &config,
+                    offset_array.as_ref(), weights_array.as_ref()),
+                other => return Err(PyValueError::new_err(format!(
+                    "Unknown link '{}' for Tweedie family. Use 'log' or 'identity'.", other
+                ))),
+            }
+        }
         other => return Err(PyValueError::new_err(format!(
-            "Unknown family '{}'. Use 'gaussian', 'poisson', 'binomial', or 'gamma'.", other
+            "Unknown family '{}'. Use 'gaussian', 'poisson', 'binomial', 'gamma', or 'tweedie'.", other
         ))),
     }.map_err(|e| PyValueError::new_err(format!("GLM fitting failed: {}", e)))?;
 
@@ -999,6 +1098,7 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPoissonFamily>()?;
     m.add_class::<PyBinomialFamily>()?;
     m.add_class::<PyGammaFamily>()?;
+    m.add_class::<PyTweedieFamily>()?;
     
     // Add GLM fitting
     m.add_class::<PyGLMResults>()?;

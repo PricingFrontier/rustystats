@@ -12,6 +12,7 @@
 //   - Binary data (0 or 1):               Binomial family  
 //   - Positive continuous (> 0):          Gamma family
 //   - Proportions with known n:           Binomial family
+//   - Mixed zeros and positives:          Tweedie family (1 < p < 2)
 //
 // WHAT DOES A FAMILY PROVIDE?
 // ---------------------------
@@ -49,12 +50,14 @@ mod gaussian;
 mod poisson;
 mod binomial;
 mod gamma;
+mod tweedie;
 
 // Re-export concrete implementations
 pub use gaussian::GaussianFamily;
 pub use poisson::PoissonFamily;
 pub use binomial::BinomialFamily;
 pub use gamma::GammaFamily;
+pub use tweedie::TweedieFamily;
 
 // =============================================================================
 // The Family Trait

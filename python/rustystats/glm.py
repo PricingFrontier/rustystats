@@ -44,6 +44,7 @@ def fit_glm(
     X: np.ndarray,
     family: str = "gaussian",
     link: Optional[str] = None,
+    var_power: float = 1.5,
     offset: Optional[np.ndarray] = None,
     weights: Optional[np.ndarray] = None,
     max_iter: int = 25,
@@ -74,6 +75,7 @@ def fit_glm(
         - "poisson": For count data (claim frequency)
         - "binomial": For binary/proportion data
         - "gamma": For positive continuous data (claim severity)
+        - "tweedie": For mixed zeros and positives (pure premium)
         
     link : str, optional
         Link function. If None, uses the canonical link:
@@ -81,12 +83,20 @@ def fit_glm(
         - Poisson: "log"
         - Binomial: "logit"
         - Gamma: "log"
+        - Tweedie: "log"
         
         Other options depend on family:
         - "identity": η = μ
         - "log": η = log(μ)
         - "logit": η = log(μ/(1-μ))
     
+    var_power : float, default=1.5
+        Variance power for Tweedie family only. Ignored for other families.
+        Must be <= 0 or >= 1. Common values:
+        - 1.0: Poisson (variance = mean)
+        - 1.5: Balanced (good default for insurance)
+        - 2.0: Gamma (variance = mean²)
+        
     offset : array-like, shape (n,), optional
         Offset term added to the linear predictor.
         For rate models with exposure: offset = log(exposure)
@@ -198,7 +208,7 @@ def fit_glm(
             )
     
     # Call the Rust implementation
-    return _fit_glm_rust(y, X, family, link, offset, weights, max_iter, tol)
+    return _fit_glm_rust(y, X, family, link, var_power, offset, weights, max_iter, tol)
 
 
 class GLM:
@@ -216,10 +226,13 @@ class GLM:
         Design matrix (X). Include intercept column if desired.
         
     family : str, default="gaussian"
-        Distribution family: "gaussian", "poisson", "binomial", "gamma"
+        Distribution family: "gaussian", "poisson", "binomial", "gamma", "tweedie"
         
     link : str, optional
         Link function. If None, uses canonical link.
+        
+    var_power : float, default=1.5
+        Variance power for Tweedie family (ignored for others).
         
     offset : array-like, shape (n,), optional
         Offset term (e.g., log(exposure) for rate models).
@@ -256,6 +269,7 @@ class GLM:
         exog: np.ndarray,
         family: str = "gaussian",
         link: Optional[str] = None,
+        var_power: float = 1.5,
         offset: Optional[np.ndarray] = None,
         weights: Optional[np.ndarray] = None,
     ):
@@ -264,6 +278,7 @@ class GLM:
         self.exog = np.asarray(exog, dtype=np.float64)
         self.family = family.lower()
         self.link = link
+        self.var_power = var_power
         self.offset = None if offset is None else np.asarray(offset, dtype=np.float64)
         self.weights = None if weights is None else np.asarray(weights, dtype=np.float64)
         
@@ -326,6 +341,7 @@ class GLM:
             self.exog,
             family=self.family,
             link=self.link,
+            var_power=self.var_power,
             offset=self.offset,
             weights=self.weights,
             max_iter=max_iter,

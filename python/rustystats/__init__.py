@@ -26,6 +26,7 @@ Available Families
 - **poisson**: Count data, variance = mean (claim frequency)
 - **binomial**: Binary/proportion data (logistic regression)
 - **gamma**: Positive continuous, variance ∝ mean² (claim severity)
+- **tweedie**: Mixed zeros and positives, variance = μ^p (pure premium)
 
 Available Link Functions
 ------------------------
@@ -40,7 +41,7 @@ This library is designed with actuarial applications in mind:
 - **Claim Frequency**: Use Poisson family with log link
 - **Claim Severity**: Use Gamma family with log link  
 - **Claim Occurrence**: Use Binomial family with logit link
-- **Pure Premium**: Poisson × Gamma (Tweedie coming soon)
+- **Pure Premium**: Use Tweedie family with var_power=1.5
 
 All code is heavily documented to help non-programmers understand
 what's happening under the hood.
@@ -78,6 +79,7 @@ from rustystats._rustystats import (
     PoissonFamily,
     BinomialFamily,
     GammaFamily,
+    TweedieFamily,
     # GLM fitting
     GLMResults,
     fit_glm_py as _fit_glm_rust,
@@ -115,4 +117,5 @@ __all__ = [
     "PoissonFamily",
     "BinomialFamily",
     "GammaFamily",
+    "TweedieFamily",
 ]
