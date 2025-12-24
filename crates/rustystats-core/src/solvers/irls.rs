@@ -147,6 +147,11 @@ pub struct IRLSResult {
 
     /// Penalty applied during fitting (if any)
     pub penalty: Penalty,
+
+    /// Design matrix X (needed for robust standard errors)
+    /// Optional to avoid expensive copies for large datasets.
+    /// Set to None by default; populated only when needed.
+    pub design_matrix: Option<Array2<f64>>,
 }
 
 // =============================================================================
@@ -465,6 +470,7 @@ pub fn fit_glm_full(
         y: y.to_owned(),  // Only clone at the end, needed for diagnostics
         family_name: family.name().to_string(),
         penalty: Penalty::None,
+        design_matrix: None,  // Computed lazily in Python layer to avoid expensive copy
     })
 }
 
@@ -720,6 +726,7 @@ pub fn fit_glm_regularized(
         y: y.to_owned(),
         family_name: family.name().to_string(),
         penalty: reg_config.penalty.clone(),
+        design_matrix: None,  // Computed lazily in Python layer to avoid expensive copy
     })
 }
 

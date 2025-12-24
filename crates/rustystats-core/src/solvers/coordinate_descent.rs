@@ -225,22 +225,7 @@ pub fn fit_glm_coordinate_descent(
         let working_response = Array1::from_vec(working_response_vec);
 
         // ---------------------------------------------------------------------
-        // Step 5b: Precompute weighted sums for coordinate descent
-        // ---------------------------------------------------------------------
-        // x_sq_sum[j] = Σ w_i × x_ij²
-        let x_sq_sum: Vec<f64> = (0..p)
-            .into_par_iter()
-            .map(|j| {
-                let col = x.column(j);
-                col.iter()
-                    .zip(combined_weights.iter())
-                    .map(|(&xij, &wi)| wi * xij * xij)
-                    .sum()
-            })
-            .collect();
-
-        // ---------------------------------------------------------------------
-        // Step 5c: Coordinate descent using COVARIANCE UPDATES (glmnet-style)
+        // Step 5b: Coordinate descent using COVARIANCE UPDATES (glmnet-style)
         // ---------------------------------------------------------------------
         // Key optimization: Precompute X'Wz and X'WX, then use O(p) updates
         // instead of O(np) per coefficient.
@@ -258,7 +243,7 @@ pub fn fit_glm_coordinate_descent(
         let mut cd_converged = false;
         let mut cd_iteration = 0;
         
-        // Precompute X'Wz (gradient at β=0)
+        // Precompute X'Wz (gradient at β=0) - PARALLEL
         let xwz: Vec<f64> = (0..p)
             .into_par_iter()
             .map(|j| {
@@ -271,20 +256,43 @@ pub fn fit_glm_coordinate_descent(
             })
             .collect();
         
-        // Precompute X'WX (Gram matrix) - this is the key to fast updates
-        // Only compute upper triangle, it's symmetric
-        let mut xwx = vec![vec![0.0; p]; p];
+        // Precompute X'WX (Gram matrix) - PARALLEL with flat Vec for cache locality
+        // Use fold-reduce pattern for thread-safe accumulation
+        let xwx: Vec<f64> = (0..n)
+            .into_par_iter()
+            .fold(
+                || vec![0.0; p * p],
+                |mut acc, i| {
+                    let w_i = combined_weights[i];
+                    let x_i = x.row(i);
+                    // Only compute upper triangle (symmetric matrix)
+                    for j in 0..p {
+                        let xij_w = x_i[j] * w_i;
+                        for k in j..p {
+                            acc[j * p + k] += xij_w * x_i[k];
+                        }
+                    }
+                    acc
+                },
+            )
+            .reduce(
+                || vec![0.0; p * p],
+                |mut a, b| {
+                    for i in 0..a.len() {
+                        a[i] += b[i];
+                    }
+                    a
+                },
+            );
+        
+        // Fill in lower triangle (symmetric)
+        let mut xwx_full = xwx;
         for j in 0..p {
-            let col_j = x.column(j);
-            for k in j..p {
-                let col_k = x.column(k);
-                let val: f64 = (0..n)
-                    .map(|i| combined_weights[i] * col_j[i] * col_k[i])
-                    .sum();
-                xwx[j][k] = val;
-                xwx[k][j] = val;
+            for k in (j + 1)..p {
+                xwx_full[k * p + j] = xwx_full[j * p + k];
             }
         }
+        let xwx = xwx_full;
 
         while cd_iteration < reg_config.max_cd_iterations {
             cd_iteration += 1;
@@ -297,17 +305,18 @@ pub fn fit_glm_coordinate_descent(
                 // Compute gradient: grad_j = X_j'Wz - Σ_k (X'WX)_{jk}β_k
                 let mut grad_j = xwz[j];
                 for k in 0..p {
-                    grad_j -= xwx[j][k] * coefficients[k];
+                    grad_j -= xwx[j * p + k] * coefficients[k];
                 }
                 
                 // rho = grad_j + (X'WX)_{jj} * old_coef
-                let rho = grad_j + xwx[j][j] * old_coef;
+                let xwx_jj = xwx[j * p + j];
+                let rho = grad_j + xwx_jj * old_coef;
 
                 // Update coefficient with soft-thresholding
                 let new_coef = if j < pen_start {
-                    rho / xwx[j][j]
+                    rho / xwx_jj
                 } else {
-                    let denom = xwx[j][j] + l2_penalty;
+                    let denom = xwx_jj + l2_penalty;
                     if denom.abs() < 1e-10 {
                         0.0
                     } else {
@@ -394,6 +403,7 @@ pub fn fit_glm_coordinate_descent(
         y: y.to_owned(),
         family_name: family.name().to_string(),
         penalty: reg_config.penalty.clone(),
+        design_matrix: None,  // Computed lazily in Python layer to avoid expensive copy
     })
 }
 

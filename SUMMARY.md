@@ -16,6 +16,7 @@ A high-performance Generalized Linear Models (GLM) library with a Rust backend a
 | **Offset Support** | ✅ Complete | For exposure-based rate models |
 | **Prior Weights** | ✅ Complete | For grouped/aggregated data |
 | **Statistical Inference** | ✅ Complete | Standard errors, z-values, p-values, confidence intervals |
+| **Robust Standard Errors** | ✅ Complete | Sandwich estimators (HC0, HC1, HC2, HC3) |
 | **Model Diagnostics** | ✅ Complete | Residuals, dispersion, AIC, BIC, log-likelihood |
 
 ### Python Bindings (`crates/rustystats`)
@@ -45,8 +46,8 @@ A high-performance Generalized Linear Models (GLM) library with a Rust backend a
 
 | Component | Count | Description |
 |-----------|-------|-------------|
-| **Rust Unit Tests** | 104 | Core library tests (families, diagnostics, solvers, regularization) |
-| **Python Tests** | 107 | API, integration, and regularization tests |
+| **Rust Unit Tests** | 108 | Core library tests (families, diagnostics, solvers, regularization, inference) |
+| **Python Tests** | 126 | API, integration, regularization, and robust SE tests |
 
 ### Examples
 
@@ -55,6 +56,45 @@ A high-performance Generalized Linear Models (GLM) library with a Rust backend a
 | `examples/getting_started.ipynb` | Comprehensive tutorial with all families |
 | `examples/frequency.ipynb` | Claim frequency model with real insurance data |
 | `examples/regularization.ipynb` | Ridge, Lasso, Elastic Net with cross-validation |
+
+---
+
+## RustyStats vs Statsmodels
+
+### What RustyStats Has That Statsmodels Doesn't
+
+| Feature | RustyStats | Statsmodels |
+|---------|------------|-------------|
+| **Parallel IRLS Solver** | ✅ Multi-threaded via Rayon | ❌ Single-threaded only |
+| **Native Polars Support** | ✅ Formula API works with Polars DataFrames | ❌ Pandas only |
+| **Built-in Lasso/Elastic Net for GLMs** | ✅ Fast coordinate descent with all families | ⚠️ Limited (regularized linear only) |
+| **Variable Selection Utilities** | ✅ `lasso_path()`, `cv_glm()` | ❌ Not built-in |
+| **Relativities Table** | ✅ `summary_relativities()` for pricing | ❌ Must compute manually |
+| **Robust Standard Errors** | ✅ HC0, HC1, HC2, HC3 sandwich estimators | ✅ HC0-HC3 |
+| **Performance on Large Data** | ✅ 678K rows in ~1s | ⚠️ Significantly slower |
+
+### Performance Comparison (678,012 rows × 28 features)
+
+| Operation | RustyStats | Statsmodels |
+|-----------|------------|-------------|
+| Poisson GLM | ~1.0s | ~5-10s |
+| Ridge GLM | ~1.0s | ~5-10s |
+| Lasso GLM | ~2.8s | Not available for GLMs |
+| Elastic Net GLM | ~2.6s | Not available for GLMs |
+
+### When to Use RustyStats
+
+- **Large datasets** - Parallel solver scales better
+- **Regularized GLMs** - Built-in Lasso/Ridge/Elastic Net for any family
+- **Actuarial/Insurance** - Relativities tables, Tweedie, exposure offsets
+- **Polars workflows** - Native DataFrame support without pandas conversion
+- **Variable selection** - Automatic feature selection with cross-validation
+
+### When to Use Statsmodels
+
+- **Broader model coverage** - OLS, WLS, GLS, mixed effects, time series
+- **Established ecosystem** - More documentation, Stack Overflow answers
+- **Advanced diagnostics** - Influence plots, leverage, Cook's distance
 
 ---
 
@@ -106,6 +146,13 @@ result.pvalues()           # P-values
 result.conf_int(alpha)     # Confidence intervals
 result.significance_codes()# *, **, *** markers
 
+# Robust Standard Errors (sandwich estimators)
+result.bse_robust("HC1")   # Robust SE (HC0, HC1, HC2, HC3)
+result.tvalues_robust()    # z-stats with robust SE
+result.pvalues_robust()    # P-values with robust SE
+result.conf_int_robust()   # Confidence intervals with robust SE
+result.cov_robust()        # Full robust covariance matrix
+
 # Diagnostics (statsmodels-compatible)
 result.resid_response()    # Raw residuals (y - μ)
 result.resid_pearson()     # Pearson residuals
@@ -156,7 +203,6 @@ cv_result.plot()  # Visualize CV curve
 | Feature | Description | Use Case |
 |---------|-------------|----------|
 | **Quasi-Families** | Quasi-Poisson, Quasi-Binomial | Overdispersion handling |
-| **Robust Standard Errors** | Sandwich estimator (HC0-HC3) | Heteroscedasticity |
 | **Interaction Terms** | `x1 * x2` in formulas | Complex relationships |
 | **Splines** | B-splines, natural splines | Non-linear continuous effects |
 
@@ -224,9 +270,11 @@ rustystats/
 
 ## Performance
 
-- **678,000 rows** fitted in ~2 seconds (Poisson with 9 parameters)
-- Pure Rust IRLS solver with NumPy array zero-copy where possible
-- Typically converges in 4-8 iterations
+- **678,000 rows × 28 features** fitted in ~1 second (Poisson GLM)
+- **Lasso/Elastic Net** use glmnet-style covariance updates for O(p²) coordinate descent
+- Pure Rust IRLS solver with multi-threaded parallelism (Rayon)
+- NumPy array zero-copy where possible
+- Typically converges in 4-8 IRLS iterations
 
 ---
 
@@ -235,6 +283,7 @@ rustystats/
 ### Rust
 - `ndarray` - N-dimensional arrays
 - `nalgebra` - Linear algebra
+- `rayon` - Parallel iterators (multi-threading)
 - `statrs` - Statistical distributions
 - `pyo3` - Python bindings
 - `numpy` - NumPy interop

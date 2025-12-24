@@ -38,7 +38,7 @@ use rustystats_core::families::{Family, GaussianFamily, PoissonFamily, BinomialF
 use rustystats_core::links::{Link, IdentityLink, LogLink, LogitLink};
 use rustystats_core::solvers::{fit_glm_full, fit_glm_regularized, fit_glm_coordinate_descent, IRLSConfig, IRLSResult};
 use rustystats_core::regularization::{Penalty, RegularizationConfig};
-use rustystats_core::inference::{pvalue_z, confidence_interval_z};
+use rustystats_core::inference::{pvalue_z, confidence_interval_z, HCType, robust_covariance, robust_standard_errors};
 use rustystats_core::diagnostics::{
     resid_response, resid_pearson, resid_deviance, resid_working,
     estimate_dispersion_pearson, pearson_chi2,
@@ -509,6 +509,10 @@ pub struct PyGLMResults {
     prior_weights: Array1<f64>,
     /// Regularization penalty applied (if any)
     penalty: Penalty,
+    /// Design matrix X (for robust standard errors)
+    design_matrix: Array2<f64>,
+    /// IRLS weights (for robust standard errors)
+    irls_weights: Array1<f64>,
 }
 
 #[pymethods]
@@ -743,6 +747,273 @@ impl PyGLMResults {
                 }
             })
             .collect()
+    }
+
+    // =========================================================================
+    // Robust Standard Errors (Sandwich Estimators)
+    // =========================================================================
+
+    /// Get robust (HC) covariance matrix.
+    ///
+    /// Uses the sandwich estimator which is valid even when the variance
+    /// function is misspecified (heteroscedasticity).
+    ///
+    /// Parameters
+    /// ----------
+    /// cov_type : str, optional
+    ///     Type of robust covariance. Options:
+    ///     - "HC0": No small-sample correction (default)
+    ///     - "HC1": Degrees of freedom correction (n/(n-p))
+    ///     - "HC2": Leverage-adjusted
+    ///     - "HC3": Jackknife-like (most conservative)
+    ///
+    /// Returns
+    /// -------
+    /// numpy.ndarray
+    ///     Robust covariance matrix (p × p)
+    #[pyo3(signature = (cov_type="HC1"))]
+    fn cov_robust<'py>(&self, py: Python<'py>, cov_type: &str) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let hc_type = HCType::from_str(cov_type).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "Unknown cov_type '{}'. Use 'HC0', 'HC1', 'HC2', or 'HC3'.", cov_type
+            ))
+        })?;
+        
+        // Compute Pearson residuals
+        let family: Box<dyn Family> = match self.family_name.as_str() {
+            "Gaussian" => Box::new(GaussianFamily),
+            "Poisson" => Box::new(PoissonFamily),
+            "Binomial" => Box::new(BinomialFamily),
+            "Gamma" => Box::new(GammaFamily),
+            _ => Box::new(GaussianFamily),
+        };
+        let pearson_resid = resid_pearson(&self.y, &self.fitted_values, family.as_ref());
+        
+        let cov = robust_covariance(
+            &self.design_matrix,
+            &pearson_resid,
+            &self.irls_weights,
+            &self.prior_weights,
+            &self.covariance_unscaled,
+            hc_type,
+        );
+        
+        Ok(cov.into_pyarray_bound(py))
+    }
+
+    /// Get robust standard errors of coefficients (HC/sandwich estimator).
+    ///
+    /// Unlike model-based standard errors that assume correct variance
+    /// specification, robust standard errors are valid under
+    /// heteroscedasticity.
+    ///
+    /// Parameters
+    /// ----------
+    /// cov_type : str, optional
+    ///     Type of robust covariance. Options:
+    ///     - "HC0": No small-sample correction
+    ///     - "HC1": Degrees of freedom correction (default, recommended)
+    ///     - "HC2": Leverage-adjusted
+    ///     - "HC3": Jackknife-like (most conservative)
+    ///
+    /// Returns
+    /// -------
+    /// numpy.ndarray
+    ///     Array of robust standard errors, one for each coefficient.
+    ///
+    /// Notes
+    /// -----
+    /// HC1 is the default as it applies the standard n/(n-p) degrees of
+    /// freedom correction, which is what most users expect.
+    ///
+    /// HC3 gives larger standard errors and is often recommended for
+    /// small samples or when there are influential observations.
+    ///
+    /// Example
+    /// -------
+    /// >>> result = rs.fit_glm(y, X, family="poisson")
+    /// >>> se_model = result.bse()       # Model-based SE
+    /// >>> se_robust = result.bse_robust("HC1")  # Robust SE
+    #[pyo3(signature = (cov_type="HC1"))]
+    fn bse_robust<'py>(&self, py: Python<'py>, cov_type: &str) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let hc_type = HCType::from_str(cov_type).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "Unknown cov_type '{}'. Use 'HC0', 'HC1', 'HC2', or 'HC3'.", cov_type
+            ))
+        })?;
+        
+        // Compute Pearson residuals
+        let family: Box<dyn Family> = match self.family_name.as_str() {
+            "Gaussian" => Box::new(GaussianFamily),
+            "Poisson" => Box::new(PoissonFamily),
+            "Binomial" => Box::new(BinomialFamily),
+            "Gamma" => Box::new(GammaFamily),
+            _ => Box::new(GaussianFamily),
+        };
+        let pearson_resid = resid_pearson(&self.y, &self.fitted_values, family.as_ref());
+        
+        let cov = robust_covariance(
+            &self.design_matrix,
+            &pearson_resid,
+            &self.irls_weights,
+            &self.prior_weights,
+            &self.covariance_unscaled,
+            hc_type,
+        );
+        
+        let se = robust_standard_errors(&cov);
+        Ok(se.into_pyarray_bound(py))
+    }
+
+    /// Get z/t statistics using robust standard errors.
+    ///
+    /// Parameters
+    /// ----------
+    /// cov_type : str, optional
+    ///     Type of robust covariance. Default "HC1".
+    ///
+    /// Returns
+    /// -------
+    /// numpy.ndarray
+    ///     Array of t/z statistics (coefficient / robust SE).
+    #[pyo3(signature = (cov_type="HC1"))]
+    fn tvalues_robust<'py>(&self, py: Python<'py>, cov_type: &str) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let hc_type = HCType::from_str(cov_type).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "Unknown cov_type '{}'. Use 'HC0', 'HC1', 'HC2', or 'HC3'.", cov_type
+            ))
+        })?;
+        
+        let family: Box<dyn Family> = match self.family_name.as_str() {
+            "Gaussian" => Box::new(GaussianFamily),
+            "Poisson" => Box::new(PoissonFamily),
+            "Binomial" => Box::new(BinomialFamily),
+            "Gamma" => Box::new(GammaFamily),
+            _ => Box::new(GaussianFamily),
+        };
+        let pearson_resid = resid_pearson(&self.y, &self.fitted_values, family.as_ref());
+        
+        let cov = robust_covariance(
+            &self.design_matrix,
+            &pearson_resid,
+            &self.irls_weights,
+            &self.prior_weights,
+            &self.covariance_unscaled,
+            hc_type,
+        );
+        
+        let se = robust_standard_errors(&cov);
+        let t: Array1<f64> = self.coefficients.iter()
+            .zip(se.iter())
+            .map(|(&c, &s)| if s > 1e-10 { c / s } else { 0.0 })
+            .collect();
+        
+        Ok(t.into_pyarray_bound(py))
+    }
+
+    /// Get p-values using robust standard errors.
+    ///
+    /// Parameters
+    /// ----------
+    /// cov_type : str, optional
+    ///     Type of robust covariance. Default "HC1".
+    ///
+    /// Returns
+    /// -------
+    /// numpy.ndarray
+    ///     Array of p-values.
+    #[pyo3(signature = (cov_type="HC1"))]
+    fn pvalues_robust<'py>(&self, py: Python<'py>, cov_type: &str) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let hc_type = HCType::from_str(cov_type).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "Unknown cov_type '{}'. Use 'HC0', 'HC1', 'HC2', or 'HC3'.", cov_type
+            ))
+        })?;
+        
+        let family: Box<dyn Family> = match self.family_name.as_str() {
+            "Gaussian" => Box::new(GaussianFamily),
+            "Poisson" => Box::new(PoissonFamily),
+            "Binomial" => Box::new(BinomialFamily),
+            "Gamma" => Box::new(GammaFamily),
+            _ => Box::new(GaussianFamily),
+        };
+        let pearson_resid = resid_pearson(&self.y, &self.fitted_values, family.as_ref());
+        
+        let cov = robust_covariance(
+            &self.design_matrix,
+            &pearson_resid,
+            &self.irls_weights,
+            &self.prior_weights,
+            &self.covariance_unscaled,
+            hc_type,
+        );
+        
+        let se = robust_standard_errors(&cov);
+        let pvals: Array1<f64> = self.coefficients.iter()
+            .zip(se.iter())
+            .map(|(&c, &s)| {
+                if s > 1e-10 {
+                    let z = c / s;
+                    pvalue_z(z)
+                } else {
+                    f64::NAN
+                }
+            })
+            .collect();
+        
+        Ok(pvals.into_pyarray_bound(py))
+    }
+
+    /// Get confidence intervals using robust standard errors.
+    ///
+    /// Parameters
+    /// ----------
+    /// alpha : float, optional
+    ///     Significance level. Default 0.05 gives 95% CI.
+    /// cov_type : str, optional
+    ///     Type of robust covariance. Default "HC1".
+    ///
+    /// Returns
+    /// -------
+    /// numpy.ndarray
+    ///     2D array of shape (n_params, 2) with [lower, upper] bounds.
+    #[pyo3(signature = (alpha=0.05, cov_type="HC1"))]
+    fn conf_int_robust<'py>(&self, py: Python<'py>, alpha: f64, cov_type: &str) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let hc_type = HCType::from_str(cov_type).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "Unknown cov_type '{}'. Use 'HC0', 'HC1', 'HC2', or 'HC3'.", cov_type
+            ))
+        })?;
+        
+        let family: Box<dyn Family> = match self.family_name.as_str() {
+            "Gaussian" => Box::new(GaussianFamily),
+            "Poisson" => Box::new(PoissonFamily),
+            "Binomial" => Box::new(BinomialFamily),
+            "Gamma" => Box::new(GammaFamily),
+            _ => Box::new(GaussianFamily),
+        };
+        let pearson_resid = resid_pearson(&self.y, &self.fitted_values, family.as_ref());
+        
+        let cov = robust_covariance(
+            &self.design_matrix,
+            &pearson_resid,
+            &self.irls_weights,
+            &self.prior_weights,
+            &self.covariance_unscaled,
+            hc_type,
+        );
+        
+        let se = robust_standard_errors(&cov);
+        let confidence = 1.0 - alpha;
+        
+        let mut ci = Array2::zeros((self.n_params, 2));
+        for (i, (&coef, &se_i)) in self.coefficients.iter().zip(se.iter()).enumerate() {
+            let (lower, upper) = confidence_interval_z(coef, se_i, confidence);
+            ci[[i, 0]] = lower;
+            ci[[i, 1]] = upper;
+        }
+        
+        Ok(ci.into_pyarray_bound(py))
     }
 
     // =========================================================================
@@ -1201,6 +1472,8 @@ fn fit_glm_py(
         family_name: result.family_name,
         prior_weights: result.prior_weights,
         penalty: result.penalty,
+        design_matrix: x_array,  // Use the X we already have (no extra copy)
+        irls_weights: result.irls_weights,
     })
 }
 

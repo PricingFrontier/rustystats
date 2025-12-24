@@ -412,6 +412,91 @@ class FormulaGLMResults:
         """Significance codes."""
         return self._result.significance_codes()
     
+    # Robust standard errors (sandwich estimators)
+    def bse_robust(self, cov_type: str = "HC1") -> np.ndarray:
+        """Robust standard errors of coefficients (HC/sandwich estimator).
+        
+        Unlike model-based standard errors that assume correct variance
+        specification, robust standard errors are valid under heteroscedasticity.
+        
+        Parameters
+        ----------
+        cov_type : str, optional
+            Type of robust covariance. Options:
+            - "HC0": No small-sample correction
+            - "HC1": Degrees of freedom correction (default, recommended)
+            - "HC2": Leverage-adjusted
+            - "HC3": Jackknife-like (most conservative)
+        
+        Returns
+        -------
+        numpy.ndarray
+            Array of robust standard errors, one for each coefficient.
+        """
+        return self._result.bse_robust(cov_type)
+    
+    def tvalues_robust(self, cov_type: str = "HC1") -> np.ndarray:
+        """z/t statistics using robust standard errors.
+        
+        Parameters
+        ----------
+        cov_type : str, optional
+            Type of robust covariance. Default "HC1".
+        
+        Returns
+        -------
+        numpy.ndarray
+            Array of t/z statistics (coefficient / robust SE).
+        """
+        return self._result.tvalues_robust(cov_type)
+    
+    def pvalues_robust(self, cov_type: str = "HC1") -> np.ndarray:
+        """P-values using robust standard errors.
+        
+        Parameters
+        ----------
+        cov_type : str, optional
+            Type of robust covariance. Default "HC1".
+        
+        Returns
+        -------
+        numpy.ndarray
+            Array of p-values.
+        """
+        return self._result.pvalues_robust(cov_type)
+    
+    def conf_int_robust(self, alpha: float = 0.05, cov_type: str = "HC1") -> np.ndarray:
+        """Confidence intervals using robust standard errors.
+        
+        Parameters
+        ----------
+        alpha : float, optional
+            Significance level. Default 0.05 gives 95% CI.
+        cov_type : str, optional
+            Type of robust covariance. Default "HC1".
+        
+        Returns
+        -------
+        numpy.ndarray
+            2D array of shape (n_params, 2) with [lower, upper] bounds.
+        """
+        return self._result.conf_int_robust(alpha, cov_type)
+    
+    def cov_robust(self, cov_type: str = "HC1") -> np.ndarray:
+        """Robust covariance matrix (HC/sandwich estimator).
+        
+        Parameters
+        ----------
+        cov_type : str, optional
+            Type of robust covariance. Default "HC1".
+        
+        Returns
+        -------
+        numpy.ndarray
+            Robust covariance matrix (p × p).
+        """
+        return self._result.cov_robust(cov_type)
+    
     # Diagnostic methods (statsmodels-compatible)
     def resid_response(self) -> np.ndarray:
         """Response residuals: y - μ."""
