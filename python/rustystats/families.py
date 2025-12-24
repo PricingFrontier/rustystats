@@ -68,6 +68,7 @@ from rustystats._rustystats import (
     GammaFamily as _GammaFamily,
     QuasiPoissonFamily as _QuasiPoissonFamily,
     QuasiBinomialFamily as _QuasiBinomialFamily,
+    NegativeBinomialFamily as _NegativeBinomialFamily,
 )
 
 
@@ -357,5 +358,66 @@ def QuasiBinomial():
     return _QuasiBinomialFamily()
 
 
+def NegativeBinomial(theta=1.0):
+    """
+    Negative Binomial family for overdispersed count data.
+    
+    Uses the NB2 parameterization where variance is quadratic in the mean:
+      Var(Y) = μ + μ²/θ
+    
+    This is an alternative to QuasiPoisson that models overdispersion explicitly
+    with a proper probability distribution, enabling valid likelihood-based inference.
+    
+    Parameters
+    ----------
+    theta : float, optional
+        Dispersion parameter (default: 1.0). Larger θ = less overdispersion.
+        - θ = 0.5: Strong overdispersion (variance = μ + 2μ²)
+        - θ = 1.0: Moderate overdispersion (variance = μ + μ²)
+        - θ = 10: Mild overdispersion (close to Poisson)
+        - θ → ∞: Approaches Poisson
+    
+    Properties
+    ----------
+    - Variance function: V(μ) = μ + μ²/θ (NB2 parameterization)
+    - Default link: Log (η = log(μ))
+    - True probability distribution with valid likelihood
+    
+    Comparison to QuasiPoisson
+    --------------------------
+    | Aspect           | QuasiPoisson        | Negative Binomial    |
+    |------------------|---------------------|----------------------|
+    | Variance         | φ × μ               | μ + μ²/θ             |
+    | True distribution| No (quasi)          | Yes                  |
+    | Likelihood-based | No                  | Yes                  |
+    | AIC/BIC valid    | Questionable        | Yes                  |
+    | Predictions      | Point only          | Proper intervals     |
+    
+    When to Use
+    -----------
+    - Count data with overdispersion (variance > mean)
+    - When you need valid likelihood-based inference (AIC, BIC)
+    - When you want proper prediction intervals
+    - Claim frequency with extra-Poisson variation
+    
+    Example
+    -------
+    >>> import rustystats as rs
+    >>> # Fit Negative Binomial with θ=1.0
+    >>> result = rs.fit_glm(y, X, family="negbinomial", theta=1.0)
+    >>> 
+    >>> # Check the variance function
+    >>> family = rs.families.NegativeBinomial(theta=2.0)
+    >>> mu = np.array([1.0, 2.0, 4.0])
+    >>> print(family.variance(mu))  # [1.5, 4.0, 12.0]
+    >>> 
+    >>> # Variance = μ + μ²/θ = μ + μ²/2
+    >>> # V(1) = 1 + 0.5 = 1.5
+    >>> # V(2) = 2 + 2 = 4.0
+    >>> # V(4) = 4 + 8 = 12.0
+    """
+    return _NegativeBinomialFamily(theta)
+
+
 # For backwards compatibility and convenience
-__all__ = ["Gaussian", "Poisson", "Binomial", "Gamma", "QuasiPoisson", "QuasiBinomial"]
+__all__ = ["Gaussian", "Poisson", "Binomial", "Gamma", "QuasiPoisson", "QuasiBinomial", "NegativeBinomial"]

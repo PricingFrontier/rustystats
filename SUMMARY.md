@@ -9,7 +9,7 @@ A high-performance Generalized Linear Models (GLM) library with a Rust backend a
 | Component | Status | Description |
 |-----------|--------|-------------|
 | **Link Functions** | ✅ Complete | Identity, Log, Logit |
-| **Distribution Families** | ✅ Complete | Gaussian, Poisson, Binomial, Gamma, Tweedie, QuasiPoisson, QuasiBinomial |
+| **Distribution Families** | ✅ Complete | Gaussian, Poisson, Binomial, Gamma, Tweedie, QuasiPoisson, QuasiBinomial, NegativeBinomial |
 | **IRLS Solver** | ✅ Complete | Multi-threaded Iteratively Reweighted Least Squares (parallel) |
 | **Coordinate Descent** | ✅ Complete | For Lasso/Elastic Net with L1 penalty |
 | **Formula Parsing** | ✅ Complete | R-style formula parsing (y ~ x1*x2 + C(cat) + bs(x, df=5)) |
@@ -45,14 +45,15 @@ A high-performance Generalized Linear Models (GLM) library with a Rust backend a
 | **Interaction Terms** | ✅ Complete | `x1*x2`, `C(cat):x`, `C(cat1)*C(cat2)` in formulas |
 | **Spline Basis Functions** | ✅ Complete | `bs(x, df)`, `ns(x, df)` for non-linear effects |
 | **Quasi-Families** | ✅ Complete | `quasipoisson`, `quasibinomial` for overdispersion |
+| **Negative Binomial** | ✅ Complete | `negbinomial` for overdispersed count data |
 | **Minimal Dependencies** | ✅ Complete | Core requires only numpy; polars optional |
 
 ### Testing
 
 | Component | Count | Description |
 |-----------|-------|-------------|
-| **Rust Unit Tests** | 145+ | Core library tests (families, diagnostics, solvers, regularization, inference, interactions, splines, formula, design_matrix) |
-| **Python Tests** | 202 | API, integration, regularization, robust SE, interaction, spline, and quasi-family tests |
+| **Rust Unit Tests** | 157+ | Core library tests (families, diagnostics, solvers, regularization, inference, interactions, splines, formula, design_matrix) |
+| **Python Tests** | 226 | API, integration, regularization, robust SE, interaction, spline, quasi-family, and negative binomial tests |
 
 ### Examples
 
@@ -307,6 +308,41 @@ result_qb = rs.fit_glm(y_binary, X, family="quasibinomial")
 - **QuasiPoisson**: Count data where Pearson χ²/df >> 1
 - **QuasiBinomial**: Binary data with clusters or unobserved heterogeneity
 
+### Negative Binomial for Overdispersed Counts (NEW)
+```python
+import rustystats as rs
+import numpy as np
+
+# Negative Binomial with θ=1.0 (moderate overdispersion)
+result = rs.fit_glm(y, X, family="negbinomial", theta=1.0)
+
+# θ controls overdispersion: Var(Y) = μ + μ²/θ
+# - θ=0.5: Strong overdispersion (variance = μ + 2μ²)
+# - θ=1.0: Moderate overdispersion (variance = μ + μ²)
+# - θ=10: Mild overdispersion (close to Poisson)
+# - θ→∞: Approaches Poisson (variance = μ)
+
+# Compare to QuasiPoisson
+result_quasi = rs.fit_glm(y, X, family="quasipoisson")
+result_nb = rs.fit_glm(y, X, family="negbinomial", theta=2.0)
+
+# NB is a proper probability distribution - AIC/BIC are valid
+print(f"NB AIC: {result_nb.aic():.1f}")
+```
+
+**NegativeBinomial vs QuasiPoisson:**
+| Aspect | QuasiPoisson | NegativeBinomial |
+|--------|--------------|------------------|
+| **Variance** | φ × μ | μ + μ²/θ |
+| **True distribution** | No (quasi) | Yes |
+| **Likelihood-based** | No | Yes |
+| **AIC/BIC valid** | Questionable | Yes |
+| **Prediction intervals** | Not principled | Proper |
+
+**When to use:**
+- **QuasiPoisson**: Quick fix, no θ to specify
+- **NegativeBinomial**: Proper inference, prediction intervals
+
 ---
 
 ## Features To Be Added
@@ -315,7 +351,7 @@ result_qb = rs.fit_glm(y_binary, X, family="quasibinomial")
 
 | Feature | Description | Use Case |
 |---------|-------------|----------|
-| **Negative Binomial** | Alternative to Poisson for overdispersion | Count data with extra variance |
+| **Negative Binomial Theta Estimation** | Automatic θ estimation from data | Convenience feature |
 | **Zero-Inflated Models** | ZIP, ZINB | Excess zeros in count data |
 | **Mixed Effects / GLMM** | Random effects | Hierarchical/panel data |
 | **Bootstrap CI** | Non-parametric confidence intervals | Small samples |

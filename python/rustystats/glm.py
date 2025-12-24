@@ -45,6 +45,7 @@ def fit_glm(
     family: str = "gaussian",
     link: Optional[str] = None,
     var_power: float = 1.5,
+    theta: float = 1.0,
     offset: Optional[np.ndarray] = None,
     weights: Optional[np.ndarray] = None,
     alpha: float = 0.0,
@@ -79,6 +80,9 @@ def fit_glm(
         - "binomial": For binary/proportion data
         - "gamma": For positive continuous data (claim severity)
         - "tweedie": For mixed zeros and positives (pure premium)
+        - "quasipoisson": For overdispersed count data
+        - "quasibinomial": For overdispersed binary data
+        - "negbinomial" or "nb": For overdispersed counts (NB2)
         
     link : str, optional
         Link function. If None, uses the canonical link:
@@ -99,6 +103,14 @@ def fit_glm(
         - 1.0: Poisson (variance = mean)
         - 1.5: Balanced (good default for insurance)
         - 2.0: Gamma (variance = mean²)
+        
+    theta : float, default=1.0
+        Dispersion parameter for Negative Binomial family only.
+        Larger θ = less overdispersion. As θ → ∞, approaches Poisson.
+        Common values:
+        - 0.5: Strong overdispersion
+        - 1.0: Moderate overdispersion
+        - 10.0: Mild overdispersion
         
     offset : array-like, shape (n,), optional
         Offset term added to the linear predictor.
@@ -236,7 +248,7 @@ def fit_glm(
             )
     
     # Call the Rust implementation
-    return _fit_glm_rust(y, X, family, link, var_power, offset, weights, alpha, l1_ratio, max_iter, tol)
+    return _fit_glm_rust(y, X, family, link, var_power, theta, offset, weights, alpha, l1_ratio, max_iter, tol)
 
 
 class GLM:
@@ -255,13 +267,17 @@ class GLM:
         Design matrix (X). Include intercept column if desired.
         
     family : str, default="gaussian"
-        Distribution family: "gaussian", "poisson", "binomial", "gamma", "tweedie"
+        Distribution family: "gaussian", "poisson", "binomial", "gamma", "tweedie",
+        "quasipoisson", "quasibinomial", or "negbinomial"
         
     link : str, optional
         Link function. If None, uses canonical link.
         
     var_power : float, default=1.5
         Variance power for Tweedie family (ignored for others).
+        
+    theta : float, default=1.0
+        Dispersion parameter for Negative Binomial family (ignored for others).
         
     offset : array-like, shape (n,), optional
         Offset term (e.g., log(exposure) for rate models).
@@ -300,6 +316,7 @@ class GLM:
         family: str = "gaussian",
         link: Optional[str] = None,
         var_power: float = 1.5,
+        theta: float = 1.0,
         offset: Optional[np.ndarray] = None,
         weights: Optional[np.ndarray] = None,
     ):
@@ -309,6 +326,7 @@ class GLM:
         self.family = family.lower()
         self.link = link
         self.var_power = var_power
+        self.theta = theta
         self.offset = None if offset is None else np.asarray(offset, dtype=np.float64)
         self.weights = None if weights is None else np.asarray(weights, dtype=np.float64)
         
@@ -385,6 +403,7 @@ class GLM:
             family=self.family,
             link=self.link,
             var_power=self.var_power,
+            theta=self.theta,
             offset=self.offset,
             weights=self.weights,
             alpha=alpha,

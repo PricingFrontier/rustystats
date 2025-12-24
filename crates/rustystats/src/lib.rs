@@ -34,7 +34,7 @@ use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2}
 use ndarray::{Array1, Array2};
 
 // Import our core library
-use rustystats_core::families::{Family, GaussianFamily, PoissonFamily, BinomialFamily, GammaFamily, TweedieFamily, QuasiPoissonFamily, QuasiBinomialFamily};
+use rustystats_core::families::{Family, GaussianFamily, PoissonFamily, BinomialFamily, GammaFamily, TweedieFamily, QuasiPoissonFamily, QuasiBinomialFamily, NegativeBinomialFamily};
 use rustystats_core::links::{Link, IdentityLink, LogLink, LogitLink};
 use rustystats_core::solvers::{fit_glm_full, fit_glm_regularized, fit_glm_coordinate_descent, IRLSConfig, IRLSResult};
 use rustystats_core::regularization::{Penalty, RegularizationConfig};
@@ -589,6 +589,94 @@ impl PyQuasiBinomialFamily {
     }
 }
 
+/// Negative Binomial family for overdispersed count data.
+///
+/// Uses the NB2 parameterization where variance is quadratic in the mean:
+///   Var(Y) = μ + μ²/θ
+///
+/// This is an alternative to QuasiPoisson that models overdispersion explicitly
+/// with a proper probability distribution, enabling valid likelihood-based inference.
+///
+/// Parameters
+/// ----------
+/// theta : float, optional
+///     Dispersion parameter (default: 1.0). Larger θ = less overdispersion.
+///     - θ = 0.5: Strong overdispersion (variance = μ + 2μ²)
+///     - θ = 1.0: Moderate overdispersion (variance = μ + μ²)
+///     - θ = 10: Mild overdispersion (close to Poisson)
+///     - θ → ∞: Approaches Poisson
+///
+/// Examples
+/// --------
+/// >>> import rustystats as rs
+/// >>> # Fit Negative Binomial with θ=1.0
+/// >>> result = rs.fit_glm(y, X, family="negbinomial", theta=1.0)
+/// >>> # Or use the family object directly
+/// >>> family = rs.families.NegativeBinomial(theta=2.0)
+#[pyclass(name = "NegativeBinomialFamily")]
+#[derive(Clone)]
+pub struct PyNegativeBinomialFamily {
+    inner: NegativeBinomialFamily,
+}
+
+#[pymethods]
+impl PyNegativeBinomialFamily {
+    #[new]
+    #[pyo3(signature = (theta=1.0))]
+    fn new(theta: f64) -> PyResult<Self> {
+        if theta <= 0.0 {
+            return Err(PyValueError::new_err(
+                format!("theta must be > 0, got {}", theta)
+            ));
+        }
+        Ok(Self { inner: NegativeBinomialFamily::new(theta) })
+    }
+
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    /// Get the theta (dispersion) parameter
+    #[getter]
+    fn theta(&self) -> f64 {
+        self.inner.theta
+    }
+
+    /// Get alpha = 1/theta (alternative parameterization)
+    #[getter]
+    fn alpha(&self) -> f64 {
+        self.inner.alpha()
+    }
+
+    fn variance<'py>(&self, py: Python<'py>, mu: PyReadonlyArray1<f64>) -> Bound<'py, PyArray1<f64>> {
+        let mu_array = mu.as_array().to_owned();
+        let result = self.inner.variance(&mu_array);
+        result.into_pyarray_bound(py)
+    }
+
+    fn unit_deviance<'py>(
+        &self,
+        py: Python<'py>,
+        y: PyReadonlyArray1<f64>,
+        mu: PyReadonlyArray1<f64>,
+    ) -> Bound<'py, PyArray1<f64>> {
+        let y_array = y.as_array().to_owned();
+        let mu_array = mu.as_array().to_owned();
+        let result = self.inner.unit_deviance(&y_array, &mu_array);
+        result.into_pyarray_bound(py)
+    }
+
+    fn deviance(&self, y: PyReadonlyArray1<f64>, mu: PyReadonlyArray1<f64>) -> f64 {
+        let y_array = y.as_array().to_owned();
+        let mu_array = mu.as_array().to_owned();
+        self.inner.deviance(&y_array, &mu_array, None)
+    }
+
+    fn default_link(&self) -> PyLogLink {
+        PyLogLink::new()
+    }
+}
+
 // =============================================================================
 // GLM Results
 // =============================================================================
@@ -651,6 +739,7 @@ impl PyGLMResults {
             "Gamma" => Box::new(GammaFamily),
             "QuasiPoisson" => Box::new(QuasiPoissonFamily),
             "QuasiBinomial" => Box::new(QuasiBinomialFamily),
+            "NegativeBinomial" => Box::new(NegativeBinomialFamily::default()),
             // Tweedie falls back to Gaussian for now (would need var_power stored)
             _ => Box::new(GaussianFamily),
         }
@@ -1152,7 +1241,7 @@ impl PyGLMResults {
         // Determine link from family (using default links)
         let link: Box<dyn Link> = match self.family_name.as_str() {
             "Gaussian" => Box::new(IdentityLink),
-            "Poisson" | "QuasiPoisson" => Box::new(LogLink),
+            "Poisson" | "QuasiPoisson" | "NegativeBinomial" => Box::new(LogLink),
             "Binomial" | "QuasiBinomial" => Box::new(LogitLink),
             "Gamma" => Box::new(LogLink),
             _ => Box::new(IdentityLink),
@@ -1330,13 +1419,16 @@ impl PyGLMResults {
 ///     Should include a column of 1s for intercept if desired
 /// family : str
 ///     Distribution family: "gaussian", "poisson", "binomial", "gamma", "tweedie",
-///     "quasipoisson", or "quasibinomial"
+///     "quasipoisson", "quasibinomial", or "negbinomial"
 /// link : str, optional
 ///     Link function: "identity", "log", "logit"
 ///     If None, uses the canonical link for the family
 /// var_power : float, optional
 ///     Variance power for Tweedie family (default: 1.5)
 ///     Must be <= 0 or >= 1. Common values: 1.5-1.9 for insurance
+/// theta : float, optional
+///     Dispersion parameter for Negative Binomial (default: 1.0)
+///     Larger θ = less overdispersion. As θ → ∞, approaches Poisson.
 /// offset : array-like, optional
 ///     Offset term added to linear predictor (e.g., log(exposure))
 /// weights : array-like, optional
@@ -1371,13 +1463,14 @@ impl PyGLMResults {
 /// >>> # Elastic Net
 /// >>> result = rs.fit_glm(y, X, family="gaussian", alpha=0.1, l1_ratio=0.5)
 #[pyfunction]
-#[pyo3(signature = (y, x, family, link=None, var_power=1.5, offset=None, weights=None, alpha=0.0, l1_ratio=0.0, max_iter=25, tol=1e-8))]
+#[pyo3(signature = (y, x, family, link=None, var_power=1.5, theta=1.0, offset=None, weights=None, alpha=0.0, l1_ratio=0.0, max_iter=25, tol=1e-8))]
 fn fit_glm_py(
     y: PyReadonlyArray1<f64>,
     x: PyReadonlyArray2<f64>,
     family: &str,
     link: Option<&str>,
     var_power: f64,
+    theta: f64,
     offset: Option<PyReadonlyArray1<f64>>,
     weights: Option<PyReadonlyArray1<f64>>,
     alpha: f64,
@@ -1520,8 +1613,23 @@ fn fit_glm_py(
                 ))),
             }
         }
+        "negbinomial" | "negativebinomial" | "negative_binomial" | "neg-binomial" | "nb" => {
+            if theta <= 0.0 {
+                return Err(PyValueError::new_err(
+                    format!("theta must be > 0 for Negative Binomial, got {}", theta)
+                ));
+            }
+            let fam = NegativeBinomialFamily::new(theta);
+            match link.unwrap_or("log") {
+                "log" => fit_model!(&fam, &LogLink),
+                "identity" => fit_model!(&fam, &IdentityLink),
+                other => return Err(PyValueError::new_err(format!(
+                    "Unknown link '{}' for NegativeBinomial family. Use 'log' or 'identity'.", other
+                ))),
+            }
+        }
         other => return Err(PyValueError::new_err(format!(
-            "Unknown family '{}'. Use 'gaussian', 'poisson', 'binomial', 'gamma', 'tweedie', 'quasipoisson', or 'quasibinomial'.", other
+            "Unknown family '{}'. Use 'gaussian', 'poisson', 'binomial', 'gamma', 'tweedie', 'quasipoisson', 'quasibinomial', or 'negbinomial'.", other
         ))),
     }.map_err(|e| PyValueError::new_err(format!("GLM fitting failed: {}", e)))?;
 
@@ -1987,6 +2095,7 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyTweedieFamily>()?;
     m.add_class::<PyQuasiPoissonFamily>()?;
     m.add_class::<PyQuasiBinomialFamily>()?;
+    m.add_class::<PyNegativeBinomialFamily>()?;
     
     // Add GLM fitting
     m.add_class::<PyGLMResults>()?;
