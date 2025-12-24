@@ -37,7 +37,6 @@ from rustystats._rustystats import (
 )
 
 if TYPE_CHECKING:
-    import pandas as pd
     import polars as pl
 
 
@@ -139,9 +138,12 @@ def parse_formula_interactions(formula: str) -> ParsedFormula:
         for s in parsed['spline_terms']
     ]
     
+    # Filter out "1" from main effects (it's just an explicit intercept indicator)
+    main_effects = [m for m in parsed['main_effects'] if m != '1']
+    
     return ParsedFormula(
         response=parsed['response'],
-        main_effects=parsed['main_effects'],
+        main_effects=main_effects,
         interactions=interactions,
         categorical_vars=set(parsed['categorical_vars']),
         spline_terms=spline_terms,
@@ -160,8 +162,8 @@ class InteractionBuilder:
     
     Parameters
     ----------
-    data : DataFrame
-        Polars or Pandas DataFrame
+    data : pl.DataFrame
+        Polars DataFrame
     dtype : numpy dtype, default=np.float64
         Data type for output arrays
         
@@ -173,12 +175,12 @@ class InteractionBuilder:
     
     def __init__(
         self,
-        data: Union["pl.DataFrame", "pd.DataFrame"],
+        data: "pl.DataFrame",
         dtype: np.dtype = np.float64,
     ):
         self.data = data
         self.dtype = dtype
-        self._is_polars = hasattr(data, 'to_pandas')
+        self._is_polars = True  # Now polars-only
         self._n = len(data)
         
         # Cache for encoded categorical variables
@@ -188,9 +190,7 @@ class InteractionBuilder:
     
     def _get_column(self, name: str) -> np.ndarray:
         """Extract column as numpy array."""
-        if self._is_polars:
-            return self.data[name].to_numpy().astype(self.dtype)
-        return self.data[name].values.astype(self.dtype)
+        return self.data[name].to_numpy().astype(self.dtype)
     
     def _get_categorical_encoding(
         self, 
@@ -201,7 +201,7 @@ class InteractionBuilder:
         Get dummy encoding for a categorical variable.
         
         Uses Rust for factorization and parallel matrix construction.
-        No pandas dependency.
+        Pure Rust implementation.
         
         Returns
         -------
@@ -214,15 +214,12 @@ class InteractionBuilder:
         if cache_key in self._cat_cache:
             return self._cat_cache[cache_key]
         
-        if self._is_polars:
-            col = self.data[name].to_numpy()
-        else:
-            col = self.data[name].values
+        col = self.data[name].to_numpy()
         
         # Convert to string list for Rust factorization
         values = [str(v) for v in col]
         
-        # Use Rust for factorization + matrix construction (no pandas needed)
+        # Use Rust for factorization + matrix construction
         encoding, names, indices, levels = _encode_categorical_rust(values, name, drop_first)
         
         # Cache both the encoding and the indices/levels for interaction building
@@ -538,7 +535,7 @@ class InteractionBuilder:
 
 def build_design_matrix_optimized(
     formula: str,
-    data: Union["pl.DataFrame", "pd.DataFrame"],
+    data: "pl.DataFrame",
 ) -> Tuple[np.ndarray, np.ndarray, List[str]]:
     """
     Build design matrix with optimized interaction handling.
@@ -553,8 +550,8 @@ def build_design_matrix_optimized(
     ----------
     formula : str
         R-style formula
-    data : DataFrame
-        Polars or Pandas DataFrame
+    data : pl.DataFrame
+        Polars DataFrame
         
     Returns
     -------

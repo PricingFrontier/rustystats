@@ -139,7 +139,7 @@ pub fn encode_categorical(
 
 /// Encode categorical from pre-computed indices.
 ///
-/// Use this when indices are already computed (e.g., from pandas factorize).
+/// Use this when indices are already computed (e.g., from factorization).
 ///
 /// # Arguments
 /// * `indices` - Pre-computed level indices (0-indexed)

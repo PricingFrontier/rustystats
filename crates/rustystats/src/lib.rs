@@ -1584,7 +1584,7 @@ fn encode_categorical_py<'py>(
 
 /// Encode categorical from pre-computed indices.
 ///
-/// Use when indices are already computed (e.g., from pandas factorize).
+/// Use when indices are already computed (e.g., from factorization).
 ///
 /// Parameters
 /// ----------

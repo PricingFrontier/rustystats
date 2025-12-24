@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from rustystats.glm import fit_glm, GLMResults
 
 if TYPE_CHECKING:
-    import pandas as pd
+    import polars as pl
 
 
 @dataclass
@@ -59,20 +59,21 @@ class RegularizationPath:
     converged: np.ndarray
     feature_names: Optional[List[str]] = None
     
-    def to_dataframe(self) -> "pd.DataFrame":
-        """Convert coefficient path to a pandas DataFrame.
+    def to_dataframe(self) -> "pl.DataFrame":
+        """Convert coefficient path to a Polars DataFrame.
         
         Returns
         -------
-        pd.DataFrame
-            DataFrame with alphas as index and features as columns
+        pl.DataFrame
+            DataFrame with alpha column and feature columns
         """
-        import pandas as pd
+        import polars as pl
         
         cols = self.feature_names or [f"x{i}" for i in range(self.coefficients.shape[1])]
-        df = pd.DataFrame(self.coefficients, columns=cols, index=self.alphas)
-        df.index.name = "alpha"
-        return df
+        data = {"alpha": self.alphas}
+        for i, col in enumerate(cols):
+            data[col] = self.coefficients[:, i]
+        return pl.DataFrame(data)
     
     def plot(self, ax=None, log_scale: bool = True, show_legend: bool = True):
         """Plot the coefficient path.

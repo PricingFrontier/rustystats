@@ -148,7 +148,6 @@ result.resid_deviance()    # Deviance residuals
 
 **Optional:**
 - `polars` — DataFrame support for formula API
-- `pandas` — Only for `summary_df()` output
 
 ## Documentation
 

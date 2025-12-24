@@ -2,8 +2,7 @@
 Formula-based API for RustyStats GLM.
 
 This module provides R-style formula support for fitting GLMs with DataFrames.
-It uses the `formulaic` library for formula parsing and supports both
-Polars and Pandas DataFrames.
+It uses the `formulaic` library for formula parsing and supports Polars DataFrames.
 
 Example
 -------
@@ -29,34 +28,16 @@ import numpy as np
 # Lazy imports for optional dependencies
 if TYPE_CHECKING:
     import polars as pl
-    import pandas as pd
 
 
-def _to_pandas(data: Union["pl.DataFrame", "pd.DataFrame"]) -> "pd.DataFrame":
-    """Convert Polars DataFrame to Pandas if needed."""
-    # Check if it's a Polars DataFrame
-    if hasattr(data, "to_pandas"):
-        return data.to_pandas()
-    return data
-
-
-def _get_column(
-    data: Union["pl.DataFrame", "pd.DataFrame"], 
-    column: str
-) -> np.ndarray:
-    """Extract a column as numpy array from either Polars or Pandas."""
-    if hasattr(data, "to_pandas"):
-        # Polars
-        return data[column].to_numpy()
-    else:
-        # Pandas
-        return data[column].values
+def _get_column(data: "pl.DataFrame", column: str) -> np.ndarray:
+    """Extract a column as numpy array from Polars DataFrame."""
+    return data[column].to_numpy()
 
 
 def build_design_matrix(
     formula: str,
-    data: Union["pl.DataFrame", "pd.DataFrame"],
-    backend: str = "auto",
+    data: "pl.DataFrame",
 ) -> tuple[np.ndarray, np.ndarray, List[str]]:
     """
     Build design matrix and response vector from a formula and DataFrame.
@@ -71,16 +52,11 @@ def build_design_matrix(
         - Two-way interactions: `x1:x2` (interaction only), `x1*x2` (main effects + interaction)
         - Categorical interactions: `C(cat1)*C(cat2)`, `C(cat):x`
         - Higher-order: `x1:x2:x3`
+        - Splines: `bs(x, df=5)`, `ns(x, df=4)`
         - Intercept: included by default, use `0 +` or `- 1` to remove
         
-    data : DataFrame
-        Polars or Pandas DataFrame containing the variables.
-        
-    backend : str, default="auto"
-        Which backend to use for design matrix construction:
-        - "auto": Use optimized backend for complex interactions, formulaic otherwise
-        - "formulaic": Always use formulaic (more features, slower for large interactions)
-        - "optimized": Always use optimized backend (faster, fewer features)
+    data : pl.DataFrame
+        Polars DataFrame containing the variables.
         
     Returns
     -------
@@ -103,48 +79,9 @@ def build_design_matrix(
     >>> print(names)
     ['Intercept', 'x1', 'x2', 'x1:x2', 'cat[T.B]:age', 'cat[T.C]:age', ...]
     """
-    # Determine which backend to use
-    use_optimized = False
-    
-    if backend == "optimized":
-        use_optimized = True
-    elif backend == "auto":
-        # Use optimized backend for formulas with interactions or splines
-        use_optimized = ':' in formula or '*' in formula or 'bs(' in formula or 'ns(' in formula
-    
-    if use_optimized:
-        try:
-            from rustystats.interactions import InteractionBuilder
-            builder = InteractionBuilder(data)
-            y, X, feature_names = builder.build_design_matrix(formula)
-            return y, X, feature_names
-        except Exception:
-            # Fall back to formulaic on any error
-            pass
-    
-    # Default: use formulaic
-    try:
-        from formulaic import model_matrix
-    except ImportError:
-        raise ImportError(
-            "formulaic is required for formula-based API. "
-            "Install it with: pip install formulaic"
-        )
-    
-    # Convert to pandas for formulaic compatibility
-    pdf = _to_pandas(data)
-    
-    # Build model matrices
-    y_matrix, X_matrix = model_matrix(formula, pdf)
-    
-    # Convert to numpy
-    y = np.asarray(y_matrix).ravel().astype(np.float64)
-    X = np.asarray(X_matrix).astype(np.float64)
-    
-    # Get feature names
-    feature_names = list(X_matrix.columns)
-    
-    return y, X, feature_names
+    from rustystats.interactions import InteractionBuilder
+    builder = InteractionBuilder(data)
+    return builder.build_design_matrix(formula)
 
 
 class FormulaGLM:
@@ -163,8 +100,8 @@ class FormulaGLM:
         - "y ~ x1 + C(cat)": Include categorical variable
         - "y ~ 0 + x1 + x2": No intercept
         
-    data : DataFrame
-        Polars or Pandas DataFrame containing the data.
+    data : pl.DataFrame
+        Polars DataFrame containing the data.
         
     family : str, default="gaussian"
         Distribution family: "gaussian", "poisson", "binomial", "gamma"
@@ -215,13 +152,12 @@ class FormulaGLM:
     def __init__(
         self,
         formula: str,
-        data: Union["pl.DataFrame", "pd.DataFrame"],
+        data: "pl.DataFrame",
         family: str = "gaussian",
         link: Optional[str] = None,
         var_power: float = 1.5,
         offset: Optional[Union[str, np.ndarray]] = None,
         weights: Optional[Union[str, np.ndarray]] = None,
-        backend: str = "auto",
     ):
         self.formula = formula
         self.data = data
@@ -230,10 +166,9 @@ class FormulaGLM:
         self.var_power = var_power
         self._offset_spec = offset
         self._weights_spec = weights
-        self._backend = backend
         
         # Build design matrix (uses optimized backend for interactions)
-        self.y, self.X, self.feature_names = build_design_matrix(formula, data, backend=backend)
+        self.y, self.X, self.feature_names = build_design_matrix(formula, data)
         self.n_obs = len(self.y)
         self.n_params = self.X.shape[1]
         
@@ -630,35 +565,36 @@ class FormulaGLMResults:
         """Model degrees of freedom."""
         return self._result.df_model
     
-    def coef_table(self) -> "pd.DataFrame":
+    def coef_table(self) -> "pl.DataFrame":
         """
         Return coefficients as a DataFrame with names.
         
         Returns
         -------
-        pd.DataFrame
-            DataFrame with columns: Estimate, Std.Error, z, Pr(>|z|), Signif
+        pl.DataFrame
+            DataFrame with columns: Feature, Estimate, Std.Error, z, Pr(>|z|), Signif
         """
-        import pandas as pd
+        import polars as pl
         
-        return pd.DataFrame({
+        return pl.DataFrame({
+            "Feature": self.feature_names,
             "Estimate": self.params,
             "Std.Error": self.bse(),
             "z": self.tvalues(),
             "Pr(>|z|)": self.pvalues(),
-            "": self.significance_codes(),
-        }, index=self.feature_names)
+            "Signif": self.significance_codes(),
+        })
     
-    def relativities(self) -> "pd.DataFrame":
+    def relativities(self) -> "pl.DataFrame":
         """
         Return relativities (exp(coef)) for log-link models.
         
         Returns
         -------
-        pd.DataFrame
-            DataFrame with Relativity and confidence interval columns
+        pl.DataFrame
+            DataFrame with Feature, Relativity and confidence interval columns
         """
-        import pandas as pd
+        import polars as pl
         
         if self.link not in ("log",):
             raise ValueError(
@@ -667,11 +603,12 @@ class FormulaGLMResults:
         
         ci = self.conf_int()
         
-        return pd.DataFrame({
+        return pl.DataFrame({
+            "Feature": self.feature_names,
             "Relativity": np.exp(self.params),
             "CI_Lower": np.exp(ci[:, 0]),
             "CI_Upper": np.exp(ci[:, 1]),
-        }, index=self.feature_names)
+        })
     
     def summary(self) -> str:
         """
@@ -695,13 +632,12 @@ class FormulaGLMResults:
 
 def glm(
     formula: str,
-    data: Union["pl.DataFrame", "pd.DataFrame"],
+    data: "pl.DataFrame",
     family: str = "gaussian",
     link: Optional[str] = None,
     var_power: float = 1.5,
     offset: Optional[Union[str, np.ndarray]] = None,
     weights: Optional[Union[str, np.ndarray]] = None,
-    backend: str = "auto",
 ) -> FormulaGLM:
     """
     Create a GLM model from a formula and DataFrame.
@@ -718,10 +654,11 @@ def glm(
         - Two-way interactions: ``x1:x2`` (interaction only), ``x1*x2`` (main effects + interaction)
         - Categorical interactions: ``C(cat1)*C(cat2)``, ``C(cat):x``
         - Higher-order: ``x1:x2:x3``
+        - Splines: ``bs(x, df=5)``, ``ns(x, df=4)``
         - Intercept: included by default, use ``0 +`` or ``- 1`` to remove
         
-    data : DataFrame
-        Polars or Pandas DataFrame containing the variables.
+    data : pl.DataFrame
+        Polars DataFrame containing the variables.
         
     family : str, default="gaussian"
         Distribution family: "gaussian", "poisson", "binomial", "gamma", "tweedie"
@@ -738,12 +675,6 @@ def glm(
         
     weights : str or array-like, optional
         Prior weights. If string, treated as column name.
-        
-    backend : str, default="auto"
-        Backend for design matrix construction:
-        - "auto": Use optimized backend for formulas with interactions
-        - "formulaic": Always use formulaic (more features, slower for large interactions)
-        - "optimized": Always use optimized backend (faster for interactions)
         
     Returns
     -------
@@ -785,5 +716,4 @@ def glm(
         var_power=var_power,
         offset=offset,
         weights=weights,
-        backend=backend,
     )

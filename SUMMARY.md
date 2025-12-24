@@ -37,7 +37,6 @@ A high-performance Generalized Linear Models (GLM) library with a Rust backend a
 | **`GLM` Class** | ✅ Complete | OOP interface (statsmodels-style) |
 | **`glm()` Formula API** | ✅ Complete | R-style formula interface with DataFrame support |
 | **Polars Support** | ✅ Complete | Native Polars DataFrame integration |
-| **Pandas Support** | ✅ Complete | Works with Pandas DataFrames too |
 | **`summary()`** | ✅ Complete | Formatted regression tables |
 | **`summary_relativities()`** | ✅ Complete | Factor tables for pricing |
 | **`predict()`** | ✅ Complete | Predictions on new data |
@@ -45,7 +44,7 @@ A high-performance Generalized Linear Models (GLM) library with a Rust backend a
 | **`cv_glm()`** | ✅ Complete | Cross-validation for optimal regularization |
 | **Interaction Terms** | ✅ Complete | `x1*x2`, `C(cat):x`, `C(cat1)*C(cat2)` in formulas |
 | **Spline Basis Functions** | ✅ Complete | `bs(x, df)`, `ns(x, df)` for non-linear effects |
-| **Minimal Dependencies** | ✅ Complete | Core requires only numpy; pandas/polars optional |
+| **Minimal Dependencies** | ✅ Complete | Core requires only numpy; polars optional |
 
 ### Testing
 
@@ -92,7 +91,7 @@ A high-performance Generalized Linear Models (GLM) library with a Rust backend a
 - **Large datasets** - Parallel solver scales better
 - **Regularized GLMs** - Built-in Lasso/Ridge/Elastic Net for any family
 - **Actuarial/Insurance** - Relativities tables, Tweedie, exposure offsets
-- **Polars workflows** - Native DataFrame support without pandas conversion
+- **Polars workflows** - Native Polars DataFrame support
 - **Variable selection** - Automatic feature selection with cross-validation
 
 ### When to Use Statsmodels
@@ -135,7 +134,7 @@ result = rs.glm(
 
 # Rich results
 print(result.summary())
-print(result.coef_table())      # As pandas DataFrame
+print(result.coef_table())      # As Polars DataFrame
 print(result.relativities())    # exp(coef) for log-link models
 ```
 
@@ -387,8 +386,6 @@ rustystats/
 
 ### Python (Optional)
 - `polars` - DataFrame support (for formula API with DataFrames)
-- `pandas` - Only needed for `summary_df()`, `relativities()` output as DataFrames
-- `formulaic` - Fallback formula parsing (rustystats has its own Rust parser)
 
 ---
 

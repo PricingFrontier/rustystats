@@ -42,8 +42,6 @@ keywords = ["statistics", "glm", "actuarial", "regression", "modeling"]
 # Python package dependencies
 dependencies = [
     "numpy>=1.20",
-    "pandas>=1.3",
-    "formulaic>=0.6",  # For R-style formulas like "y ~ x1 + x2"
     "jupyter>=1.1.1",
     "polars>=1.36.1",
     "pyarrow>=21.0.0",
@@ -92,6 +90,5 @@ addopts = "-v --tb=short"
 dev = [
     "maturin>=1.10.2",
     "numpy>=2.0.2",
-    "pandas>=2.3.3",
     "pytest>=8.4.2",
 ]

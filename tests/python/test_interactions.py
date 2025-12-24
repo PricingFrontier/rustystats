@@ -11,7 +11,7 @@ Tests cover:
 """
 
 import numpy as np
-import pandas as pd
+import polars as pl
 import pytest
 
 import rustystats as rs
@@ -101,7 +101,7 @@ class TestInteractionBuilder:
         """Create sample test data."""
         np.random.seed(42)
         n = 100
-        return pd.DataFrame({
+        return pl.DataFrame({
             'y': np.random.poisson(1, n),
             'x1': np.random.uniform(0, 10, n),
             'x2': np.random.uniform(0, 10, n),
@@ -200,7 +200,7 @@ class TestGLMInteractions:
         claims = np.random.poisson(np.exp(log_rate))
         exposure = np.random.uniform(0.5, 1.0, n)
         
-        return pd.DataFrame({
+        return pl.DataFrame({
             'claims': claims,
             'age': age,
             'power': power,
@@ -214,8 +214,7 @@ class TestGLMInteractions:
             'claims ~ age*power',
             insurance_data,
             family='poisson',
-            offset='exposure',
-            backend='optimized'
+            offset='exposure'
         ).fit()
         
         assert len(result.params) == 4  # Intercept, age, power, age:power
@@ -231,8 +230,7 @@ class TestGLMInteractions:
             'claims ~ C(area)*age',
             insurance_data,
             family='poisson',
-            offset='exposure',
-            backend='optimized'
+            offset='exposure'
         ).fit()
         
         # Intercept + 2 area dummies + age + 2 interactions = 6
@@ -245,14 +243,15 @@ class TestGLMInteractions:
     def test_fit_categorical_categorical_interaction(self, insurance_data):
         """Fit GLM with categorical × categorical interaction."""
         # Add another categorical
-        insurance_data['fuel'] = np.random.choice(['Petrol', 'Diesel'], len(insurance_data))
+        insurance_data = insurance_data.with_columns(
+            pl.Series('fuel', np.random.choice(['Petrol', 'Diesel'], len(insurance_data)))
+        )
         
         result = rs.glm(
             'claims ~ C(area)*C(fuel)',
             insurance_data,
             family='poisson',
-            offset='exposure',
-            backend='optimized'
+            offset='exposure'
         ).fit()
         
         # area: 2 dummies, fuel: 1 dummy
@@ -260,25 +259,6 @@ class TestGLMInteractions:
         assert len(result.params) == 6
         assert result.converged
     
-    def test_backend_consistency(self, insurance_data):
-        """Verify formulaic and optimized backends give similar results."""
-        formula = 'claims ~ age*power'
-        
-        result_form = rs.glm(
-            formula, insurance_data, family='poisson',
-            offset='exposure', backend='formulaic'
-        ).fit()
-        
-        result_opt = rs.glm(
-            formula, insurance_data, family='poisson',
-            offset='exposure', backend='optimized'
-        ).fit()
-        
-        # Coefficients should be very close
-        np.testing.assert_allclose(result_form.params, result_opt.params, rtol=1e-5)
-        
-        # Feature names should match
-        assert result_form.feature_names == result_opt.feature_names
     
     def test_regularized_interaction_model(self, insurance_data):
         """Fit regularized model with interactions."""
@@ -286,8 +266,7 @@ class TestGLMInteractions:
             'claims ~ age*power + C(area)',
             insurance_data,
             family='poisson',
-            offset='exposure',
-            backend='optimized'
+            offset='exposure'
         ).fit(alpha=0.1, l1_ratio=0.0)  # Ridge
         
         assert result.is_regularized
@@ -299,8 +278,7 @@ class TestGLMInteractions:
             'claims ~ age*power',
             insurance_data,
             family='poisson',
-            offset='exposure',
-            backend='optimized'
+            offset='exposure'
         ).fit()
         
         # Check fitted values are reasonable
@@ -321,7 +299,7 @@ class TestInteractionPerformance:
         np.random.seed(42)
         n = 50_000
         
-        df = pd.DataFrame({
+        df = pl.DataFrame({
             'y': np.random.poisson(1, n),
             'cat1': np.random.choice([f'A{i}' for i in range(10)], n),
             'cat2': np.random.choice([f'B{i}' for i in range(8)], n),
@@ -335,8 +313,7 @@ class TestInteractionPerformance:
             'y ~ C(cat1)*C(cat2)',
             df,
             family='poisson',
-            offset='exposure',
-            backend='optimized'
+            offset='exposure'
         ).fit()
         t_opt = time.time() - t0
         
@@ -359,7 +336,7 @@ class TestInteractionEdgeCases:
     
     def test_single_level_categorical(self):
         """Handle categorical with single level (no variation)."""
-        df = pd.DataFrame({
+        df = pl.DataFrame({
             'y': [1, 2, 3, 4],
             'x': [1.0, 2.0, 3.0, 4.0],
             'cat': ['A', 'A', 'A', 'A'],  # Only one level
@@ -374,23 +351,23 @@ class TestInteractionEdgeCases:
     
     def test_missing_variable(self):
         """Handle reference to non-existent variable."""
-        df = pd.DataFrame({
+        df = pl.DataFrame({
             'y': [1, 2, 3, 4],
             'x': [1.0, 2.0, 3.0, 4.0],
         })
         
         with pytest.raises((KeyError, Exception)):
-            rs.glm('y ~ x*z', df, backend='optimized').fit()
+            rs.glm('y ~ x*z', df).fit()
     
     def test_empty_formula(self):
         """Handle degenerate formulas."""
-        df = pd.DataFrame({
+        df = pl.DataFrame({
             'y': [1, 2, 3, 4],
             'x': [1.0, 2.0, 3.0, 4.0],
         })
         
         # Intercept-only model
-        result = rs.glm('y ~ 1', df, backend='formulaic').fit()
+        result = rs.glm('y ~ 1', df).fit()
         assert len(result.params) == 1
 
 

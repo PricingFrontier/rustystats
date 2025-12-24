@@ -54,7 +54,6 @@ from typing import Optional, Union, List, Tuple, TYPE_CHECKING
 import numpy as np
 
 if TYPE_CHECKING:
-    import pandas as pd
     import polars as pl
 
 # Import Rust implementations
