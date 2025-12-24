@@ -242,8 +242,9 @@ rustystats/
 │   │       ├── error.rs          # Error types
 │   │       ├── families/         # Gaussian, Poisson, Binomial, Gamma
 │   │       ├── links/            # Identity, Log, Logit
-│   │       ├── solvers/          # IRLS algorithm
-│   │       └── inference/        # P-values, confidence intervals
+│   │       ├── solvers/          # IRLS, coordinate descent
+│   │       ├── inference/        # P-values, CIs, robust SE (HC0-HC3)
+│   │       └── diagnostics/      # Residuals, dispersion, AIC/BIC
 │   │
 │   └── rustystats/               # Python bindings (PyO3)
 │       └── src/lib.rs
@@ -261,9 +262,11 @@ rustystats/
 │
 └── tests/
     └── python/
-        ├── test_glm.py           # GLM tests (77 tests)
+        ├── test_glm.py           # GLM tests
         ├── test_families.py      # Family tests
-        └── test_links.py         # Link tests
+        ├── test_links.py         # Link tests
+        ├── test_regularization.py # Lasso/Ridge/Elastic Net tests
+        └── test_robust_se.py     # Robust standard error tests
 ```
 
 ---
@@ -275,6 +278,15 @@ rustystats/
 - Pure Rust IRLS solver with multi-threaded parallelism (Rayon)
 - NumPy array zero-copy where possible
 - Typically converges in 4-8 IRLS iterations
+
+### Parallelized Operations
+
+| Operation | Parallelization |
+|-----------|-----------------|
+| **X'WX computation** (IRLS) | Parallel fold-reduce over observations |
+| **X'WX Gram matrix** (Lasso/CD) | Parallel fold-reduce with flat Vec for cache locality |
+| **Robust covariance meat** | Parallel fold-reduce with upper-triangle optimization |
+| **Leverage computation** (HC2/HC3) | Parallel over observations |
 
 ---
 

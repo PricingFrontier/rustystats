@@ -515,6 +515,51 @@ pub struct PyGLMResults {
     irls_weights: Array1<f64>,
 }
 
+// =============================================================================
+// Helper Methods (not exposed to Python)
+// =============================================================================
+
+impl PyGLMResults {
+    /// Get the appropriate Family trait object based on family_name.
+    /// Used internally by diagnostics and robust SE methods.
+    fn get_family(&self) -> Box<dyn Family> {
+        match self.family_name.as_str() {
+            "Gaussian" => Box::new(GaussianFamily),
+            "Poisson" => Box::new(PoissonFamily),
+            "Binomial" => Box::new(BinomialFamily),
+            "Gamma" => Box::new(GammaFamily),
+            // Tweedie falls back to Gaussian for now (would need var_power stored)
+            _ => Box::new(GaussianFamily),
+        }
+    }
+    
+    /// Get prior weights as Option, returning None if all weights are 1.0.
+    /// Many functions accept Option<&Array1<f64>> for weights.
+    fn maybe_weights(&self) -> Option<&Array1<f64>> {
+        if self.prior_weights.iter().all(|&w| (w - 1.0).abs() < 1e-10) {
+            None
+        } else {
+            Some(&self.prior_weights)
+        }
+    }
+    
+    /// Compute robust covariance matrix (internal helper).
+    /// Factored out to avoid repeating the same logic in cov_robust, bse_robust, etc.
+    fn compute_robust_cov(&self, hc_type: HCType) -> Array2<f64> {
+        let family = self.get_family();
+        let pearson_resid = resid_pearson(&self.y, &self.fitted_values, family.as_ref());
+        
+        robust_covariance(
+            &self.design_matrix,
+            &pearson_resid,
+            &self.irls_weights,
+            &self.prior_weights,
+            &self.covariance_unscaled,
+            hc_type,
+        )
+    }
+}
+
 #[pymethods]
 impl PyGLMResults {
     /// Get the fitted coefficients (β).
@@ -779,25 +824,7 @@ impl PyGLMResults {
             ))
         })?;
         
-        // Compute Pearson residuals
-        let family: Box<dyn Family> = match self.family_name.as_str() {
-            "Gaussian" => Box::new(GaussianFamily),
-            "Poisson" => Box::new(PoissonFamily),
-            "Binomial" => Box::new(BinomialFamily),
-            "Gamma" => Box::new(GammaFamily),
-            _ => Box::new(GaussianFamily),
-        };
-        let pearson_resid = resid_pearson(&self.y, &self.fitted_values, family.as_ref());
-        
-        let cov = robust_covariance(
-            &self.design_matrix,
-            &pearson_resid,
-            &self.irls_weights,
-            &self.prior_weights,
-            &self.covariance_unscaled,
-            hc_type,
-        );
-        
+        let cov = self.compute_robust_cov(hc_type);
         Ok(cov.into_pyarray_bound(py))
     }
 
@@ -842,25 +869,7 @@ impl PyGLMResults {
             ))
         })?;
         
-        // Compute Pearson residuals
-        let family: Box<dyn Family> = match self.family_name.as_str() {
-            "Gaussian" => Box::new(GaussianFamily),
-            "Poisson" => Box::new(PoissonFamily),
-            "Binomial" => Box::new(BinomialFamily),
-            "Gamma" => Box::new(GammaFamily),
-            _ => Box::new(GaussianFamily),
-        };
-        let pearson_resid = resid_pearson(&self.y, &self.fitted_values, family.as_ref());
-        
-        let cov = robust_covariance(
-            &self.design_matrix,
-            &pearson_resid,
-            &self.irls_weights,
-            &self.prior_weights,
-            &self.covariance_unscaled,
-            hc_type,
-        );
-        
+        let cov = self.compute_robust_cov(hc_type);
         let se = robust_standard_errors(&cov);
         Ok(se.into_pyarray_bound(py))
     }
@@ -884,24 +893,7 @@ impl PyGLMResults {
             ))
         })?;
         
-        let family: Box<dyn Family> = match self.family_name.as_str() {
-            "Gaussian" => Box::new(GaussianFamily),
-            "Poisson" => Box::new(PoissonFamily),
-            "Binomial" => Box::new(BinomialFamily),
-            "Gamma" => Box::new(GammaFamily),
-            _ => Box::new(GaussianFamily),
-        };
-        let pearson_resid = resid_pearson(&self.y, &self.fitted_values, family.as_ref());
-        
-        let cov = robust_covariance(
-            &self.design_matrix,
-            &pearson_resid,
-            &self.irls_weights,
-            &self.prior_weights,
-            &self.covariance_unscaled,
-            hc_type,
-        );
-        
+        let cov = self.compute_robust_cov(hc_type);
         let se = robust_standard_errors(&cov);
         let t: Array1<f64> = self.coefficients.iter()
             .zip(se.iter())
@@ -930,24 +922,7 @@ impl PyGLMResults {
             ))
         })?;
         
-        let family: Box<dyn Family> = match self.family_name.as_str() {
-            "Gaussian" => Box::new(GaussianFamily),
-            "Poisson" => Box::new(PoissonFamily),
-            "Binomial" => Box::new(BinomialFamily),
-            "Gamma" => Box::new(GammaFamily),
-            _ => Box::new(GaussianFamily),
-        };
-        let pearson_resid = resid_pearson(&self.y, &self.fitted_values, family.as_ref());
-        
-        let cov = robust_covariance(
-            &self.design_matrix,
-            &pearson_resid,
-            &self.irls_weights,
-            &self.prior_weights,
-            &self.covariance_unscaled,
-            hc_type,
-        );
-        
+        let cov = self.compute_robust_cov(hc_type);
         let se = robust_standard_errors(&cov);
         let pvals: Array1<f64> = self.coefficients.iter()
             .zip(se.iter())
@@ -985,24 +960,7 @@ impl PyGLMResults {
             ))
         })?;
         
-        let family: Box<dyn Family> = match self.family_name.as_str() {
-            "Gaussian" => Box::new(GaussianFamily),
-            "Poisson" => Box::new(PoissonFamily),
-            "Binomial" => Box::new(BinomialFamily),
-            "Gamma" => Box::new(GammaFamily),
-            _ => Box::new(GaussianFamily),
-        };
-        let pearson_resid = resid_pearson(&self.y, &self.fitted_values, family.as_ref());
-        
-        let cov = robust_covariance(
-            &self.design_matrix,
-            &pearson_resid,
-            &self.irls_weights,
-            &self.prior_weights,
-            &self.covariance_unscaled,
-            hc_type,
-        );
-        
+        let cov = self.compute_robust_cov(hc_type);
         let se = robust_standard_errors(&cov);
         let confidence = 1.0 - alpha;
         
@@ -1034,13 +992,7 @@ impl PyGLMResults {
     /// Standardized residuals that account for the variance function.
     /// For a well-specified model, should have approximately constant variance.
     fn resid_pearson<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        let family: Box<dyn Family> = match self.family_name.as_str() {
-            "Gaussian" => Box::new(GaussianFamily),
-            "Poisson" => Box::new(PoissonFamily),
-            "Binomial" => Box::new(BinomialFamily),
-            "Gamma" => Box::new(GammaFamily),
-            _ => Box::new(GaussianFamily),
-        };
+        let family = self.get_family();
         let resid = resid_pearson(&self.y, &self.fitted_values, family.as_ref());
         resid.into_pyarray_bound(py)
     }
@@ -1051,13 +1003,7 @@ impl PyGLMResults {
     /// distributed than Pearson residuals for non-Gaussian families.
     /// sum(resid_deviance²) = model deviance
     fn resid_deviance<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        let family: Box<dyn Family> = match self.family_name.as_str() {
-            "Gaussian" => Box::new(GaussianFamily),
-            "Poisson" => Box::new(PoissonFamily),
-            "Binomial" => Box::new(BinomialFamily),
-            "Gamma" => Box::new(GammaFamily),
-            _ => Box::new(GaussianFamily),
-        };
+        let family = self.get_family();
         let resid = resid_deviance(&self.y, &self.fitted_values, family.as_ref());
         resid.into_pyarray_bound(py)
     }
@@ -1090,47 +1036,21 @@ impl PyGLMResults {
     /// For a well-specified model with known dispersion φ=1,
     /// X² should be approximately chi-squared with (n-p) df.
     fn pearson_chi2(&self) -> f64 {
-        let family: Box<dyn Family> = match self.family_name.as_str() {
-            "Gaussian" => Box::new(GaussianFamily),
-            "Poisson" => Box::new(PoissonFamily),
-            "Binomial" => Box::new(BinomialFamily),
-            "Gamma" => Box::new(GammaFamily),
-            _ => Box::new(GaussianFamily),
-        };
-        
-        let weights = if self.prior_weights.iter().all(|&w| (w - 1.0).abs() < 1e-10) {
-            None
-        } else {
-            Some(&self.prior_weights)
-        };
-        
-        pearson_chi2(&self.y, &self.fitted_values, family.as_ref(), weights)
+        let family = self.get_family();
+        pearson_chi2(&self.y, &self.fitted_values, family.as_ref(), self.maybe_weights())
     }
 
     /// Get dispersion estimated from Pearson residuals.
     ///
     /// φ_pearson = X² / (n - p)
     fn scale_pearson(&self) -> f64 {
-        let family: Box<dyn Family> = match self.family_name.as_str() {
-            "Gaussian" => Box::new(GaussianFamily),
-            "Poisson" => Box::new(PoissonFamily),
-            "Binomial" => Box::new(BinomialFamily),
-            "Gamma" => Box::new(GammaFamily),
-            _ => Box::new(GaussianFamily),
-        };
-        
-        let weights = if self.prior_weights.iter().all(|&w| (w - 1.0).abs() < 1e-10) {
-            None
-        } else {
-            Some(&self.prior_weights)
-        };
-        
+        let family = self.get_family();
         estimate_dispersion_pearson(
             &self.y, 
             &self.fitted_values, 
             family.as_ref(), 
             self.df_resid(),
-            weights,
+            self.maybe_weights(),
         )
     }
 
@@ -1144,11 +1064,7 @@ impl PyGLMResults {
     /// the fitted model. Higher (less negative) is better.
     fn llf(&self) -> f64 {
         let scale = self.scale();
-        let weights = if self.prior_weights.iter().all(|&w| (w - 1.0).abs() < 1e-10) {
-            None
-        } else {
-            Some(&self.prior_weights)
-        };
+        let weights = self.maybe_weights();
         
         match self.family_name.as_str() {
             "Gaussian" => log_likelihood_gaussian(&self.y, &self.fitted_values, scale, weights),
@@ -1182,13 +1098,7 @@ impl PyGLMResults {
     /// Measures total variation in y before accounting for predictors.
     /// Compare to residual deviance to assess explanatory power.
     fn null_deviance(&self) -> f64 {
-        let weights = if self.prior_weights.iter().all(|&w| (w - 1.0).abs() < 1e-10) {
-            None
-        } else {
-            Some(&self.prior_weights)
-        };
-        
-        null_deviance(&self.y, &self.family_name, weights)
+        null_deviance(&self.y, &self.family_name, self.maybe_weights())
     }
 
     /// Get the family name.
