@@ -41,13 +41,14 @@ A high-performance Generalized Linear Models (GLM) library with a Rust backend a
 | **`predict()`** | ✅ Complete | Predictions on new data |
 | **`lasso_path()`** | ✅ Complete | Coefficient paths over alpha grid |
 | **`cv_glm()`** | ✅ Complete | Cross-validation for optimal regularization |
+| **Interaction Terms** | ✅ Complete | `x1*x2`, `C(cat):x`, `C(cat1)*C(cat2)` in formulas |
 
 ### Testing
 
 | Component | Count | Description |
 |-----------|-------|-------------|
-| **Rust Unit Tests** | 108 | Core library tests (families, diagnostics, solvers, regularization, inference) |
-| **Python Tests** | 126 | API, integration, regularization, and robust SE tests |
+| **Rust Unit Tests** | 110 | Core library tests (families, diagnostics, solvers, regularization, inference, interactions) |
+| **Python Tests** | 147 | API, integration, regularization, robust SE, and interaction tests |
 
 ### Examples
 
@@ -168,6 +169,42 @@ result.scale_pearson()     # Dispersion (Pearson-based)
 result.family              # Family name
 ```
 
+### Interaction Terms
+```python
+import rustystats as rs
+import polars as pl
+
+data = pl.read_parquet("insurance.parquet")
+
+# Continuous × Continuous interaction (main effects + interaction)
+result = rs.glm(
+    "ClaimNb ~ Age*VehPower",  # Equivalent to Age + VehPower + Age:VehPower
+    data, family="poisson", offset="Exposure"
+).fit()
+
+# Categorical × Continuous interaction
+result = rs.glm(
+    "ClaimNb ~ C(Area)*Age",  # Each area level has different age effect
+    data, family="poisson", offset="Exposure"
+).fit()
+
+# Categorical × Categorical interaction
+result = rs.glm(
+    "ClaimNb ~ C(Area)*C(VehBrand)",
+    data, family="poisson", offset="Exposure"
+).fit()
+
+# Pure interaction (no main effects added)
+result = rs.glm(
+    "ClaimNb ~ Age + C(Area):VehPower",  # Area-specific VehPower slopes
+    data, family="poisson", offset="Exposure"
+).fit()
+
+# View coefficients
+print(result.summary())
+print(result.coef_table())
+```
+
 ### Regularization API (NEW)
 ```python
 import rustystats as rs
@@ -203,7 +240,6 @@ cv_result.plot()  # Visualize CV curve
 | Feature | Description | Use Case |
 |---------|-------------|----------|
 | **Quasi-Families** | Quasi-Poisson, Quasi-Binomial | Overdispersion handling |
-| **Interaction Terms** | `x1 * x2` in formulas | Complex relationships |
 | **Splines** | B-splines, natural splines | Non-linear continuous effects |
 
 ### Lower Priority
@@ -244,6 +280,7 @@ rustystats/
 │   │       ├── links/            # Identity, Log, Logit
 │   │       ├── solvers/          # IRLS, coordinate descent
 │   │       ├── inference/        # P-values, CIs, robust SE (HC0-HC3)
+│   │       ├── interactions/     # Lazy interaction term computation
 │   │       └── diagnostics/      # Residuals, dispersion, AIC/BIC
 │   │
 │   └── rustystats/               # Python bindings (PyO3)
@@ -253,6 +290,7 @@ rustystats/
 │   ├── __init__.py               # Main exports
 │   ├── glm.py                    # GLM class, fit_glm, summary
 │   ├── formula.py                # Formula API with DataFrame support
+│   ├── interactions.py           # Optimized interaction term handling
 │   ├── families.py               # Family wrappers
 │   └── links.py                  # Link wrappers
 │
@@ -265,6 +303,7 @@ rustystats/
         ├── test_glm.py           # GLM tests
         ├── test_families.py      # Family tests
         ├── test_links.py         # Link tests
+        ├── test_interactions.py  # Interaction term tests
         ├── test_regularization.py # Lasso/Ridge/Elastic Net tests
         └── test_robust_se.py     # Robust standard error tests
 ```

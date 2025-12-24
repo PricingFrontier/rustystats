@@ -56,6 +56,7 @@ def _get_column(
 def build_design_matrix(
     formula: str,
     data: Union["pl.DataFrame", "pd.DataFrame"],
+    backend: str = "auto",
 ) -> tuple[np.ndarray, np.ndarray, List[str]]:
     """
     Build design matrix and response vector from a formula and DataFrame.
@@ -64,12 +65,22 @@ def build_design_matrix(
     ----------
     formula : str
         R-style formula, e.g., "y ~ x1 + x2 + C(cat_var)"
-        - Use `C(var)` to treat a variable as categorical
-        - Intercept is included by default
-        - Use `0 +` or `-1` to remove intercept
+        
+        Supported syntax:
+        - Main effects: `x1`, `x2`, `C(cat)` (categorical)
+        - Two-way interactions: `x1:x2` (interaction only), `x1*x2` (main effects + interaction)
+        - Categorical interactions: `C(cat1)*C(cat2)`, `C(cat):x`
+        - Higher-order: `x1:x2:x3`
+        - Intercept: included by default, use `0 +` or `- 1` to remove
         
     data : DataFrame
         Polars or Pandas DataFrame containing the variables.
+        
+    backend : str, default="auto"
+        Which backend to use for design matrix construction:
+        - "auto": Use optimized backend for complex interactions, formulaic otherwise
+        - "formulaic": Always use formulaic (more features, slower for large interactions)
+        - "optimized": Always use optimized backend (faster, fewer features)
         
     Returns
     -------
@@ -82,10 +93,36 @@ def build_design_matrix(
         
     Examples
     --------
+    >>> # Simple model
     >>> y, X, names = build_design_matrix("ClaimNb ~ VehPower + C(Area)", data)
     >>> print(names)
     ['Intercept', 'VehPower', 'Area[T.B]', 'Area[T.C]', ...]
+    
+    >>> # With interactions
+    >>> y, X, names = build_design_matrix("y ~ x1*x2 + C(cat):age", data)
+    >>> print(names)
+    ['Intercept', 'x1', 'x2', 'x1:x2', 'cat[T.B]:age', 'cat[T.C]:age', ...]
     """
+    # Determine which backend to use
+    use_optimized = False
+    
+    if backend == "optimized":
+        use_optimized = True
+    elif backend == "auto":
+        # Use optimized backend for formulas with interactions
+        use_optimized = ':' in formula or '*' in formula
+    
+    if use_optimized:
+        try:
+            from rustystats.interactions import InteractionBuilder
+            builder = InteractionBuilder(data)
+            y, X, feature_names = builder.build_design_matrix(formula)
+            return y, X, feature_names
+        except Exception:
+            # Fall back to formulaic on any error
+            pass
+    
+    # Default: use formulaic
     try:
         from formulaic import model_matrix
     except ImportError:
@@ -184,6 +221,7 @@ class FormulaGLM:
         var_power: float = 1.5,
         offset: Optional[Union[str, np.ndarray]] = None,
         weights: Optional[Union[str, np.ndarray]] = None,
+        backend: str = "auto",
     ):
         self.formula = formula
         self.data = data
@@ -192,9 +230,10 @@ class FormulaGLM:
         self.var_power = var_power
         self._offset_spec = offset
         self._weights_spec = weights
+        self._backend = backend
         
-        # Build design matrix
-        self.y, self.X, self.feature_names = build_design_matrix(formula, data)
+        # Build design matrix (uses optimized backend for interactions)
+        self.y, self.X, self.feature_names = build_design_matrix(formula, data, backend=backend)
         self.n_obs = len(self.y)
         self.n_params = self.X.shape[1]
         
@@ -662,6 +701,7 @@ def glm(
     var_power: float = 1.5,
     offset: Optional[Union[str, np.ndarray]] = None,
     weights: Optional[Union[str, np.ndarray]] = None,
+    backend: str = "auto",
 ) -> FormulaGLM:
     """
     Create a GLM model from a formula and DataFrame.
@@ -671,7 +711,14 @@ def glm(
     Parameters
     ----------
     formula : str
-        R-style formula, e.g., "y ~ x1 + x2 + C(cat_var)"
+        R-style formula specifying the model.
+        
+        Supported syntax:
+        - Main effects: ``x1``, ``x2``, ``C(cat)`` (categorical)
+        - Two-way interactions: ``x1:x2`` (interaction only), ``x1*x2`` (main effects + interaction)
+        - Categorical interactions: ``C(cat1)*C(cat2)``, ``C(cat):x``
+        - Higher-order: ``x1:x2:x3``
+        - Intercept: included by default, use ``0 +`` or ``- 1`` to remove
         
     data : DataFrame
         Polars or Pandas DataFrame containing the variables.
@@ -691,6 +738,12 @@ def glm(
         
     weights : str or array-like, optional
         Prior weights. If string, treated as column name.
+        
+    backend : str, default="auto"
+        Backend for design matrix construction:
+        - "auto": Use optimized backend for formulas with interactions
+        - "formulaic": Always use formulaic (more features, slower for large interactions)
+        - "optimized": Always use optimized backend (faster for interactions)
         
     Returns
     -------
@@ -714,9 +767,15 @@ def glm(
     ... )
     >>> result = model.fit()
     >>> 
-    >>> # View results
+    >>> # Model with interactions
+    >>> model = rs.glm(
+    ...     formula="ClaimNb ~ VehPower*VehAge + C(Area):DrivAge",
+    ...     data=data,
+    ...     family="poisson",
+    ...     offset="Exposure"
+    ... )
+    >>> result = model.fit()
     >>> print(result.summary())
-    >>> print(result.relativities())
     """
     return FormulaGLM(
         formula=formula,
@@ -726,4 +785,5 @@ def glm(
         var_power=var_power,
         offset=offset,
         weights=weights,
+        backend=backend,
     )

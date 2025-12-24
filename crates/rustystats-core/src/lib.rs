@@ -30,6 +30,7 @@
 pub mod error;
 pub mod families;
 pub mod inference;
+pub mod interactions;
 pub mod links;
 pub mod regularization;
 pub mod solvers;

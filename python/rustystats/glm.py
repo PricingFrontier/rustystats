@@ -635,15 +635,20 @@ def summary(
     lines.append("")
     lines.append("-" * 78)
     
+    # Calculate dynamic column width for variable names
+    # Use max of 16 chars or longest name (capped at 30)
+    max_name_len = max(len(name) for name in feature_names)
+    name_width = min(max(16, max_name_len), 30)
+    
     # Coefficient table header
     ci_label = f"{int((1-alpha)*100)}% CI"
-    header = f"{'Variable':<12} {'Coef':>10} {'Std.Err':>10} {'z':>8} {'P>|z|':>8} {ci_label:>22} {'':>4}"
+    header = f"{'Variable':<{name_width}} {'Coef':>10} {'Std.Err':>10} {'z':>8} {'P>|z|':>8} {ci_label:>22} {'':>4}"
     lines.append(header)
     lines.append("-" * 78)
     
     # Coefficient rows
     for i in range(n_params):
-        name = feature_names[i][:12]  # Truncate long names
+        name = feature_names[i][:name_width]  # Truncate only if exceeds max
         coef = coefs[i]
         se = std_errs[i]
         z = z_vals[i]
@@ -658,7 +663,7 @@ def summary(
             p_str = f"{p:.4f}"
         
         ci_str = f"[{ci_low:>8.4f}, {ci_high:>8.4f}]"
-        row = f"{name:<12} {coef:>10.4f} {se:>10.4f} {z:>8.3f} {p_str:>8} {ci_str:>22} {sig:>4}"
+        row = f"{name:<{name_width}} {coef:>10.4f} {se:>10.4f} {z:>8.3f} {p_str:>8} {ci_str:>22} {sig:>4}"
         lines.append(row)
     
     lines.append("-" * 78)
