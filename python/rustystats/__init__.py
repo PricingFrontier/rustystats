@@ -92,7 +92,7 @@ from rustystats._rustystats import (
 from rustystats import families
 from rustystats import links
 from rustystats import glm as glm_module  # Import as module for backward compat
-from rustystats.glm import GLM, fit_glm, summary, summary_relativities, predict
+from rustystats.glm import GLM, fit_glm, fit_negbinomial, summary, summary_relativities, predict
 
 # Formula-based API (works with DataFrames)
 from rustystats.formula import glm, FormulaGLM, FormulaGLMResults
@@ -119,6 +119,7 @@ __all__ = [
     # Main API
     "GLM",
     "fit_glm",
+    "fit_negbinomial",
     "predict",
     "glm",  # Formula-based API
     "glm_module",  # The glm module (for rs.glm_module.predict compatibility)

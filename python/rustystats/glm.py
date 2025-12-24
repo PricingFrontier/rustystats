@@ -36,7 +36,11 @@ import numpy as np
 from typing import Optional, Union, List
 
 # Import the Rust fitting function
-from rustystats._rustystats import fit_glm_py as _fit_glm_rust, GLMResults
+from rustystats._rustystats import (
+    fit_glm_py as _fit_glm_rust,
+    fit_negbinomial_py as _fit_negbinomial_rust,
+    GLMResults,
+)
 
 
 def fit_glm(
@@ -249,6 +253,137 @@ def fit_glm(
     
     # Call the Rust implementation
     return _fit_glm_rust(y, X, family, link, var_power, theta, offset, weights, alpha, l1_ratio, max_iter, tol)
+
+
+def fit_negbinomial(
+    y: np.ndarray,
+    X: np.ndarray,
+    link: Optional[str] = None,
+    init_theta: Optional[float] = None,
+    theta_tol: float = 1e-5,
+    max_theta_iter: int = 10,
+    offset: Optional[np.ndarray] = None,
+    weights: Optional[np.ndarray] = None,
+    max_iter: int = 25,
+    tol: float = 1e-8,
+) -> GLMResults:
+    """
+    Fit Negative Binomial GLM with automatic theta estimation.
+    
+    This function uses profile likelihood to automatically estimate the
+    optimal dispersion parameter θ, alternating between fitting β and
+    optimizing θ until convergence.
+    
+    Parameters
+    ----------
+    y : array-like, shape (n,)
+        Response variable (non-negative counts)
+        
+    X : array-like, shape (n, p)
+        Design matrix (include intercept column if desired)
+        
+    link : str, optional
+        Link function: "log" (default) or "identity"
+        
+    init_theta : float, optional
+        Initial θ value. If None, uses method-of-moments estimate.
+        
+    theta_tol : float, default=1e-5
+        Convergence tolerance for θ estimation
+        
+    max_theta_iter : int, default=10
+        Maximum number of θ iteration cycles
+        
+    offset : array-like, shape (n,), optional
+        Offset term (e.g., log(exposure) for rate models)
+        
+    weights : array-like, shape (n,), optional
+        Prior weights for each observation
+        
+    max_iter : int, default=25
+        Maximum IRLS iterations per GLM fit
+        
+    tol : float, default=1e-8
+        IRLS convergence tolerance
+        
+    Returns
+    -------
+    GLMResults
+        Fitted model. The estimated theta is encoded in the family name
+        as "NegativeBinomial(theta=X.XXXX)".
+        
+    Examples
+    --------
+    >>> import rustystats as rs
+    >>> import numpy as np
+    >>>
+    >>> # Generate overdispersed count data
+    >>> np.random.seed(42)
+    >>> n = 500
+    >>> x = np.random.randn(n)
+    >>> mu = np.exp(0.5 + 0.3 * x)
+    >>> y = np.random.negative_binomial(n=2, p=2/(2+mu))  # True theta=2
+    >>> X = np.column_stack([np.ones(n), x])
+    >>>
+    >>> # Fit with automatic theta estimation
+    >>> result = rs.fit_negbinomial(y, X)
+    >>> print(result.family)  # Shows estimated theta
+    >>> print(result.params)  # Coefficients
+    >>>
+    >>> # Compare to fixed theta
+    >>> result_fixed = rs.fit_glm(y, X, family="negbinomial", theta=1.0)
+    
+    Notes
+    -----
+    **Algorithm:**
+    1. Initialize θ using method-of-moments (or provided value)
+    2. Fit NB GLM with current θ → get μ
+    3. Optimize θ given μ using profile likelihood (Brent's method)
+    4. If |θ_new - θ_old| < theta_tol, stop; else go to step 2
+    
+    **Comparison to fit_glm with family="negbinomial":**
+    - `fit_negbinomial()`: Automatically estimates θ from data
+    - `fit_glm(..., theta=X)`: Uses fixed θ value you provide
+    
+    **Variance function:**
+    The Negative Binomial variance is V(μ) = μ + μ²/θ
+    - Small θ: High overdispersion (variance >> mean)
+    - Large θ: Low overdispersion (approaches Poisson)
+    """
+    # Ensure arrays are the right type
+    y = np.asarray(y, dtype=np.float64)
+    X = np.asarray(X, dtype=np.float64)
+    
+    # Validate inputs
+    if y.ndim != 1:
+        raise ValueError(f"y must be 1-dimensional, got shape {y.shape}")
+    if X.ndim != 2:
+        raise ValueError(f"X must be 2-dimensional, got shape {X.shape}")
+    if len(y) != X.shape[0]:
+        raise ValueError(
+            f"y has {len(y)} observations but X has {X.shape[0]} rows"
+        )
+    
+    # Convert optional arrays
+    if offset is not None:
+        offset = np.asarray(offset, dtype=np.float64)
+        if offset.shape != y.shape:
+            raise ValueError(
+                f"offset has shape {offset.shape} but y has shape {y.shape}"
+            )
+    
+    if weights is not None:
+        weights = np.asarray(weights, dtype=np.float64)
+        if weights.shape != y.shape:
+            raise ValueError(
+                f"weights has shape {weights.shape} but y has shape {y.shape}"
+            )
+    
+    # Call the Rust implementation
+    return _fit_negbinomial_rust(
+        y, X, link, init_theta, theta_tol, max_theta_iter,
+        offset, weights, max_iter, tol
+    )
 
 
 class GLM:

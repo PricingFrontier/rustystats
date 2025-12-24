@@ -45,15 +45,15 @@ A high-performance Generalized Linear Models (GLM) library with a Rust backend a
 | **Interaction Terms** | ✅ Complete | `x1*x2`, `C(cat):x`, `C(cat1)*C(cat2)` in formulas |
 | **Spline Basis Functions** | ✅ Complete | `bs(x, df)`, `ns(x, df)` for non-linear effects |
 | **Quasi-Families** | ✅ Complete | `quasipoisson`, `quasibinomial` for overdispersion |
-| **Negative Binomial** | ✅ Complete | `negbinomial` for overdispersed count data |
+| **Negative Binomial** | ✅ Complete | `negbinomial` with auto θ estimation |
 | **Minimal Dependencies** | ✅ Complete | Core requires only numpy; polars optional |
 
 ### Testing
 
 | Component | Count | Description |
 |-----------|-------|-------------|
-| **Rust Unit Tests** | 157+ | Core library tests (families, diagnostics, solvers, regularization, inference, interactions, splines, formula, design_matrix) |
-| **Python Tests** | 226 | API, integration, regularization, robust SE, interaction, spline, quasi-family, and negative binomial tests |
+| **Rust Unit Tests** | 163+ | Core library tests (families, diagnostics, solvers, regularization, inference, interactions, splines, formula, design_matrix) |
+| **Python Tests** | 234 | API, integration, regularization, robust SE, interaction, spline, quasi-family, and negative binomial tests |
 
 ### Examples
 
@@ -114,10 +114,13 @@ import numpy as np
 # Fit a GLM with numpy arrays
 result = rs.fit_glm(
     y, X,
-    family="poisson",
+    family="poisson",           # or "gaussian", "binomial", "gamma", "tweedie", "quasipoisson", "negbinomial"
     offset=np.log(exposure),
     weights=weights
 )
+
+# Negative Binomial for overdispersed count data
+result = rs.fit_glm(y, X, family="negbinomial", theta=1.0)  # θ controls overdispersion
 ```
 
 ### Formula-Based API (NEW)
@@ -130,7 +133,7 @@ data = pl.read_parquet("insurance.parquet")
 result = rs.glm(
     formula="ClaimCount ~ VehPower + VehAge + C(Area) + C(Region)",
     data=data,
-    family="poisson",
+    family="poisson",      # or "negbinomial" (auto-estimates θ)
     offset="Exposure"
 ).fit()
 
@@ -328,6 +331,18 @@ result_nb = rs.fit_glm(y, X, family="negbinomial", theta=2.0)
 
 # NB is a proper probability distribution - AIC/BIC are valid
 print(f"NB AIC: {result_nb.aic():.1f}")
+
+# AUTOMATIC THETA ESTIMATION
+# Option 1: Array API
+result_auto = rs.fit_negbinomial(y, X)
+print(result_auto.family)  # "NegativeBinomial(theta=2.1234)"
+
+# Option 2: Formula API (auto when theta not supplied)
+result = rs.glm("y ~ x1 + x2", data, family="negbinomial").fit()
+print(result.family)  # "NegativeBinomial(theta=2.1234)"
+
+# Option 3: Fixed theta
+result = rs.glm("y ~ x1 + x2", data, family="negbinomial", theta=1.0).fit()
 ```
 
 **NegativeBinomial vs QuasiPoisson:**
@@ -351,7 +366,6 @@ print(f"NB AIC: {result_nb.aic():.1f}")
 
 | Feature | Description | Use Case |
 |---------|-------------|----------|
-| **Negative Binomial Theta Estimation** | Automatic θ estimation from data | Convenience feature |
 | **Zero-Inflated Models** | ZIP, ZINB | Excess zeros in count data |
 | **Mixed Effects / GLMM** | Random effects | Hierarchical/panel data |
 | **Bootstrap CI** | Non-parametric confidence intervals | Small samples |
@@ -381,7 +395,7 @@ rustystats/
 │   │   └── src/
 │   │       ├── lib.rs
 │   │       ├── error.rs          # Error types
-│   │       ├── families/         # Gaussian, Poisson, Binomial, Gamma, Tweedie, Quasi
+│   │       ├── families/         # Gaussian, Poisson, Binomial, Gamma, Tweedie, Quasi, NegativeBinomial
 │   │       ├── links/            # Identity, Log, Logit
 │   │       ├── solvers/          # IRLS, coordinate descent
 │   │       ├── inference/        # P-values, CIs, robust SE (HC0-HC3)
@@ -415,7 +429,9 @@ rustystats/
         ├── test_interactions.py  # Interaction term tests
         ├── test_regularization.py # Lasso/Ridge/Elastic Net tests
         ├── test_robust_se.py     # Robust standard error tests
-        └── test_splines.py       # Spline basis function tests
+        ├── test_splines.py       # Spline basis function tests
+        ├── test_quasi_families.py # QuasiPoisson/QuasiBinomial tests
+        └── test_negative_binomial.py # Negative Binomial tests
 ```
 
 ---

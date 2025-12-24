@@ -26,6 +26,7 @@
 mod residuals;
 mod dispersion;
 mod model_fit;
+mod negbinomial;
 
 pub use residuals::{
     resid_response,
@@ -48,4 +49,10 @@ pub use model_fit::{
     aic,
     bic,
     null_deviance,
+};
+
+pub use negbinomial::{
+    nb_loglikelihood,
+    estimate_theta_profile,
+    estimate_theta_moments,
 };

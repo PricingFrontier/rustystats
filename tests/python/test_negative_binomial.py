@@ -381,3 +381,127 @@ class TestNegativeBinomialDiagnostics:
         
         assert ci.shape == (3, 2)
         assert np.all(ci[:, 0] < ci[:, 1])  # Lower < Upper
+
+
+# =============================================================================
+# Theta Estimation Tests
+# =============================================================================
+
+class TestThetaEstimation:
+    """Tests for automatic theta estimation via fit_negbinomial."""
+    
+    def test_fit_negbinomial_basic(self, overdispersed_count_data):
+        """fit_negbinomial should fit without errors."""
+        y, X = overdispersed_count_data
+        result = rs.fit_negbinomial(y, X)
+        
+        assert result.converged
+        assert len(result.params) == 3
+        assert "NegativeBinomial(theta=" in result.family
+    
+    def test_theta_in_family_name(self, overdispersed_count_data):
+        """Estimated theta should be encoded in family name."""
+        y, X = overdispersed_count_data
+        result = rs.fit_negbinomial(y, X)
+        
+        # Parse theta from family name
+        import re
+        match = re.search(r'theta=([0-9.]+)', result.family)
+        assert match is not None
+        theta = float(match.group(1))
+        assert theta > 0
+    
+    def test_theta_estimation_recovers_true_theta(self):
+        """Theta estimation should recover approximately the true theta."""
+        np.random.seed(42)
+        n = 1000
+        
+        # Generate data with known theta=2.0
+        x = np.random.randn(n)
+        mu = np.exp(0.5 + 0.3 * x)
+        true_theta = 2.0
+        
+        # NB parameterization: p = theta / (theta + mu)
+        y = np.random.negative_binomial(n=true_theta, p=true_theta / (true_theta + mu))
+        
+        X = np.column_stack([np.ones(n), x])
+        result = rs.fit_negbinomial(y.astype(float), X)
+        
+        # Parse estimated theta
+        import re
+        match = re.search(r'theta=([0-9.]+)', result.family)
+        estimated_theta = float(match.group(1))
+        
+        # Should be within reasonable range of true theta
+        # (This is probabilistic, so we use a wide tolerance)
+        assert 0.5 < estimated_theta < 10.0
+    
+    def test_fit_negbinomial_with_init_theta(self, overdispersed_count_data):
+        """fit_negbinomial should accept initial theta."""
+        y, X = overdispersed_count_data
+        
+        result = rs.fit_negbinomial(y, X, init_theta=2.0)
+        
+        assert result.converged
+    
+    def test_fit_negbinomial_with_offset(self):
+        """fit_negbinomial should work with offset."""
+        np.random.seed(42)
+        n = 200
+        
+        x = np.random.randn(n)
+        exposure = np.random.uniform(0.5, 2.0, n)
+        mu = exposure * np.exp(0.5 + 0.3 * x)
+        y = np.random.poisson(mu).astype(float)
+        
+        X = np.column_stack([np.ones(n), x])
+        offset = np.log(exposure)
+        
+        result = rs.fit_negbinomial(y, X, offset=offset)
+        
+        assert result.converged
+    
+    def test_fit_negbinomial_coefficients_reasonable(self):
+        """Coefficients should be reasonable for known data."""
+        np.random.seed(123)
+        n = 500
+        
+        # Generate data with known coefficients
+        x = np.random.randn(n)
+        true_beta0, true_beta1 = 0.5, 0.3
+        mu = np.exp(true_beta0 + true_beta1 * x)
+        y = np.random.negative_binomial(n=2, p=2/(2+mu))
+        
+        X = np.column_stack([np.ones(n), x])
+        result = rs.fit_negbinomial(y.astype(float), X)
+        
+        # Coefficients should be in reasonable range
+        assert -2 < result.params[0] < 3  # Intercept
+        assert -1 < result.params[1] < 1  # Slope
+    
+    def test_fit_negbinomial_vs_fixed_theta(self, overdispersed_count_data):
+        """Compare fit_negbinomial to fit_glm with fixed theta."""
+        y, X = overdispersed_count_data
+        
+        # Auto-estimate theta
+        result_auto = rs.fit_negbinomial(y, X)
+        
+        # Fixed theta
+        result_fixed = rs.fit_glm(y, X, family="negbinomial", theta=1.0)
+        
+        # Both should converge
+        assert result_auto.converged
+        assert result_fixed.converged
+        
+        # Coefficients should be in similar range
+        assert np.allclose(result_auto.params, result_fixed.params, rtol=0.5)
+    
+    def test_fit_negbinomial_invalid_init_theta(self, simple_count_data):
+        """Invalid init_theta should raise error."""
+        y, X = simple_count_data
+        
+        with pytest.raises(ValueError):
+            rs.fit_negbinomial(y, X, init_theta=0.0)
+        
+        with pytest.raises(ValueError):
+            rs.fit_negbinomial(y, X, init_theta=-1.0)

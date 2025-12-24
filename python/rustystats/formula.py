@@ -156,7 +156,7 @@ class FormulaGLM:
         family: str = "gaussian",
         link: Optional[str] = None,
         var_power: float = 1.5,
-        theta: float = 1.0,
+        theta: Optional[float] = None,
         offset: Optional[Union[str, np.ndarray]] = None,
         weights: Optional[Union[str, np.ndarray]] = None,
     ):
@@ -165,7 +165,7 @@ class FormulaGLM:
         self.family = family.lower()
         self.link = link
         self.var_power = var_power
-        self.theta = theta
+        self.theta = theta  # None means auto-estimate for negbinomial
         self._offset_spec = offset
         self._weights_spec = weights
         
@@ -269,30 +269,52 @@ class FormulaGLM:
         >>> # Lasso for variable selection
         >>> result = model.fit(alpha=0.1, l1_ratio=1.0)
         """
-        from rustystats._rustystats import fit_glm_py as _fit_glm_rust
+        from rustystats._rustystats import fit_glm_py as _fit_glm_rust, fit_negbinomial_py as _fit_negbinomial_rust
         
-        # Call Rust backend
-        result = _fit_glm_rust(
-            self.y,
-            self.X,
-            self.family,
-            self.link,
-            self.var_power,
-            self.theta,
-            self.offset,
-            self.weights,
-            alpha,
-            l1_ratio,
-            max_iter,
-            tol,
-        )
+        # Check if we need auto theta estimation for negbinomial
+        is_negbinomial = self.family in ("negbinomial", "negativebinomial", "negative_binomial", "neg-binomial", "nb")
+        auto_theta = is_negbinomial and self.theta is None
+        
+        if auto_theta:
+            # Use profile likelihood to auto-estimate theta
+            result = _fit_negbinomial_rust(
+                self.y,
+                self.X,
+                self.link,
+                None,  # init_theta (use method-of-moments)
+                1e-5,  # theta_tol
+                10,    # max_theta_iter
+                self.offset,
+                self.weights,
+                max_iter,
+                tol,
+            )
+            result_family = result.family  # Contains estimated theta
+        else:
+            # Use fixed theta (default 1.0 for negbinomial if not auto)
+            theta = self.theta if self.theta is not None else 1.0
+            result = _fit_glm_rust(
+                self.y,
+                self.X,
+                self.family,
+                self.link,
+                self.var_power,
+                theta,
+                self.offset,
+                self.weights,
+                alpha,
+                l1_ratio,
+                max_iter,
+                tol,
+            )
+            result_family = self.family
         
         # Wrap result with formula metadata
         return FormulaGLMResults(
             result=result,
             feature_names=self.feature_names,
             formula=self.formula,
-            family=self.family,
+            family=result_family,
             link=self.link,
         )
 
@@ -639,7 +661,7 @@ def glm(
     family: str = "gaussian",
     link: Optional[str] = None,
     var_power: float = 1.5,
-    theta: float = 1.0,
+    theta: Optional[float] = None,
     offset: Optional[Union[str, np.ndarray]] = None,
     weights: Optional[Union[str, np.ndarray]] = None,
 ) -> FormulaGLM:
@@ -674,8 +696,9 @@ def glm(
     var_power : float, default=1.5
         Variance power for Tweedie family (ignored for others).
         
-    theta : float, default=1.0
+    theta : float, optional
         Dispersion parameter for Negative Binomial family (ignored for others).
+        If None (default), theta is automatically estimated using profile likelihood.
         
     offset : str or array-like, optional
         Offset term. If string, treated as column name.

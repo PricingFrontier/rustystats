@@ -44,6 +44,7 @@ use rustystats_core::diagnostics::{
     estimate_dispersion_pearson, pearson_chi2,
     log_likelihood_gaussian, log_likelihood_poisson, log_likelihood_binomial, log_likelihood_gamma,
     aic, bic, null_deviance,
+    estimate_theta_profile, estimate_theta_moments,
 };
 
 // =============================================================================
@@ -1652,6 +1653,170 @@ fn fit_glm_py(
     })
 }
 
+/// Fit Negative Binomial GLM with automatic theta estimation.
+///
+/// This function uses profile likelihood to automatically estimate the
+/// optimal dispersion parameter θ, alternating between:
+/// 1. Fitting the GLM with current θ to get β and μ
+/// 2. Optimizing θ given μ using profile likelihood
+/// 3. Repeating until θ converges
+///
+/// Parameters
+/// ----------
+/// y : array-like
+///     Response variable (non-negative counts)
+/// X : array-like
+///     Design matrix (include intercept column if desired)
+/// link : str, optional
+///     Link function: "log" (default) or "identity"
+/// init_theta : float, optional
+///     Initial θ value (default: 1.0, uses method-of-moments if None)
+/// theta_tol : float, optional
+///     Convergence tolerance for θ (default: 1e-5)
+/// max_theta_iter : int, optional
+///     Maximum θ iterations (default: 10)
+/// offset : array-like, optional
+///     Offset term added to linear predictor
+/// weights : array-like, optional
+///     Prior weights for each observation
+/// max_iter : int, optional
+///     Maximum IRLS iterations per GLM fit (default: 25)
+/// tol : float, optional
+///     IRLS convergence tolerance (default: 1e-8)
+///
+/// Returns
+/// -------
+/// GLMResults
+///     Fitted model with estimated theta accessible via result.theta
+///
+/// Examples
+/// --------
+/// >>> import rustystats as rs
+/// >>> # Auto-estimate theta
+/// >>> result = rs.fit_negbinomial(y, X)
+/// >>> print(f"Estimated theta: {result.theta:.3f}")
+/// >>>
+/// >>> # With initial theta guess
+/// >>> result = rs.fit_negbinomial(y, X, init_theta=2.0)
+#[pyfunction]
+#[pyo3(signature = (y, x, link=None, init_theta=None, theta_tol=1e-5, max_theta_iter=10, offset=None, weights=None, max_iter=25, tol=1e-8))]
+fn fit_negbinomial_py(
+    y: PyReadonlyArray1<f64>,
+    x: PyReadonlyArray2<f64>,
+    link: Option<&str>,
+    init_theta: Option<f64>,
+    theta_tol: f64,
+    max_theta_iter: usize,
+    offset: Option<PyReadonlyArray1<f64>>,
+    weights: Option<PyReadonlyArray1<f64>>,
+    max_iter: usize,
+    tol: f64,
+) -> PyResult<PyGLMResults> {
+    let y_array: Array1<f64> = y.as_array().to_owned();
+    let x_array: Array2<f64> = x.as_array().to_owned();
+
+    let n_obs = y_array.len();
+    let n_params = x_array.ncols();
+
+    let offset_array: Option<Array1<f64>> = offset.map(|o| o.as_array().to_owned());
+    let weights_array: Option<Array1<f64>> = weights.map(|w| w.as_array().to_owned());
+
+    let irls_config = IRLSConfig {
+        max_iterations: max_iter,
+        tolerance: tol,
+        min_weight: 1e-10,
+        verbose: false,
+    };
+
+    // Get link
+    let link_fn: Box<dyn Link> = match link.unwrap_or("log") {
+        "log" => Box::new(LogLink),
+        "identity" => Box::new(IdentityLink),
+        other => return Err(PyValueError::new_err(format!(
+            "Unknown link '{}' for NegativeBinomial. Use 'log' or 'identity'.", other
+        ))),
+    };
+
+    // Initialize theta using method-of-moments or provided value
+    let mut theta = match init_theta {
+        Some(t) => {
+            if t <= 0.0 {
+                return Err(PyValueError::new_err(
+                    format!("init_theta must be > 0, got {}", t)
+                ));
+            }
+            t
+        }
+        None => {
+            // Use method-of-moments for initial estimate
+            // First fit a Poisson to get initial mu
+            let poisson = PoissonFamily;
+            let init_result = fit_glm_full(
+                &y_array, &x_array, &poisson, link_fn.as_ref(), &irls_config,
+                offset_array.as_ref(), weights_array.as_ref(),
+            ).map_err(|e| PyValueError::new_err(format!("Initial Poisson fit failed: {}", e)))?;
+            
+            estimate_theta_moments(&y_array, &init_result.fitted_values)
+        }
+    };
+
+    let mut result: IRLSResult;
+
+    // Profile likelihood iteration
+    for _iter in 0..max_theta_iter {
+        let family = NegativeBinomialFamily::new(theta);
+        
+        // Fit GLM with current theta
+        result = fit_glm_full(
+            &y_array, &x_array, &family, link_fn.as_ref(), &irls_config,
+            offset_array.as_ref(), weights_array.as_ref(),
+        ).map_err(|e| PyValueError::new_err(format!("GLM fitting failed: {}", e)))?;
+
+        // Estimate optimal theta given fitted values
+        let new_theta = estimate_theta_profile(
+            &y_array,
+            &result.fitted_values,
+            weights_array.as_ref(),
+            0.01,   // min_theta
+            1000.0, // max_theta
+            1e-6,   // optimization tolerance
+        );
+
+        // Check convergence
+        if (new_theta - theta).abs() < theta_tol {
+            theta = new_theta;
+            break;
+        }
+        
+        theta = new_theta;
+    }
+
+    // Final fit with converged theta
+    let final_family = NegativeBinomialFamily::new(theta);
+    result = fit_glm_full(
+        &y_array, &x_array, &final_family, link_fn.as_ref(), &irls_config,
+        offset_array.as_ref(), weights_array.as_ref(),
+    ).map_err(|e| PyValueError::new_err(format!("Final GLM fit failed: {}", e)))?;
+
+    Ok(PyGLMResults {
+        coefficients: result.coefficients,
+        fitted_values: result.fitted_values,
+        linear_predictor: result.linear_predictor,
+        deviance: result.deviance,
+        iterations: result.iterations,
+        converged: result.converged,
+        covariance_unscaled: result.covariance_unscaled,
+        n_obs,
+        n_params,
+        y: y_array,
+        family_name: format!("NegativeBinomial(theta={:.4})", theta),
+        prior_weights: weights_array.unwrap_or_else(|| Array1::ones(n_obs)),
+        penalty: result.penalty,
+        design_matrix: x_array,
+        irls_weights: result.irls_weights,
+    })
+}
+
 // =============================================================================
 // Spline Basis Functions
 // =============================================================================
@@ -2100,6 +2265,7 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Add GLM fitting
     m.add_class::<PyGLMResults>()?;
     m.add_function(wrap_pyfunction!(fit_glm_py, m)?)?;
+    m.add_function(wrap_pyfunction!(fit_negbinomial_py, m)?)?;
     
     // Add spline functions
     m.add_function(wrap_pyfunction!(bs_py, m)?)?;
