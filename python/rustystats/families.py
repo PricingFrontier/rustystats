@@ -66,6 +66,8 @@ from rustystats._rustystats import (
     PoissonFamily as _PoissonFamily,
     BinomialFamily as _BinomialFamily,
     GammaFamily as _GammaFamily,
+    QuasiPoissonFamily as _QuasiPoissonFamily,
+    QuasiBinomialFamily as _QuasiBinomialFamily,
 )
 
 
@@ -247,5 +249,113 @@ def Gamma():
     return _GammaFamily()
 
 
+def QuasiPoisson():
+    """
+    QuasiPoisson family for overdispersed count data.
+    
+    Uses the same variance function as Poisson (V(μ) = μ) but estimates
+    the dispersion parameter φ from data instead of fixing it at 1.
+    
+    Properties
+    ----------
+    - Variance function: V(μ) = μ (same as Poisson)
+    - Full variance: Var(Y) = φ × μ where φ is estimated
+    - Default link: Log (η = log(μ))
+    - Dispersion: φ = Pearson_χ² / (n - p), estimated from data
+    
+    When to Use
+    -----------
+    - Count data with overdispersion (Pearson χ²/df >> 1)
+    - When you want Poisson-like point estimates but valid standard errors
+    - Insurance claim frequency with extra-Poisson variation
+    
+    How It Works
+    ------------
+    Point estimates (coefficients) are IDENTICAL to Poisson. The only
+    difference is how standard errors are computed:
+    
+    - Poisson: SE = sqrt(diag((X'WX)⁻¹))
+    - QuasiPoisson: SE = sqrt(φ × diag((X'WX)⁻¹))
+    
+    The inflation factor √φ makes confidence intervals wider and p-values
+    more conservative, correctly accounting for overdispersion.
+    
+    Detecting Overdispersion
+    ------------------------
+    After fitting a Poisson model, check:
+    
+        dispersion = result.pearson_chi2() / result.df_resid
+    
+    If dispersion >> 1 (e.g., > 1.5), overdispersion is present.
+    
+    Alternatives
+    ------------
+    - Robust standard errors (result.bse_robust("HC1"))
+    - Negative Binomial family (not yet implemented)
+    
+    Example
+    -------
+    >>> import rustystats as rs
+    >>> # Fit QuasiPoisson when overdispersion is detected
+    >>> result = rs.fit_glm(y, X, family="quasipoisson")
+    >>> print(f"Estimated dispersion: {result.scale():.3f}")
+    >>> print(f"SE (model-based): {result.bse()}")  # Inflated by √φ
+    """
+    return _QuasiPoissonFamily()
+
+
+def QuasiBinomial():
+    """
+    QuasiBinomial family for overdispersed binary/proportion data.
+    
+    Uses the same variance function as Binomial (V(μ) = μ(1-μ)) but estimates
+    the dispersion parameter φ from data instead of fixing it at 1.
+    
+    Properties
+    ----------
+    - Variance function: V(μ) = μ(1-μ) (same as Binomial)
+    - Full variance: Var(Y) = φ × μ(1-μ) where φ is estimated
+    - Default link: Logit (η = log(μ/(1-μ)))
+    - Dispersion: φ = Pearson_χ² / (n - p), estimated from data
+    
+    When to Use
+    -----------
+    - Binary outcomes with overdispersion
+    - Clustered binary data (where observations within clusters are correlated)
+    - When unobserved heterogeneity inflates variance beyond Binomial
+    
+    How It Works
+    ------------
+    Point estimates (coefficients, odds ratios) are IDENTICAL to Binomial.
+    The only difference is how standard errors are computed:
+    
+    - Binomial: SE = sqrt(diag((X'WX)⁻¹))
+    - QuasiBinomial: SE = sqrt(φ × diag((X'WX)⁻¹))
+    
+    The inflation factor √φ makes confidence intervals wider and p-values
+    more conservative, correctly accounting for overdispersion.
+    
+    Common Causes of Overdispersion
+    -------------------------------
+    - Clustered/correlated observations
+    - Omitted predictors that affect variance
+    - Non-constant success probability within groups
+    
+    Alternatives
+    ------------
+    - Robust standard errors (result.bse_robust("HC1"))
+    - Mixed effects models (not yet implemented)
+    
+    Example
+    -------
+    >>> import rustystats as rs
+    >>> # Fit QuasiBinomial when overdispersion is detected
+    >>> result = rs.fit_glm(y, X, family="quasibinomial")
+    >>> print(f"Estimated dispersion: {result.scale():.3f}")
+    >>> print(f"Odds ratios: {np.exp(result.params)}")
+    """
+    return _QuasiBinomialFamily()
+
+
 # For backwards compatibility and convenience
-__all__ = ["Gaussian", "Poisson", "Binomial", "Gamma"]
+__all__ = ["Gaussian", "Poisson", "Binomial", "Gamma", "QuasiPoisson", "QuasiBinomial"]

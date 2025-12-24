@@ -9,7 +9,7 @@ A high-performance Generalized Linear Models (GLM) library with a Rust backend a
 | Component | Status | Description |
 |-----------|--------|-------------|
 | **Link Functions** | ✅ Complete | Identity, Log, Logit |
-| **Distribution Families** | ✅ Complete | Gaussian, Poisson, Binomial, Gamma, Tweedie |
+| **Distribution Families** | ✅ Complete | Gaussian, Poisson, Binomial, Gamma, Tweedie, QuasiPoisson, QuasiBinomial |
 | **IRLS Solver** | ✅ Complete | Multi-threaded Iteratively Reweighted Least Squares (parallel) |
 | **Coordinate Descent** | ✅ Complete | For Lasso/Elastic Net with L1 penalty |
 | **Formula Parsing** | ✅ Complete | R-style formula parsing (y ~ x1*x2 + C(cat) + bs(x, df=5)) |
@@ -44,14 +44,15 @@ A high-performance Generalized Linear Models (GLM) library with a Rust backend a
 | **`cv_glm()`** | ✅ Complete | Cross-validation for optimal regularization |
 | **Interaction Terms** | ✅ Complete | `x1*x2`, `C(cat):x`, `C(cat1)*C(cat2)` in formulas |
 | **Spline Basis Functions** | ✅ Complete | `bs(x, df)`, `ns(x, df)` for non-linear effects |
+| **Quasi-Families** | ✅ Complete | `quasipoisson`, `quasibinomial` for overdispersion |
 | **Minimal Dependencies** | ✅ Complete | Core requires only numpy; polars optional |
 
 ### Testing
 
 | Component | Count | Description |
 |-----------|-------|-------------|
-| **Rust Unit Tests** | 130+ | Core library tests (families, diagnostics, solvers, regularization, inference, interactions, splines, formula, design_matrix) |
-| **Python Tests** | 175 | API, integration, regularization, robust SE, interaction, and spline tests |
+| **Rust Unit Tests** | 145+ | Core library tests (families, diagnostics, solvers, regularization, inference, interactions, splines, formula, design_matrix) |
+| **Python Tests** | 202 | API, integration, regularization, robust SE, interaction, spline, and quasi-family tests |
 
 ### Examples
 
@@ -269,15 +270,46 @@ basis = rs.bs(age_values, df=6, degree=3, boundary_knots=(18, 80))
 - **B-splines (`bs`)**: Standard choice, more flexible at boundaries
 - **Natural splines (`ns`)**: Better extrapolation, linear beyond boundaries (recommended for actuarial work)
 
+### Quasi-Families for Overdispersion (NEW)
+```python
+import rustystats as rs
+import numpy as np
+
+# Fit a standard Poisson model first
+result_poisson = rs.fit_glm(y, X, family="poisson")
+
+# Check for overdispersion: Pearson χ² / df >> 1 indicates overdispersion
+dispersion_ratio = result_poisson.pearson_chi2() / result_poisson.df_resid
+print(f"Dispersion ratio: {dispersion_ratio:.2f}")  # If >> 1, use quasi-family
+
+# Fit QuasiPoisson if overdispersed
+result_quasi = rs.fit_glm(y, X, family="quasipoisson")
+
+# Coefficients are IDENTICAL to Poisson
+np.allclose(result_quasi.params, result_poisson.params)  # True
+
+# But standard errors are inflated by √φ
+print(f"Estimated dispersion (φ): {result_quasi.scale():.3f}")
+print(f"Poisson SE: {result_poisson.bse()}")
+print(f"QuasiPoisson SE: {result_quasi.bse()}")  # Larger by √φ
+
+# For binary data with overdispersion
+result_qb = rs.fit_glm(y_binary, X, family="quasibinomial")
+```
+
+**Key properties of quasi-families:**
+- **Point estimates**: Identical to base family (Poisson/Binomial)
+- **Standard errors**: Inflated by √φ where φ = Pearson χ²/(n-p)
+- **P-values**: More conservative (larger), accounting for extra variance
+- **Confidence intervals**: Wider, correctly reflecting uncertainty
+
+**When to use:**
+- **QuasiPoisson**: Count data where Pearson χ²/df >> 1
+- **QuasiBinomial**: Binary data with clusters or unobserved heterogeneity
+
 ---
 
 ## Features To Be Added
-
-### Medium Priority
-
-| Feature | Description | Use Case |
-|---------|-------------|----------|
-| **Quasi-Families** | Quasi-Poisson, Quasi-Binomial | Overdispersion handling |
 
 ### Lower Priority
 
@@ -313,7 +345,7 @@ rustystats/
 │   │   └── src/
 │   │       ├── lib.rs
 │   │       ├── error.rs          # Error types
-│   │       ├── families/         # Gaussian, Poisson, Binomial, Gamma
+│   │       ├── families/         # Gaussian, Poisson, Binomial, Gamma, Tweedie, Quasi
 │   │       ├── links/            # Identity, Log, Logit
 │   │       ├── solvers/          # IRLS, coordinate descent
 │   │       ├── inference/        # P-values, CIs, robust SE (HC0-HC3)

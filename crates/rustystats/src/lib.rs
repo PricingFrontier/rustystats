@@ -34,7 +34,7 @@ use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2}
 use ndarray::{Array1, Array2};
 
 // Import our core library
-use rustystats_core::families::{Family, GaussianFamily, PoissonFamily, BinomialFamily, GammaFamily, TweedieFamily};
+use rustystats_core::families::{Family, GaussianFamily, PoissonFamily, BinomialFamily, GammaFamily, TweedieFamily, QuasiPoissonFamily, QuasiBinomialFamily};
 use rustystats_core::links::{Link, IdentityLink, LogLink, LogitLink};
 use rustystats_core::solvers::{fit_glm_full, fit_glm_regularized, fit_glm_coordinate_descent, IRLSConfig, IRLSResult};
 use rustystats_core::regularization::{Penalty, RegularizationConfig};
@@ -468,6 +468,127 @@ impl PyTweedieFamily {
     }
 }
 
+/// QuasiPoisson family for overdispersed count data.
+///
+/// Uses the same variance function as Poisson (V(μ) = μ) but estimates
+/// the dispersion parameter φ from data instead of fixing it at 1.
+///
+/// This is the simplest approach to handling overdispersion in count data.
+/// Point estimates are identical to Poisson, but standard errors are
+/// inflated by √φ to account for extra variance.
+///
+/// Examples
+/// --------
+/// >>> import rustystats as rs
+/// >>> # Fit QuasiPoisson when Pearson chi²/df >> 1
+/// >>> result = rs.fit_glm(y, X, family="quasipoisson")
+/// >>> print(f"Dispersion: {result.scale():.3f}")  # Estimated φ
+#[pyclass(name = "QuasiPoissonFamily")]
+#[derive(Clone)]
+pub struct PyQuasiPoissonFamily {
+    inner: QuasiPoissonFamily,
+}
+
+#[pymethods]
+impl PyQuasiPoissonFamily {
+    #[new]
+    fn new() -> Self {
+        Self { inner: QuasiPoissonFamily }
+    }
+
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn variance<'py>(&self, py: Python<'py>, mu: PyReadonlyArray1<f64>) -> Bound<'py, PyArray1<f64>> {
+        let mu_array = mu.as_array().to_owned();
+        let result = self.inner.variance(&mu_array);
+        result.into_pyarray_bound(py)
+    }
+
+    fn unit_deviance<'py>(
+        &self,
+        py: Python<'py>,
+        y: PyReadonlyArray1<f64>,
+        mu: PyReadonlyArray1<f64>,
+    ) -> Bound<'py, PyArray1<f64>> {
+        let y_array = y.as_array().to_owned();
+        let mu_array = mu.as_array().to_owned();
+        let result = self.inner.unit_deviance(&y_array, &mu_array);
+        result.into_pyarray_bound(py)
+    }
+
+    fn deviance(&self, y: PyReadonlyArray1<f64>, mu: PyReadonlyArray1<f64>) -> f64 {
+        let y_array = y.as_array().to_owned();
+        let mu_array = mu.as_array().to_owned();
+        self.inner.deviance(&y_array, &mu_array, None)
+    }
+
+    fn default_link(&self) -> PyLogLink {
+        PyLogLink::new()
+    }
+}
+
+/// QuasiBinomial family for overdispersed binary/proportion data.
+///
+/// Uses the same variance function as Binomial (V(μ) = μ(1-μ)) but estimates
+/// the dispersion parameter φ from data instead of fixing it at 1.
+///
+/// Useful when binary outcomes are more variable than Binomial predicts,
+/// which can happen with clustered data or unobserved heterogeneity.
+///
+/// Examples
+/// --------
+/// >>> import rustystats as rs
+/// >>> # Fit QuasiBinomial when data shows overdispersion
+/// >>> result = rs.fit_glm(y, X, family="quasibinomial")
+/// >>> print(f"Dispersion: {result.scale():.3f}")  # Estimated φ
+#[pyclass(name = "QuasiBinomialFamily")]
+#[derive(Clone)]
+pub struct PyQuasiBinomialFamily {
+    inner: QuasiBinomialFamily,
+}
+
+#[pymethods]
+impl PyQuasiBinomialFamily {
+    #[new]
+    fn new() -> Self {
+        Self { inner: QuasiBinomialFamily }
+    }
+
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn variance<'py>(&self, py: Python<'py>, mu: PyReadonlyArray1<f64>) -> Bound<'py, PyArray1<f64>> {
+        let mu_array = mu.as_array().to_owned();
+        let result = self.inner.variance(&mu_array);
+        result.into_pyarray_bound(py)
+    }
+
+    fn unit_deviance<'py>(
+        &self,
+        py: Python<'py>,
+        y: PyReadonlyArray1<f64>,
+        mu: PyReadonlyArray1<f64>,
+    ) -> Bound<'py, PyArray1<f64>> {
+        let y_array = y.as_array().to_owned();
+        let mu_array = mu.as_array().to_owned();
+        let result = self.inner.unit_deviance(&y_array, &mu_array);
+        result.into_pyarray_bound(py)
+    }
+
+    fn deviance(&self, y: PyReadonlyArray1<f64>, mu: PyReadonlyArray1<f64>) -> f64 {
+        let y_array = y.as_array().to_owned();
+        let mu_array = mu.as_array().to_owned();
+        self.inner.deviance(&y_array, &mu_array, None)
+    }
+
+    fn default_link(&self) -> PyLogitLink {
+        PyLogitLink::new()
+    }
+}
+
 // =============================================================================
 // GLM Results
 // =============================================================================
@@ -528,6 +649,8 @@ impl PyGLMResults {
             "Poisson" => Box::new(PoissonFamily),
             "Binomial" => Box::new(BinomialFamily),
             "Gamma" => Box::new(GammaFamily),
+            "QuasiPoisson" => Box::new(QuasiPoissonFamily),
+            "QuasiBinomial" => Box::new(QuasiBinomialFamily),
             // Tweedie falls back to Gaussian for now (would need var_power stored)
             _ => Box::new(GaussianFamily),
         }
@@ -644,15 +767,28 @@ impl PyGLMResults {
     /// Get the dispersion parameter φ.
     ///
     /// For Poisson/Binomial: φ = 1 (fixed by assumption)
+    /// For QuasiPoisson/QuasiBinomial: φ = Pearson χ² / df_resid (estimated)
     /// For Gaussian/Gamma/Tweedie: φ = deviance / df_resid (estimated)
     ///
     /// This matches statsmodels behavior.
     fn scale(&self) -> f64 {
-        // Poisson and Binomial have fixed dispersion = 1
         match self.family_name.as_str() {
+            // True Poisson and Binomial have fixed dispersion = 1
             "Poisson" | "Binomial" => 1.0,
+            // Quasi-families estimate dispersion from Pearson residuals
+            // This is the key difference: SE's are inflated by √φ
+            "QuasiPoisson" | "QuasiBinomial" => {
+                let family = self.get_family();
+                estimate_dispersion_pearson(
+                    &self.y,
+                    &self.fitted_values,
+                    family.as_ref(),
+                    self.df_resid(),
+                    self.maybe_weights(),
+                )
+            }
             _ => {
-                // Estimate dispersion for Gaussian, Gamma, Tweedie
+                // Estimate dispersion for Gaussian, Gamma, Tweedie using deviance
                 let df = self.df_resid() as f64;
                 if df > 0.0 {
                     self.deviance / df
@@ -1016,8 +1152,8 @@ impl PyGLMResults {
         // Determine link from family (using default links)
         let link: Box<dyn Link> = match self.family_name.as_str() {
             "Gaussian" => Box::new(IdentityLink),
-            "Poisson" => Box::new(LogLink),
-            "Binomial" => Box::new(LogitLink),
+            "Poisson" | "QuasiPoisson" => Box::new(LogLink),
+            "Binomial" | "QuasiBinomial" => Box::new(LogitLink),
             "Gamma" => Box::new(LogLink),
             _ => Box::new(IdentityLink),
         };
@@ -1193,7 +1329,8 @@ impl PyGLMResults {
 ///     Design matrix (2D array of shape n × p)
 ///     Should include a column of 1s for intercept if desired
 /// family : str
-///     Distribution family: "gaussian", "poisson", "binomial", "gamma", "tweedie"
+///     Distribution family: "gaussian", "poisson", "binomial", "gamma", "tweedie",
+///     "quasipoisson", or "quasibinomial"
 /// link : str, optional
 ///     Link function: "identity", "log", "logit"
 ///     If None, uses the canonical link for the family
@@ -1363,8 +1500,28 @@ fn fit_glm_py(
                 ))),
             }
         }
+        "quasipoisson" | "quasi-poisson" | "quasi_poisson" => {
+            let fam = QuasiPoissonFamily;
+            match link.unwrap_or("log") {
+                "log" => fit_model!(&fam, &LogLink),
+                "identity" => fit_model!(&fam, &IdentityLink),
+                other => return Err(PyValueError::new_err(format!(
+                    "Unknown link '{}' for QuasiPoisson family. Use 'log' or 'identity'.", other
+                ))),
+            }
+        }
+        "quasibinomial" | "quasi-binomial" | "quasi_binomial" => {
+            let fam = QuasiBinomialFamily;
+            match link.unwrap_or("logit") {
+                "logit" => fit_model!(&fam, &LogitLink),
+                "log" => fit_model!(&fam, &LogLink),
+                other => return Err(PyValueError::new_err(format!(
+                    "Unknown link '{}' for QuasiBinomial family. Use 'logit' or 'log'.", other
+                ))),
+            }
+        }
         other => return Err(PyValueError::new_err(format!(
-            "Unknown family '{}'. Use 'gaussian', 'poisson', 'binomial', 'gamma', or 'tweedie'.", other
+            "Unknown family '{}'. Use 'gaussian', 'poisson', 'binomial', 'gamma', 'tweedie', 'quasipoisson', or 'quasibinomial'.", other
         ))),
     }.map_err(|e| PyValueError::new_err(format!("GLM fitting failed: {}", e)))?;
 
@@ -1828,6 +1985,8 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyBinomialFamily>()?;
     m.add_class::<PyGammaFamily>()?;
     m.add_class::<PyTweedieFamily>()?;
+    m.add_class::<PyQuasiPoissonFamily>()?;
+    m.add_class::<PyQuasiBinomialFamily>()?;
     
     // Add GLM fitting
     m.add_class::<PyGLMResults>()?;

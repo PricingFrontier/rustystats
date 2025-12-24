@@ -51,6 +51,7 @@ mod poisson;
 mod binomial;
 mod gamma;
 mod tweedie;
+mod quasi;
 
 // Re-export concrete implementations
 pub use gaussian::GaussianFamily;
@@ -58,6 +59,7 @@ pub use poisson::PoissonFamily;
 pub use binomial::BinomialFamily;
 pub use gamma::GammaFamily;
 pub use tweedie::TweedieFamily;
+pub use quasi::{QuasiPoissonFamily, QuasiBinomialFamily};
 
 // =============================================================================
 // The Family Trait
