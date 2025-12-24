@@ -88,10 +88,23 @@ from rustystats._rustystats import (
 # Import Python wrappers (these provide the nice API)
 from rustystats import families
 from rustystats import links
-from rustystats.glm import GLM, fit_glm, summary, summary_relativities
+from rustystats import glm as glm_module  # Import as module for backward compat
+from rustystats.glm import GLM, fit_glm, summary, summary_relativities, predict
 
 # Formula-based API (works with DataFrames)
 from rustystats.formula import glm, FormulaGLM, FormulaGLMResults
+
+# Variable selection utilities
+from rustystats.selection import (
+    regularization_path,
+    lasso_path,
+    cv_glm,
+    cv_lasso,
+    cv_ridge,
+    cv_elasticnet,
+    RegularizationPath,
+    CVResult,
+)
 
 # What gets exported when someone does `from rustystats import *`
 __all__ = [
@@ -100,7 +113,9 @@ __all__ = [
     # Main API
     "GLM",
     "fit_glm",
+    "predict",
     "glm",  # Formula-based API
+    "glm_module",  # The glm module (for rs.glm_module.predict compatibility)
     "GLMResults",
     "FormulaGLM",
     "FormulaGLMResults",
@@ -109,6 +124,15 @@ __all__ = [
     # Sub-modules
     "families",
     "links",
+    # Variable selection
+    "regularization_path",
+    "lasso_path",
+    "cv_glm",
+    "cv_lasso",
+    "cv_ridge",
+    "cv_elasticnet",
+    "RegularizationPath",
+    "CVResult",
     # Direct access to classes (for convenience)
     "IdentityLink",
     "LogLink",

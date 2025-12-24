@@ -11,6 +11,8 @@ A high-performance Generalized Linear Models (GLM) library with a Rust backend a
 | **Link Functions** | ✅ Complete | Identity, Log, Logit |
 | **Distribution Families** | ✅ Complete | Gaussian, Poisson, Binomial, Gamma, Tweedie |
 | **IRLS Solver** | ✅ Complete | Multi-threaded Iteratively Reweighted Least Squares (parallel) |
+| **Coordinate Descent** | ✅ Complete | For Lasso/Elastic Net with L1 penalty |
+| **Regularization** | ✅ Complete | Ridge (L2), Lasso (L1), Elastic Net |
 | **Offset Support** | ✅ Complete | For exposure-based rate models |
 | **Prior Weights** | ✅ Complete | For grouped/aggregated data |
 | **Statistical Inference** | ✅ Complete | Standard errors, z-values, p-values, confidence intervals |
@@ -28,7 +30,7 @@ A high-performance Generalized Linear Models (GLM) library with a Rust backend a
 
 | Component | Status | Description |
 |-----------|--------|-------------|
-| **`fit_glm()`** | ✅ Complete | Array-based fitting function |
+| **`fit_glm()`** | ✅ Complete | Array-based fitting function with regularization |
 | **`GLM` Class** | ✅ Complete | OOP interface (statsmodels-style) |
 | **`glm()` Formula API** | ✅ Complete | R-style formula interface with DataFrame support |
 | **Polars Support** | ✅ Complete | Native Polars DataFrame integration |
@@ -36,13 +38,15 @@ A high-performance Generalized Linear Models (GLM) library with a Rust backend a
 | **`summary()`** | ✅ Complete | Formatted regression tables |
 | **`summary_relativities()`** | ✅ Complete | Factor tables for pricing |
 | **`predict()`** | ✅ Complete | Predictions on new data |
+| **`lasso_path()`** | ✅ Complete | Coefficient paths over alpha grid |
+| **`cv_glm()`** | ✅ Complete | Cross-validation for optimal regularization |
 
 ### Testing
 
 | Component | Count | Description |
 |-----------|-------|-------------|
-| **Rust Unit Tests** | 89 | Core library tests (families, diagnostics, solvers) |
-| **Python Tests** | 88 | API and integration tests |
+| **Rust Unit Tests** | 104 | Core library tests (families, diagnostics, solvers, regularization) |
+| **Python Tests** | 107 | API, integration, and regularization tests |
 
 ### Examples
 
@@ -50,6 +54,7 @@ A high-performance Generalized Linear Models (GLM) library with a Rust backend a
 |----------|-------------|
 | `examples/getting_started.ipynb` | Comprehensive tutorial with all families |
 | `examples/frequency.ipynb` | Claim frequency model with real insurance data |
+| `examples/regularization.ipynb` | Ridge, Lasso, Elastic Net with cross-validation |
 
 ---
 
@@ -116,6 +121,32 @@ result.scale_pearson()     # Dispersion (Pearson-based)
 result.family              # Family name
 ```
 
+### Regularization API (NEW)
+```python
+import rustystats as rs
+
+# Ridge (L2) - shrinks coefficients, keeps all variables
+result = rs.fit_glm(y, X, family="gaussian", alpha=0.1, l1_ratio=0.0)
+
+# Lasso (L1) - variable selection, zeros out weak predictors
+result = rs.fit_glm(y, X, family="poisson", alpha=0.1, l1_ratio=1.0)
+print(f"Selected {result.n_nonzero()} variables")
+print(f"Features: {result.selected_features()}")
+
+# Elastic Net - mix of L1 and L2
+result = rs.fit_glm(y, X, family="gaussian", alpha=0.1, l1_ratio=0.5)
+
+# Coefficient path - see how coefficients shrink with alpha
+path = rs.lasso_path(y, X, family="gaussian", n_alphas=50)
+path.plot()  # Visualize the path
+
+# Cross-validation - find optimal alpha
+cv_result = rs.cv_glm(y, X, family="poisson", l1_ratio=1.0, cv=5)
+print(f"Best alpha: {cv_result.alpha_best}")
+print(f"1-SE alpha: {cv_result.alpha_1se}")  # More parsimonious model
+cv_result.plot()  # Visualize CV curve
+```
+
 ---
 
 ## Features To Be Added
@@ -124,7 +155,6 @@ result.family              # Family name
 
 | Feature | Description | Use Case |
 |---------|-------------|----------|
-| **Regularization** | Ridge (L2), Lasso (L1), Elastic Net | High-dimensional data, variable selection |
 | **Quasi-Families** | Quasi-Poisson, Quasi-Binomial | Overdispersion handling |
 | **Robust Standard Errors** | Sandwich estimator (HC0-HC3) | Heteroscedasticity |
 | **Interaction Terms** | `x1 * x2` in formulas | Complex relationships |
@@ -138,7 +168,6 @@ result.family              # Family name
 | **Zero-Inflated Models** | ZIP, ZINB | Excess zeros in count data |
 | **Mixed Effects / GLMM** | Random effects | Hierarchical/panel data |
 | **Bootstrap CI** | Non-parametric confidence intervals | Small samples |
-| **Cross-Validation** | K-fold CV utilities | Model selection |
 | **Prediction Intervals** | Not just point predictions | Uncertainty quantification |
 
 ### Infrastructure

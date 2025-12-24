@@ -459,7 +459,7 @@ class TestPredict:
         result = rs.fit_glm(y, X, family="gaussian")
         
         # Predict on training data
-        predictions = rs.glm.predict(result, X, link="identity")
+        predictions = rs.predict(result, X, link="identity")
         
         # Should match fitted values
         np.testing.assert_array_almost_equal(predictions, result.fittedvalues, decimal=5)
@@ -475,7 +475,7 @@ class TestPredict:
         
         # Predict on new data
         X_new = np.array([[1.0, 0.0], [1.0, 1.0]])
-        predictions = rs.glm.predict(result, X_new, link="log")
+        predictions = rs.predict(result, X_new, link="log")
         
         # Should be positive
         assert np.all(predictions > 0)
@@ -492,7 +492,7 @@ class TestPredict:
         
         # Predict on new data
         X_new = np.array([[1.0, -2.0], [1.0, 0.0], [1.0, 2.0]])
-        predictions = rs.glm.predict(result, X_new, link="logit")
+        predictions = rs.predict(result, X_new, link="logit")
         
         assert np.all(predictions > 0)
         assert np.all(predictions < 1)
@@ -509,10 +509,10 @@ class TestPredict:
         # Predict with exposure
         X_new = np.array([[1.0, 0.0]])
         exposure_new = np.array([2.0])
-        pred = rs.glm.predict(result, X_new, link="log", offset=np.log(exposure_new))
+        pred = rs.predict(result, X_new, link="log", offset=np.log(exposure_new))
         
         # Prediction should be scaled by exposure
-        pred_no_offset = rs.glm.predict(result, X_new, link="log")
+        pred_no_offset = rs.predict(result, X_new, link="log")
         np.testing.assert_almost_equal(pred[0], pred_no_offset[0] * 2.0, decimal=5)
 
 

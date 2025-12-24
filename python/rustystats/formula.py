@@ -251,14 +251,27 @@ class FormulaGLM:
     
     def fit(
         self,
+        alpha: float = 0.0,
+        l1_ratio: float = 0.0,
         max_iter: int = 25,
         tol: float = 1e-8,
     ):
         """
-        Fit the GLM model.
+        Fit the GLM model, optionally with regularization.
         
         Parameters
         ----------
+        alpha : float, default=0.0
+            Regularization strength. Higher values = more shrinkage.
+            - alpha=0: No regularization (standard GLM)
+            - alpha>0: Regularized GLM
+            
+        l1_ratio : float, default=0.0
+            Elastic Net mixing parameter:
+            - l1_ratio=0.0: Ridge (L2) penalty
+            - l1_ratio=1.0: Lasso (L1) penalty - performs variable selection
+            - 0 < l1_ratio < 1: Elastic Net
+            
         max_iter : int, default=25
             Maximum IRLS iterations.
         tol : float, default=1e-8
@@ -268,6 +281,17 @@ class FormulaGLM:
         -------
         FormulaGLMResults
             Fitted model results with feature names attached.
+            
+        Examples
+        --------
+        >>> # Standard GLM
+        >>> result = model.fit()
+        
+        >>> # Ridge regularization
+        >>> result = model.fit(alpha=0.1, l1_ratio=0.0)
+        
+        >>> # Lasso for variable selection
+        >>> result = model.fit(alpha=0.1, l1_ratio=1.0)
         """
         from rustystats._rustystats import fit_glm_py as _fit_glm_rust
         
@@ -280,6 +304,8 @@ class FormulaGLM:
             self.var_power,
             self.offset,
             self.weights,
+            alpha,
+            l1_ratio,
             max_iter,
             tol,
         )
@@ -430,6 +456,40 @@ class FormulaGLMResults:
     def scale_pearson(self) -> float:
         """Estimated dispersion parameter (Pearson-based)."""
         return self._result.scale_pearson()
+    
+    # Regularization properties
+    @property
+    def alpha(self) -> float:
+        """Regularization strength (lambda)."""
+        return self._result.alpha
+    
+    @property
+    def l1_ratio(self):
+        """L1 ratio for Elastic Net (1.0=Lasso, 0.0=Ridge)."""
+        return self._result.l1_ratio
+    
+    @property
+    def is_regularized(self) -> bool:
+        """Whether this is a regularized model."""
+        return self._result.is_regularized
+    
+    @property
+    def penalty_type(self) -> str:
+        """Type of penalty: 'none', 'ridge', 'lasso', or 'elasticnet'."""
+        return self._result.penalty_type
+    
+    def n_nonzero(self) -> int:
+        """Number of non-zero coefficients (excluding intercept)."""
+        return self._result.n_nonzero()
+    
+    def selected_features(self) -> List[str]:
+        """
+        Get names of features with non-zero coefficients.
+        
+        Useful for Lasso/Elastic Net to see which variables were selected.
+        """
+        indices = self._result.selected_features()
+        return [self.feature_names[i] for i in indices]
     
     @property
     def nobs(self) -> int:

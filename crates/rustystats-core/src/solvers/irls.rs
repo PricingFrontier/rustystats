@@ -54,6 +54,7 @@ use nalgebra::{DMatrix, DVector};
 use crate::error::{RustyStatsError, Result};
 use crate::families::Family;
 use crate::links::Link;
+use crate::regularization::{Penalty, RegularizationConfig};
 
 // =============================================================================
 // Configuration
@@ -143,6 +144,9 @@ pub struct IRLSResult {
 
     /// Family name (needed for computing log-likelihood)
     pub family_name: String,
+
+    /// Penalty applied during fitting (if any)
+    pub penalty: Penalty,
 }
 
 // =============================================================================
@@ -460,6 +464,262 @@ pub fn fit_glm_full(
         offset: offset_vec,
         y: y.to_owned(),  // Only clone at the end, needed for diagnostics
         family_name: family.name().to_string(),
+        penalty: Penalty::None,
+    })
+}
+
+/// Fit a regularized GLM using Iteratively Reweighted Least Squares.
+///
+/// This version supports Ridge (L2) regularization. For Lasso (L1) or Elastic Net,
+/// use `fit_glm_coordinate_descent` (which handles the non-differentiable L1 term).
+///
+/// # Arguments
+/// * `y` - Response variable (n × 1)
+/// * `x` - Design matrix (n × p), should include intercept column if desired
+/// * `family` - Distribution family (Gaussian, Poisson, Binomial, Gamma)
+/// * `link` - Link function (Identity, Log, Logit)
+/// * `irls_config` - IRLS algorithm configuration
+/// * `reg_config` - Regularization configuration
+/// * `offset` - Optional offset term
+/// * `weights` - Optional prior weights
+///
+/// # Returns
+/// * `Ok(IRLSResult)` - Fitted model results
+/// * `Err(RustyStatsError)` - If fitting fails or L1 penalty requested
+///
+/// # Ridge Regularization
+/// For Ridge (L2) regularization, we modify the normal equations:
+///   (X'WX)β = X'Wz  →  (X'WX + λI)β = X'Wz
+///
+/// This shrinks coefficients toward zero, improving stability for
+/// multicollinear data. The intercept is NOT penalized by default.
+///
+/// # Example
+/// ```ignore
+/// use rustystats_core::regularization::RegularizationConfig;
+/// 
+/// let reg_config = RegularizationConfig::ridge(0.1);
+/// let result = fit_glm_regularized(&y, &x, &family, &link, &config, &reg_config, None, None)?;
+/// ```
+pub fn fit_glm_regularized(
+    y: &Array1<f64>,
+    x: &Array2<f64>,
+    family: &dyn Family,
+    link: &dyn Link,
+    irls_config: &IRLSConfig,
+    reg_config: &RegularizationConfig,
+    offset: Option<&Array1<f64>>,
+    weights: Option<&Array1<f64>>,
+) -> Result<IRLSResult> {
+    // Check if L1 penalty is requested - this requires coordinate descent
+    if reg_config.penalty.requires_coordinate_descent() {
+        return Err(RustyStatsError::InvalidValue(
+            "L1 (Lasso) and Elastic Net penalties require coordinate descent solver. \
+             Use fit_glm_coordinate_descent instead, or use pure Ridge (L2) penalty."
+                .to_string(),
+        ));
+    }
+
+    let l2_penalty = reg_config.penalty.l2_penalty();
+    let penalize_intercept = !reg_config.fit_intercept;
+
+    // -------------------------------------------------------------------------
+    // Step 0: Validate inputs (same as fit_glm_full)
+    // -------------------------------------------------------------------------
+    let n = y.len();
+    let p = x.ncols();
+
+    if x.nrows() != n {
+        return Err(RustyStatsError::DimensionMismatch(format!(
+            "X has {} rows but y has {} elements",
+            x.nrows(),
+            n
+        )));
+    }
+
+    if n == 0 {
+        return Err(RustyStatsError::EmptyInput("y is empty".to_string()));
+    }
+
+    if p == 0 {
+        return Err(RustyStatsError::EmptyInput("X has no columns".to_string()));
+    }
+
+    // -------------------------------------------------------------------------
+    // Step 0b: Set up offset and prior weights
+    // -------------------------------------------------------------------------
+    let offset_vec = match offset {
+        Some(o) => {
+            if o.len() != n {
+                return Err(RustyStatsError::DimensionMismatch(format!(
+                    "offset has {} elements but y has {}",
+                    o.len(),
+                    n
+                )));
+            }
+            o.clone()
+        }
+        None => Array1::zeros(n),
+    };
+
+    let prior_weights_vec = match weights {
+        Some(w) => {
+            if w.len() != n {
+                return Err(RustyStatsError::DimensionMismatch(format!(
+                    "weights has {} elements but y has {}",
+                    w.len(),
+                    n
+                )));
+            }
+            if w.iter().any(|&x| x < 0.0) {
+                return Err(RustyStatsError::InvalidValue(
+                    "weights must be non-negative".to_string(),
+                ));
+            }
+            w.clone()
+        }
+        None => Array1::ones(n),
+    };
+
+    // -------------------------------------------------------------------------
+    // Step 1: Initialize μ using the family's method
+    // -------------------------------------------------------------------------
+    let mut mu = family.initialize_mu(y);
+
+    if !family.is_valid_mu(&mu) {
+        mu = initialize_mu_safe(y, family);
+    }
+
+    // -------------------------------------------------------------------------
+    // Step 2: Initialize linear predictor η = g(μ)
+    // -------------------------------------------------------------------------
+    let mut eta = link.link(&mu);
+
+    // -------------------------------------------------------------------------
+    // Step 3: Calculate initial deviance
+    // -------------------------------------------------------------------------
+    let mut deviance = family.deviance(y, &mu, Some(&prior_weights_vec));
+    let mut deviance_old: f64;
+
+    // -------------------------------------------------------------------------
+    // Step 4: IRLS iteration loop (with Ridge penalty)
+    // -------------------------------------------------------------------------
+    let mut converged = false;
+    let mut iteration = 0;
+    let mut cov_unscaled = Array2::zeros((p, p));
+    let mut final_weights = Array1::zeros(n);
+
+    while iteration < irls_config.max_iterations {
+        iteration += 1;
+
+        // Compute working weights W
+        let variance = family.variance(&mu);
+        let link_deriv = link.derivative(&mu);
+
+        let min_weight = irls_config.min_weight;
+        
+        let results: Vec<(f64, f64, f64)> = (0..n)
+            .into_par_iter()
+            .map(|i| {
+                let v = variance[i];
+                let d = link_deriv[i];
+                let iw = (1.0 / (v * d * d)).max(min_weight).min(1e10);
+                let cw = prior_weights_vec[i] * iw;
+                let e = eta[i] - offset_vec[i];
+                let wr = e + (y[i] - mu[i]) * d;
+                (iw, cw, wr)
+            })
+            .collect();
+        
+        let mut irls_weights_vec = Vec::with_capacity(n);
+        let mut combined_weights_vec = Vec::with_capacity(n);
+        let mut working_response_vec = Vec::with_capacity(n);
+        for (iw, cw, wr) in results {
+            irls_weights_vec.push(iw);
+            combined_weights_vec.push(cw);
+            working_response_vec.push(wr);
+        }
+        
+        let irls_weights = Array1::from_vec(irls_weights_vec);
+        let combined_weights = Array1::from_vec(combined_weights_vec);
+        let working_response = Array1::from_vec(working_response_vec);
+
+        // Solve PENALIZED weighted least squares: (X'WX + λI)β = X'Wz
+        let (new_coefficients, xtwinv) =
+            solve_weighted_least_squares_penalized(x, &working_response, &combined_weights, l2_penalty, penalize_intercept)?;
+
+        // Update η and μ
+        let eta_base = x.dot(&new_coefficients);
+        eta = &eta_base + &offset_vec;
+        mu = link.inverse(&eta);
+        mu = clamp_mu(&mu, family);
+
+        // Check convergence
+        deviance_old = deviance;
+        deviance = family.deviance(y, &mu, Some(&prior_weights_vec));
+
+        let rel_change = if deviance_old.abs() > 1e-10 {
+            (deviance_old - deviance).abs() / deviance_old.abs()
+        } else {
+            (deviance_old - deviance).abs()
+        };
+
+        if irls_config.verbose {
+            eprintln!(
+                "Iteration {}: deviance = {:.6}, rel_change = {:.2e}, penalty = {:.4}",
+                iteration, deviance, rel_change, l2_penalty
+            );
+        }
+
+        if rel_change < irls_config.tolerance {
+            converged = true;
+            cov_unscaled = xtwinv;
+            final_weights = irls_weights;
+            break;
+        }
+
+        cov_unscaled = xtwinv;
+        final_weights = irls_weights;
+    }
+
+    // -------------------------------------------------------------------------
+    // Step 5: Extract final coefficients
+    // -------------------------------------------------------------------------
+    let eta_no_offset: Array1<f64> = eta
+        .iter()
+        .zip(offset_vec.iter())
+        .map(|(&e, &o)| e - o)
+        .collect();
+    
+    let combined_final_weights: Array1<f64> = prior_weights_vec
+        .iter()
+        .zip(final_weights.iter())
+        .map(|(&pw, &iw)| pw * iw)
+        .collect();
+
+    let (final_coefficients, _) =
+        solve_weighted_least_squares_penalized(
+            x, 
+            &compute_working_response(y, &mu, &eta_no_offset, link), 
+            &combined_final_weights,
+            l2_penalty,
+            penalize_intercept,
+        )?;
+
+    Ok(IRLSResult {
+        coefficients: final_coefficients,
+        fitted_values: mu,
+        linear_predictor: eta,
+        deviance,
+        iterations: iteration,
+        converged,
+        covariance_unscaled: cov_unscaled,
+        irls_weights: final_weights,
+        prior_weights: prior_weights_vec,
+        offset: offset_vec,
+        y: y.to_owned(),
+        family_name: family.name().to_string(),
+        penalty: reg_config.penalty.clone(),
     })
 }
 
@@ -478,10 +738,119 @@ pub fn fit_glm_full(
 /// - Compute X'WX directly without forming weighted X matrix
 /// - Reuse Cholesky factorization for both solve and inverse
 /// - Use chunk-based parallelism to reduce synchronization overhead
+#[inline]
 fn solve_weighted_least_squares(
     x: &Array2<f64>,
     z: &Array1<f64>,
     w: &Array1<f64>,
+) -> Result<(Array1<f64>, Array2<f64>)> {
+    let n = x.nrows();
+    let p = x.ncols();
+
+    // PARALLEL: Compute X'WX and X'Wz using parallel chunk processing
+    let (xtx_data, xtz_data): (Vec<f64>, Vec<f64>) = (0..n)
+        .into_par_iter()
+        .fold(
+            || (vec![0.0; p * p], vec![0.0; p]),
+            |(mut xtx_local, mut xtz_local), k| {
+                let wk = w[k];
+                let wz = wk * z[k];
+                
+                for i in 0..p {
+                    let xki = x[[k, i]];
+                    let xki_w = xki * wk;
+                    xtz_local[i] += xki * wz;
+                    for j in i..p {
+                        xtx_local[i * p + j] += xki_w * x[[k, j]];
+                    }
+                }
+                (xtx_local, xtz_local)
+            },
+        )
+        .reduce(
+            || (vec![0.0; p * p], vec![0.0; p]),
+            |(mut a_xtx, mut a_xtz), (b_xtx, b_xtz)| {
+                for i in 0..a_xtx.len() {
+                    a_xtx[i] += b_xtx[i];
+                }
+                for i in 0..a_xtz.len() {
+                    a_xtz[i] += b_xtz[i];
+                }
+                (a_xtx, a_xtz)
+            },
+        );
+
+    // Convert to nalgebra types
+    let mut xtx = DMatrix::zeros(p, p);
+    for i in 0..p {
+        for j in i..p {
+            let val = xtx_data[i * p + j];
+            xtx[(i, j)] = val;
+            xtx[(j, i)] = val;
+        }
+    }
+    let xtz = DVector::from_vec(xtz_data);
+
+    // Solve using Cholesky decomposition
+    let chol = match xtx.clone().cholesky() {
+        Some(c) => c,
+        None => {
+            match xtx.clone().lu().solve(&xtz) {
+                Some(sol) => {
+                    let coef_array: Array1<f64> = sol.iter().copied().collect();
+                    let xtx_inv = xtx.try_inverse().unwrap_or_else(|| DMatrix::zeros(p, p));
+                    let mut cov_array = Array2::zeros((p, p));
+                    for i in 0..p {
+                        for j in 0..p {
+                            cov_array[[i, j]] = xtx_inv[(i, j)];
+                        }
+                    }
+                    return Ok((coef_array, cov_array));
+                }
+                None => {
+                    return Err(RustyStatsError::LinearAlgebraError(
+                        "Failed to solve weighted least squares - matrix may be singular. \
+                         This often indicates multicollinearity in predictors.".to_string(),
+                    ));
+                }
+            }
+        }
+    };
+
+    let coefficients = chol.solve(&xtz);
+    let identity = DMatrix::identity(p, p);
+    let xtx_inv = chol.solve(&identity);
+
+    let coef_array: Array1<f64> = coefficients.iter().copied().collect();
+    let mut cov_array = Array2::zeros((p, p));
+    for i in 0..p {
+        for j in 0..p {
+            cov_array[[i, j]] = xtx_inv[(i, j)];
+        }
+    }
+
+    Ok((coef_array, cov_array))
+}
+
+/// Solve penalized weighted least squares: minimize Σ w_i (z_i - x_i'β)² + λ Σ β_j²
+///
+/// Returns (coefficients, (X'WX + λI)⁻¹)
+///
+/// For Ridge (L2) regularization, we add λ to the diagonal of X'WX.
+/// The intercept (first coefficient if `penalize_intercept` is false) is NOT penalized.
+///
+/// # Arguments
+/// * `x` - Design matrix (n × p)
+/// * `z` - Working response (n × 1)
+/// * `w` - Observation weights (n × 1)
+/// * `l2_penalty` - Ridge penalty λ (0.0 = no penalty)
+/// * `penalize_intercept` - If false, first column is assumed to be intercept and not penalized
+fn solve_weighted_least_squares_penalized(
+    x: &Array2<f64>,
+    z: &Array1<f64>,
+    w: &Array1<f64>,
+    l2_penalty: f64,
+    penalize_intercept: bool,
 ) -> Result<(Array1<f64>, Array2<f64>)> {
     let n = x.nrows();
     let p = x.ncols();
@@ -542,6 +911,18 @@ fn solve_weighted_least_squares(
     }
     
     let xtz = DVector::from_vec(xtz_data);
+
+    // -------------------------------------------------------------------------
+    // Add L2 (Ridge) penalty to diagonal: (X'WX + λI)
+    // -------------------------------------------------------------------------
+    // The intercept (first column) is typically NOT penalized.
+    // This prevents the baseline from being shrunk toward zero.
+    if l2_penalty > 0.0 {
+        let start_idx = if penalize_intercept { 0 } else { 1 };
+        for j in start_idx..p {
+            xtx[(j, j)] += l2_penalty;
+        }
+    }
 
     // -------------------------------------------------------------------------
     // Solve using Cholesky decomposition (reuse for inverse)
@@ -740,5 +1121,165 @@ mod tests {
         assert!(result.converged);
         // Perfect linear relationship should converge quickly
         assert!(result.iterations < 10);
+    }
+
+    // =========================================================================
+    // Ridge (L2) Regularization Tests
+    // =========================================================================
+
+    #[test]
+    fn test_ridge_shrinks_coefficients() {
+        // Ridge regression should shrink coefficients toward zero
+        let x = Array2::from_shape_vec(
+            (5, 2),
+            vec![
+                1.0, 1.0,
+                1.0, 2.0,
+                1.0, 3.0,
+                1.0, 4.0,
+                1.0, 5.0,
+            ],
+        )
+        .unwrap();
+        let y = array![5.0, 8.0, 11.0, 14.0, 17.0]; // y = 2 + 3*x
+
+        let family = GaussianFamily;
+        let link = IdentityLink;
+        let irls_config = IRLSConfig::default();
+
+        // Unregularized fit
+        let unreg = fit_glm(&y, &x, &family, &link, &irls_config).unwrap();
+
+        // Ridge with lambda = 10 (strong regularization)
+        let reg_config = RegularizationConfig::ridge(10.0);
+        let ridge = fit_glm_regularized(&y, &x, &family, &link, &irls_config, &reg_config, None, None).unwrap();
+
+        // Ridge coefficients should be smaller in absolute value (except intercept)
+        assert!(ridge.coefficients[1].abs() < unreg.coefficients[1].abs(),
+            "Ridge should shrink slope: ridge={:.4}, unreg={:.4}", 
+            ridge.coefficients[1], unreg.coefficients[1]);
+        
+        // Both should converge
+        assert!(unreg.converged);
+        assert!(ridge.converged);
+        
+        // Penalty should be recorded
+        assert!(!ridge.penalty.is_none());
+        assert_eq!(ridge.penalty.l2_penalty(), 10.0);
+    }
+
+    #[test]
+    fn test_ridge_no_penalty_equals_ols() {
+        // Ridge with lambda=0 should give same results as OLS
+        let x = Array2::from_shape_vec(
+            (5, 2),
+            vec![
+                1.0, 1.0,
+                1.0, 2.0,
+                1.0, 3.0,
+                1.0, 4.0,
+                1.0, 5.0,
+            ],
+        )
+        .unwrap();
+        let y = array![5.0, 8.0, 11.0, 14.0, 17.0];
+
+        let family = GaussianFamily;
+        let link = IdentityLink;
+        let irls_config = IRLSConfig::default();
+
+        let unreg = fit_glm(&y, &x, &family, &link, &irls_config).unwrap();
+        
+        let reg_config = RegularizationConfig::ridge(0.0);
+        let ridge_zero = fit_glm_regularized(&y, &x, &family, &link, &irls_config, &reg_config, None, None).unwrap();
+
+        // Coefficients should be essentially equal
+        for i in 0..2 {
+            assert!((unreg.coefficients[i] - ridge_zero.coefficients[i]).abs() < 1e-6,
+                "Coefficient {} differs: unreg={:.6}, ridge={:.6}",
+                i, unreg.coefficients[i], ridge_zero.coefficients[i]);
+        }
+    }
+
+    #[test]
+    fn test_ridge_intercept_not_penalized() {
+        // The intercept should not be penalized by default
+        let x = Array2::from_shape_vec(
+            (5, 2),
+            vec![
+                1.0, 1.0,
+                1.0, 2.0,
+                1.0, 3.0,
+                1.0, 4.0,
+                1.0, 5.0,
+            ],
+        )
+        .unwrap();
+        let y = array![5.0, 8.0, 11.0, 14.0, 17.0];
+
+        let family = GaussianFamily;
+        let link = IdentityLink;
+        let irls_config = IRLSConfig::default();
+
+        // Compare very strong penalty with no penalty
+        let unreg = fit_glm(&y, &x, &family, &link, &irls_config).unwrap();
+        
+        let reg_config = RegularizationConfig::ridge(100.0);
+        let ridge = fit_glm_regularized(&y, &x, &family, &link, &irls_config, &reg_config, None, None).unwrap();
+
+        // Slope should be heavily shrunk
+        assert!(ridge.coefficients[1].abs() < unreg.coefficients[1].abs() * 0.5,
+            "Slope should be heavily shrunk");
+        
+        // Intercept should still be reasonable (not shrunk to 0)
+        // With y mean around 11, intercept shouldn't be close to 0
+        assert!(ridge.coefficients[0].abs() > 1.0,
+            "Intercept should not be heavily shrunk: {:.4}", ridge.coefficients[0]);
+    }
+
+    #[test]
+    fn test_ridge_poisson() {
+        // Ridge should work with non-Gaussian families
+        let x = Array2::from_shape_vec(
+            (6, 2),
+            vec![
+                1.0, 0.0,
+                1.0, 1.0,
+                1.0, 2.0,
+                1.0, 3.0,
+                1.0, 4.0,
+                1.0, 5.0,
+            ],
+        )
+        .unwrap();
+        let y = array![2.0, 3.0, 4.0, 6.0, 8.0, 12.0];
+
+        let family = PoissonFamily;
+        let link = LogLink;
+        let irls_config = IRLSConfig::default();
+
+        let reg_config = RegularizationConfig::ridge(1.0);
+        let result = fit_glm_regularized(&y, &x, &family, &link, &irls_config, &reg_config, None, None).unwrap();
+
+        assert!(result.converged);
+        assert!(result.fitted_values.iter().all(|&x| x > 0.0));
+    }
+
+    #[test]
+    fn test_lasso_requires_coordinate_descent() {
+        // Lasso should return an error (not yet implemented)
+        let x = Array2::from_shape_vec((3, 2), vec![1.0, 1.0, 1.0, 2.0, 1.0, 3.0]).unwrap();
+        let y = array![2.0, 4.0, 6.0];
+
+        let family = GaussianFamily;
+        let link = IdentityLink;
+        let irls_config = IRLSConfig::default();
+        let reg_config = RegularizationConfig::lasso(1.0);
+
+        let result = fit_glm_regularized(&y, &x, &family, &link, &irls_config, &reg_config, None, None);
+        
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, RustyStatsError::InvalidValue(_)));
     }
 }

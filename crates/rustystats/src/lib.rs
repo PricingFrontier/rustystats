@@ -36,7 +36,8 @@ use ndarray::{Array1, Array2};
 // Import our core library
 use rustystats_core::families::{Family, GaussianFamily, PoissonFamily, BinomialFamily, GammaFamily, TweedieFamily};
 use rustystats_core::links::{Link, IdentityLink, LogLink, LogitLink};
-use rustystats_core::solvers::{fit_glm_full, IRLSConfig, IRLSResult};
+use rustystats_core::solvers::{fit_glm_full, fit_glm_regularized, fit_glm_coordinate_descent, IRLSConfig, IRLSResult};
+use rustystats_core::regularization::{Penalty, RegularizationConfig};
 use rustystats_core::inference::{pvalue_z, confidence_interval_z};
 use rustystats_core::diagnostics::{
     resid_response, resid_pearson, resid_deviance, resid_working,
@@ -506,6 +507,8 @@ pub struct PyGLMResults {
     family_name: String,
     /// Prior weights
     prior_weights: Array1<f64>,
+    /// Regularization penalty applied (if any)
+    penalty: Penalty,
 }
 
 #[pymethods]
@@ -922,6 +925,74 @@ impl PyGLMResults {
     fn family(&self) -> &str {
         &self.family_name
     }
+
+    // =========================================================================
+    // Regularization Information
+    // =========================================================================
+
+    /// Get the regularization strength (alpha/lambda).
+    ///
+    /// Returns 0.0 for unregularized models.
+    #[getter]
+    fn alpha(&self) -> f64 {
+        self.penalty.lambda()
+    }
+
+    /// Get the L1 ratio for Elastic Net.
+    ///
+    /// Returns:
+    /// - None: unregularized or pure Ridge
+    /// - 1.0: pure Lasso
+    /// - 0.0-1.0: Elastic Net mix
+    #[getter]
+    fn l1_ratio(&self) -> Option<f64> {
+        match &self.penalty {
+            Penalty::None => None,
+            Penalty::Ridge(_) => Some(0.0),
+            Penalty::Lasso(_) => Some(1.0),
+            Penalty::ElasticNet { l1_ratio, .. } => Some(*l1_ratio),
+        }
+    }
+
+    /// Get the penalty type as a string.
+    ///
+    /// Returns "none", "ridge", "lasso", or "elasticnet".
+    #[getter]
+    fn penalty_type(&self) -> &str {
+        match &self.penalty {
+            Penalty::None => "none",
+            Penalty::Ridge(_) => "ridge",
+            Penalty::Lasso(_) => "lasso",
+            Penalty::ElasticNet { .. } => "elasticnet",
+        }
+    }
+
+    /// Check if this is a regularized model.
+    #[getter]
+    fn is_regularized(&self) -> bool {
+        !self.penalty.is_none()
+    }
+
+    /// Get the number of non-zero coefficients.
+    ///
+    /// Useful for Lasso/Elastic Net to see how many variables were selected.
+    /// Excludes the intercept (first coefficient) from the count.
+    fn n_nonzero(&self) -> usize {
+        self.coefficients.iter().skip(1).filter(|&&c| c.abs() > 1e-10).count()
+    }
+
+    /// Get indices of non-zero coefficients (selected variables).
+    ///
+    /// For Lasso/Elastic Net, this shows which variables were retained.
+    fn selected_features(&self) -> Vec<usize> {
+        self.coefficients
+            .iter()
+            .enumerate()
+            .skip(1)  // Skip intercept
+            .filter(|(_, &c)| c.abs() > 1e-10)
+            .map(|(i, _)| i)
+            .collect()
+    }
 }
 
 // =============================================================================
@@ -952,6 +1023,14 @@ impl PyGLMResults {
 ///     Offset term added to linear predictor (e.g., log(exposure))
 /// weights : array-like, optional
 ///     Prior weights for each observation
+/// alpha : float, optional
+///     Regularization strength (default: 0.0 = no regularization)
+///     Higher values = stronger regularization = more shrinkage
+/// l1_ratio : float, optional
+///     Elastic Net mixing parameter (default: 0.0 = pure Ridge)
+///     - 0.0: Ridge (L2) penalty only
+///     - 1.0: Lasso (L1) penalty only  
+///     - 0.0-1.0: Elastic Net (mix of L1 and L2)
 /// max_iter : int, optional
 ///     Maximum IRLS iterations (default: 25)
 /// tol : float, optional
@@ -961,8 +1040,20 @@ impl PyGLMResults {
 /// -------
 /// GLMResults
 ///     Object containing fitted coefficients, deviance, etc.
+///
+/// Examples
+/// --------
+/// >>> import rustystats as rs
+/// >>> # Unregularized GLM
+/// >>> result = rs.fit_glm(y, X, family="poisson")
+/// >>> # Ridge regression
+/// >>> result = rs.fit_glm(y, X, family="gaussian", alpha=0.1, l1_ratio=0.0)
+/// >>> # Lasso regression  
+/// >>> result = rs.fit_glm(y, X, family="gaussian", alpha=0.1, l1_ratio=1.0)
+/// >>> # Elastic Net
+/// >>> result = rs.fit_glm(y, X, family="gaussian", alpha=0.1, l1_ratio=0.5)
 #[pyfunction]
-#[pyo3(signature = (y, x, family, link=None, var_power=1.5, offset=None, weights=None, max_iter=25, tol=1e-8))]
+#[pyo3(signature = (y, x, family, link=None, var_power=1.5, offset=None, weights=None, alpha=0.0, l1_ratio=0.0, max_iter=25, tol=1e-8))]
 fn fit_glm_py(
     y: PyReadonlyArray1<f64>,
     x: PyReadonlyArray2<f64>,
@@ -971,6 +1062,8 @@ fn fit_glm_py(
     var_power: f64,
     offset: Option<PyReadonlyArray1<f64>>,
     weights: Option<PyReadonlyArray1<f64>>,
+    alpha: f64,
+    l1_ratio: f64,
     max_iter: usize,
     tol: f64,
 ) -> PyResult<PyGLMResults> {
@@ -985,23 +1078,60 @@ fn fit_glm_py(
     let offset_array: Option<Array1<f64>> = offset.map(|o| o.as_array().to_owned());
     let weights_array: Option<Array1<f64>> = weights.map(|w| w.as_array().to_owned());
 
-    // Create config
-    let config = IRLSConfig {
+    // Create IRLS config
+    let irls_config = IRLSConfig {
         max_iterations: max_iter,
         tolerance: tol,
         min_weight: 1e-10,
         verbose: false,
     };
 
+    // Determine regularization type
+    let use_regularization = alpha > 0.0;
+    let use_coordinate_descent = use_regularization && l1_ratio > 0.0;
+
+    // Create regularization config
+    let reg_config = if use_regularization {
+        if l1_ratio >= 1.0 {
+            RegularizationConfig::lasso(alpha)
+        } else if l1_ratio <= 0.0 {
+            RegularizationConfig::ridge(alpha)
+        } else {
+            RegularizationConfig::elastic_net(alpha, l1_ratio)
+        }
+    } else {
+        RegularizationConfig::none()
+    };
+
+    // Helper macro to reduce repetition - fits with appropriate solver
+    macro_rules! fit_model {
+        ($fam:expr, $link:expr) => {
+            if use_coordinate_descent {
+                fit_glm_coordinate_descent(
+                    &y_array, &x_array, $fam, $link, &irls_config, &reg_config,
+                    offset_array.as_ref(), weights_array.as_ref()
+                )
+            } else if use_regularization {
+                fit_glm_regularized(
+                    &y_array, &x_array, $fam, $link, &irls_config, &reg_config,
+                    offset_array.as_ref(), weights_array.as_ref()
+                )
+            } else {
+                fit_glm_full(
+                    &y_array, &x_array, $fam, $link, &irls_config,
+                    offset_array.as_ref(), weights_array.as_ref()
+                )
+            }
+        };
+    }
+
     // Match family and link, then fit
     let result: IRLSResult = match family.to_lowercase().as_str() {
         "gaussian" | "normal" => {
             let fam = GaussianFamily;
             match link.unwrap_or("identity") {
-                "identity" => fit_glm_full(&y_array, &x_array, &fam, &IdentityLink, &config, 
-                    offset_array.as_ref(), weights_array.as_ref()),
-                "log" => fit_glm_full(&y_array, &x_array, &fam, &LogLink, &config,
-                    offset_array.as_ref(), weights_array.as_ref()),
+                "identity" => fit_model!(&fam, &IdentityLink),
+                "log" => fit_model!(&fam, &LogLink),
                 other => return Err(PyValueError::new_err(format!(
                     "Unknown link '{}' for Gaussian family. Use 'identity' or 'log'.", other
                 ))),
@@ -1010,10 +1140,8 @@ fn fit_glm_py(
         "poisson" => {
             let fam = PoissonFamily;
             match link.unwrap_or("log") {
-                "log" => fit_glm_full(&y_array, &x_array, &fam, &LogLink, &config,
-                    offset_array.as_ref(), weights_array.as_ref()),
-                "identity" => fit_glm_full(&y_array, &x_array, &fam, &IdentityLink, &config,
-                    offset_array.as_ref(), weights_array.as_ref()),
+                "log" => fit_model!(&fam, &LogLink),
+                "identity" => fit_model!(&fam, &IdentityLink),
                 other => return Err(PyValueError::new_err(format!(
                     "Unknown link '{}' for Poisson family. Use 'log' or 'identity'.", other
                 ))),
@@ -1022,10 +1150,8 @@ fn fit_glm_py(
         "binomial" => {
             let fam = BinomialFamily;
             match link.unwrap_or("logit") {
-                "logit" => fit_glm_full(&y_array, &x_array, &fam, &LogitLink, &config,
-                    offset_array.as_ref(), weights_array.as_ref()),
-                "log" => fit_glm_full(&y_array, &x_array, &fam, &LogLink, &config,
-                    offset_array.as_ref(), weights_array.as_ref()),
+                "logit" => fit_model!(&fam, &LogitLink),
+                "log" => fit_model!(&fam, &LogLink),
                 other => return Err(PyValueError::new_err(format!(
                     "Unknown link '{}' for Binomial family. Use 'logit' or 'log'.", other
                 ))),
@@ -1034,10 +1160,8 @@ fn fit_glm_py(
         "gamma" => {
             let fam = GammaFamily;
             match link.unwrap_or("log") {
-                "log" => fit_glm_full(&y_array, &x_array, &fam, &LogLink, &config,
-                    offset_array.as_ref(), weights_array.as_ref()),
-                "identity" => fit_glm_full(&y_array, &x_array, &fam, &IdentityLink, &config,
-                    offset_array.as_ref(), weights_array.as_ref()),
+                "log" => fit_model!(&fam, &LogLink),
+                "identity" => fit_model!(&fam, &IdentityLink),
                 other => return Err(PyValueError::new_err(format!(
                     "Unknown link '{}' for Gamma family. Use 'log' or 'identity'.", other
                 ))),
@@ -1051,10 +1175,8 @@ fn fit_glm_py(
             }
             let fam = TweedieFamily::new(var_power);
             match link.unwrap_or("log") {
-                "log" => fit_glm_full(&y_array, &x_array, &fam, &LogLink, &config,
-                    offset_array.as_ref(), weights_array.as_ref()),
-                "identity" => fit_glm_full(&y_array, &x_array, &fam, &IdentityLink, &config,
-                    offset_array.as_ref(), weights_array.as_ref()),
+                "log" => fit_model!(&fam, &LogLink),
+                "identity" => fit_model!(&fam, &IdentityLink),
                 other => return Err(PyValueError::new_err(format!(
                     "Unknown link '{}' for Tweedie family. Use 'log' or 'identity'.", other
                 ))),
@@ -1078,6 +1200,7 @@ fn fit_glm_py(
         y: result.y,
         family_name: result.family_name,
         prior_weights: result.prior_weights,
+        penalty: result.penalty,
     })
 }
 

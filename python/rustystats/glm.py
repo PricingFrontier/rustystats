@@ -47,14 +47,17 @@ def fit_glm(
     var_power: float = 1.5,
     offset: Optional[np.ndarray] = None,
     weights: Optional[np.ndarray] = None,
+    alpha: float = 0.0,
+    l1_ratio: float = 0.0,
     max_iter: int = 25,
     tol: float = 1e-8,
 ) -> GLMResults:
     """
-    Fit a Generalized Linear Model.
+    Fit a Generalized Linear Model, optionally with regularization.
     
     This is the main function for fitting GLMs. It uses IRLS
-    (Iteratively Reweighted Least Squares) internally.
+    (Iteratively Reweighted Least Squares) internally, with coordinate
+    descent for L1 (Lasso) penalties.
     
     Parameters
     ----------
@@ -112,6 +115,17 @@ def fit_glm(
         - Known variance differences
         - Importance weighting
         
+    alpha : float, default=0.0
+        Regularization strength. Higher values = more shrinkage.
+        - alpha=0: No regularization (standard GLM)
+        - alpha>0: Regularized GLM
+        
+    l1_ratio : float, default=0.0
+        Elastic Net mixing parameter (only used when alpha > 0):
+        - l1_ratio=0.0: Ridge (L2) penalty - shrinks coefficients
+        - l1_ratio=1.0: Lasso (L1) penalty - can zero out coefficients
+        - 0 < l1_ratio < 1: Elastic Net (mix of L1 and L2)
+        
     max_iter : int, default=25
         Maximum number of IRLS iterations.
         
@@ -129,33 +143,47 @@ def fit_glm(
         - converged: Whether fitting converged
         - bse(): Standard errors
         - tvalues(): t/z statistics
+        - alpha: Regularization strength used
+        - l1_ratio: L1/L2 mix used
+        - n_nonzero(): Number of non-zero coefficients (for Lasso)
         
     Examples
     --------
     >>> import rustystats as rs
     >>> import numpy as np
     >>>
-    >>> # Linear regression (Gaussian with identity link)
-    >>> n = 100
-    >>> X = np.column_stack([np.ones(n), np.random.randn(n)])
-    >>> y = 2 + 3 * X[:, 1] + np.random.randn(n) * 0.5
-    >>> result = rs.fit_glm(y, X, family="gaussian")
-    >>> print(f"Intercept: {result.params[0]:.2f}")  # ≈ 2
-    >>> print(f"Slope: {result.params[1]:.2f}")      # ≈ 3
+    >>> # Standard GLM (no regularization)
+    >>> result = rs.fit_glm(y, X, family="poisson")
     >>>
-    >>> # Poisson regression (claim frequency)
-    >>> claims = np.random.poisson(np.exp(0.5 + 0.2 * X[:, 1]))
-    >>> result = rs.fit_glm(claims, X, family="poisson")
-    >>> print(f"Rate relativity: {np.exp(result.params[1]):.2f}")
+    >>> # Ridge regression (L2 penalty)
+    >>> result = rs.fit_glm(y, X, family="gaussian", alpha=0.1, l1_ratio=0.0)
     >>>
-    >>> # Logistic regression (claim probability)
-    >>> prob = 1 / (1 + np.exp(-(0.5 + 0.3 * X[:, 1])))
-    >>> claim_flag = np.random.binomial(1, prob)
-    >>> result = rs.fit_glm(claim_flag, X, family="binomial")
-    >>> print(f"Odds ratio: {np.exp(result.params[1]):.2f}")
+    >>> # Lasso regression (L1 penalty) - performs variable selection
+    >>> result = rs.fit_glm(y, X, family="gaussian", alpha=0.1, l1_ratio=1.0)
+    >>> print(f"Selected {result.n_nonzero()} variables")
+    >>>
+    >>> # Elastic Net (mix of L1 and L2)
+    >>> result = rs.fit_glm(y, X, family="gaussian", alpha=0.1, l1_ratio=0.5)
     
     Notes
     -----
+    **Regularization**
+    
+    Regularization helps when you have:
+    - More predictors than observations (p > n)
+    - Multicollinearity (correlated predictors)
+    - Overfitting concerns
+    
+    **Ridge (L2)** shrinks all coefficients but keeps them non-zero.
+    Good for multicollinearity.
+    
+    **Lasso (L1)** can shrink coefficients exactly to zero, performing
+    automatic variable selection. Use `result.selected_features()` to
+    see which variables were retained.
+    
+    **Elastic Net** combines both, useful when predictors are correlated
+    and you want some variable selection.
+    
     **Interpreting Coefficients**
     
     The interpretation depends on the link function:
@@ -208,14 +236,15 @@ def fit_glm(
             )
     
     # Call the Rust implementation
-    return _fit_glm_rust(y, X, family, link, var_power, offset, weights, max_iter, tol)
+    return _fit_glm_rust(y, X, family, link, var_power, offset, weights, alpha, l1_ratio, max_iter, tol)
 
 
 class GLM:
     """
     Generalized Linear Model class (statsmodels-style API).
     
-    This provides an object-oriented interface similar to statsmodels.
+    This provides an object-oriented interface similar to statsmodels,
+    with support for Ridge, Lasso, and Elastic Net regularization.
     
     Parameters
     ----------
@@ -245,18 +274,19 @@ class GLM:
     >>> import rustystats as rs
     >>> import numpy as np
     >>>
-    >>> # Create model
+    >>> # Standard GLM
     >>> model = rs.GLM(y, X, family="poisson")
-    >>>
-    >>> # Fit with default options
     >>> result = model.fit()
     >>>
-    >>> # Fit with custom options
-    >>> result = model.fit(max_iter=50, tol=1e-10)
+    >>> # Ridge regularization
+    >>> result = model.fit(alpha=0.1, l1_ratio=0.0)
     >>>
-    >>> # Access results
-    >>> print(result.params)
-    >>> print(result.deviance)
+    >>> # Lasso regularization (variable selection)
+    >>> result = model.fit(alpha=0.1, l1_ratio=1.0)
+    >>> print(f"Selected {result.n_nonzero()} features")
+    >>>
+    >>> # Elastic Net
+    >>> result = model.fit(alpha=0.1, l1_ratio=0.5)
     >>>
     >>> # With exposure (rate model)
     >>> model = rs.GLM(claims, X, family="poisson", offset=np.log(exposure))
@@ -317,14 +347,27 @@ class GLM:
     
     def fit(
         self,
+        alpha: float = 0.0,
+        l1_ratio: float = 0.0,
         max_iter: int = 25,
         tol: float = 1e-8,
     ) -> GLMResults:
         """
-        Fit the GLM model.
+        Fit the GLM model, optionally with regularization.
         
         Parameters
         ----------
+        alpha : float, default=0.0
+            Regularization strength. Higher values = more shrinkage.
+            - alpha=0: No regularization (standard GLM)
+            - alpha>0: Regularized GLM
+            
+        l1_ratio : float, default=0.0
+            Elastic Net mixing parameter:
+            - l1_ratio=0.0: Ridge (L2) penalty
+            - l1_ratio=1.0: Lasso (L1) penalty
+            - 0 < l1_ratio < 1: Elastic Net
+            
         max_iter : int, default=25
             Maximum IRLS iterations.
             
@@ -344,6 +387,8 @@ class GLM:
             var_power=self.var_power,
             offset=self.offset,
             weights=self.weights,
+            alpha=alpha,
+            l1_ratio=l1_ratio,
             max_iter=max_iter,
             tol=tol,
         )
@@ -557,8 +602,29 @@ def summary(
     # Model info - statsmodels style
     lines.append(f"{'Family:':<20} {family_name:<15} {'No. Observations:':<20} {result.nobs:>10}")
     lines.append(f"{'Link Function:':<20} {'(default)':<15} {'Df Residuals:':<20} {result.df_resid:>10}")
-    lines.append(f"{'Method:':<20} {'IRLS':<15} {'Df Model:':<20} {result.df_model:>10}")
-    lines.append(f"{'Scale:':<20} {scale:<15.4f} {'Iterations:':<20} {result.iterations:>10}")
+    
+    # Show regularization info if applicable
+    try:
+        is_reg = result.is_regularized
+        penalty_type = result.penalty_type if is_reg else "none"
+    except Exception:
+        is_reg = False
+        penalty_type = "none"
+    
+    if is_reg:
+        method = f"IRLS + {penalty_type.title()}"
+        lines.append(f"{'Method:':<20} {method:<15} {'Df Model:':<20} {result.df_model:>10}")
+        lines.append(f"{'Scale:':<20} {scale:<15.4f} {'Alpha (λ):':<20} {result.alpha:>10.4f}")
+        l1_val = result.l1_ratio if result.l1_ratio is not None else 0.0
+        lines.append(f"{'L1 Ratio:':<20} {l1_val:<15.2f} {'Iterations:':<20} {result.iterations:>10}")
+        try:
+            n_nonzero = result.n_nonzero()
+            lines.append(f"{'Non-zero coefs:':<20} {n_nonzero:<15}")
+        except Exception:
+            pass
+    else:
+        lines.append(f"{'Method:':<20} {'IRLS':<15} {'Df Model:':<20} {result.df_model:>10}")
+        lines.append(f"{'Scale:':<20} {scale:<15.4f} {'Iterations:':<20} {result.iterations:>10}")
     lines.append("")
     
     # Goodness of fit

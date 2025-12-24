@@ -31,6 +31,7 @@ pub mod error;
 pub mod families;
 pub mod inference;
 pub mod links;
+pub mod regularization;
 pub mod solvers;
 pub mod diagnostics;
 
@@ -41,4 +42,5 @@ pub use error::{RustyStatsError, Result};
 pub use families::Family;
 pub use inference::{pvalue_z, pvalue_t, confidence_interval_z, confidence_interval_t};
 pub use links::Link;
-pub use solvers::{IRLSConfig, IRLSResult, fit_glm, fit_glm_full};
+pub use regularization::{Penalty, RegularizationConfig, soft_threshold};
+pub use solvers::{IRLSConfig, IRLSResult, fit_glm, fit_glm_full, fit_glm_regularized, fit_glm_coordinate_descent};
