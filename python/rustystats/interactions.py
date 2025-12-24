@@ -1,37 +1,44 @@
 """
 Optimized interaction term support for RustyStats.
 
-This module provides high-performance interaction term handling for GLMs,
-including:
-- Lazy interaction computation (avoid materializing large matrices)
-- Sparse matrix support for categorical interactions
-- Efficient vectorized construction of interaction columns
+This module provides high-performance interaction term handling for GLMs.
+All heavy computation is done in Rust for maximum speed:
+- Categorical encoding (Rust parallel construction)
+- Interaction terms (Rust parallel for large data)
+- Spline basis functions (Rust with Rayon)
 
-Performance Characteristics:
-- Continuous × Continuous: O(n) memory, O(n) time
-- Categorical × Continuous: O(n × k) memory where k = levels
-- Categorical × Categorical: O(n) memory using sparse representation
+The Python layer handles only:
+- Formula parsing (string manipulation)
+- DataFrame column extraction
+- Orchestration of Rust calls
 
 Example
 -------
 >>> from rustystats.interactions import InteractionBuilder
 >>> 
->>> builder = InteractionBuilder(data, ['x1', 'x2'], ['cat1', 'cat2'])
->>> X, names = builder.build('x1*x2 + C(cat1):x1')
+>>> builder = InteractionBuilder(data)
+>>> y, X, names = builder.build_design_matrix('y ~ x1*x2 + C(cat) + bs(age, df=5)')
 """
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple, Union, Dict, Set, TYPE_CHECKING
 
 import numpy as np
 
+# Import Rust implementations for heavy computation
+from rustystats._rustystats import (
+    encode_categorical_py as _encode_categorical_rust,
+    build_cat_cat_interaction_py as _build_cat_cat_rust,
+    build_cat_cont_interaction_py as _build_cat_cont_rust,
+    multiply_matrix_by_continuous_py as _multiply_matrix_cont_rust,
+    parse_formula_py as _parse_formula_rust,
+)
+
 if TYPE_CHECKING:
     import pandas as pd
     import polars as pl
-    from scipy import sparse
 
 
 @dataclass
@@ -62,6 +69,21 @@ class InteractionTerm:
         return any(self.categorical_flags) and not all(self.categorical_flags)
 
 
+@dataclass
+class SplineTermSpec:
+    """Represents a spline term like bs(age, df=5) or ns(income, df=4)."""
+    
+    var_name: str           # Variable name (e.g., 'age')
+    spline_type: str        # 'bs' or 'ns'
+    df: int = 5             # Degrees of freedom
+    degree: int = 3         # Polynomial degree (for B-splines)
+    
+    def __repr__(self) -> str:
+        if self.spline_type == "bs":
+            return f"bs({self.var_name}, df={self.df})"
+        return f"ns({self.var_name}, df={self.df})"
+
+
 @dataclass 
 class ParsedFormula:
     """Parsed formula with identified terms."""
@@ -70,6 +92,7 @@ class ParsedFormula:
     main_effects: List[str]  # Main effect variables
     interactions: List[InteractionTerm]  # Interaction terms
     categorical_vars: Set[str]  # Variables marked as categorical with C()
+    spline_terms: List[SplineTermSpec] = field(default_factory=list)  # Spline terms
     has_intercept: bool = True
 
 
@@ -77,118 +100,53 @@ def parse_formula_interactions(formula: str) -> ParsedFormula:
     """
     Parse a formula string and extract interaction terms.
     
-    Handles:
+    Uses Rust for fast parsing of:
     - Main effects: x1, x2, C(cat)
     - Two-way interactions: x1:x2, x1*x2, C(cat):x
     - Higher-order: x1:x2:x3
     - Intercept removal: 0 + ... or -1
+    - Spline terms: bs(x, df=5), ns(x, df=4)
     
     Parameters
     ----------
     formula : str
-        R-style formula like "y ~ x1*x2 + C(cat)"
+        R-style formula like "y ~ x1*x2 + C(cat) + bs(age, df=5)"
         
     Returns
     -------
     ParsedFormula
         Parsed structure with all terms identified
     """
-    # Split into response and predictors
-    if '~' not in formula:
-        raise ValueError(f"Formula must contain '~': {formula}")
+    # Use Rust parser
+    parsed = _parse_formula_rust(formula)
     
-    response, rhs = formula.split('~', 1)
-    response = response.strip()
-    rhs = rhs.strip()
+    # Convert to Python dataclasses
+    interactions = [
+        InteractionTerm(
+            factors=i['factors'],
+            categorical_flags=i['categorical_flags']
+        )
+        for i in parsed['interactions']
+    ]
     
-    # Check for intercept removal
-    has_intercept = True
-    if rhs.startswith('0 +') or rhs.startswith('0+'):
-        has_intercept = False
-        rhs = rhs[3:].strip()
-    
-    # Handle "- 1" or "-1" anywhere in formula (R-style intercept removal)
-    # Match patterns like "+ - 1", "- 1", "-1" 
-    if re.search(r'[-+]\s*1\s*$', rhs) or re.search(r'[-+]\s*1\s*[-+]', rhs):
-        has_intercept = False
-        # Remove the "-1" or "- 1" term
-        rhs = re.sub(r'\s*[-+]\s*1\s*', ' ', rhs).strip()
-        # Clean up any leading/trailing operators
-        rhs = re.sub(r'^\s*[-+]\s*', '', rhs)
-        rhs = re.sub(r'\s*[-+]\s*$', '', rhs)
-    
-    # Find all C(...) categorical markers
-    categorical_pattern = r'C\(([^)]+)\)'
-    categorical_vars = set(re.findall(categorical_pattern, rhs))
-    
-    # Split into terms (by +)
-    terms = [t.strip() for t in rhs.split('+')]
-    terms = [t for t in terms if t]  # Remove empty
-    
-    main_effects = []
-    interactions = []
-    
-    for term in terms:
-        if '*' in term:
-            # Full interaction: a*b = a + b + a:b
-            factors = _parse_interaction_factors(term.replace('*', ':'), categorical_vars)
-            
-            # Add main effects
-            for i, (var, is_cat) in enumerate(zip(factors, [v in categorical_vars or v.startswith('C(') for v in term.split('*')])):
-                clean_var = _clean_var_name(term.split('*')[i].strip())
-                if clean_var not in main_effects:
-                    main_effects.append(clean_var)
-            
-            # Add interaction
-            parsed = _parse_interaction_factors(term.replace('*', ':'), categorical_vars)
-            interactions.append(InteractionTerm(
-                factors=[_clean_var_name(f) for f in term.split('*')],
-                categorical_flags=[_is_categorical(f.strip(), categorical_vars) for f in term.split('*')]
-            ))
-            
-        elif ':' in term:
-            # Pure interaction: a:b (no main effects added)
-            factor_strs = term.split(':')
-            interactions.append(InteractionTerm(
-                factors=[_clean_var_name(f.strip()) for f in factor_strs],
-                categorical_flags=[_is_categorical(f.strip(), categorical_vars) for f in factor_strs]
-            ))
-        else:
-            # Main effect
-            clean = _clean_var_name(term)
-            if clean and clean not in main_effects:
-                main_effects.append(clean)
+    spline_terms = [
+        SplineTermSpec(
+            var_name=s['var_name'],
+            spline_type=s['spline_type'],
+            df=s['df'],
+            degree=s['degree']
+        )
+        for s in parsed['spline_terms']
+    ]
     
     return ParsedFormula(
-        response=response,
-        main_effects=main_effects,
+        response=parsed['response'],
+        main_effects=parsed['main_effects'],
         interactions=interactions,
-        categorical_vars=categorical_vars,
-        has_intercept=has_intercept,
+        categorical_vars=set(parsed['categorical_vars']),
+        spline_terms=spline_terms,
+        has_intercept=parsed['has_intercept'],
     )
-
-
-def _clean_var_name(term: str) -> str:
-    """Extract variable name from term like 'C(var)' -> 'var'."""
-    term = term.strip()
-    match = re.match(r'C\(([^)]+)\)', term)
-    if match:
-        return match.group(1)
-    return term
-
-
-def _is_categorical(term: str, categorical_vars: Set[str]) -> bool:
-    """Check if a term is categorical."""
-    term = term.strip()
-    if term.startswith('C('):
-        return True
-    return _clean_var_name(term) in categorical_vars
-
-
-def _parse_interaction_factors(term: str, categorical_vars: Set[str]) -> List[Tuple[str, bool]]:
-    """Parse interaction term into (variable_name, is_categorical) pairs."""
-    factors = term.split(':')
-    return [(f.strip(), _is_categorical(f, categorical_vars)) for f in factors]
 
 
 class InteractionBuilder:
@@ -225,6 +183,8 @@ class InteractionBuilder:
         
         # Cache for encoded categorical variables
         self._cat_cache: Dict[str, Tuple[np.ndarray, List[str]]] = {}
+        # Cache for categorical indices (for interaction building)
+        self._cat_indices_cache: Dict[str, Tuple[np.ndarray, List[str]]] = {}
     
     def _get_column(self, name: str) -> np.ndarray:
         """Extract column as numpy array."""
@@ -240,7 +200,8 @@ class InteractionBuilder:
         """
         Get dummy encoding for a categorical variable.
         
-        Uses optimized vectorized construction with sparse intermediate.
+        Uses Rust for factorization and parallel matrix construction.
+        No pandas dependency.
         
         Returns
         -------
@@ -258,45 +219,16 @@ class InteractionBuilder:
         else:
             col = self.data[name].values
         
-        # Get unique levels sorted
-        levels, inverse = np.unique(col, return_inverse=True)
-        indices = inverse.astype(np.int32)
+        # Convert to string list for Rust factorization
+        values = [str(v) for v in col]
         
-        # Create dummy matrix
-        n_levels = len(levels)
-        start_idx = 1 if drop_first else 0
-        n_cols = n_levels - start_idx
+        # Use Rust for factorization + matrix construction (no pandas needed)
+        encoding, names, indices, levels = _encode_categorical_rust(values, name, drop_first)
         
-        if n_cols == 0:
-            self._cat_cache[cache_key] = (np.zeros((self._n, 0), dtype=self.dtype), [])
-            return self._cat_cache[cache_key]
-        
-        # Vectorized sparse construction (always efficient)
-        from scipy import sparse
-        
-        col_idx = indices - start_idx
-        
-        if drop_first:
-            # Only include rows where col_idx >= 0
-            mask = col_idx >= 0
-            row_idx = np.arange(self._n, dtype=np.int32)[mask]
-            col_idx = col_idx[mask]
-        else:
-            row_idx = np.arange(self._n, dtype=np.int32)
-        
-        data = np.ones(len(row_idx), dtype=self.dtype)
-        
-        sp = sparse.csr_matrix(
-            (data, (row_idx, col_idx)),
-            shape=(self._n, n_cols),
-            dtype=self.dtype
-        )
-        encoding = sp.toarray()
-        
-        # Generate names
-        names = [f"{name}[T.{levels[i + start_idx]}]" for i in range(n_cols)]
-        
+        # Cache both the encoding and the indices/levels for interaction building
         self._cat_cache[cache_key] = (encoding, names)
+        self._cat_indices_cache[name] = (np.array(indices, dtype=np.int32), levels)
+        
         return encoding, names
     
     def build_interaction_columns(
@@ -380,70 +312,32 @@ class InteractionBuilder:
         at most one column in each encoding is 1. So the interaction column 
         corresponding to (level_i, level_j) is 1 only if both encodings are 1.
         """
-        # Get original indices (before dummy encoding)
+        # Get original indices (from cache or compute via encoding)
         cat1, cat2 = factors
         
-        # Re-extract level indices for efficient construction
-        if self._is_polars:
-            col1 = self.data[cat1].to_numpy()
-            col2 = self.data[cat2].to_numpy()
-        else:
-            col1 = self.data[cat1].values
-            col2 = self.data[cat2].values
+        # Ensure we have indices cached (this will populate cache if not already)
+        if cat1 not in self._cat_indices_cache:
+            self._get_categorical_encoding(cat1)
+        if cat2 not in self._cat_indices_cache:
+            self._get_categorical_encoding(cat2)
         
-        levels1 = np.unique(col1)
-        levels2 = np.unique(col2)
-        levels1 = np.sort(levels1)
-        levels2 = np.sort(levels2)
+        idx1, levels1 = self._cat_indices_cache[cat1]
+        idx2, levels2 = self._cat_indices_cache[cat2]
         
-        # Map values to indices (0-based, first level will be dropped)
-        level_to_idx1 = {l: i for i, l in enumerate(levels1)}
-        level_to_idx2 = {l: i for i, l in enumerate(levels2)}
-        
-        idx1 = np.array([level_to_idx1[v] for v in col1], dtype=np.int32)
-        idx2 = np.array([level_to_idx2[v] for v in col2], dtype=np.int32)
-        
-        # Number of levels after dropping first
+        # Number of non-reference levels
         n1 = len(levels1) - 1
         n2 = len(levels2) - 1
-        n_cols = n1 * n2
         
-        if n_cols == 0:
+        if n1 * n2 == 0:
             return np.zeros((self._n, 0), dtype=self.dtype), []
         
-        # Use sparse construction for large data
-        if self._n > 5000 or n_cols > 50:
-            from scipy import sparse
-            
-            # For interaction (i, j) where i,j >= 1 (after dropping first level),
-            # the interaction column index is (i-1) * n2 + (j-1)
-            # Only create entries where both indices are >= 1
-            mask = (idx1 >= 1) & (idx2 >= 1)
-            row_indices = np.arange(self._n)[mask]
-            col_indices = (idx1[mask] - 1) * n2 + (idx2[mask] - 1)
-            data = np.ones(len(row_indices), dtype=self.dtype)
-            
-            sp = sparse.csr_matrix(
-                (data, (row_indices, col_indices)),
-                shape=(self._n, n_cols),
-                dtype=self.dtype
-            )
-            result = sp.toarray()
-        else:
-            # Direct dense construction for small data
-            result = np.zeros((self._n, n_cols), dtype=self.dtype)
-            for i in range(self._n):
-                i1, i2 = idx1[i], idx2[i]
-                if i1 >= 1 and i2 >= 1:
-                    col_idx = (i1 - 1) * n2 + (i2 - 1)
-                    result[i, col_idx] = 1.0
-        
-        # Generate column names
+        # Use Rust for fast parallel construction
         names1, names2 = all_names
-        col_names = []
-        for i in range(n1):
-            for j in range(n2):
-                col_names.append(f"{names1[i]}:{names2[j]}")
+        result, col_names = _build_cat_cat_rust(
+            idx1.astype(np.int32), n1,
+            idx2.astype(np.int32), n2,
+            list(names1), list(names2)
+        )
         
         return result, col_names
     
@@ -453,36 +347,38 @@ class InteractionBuilder:
         all_names: List[List[str]],
         factors: List[str],
     ) -> Tuple[np.ndarray, List[str]]:
-        """General n-way categorical interaction."""
-        from itertools import product
+        """
+        General n-way categorical interaction using recursive 2-way Rust calls.
         
-        # Get all combinations of column indices
-        col_ranges = [range(e.shape[1]) for e in encodings]
+        For 3+ way interactions, we recursively combine pairs using the
+        optimized 2-way Rust implementation.
+        """
+        if len(factors) == 2:
+            # Base case - use optimized 2-way
+            return self._build_2way_categorical(encodings, all_names, factors)
         
-        result_cols = []
-        col_names = []
+        # Recursive case: combine first two factors, then combine with rest
+        # Build first two factors' interaction
+        first_two_enc = encodings[:2]
+        first_two_names = all_names[:2]
+        first_two_factors = factors[:2]
         
-        for indices in product(*col_ranges):
-            # Multiply all encodings at these indices
-            col = np.ones(self._n, dtype=self.dtype)
-            name_parts = []
-            
-            for k, idx in enumerate(indices):
-                col = col * encodings[k][:, idx]
-                name_parts.append(all_names[k][idx])
-            
-            result_cols.append(col)
-            col_names.append(':'.join(name_parts))
+        combined, combined_names = self._build_2way_categorical(
+            first_two_enc, first_two_names, first_two_factors
+        )
         
-        if result_cols:
-            return np.column_stack(result_cols), col_names
-        return np.zeros((self._n, 0), dtype=self.dtype), []
+        # Recursively combine with remaining factors
+        remaining_enc = [combined] + encodings[2:]
+        remaining_names = [combined_names] + all_names[2:]
+        remaining_factors = [f"{first_two_factors[0]}:{first_two_factors[1]}"] + factors[2:]
+        
+        return self._build_nway_categorical(remaining_enc, remaining_names, remaining_factors)
     
     def _build_mixed_interaction(
         self,
         interaction: InteractionTerm
     ) -> Tuple[np.ndarray, List[str]]:
-        """Build categorical × continuous interaction."""
+        """Build categorical × continuous interaction using Rust."""
         # Separate categorical and continuous factors
         cat_factors = []
         cont_factors = []
@@ -493,34 +389,84 @@ class InteractionBuilder:
             else:
                 cont_factors.append(factor)
         
-        # Build categorical part
+        # Build continuous part (product of all continuous)
+        cont_product = self._get_column(cont_factors[0])
+        for factor in cont_factors[1:]:
+            cont_product = cont_product * self._get_column(factor)
+        cont_name = ':'.join(cont_factors)
+        
+        # Build categorical part and use Rust for interaction
         if len(cat_factors) == 1:
-            cat_encoding, cat_names = self._get_categorical_encoding(cat_factors[0])
+            # Single categorical - use Rust directly
+            cat_name = cat_factors[0]
+            
+            # Ensure indices are cached
+            if cat_name not in self._cat_indices_cache:
+                self._get_categorical_encoding(cat_name)
+            
+            cat_indices, levels = self._cat_indices_cache[cat_name]
+            n_levels = len(levels) - 1  # Excluding reference
+            
+            if n_levels == 0:
+                return np.zeros((self._n, 0), dtype=self.dtype), []
+            
+            # Get category names from encoding
+            _, cat_names = self._get_categorical_encoding(cat_name)
+            
+            # Use Rust for fast parallel construction
+            result, col_names = _build_cat_cont_rust(
+                cat_indices.astype(np.int32),
+                n_levels,
+                cont_product.astype(np.float64),
+                list(cat_names),
+                cont_name
+            )
+            return result, col_names
         else:
-            # Multiple categorical - build their interaction first
+            # Multiple categorical - build their interaction first, then multiply using Rust
             cat_interaction = InteractionTerm(
                 factors=cat_factors,
                 categorical_flags=[True] * len(cat_factors)
             )
             cat_encoding, cat_names = self._build_categorical_interaction(cat_interaction)
+            
+            # Use Rust to multiply categorical matrix by continuous
+            result, col_names = _multiply_matrix_cont_rust(
+                cat_encoding.astype(np.float64),
+                cont_product.astype(np.float64),
+                list(cat_names),
+                cont_name
+            )
+            return result, col_names
+    
+    def _build_spline_columns(
+        self,
+        spline: SplineTermSpec,
+    ) -> Tuple[np.ndarray, List[str]]:
+        """
+        Build columns for a spline term.
         
-        # Build continuous part (product of all continuous)
-        cont_product = self._get_column(cont_factors[0])
-        for factor in cont_factors[1:]:
-            cont_product = cont_product * self._get_column(factor)
+        Uses the fast Rust implementation for basis computation.
+        """
+        from rustystats.splines import bs, ns, bs_names, ns_names
         
-        # Multiply each categorical column by continuous product
-        n_cat_cols = cat_encoding.shape[1]
-        result = np.zeros((self._n, n_cat_cols), dtype=self.dtype)
-        col_names = []
+        # Get the data for this variable
+        x = self._get_column(spline.var_name)
         
-        cont_name = ':'.join(cont_factors)
+        # Compute spline basis
+        if spline.spline_type == "bs":
+            basis = bs(x, df=spline.df, degree=spline.degree, include_intercept=False)
+            col_names = bs_names(spline.var_name, spline.df, include_intercept=False)
+        else:
+            basis = ns(x, df=spline.df, include_intercept=False)
+            col_names = ns_names(spline.var_name, spline.df, include_intercept=False)
         
-        for i in range(n_cat_cols):
-            result[:, i] = cat_encoding[:, i] * cont_product
-            col_names.append(f"{cat_names[i]}:{cont_name}")
+        # Ensure names match columns
+        if len(col_names) != basis.shape[1]:
+            col_names = [f"{spline.spline_type}({spline.var_name}, {i+1}/{basis.shape[1]})" 
+                        for i in range(basis.shape[1])]
         
-        return result, col_names
+        return basis, col_names
     
     def build_design_matrix(
         self,
@@ -532,7 +478,7 @@ class InteractionBuilder:
         Parameters
         ----------
         formula : str
-            R-style formula like "y ~ x1*x2 + C(cat)"
+            R-style formula like "y ~ x1*x2 + C(cat) + bs(age, df=5)"
             
         Returns
         -------
@@ -562,6 +508,12 @@ class InteractionBuilder:
             else:
                 columns.append(self._get_column(var).reshape(-1, 1))
                 names.append(var)
+        
+        # Add spline terms
+        for spline in parsed.spline_terms:
+            spline_cols, spline_names = self._build_spline_columns(spline)
+            columns.append(spline_cols)
+            names.extend(spline_names)
         
         # Add interactions
         for interaction in parsed.interactions:
@@ -622,149 +574,3 @@ def build_design_matrix_optimized(
     """
     builder = InteractionBuilder(data)
     return builder.build_design_matrix(formula)
-
-
-class SparseInteractionMatrix:
-    """
-    Lazy sparse representation for large categorical interactions.
-    
-    Instead of materializing the full (n × p) design matrix where p can be
-    very large for categorical × categorical interactions, this class stores
-    the component factors and computes products on-the-fly.
-    
-    This is particularly efficient for:
-    - Computing X'WX where most entries are zero
-    - Memory-constrained environments
-    - Very high-cardinality categoricals
-    
-    Example
-    -------
-    >>> sim = SparseInteractionMatrix(data, ['region', 'brand'])
-    >>> xtx = sim.compute_xtx(weights)  # Without materializing full X
-    """
-    
-    def __init__(
-        self,
-        data: Union["pl.DataFrame", "pd.DataFrame"],
-        categorical_factors: List[str],
-        continuous_factor: Optional[str] = None,
-    ):
-        self.data = data
-        self.categorical_factors = categorical_factors
-        self.continuous_factor = continuous_factor
-        
-        self._is_polars = hasattr(data, 'to_pandas')
-        self._n = len(data)
-        
-        # Store level indices for each categorical
-        self._indices: List[np.ndarray] = []
-        self._levels: List[np.ndarray] = []
-        self._n_levels: List[int] = []
-        
-        for cat in categorical_factors:
-            if self._is_polars:
-                col = data[cat].to_numpy()
-            else:
-                col = data[cat].values
-            
-            levels = np.unique(col)
-            levels = np.sort(levels)
-            level_to_idx = {l: i for i, l in enumerate(levels)}
-            indices = np.array([level_to_idx[v] for v in col], dtype=np.int32)
-            
-            self._indices.append(indices)
-            self._levels.append(levels)
-            self._n_levels.append(len(levels))
-        
-        # Store continuous factor if present
-        self._continuous: Optional[np.ndarray] = None
-        if continuous_factor:
-            if self._is_polars:
-                self._continuous = data[continuous_factor].to_numpy().astype(np.float64)
-            else:
-                self._continuous = data[continuous_factor].values.astype(np.float64)
-    
-    @property
-    def n_interaction_columns(self) -> int:
-        """Number of columns in full interaction matrix (excluding reference levels)."""
-        result = 1
-        for n in self._n_levels:
-            result *= (n - 1)  # Drop first level of each
-        return result
-    
-    def compute_xtx_contribution(
-        self,
-        weights: np.ndarray,
-    ) -> np.ndarray:
-        """
-        Compute X'WX contribution from this interaction without full materialization.
-        
-        For sparse categorical interactions, most X'WX entries are zero.
-        We compute only the non-zero entries.
-        
-        Parameters
-        ----------
-        weights : np.ndarray
-            IRLS weights (n,)
-            
-        Returns
-        -------
-        xtx : np.ndarray
-            Contribution to X'WX from this interaction
-        """
-        from itertools import product
-        
-        n_cols = self.n_interaction_columns
-        xtx = np.zeros((n_cols, n_cols), dtype=np.float64)
-        
-        # Generate all non-reference level combinations
-        col_ranges = [range(1, n) for n in self._n_levels]  # Skip first level
-        
-        col_idx = 0
-        for indices in product(*col_ranges):
-            # Find rows where all categoricals match these indices
-            mask = np.ones(self._n, dtype=bool)
-            for k, idx in enumerate(indices):
-                mask &= (self._indices[k] == idx)
-            
-            if self._continuous is not None:
-                # Weight is sum of w_i * x_i^2 for matching rows
-                x_vals = self._continuous[mask]
-                w_vals = weights[mask]
-                xtx[col_idx, col_idx] = np.sum(w_vals * x_vals * x_vals)
-            else:
-                # Just sum of weights for matching rows
-                xtx[col_idx, col_idx] = np.sum(weights[mask])
-            
-            col_idx += 1
-        
-        return xtx
-    
-    def compute_xtz_contribution(
-        self,
-        z: np.ndarray,
-        weights: np.ndarray,
-    ) -> np.ndarray:
-        """Compute X'Wz contribution from this interaction."""
-        from itertools import product
-        
-        n_cols = self.n_interaction_columns
-        xtz = np.zeros(n_cols, dtype=np.float64)
-        
-        col_ranges = [range(1, n) for n in self._n_levels]
-        
-        col_idx = 0
-        for indices in product(*col_ranges):
-            mask = np.ones(self._n, dtype=bool)
-            for k, idx in enumerate(indices):
-                mask &= (self._indices[k] == idx)
-            
-            if self._continuous is not None:
-                x_vals = self._continuous[mask]
-                xtz[col_idx] = np.sum(weights[mask] * z[mask] * x_vals)
-            else:
-                xtz[col_idx] = np.sum(weights[mask] * z[mask])
-            
-            col_idx += 1
-        
-        return xtz

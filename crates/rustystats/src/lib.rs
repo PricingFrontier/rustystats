@@ -1388,6 +1388,421 @@ fn fit_glm_py(
 }
 
 // =============================================================================
+// Spline Basis Functions
+// =============================================================================
+//
+// B-splines and natural splines for non-linear continuous effects in GLMs.
+// These are computed in Rust for maximum performance.
+// =============================================================================
+
+use rustystats_core::splines;
+
+/// Compute B-spline basis matrix.
+///
+/// B-splines are flexible piecewise polynomial bases commonly used for
+/// modeling non-linear continuous effects in regression models.
+///
+/// Parameters
+/// ----------
+/// x : numpy.ndarray
+///     Data points (1D array of length n)
+/// df : int
+///     Degrees of freedom (number of basis functions)
+/// degree : int, optional
+///     Spline degree. Default 3 (cubic splines).
+/// boundary_knots : tuple, optional
+///     (min, max) boundary knots. If None, uses data range.
+/// include_intercept : bool, optional
+///     Whether to include an intercept column. Default False.
+///
+/// Returns
+/// -------
+/// numpy.ndarray
+///     Basis matrix of shape (n, df) or (n, df-1) if include_intercept=False
+///
+/// Examples
+/// --------
+/// >>> import rustystats as rs
+/// >>> import numpy as np
+/// >>> x = np.linspace(0, 10, 100)
+/// >>> basis = rs.bs(x, df=5)
+/// >>> print(basis.shape)
+/// (100, 4)
+#[pyfunction]
+#[pyo3(signature = (x, df, degree=3, boundary_knots=None, include_intercept=false))]
+fn bs_py<'py>(
+    py: Python<'py>,
+    x: PyReadonlyArray1<f64>,
+    df: usize,
+    degree: usize,
+    boundary_knots: Option<(f64, f64)>,
+    include_intercept: bool,
+) -> PyResult<Bound<'py, PyArray2<f64>>> {
+    let x_array = x.as_array().to_owned();
+    let result = splines::bs_basis(&x_array, df, degree, boundary_knots, include_intercept);
+    Ok(result.into_pyarray_bound(py))
+}
+
+/// Compute natural cubic spline basis matrix.
+///
+/// Natural splines are cubic splines with the additional constraint that
+/// the second derivative is zero at the boundaries. This makes extrapolation
+/// linear beyond the data range, which is often more sensible for prediction.
+///
+/// Parameters
+/// ----------
+/// x : numpy.ndarray
+///     Data points (1D array of length n)
+/// df : int
+///     Degrees of freedom (number of basis functions)
+/// boundary_knots : tuple, optional
+///     (min, max) boundary knots. If None, uses data range.
+/// include_intercept : bool, optional
+///     Whether to include an intercept column. Default False.
+///
+/// Returns
+/// -------
+/// numpy.ndarray
+///     Basis matrix of shape (n, df) or (n, df-1)
+///
+/// Notes
+/// -----
+/// Natural splines are recommended when extrapolation beyond the data
+/// range is needed, as they provide more sensible linear extrapolation
+/// compared to B-splines which can have erratic behavior at boundaries.
+///
+/// Examples
+/// --------
+/// >>> import rustystats as rs
+/// >>> import numpy as np
+/// >>> x = np.linspace(0, 10, 100)
+/// >>> basis = rs.ns(x, df=5)
+/// >>> print(basis.shape)
+/// (100, 4)
+#[pyfunction]
+#[pyo3(signature = (x, df, boundary_knots=None, include_intercept=false))]
+fn ns_py<'py>(
+    py: Python<'py>,
+    x: PyReadonlyArray1<f64>,
+    df: usize,
+    boundary_knots: Option<(f64, f64)>,
+    include_intercept: bool,
+) -> PyResult<Bound<'py, PyArray2<f64>>> {
+    let x_array = x.as_array().to_owned();
+    let result = splines::ns_basis(&x_array, df, boundary_knots, include_intercept);
+    Ok(result.into_pyarray_bound(py))
+}
+
+/// Compute B-spline basis with explicit knots.
+///
+/// For cases where you want to specify interior knots directly rather
+/// than having them computed from the data.
+///
+/// Parameters
+/// ----------
+/// x : numpy.ndarray
+///     Data points (1D array)
+/// knots : list
+///     Interior knot positions
+/// degree : int, optional
+///     Spline degree. Default 3.
+/// boundary_knots : tuple, optional
+///     (min, max) boundary knots.
+///
+/// Returns
+/// -------
+/// numpy.ndarray
+///     Basis matrix
+#[pyfunction]
+#[pyo3(signature = (x, knots, degree=3, boundary_knots=None))]
+fn bs_knots_py<'py>(
+    py: Python<'py>,
+    x: PyReadonlyArray1<f64>,
+    knots: Vec<f64>,
+    degree: usize,
+    boundary_knots: Option<(f64, f64)>,
+) -> PyResult<Bound<'py, PyArray2<f64>>> {
+    let x_array = x.as_array().to_owned();
+    let result = splines::bs_with_knots(&x_array, &knots, degree, boundary_knots);
+    Ok(result.into_pyarray_bound(py))
+}
+
+/// Get column names for B-spline basis.
+#[pyfunction]
+#[pyo3(signature = (var_name, df, include_intercept=false))]
+fn bs_names_py(var_name: &str, df: usize, include_intercept: bool) -> Vec<String> {
+    splines::bs_names(var_name, df, include_intercept)
+}
+
+/// Get column names for natural spline basis.
+#[pyfunction]
+#[pyo3(signature = (var_name, df, include_intercept=false))]
+fn ns_names_py(var_name: &str, df: usize, include_intercept: bool) -> Vec<String> {
+    splines::ns_names(var_name, df, include_intercept)
+}
+
+// =============================================================================
+// Design Matrix Functions
+// =============================================================================
+//
+// Fast categorical encoding and interaction construction in Rust.
+// =============================================================================
+
+use rustystats_core::design_matrix;
+
+/// Encode categorical variable from string values.
+///
+/// Parameters
+/// ----------
+/// values : list[str]
+///     String values for each observation
+/// var_name : str
+///     Variable name (for column naming)
+/// drop_first : bool
+///     Whether to drop the first level (reference category)
+///
+/// Returns
+/// -------
+/// tuple[numpy.ndarray, list[str], list[int], list[str]]
+///     (dummy_matrix, column_names, indices, levels)
+#[pyfunction]
+#[pyo3(signature = (values, var_name, drop_first=true))]
+fn encode_categorical_py<'py>(
+    py: Python<'py>,
+    values: Vec<String>,
+    var_name: &str,
+    drop_first: bool,
+) -> PyResult<(Bound<'py, PyArray2<f64>>, Vec<String>, Vec<i32>, Vec<String>)> {
+    let enc = design_matrix::encode_categorical(&values, var_name, drop_first);
+    Ok((
+        enc.matrix.into_pyarray_bound(py),
+        enc.names,
+        enc.indices,
+        enc.levels,
+    ))
+}
+
+/// Encode categorical from pre-computed indices.
+///
+/// Use when indices are already computed (e.g., from pandas factorize).
+///
+/// Parameters
+/// ----------
+/// indices : numpy.ndarray
+///     Pre-computed level indices (0-indexed, int32)
+/// n_levels : int
+///     Total number of levels
+/// level_names : list[str]
+///     Names for each level
+/// var_name : str
+///     Variable name
+/// drop_first : bool
+///     Drop first level
+///
+/// Returns
+/// -------
+/// tuple[numpy.ndarray, list[str]]
+///     (dummy_matrix, column_names)
+#[pyfunction]
+#[pyo3(signature = (indices, n_levels, level_names, var_name, drop_first=true))]
+fn encode_categorical_indices_py<'py>(
+    py: Python<'py>,
+    indices: PyReadonlyArray1<i32>,
+    n_levels: usize,
+    level_names: Vec<String>,
+    var_name: &str,
+    drop_first: bool,
+) -> PyResult<(Bound<'py, PyArray2<f64>>, Vec<String>)> {
+    let indices_vec: Vec<i32> = indices.as_array().to_vec();
+    let enc = design_matrix::encode_categorical_from_indices(
+        &indices_vec, n_levels, &level_names, var_name, drop_first
+    );
+    Ok((enc.matrix.into_pyarray_bound(py), enc.names))
+}
+
+/// Build categorical × categorical interaction matrix.
+///
+/// Parameters
+/// ----------
+/// idx1 : numpy.ndarray
+///     Level indices for first categorical (0 = reference)
+/// n_levels1 : int
+///     Number of non-reference levels for first
+/// idx2 : numpy.ndarray
+///     Level indices for second categorical
+/// n_levels2 : int
+///     Number of non-reference levels for second
+/// names1 : list[str]
+///     Column names for first categorical dummies
+/// names2 : list[str]
+///     Column names for second categorical dummies
+///
+/// Returns
+/// -------
+/// tuple[numpy.ndarray, list[str]]
+///     (interaction_matrix, column_names)
+#[pyfunction]
+fn build_cat_cat_interaction_py<'py>(
+    py: Python<'py>,
+    idx1: PyReadonlyArray1<i32>,
+    n_levels1: usize,
+    idx2: PyReadonlyArray1<i32>,
+    n_levels2: usize,
+    names1: Vec<String>,
+    names2: Vec<String>,
+) -> PyResult<(Bound<'py, PyArray2<f64>>, Vec<String>)> {
+    let idx1_vec: Vec<i32> = idx1.as_array().to_vec();
+    let idx2_vec: Vec<i32> = idx2.as_array().to_vec();
+    let (matrix, names) = design_matrix::build_categorical_categorical_interaction(
+        &idx1_vec, n_levels1, &idx2_vec, n_levels2, &names1, &names2
+    );
+    Ok((matrix.into_pyarray_bound(py), names))
+}
+
+/// Build categorical × continuous interaction matrix.
+///
+/// Parameters
+/// ----------
+/// cat_indices : numpy.ndarray
+///     Level indices for categorical (0 = reference)
+/// n_levels : int
+///     Number of non-reference levels
+/// continuous : numpy.ndarray
+///     Continuous variable values
+/// cat_names : list[str]
+///     Column names for categorical dummies
+/// cont_name : str
+///     Name of continuous variable
+///
+/// Returns
+/// -------
+/// tuple[numpy.ndarray, list[str]]
+///     (interaction_matrix, column_names)
+#[pyfunction]
+fn build_cat_cont_interaction_py<'py>(
+    py: Python<'py>,
+    cat_indices: PyReadonlyArray1<i32>,
+    n_levels: usize,
+    continuous: PyReadonlyArray1<f64>,
+    cat_names: Vec<String>,
+    cont_name: &str,
+) -> PyResult<(Bound<'py, PyArray2<f64>>, Vec<String>)> {
+    let idx_vec: Vec<i32> = cat_indices.as_array().to_vec();
+    let cont_array = continuous.as_array().to_owned();
+    let (matrix, names) = design_matrix::build_categorical_continuous_interaction(
+        &idx_vec, n_levels, &cont_array, &cat_names, cont_name
+    );
+    Ok((matrix.into_pyarray_bound(py), names))
+}
+
+/// Build continuous × continuous interaction.
+///
+/// Simple element-wise multiplication.
+#[pyfunction]
+fn build_cont_cont_interaction_py<'py>(
+    py: Python<'py>,
+    x1: PyReadonlyArray1<f64>,
+    x2: PyReadonlyArray1<f64>,
+    name1: &str,
+    name2: &str,
+) -> PyResult<(Bound<'py, PyArray1<f64>>, String)> {
+    let x1_array = x1.as_array().to_owned();
+    let x2_array = x2.as_array().to_owned();
+    let (result, name) = design_matrix::build_continuous_continuous_interaction(
+        &x1_array, &x2_array, name1, name2
+    );
+    Ok((result.into_pyarray_bound(py), name))
+}
+
+/// Multiply each column of a matrix by a continuous vector.
+///
+/// Used for multi-categorical × continuous interactions.
+#[pyfunction]
+fn multiply_matrix_by_continuous_py<'py>(
+    py: Python<'py>,
+    matrix: PyReadonlyArray2<f64>,
+    continuous: PyReadonlyArray1<f64>,
+    matrix_names: Vec<String>,
+    cont_name: &str,
+) -> PyResult<(Bound<'py, PyArray2<f64>>, Vec<String>)> {
+    let matrix_array = matrix.as_array().to_owned();
+    let cont_array = continuous.as_array().to_owned();
+    let (result, names) = design_matrix::multiply_matrix_by_continuous(
+        &matrix_array, &cont_array, &matrix_names, cont_name
+    );
+    Ok((result.into_pyarray_bound(py), names))
+}
+
+// =============================================================================
+// Formula Parsing
+// =============================================================================
+
+use rustystats_core::formula;
+
+/// Parse a formula string into structured components.
+///
+/// Parameters
+/// ----------
+/// formula_str : str
+///     R-style formula like "y ~ x1*x2 + C(cat) + bs(age, df=5)"
+///
+/// Returns
+/// -------
+/// dict
+///     Parsed formula with keys:
+///     - response: str
+///     - main_effects: list[str]
+///     - interactions: list[dict] with 'factors' and 'categorical_flags'
+///     - categorical_vars: list[str]
+///     - spline_terms: list[dict] with 'var_name', 'spline_type', 'df', 'degree'
+///     - has_intercept: bool
+#[pyfunction]
+fn parse_formula_py(formula_str: &str) -> PyResult<std::collections::HashMap<String, pyo3::PyObject>> {
+    use pyo3::types::PyDict;
+    
+    let parsed = formula::parse_formula(formula_str)
+        .map_err(|e| PyValueError::new_err(e))?;
+    
+    Python::with_gil(|py| {
+        let mut result = std::collections::HashMap::new();
+        
+        result.insert("response".to_string(), parsed.response.into_py(py));
+        result.insert("main_effects".to_string(), parsed.main_effects.into_py(py));
+        result.insert("has_intercept".to_string(), parsed.has_intercept.into_py(py));
+        result.insert("categorical_vars".to_string(), 
+            parsed.categorical_vars.into_iter().collect::<Vec<_>>().into_py(py));
+        
+        // Convert interactions
+        let interactions: Vec<_> = parsed.interactions
+            .into_iter()
+            .map(|i| {
+                let dict = PyDict::new_bound(py);
+                dict.set_item("factors", i.factors).unwrap();
+                dict.set_item("categorical_flags", i.categorical_flags).unwrap();
+                dict.into_py(py)
+            })
+            .collect();
+        result.insert("interactions".to_string(), interactions.into_py(py));
+        
+        // Convert spline terms
+        let splines: Vec<_> = parsed.spline_terms
+            .into_iter()
+            .map(|s| {
+                let dict = PyDict::new_bound(py);
+                dict.set_item("var_name", s.var_name).unwrap();
+                dict.set_item("spline_type", s.spline_type).unwrap();
+                dict.set_item("df", s.df).unwrap();
+                dict.set_item("degree", s.degree).unwrap();
+                dict.into_py(py)
+            })
+            .collect();
+        result.insert("spline_terms".to_string(), splines.into_py(py));
+        
+        Ok(result)
+    })
+}
+
+// =============================================================================
 // Module Registration
 // =============================================================================
 //
@@ -1417,6 +1832,24 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Add GLM fitting
     m.add_class::<PyGLMResults>()?;
     m.add_function(wrap_pyfunction!(fit_glm_py, m)?)?;
+    
+    // Add spline functions
+    m.add_function(wrap_pyfunction!(bs_py, m)?)?;
+    m.add_function(wrap_pyfunction!(ns_py, m)?)?;
+    m.add_function(wrap_pyfunction!(bs_knots_py, m)?)?;
+    m.add_function(wrap_pyfunction!(bs_names_py, m)?)?;
+    m.add_function(wrap_pyfunction!(ns_names_py, m)?)?;
+    
+    // Add design matrix functions
+    m.add_function(wrap_pyfunction!(encode_categorical_py, m)?)?;
+    m.add_function(wrap_pyfunction!(encode_categorical_indices_py, m)?)?;
+    m.add_function(wrap_pyfunction!(build_cat_cat_interaction_py, m)?)?;
+    m.add_function(wrap_pyfunction!(build_cat_cont_interaction_py, m)?)?;
+    m.add_function(wrap_pyfunction!(build_cont_cont_interaction_py, m)?)?;
+    m.add_function(wrap_pyfunction!(multiply_matrix_by_continuous_py, m)?)?;
+    
+    // Add formula parsing
+    m.add_function(wrap_pyfunction!(parse_formula_py, m)?)?;
     
     Ok(())
 }

@@ -12,6 +12,8 @@ A high-performance Generalized Linear Models (GLM) library with a Rust backend a
 | **Distribution Families** | ✅ Complete | Gaussian, Poisson, Binomial, Gamma, Tweedie |
 | **IRLS Solver** | ✅ Complete | Multi-threaded Iteratively Reweighted Least Squares (parallel) |
 | **Coordinate Descent** | ✅ Complete | For Lasso/Elastic Net with L1 penalty |
+| **Formula Parsing** | ✅ Complete | R-style formula parsing (y ~ x1*x2 + C(cat) + bs(x, df=5)) |
+| **Design Matrix Builder** | ✅ Complete | Categorical encoding, interactions, splines (parallel) |
 | **Regularization** | ✅ Complete | Ridge (L2), Lasso (L1), Elastic Net |
 | **Offset Support** | ✅ Complete | For exposure-based rate models |
 | **Prior Weights** | ✅ Complete | For grouped/aggregated data |
@@ -42,13 +44,15 @@ A high-performance Generalized Linear Models (GLM) library with a Rust backend a
 | **`lasso_path()`** | ✅ Complete | Coefficient paths over alpha grid |
 | **`cv_glm()`** | ✅ Complete | Cross-validation for optimal regularization |
 | **Interaction Terms** | ✅ Complete | `x1*x2`, `C(cat):x`, `C(cat1)*C(cat2)` in formulas |
+| **Spline Basis Functions** | ✅ Complete | `bs(x, df)`, `ns(x, df)` for non-linear effects |
+| **Minimal Dependencies** | ✅ Complete | Core requires only numpy; pandas/polars optional |
 
 ### Testing
 
 | Component | Count | Description |
 |-----------|-------|-------------|
-| **Rust Unit Tests** | 110 | Core library tests (families, diagnostics, solvers, regularization, inference, interactions) |
-| **Python Tests** | 147 | API, integration, regularization, robust SE, and interaction tests |
+| **Rust Unit Tests** | 130+ | Core library tests (families, diagnostics, solvers, regularization, inference, interactions, splines, formula, design_matrix) |
+| **Python Tests** | 175 | API, integration, regularization, robust SE, interaction, and spline tests |
 
 ### Examples
 
@@ -231,6 +235,41 @@ print(f"1-SE alpha: {cv_result.alpha_1se}")  # More parsimonious model
 cv_result.plot()  # Visualize CV curve
 ```
 
+### Spline Basis Functions (NEW)
+```python
+import rustystats as rs
+import numpy as np
+
+# B-spline basis - flexible piecewise polynomials
+x = np.linspace(0, 10, 100)
+basis = rs.bs(x, df=5)  # 5 degrees of freedom (4 basis columns)
+
+# Natural splines - linear extrapolation at boundaries
+basis_ns = rs.ns(x, df=5)  # Better for prediction outside training range
+
+# Use splines in formulas - automatic parsing
+result = rs.glm(
+    "ClaimNb ~ bs(Age, df=5) + ns(VehPower, df=4) + C(Region)",
+    data=data,
+    family="poisson",
+    offset="Exposure"
+).fit()
+
+# Combine splines with interactions
+result = rs.glm(
+    "y ~ bs(age, df=4)*C(gender) + ns(income, df=3)",
+    data=data,
+    family="gaussian"
+).fit()
+
+# Direct basis computation for custom use
+basis = rs.bs(age_values, df=6, degree=3, boundary_knots=(18, 80))
+```
+
+**When to use each spline type:**
+- **B-splines (`bs`)**: Standard choice, more flexible at boundaries
+- **Natural splines (`ns`)**: Better extrapolation, linear beyond boundaries (recommended for actuarial work)
+
 ---
 
 ## Features To Be Added
@@ -240,7 +279,6 @@ cv_result.plot()  # Visualize CV curve
 | Feature | Description | Use Case |
 |---------|-------------|----------|
 | **Quasi-Families** | Quasi-Poisson, Quasi-Binomial | Overdispersion handling |
-| **Splines** | B-splines, natural splines | Non-linear continuous effects |
 
 ### Lower Priority
 
@@ -281,6 +319,9 @@ rustystats/
 │   │       ├── solvers/          # IRLS, coordinate descent
 │   │       ├── inference/        # P-values, CIs, robust SE (HC0-HC3)
 │   │       ├── interactions/     # Lazy interaction term computation
+│   │       ├── splines/          # B-spline and natural spline basis functions
+│   │       ├── design_matrix/    # Categorical encoding, interaction matrices
+│   │       ├── formula/          # R-style formula parsing
 │   │       └── diagnostics/      # Residuals, dispersion, AIC/BIC
 │   │
 │   └── rustystats/               # Python bindings (PyO3)
@@ -291,6 +332,7 @@ rustystats/
 │   ├── glm.py                    # GLM class, fit_glm, summary
 │   ├── formula.py                # Formula API with DataFrame support
 │   ├── interactions.py           # Optimized interaction term handling
+│   ├── splines.py                # bs() and ns() spline basis functions
 │   ├── families.py               # Family wrappers
 │   └── links.py                  # Link wrappers
 │
@@ -305,7 +347,8 @@ rustystats/
         ├── test_links.py         # Link tests
         ├── test_interactions.py  # Interaction term tests
         ├── test_regularization.py # Lasso/Ridge/Elastic Net tests
-        └── test_robust_se.py     # Robust standard error tests
+        ├── test_robust_se.py     # Robust standard error tests
+        └── test_splines.py       # Spline basis function tests
 ```
 
 ---
@@ -339,11 +382,13 @@ rustystats/
 - `pyo3` - Python bindings
 - `numpy` - NumPy interop
 
-### Python
-- `numpy` - Array operations
-- `polars` - DataFrame support
-- `formulaic` - Formula parsing
-- `pyarrow` - Polars ↔ Pandas conversion
+### Python (Core)
+- `numpy` - Array operations (required)
+
+### Python (Optional)
+- `polars` - DataFrame support (for formula API with DataFrames)
+- `pandas` - Only needed for `summary_df()`, `relativities()` output as DataFrames
+- `formulaic` - Fallback formula parsing (rustystats has its own Rust parser)
 
 ---
 

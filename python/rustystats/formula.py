@@ -109,8 +109,8 @@ def build_design_matrix(
     if backend == "optimized":
         use_optimized = True
     elif backend == "auto":
-        # Use optimized backend for formulas with interactions
-        use_optimized = ':' in formula or '*' in formula
+        # Use optimized backend for formulas with interactions or splines
+        use_optimized = ':' in formula or '*' in formula or 'bs(' in formula or 'ns(' in formula
     
     if use_optimized:
         try:

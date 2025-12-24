@@ -1,169 +1,159 @@
 # RustyStats 🦀📊
 
-**Fast Generalized Linear Models with a Rust Backend**
+**High-performance Generalized Linear Models with a Rust backend and Python API**
 
-A statsmodels-compatible Python library for GLM fitting, optimized for actuarial applications.
+Built for actuarial applications. Fits 678K rows in ~1 second.
 
-## Why RustyStats?
+## Features
 
-- **Fast**: Core algorithms implemented in Rust for speed
-- **Familiar**: API designed to match statsmodels
-- **Clear**: Heavily documented code that actuaries can understand and maintain
-- **Reliable**: Comprehensive test suite validated against statsmodels
+- **Fast** — Parallel IRLS solver in Rust (Rayon)
+- **Complete** — Families, regularization, inference, diagnostics
+- **Flexible** — R-style formulas with interactions and splines
+- **Minimal** — Core requires only `numpy`
 
 ## Installation
 
-### From PyPI (coming soon)
 ```bash
-pip install rustystats
-```
-
-### From Source (Development)
-```bash
-# Clone the repository
-git clone https://github.com/your-org/rustystats.git
+# Development install
+git clone https://github.com/PricingFrontier/rustystats.git
 cd rustystats
+uv run maturin develop --release
 
-# Install Rust if you don't have it
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# Install maturin (Rust-Python build tool)
-pip install maturin
-
-# Build and install in development mode
-maturin develop
+# Run tests
+uv run pytest tests/python/
 ```
 
 ## Quick Start
+
+### Formula API (recommended)
+
+```python
+import rustystats as rs
+import polars as pl
+
+# Load data
+data = pl.read_parquet("insurance.parquet")
+
+# Fit a Poisson GLM for claim frequency
+result = rs.glm(
+    "ClaimCount ~ VehAge + VehPower + C(Area) + C(Region)",
+    data=data,
+    family="poisson",
+    offset="Exposure"
+).fit()
+
+# View results
+print(result.summary())
+print(result.relativities())  # exp(coef) for pricing
+```
+
+### Array API
 
 ```python
 import rustystats as rs
 import numpy as np
 
-# Distribution families
-poisson = rs.families.Poisson()
-gamma = rs.families.Gamma()
-binomial = rs.families.Binomial()
+# Fit with numpy arrays
+result = rs.fit_glm(
+    y, X,
+    family="poisson",
+    offset=np.log(exposure),
+    alpha=0.1,        # Regularization strength
+    l1_ratio=0.5      # Elastic net mixing (0=Ridge, 1=Lasso)
+)
 
-# Link functions
-log_link = rs.links.Log()
-logit_link = rs.links.Logit()
-
-# Check variance functions
-mu = np.array([1.0, 2.0, 5.0])
-print(poisson.variance(mu))  # [1.0, 2.0, 5.0] - variance = mean
-print(gamma.variance(mu))    # [1.0, 4.0, 25.0] - variance = mean²
-
-# GLM fitting coming soon!
-# model = rs.GLM(y, X, family=rs.families.Poisson())
-# result = model.fit()
-# print(result.summary())
+print(f"Coefficients: {result.params}")
+print(f"Deviance: {result.deviance}")
 ```
 
-## Available Families
+## Families & Links
 
-| Family | Variance Function | Default Link | Use For |
-|--------|-------------------|--------------|---------|
-| Gaussian | V(μ) = 1 | Identity | Linear regression |
-| Poisson | V(μ) = μ | Log | Claim frequency |
-| Binomial | V(μ) = μ(1-μ) | Logit | Binary outcomes |
-| Gamma | V(μ) = μ² | Log | Claim severity |
+| Family | Default Link | Use Case |
+|--------|--------------|----------|
+| `gaussian` | identity | Linear regression |
+| `poisson` | log | Claim frequency |
+| `binomial` | logit | Binary outcomes |
+| `gamma` | log | Claim severity |
+| `tweedie` | log | Pure premium (var_power=1.5) |
 
-## Available Links
+## Formula Syntax
 
-| Link | Function | Inverse | Use With |
-|------|----------|---------|----------|
-| Identity | η = μ | μ = η | Gaussian |
-| Log | η = log(μ) | μ = exp(η) | Poisson, Gamma |
-| Logit | η = log(μ/(1-μ)) | μ = sigmoid(η) | Binomial |
-
-## For Actuaries
-
-This library is designed with actuarial pricing in mind:
-
-### Claim Frequency
 ```python
-# Poisson GLM with log link
-# Coefficients are log rate relativities
-# exp(β) = rate relativity
+# Main effects
+"y ~ x1 + x2 + C(category)"
+
+# Interactions
+"y ~ x1*x2"              # x1 + x2 + x1:x2
+"y ~ C(area):age"        # Area-specific age effects
+"y ~ C(area)*C(brand)"   # Categorical × categorical
+
+# Splines (non-linear effects)
+"y ~ bs(age, df=5)"      # B-spline basis
+"y ~ ns(income, df=4)"   # Natural spline (better extrapolation)
+
+# Combined
+"y ~ bs(age, df=5) + C(region)*income + ns(vehicle_age, df=3)"
 ```
 
-### Claim Severity  
+## Regularization
+
 ```python
-# Gamma GLM with log link
-# Coefficients are log severity relativities
-# exp(β) = severity relativity
+# Ridge (L2) - shrinks coefficients
+result = rs.fit_glm(y, X, family="poisson", alpha=0.1, l1_ratio=0.0)
+
+# Lasso (L1) - variable selection
+result = rs.fit_glm(y, X, family="poisson", alpha=0.1, l1_ratio=1.0)
+
+# Elastic Net - mix of both
+result = rs.fit_glm(y, X, family="poisson", alpha=0.1, l1_ratio=0.5)
+
+# Cross-validation for optimal alpha
+cv = rs.cv_glm(y, X, family="poisson", l1_ratio=1.0, cv=5)
+print(f"Best alpha: {cv.alpha_best}")
+
+# Coefficient path
+path = rs.lasso_path(y, X, family="poisson", n_alphas=50)
 ```
 
-### Pure Premium
+## Results Methods
+
 ```python
-# If both use log link:
-# Pure premium β = Frequency β + Severity β
-# (Because log(Freq × Sev) = log(Freq) + log(Sev))
+result.params              # Coefficients
+result.bse()               # Standard errors
+result.pvalues()           # P-values
+result.conf_int()          # Confidence intervals
+result.fittedvalues        # Predicted values
+
+# Robust standard errors (sandwich estimators)
+result.bse_robust("HC1")   # HC0, HC1, HC2, HC3
+
+# Diagnostics
+result.deviance            # Model deviance
+result.aic()               # Akaike Information Criterion
+result.bic()               # Bayesian Information Criterion
+result.resid_pearson()     # Pearson residuals
+result.resid_deviance()    # Deviance residuals
 ```
 
-## Project Structure
+## Performance
 
-```
-rustystats/
-├── Cargo.toml                 # Rust workspace config
-├── pyproject.toml             # Python package config
-├── crates/
-│   ├── rustystats-core/       # Pure Rust statistics library
-│   │   └── src/
-│   │       ├── families/      # Distribution families
-│   │       ├── links/         # Link functions
-│   │       └── error.rs       # Error types
-│   └── rustystats/            # Python bindings (PyO3)
-├── python/
-│   └── rustystats/            # Python package
-│       ├── __init__.py
-│       ├── families.py
-│       └── links.py
-└── tests/
-    ├── rust/                  # Rust tests (cargo test)
-    └── python/                # Python tests (pytest)
-```
+| Dataset | RustyStats | Statsmodels |
+|---------|------------|-------------|
+| 678K rows, Poisson | ~1.0s | ~5-10s |
+| 678K rows, Lasso | ~2.8s | N/A for GLMs |
 
-## Development
+## Dependencies
 
-### Running Tests
+**Required:** `numpy`
 
-```bash
-# Rust tests
-cargo test
+**Optional:**
+- `polars` — DataFrame support for formula API
+- `pandas` — Only for `summary_df()` output
 
-# Python tests (after building)
-maturin develop
-pytest tests/python/
-```
+## Documentation
 
-### Building Documentation
-
-```bash
-# Rust docs
-cargo doc --open
-
-# Python docs (coming soon)
-```
-
-## Roadmap
-
-- [x] Phase 1: Project scaffolding
-- [x] Phase 2: Link functions (Identity, Log, Logit)
-- [x] Phase 3: Distribution families (Gaussian, Poisson, Binomial, Gamma)
-- [ ] Phase 4: IRLS fitting algorithm
-- [ ] Phase 5: Statistical inference (standard errors, p-values)
-- [ ] Phase 6: Model diagnostics (residuals, influence)
-- [ ] Phase 7: Python API (statsmodels-compatible)
-- [ ] Phase 8: Formula interface (patsy/formulaic)
-- [ ] Phase 9: Advanced features (regularization, robust SE)
+See [SUMMARY.md](SUMMARY.md) for detailed API documentation and architecture.
 
 ## License
 
-MIT License - see LICENSE file.
-
-## Contributing
-
-Contributions welcome! Please read the code documentation and follow the existing style.
-The code is intentionally verbose with lots of comments to help actuaries understand and maintain it.
+MIT

@@ -83,6 +83,9 @@ from rustystats._rustystats import (
     # GLM fitting
     GLMResults,
     fit_glm_py as _fit_glm_rust,
+    # Spline functions (raw Rust)
+    bs_py as _bs_rust,
+    ns_py as _ns_rust,
 )
 
 # Import Python wrappers (these provide the nice API)
@@ -93,6 +96,9 @@ from rustystats.glm import GLM, fit_glm, summary, summary_relativities, predict
 
 # Formula-based API (works with DataFrames)
 from rustystats.formula import glm, FormulaGLM, FormulaGLMResults
+
+# Spline basis functions (for non-linear continuous effects)
+from rustystats.splines import bs, ns, bs_names, ns_names, SplineTerm
 
 # Variable selection utilities
 from rustystats.selection import (
@@ -121,6 +127,12 @@ __all__ = [
     "FormulaGLMResults",
     "summary",
     "summary_relativities",
+    # Spline functions
+    "bs",
+    "ns",
+    "bs_names",
+    "ns_names",
+    "SplineTerm",
     # Sub-modules
     "families",
     "links",

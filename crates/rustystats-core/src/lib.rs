@@ -35,6 +35,9 @@ pub mod links;
 pub mod regularization;
 pub mod solvers;
 pub mod diagnostics;
+pub mod splines;
+pub mod design_matrix;
+pub mod formula;
 
 // Re-export commonly used items at the top level for convenience
 // Users can write `use rustystats_core::GaussianFamily` instead of
@@ -48,3 +51,11 @@ pub use inference::{
 pub use links::Link;
 pub use regularization::{Penalty, RegularizationConfig, soft_threshold};
 pub use solvers::{IRLSConfig, IRLSResult, fit_glm, fit_glm_full, fit_glm_regularized, fit_glm_coordinate_descent};
+pub use splines::{bs, ns, bs_basis, ns_basis, bs_with_knots, bs_names, ns_names, compute_knots, DEFAULT_DEGREE};
+pub use design_matrix::{
+    encode_categorical, encode_categorical_from_indices,
+    build_categorical_categorical_interaction, build_categorical_continuous_interaction,
+    build_continuous_continuous_interaction, multiply_matrix_by_continuous,
+    build_design_matrix, CategoricalEncoding, DesignColumn,
+};
+pub use formula::{parse_formula, ParsedFormula, SplineTerm, InteractionTerm};
