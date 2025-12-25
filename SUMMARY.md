@@ -12,8 +12,9 @@ A high-performance Generalized Linear Models (GLM) library with a Rust backend a
 | **Distribution Families** | ✅ Complete | Gaussian, Poisson, Binomial, Gamma, Tweedie, QuasiPoisson, QuasiBinomial, NegativeBinomial |
 | **IRLS Solver** | ✅ Complete | Multi-threaded Iteratively Reweighted Least Squares (parallel) |
 | **Coordinate Descent** | ✅ Complete | For Lasso/Elastic Net with L1 penalty |
-| **Formula Parsing** | ✅ Complete | R-style formula parsing (y ~ x1*x2 + C(cat) + bs(x, df=5)) |
+| **Formula Parsing** | ✅ Complete | R-style formula parsing (y ~ x1*x2 + C(cat) + bs(x, df=5) + TE(brand)) |
 | **Design Matrix Builder** | ✅ Complete | Categorical encoding, interactions, splines (parallel) |
+| **Target Encoding** | ✅ Complete | CatBoost-style ordered target statistics (prevents target leakage) |
 | **Regularization** | ✅ Complete | Ridge (L2), Lasso (L1), Elastic Net |
 | **Offset Support** | ✅ Complete | For exposure-based rate models |
 | **Prior Weights** | ✅ Complete | For grouped/aggregated data |
@@ -44,6 +45,7 @@ A high-performance Generalized Linear Models (GLM) library with a Rust backend a
 | **`cv_glm()`** | ✅ Complete | Cross-validation for optimal regularization |
 | **Interaction Terms** | ✅ Complete | `x1*x2`, `C(cat):x`, `C(cat1)*C(cat2)` in formulas |
 | **Spline Basis Functions** | ✅ Complete | `bs(x, df)`, `ns(x, df)` for non-linear effects |
+| **Target Encoding** | ✅ Complete | `target_encode()`, `TE()` in formulas, `TargetEncoder` class |
 | **Quasi-Families** | ✅ Complete | `quasipoisson`, `quasibinomial` for overdispersion |
 | **Negative Binomial** | ✅ Complete | `negbinomial` with auto θ estimation |
 | **Minimal Dependencies** | ✅ Complete | Core requires only numpy; polars optional |
@@ -52,8 +54,8 @@ A high-performance Generalized Linear Models (GLM) library with a Rust backend a
 
 | Component | Count | Description |
 |-----------|-------|-------------|
-| **Rust Unit Tests** | 163+ | Core library tests (families, diagnostics, solvers, regularization, inference, interactions, splines, formula, design_matrix) |
-| **Python Tests** | 234 | API, integration, regularization, robust SE, interaction, spline, quasi-family, and negative binomial tests |
+| **Rust Unit Tests** | 175+ | Core library tests (families, diagnostics, solvers, regularization, inference, interactions, splines, formula, design_matrix, target_encoding) |
+| **Python Tests** | 256 | API, integration, regularization, robust SE, interaction, spline, quasi-family, negative binomial, and target encoding tests |
 
 ### Examples
 
@@ -358,6 +360,78 @@ result = rs.glm("y ~ x1 + x2", data, family="negbinomial", theta=1.0).fit()
 - **QuasiPoisson**: Quick fix, no θ to specify
 - **NegativeBinomial**: Proper inference, prediction intervals
 
+### Target Encoding for High-Cardinality Categoricals (NEW)
+```python
+import rustystats as rs
+import numpy as np
+
+# CatBoost-style ordered target statistics
+# Prevents target leakage during training
+
+# Direct API
+categories = ["Toyota", "Ford", "BMW", "Toyota", "Ford", "BMW"]
+target = np.array([1.0, 0.0, 1.0, 0.5, 0.2, 0.8])
+
+encoded, name, prior, stats = rs.target_encode(
+    categories, target, "brand",
+    prior_weight=1.0,      # Regularization toward global mean
+    n_permutations=4,      # Average across permutations for stability
+    seed=42                # For reproducibility
+)
+
+# For prediction on new data (uses full training statistics)
+new_cats = ["Toyota", "Honda"]  # Honda is unseen
+new_encoded = rs.apply_target_encoding(new_cats, stats, prior)
+# Unseen categories get the prior (global mean)
+
+# Sklearn-style API
+encoder = rs.TargetEncoder(prior_weight=1.0, n_permutations=4)
+train_encoded = encoder.fit_transform(train_categories, train_target)
+test_encoded = encoder.transform(test_categories)
+
+# Formula API - TE() in formulas
+result = rs.glm(
+    "ClaimNb ~ TE(Brand) + TE(Model) + Age + C(Region)",
+    data=data,
+    family="poisson",
+    offset="Exposure"
+).fit()
+
+# With options
+result = rs.glm(
+    "y ~ TE(brand, prior_weight=2.0, n_permutations=8) + age",
+    data=data,
+    family="gaussian"
+).fit()
+```
+
+**How it works (CatBoost algorithm):**
+1. Shuffle data with random permutation
+2. For each observation i in permutation order:
+   `encoded[i] = (sum_target_before + prior × prior_weight) / (count_before + prior_weight)`
+3. Average across multiple permutations to reduce variance
+4. For prediction: use full training statistics
+
+**Key benefits:**
+- **No target leakage**: Each observation's encoding uses only "past" data
+- **Regularization**: Prior weight controls shrinkage toward global mean
+- **High-cardinality**: Single column instead of thousands of dummies
+- **Rare categories**: Automatically regularized toward global mean
+
+**When to use:**
+- High-cardinality categorical features (100s or 1000s of levels)
+- When one-hot encoding would create too many columns
+- When you want the model to learn category-target relationships
+
+**Target Encoding vs One-Hot Encoding:**
+| Aspect | Target Encoding | One-Hot Encoding |
+|--------|-----------------|------------------|
+| **Columns** | 1 per feature | k-1 per feature |
+| **High cardinality** | Efficient | Explosive |
+| **Target info** | Embedded | None |
+| **Overfitting risk** | Controlled by prior | Lower |
+| **Interpretability** | Single effect | Per-level effects |
+
 ---
 
 ## Features To Be Added
@@ -403,6 +477,7 @@ rustystats/
 │   │       ├── splines/          # B-spline and natural spline basis functions
 │   │       ├── design_matrix/    # Categorical encoding, interaction matrices
 │   │       ├── formula/          # R-style formula parsing
+│   │       ├── target_encoding/  # CatBoost-style ordered target statistics
 │   │       └── diagnostics/      # Residuals, dispersion, AIC/BIC
 │   │
 │   └── rustystats/               # Python bindings (PyO3)
@@ -414,6 +489,7 @@ rustystats/
 │   ├── formula.py                # Formula API with DataFrame support
 │   ├── interactions.py           # Optimized interaction term handling
 │   ├── splines.py                # bs() and ns() spline basis functions
+│   ├── target_encoding.py        # CatBoost-style target encoding
 │   ├── families.py               # Family wrappers
 │   └── links.py                  # Link wrappers
 │
@@ -431,7 +507,8 @@ rustystats/
         ├── test_robust_se.py     # Robust standard error tests
         ├── test_splines.py       # Spline basis function tests
         ├── test_quasi_families.py # QuasiPoisson/QuasiBinomial tests
-        └── test_negative_binomial.py # Negative Binomial tests
+        ├── test_negative_binomial.py # Negative Binomial tests
+        └── test_target_encoding.py # Target encoding tests
 ```
 
 ---

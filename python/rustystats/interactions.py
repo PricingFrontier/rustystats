@@ -34,6 +34,7 @@ from rustystats._rustystats import (
     build_cat_cont_interaction_py as _build_cat_cont_rust,
     multiply_matrix_by_continuous_py as _multiply_matrix_cont_rust,
     parse_formula_py as _parse_formula_rust,
+    target_encode_py as _target_encode_rust,
 )
 
 if TYPE_CHECKING:
@@ -72,6 +73,14 @@ class InteractionTerm:
 from rustystats.splines import SplineTerm
 
 
+@dataclass
+class TargetEncodingTermSpec:
+    """Parsed target encoding term specification from formula."""
+    var_name: str
+    prior_weight: float = 1.0
+    n_permutations: int = 4
+
+
 @dataclass 
 class ParsedFormula:
     """Parsed formula with identified terms."""
@@ -81,6 +90,7 @@ class ParsedFormula:
     interactions: List[InteractionTerm]  # Interaction terms
     categorical_vars: Set[str]  # Variables marked as categorical with C()
     spline_terms: List[SplineTerm] = field(default_factory=list)  # Spline terms
+    target_encoding_terms: List[TargetEncodingTermSpec] = field(default_factory=list)  # TE() terms
     has_intercept: bool = True
 
 
@@ -127,6 +137,16 @@ def parse_formula_interactions(formula: str) -> ParsedFormula:
         for s in parsed['spline_terms']
     ]
     
+    # Parse target encoding terms
+    target_encoding_terms = [
+        TargetEncodingTermSpec(
+            var_name=t['var_name'],
+            prior_weight=t['prior_weight'],
+            n_permutations=t['n_permutations']
+        )
+        for t in parsed.get('target_encoding_terms', [])
+    ]
+    
     # Filter out "1" from main effects (it's just an explicit intercept indicator)
     main_effects = [m for m in parsed['main_effects'] if m != '1']
     
@@ -136,6 +156,7 @@ def parse_formula_interactions(formula: str) -> ParsedFormula:
         interactions=interactions,
         categorical_vars=set(parsed['categorical_vars']),
         spline_terms=spline_terms,
+        target_encoding_terms=target_encoding_terms,
         has_intercept=parsed['has_intercept'],
     )
 
@@ -436,6 +457,49 @@ class InteractionBuilder:
         x = self._get_column(spline.var_name)
         return spline.transform(x)
     
+    def _build_target_encoding_columns(
+        self,
+        te_term: TargetEncodingTermSpec,
+        target: np.ndarray,
+        seed: Optional[int] = None,
+    ) -> Tuple[np.ndarray, str, dict]:
+        """
+        Build target-encoded column for a categorical variable.
+        
+        Uses CatBoost-style ordered target statistics to prevent target leakage.
+        
+        Parameters
+        ----------
+        te_term : TargetEncodingTermSpec
+            Target encoding term specification
+        target : np.ndarray
+            Target variable values
+        seed : int, optional
+            Random seed for reproducibility
+            
+        Returns
+        -------
+        encoded : np.ndarray
+            Target-encoded values (n,)
+        name : str
+            Column name like "TE(brand)"
+        stats : dict
+            Level statistics for prediction on new data
+        """
+        col = self.data[te_term.var_name].to_numpy()
+        categories = [str(v) for v in col]
+        
+        encoded, name, prior, stats = _target_encode_rust(
+            categories,
+            target.astype(np.float64),
+            te_term.var_name,
+            te_term.prior_weight,
+            te_term.n_permutations,
+            seed,
+        )
+        
+        return encoded, name, {'prior': prior, 'stats': stats, 'prior_weight': te_term.prior_weight}
+    
     def build_design_matrix(
         self,
         formula: str,
@@ -491,15 +555,24 @@ class InteractionBuilder:
             columns.append(int_cols)
             names.extend(int_names)
         
+        # Get response (needed for target encoding)
+        y = self._get_column(parsed.response)
+        
+        # Add target encoding terms (CatBoost-style)
+        # Store stats for prediction on new data
+        self._te_stats: Dict[str, dict] = {}
+        for te_term in parsed.target_encoding_terms:
+            te_col, te_name, te_stats = self._build_target_encoding_columns(te_term, y)
+            columns.append(te_col.reshape(-1, 1))
+            names.append(te_name)
+            self._te_stats[te_term.var_name] = te_stats
+        
         # Stack all columns
         if columns:
             X = np.hstack([c if c.ndim == 2 else c.reshape(-1, 1) for c in columns])
         else:
             X = np.ones((self._n, 1), dtype=self.dtype)
             names = ['Intercept']
-        
-        # Get response
-        y = self._get_column(parsed.response)
         
         return y, X, names
 

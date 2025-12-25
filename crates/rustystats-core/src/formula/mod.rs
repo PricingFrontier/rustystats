@@ -1,6 +1,6 @@
 //! Formula parsing for R-style model specifications.
 //!
-//! This module parses formulas like "y ~ x1*x2 + C(cat) + bs(age, df=5)"
+//! This module parses formulas like "y ~ x1*x2 + C(cat) + bs(age, df=5) + TE(brand)"
 //! into structured components for design matrix construction.
 
 use std::collections::HashSet;
@@ -12,6 +12,14 @@ pub struct SplineTerm {
     pub spline_type: String,  // "bs" or "ns"
     pub df: usize,
     pub degree: usize,
+}
+
+/// Parsed target encoding term specification (CatBoost-style)
+#[derive(Debug, Clone, PartialEq)]
+pub struct TargetEncodingTermSpec {
+    pub var_name: String,
+    pub prior_weight: f64,
+    pub n_permutations: usize,
 }
 
 /// Parsed interaction term
@@ -29,7 +37,64 @@ pub struct ParsedFormula {
     pub interactions: Vec<InteractionTerm>,
     pub categorical_vars: HashSet<String>,
     pub spline_terms: Vec<SplineTerm>,
+    pub target_encoding_terms: Vec<TargetEncodingTermSpec>,
     pub has_intercept: bool,
+}
+
+/// Parse a target encoding term like "TE(brand)" or "TE(brand, prior_weight=2.0)"
+fn parse_target_encoding_term(term: &str) -> Option<TargetEncodingTermSpec> {
+    let term = term.trim();
+    
+    // Check if starts with TE(
+    if !term.starts_with("TE(") {
+        return None;
+    }
+    
+    // Find matching parenthesis
+    let start = term.find('(')?;
+    let end = term.rfind(')')?;
+    if end <= start {
+        return None;
+    }
+    
+    let inner = &term[start + 1..end];
+    let parts: Vec<&str> = inner.split(',').collect();
+    
+    if parts.is_empty() {
+        return None;
+    }
+    
+    let var_name = parts[0].trim().to_string();
+    let mut prior_weight = 1.0f64;
+    let mut n_permutations = 4usize;
+    
+    // Parse remaining arguments
+    for part in parts.iter().skip(1) {
+        let part = part.trim();
+        if let Some(eq_pos) = part.find('=') {
+            let key = part[..eq_pos].trim();
+            let value = part[eq_pos + 1..].trim();
+            match key {
+                "prior_weight" | "pw" => {
+                    if let Ok(v) = value.parse() {
+                        prior_weight = v;
+                    }
+                }
+                "n_permutations" | "nperm" => {
+                    if let Ok(v) = value.parse() {
+                        n_permutations = v;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    
+    Some(TargetEncodingTermSpec {
+        var_name,
+        prior_weight,
+        n_permutations,
+    })
 }
 
 /// Parse a spline term like "bs(age, df=5)" or "ns(income, df=4)"
@@ -216,15 +281,22 @@ pub fn parse_formula(formula: &str) -> Result<ParsedFormula, String> {
     let mut main_effects = Vec::new();
     let mut interactions = Vec::new();
     let mut spline_terms = Vec::new();
+    let mut target_encoding_terms = Vec::new();
     
     for term in terms {
+        // Check for target encoding term
+        if let Some(te_term) = parse_target_encoding_term(&term) {
+            target_encoding_terms.push(te_term);
+            continue;
+        }
+        
         // Check for spline term
         if let Some(spline) = parse_spline_term(&term) {
             spline_terms.push(spline);
             continue;
         }
         
-        if term.contains('*') && !term.starts_with("bs(") && !term.starts_with("ns(") {
+        if term.contains('*') && !term.starts_with("bs(") && !term.starts_with("ns(") && !term.starts_with("TE(") {
             // Full interaction: a*b = a + b + a:b
             let factor_strs: Vec<&str> = term.split('*').collect();
             
@@ -247,7 +319,7 @@ pub fn parse_formula(formula: &str) -> Result<ParsedFormula, String> {
                 factors,
                 categorical_flags,
             });
-        } else if term.contains(':') && !term.starts_with("bs(") && !term.starts_with("ns(") {
+        } else if term.contains(':') && !term.starts_with("bs(") && !term.starts_with("ns(") && !term.starts_with("TE(") {
             // Pure interaction: a:b (no main effects)
             let factor_strs: Vec<&str> = term.split(':').collect();
             let factors: Vec<String> = factor_strs.iter().map(|f| clean_var_name(f)).collect();
@@ -275,6 +347,7 @@ pub fn parse_formula(formula: &str) -> Result<ParsedFormula, String> {
         interactions,
         categorical_vars,
         spline_terms,
+        target_encoding_terms,
         has_intercept,
     })
 }
@@ -336,5 +409,33 @@ mod tests {
         assert!(parsed.categorical_vars.contains("region"));
         assert_eq!(parsed.main_effects, vec!["region", "income"]);
         assert_eq!(parsed.interactions.len(), 2); // region*income and x1:x2
+    }
+
+    #[test]
+    fn test_parse_target_encoding() {
+        let parsed = parse_formula("y ~ TE(brand) + age").unwrap();
+        assert_eq!(parsed.target_encoding_terms.len(), 1);
+        assert_eq!(parsed.target_encoding_terms[0].var_name, "brand");
+        assert!((parsed.target_encoding_terms[0].prior_weight - 1.0).abs() < 1e-10);
+        assert_eq!(parsed.target_encoding_terms[0].n_permutations, 4);
+        assert_eq!(parsed.main_effects, vec!["age"]);
+    }
+
+    #[test]
+    fn test_parse_target_encoding_with_options() {
+        let parsed = parse_formula("y ~ TE(brand, prior_weight=2.0, n_permutations=8)").unwrap();
+        assert_eq!(parsed.target_encoding_terms.len(), 1);
+        assert_eq!(parsed.target_encoding_terms[0].var_name, "brand");
+        assert!((parsed.target_encoding_terms[0].prior_weight - 2.0).abs() < 1e-10);
+        assert_eq!(parsed.target_encoding_terms[0].n_permutations, 8);
+    }
+
+    #[test]
+    fn test_parse_formula_with_te_and_splines() {
+        let parsed = parse_formula("y ~ TE(brand) + bs(age, df=5) + C(region)").unwrap();
+        assert_eq!(parsed.target_encoding_terms.len(), 1);
+        assert_eq!(parsed.spline_terms.len(), 1);
+        assert!(parsed.categorical_vars.contains("region"));
+        assert_eq!(parsed.main_effects, vec!["region"]);
     }
 }

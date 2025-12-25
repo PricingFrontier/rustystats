@@ -2164,6 +2164,116 @@ fn multiply_matrix_by_continuous_py<'py>(
 }
 
 // =============================================================================
+// Target Encoding (CatBoost-style Ordered Target Statistics)
+// =============================================================================
+
+use rustystats_core::target_encoding;
+
+/// Target encode categorical variables using CatBoost-style ordered target statistics.
+///
+/// This encoding prevents target leakage during training by computing statistics
+/// using only "past" observations in a random permutation order.
+///
+/// Parameters
+/// ----------
+/// categories : list[str]
+///     Categorical values as strings
+/// target : numpy.ndarray
+///     Target variable (continuous or binary)
+/// var_name : str
+///     Variable name for output column
+/// prior_weight : float, optional
+///     Regularization strength toward global mean (default: 1.0)
+/// n_permutations : int, optional
+///     Number of random permutations to average (default: 4)
+/// seed : int, optional
+///     Random seed for reproducibility (default: None = random)
+///
+/// Returns
+/// -------
+/// tuple[numpy.ndarray, str, dict]
+///     (encoded_values, column_name, level_stats)
+///     level_stats is a dict mapping level -> (sum_target, count) for prediction
+#[pyfunction]
+#[pyo3(signature = (categories, target, var_name, prior_weight=1.0, n_permutations=4, seed=None))]
+fn target_encode_py<'py>(
+    py: Python<'py>,
+    categories: Vec<String>,
+    target: PyReadonlyArray1<f64>,
+    var_name: &str,
+    prior_weight: f64,
+    n_permutations: usize,
+    seed: Option<u64>,
+) -> PyResult<(Bound<'py, PyArray1<f64>>, String, f64, std::collections::HashMap<String, (f64, usize)>)> {
+    let target_vec: Vec<f64> = target.as_array().to_vec();
+    
+    let config = target_encoding::TargetEncodingConfig {
+        prior_weight,
+        n_permutations,
+        seed,
+    };
+    
+    let enc = target_encoding::target_encode(&categories, &target_vec, var_name, &config);
+    
+    // Convert level_stats to Python-friendly format
+    let stats: std::collections::HashMap<String, (f64, usize)> = enc.level_stats
+        .into_iter()
+        .map(|(k, v)| (k, (v.sum_target, v.count)))
+        .collect();
+    
+    Ok((
+        enc.values.into_pyarray_bound(py),
+        enc.name,
+        enc.prior,
+        stats,
+    ))
+}
+
+/// Apply target encoding to new data using pre-computed statistics.
+///
+/// For prediction: uses full training statistics (no ordering needed).
+///
+/// Parameters
+/// ----------
+/// categories : list[str]
+///     Categorical values for new data
+/// level_stats : dict
+///     Mapping of level -> (sum_target, count) from training
+/// prior : float
+///     Global prior (mean of training target)
+/// prior_weight : float, optional
+///     Prior weight (should match training, default: 1.0)
+///
+/// Returns
+/// -------
+/// numpy.ndarray
+///     Encoded values for new data
+#[pyfunction]
+#[pyo3(signature = (categories, level_stats, prior, prior_weight=1.0))]
+fn apply_target_encoding_py<'py>(
+    py: Python<'py>,
+    categories: Vec<String>,
+    level_stats: std::collections::HashMap<String, (f64, usize)>,
+    prior: f64,
+    prior_weight: f64,
+) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    let n = categories.len();
+    let mut values = Vec::with_capacity(n);
+    
+    for cat in &categories {
+        let encoded = if let Some(&(sum_target, count)) = level_stats.get(cat) {
+            (sum_target + prior * prior_weight) / (count as f64 + prior_weight)
+        } else {
+            // Unseen category: use prior
+            prior
+        };
+        values.push(encoded);
+    }
+    
+    Ok(Array1::from_vec(values).into_pyarray_bound(py))
+}
+
+// =============================================================================
 // Formula Parsing
 // =============================================================================
 
@@ -2228,6 +2338,19 @@ fn parse_formula_py(formula_str: &str) -> PyResult<std::collections::HashMap<Str
             .collect();
         result.insert("spline_terms".to_string(), splines.into_py(py));
         
+        // Convert target encoding terms
+        let te_terms: Vec<_> = parsed.target_encoding_terms
+            .into_iter()
+            .map(|t| {
+                let dict = PyDict::new_bound(py);
+                dict.set_item("var_name", t.var_name).unwrap();
+                dict.set_item("prior_weight", t.prior_weight).unwrap();
+                dict.set_item("n_permutations", t.n_permutations).unwrap();
+                dict.into_py(py)
+            })
+            .collect();
+        result.insert("target_encoding_terms".to_string(), te_terms.into_py(py));
+        
         Ok(result)
     })
 }
@@ -2284,6 +2407,10 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
     
     // Add formula parsing
     m.add_function(wrap_pyfunction!(parse_formula_py, m)?)?;
+    
+    // Add target encoding (CatBoost-style)
+    m.add_function(wrap_pyfunction!(target_encode_py, m)?)?;
+    m.add_function(wrap_pyfunction!(apply_target_encoding_py, m)?)?;
     
     Ok(())
 }

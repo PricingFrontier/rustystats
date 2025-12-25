@@ -38,6 +38,7 @@ pub mod diagnostics;
 pub mod splines;
 pub mod design_matrix;
 pub mod formula;
+pub mod target_encoding;
 
 // Re-export commonly used items at the top level for convenience
 // Users can write `use rustystats_core::GaussianFamily` instead of
@@ -58,4 +59,7 @@ pub use design_matrix::{
     build_continuous_continuous_interaction, multiply_matrix_by_continuous,
     build_design_matrix, CategoricalEncoding, DesignColumn,
 };
-pub use formula::{parse_formula, ParsedFormula, SplineTerm, InteractionTerm};
+pub use formula::{parse_formula, ParsedFormula, SplineTerm, InteractionTerm, TargetEncodingTermSpec};
+pub use target_encoding::{
+    target_encode, apply_target_encoding, TargetEncoding, TargetEncodingConfig, LevelStatistics,
+};

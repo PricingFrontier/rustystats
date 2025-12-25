@@ -1,0 +1,375 @@
+"""
+Target Encoding (CatBoost-style Ordered Target Statistics)
+===========================================================
+
+Implements CatBoost's ordered target statistics for categorical encoding.
+This prevents target leakage during training by using only "past" observations
+in the permutation order to compute statistics.
+
+Reference: https://arxiv.org/abs/1706.09516 (CatBoost paper)
+
+Key Features
+------------
+- **Ordered statistics**: For training, each observation is encoded using only
+  observations that appear before it in a random permutation order
+- **Multiple permutations**: Average across several permutations to reduce variance
+- **Regularization**: Prior weight controls smoothing toward global mean
+- **No target leakage**: The observation's own target is never used in its encoding
+
+Usage
+-----
+Direct API:
+    >>> import rustystats as rs
+    >>> encoded, name, prior, stats = rs.target_encode(categories, target, "var")
+    >>> # For prediction on new data:
+    >>> new_encoded = rs.apply_target_encoding(new_categories, stats, prior)
+
+Formula API:
+    >>> result = rs.glm("y ~ TE(brand) + age", data, family="poisson").fit()
+"""
+
+from typing import Dict, List, Optional, Tuple, Union
+import numpy as np
+
+from . import _rustystats
+
+
+def target_encode(
+    categories: Union[List[str], np.ndarray],
+    target: np.ndarray,
+    var_name: str = "x",
+    prior_weight: float = 1.0,
+    n_permutations: int = 4,
+    seed: Optional[int] = None,
+) -> Tuple[np.ndarray, str, float, Dict[str, Tuple[float, int]]]:
+    """
+    Target encode categorical variables using CatBoost-style ordered target statistics.
+    
+    This encoding prevents target leakage during training by computing statistics
+    using only "past" observations in a random permutation order.
+    
+    Parameters
+    ----------
+    categories : list[str] or numpy.ndarray
+        Categorical values as strings
+    target : numpy.ndarray
+        Target variable (continuous or binary)
+    var_name : str, optional
+        Variable name for output column (default: "x")
+    prior_weight : float, optional
+        Regularization strength toward global mean (default: 1.0).
+        Higher values = more regularization for rare categories.
+    n_permutations : int, optional
+        Number of random permutations to average (default: 4).
+        More permutations = lower variance but slower.
+    seed : int, optional
+        Random seed for reproducibility (default: None = random)
+    
+    Returns
+    -------
+    encoded : numpy.ndarray
+        Encoded values (shape: n_samples,)
+    name : str
+        Column name like "TE(var_name)"
+    prior : float
+        Global prior (mean of target) - needed for prediction
+    level_stats : dict
+        Mapping of level -> (sum_target, count) for prediction on new data
+    
+    Examples
+    --------
+    >>> import rustystats as rs
+    >>> import numpy as np
+    >>> 
+    >>> categories = ["A", "B", "A", "B", "A", "B"]
+    >>> target = np.array([1.0, 0.0, 1.0, 0.0, 1.0, 0.0])
+    >>> 
+    >>> encoded, name, prior, stats = rs.target_encode(categories, target, "cat")
+    >>> print(f"Column: {name}, Prior: {prior:.3f}")
+    Column: TE(cat), Prior: 0.500
+    >>> 
+    >>> # For new data:
+    >>> new_cats = ["A", "B", "C"]  # C is unseen
+    >>> new_encoded = rs.apply_target_encoding(new_cats, stats, prior)
+    >>> print(new_encoded)  # C gets the prior
+    
+    Notes
+    -----
+    The algorithm:
+    1. Shuffle data with random permutation
+    2. For each observation i in permutation order:
+       encoded[i] = (sum_target_before + prior * prior_weight) / (count_before + prior_weight)
+    3. Average across multiple permutations to reduce variance
+    
+    For prediction on new data, use `apply_target_encoding()` which uses the full
+    training statistics (no ordering needed).
+    """
+    # Convert to list of strings if numpy array
+    if isinstance(categories, np.ndarray):
+        categories = [str(x) for x in categories]
+    else:
+        categories = [str(x) for x in categories]
+    
+    target = np.asarray(target, dtype=np.float64)
+    
+    return _rustystats.target_encode_py(
+        categories, target, var_name, prior_weight, n_permutations, seed
+    )
+
+
+def apply_target_encoding(
+    categories: Union[List[str], np.ndarray],
+    level_stats: Dict[str, Tuple[float, int]],
+    prior: float,
+    prior_weight: float = 1.0,
+) -> np.ndarray:
+    """
+    Apply target encoding to new data using pre-computed statistics.
+    
+    For prediction: uses full training statistics (no ordering needed).
+    Unseen categories get the prior (global mean).
+    
+    Parameters
+    ----------
+    categories : list[str] or numpy.ndarray
+        Categorical values for new data
+    level_stats : dict
+        Mapping of level -> (sum_target, count) from training.
+        Returned by `target_encode()`.
+    prior : float
+        Global prior (mean of training target).
+        Returned by `target_encode()`.
+    prior_weight : float, optional
+        Prior weight (should match training, default: 1.0)
+    
+    Returns
+    -------
+    numpy.ndarray
+        Encoded values for new data
+    
+    Examples
+    --------
+    >>> # Train
+    >>> encoded, name, prior, stats = rs.target_encode(train_cats, train_y, "brand")
+    >>> 
+    >>> # Predict
+    >>> test_encoded = rs.apply_target_encoding(test_cats, stats, prior)
+    """
+    # Convert to list of strings if numpy array
+    if isinstance(categories, np.ndarray):
+        categories = [str(x) for x in categories]
+    else:
+        categories = [str(x) for x in categories]
+    
+    return _rustystats.apply_target_encoding_py(
+        categories, level_stats, prior, prior_weight
+    )
+
+
+class TargetEncoder:
+    """
+    Scikit-learn style target encoder with CatBoost-style ordered target statistics.
+    
+    Fits on training data and transforms both training and test data.
+    
+    Parameters
+    ----------
+    prior_weight : float, optional
+        Regularization strength toward global mean (default: 1.0)
+    n_permutations : int, optional
+        Number of random permutations to average (default: 4)
+    seed : int, optional
+        Random seed for reproducibility
+    
+    Attributes
+    ----------
+    prior_ : float
+        Global prior (mean of training target)
+    level_stats_ : dict
+        Mapping of level -> (sum_target, count)
+    
+    Examples
+    --------
+    >>> encoder = rs.TargetEncoder(prior_weight=1.0, n_permutations=4)
+    >>> train_encoded = encoder.fit_transform(train_categories, train_y)
+    >>> test_encoded = encoder.transform(test_categories)
+    """
+    
+    def __init__(
+        self,
+        prior_weight: float = 1.0,
+        n_permutations: int = 4,
+        seed: Optional[int] = None,
+    ):
+        self.prior_weight = prior_weight
+        self.n_permutations = n_permutations
+        self.seed = seed
+        self.prior_: Optional[float] = None
+        self.level_stats_: Optional[Dict[str, Tuple[float, int]]] = None
+    
+    def fit(
+        self,
+        categories: Union[List[str], np.ndarray],
+        target: np.ndarray,
+    ) -> "TargetEncoder":
+        """
+        Fit the encoder on training data.
+        
+        Parameters
+        ----------
+        categories : list[str] or numpy.ndarray
+            Categorical values
+        target : numpy.ndarray
+            Target variable
+        
+        Returns
+        -------
+        self
+        """
+        _, _, self.prior_, self.level_stats_ = target_encode(
+            categories, target, "x",
+            self.prior_weight, self.n_permutations, self.seed
+        )
+        return self
+    
+    def transform(
+        self,
+        categories: Union[List[str], np.ndarray],
+    ) -> np.ndarray:
+        """
+        Transform categories using fitted statistics.
+        
+        For test/validation data, uses full training statistics.
+        
+        Parameters
+        ----------
+        categories : list[str] or numpy.ndarray
+            Categorical values
+        
+        Returns
+        -------
+        numpy.ndarray
+            Encoded values
+        """
+        if self.level_stats_ is None or self.prior_ is None:
+            raise ValueError("Encoder not fitted. Call fit() first.")
+        
+        return apply_target_encoding(
+            categories, self.level_stats_, self.prior_, self.prior_weight
+        )
+    
+    def fit_transform(
+        self,
+        categories: Union[List[str], np.ndarray],
+        target: np.ndarray,
+    ) -> np.ndarray:
+        """
+        Fit and transform training data using ordered target statistics.
+        
+        Uses CatBoost-style ordering to prevent target leakage.
+        
+        Parameters
+        ----------
+        categories : list[str] or numpy.ndarray
+            Categorical values
+        target : numpy.ndarray
+            Target variable
+        
+        Returns
+        -------
+        numpy.ndarray
+            Encoded values (with ordered statistics for training)
+        """
+        encoded, _, self.prior_, self.level_stats_ = target_encode(
+            categories, target, "x",
+            self.prior_weight, self.n_permutations, self.seed
+        )
+        return encoded
+
+
+class TargetEncodingTerm:
+    """
+    Represents a target encoding term in a formula.
+    
+    Used internally by the formula parser to handle TE(var) syntax.
+    
+    Parameters
+    ----------
+    var_name : str
+        Variable name to encode
+    prior_weight : float, optional
+        Prior weight for regularization
+    n_permutations : int, optional
+        Number of permutations
+    """
+    
+    def __init__(
+        self,
+        var_name: str,
+        prior_weight: float = 1.0,
+        n_permutations: int = 4,
+    ):
+        self.var_name = var_name
+        self.prior_weight = prior_weight
+        self.n_permutations = n_permutations
+        self.encoder: Optional[TargetEncoder] = None
+    
+    def fit_transform(
+        self,
+        data,  # DataFrame (Polars or Pandas)
+        target: np.ndarray,
+        seed: Optional[int] = None,
+    ) -> Tuple[np.ndarray, str]:
+        """
+        Fit and transform the column from a DataFrame.
+        
+        Returns
+        -------
+        values : numpy.ndarray
+            Encoded values
+        name : str
+            Column name
+        """
+        # Extract column
+        if hasattr(data, 'to_numpy'):
+            # Polars DataFrame
+            col = data[self.var_name].to_numpy()
+        else:
+            # Pandas DataFrame
+            col = data[self.var_name].values
+        
+        categories = [str(x) for x in col]
+        
+        self.encoder = TargetEncoder(
+            prior_weight=self.prior_weight,
+            n_permutations=self.n_permutations,
+            seed=seed,
+        )
+        encoded = self.encoder.fit_transform(categories, target)
+        
+        return encoded, f"TE({self.var_name})"
+    
+    def transform(self, data) -> Tuple[np.ndarray, str]:
+        """
+        Transform new data using fitted encoder.
+        
+        Returns
+        -------
+        values : numpy.ndarray
+            Encoded values
+        name : str
+            Column name
+        """
+        if self.encoder is None:
+            raise ValueError("Term not fitted. Call fit_transform() first.")
+        
+        # Extract column
+        if hasattr(data, 'to_numpy'):
+            col = data[self.var_name].to_numpy()
+        else:
+            col = data[self.var_name].values
+        
+        categories = [str(x) for x in col]
+        encoded = self.encoder.transform(categories)
+        
+        return encoded, f"TE({self.var_name})"

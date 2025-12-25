@@ -100,6 +100,14 @@ from rustystats.formula import glm, FormulaGLM, FormulaGLMResults
 # Spline basis functions (for non-linear continuous effects)
 from rustystats.splines import bs, ns, bs_names, ns_names, SplineTerm
 
+# Target encoding (CatBoost-style ordered target statistics)
+from rustystats.target_encoding import (
+    target_encode,
+    apply_target_encoding,
+    TargetEncoder,
+    TargetEncodingTerm,
+)
+
 # Variable selection utilities
 from rustystats.selection import (
     regularization_path,
@@ -134,6 +142,11 @@ __all__ = [
     "bs_names",
     "ns_names",
     "SplineTerm",
+    # Target encoding (CatBoost-style)
+    "target_encode",
+    "apply_target_encoding",
+    "TargetEncoder",
+    "TargetEncodingTerm",
     # Sub-modules
     "families",
     "links",
