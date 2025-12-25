@@ -43,6 +43,49 @@ from rustystats._rustystats import (
 )
 
 
+def _validate_inputs(
+    y: np.ndarray,
+    X: np.ndarray,
+    offset: Optional[np.ndarray] = None,
+    weights: Optional[np.ndarray] = None,
+) -> tuple[np.ndarray, np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]:
+    """
+    Validate and convert GLM inputs to the correct types.
+    
+    Returns
+    -------
+    tuple
+        (y, X, offset, weights) as validated float64 arrays
+    """
+    y = np.asarray(y, dtype=np.float64)
+    X = np.asarray(X, dtype=np.float64)
+    
+    if y.ndim != 1:
+        raise ValueError(f"y must be 1-dimensional, got shape {y.shape}")
+    if X.ndim != 2:
+        raise ValueError(f"X must be 2-dimensional, got shape {X.shape}")
+    if len(y) != X.shape[0]:
+        raise ValueError(
+            f"y has {len(y)} observations but X has {X.shape[0]} rows"
+        )
+    
+    if offset is not None:
+        offset = np.asarray(offset, dtype=np.float64)
+        if offset.shape != y.shape:
+            raise ValueError(
+                f"offset has shape {offset.shape} but y has shape {y.shape}"
+            )
+    
+    if weights is not None:
+        weights = np.asarray(weights, dtype=np.float64)
+        if weights.shape != y.shape:
+            raise ValueError(
+                f"weights has shape {weights.shape} but y has shape {y.shape}"
+            )
+    
+    return y, X, offset, weights
+
+
 def fit_glm(
     y: np.ndarray,
     X: np.ndarray,
@@ -222,36 +265,7 @@ def fit_glm(
     
     This gives you more control but is a common source of errors.
     """
-    # Ensure arrays are the right type
-    y = np.asarray(y, dtype=np.float64)
-    X = np.asarray(X, dtype=np.float64)
-    
-    # Validate inputs
-    if y.ndim != 1:
-        raise ValueError(f"y must be 1-dimensional, got shape {y.shape}")
-    if X.ndim != 2:
-        raise ValueError(f"X must be 2-dimensional, got shape {X.shape}")
-    if len(y) != X.shape[0]:
-        raise ValueError(
-            f"y has {len(y)} observations but X has {X.shape[0]} rows"
-        )
-    
-    # Convert optional arrays
-    if offset is not None:
-        offset = np.asarray(offset, dtype=np.float64)
-        if offset.shape != y.shape:
-            raise ValueError(
-                f"offset has shape {offset.shape} but y has shape {y.shape}"
-            )
-    
-    if weights is not None:
-        weights = np.asarray(weights, dtype=np.float64)
-        if weights.shape != y.shape:
-            raise ValueError(
-                f"weights has shape {weights.shape} but y has shape {y.shape}"
-            )
-    
-    # Call the Rust implementation
+    y, X, offset, weights = _validate_inputs(y, X, offset, weights)
     return _fit_glm_rust(y, X, family, link, var_power, theta, offset, weights, alpha, l1_ratio, max_iter, tol)
 
 
@@ -350,36 +364,7 @@ def fit_negbinomial(
     - Small θ: High overdispersion (variance >> mean)
     - Large θ: Low overdispersion (approaches Poisson)
     """
-    # Ensure arrays are the right type
-    y = np.asarray(y, dtype=np.float64)
-    X = np.asarray(X, dtype=np.float64)
-    
-    # Validate inputs
-    if y.ndim != 1:
-        raise ValueError(f"y must be 1-dimensional, got shape {y.shape}")
-    if X.ndim != 2:
-        raise ValueError(f"X must be 2-dimensional, got shape {X.shape}")
-    if len(y) != X.shape[0]:
-        raise ValueError(
-            f"y has {len(y)} observations but X has {X.shape[0]} rows"
-        )
-    
-    # Convert optional arrays
-    if offset is not None:
-        offset = np.asarray(offset, dtype=np.float64)
-        if offset.shape != y.shape:
-            raise ValueError(
-                f"offset has shape {offset.shape} but y has shape {y.shape}"
-            )
-    
-    if weights is not None:
-        weights = np.asarray(weights, dtype=np.float64)
-        if weights.shape != y.shape:
-            raise ValueError(
-                f"weights has shape {weights.shape} but y has shape {y.shape}"
-            )
-    
-    # Call the Rust implementation
+    y, X, offset, weights = _validate_inputs(y, X, offset, weights)
     return _fit_negbinomial_rust(
         y, X, link, init_theta, theta_tol, max_theta_iter,
         offset, weights, max_iter, tol

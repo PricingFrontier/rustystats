@@ -510,7 +510,75 @@ def cv_glm(
     )
 
 
-# Convenience aliases
-cv_lasso = lambda y, X, **kwargs: cv_glm(y, X, l1_ratio=1.0, **kwargs)
-cv_ridge = lambda y, X, **kwargs: cv_glm(y, X, l1_ratio=0.0, **kwargs)
-cv_elasticnet = lambda y, X, l1_ratio=0.5, **kwargs: cv_glm(y, X, l1_ratio=l1_ratio, **kwargs)
+def cv_lasso(y: np.ndarray, X: np.ndarray, **kwargs) -> CVResult:
+    """
+    Cross-validated Lasso (L1) GLM.
+    
+    Convenience wrapper for cv_glm with l1_ratio=1.0.
+    Lasso performs variable selection by shrinking some coefficients to exactly zero.
+    
+    Parameters
+    ----------
+    y : np.ndarray
+        Response variable
+    X : np.ndarray
+        Design matrix
+    **kwargs
+        Additional arguments passed to cv_glm (family, cv, alphas, etc.)
+        
+    Returns
+    -------
+    CVResult
+        Cross-validation results with optimal alpha
+    """
+    return cv_glm(y, X, l1_ratio=1.0, **kwargs)
+
+
+def cv_ridge(y: np.ndarray, X: np.ndarray, **kwargs) -> CVResult:
+    """
+    Cross-validated Ridge (L2) GLM.
+    
+    Convenience wrapper for cv_glm with l1_ratio=0.0.
+    Ridge shrinks all coefficients but keeps them non-zero.
+    
+    Parameters
+    ----------
+    y : np.ndarray
+        Response variable
+    X : np.ndarray
+        Design matrix
+    **kwargs
+        Additional arguments passed to cv_glm (family, cv, alphas, etc.)
+        
+    Returns
+    -------
+    CVResult
+        Cross-validation results with optimal alpha
+    """
+    return cv_glm(y, X, l1_ratio=0.0, **kwargs)
+
+
+def cv_elasticnet(y: np.ndarray, X: np.ndarray, l1_ratio: float = 0.5, **kwargs) -> CVResult:
+    """
+    Cross-validated Elastic Net GLM.
+    
+    Convenience wrapper for cv_glm with configurable l1_ratio.
+    Elastic Net combines L1 and L2 penalties.
+    
+    Parameters
+    ----------
+    y : np.ndarray
+        Response variable
+    X : np.ndarray
+        Design matrix
+    l1_ratio : float, default=0.5
+        Mixing parameter (0=Ridge, 1=Lasso, between=Elastic Net)
+    **kwargs
+        Additional arguments passed to cv_glm (family, cv, alphas, etc.)
+        
+    Returns
+    -------
+    CVResult
+        Cross-validation results with optimal alpha
+    """
+    return cv_glm(y, X, l1_ratio=l1_ratio, **kwargs)

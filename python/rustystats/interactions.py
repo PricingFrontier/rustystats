@@ -68,19 +68,8 @@ class InteractionTerm:
         return any(self.categorical_flags) and not all(self.categorical_flags)
 
 
-@dataclass
-class SplineTermSpec:
-    """Represents a spline term like bs(age, df=5) or ns(income, df=4)."""
-    
-    var_name: str           # Variable name (e.g., 'age')
-    spline_type: str        # 'bs' or 'ns'
-    df: int = 5             # Degrees of freedom
-    degree: int = 3         # Polynomial degree (for B-splines)
-    
-    def __repr__(self) -> str:
-        if self.spline_type == "bs":
-            return f"bs({self.var_name}, df={self.df})"
-        return f"ns({self.var_name}, df={self.df})"
+# Import SplineTerm from splines module (canonical implementation)
+from rustystats.splines import SplineTerm
 
 
 @dataclass 
@@ -91,7 +80,7 @@ class ParsedFormula:
     main_effects: List[str]  # Main effect variables
     interactions: List[InteractionTerm]  # Interaction terms
     categorical_vars: Set[str]  # Variables marked as categorical with C()
-    spline_terms: List[SplineTermSpec] = field(default_factory=list)  # Spline terms
+    spline_terms: List[SplineTerm] = field(default_factory=list)  # Spline terms
     has_intercept: bool = True
 
 
@@ -129,7 +118,7 @@ def parse_formula_interactions(formula: str) -> ParsedFormula:
     ]
     
     spline_terms = [
-        SplineTermSpec(
+        SplineTerm(
             var_name=s['var_name'],
             spline_type=s['spline_type'],
             df=s['df'],
@@ -180,7 +169,6 @@ class InteractionBuilder:
     ):
         self.data = data
         self.dtype = dtype
-        self._is_polars = True  # Now polars-only
         self._n = len(data)
         
         # Cache for encoded categorical variables
@@ -438,32 +426,15 @@ class InteractionBuilder:
     
     def _build_spline_columns(
         self,
-        spline: SplineTermSpec,
+        spline: SplineTerm,
     ) -> Tuple[np.ndarray, List[str]]:
         """
         Build columns for a spline term.
         
-        Uses the fast Rust implementation for basis computation.
+        Uses SplineTerm.transform() which calls the fast Rust implementation.
         """
-        from rustystats.splines import bs, ns, bs_names, ns_names
-        
-        # Get the data for this variable
         x = self._get_column(spline.var_name)
-        
-        # Compute spline basis
-        if spline.spline_type == "bs":
-            basis = bs(x, df=spline.df, degree=spline.degree, include_intercept=False)
-            col_names = bs_names(spline.var_name, spline.df, include_intercept=False)
-        else:
-            basis = ns(x, df=spline.df, include_intercept=False)
-            col_names = ns_names(spline.var_name, spline.df, include_intercept=False)
-        
-        # Ensure names match columns
-        if len(col_names) != basis.shape[1]:
-            col_names = [f"{spline.spline_type}({spline.var_name}, {i+1}/{basis.shape[1]})" 
-                        for i in range(basis.shape[1])]
-        
-        return basis, col_names
+        return spline.transform(x)
     
     def build_design_matrix(
         self,
@@ -533,7 +504,7 @@ class InteractionBuilder:
         return y, X, names
 
 
-def build_design_matrix_optimized(
+def build_design_matrix(
     formula: str,
     data: "pl.DataFrame",
 ) -> Tuple[np.ndarray, np.ndarray, List[str]]:
@@ -564,7 +535,7 @@ def build_design_matrix_optimized(
         
     Example
     -------
-    >>> y, X, names = build_design_matrix_optimized(
+    >>> y, X, names = build_design_matrix(
     ...     "claims ~ age*C(region) + C(brand)*C(fuel)",
     ...     data
     ... )

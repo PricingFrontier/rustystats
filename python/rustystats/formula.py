@@ -35,53 +35,8 @@ def _get_column(data: "pl.DataFrame", column: str) -> np.ndarray:
     return data[column].to_numpy()
 
 
-def build_design_matrix(
-    formula: str,
-    data: "pl.DataFrame",
-) -> tuple[np.ndarray, np.ndarray, List[str]]:
-    """
-    Build design matrix and response vector from a formula and DataFrame.
-    
-    Parameters
-    ----------
-    formula : str
-        R-style formula, e.g., "y ~ x1 + x2 + C(cat_var)"
-        
-        Supported syntax:
-        - Main effects: `x1`, `x2`, `C(cat)` (categorical)
-        - Two-way interactions: `x1:x2` (interaction only), `x1*x2` (main effects + interaction)
-        - Categorical interactions: `C(cat1)*C(cat2)`, `C(cat):x`
-        - Higher-order: `x1:x2:x3`
-        - Splines: `bs(x, df=5)`, `ns(x, df=4)`
-        - Intercept: included by default, use `0 +` or `- 1` to remove
-        
-    data : pl.DataFrame
-        Polars DataFrame containing the variables.
-        
-    Returns
-    -------
-    y : np.ndarray
-        Response variable (n,)
-    X : np.ndarray
-        Design matrix (n, p) including intercept if specified
-    feature_names : list[str]
-        Names of the columns in X
-        
-    Examples
-    --------
-    >>> # Simple model
-    >>> y, X, names = build_design_matrix("ClaimNb ~ VehPower + C(Area)", data)
-    >>> print(names)
-    ['Intercept', 'VehPower', 'Area[T.B]', 'Area[T.C]', ...]
-    
-    >>> # With interactions
-    >>> y, X, names = build_design_matrix("y ~ x1*x2 + C(cat):age", data)
-    >>> print(names)
-    ['Intercept', 'x1', 'x2', 'x1:x2', 'cat[T.B]:age', 'cat[T.C]:age', ...]
-    """
-    from rustystats.interactions import InteractionBuilder
-    builder = InteractionBuilder(data)
-    return builder.build_design_matrix(formula)
+# Import build_design_matrix from interactions module (the canonical implementation)
+from rustystats.interactions import build_design_matrix
 
 
 class FormulaGLM:
