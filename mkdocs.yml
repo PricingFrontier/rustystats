@@ -93,6 +93,7 @@ nav:
     - Diagnostics: api/diagnostics.md
   - Rust Guide:
     - Rust Fundamentals: rust-guide/fundamentals.md
+    - Code Walkthrough: rust-guide/code-walkthrough.md
   - Maintenance Guide:
     - Rust Best Practices: maintenance/rust-best-practices.md
     - Adding a New Family: maintenance/adding-family.md
