@@ -89,6 +89,9 @@ addopts = "-v --tb=short"
 [dependency-groups]
 dev = [
     "maturin>=1.10.2",
+    "mkdocs>=1.6.1",
+    "mkdocs-material>=9.7.1",
     "numpy>=2.0.2",
+    "pymdown-extensions>=10.19.1",
     "pytest>=8.4.2",
 ]

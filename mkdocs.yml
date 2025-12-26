@@ -1,0 +1,104 @@
+site_name: RustyStats Documentation
+site_description: High-performance Generalized Linear Models with Rust backend and Python API
+site_author: RustyStats Team
+repo_url: https://github.com/your-org/rustystats
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: amber
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: amber
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+  icon:
+    repo: fontawesome/brands/github
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.arithmatex:
+      generic: true
+  - admonition
+  - pymdownx.details
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+
+extra_javascript:
+  - javascripts/mathjax.js
+  - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js
+
+plugins:
+  - search
+
+nav:
+  - Home: index.md
+  - Guides:
+    - GLM Workflow: guides/glm-workflow.md
+  - Getting Started:
+    - Installation: getting-started/installation.md
+    - Quick Start: getting-started/quickstart.md
+  - GLM Theory:
+    - Introduction to GLMs: theory/glm-intro.md
+    - Distribution Families: theory/families.md
+    - Link Functions: theory/links.md
+    - The IRLS Algorithm: theory/irls.md
+    - Coordinate Descent: theory/coordinate-descent.md
+    - Model Diagnostics: theory/diagnostics.md
+    - Regularization: theory/regularization.md
+  - Architecture:
+    - Overview: architecture/overview.md
+    - Rust Core Library: architecture/rust-core.md
+    - Python Bindings: architecture/python-bindings.md
+    - Data Flow: architecture/data-flow.md
+  - Components:
+    - Solvers: components/solvers.md
+    - Families: components/families.md
+    - Link Functions: components/links.md
+    - Design Matrix: components/design-matrix.md
+    - Splines: components/splines.md
+    - Target Encoding: components/target-encoding.md
+    - Diagnostics: components/diagnostics.md
+  - Python API:
+    - Array API: api/array-api.md
+    - Formula API: api/formula-api.md
+    - Results Object: api/results.md
+    - Regularization: api/regularization.md
+    - Diagnostics: api/diagnostics.md
+  - Rust Guide:
+    - Rust Fundamentals: rust-guide/fundamentals.md
+  - Maintenance Guide:
+    - Rust Best Practices: maintenance/rust-best-practices.md
+    - Adding a New Family: maintenance/adding-family.md
+    - Adding a New Link: maintenance/adding-link.md
+    - Testing Strategy: maintenance/testing.md
+    - Performance: maintenance/performance.md
+  - Reference:
+    - Glossary: reference/glossary.md
+    - Mathematical Notation: reference/notation.md

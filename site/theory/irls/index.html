@@ -1,0 +1,3845 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="High-performance Generalized Linear Models with Rust backend and Python API">
+      
+      
+        <meta name="author" content="RustyStats Team">
+      
+      
+      
+        <link rel="prev" href="../links/">
+      
+      
+        <link rel="next" href="../coordinate-descent/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.1">
+    
+    
+      
+        <title>The IRLS Algorithm - RustyStats Documentation</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="amber">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#the-irls-algorithm" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="RustyStats Documentation" class="md-header__button md-logo" aria-label="RustyStats Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            RustyStats Documentation
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              The IRLS Algorithm
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="amber"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="amber"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/your-org/rustystats" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../guides/glm-workflow/" class="md-tabs__link">
+          
+  
+  
+  Guides
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../getting-started/installation/" class="md-tabs__link">
+          
+  
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../glm-intro/" class="md-tabs__link">
+          
+  
+  
+  GLM Theory
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../architecture/overview/" class="md-tabs__link">
+          
+  
+  
+  Architecture
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../components/solvers/" class="md-tabs__link">
+          
+  
+  
+  Components
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../api/array-api/" class="md-tabs__link">
+          
+  
+  
+  Python API
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../rust-guide/fundamentals/" class="md-tabs__link">
+          
+  
+  
+  Rust Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../maintenance/rust-best-practices/" class="md-tabs__link">
+          
+  
+  
+  Maintenance Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../reference/glossary/" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="RustyStats Documentation" class="md-nav__button md-logo" aria-label="RustyStats Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    RustyStats Documentation
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/your-org/rustystats" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/glm-workflow/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GLM Workflow
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GLM Theory
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    GLM Theory
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../glm-intro/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Introduction to GLMs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../families/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Distribution Families
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../links/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Link Functions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The IRLS Algorithm
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The IRLS Algorithm
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#part-1-the-problem-were-solving" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 1: The Problem We're Solving
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 1: The Problem We&#39;re Solving">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#11-recap-the-score-equations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.1 Recap: The Score Equations
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#12-why-we-cant-solve-directly" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.2 Why We Can't Solve Directly
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-2-newton-raphson-and-fisher-scoring" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 2: Newton-Raphson and Fisher Scoring
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 2: Newton-Raphson and Fisher Scoring">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21-newton-raphson-method" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.1 Newton-Raphson Method
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#22-newton-raphson-for-maximum-likelihood" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.2 Newton-Raphson for Maximum Likelihood
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#23-the-problem-with-the-hessian" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.3 The Problem with the Hessian
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#24-fisher-information" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.4 Fisher Information
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#25-deriving-the-fisher-information-for-glms" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.5 Deriving the Fisher Information for GLMs
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#26-fisher-scoring-algorithm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.6 Fisher Scoring Algorithm
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-3-transforming-to-weighted-least-squares" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 3: Transforming to Weighted Least Squares
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 3: Transforming to Weighted Least Squares">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-the-working-response" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 The Working Response
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32-the-magic-irls-update-equals-weighted-least-squares" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 The Magic: IRLS Update Equals Weighted Least Squares
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33-why-this-matters" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.3 Why This Matters
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-4-understanding-the-components" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 4: Understanding the Components
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 4: Understanding the Components">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-the-working-response-in-detail" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 The Working Response in Detail
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-the-working-weights-in-detail" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 The Working Weights in Detail
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#43-why-reweighted" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.3 Why "Reweighted"?
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-5-a-complete-worked-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 5: A Complete Worked Example
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 5: A Complete Worked Example">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#51-setup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.1 Setup
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#52-iteration-0-initialization" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.2 Iteration 0: Initialization
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#53-iteration-1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.3 Iteration 1
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#54-iteration-2-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.4 Iteration 2 (Summary)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#55-final-results" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.5 Final Results
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-6-the-complete-irls-algorithm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 6: The Complete IRLS Algorithm
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-7-convergence-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 7: Convergence Properties
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 7: Convergence Properties">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#71-when-does-irls-converge" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.1 When Does IRLS Converge?
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#72-typical-convergence-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.2 Typical Convergence Behavior
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#73-why-gaussian-converges-in-one-iteration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.3 Why Gaussian Converges in One Iteration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#74-when-convergence-fails" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.4 When Convergence Fails
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-8-implementation-in-rustystats" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 8: Implementation in RustyStats
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 8: Implementation in RustyStats">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#81-code-structure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.1 Code Structure
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#82-key-data-structures" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.2 Key Data Structures
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#83-the-core-loop-simplified" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.3 The Core Loop (Simplified)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#84-parallel-computation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.4 Parallel Computation
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-9-numerical-stability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 9: Numerical Stability
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 9: Numerical Stability">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#91-weight-clamping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.1 Weight Clamping
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#92-mean-clamping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.2 Mean Clamping
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#93-cholesky-decomposition" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.3 Cholesky Decomposition
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-10-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 10: Summary
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#exercises" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exercises
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#further-reading" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Further Reading
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../coordinate-descent/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Coordinate Descent
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../diagnostics/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Model Diagnostics
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../regularization/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Regularization
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/rust-core/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rust Core Library
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/python-bindings/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Python Bindings
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/data-flow/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Data Flow
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Components
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Components
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../components/solvers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Solvers
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../components/families/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Families
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../components/links/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Link Functions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../components/design-matrix/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design Matrix
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../components/splines/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Splines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../components/target-encoding/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Target Encoding
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../components/diagnostics/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Diagnostics
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Python API
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Python API
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/array-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Array API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/formula-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Formula API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/results/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Results Object
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/regularization/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Regularization
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/diagnostics/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Diagnostics
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rust Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Rust Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../rust-guide/fundamentals/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rust Fundamentals
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Maintenance Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Maintenance Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../maintenance/rust-best-practices/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rust Best Practices
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../maintenance/adding-family/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Adding a New Family
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../maintenance/adding-link/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Adding a New Link
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../maintenance/testing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Testing Strategy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../maintenance/performance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Performance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/glossary/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Glossary
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/notation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mathematical Notation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#part-1-the-problem-were-solving" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 1: The Problem We're Solving
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 1: The Problem We&#39;re Solving">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#11-recap-the-score-equations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.1 Recap: The Score Equations
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#12-why-we-cant-solve-directly" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.2 Why We Can't Solve Directly
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-2-newton-raphson-and-fisher-scoring" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 2: Newton-Raphson and Fisher Scoring
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 2: Newton-Raphson and Fisher Scoring">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21-newton-raphson-method" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.1 Newton-Raphson Method
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#22-newton-raphson-for-maximum-likelihood" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.2 Newton-Raphson for Maximum Likelihood
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#23-the-problem-with-the-hessian" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.3 The Problem with the Hessian
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#24-fisher-information" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.4 Fisher Information
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#25-deriving-the-fisher-information-for-glms" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.5 Deriving the Fisher Information for GLMs
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#26-fisher-scoring-algorithm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.6 Fisher Scoring Algorithm
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-3-transforming-to-weighted-least-squares" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 3: Transforming to Weighted Least Squares
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 3: Transforming to Weighted Least Squares">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-the-working-response" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 The Working Response
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32-the-magic-irls-update-equals-weighted-least-squares" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 The Magic: IRLS Update Equals Weighted Least Squares
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33-why-this-matters" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.3 Why This Matters
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-4-understanding-the-components" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 4: Understanding the Components
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 4: Understanding the Components">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-the-working-response-in-detail" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 The Working Response in Detail
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-the-working-weights-in-detail" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 The Working Weights in Detail
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#43-why-reweighted" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.3 Why "Reweighted"?
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-5-a-complete-worked-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 5: A Complete Worked Example
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 5: A Complete Worked Example">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#51-setup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.1 Setup
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#52-iteration-0-initialization" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.2 Iteration 0: Initialization
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#53-iteration-1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.3 Iteration 1
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#54-iteration-2-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.4 Iteration 2 (Summary)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#55-final-results" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.5 Final Results
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-6-the-complete-irls-algorithm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 6: The Complete IRLS Algorithm
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-7-convergence-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 7: Convergence Properties
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 7: Convergence Properties">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#71-when-does-irls-converge" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.1 When Does IRLS Converge?
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#72-typical-convergence-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.2 Typical Convergence Behavior
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#73-why-gaussian-converges-in-one-iteration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.3 Why Gaussian Converges in One Iteration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#74-when-convergence-fails" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.4 When Convergence Fails
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-8-implementation-in-rustystats" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 8: Implementation in RustyStats
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 8: Implementation in RustyStats">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#81-code-structure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.1 Code Structure
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#82-key-data-structures" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.2 Key Data Structures
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#83-the-core-loop-simplified" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.3 The Core Loop (Simplified)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#84-parallel-computation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.4 Parallel Computation
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-9-numerical-stability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 9: Numerical Stability
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 9: Numerical Stability">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#91-weight-clamping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.1 Weight Clamping
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#92-mean-clamping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.2 Mean Clamping
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#93-cholesky-decomposition" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.3 Cholesky Decomposition
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-10-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 10: Summary
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#exercises" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exercises
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#further-reading" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Further Reading
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="the-irls-algorithm">The IRLS Algorithm<a class="headerlink" href="#the-irls-algorithm" title="Permanent link">&para;</a></h1>
+<p><strong>Iteratively Reweighted Least Squares (IRLS)</strong> is the workhorse algorithm for fitting GLMs. This chapter provides a complete derivation from first principles, showing exactly why IRLS works and how it's implemented in RustyStats.</p>
+<p><strong>Prerequisites</strong>: You should understand the GLM framework from the <a href="../glm-intro/">previous chapter</a>, including the score equations and Fisher information.</p>
+<hr />
+<h2 id="part-1-the-problem-were-solving">Part 1: The Problem We're Solving<a class="headerlink" href="#part-1-the-problem-were-solving" title="Permanent link">&para;</a></h2>
+<h3 id="11-recap-the-score-equations">1.1 Recap: The Score Equations<a class="headerlink" href="#11-recap-the-score-equations" title="Permanent link">&para;</a></h3>
+<p>From maximum likelihood theory, we want to find <span class="arithmatex">\(\boldsymbol{\beta}\)</span> that satisfies the score equations:</p>
+<div class="arithmatex">\[
+\frac{\partial \ell}{\partial \beta_j} = \sum_{i=1}^n \frac{(y_i - \mu_i) x_{ij}}{\phi \cdot V(\mu_i) \cdot g'(\mu_i)} = 0 \quad \text{for } j = 0, 1, \ldots, p-1
+\]</div>
+<p>In matrix notation, define the diagonal matrices:
+- <span class="arithmatex">\(\mathbf{V} = \text{diag}(V(\mu_1), \ldots, V(\mu_n))\)</span> — variance function values
+- <span class="arithmatex">\(\mathbf{G} = \text{diag}(g'(\mu_1), \ldots, g'(\mu_n))\)</span> — link derivatives</p>
+<p>Then the score equations become:</p>
+<div class="arithmatex">\[
+\mathbf{U} = \frac{1}{\phi} \mathbf{X}^T \mathbf{V}^{-1} \mathbf{G}^{-1} (\mathbf{y} - \boldsymbol{\mu}) = \mathbf{0}
+\]</div>
+<h3 id="12-why-we-cant-solve-directly">1.2 Why We Can't Solve Directly<a class="headerlink" href="#12-why-we-cant-solve-directly" title="Permanent link">&para;</a></h3>
+<p>For linear regression (Gaussian family, identity link), <span class="arithmatex">\(\mu_i = \mathbf{x}_i^T\boldsymbol{\beta}\)</span> is linear in <span class="arithmatex">\(\boldsymbol{\beta}\)</span>, and we get the normal equations with a closed-form solution.</p>
+<p>For general GLMs, <span class="arithmatex">\(\mu_i = g^{-1}(\mathbf{x}_i^T\boldsymbol{\beta})\)</span> is <strong>nonlinear</strong> in <span class="arithmatex">\(\boldsymbol{\beta}\)</span>. For example:</p>
+<ul>
+<li><strong>Poisson with log link</strong>: <span class="arithmatex">\(\mu_i = e^{\mathbf{x}_i^T\boldsymbol{\beta}}\)</span></li>
+<li><strong>Binomial with logit link</strong>: <span class="arithmatex">\(\mu_i = \frac{e^{\mathbf{x}_i^T\boldsymbol{\beta}}}{1 + e^{\mathbf{x}_i^T\boldsymbol{\beta}}}\)</span></li>
+</ul>
+<p>The score equations involve these nonlinear functions, so there's no closed-form solution. We need an iterative method.</p>
+<hr />
+<h2 id="part-2-newton-raphson-and-fisher-scoring">Part 2: Newton-Raphson and Fisher Scoring<a class="headerlink" href="#part-2-newton-raphson-and-fisher-scoring" title="Permanent link">&para;</a></h2>
+<h3 id="21-newton-raphson-method">2.1 Newton-Raphson Method<a class="headerlink" href="#21-newton-raphson-method" title="Permanent link">&para;</a></h3>
+<p>Newton-Raphson is a general method for solving equations <span class="arithmatex">\(f(\mathbf{x}) = \mathbf{0}\)</span>. The idea is to linearize <span class="arithmatex">\(f\)</span> around the current estimate and solve the linear approximation.</p>
+<p><strong>One-dimensional case</strong>: To solve <span class="arithmatex">\(f(x) = 0\)</span>:</p>
+<ol>
+<li>Start with initial guess <span class="arithmatex">\(x^{(0)}\)</span></li>
+<li>Taylor expand: <span class="arithmatex">\(f(x) \approx f(x^{(t)}) + f'(x^{(t)})(x - x^{(t)})\)</span></li>
+<li>Set approximation to zero and solve: <span class="arithmatex">\(x^{(t+1)} = x^{(t)} - \frac{f(x^{(t)})}{f'(x^{(t)})}\)</span></li>
+</ol>
+<p><strong>Multi-dimensional case</strong>: To solve <span class="arithmatex">\(\mathbf{f}(\mathbf{x}) = \mathbf{0}\)</span>:</p>
+<div class="arithmatex">\[
+\mathbf{x}^{(t+1)} = \mathbf{x}^{(t)} - \mathbf{J}^{-1}(\mathbf{x}^{(t)}) \mathbf{f}(\mathbf{x}^{(t)})
+\]</div>
+<p>where <span class="arithmatex">\(\mathbf{J}\)</span> is the Jacobian matrix with <span class="arithmatex">\(J_{jk} = \frac{\partial f_j}{\partial x_k}\)</span>.</p>
+<h3 id="22-newton-raphson-for-maximum-likelihood">2.2 Newton-Raphson for Maximum Likelihood<a class="headerlink" href="#22-newton-raphson-for-maximum-likelihood" title="Permanent link">&para;</a></h3>
+<p>For maximum likelihood, we want to solve <span class="arithmatex">\(\mathbf{U}(\boldsymbol{\beta}) = \mathbf{0}\)</span> where <span class="arithmatex">\(\mathbf{U} = \frac{\partial \ell}{\partial \boldsymbol{\beta}}\)</span> is the score.</p>
+<p>The Jacobian of <span class="arithmatex">\(\mathbf{U}\)</span> is the <strong>Hessian</strong> of <span class="arithmatex">\(\ell\)</span>:</p>
+<div class="arithmatex">\[
+\mathbf{H} = \frac{\partial \mathbf{U}}{\partial \boldsymbol{\beta}^T} = \frac{\partial^2 \ell}{\partial \boldsymbol{\beta} \partial \boldsymbol{\beta}^T}
+\]</div>
+<p>So Newton-Raphson gives:</p>
+<div class="arithmatex">\[
+\boldsymbol{\beta}^{(t+1)} = \boldsymbol{\beta}^{(t)} - \mathbf{H}^{-1}(\boldsymbol{\beta}^{(t)}) \mathbf{U}(\boldsymbol{\beta}^{(t)})
+\]</div>
+<h3 id="23-the-problem-with-the-hessian">2.3 The Problem with the Hessian<a class="headerlink" href="#23-the-problem-with-the-hessian" title="Permanent link">&para;</a></h3>
+<p>Computing the Hessian requires second derivatives, which can be:
+- Complicated to derive
+- Computationally expensive
+- Potentially non-positive-definite (causing instability)</p>
+<p><strong>Fisher's insight</strong>: Replace the Hessian with its <strong>expected value</strong>.</p>
+<h3 id="24-fisher-information">2.4 Fisher Information<a class="headerlink" href="#24-fisher-information" title="Permanent link">&para;</a></h3>
+<p>The <strong>Fisher information matrix</strong> is defined as:</p>
+<div class="arithmatex">\[
+\mathcal{I}(\boldsymbol{\beta}) = E\left[-\mathbf{H}\right] = E\left[-\frac{\partial^2 \ell}{\partial \boldsymbol{\beta} \partial \boldsymbol{\beta}^T}\right]
+\]</div>
+<p>Equivalently (under regularity conditions):</p>
+<div class="arithmatex">\[
+\mathcal{I}(\boldsymbol{\beta}) = E\left[\mathbf{U}\mathbf{U}^T\right]
+\]</div>
+<p>The Fisher information has a beautiful property: it tells us the <strong>maximum precision</strong> we can achieve when estimating <span class="arithmatex">\(\boldsymbol{\beta}\)</span>.</p>
+<h3 id="25-deriving-the-fisher-information-for-glms">2.5 Deriving the Fisher Information for GLMs<a class="headerlink" href="#25-deriving-the-fisher-information-for-glms" title="Permanent link">&para;</a></h3>
+<p>Let's compute <span class="arithmatex">\(\mathcal{I}\)</span> for a GLM. We need the second derivative of the log-likelihood.</p>
+<p>Starting from:
+$$
+\frac{\partial \ell}{\partial \beta_j} = \frac{1}{\phi} \sum_i \frac{(y_i - \mu_i) x_{ij}}{V(\mu_i) g'(\mu_i)}
+$$</p>
+<p>Taking the derivative with respect to <span class="arithmatex">\(\beta_k\)</span>:</p>
+<div class="arithmatex">\[
+\frac{\partial^2 \ell}{\partial \beta_j \partial \beta_k} = \frac{1}{\phi} \sum_i x_{ij} \frac{\partial}{\partial \beta_k}\left[\frac{y_i - \mu_i}{V(\mu_i) g'(\mu_i)}\right]
+\]</div>
+<p>This involves derivatives of <span class="arithmatex">\(\mu_i\)</span>, <span class="arithmatex">\(V(\mu_i)\)</span>, and <span class="arithmatex">\(g'(\mu_i)\)</span> with respect to <span class="arithmatex">\(\beta_k\)</span>. After careful calculation (which is tedious but straightforward), we get:</p>
+<div class="arithmatex">\[
+\frac{\partial^2 \ell}{\partial \beta_j \partial \beta_k} = -\frac{1}{\phi} \sum_i \frac{x_{ij} x_{ik}}{V(\mu_i)[g'(\mu_i)]^2} + \text{(terms involving } y_i - \mu_i \text{)}
+\]</div>
+<p>Taking expectations (using <span class="arithmatex">\(E[y_i - \mu_i] = 0\)</span>):</p>
+<div class="arithmatex">\[
+\mathcal{I}_{jk} = E\left[-\frac{\partial^2 \ell}{\partial \beta_j \partial \beta_k}\right] = \frac{1}{\phi} \sum_i \frac{x_{ij} x_{ik}}{V(\mu_i)[g'(\mu_i)]^2}
+\]</div>
+<p>In matrix form:</p>
+<div class="arithmatex">\[
+\mathcal{I} = \frac{1}{\phi} \mathbf{X}^T \mathbf{W} \mathbf{X}
+\]</div>
+<p>where <span class="arithmatex">\(\mathbf{W}\)</span> is a diagonal matrix with:</p>
+<div class="arithmatex">\[
+W_{ii} = \frac{1}{V(\mu_i)[g'(\mu_i)]^2}
+\]</div>
+<p>This is the <strong>weight matrix</strong> for IRLS!</p>
+<h3 id="26-fisher-scoring-algorithm">2.6 Fisher Scoring Algorithm<a class="headerlink" href="#26-fisher-scoring-algorithm" title="Permanent link">&para;</a></h3>
+<p><strong>Fisher scoring</strong> replaces Newton-Raphson's Hessian with the Fisher information:</p>
+<div class="arithmatex">\[
+\boldsymbol{\beta}^{(t+1)} = \boldsymbol{\beta}^{(t)} + \mathcal{I}^{-1}(\boldsymbol{\beta}^{(t)}) \mathbf{U}(\boldsymbol{\beta}^{(t)})
+\]</div>
+<p>Substituting our expressions:</p>
+<div class="arithmatex">\[
+\boldsymbol{\beta}^{(t+1)} = \boldsymbol{\beta}^{(t)} + \phi(\mathbf{X}^T \mathbf{W}^{(t)} \mathbf{X})^{-1} \cdot \frac{1}{\phi} \mathbf{X}^T \mathbf{V}^{-1} \mathbf{G}^{-1} (\mathbf{y} - \boldsymbol{\mu}^{(t)})
+\]</div>
+<div class="arithmatex">\[
+= \boldsymbol{\beta}^{(t)} + (\mathbf{X}^T \mathbf{W}^{(t)} \mathbf{X})^{-1} \mathbf{X}^T \mathbf{W}^{(t)} \mathbf{G}^{(t)} (\mathbf{y} - \boldsymbol{\mu}^{(t)})
+\]</div>
+<p>(The second line uses <span class="arithmatex">\(\mathbf{V}^{-1}\mathbf{G}^{-1} = \mathbf{W}\mathbf{G}\)</span> since <span class="arithmatex">\(W_{ii} = 1/(V_i G_i^2)\)</span>.)</p>
+<hr />
+<h2 id="part-3-transforming-to-weighted-least-squares">Part 3: Transforming to Weighted Least Squares<a class="headerlink" href="#part-3-transforming-to-weighted-least-squares" title="Permanent link">&para;</a></h2>
+<h3 id="31-the-working-response">3.1 The Working Response<a class="headerlink" href="#31-the-working-response" title="Permanent link">&para;</a></h3>
+<p>The key insight is to define the <strong>working response</strong> (or adjusted dependent variable):</p>
+<div class="arithmatex">\[
+z_i = \eta_i + (y_i - \mu_i) g'(\mu_i)
+\]</div>
+<p>where <span class="arithmatex">\(\eta_i = g(\mu_i) = \mathbf{x}_i^T\boldsymbol{\beta}^{(t)}\)</span> is the current linear predictor.</p>
+<p>In matrix form:
+$$
+\mathbf{z} = \boldsymbol{\eta} + \mathbf{G}(\mathbf{y} - \boldsymbol{\mu})
+$$</p>
+<h3 id="32-the-magic-irls-update-equals-weighted-least-squares">3.2 The Magic: IRLS Update Equals Weighted Least Squares<a class="headerlink" href="#32-the-magic-irls-update-equals-weighted-least-squares" title="Permanent link">&para;</a></h3>
+<p>Let's show that the Fisher scoring update is equivalent to weighted least squares of <span class="arithmatex">\(\mathbf{z}\)</span> on <span class="arithmatex">\(\mathbf{X}\)</span> with weights <span class="arithmatex">\(\mathbf{W}\)</span>.</p>
+<p><strong>Weighted least squares solution</strong>:</p>
+<div class="arithmatex">\[
+\hat{\boldsymbol{\beta}}_{\text{WLS}} = (\mathbf{X}^T \mathbf{W} \mathbf{X})^{-1} \mathbf{X}^T \mathbf{W} \mathbf{z}
+\]</div>
+<p><strong>Substituting <span class="arithmatex">\(\mathbf{z}\)</span></strong>:</p>
+<div class="arithmatex">\[
+\hat{\boldsymbol{\beta}}_{\text{WLS}} = (\mathbf{X}^T \mathbf{W} \mathbf{X})^{-1} \mathbf{X}^T \mathbf{W} [\boldsymbol{\eta} + \mathbf{G}(\mathbf{y} - \boldsymbol{\mu})]
+\]</div>
+<div class="arithmatex">\[
+= (\mathbf{X}^T \mathbf{W} \mathbf{X})^{-1} \mathbf{X}^T \mathbf{W} \boldsymbol{\eta} + (\mathbf{X}^T \mathbf{W} \mathbf{X})^{-1} \mathbf{X}^T \mathbf{W} \mathbf{G}(\mathbf{y} - \boldsymbol{\mu})
+\]</div>
+<p>Now, <span class="arithmatex">\(\boldsymbol{\eta} = \mathbf{X}\boldsymbol{\beta}^{(t)}\)</span>, so:</p>
+<div class="arithmatex">\[
+(\mathbf{X}^T \mathbf{W} \mathbf{X})^{-1} \mathbf{X}^T \mathbf{W} \mathbf{X} \boldsymbol{\beta}^{(t)} = \boldsymbol{\beta}^{(t)}
+\]</div>
+<p>Therefore:</p>
+<div class="arithmatex">\[
+\hat{\boldsymbol{\beta}}_{\text{WLS}} = \boldsymbol{\beta}^{(t)} + (\mathbf{X}^T \mathbf{W} \mathbf{X})^{-1} \mathbf{X}^T \mathbf{W} \mathbf{G}(\mathbf{y} - \boldsymbol{\mu})
+\]</div>
+<p>This is exactly the Fisher scoring update! <span class="arithmatex">\(\square\)</span></p>
+<h3 id="33-why-this-matters">3.3 Why This Matters<a class="headerlink" href="#33-why-this-matters" title="Permanent link">&para;</a></h3>
+<p>This equivalence is profound:</p>
+<ol>
+<li><strong>Conceptual</strong>: GLM fitting is "just" repeated weighted linear regression</li>
+<li><strong>Computational</strong>: We can use highly optimized linear algebra routines</li>
+<li><strong>Software</strong>: The same code structure handles all GLM families</li>
+</ol>
+<hr />
+<h2 id="part-4-understanding-the-components">Part 4: Understanding the Components<a class="headerlink" href="#part-4-understanding-the-components" title="Permanent link">&para;</a></h2>
+<h3 id="41-the-working-response-in-detail">4.1 The Working Response in Detail<a class="headerlink" href="#41-the-working-response-in-detail" title="Permanent link">&para;</a></h3>
+<div class="arithmatex">\[
+z_i = \eta_i + (y_i - \mu_i) g'(\mu_i)
+\]</div>
+<p><strong>Intuition</strong>: The working response is a first-order Taylor approximation of <span class="arithmatex">\(g(y_i)\)</span> around <span class="arithmatex">\(\mu_i\)</span>:</p>
+<div class="arithmatex">\[
+g(y_i) \approx g(\mu_i) + g'(\mu_i)(y_i - \mu_i) = \eta_i + g'(\mu_i)(y_i - \mu_i)
+\]</div>
+<p>So <span class="arithmatex">\(z_i\)</span> is approximately what the linear predictor "should be" to match observation <span class="arithmatex">\(y_i\)</span>.</p>
+<p><strong>Examples</strong>:</p>
+<table>
+<thead>
+<tr>
+<th>Family + Link</th>
+<th><span class="arithmatex">\(g'(\mu)\)</span></th>
+<th>Working Response <span class="arithmatex">\(z_i\)</span></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Gaussian + Identity</td>
+<td><span class="arithmatex">\(1\)</span></td>
+<td><span class="arithmatex">\(\eta_i + (y_i - \mu_i) = y_i\)</span></td>
+</tr>
+<tr>
+<td>Poisson + Log</td>
+<td><span class="arithmatex">\(1/\mu\)</span></td>
+<td><span class="arithmatex">\(\eta_i + (y_i - \mu_i)/\mu_i\)</span></td>
+</tr>
+<tr>
+<td>Binomial + Logit</td>
+<td><span class="arithmatex">\(1/[\mu(1-\mu)]\)</span></td>
+<td><span class="arithmatex">\(\eta_i + (y_i - \mu_i)/[\mu_i(1-\mu_i)]\)</span></td>
+</tr>
+</tbody>
+</table>
+<p>For Gaussian, the working response is just <span class="arithmatex">\(y_i\)</span>—no adjustment needed!</p>
+<h3 id="42-the-working-weights-in-detail">4.2 The Working Weights in Detail<a class="headerlink" href="#42-the-working-weights-in-detail" title="Permanent link">&para;</a></h3>
+<div class="arithmatex">\[
+w_i = \frac{1}{V(\mu_i)[g'(\mu_i)]^2}
+\]</div>
+<p><strong>Interpretation</strong>:
+- <strong>Variance factor</strong>: <span class="arithmatex">\(1/V(\mu_i)\)</span> downweights observations with high variance (more noise → less information)
+- <strong>Link factor</strong>: <span class="arithmatex">\(1/[g'(\mu_i)]^2\)</span> adjusts for the curvature of the link function</p>
+<p><strong>Examples</strong>:</p>
+<table>
+<thead>
+<tr>
+<th>Family + Link</th>
+<th><span class="arithmatex">\(V(\mu)\)</span></th>
+<th><span class="arithmatex">\(g'(\mu)\)</span></th>
+<th>Weight <span class="arithmatex">\(w_i\)</span></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Gaussian + Identity</td>
+<td><span class="arithmatex">\(1\)</span></td>
+<td><span class="arithmatex">\(1\)</span></td>
+<td><span class="arithmatex">\(1\)</span></td>
+</tr>
+<tr>
+<td>Poisson + Log</td>
+<td><span class="arithmatex">\(\mu\)</span></td>
+<td><span class="arithmatex">\(1/\mu\)</span></td>
+<td><span class="arithmatex">\(\mu\)</span></td>
+</tr>
+<tr>
+<td>Binomial + Logit</td>
+<td><span class="arithmatex">\(\mu(1-\mu)\)</span></td>
+<td><span class="arithmatex">\(1/[\mu(1-\mu)]\)</span></td>
+<td><span class="arithmatex">\(\mu(1-\mu)\)</span></td>
+</tr>
+<tr>
+<td>Gamma + Log</td>
+<td><span class="arithmatex">\(\mu^2\)</span></td>
+<td><span class="arithmatex">\(1/\mu\)</span></td>
+<td><span class="arithmatex">\(1\)</span></td>
+</tr>
+</tbody>
+</table>
+<div class="admonition note">
+<p class="admonition-title">Constant Weights</p>
+<p>For Gamma + Log, the weights are constant! This is because <span class="arithmatex">\(V(\mu) = \mu^2\)</span> and <span class="arithmatex">\(g'(\mu) = 1/\mu\)</span>, so:
+$<span class="arithmatex">\(w = \frac{1}{\mu^2 \cdot (1/\mu)^2} = 1\)</span>$</p>
+</div>
+<h3 id="43-why-reweighted">4.3 Why "Reweighted"?<a class="headerlink" href="#43-why-reweighted" title="Permanent link">&para;</a></h3>
+<p>The weights <span class="arithmatex">\(w_i\)</span> depend on <span class="arithmatex">\(\mu_i\)</span>, which depends on the current <span class="arithmatex">\(\boldsymbol{\beta}^{(t)}\)</span>. Each iteration:</p>
+<ol>
+<li>Updates <span class="arithmatex">\(\boldsymbol{\beta}\)</span></li>
+<li>Updates <span class="arithmatex">\(\boldsymbol{\mu} = g^{-1}(\mathbf{X}\boldsymbol{\beta})\)</span></li>
+<li>Updates weights <span class="arithmatex">\(\mathbf{W}\)</span> based on new <span class="arithmatex">\(\boldsymbol{\mu}\)</span></li>
+</ol>
+<p>Hence "<strong>iteratively reweighted</strong>" least squares.</p>
+<hr />
+<h2 id="part-5-a-complete-worked-example">Part 5: A Complete Worked Example<a class="headerlink" href="#part-5-a-complete-worked-example" title="Permanent link">&para;</a></h2>
+<p>Let's trace through IRLS by hand for a tiny Poisson regression problem.</p>
+<h3 id="51-setup">5.1 Setup<a class="headerlink" href="#51-setup" title="Permanent link">&para;</a></h3>
+<p><strong>Data</strong>:
+| <span class="arithmatex">\(i\)</span> | <span class="arithmatex">\(y_i\)</span> | <span class="arithmatex">\(x_i\)</span> |
+|-----|-------|-------|
+| 1 | 1 | 0 |
+| 2 | 4 | 1 |
+| 3 | 7 | 2 |</p>
+<p><strong>Model</strong>: <span class="arithmatex">\(\log(\mu_i) = \beta_0 + \beta_1 x_i\)</span></p>
+<p><strong>Design matrix</strong>: 
+$<span class="arithmatex">\(\mathbf{X} = \begin{pmatrix} 1 &amp; 0 \\ 1 &amp; 1 \\ 1 &amp; 2 \end{pmatrix}\)</span>$</p>
+<p><strong>Link function</strong>: <span class="arithmatex">\(g(\mu) = \log(\mu)\)</span>, so <span class="arithmatex">\(g'(\mu) = 1/\mu\)</span> and <span class="arithmatex">\(g^{-1}(\eta) = e^\eta\)</span></p>
+<p><strong>Variance function</strong>: <span class="arithmatex">\(V(\mu) = \mu\)</span></p>
+<h3 id="52-iteration-0-initialization">5.2 Iteration 0: Initialization<a class="headerlink" href="#52-iteration-0-initialization" title="Permanent link">&para;</a></h3>
+<p>Initialize <span class="arithmatex">\(\mu_i\)</span> from the data (common choice: <span class="arithmatex">\(\mu_i^{(0)} = y_i + 0.1\)</span> to avoid <span class="arithmatex">\(\log(0)\)</span>):</p>
+<div class="arithmatex">\[\boldsymbol{\mu}^{(0)} = \begin{pmatrix} 1.1 \\ 4.1 \\ 7.1 \end{pmatrix}\]</div>
+<p>Compute initial linear predictor:
+$<span class="arithmatex">\(\boldsymbol{\eta}^{(0)} = \log(\boldsymbol{\mu}^{(0)}) = \begin{pmatrix} 0.095 \\ 1.411 \\ 1.960 \end{pmatrix}\)</span>$</p>
+<p>We could solve for initial <span class="arithmatex">\(\boldsymbol{\beta}^{(0)}\)</span> by WLS, but let's just proceed to iteration 1.</p>
+<h3 id="53-iteration-1">5.3 Iteration 1<a class="headerlink" href="#53-iteration-1" title="Permanent link">&para;</a></h3>
+<p><strong>Step 1: Compute weights</strong></p>
+<div class="arithmatex">\[w_i = \frac{1}{V(\mu_i)[g'(\mu_i)]^2} = \frac{1}{\mu_i \cdot (1/\mu_i)^2} = \mu_i\]</div>
+<div class="arithmatex">\[\mathbf{W}^{(0)} = \text{diag}(1.1, 4.1, 7.1)\]</div>
+<p><strong>Step 2: Compute working response</strong></p>
+<div class="arithmatex">\[z_i = \eta_i + (y_i - \mu_i) g'(\mu_i) = \eta_i + \frac{y_i - \mu_i}{\mu_i}\]</div>
+<div class="arithmatex">\[z_1 = 0.095 + \frac{1 - 1.1}{1.1} = 0.095 - 0.091 = 0.004$$
+$$z_2 = 1.411 + \frac{4 - 4.1}{4.1} = 1.411 - 0.024 = 1.387$$
+$$z_3 = 1.960 + \frac{7 - 7.1}{7.1} = 1.960 - 0.014 = 1.946\]</div>
+<div class="arithmatex">\[\mathbf{z}^{(0)} = \begin{pmatrix} 0.004 \\ 1.387 \\ 1.946 \end{pmatrix}\]</div>
+<p><strong>Step 3: Compute <span class="arithmatex">\(\mathbf{X}^T\mathbf{W}\mathbf{X}\)</span></strong></p>
+<div class="arithmatex">\[\mathbf{X}^T\mathbf{W}\mathbf{X} = \begin{pmatrix} 1 &amp; 1 &amp; 1 \\ 0 &amp; 1 &amp; 2 \end{pmatrix} \begin{pmatrix} 1.1 &amp; 0 &amp; 0 \\ 0 &amp; 4.1 &amp; 0 \\ 0 &amp; 0 &amp; 7.1 \end{pmatrix} \begin{pmatrix} 1 &amp; 0 \\ 1 &amp; 1 \\ 1 &amp; 2 \end{pmatrix}\]</div>
+<div class="arithmatex">\[= \begin{pmatrix} 1.1 &amp; 4.1 &amp; 7.1 \\ 0 &amp; 4.1 &amp; 14.2 \end{pmatrix} \begin{pmatrix} 1 &amp; 0 \\ 1 &amp; 1 \\ 1 &amp; 2 \end{pmatrix} = \begin{pmatrix} 12.3 &amp; 18.3 \\ 18.3 &amp; 32.5 \end{pmatrix}\]</div>
+<p><strong>Step 4: Compute <span class="arithmatex">\(\mathbf{X}^T\mathbf{W}\mathbf{z}\)</span></strong></p>
+<div class="arithmatex">\[\mathbf{X}^T\mathbf{W}\mathbf{z} = \begin{pmatrix} 1.1 &amp; 4.1 &amp; 7.1 \\ 0 &amp; 4.1 &amp; 14.2 \end{pmatrix} \begin{pmatrix} 0.004 \\ 1.387 \\ 1.946 \end{pmatrix} = \begin{pmatrix} 19.51 \\ 33.32 \end{pmatrix}\]</div>
+<p><strong>Step 5: Solve for <span class="arithmatex">\(\boldsymbol{\beta}^{(1)}\)</span></strong></p>
+<div class="arithmatex">\[\boldsymbol{\beta}^{(1)} = (\mathbf{X}^T\mathbf{W}\mathbf{X})^{-1} \mathbf{X}^T\mathbf{W}\mathbf{z}\]</div>
+<p>First, compute the inverse:
+$<span class="arithmatex">\((\mathbf{X}^T\mathbf{W}\mathbf{X})^{-1} = \frac{1}{12.3 \times 32.5 - 18.3^2} \begin{pmatrix} 32.5 &amp; -18.3 \\ -18.3 &amp; 12.3 \end{pmatrix}\)</span>$</p>
+<div class="arithmatex">\[= \frac{1}{64.86} \begin{pmatrix} 32.5 &amp; -18.3 \\ -18.3 &amp; 12.3 \end{pmatrix} = \begin{pmatrix} 0.501 &amp; -0.282 \\ -0.282 &amp; 0.190 \end{pmatrix}\]</div>
+<p>Then:
+$<span class="arithmatex">\(\boldsymbol{\beta}^{(1)} = \begin{pmatrix} 0.501 &amp; -0.282 \\ -0.282 &amp; 0.190 \end{pmatrix} \begin{pmatrix} 19.51 \\ 33.32 \end{pmatrix} = \begin{pmatrix} 0.38 \\ 0.83 \end{pmatrix}\)</span>$</p>
+<p><strong>Step 6: Update linear predictor and means</strong></p>
+<div class="arithmatex">\[\boldsymbol{\eta}^{(1)} = \mathbf{X}\boldsymbol{\beta}^{(1)} = \begin{pmatrix} 0.38 \\ 1.21 \\ 2.04 \end{pmatrix}\]</div>
+<div class="arithmatex">\[\boldsymbol{\mu}^{(1)} = e^{\boldsymbol{\eta}^{(1)}} = \begin{pmatrix} 1.46 \\ 3.35 \\ 7.69 \end{pmatrix}\]</div>
+<p><strong>Step 7: Compute deviance</strong></p>
+<div class="arithmatex">\[D = 2\sum_i [y_i \log(y_i/\mu_i) - (y_i - \mu_i)]\]</div>
+<div class="arithmatex">\[= 2[(1)\log(1/1.46) - (1-1.46) + (4)\log(4/3.35) - (4-3.35) + (7)\log(7/7.69) - (7-7.69)]\]</div>
+<div class="arithmatex">\[= 2[(-0.378 + 0.46) + (0.716 - 0.65) + (-0.661 + 0.69)]\]</div>
+<div class="arithmatex">\[= 2[0.082 + 0.066 + 0.029] = 0.354\]</div>
+<h3 id="54-iteration-2-summary">5.4 Iteration 2 (Summary)<a class="headerlink" href="#54-iteration-2-summary" title="Permanent link">&para;</a></h3>
+<p>Repeating with <span class="arithmatex">\(\boldsymbol{\mu}^{(1)}\)</span>:</p>
+<ul>
+<li>New weights: <span class="arithmatex">\(\mathbf{W}^{(1)} = \text{diag}(1.46, 3.35, 7.69)\)</span></li>
+<li>New working response computed</li>
+<li>Solve WLS again</li>
+<li>Get <span class="arithmatex">\(\boldsymbol{\beta}^{(2)} \approx (0.38, 0.83)\)</span> (nearly unchanged!)</li>
+<li>Deviance <span class="arithmatex">\(\approx 0.354\)</span> (unchanged)</li>
+</ul>
+<p><strong>Converged!</strong> The change in deviance is below tolerance.</p>
+<h3 id="55-final-results">5.5 Final Results<a class="headerlink" href="#55-final-results" title="Permanent link">&para;</a></h3>
+<div class="arithmatex">\[\hat{\beta}_0 = 0.38, \quad \hat{\beta}_1 = 0.83\]</div>
+<p>Interpretation: Each unit increase in <span class="arithmatex">\(x\)</span> multiplies the expected count by <span class="arithmatex">\(e^{0.83} \approx 2.29\)</span>.</p>
+<hr />
+<h2 id="part-6-the-complete-irls-algorithm">Part 6: The Complete IRLS Algorithm<a class="headerlink" href="#part-6-the-complete-irls-algorithm" title="Permanent link">&para;</a></h2>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>Algorithm: IRLS for GLM Fitting
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>════════════════════════════════════════════════════════════════
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>Input:
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>  - y: response vector (n × 1)
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>  - X: design matrix (n × p)
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>  - family: distribution family (defines V(μ))
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>  - link: link function (defines g, g⁻¹, g&#39;)
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>  - config: {max_iter, tolerance, min_weight}
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>Output:
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>  - β: coefficient estimates (p × 1)
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>  - μ: fitted means (n × 1)
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>  - D: final deviance
+</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>  - Σ: covariance matrix (p × p)
+</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>
+</span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>════════════════════════════════════════════════════════════════
+</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>
+</span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>1. INITIALIZE
+</span><span id="__span-0-20"><a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>   μ⁽⁰⁾ ← family.initialize(y)     // e.g., μ = y + 0.1 for Poisson
+</span><span id="__span-0-21"><a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>   η⁽⁰⁾ ← g(μ⁽⁰⁾)                   // initial linear predictor
+</span><span id="__span-0-22"><a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>   D⁽⁰⁾ ← compute_deviance(y, μ⁽⁰⁾)
+</span><span id="__span-0-23"><a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>
+</span><span id="__span-0-24"><a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a>2. ITERATE for t = 1, 2, ..., max_iter:
+</span><span id="__span-0-25"><a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a>
+</span><span id="__span-0-26"><a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a>   // 2a. Compute working weights
+</span><span id="__span-0-27"><a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a>   For i = 1 to n:
+</span><span id="__span-0-28"><a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a>       V_i ← V(μᵢ⁽ᵗ⁻¹⁾)
+</span><span id="__span-0-29"><a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a>       g&#39;_i ← g&#39;(μᵢ⁽ᵗ⁻¹⁾)
+</span><span id="__span-0-30"><a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a>       w_i ← 1 / (V_i × g&#39;_i²)
+</span><span id="__span-0-31"><a id="__codelineno-0-31" name="__codelineno-0-31" href="#__codelineno-0-31"></a>       w_i ← max(w_i, min_weight)    // numerical stability
+</span><span id="__span-0-32"><a id="__codelineno-0-32" name="__codelineno-0-32" href="#__codelineno-0-32"></a>
+</span><span id="__span-0-33"><a id="__codelineno-0-33" name="__codelineno-0-33" href="#__codelineno-0-33"></a>   W ← diag(w₁, ..., wₙ)
+</span><span id="__span-0-34"><a id="__codelineno-0-34" name="__codelineno-0-34" href="#__codelineno-0-34"></a>
+</span><span id="__span-0-35"><a id="__codelineno-0-35" name="__codelineno-0-35" href="#__codelineno-0-35"></a>   // 2b. Compute working response
+</span><span id="__span-0-36"><a id="__codelineno-0-36" name="__codelineno-0-36" href="#__codelineno-0-36"></a>   For i = 1 to n:
+</span><span id="__span-0-37"><a id="__codelineno-0-37" name="__codelineno-0-37" href="#__codelineno-0-37"></a>       z_i ← ηᵢ⁽ᵗ⁻¹⁾ + (yᵢ - μᵢ⁽ᵗ⁻¹⁾) × g&#39;(μᵢ⁽ᵗ⁻¹⁾)
+</span><span id="__span-0-38"><a id="__codelineno-0-38" name="__codelineno-0-38" href="#__codelineno-0-38"></a>
+</span><span id="__span-0-39"><a id="__codelineno-0-39" name="__codelineno-0-39" href="#__codelineno-0-39"></a>   // 2c. Solve weighted least squares
+</span><span id="__span-0-40"><a id="__codelineno-0-40" name="__codelineno-0-40" href="#__codelineno-0-40"></a>   β⁽ᵗ⁾ ← solve(X&#39;WX, X&#39;Wz)         // Using Cholesky decomposition
+</span><span id="__span-0-41"><a id="__codelineno-0-41" name="__codelineno-0-41" href="#__codelineno-0-41"></a>
+</span><span id="__span-0-42"><a id="__codelineno-0-42" name="__codelineno-0-42" href="#__codelineno-0-42"></a>   // 2d. Update linear predictor and means
+</span><span id="__span-0-43"><a id="__codelineno-0-43" name="__codelineno-0-43" href="#__codelineno-0-43"></a>   η⁽ᵗ⁾ ← Xβ⁽ᵗ⁾ + offset             // offset is 0 if not specified
+</span><span id="__span-0-44"><a id="__codelineno-0-44" name="__codelineno-0-44" href="#__codelineno-0-44"></a>   μ⁽ᵗ⁾ ← g⁻¹(η⁽ᵗ⁾)
+</span><span id="__span-0-45"><a id="__codelineno-0-45" name="__codelineno-0-45" href="#__codelineno-0-45"></a>
+</span><span id="__span-0-46"><a id="__codelineno-0-46" name="__codelineno-0-46" href="#__codelineno-0-46"></a>   // Clamp means to valid range
+</span><span id="__span-0-47"><a id="__codelineno-0-47" name="__codelineno-0-47" href="#__codelineno-0-47"></a>   μ⁽ᵗ⁾ ← family.clamp(μ⁽ᵗ⁾)        // e.g., μ &gt; 0 for Poisson
+</span><span id="__span-0-48"><a id="__codelineno-0-48" name="__codelineno-0-48" href="#__codelineno-0-48"></a>
+</span><span id="__span-0-49"><a id="__codelineno-0-49" name="__codelineno-0-49" href="#__codelineno-0-49"></a>   // 2e. Compute deviance
+</span><span id="__span-0-50"><a id="__codelineno-0-50" name="__codelineno-0-50" href="#__codelineno-0-50"></a>   D⁽ᵗ⁾ ← compute_deviance(y, μ⁽ᵗ⁾)
+</span><span id="__span-0-51"><a id="__codelineno-0-51" name="__codelineno-0-51" href="#__codelineno-0-51"></a>
+</span><span id="__span-0-52"><a id="__codelineno-0-52" name="__codelineno-0-52" href="#__codelineno-0-52"></a>   // 2f. Check convergence
+</span><span id="__span-0-53"><a id="__codelineno-0-53" name="__codelineno-0-53" href="#__codelineno-0-53"></a>   If |D⁽ᵗ⁾ - D⁽ᵗ⁻¹⁾| / |D⁽ᵗ⁻¹⁾| &lt; tolerance:
+</span><span id="__span-0-54"><a id="__codelineno-0-54" name="__codelineno-0-54" href="#__codelineno-0-54"></a>       converged ← true
+</span><span id="__span-0-55"><a id="__codelineno-0-55" name="__codelineno-0-55" href="#__codelineno-0-55"></a>       BREAK
+</span><span id="__span-0-56"><a id="__codelineno-0-56" name="__codelineno-0-56" href="#__codelineno-0-56"></a>
+</span><span id="__span-0-57"><a id="__codelineno-0-57" name="__codelineno-0-57" href="#__codelineno-0-57"></a>3. COMPUTE COVARIANCE
+</span><span id="__span-0-58"><a id="__codelineno-0-58" name="__codelineno-0-58" href="#__codelineno-0-58"></a>   Σ_unscaled ← (X&#39;WX)⁻¹
+</span><span id="__span-0-59"><a id="__codelineno-0-59" name="__codelineno-0-59" href="#__codelineno-0-59"></a>   φ̂ ← estimate_dispersion(y, μ, family)
+</span><span id="__span-0-60"><a id="__codelineno-0-60" name="__codelineno-0-60" href="#__codelineno-0-60"></a>   Σ ← φ̂ × Σ_unscaled
+</span><span id="__span-0-61"><a id="__codelineno-0-61" name="__codelineno-0-61" href="#__codelineno-0-61"></a>
+</span><span id="__span-0-62"><a id="__codelineno-0-62" name="__codelineno-0-62" href="#__codelineno-0-62"></a>4. RETURN β, μ, D, Σ, converged
+</span><span id="__span-0-63"><a id="__codelineno-0-63" name="__codelineno-0-63" href="#__codelineno-0-63"></a>
+</span><span id="__span-0-64"><a id="__codelineno-0-64" name="__codelineno-0-64" href="#__codelineno-0-64"></a>════════════════════════════════════════════════════════════════
+</span></code></pre></div>
+<hr />
+<h2 id="part-7-convergence-properties">Part 7: Convergence Properties<a class="headerlink" href="#part-7-convergence-properties" title="Permanent link">&para;</a></h2>
+<h3 id="71-when-does-irls-converge">7.1 When Does IRLS Converge?<a class="headerlink" href="#71-when-does-irls-converge" title="Permanent link">&para;</a></h3>
+<p>IRLS inherits the convergence properties of Fisher scoring:</p>
+<ul>
+<li><strong>Local convergence</strong>: If started close enough to the MLE, IRLS converges</li>
+<li><strong>Quadratic rate</strong>: Near the solution, the error roughly squares each iteration</li>
+<li><strong>Not guaranteed globally</strong>: Can fail with poor initialization or problematic data</li>
+</ul>
+<h3 id="72-typical-convergence-behavior">7.2 Typical Convergence Behavior<a class="headerlink" href="#72-typical-convergence-behavior" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Family</th>
+<th>Link</th>
+<th>Typical Iterations</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Gaussian</td>
+<td>Identity</td>
+<td><strong>1</strong> (exact in one step!)</td>
+</tr>
+<tr>
+<td>Poisson</td>
+<td>Log</td>
+<td>4-8</td>
+</tr>
+<tr>
+<td>Binomial</td>
+<td>Logit</td>
+<td>4-10</td>
+</tr>
+<tr>
+<td>Gamma</td>
+<td>Log</td>
+<td>4-8</td>
+</tr>
+<tr>
+<td>Tweedie</td>
+<td>Log</td>
+<td>5-15</td>
+</tr>
+</tbody>
+</table>
+<h3 id="73-why-gaussian-converges-in-one-iteration">7.3 Why Gaussian Converges in One Iteration<a class="headerlink" href="#73-why-gaussian-converges-in-one-iteration" title="Permanent link">&para;</a></h3>
+<p>For Gaussian with identity link:
+- <span class="arithmatex">\(V(\mu) = 1\)</span>, <span class="arithmatex">\(g'(\mu) = 1\)</span>
+- Weights <span class="arithmatex">\(w_i = 1\)</span> (constant)
+- Working response <span class="arithmatex">\(z_i = \mu_i + (y_i - \mu_i) = y_i\)</span></p>
+<p>So IRLS becomes ordinary least squares of <span class="arithmatex">\(\mathbf{y}\)</span> on <span class="arithmatex">\(\mathbf{X}\)</span>—the exact solution in one step!</p>
+<h3 id="74-when-convergence-fails">7.4 When Convergence Fails<a class="headerlink" href="#74-when-convergence-fails" title="Permanent link">&para;</a></h3>
+<p><strong>Problem 1: Complete Separation (Logistic Regression)</strong></p>
+<p>If one predictor perfectly separates the 0s from the 1s, the MLE doesn't exist—coefficients should be <span class="arithmatex">\(\pm\infty\)</span>.</p>
+<p><em>Symptom</em>: Coefficients grow larger each iteration; deviance decreases slowly.</p>
+<p><em>Solution</em>: Add regularization (ridge/lasso), remove the separating variable, or use Firth's bias-reduced logistic regression.</p>
+<p><strong>Problem 2: Near-Zero Counts (Poisson)</strong></p>
+<p>If many <span class="arithmatex">\(y_i = 0\)</span>, the means <span class="arithmatex">\(\mu_i\)</span> can become very small, causing numerical issues.</p>
+<p><em>Symptom</em>: Warnings about small weights or invalid means.</p>
+<p><em>Solution</em>: Check data quality; consider zero-inflated models.</p>
+<p><strong>Problem 3: Multicollinearity</strong></p>
+<p>If columns of <span class="arithmatex">\(\mathbf{X}\)</span> are nearly linearly dependent, <span class="arithmatex">\(\mathbf{X}^T\mathbf{W}\mathbf{X}\)</span> is nearly singular.</p>
+<p><em>Symptom</em>: Large standard errors, coefficients jump between iterations.</p>
+<p><em>Solution</em>: Remove correlated predictors, add regularization.</p>
+<hr />
+<h2 id="part-8-implementation-in-rustystats">Part 8: Implementation in RustyStats<a class="headerlink" href="#part-8-implementation-in-rustystats" title="Permanent link">&para;</a></h2>
+<h3 id="81-code-structure">8.1 Code Structure<a class="headerlink" href="#81-code-structure" title="Permanent link">&para;</a></h3>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>crates/rustystats-core/src/solvers/
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>├── mod.rs              // Module exports
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>├── irls.rs             // Main IRLS implementation
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>└── coordinate_descent.rs  // For regularized GLMs
+</span></code></pre></div>
+<h3 id="82-key-data-structures">8.2 Key Data Structures<a class="headerlink" href="#82-key-data-structures" title="Permanent link">&para;</a></h3>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="sd">/// Configuration for IRLS</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">IRLSConfig</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">    </span><span class="sd">/// Maximum number of iterations (default: 25)</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="n">max_iterations</span><span class="p">:</span><span class="w"> </span><span class="kt">usize</span><span class="p">,</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">    </span><span class="sd">/// Convergence tolerance for deviance change (default: 1e-8)</span>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="n">tolerance</span><span class="p">:</span><span class="w"> </span><span class="kt">f64</span><span class="p">,</span>
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>
+</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">    </span><span class="sd">/// Minimum weight to prevent numerical issues (default: 1e-10)</span>
+</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="n">min_weight</span><span class="p">:</span><span class="w"> </span><span class="kt">f64</span><span class="p">,</span>
+</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>
+</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="w">    </span><span class="sd">/// Whether to print iteration info (default: false)</span>
+</span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="n">verbose</span><span class="p">:</span><span class="w"> </span><span class="kt">bool</span><span class="p">,</span>
+</span><span id="__span-2-14"><a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="p">}</span>
+</span><span id="__span-2-15"><a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a>
+</span><span id="__span-2-16"><a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a><span class="sd">/// Results from IRLS fitting</span>
+</span><span id="__span-2-17"><a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a><span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">IRLSResult</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-2-18"><a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a><span class="w">    </span><span class="sd">/// Estimated coefficients β</span>
+</span><span id="__span-2-19"><a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a><span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="n">coefficients</span><span class="p">:</span><span class="w"> </span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">,</span>
+</span><span id="__span-2-20"><a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a>
+</span><span id="__span-2-21"><a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a><span class="w">    </span><span class="sd">/// Fitted means μ = g⁻¹(Xβ)</span>
+</span><span id="__span-2-22"><a id="__codelineno-2-22" name="__codelineno-2-22" href="#__codelineno-2-22"></a><span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="n">fitted_values</span><span class="p">:</span><span class="w"> </span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">,</span>
+</span><span id="__span-2-23"><a id="__codelineno-2-23" name="__codelineno-2-23" href="#__codelineno-2-23"></a>
+</span><span id="__span-2-24"><a id="__codelineno-2-24" name="__codelineno-2-24" href="#__codelineno-2-24"></a><span class="w">    </span><span class="sd">/// Linear predictor η = Xβ + offset</span>
+</span><span id="__span-2-25"><a id="__codelineno-2-25" name="__codelineno-2-25" href="#__codelineno-2-25"></a><span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="n">linear_predictor</span><span class="p">:</span><span class="w"> </span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">,</span>
+</span><span id="__span-2-26"><a id="__codelineno-2-26" name="__codelineno-2-26" href="#__codelineno-2-26"></a>
+</span><span id="__span-2-27"><a id="__codelineno-2-27" name="__codelineno-2-27" href="#__codelineno-2-27"></a><span class="w">    </span><span class="sd">/// Final deviance</span>
+</span><span id="__span-2-28"><a id="__codelineno-2-28" name="__codelineno-2-28" href="#__codelineno-2-28"></a><span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="n">deviance</span><span class="p">:</span><span class="w"> </span><span class="kt">f64</span><span class="p">,</span>
+</span><span id="__span-2-29"><a id="__codelineno-2-29" name="__codelineno-2-29" href="#__codelineno-2-29"></a>
+</span><span id="__span-2-30"><a id="__codelineno-2-30" name="__codelineno-2-30" href="#__codelineno-2-30"></a><span class="w">    </span><span class="sd">/// Number of iterations used</span>
+</span><span id="__span-2-31"><a id="__codelineno-2-31" name="__codelineno-2-31" href="#__codelineno-2-31"></a><span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="n">iterations</span><span class="p">:</span><span class="w"> </span><span class="kt">usize</span><span class="p">,</span>
+</span><span id="__span-2-32"><a id="__codelineno-2-32" name="__codelineno-2-32" href="#__codelineno-2-32"></a>
+</span><span id="__span-2-33"><a id="__codelineno-2-33" name="__codelineno-2-33" href="#__codelineno-2-33"></a><span class="w">    </span><span class="sd">/// Whether algorithm converged</span>
+</span><span id="__span-2-34"><a id="__codelineno-2-34" name="__codelineno-2-34" href="#__codelineno-2-34"></a><span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="n">converged</span><span class="p">:</span><span class="w"> </span><span class="kt">bool</span><span class="p">,</span>
+</span><span id="__span-2-35"><a id="__codelineno-2-35" name="__codelineno-2-35" href="#__codelineno-2-35"></a>
+</span><span id="__span-2-36"><a id="__codelineno-2-36" name="__codelineno-2-36" href="#__codelineno-2-36"></a><span class="w">    </span><span class="sd">/// Unscaled covariance matrix (X&#39;WX)⁻¹</span>
+</span><span id="__span-2-37"><a id="__codelineno-2-37" name="__codelineno-2-37" href="#__codelineno-2-37"></a><span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="n">covariance_unscaled</span><span class="p">:</span><span class="w"> </span><span class="nc">Array2</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">,</span>
+</span><span id="__span-2-38"><a id="__codelineno-2-38" name="__codelineno-2-38" href="#__codelineno-2-38"></a>
+</span><span id="__span-2-39"><a id="__codelineno-2-39" name="__codelineno-2-39" href="#__codelineno-2-39"></a><span class="w">    </span><span class="sd">/// Final IRLS weights</span>
+</span><span id="__span-2-40"><a id="__codelineno-2-40" name="__codelineno-2-40" href="#__codelineno-2-40"></a><span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="n">irls_weights</span><span class="p">:</span><span class="w"> </span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">,</span>
+</span><span id="__span-2-41"><a id="__codelineno-2-41" name="__codelineno-2-41" href="#__codelineno-2-41"></a>
+</span><span id="__span-2-42"><a id="__codelineno-2-42" name="__codelineno-2-42" href="#__codelineno-2-42"></a><span class="w">    </span><span class="c1">// ... additional fields</span>
+</span><span id="__span-2-43"><a id="__codelineno-2-43" name="__codelineno-2-43" href="#__codelineno-2-43"></a><span class="p">}</span>
+</span></code></pre></div>
+<h3 id="83-the-core-loop-simplified">8.3 The Core Loop (Simplified)<a class="headerlink" href="#83-the-core-loop-simplified" title="Permanent link">&para;</a></h3>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">pub</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">fit_glm</span><span class="p">(</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">    </span><span class="n">y</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">,</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">    </span><span class="n">x</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array2</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">,</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">    </span><span class="n">family</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">dyn</span><span class="w"> </span><span class="n">Family</span><span class="p">,</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">    </span><span class="n">link</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">dyn</span><span class="w"> </span><span class="n">Link</span><span class="p">,</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">    </span><span class="n">config</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">IRLSConfig</span><span class="p">,</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="n">IRLSResult</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">n</span><span class="p">,</span><span class="w"> </span><span class="n">p</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">(</span><span class="n">y</span><span class="p">.</span><span class="n">len</span><span class="p">(),</span><span class="w"> </span><span class="n">x</span><span class="p">.</span><span class="n">ncols</span><span class="p">());</span>
+</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>
+</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="w">    </span><span class="c1">// Step 1: Initialize</span>
+</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">mu</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">family</span><span class="p">.</span><span class="n">initialize_mu</span><span class="p">(</span><span class="n">y</span><span class="p">);</span>
+</span><span id="__span-3-12"><a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">eta</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">link</span><span class="p">.</span><span class="n">link</span><span class="p">(</span><span class="o">&amp;</span><span class="n">mu</span><span class="p">);</span>
+</span><span id="__span-3-13"><a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">deviance</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">family</span><span class="p">.</span><span class="n">deviance</span><span class="p">(</span><span class="n">y</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">mu</span><span class="p">,</span><span class="w"> </span><span class="nb">None</span><span class="p">);</span>
+</span><span id="__span-3-14"><a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a>
+</span><span id="__span-3-15"><a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a><span class="w">    </span><span class="c1">// Step 2: Iterate</span>
+</span><span id="__span-3-16"><a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a><span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="n">iteration</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="mi">1</span><span class="o">..=</span><span class="n">config</span><span class="p">.</span><span class="n">max_iterations</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-3-17"><a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a><span class="w">        </span><span class="c1">// 2a: Compute weights</span>
+</span><span id="__span-3-18"><a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">variance</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">family</span><span class="p">.</span><span class="n">variance</span><span class="p">(</span><span class="o">&amp;</span><span class="n">mu</span><span class="p">);</span>
+</span><span id="__span-3-19"><a id="__codelineno-3-19" name="__codelineno-3-19" href="#__codelineno-3-19"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">link_deriv</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">link</span><span class="p">.</span><span class="n">derivative</span><span class="p">(</span><span class="o">&amp;</span><span class="n">mu</span><span class="p">);</span>
+</span><span id="__span-3-20"><a id="__codelineno-3-20" name="__codelineno-3-20" href="#__codelineno-3-20"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">weights</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">compute_weights</span><span class="p">(</span><span class="o">&amp;</span><span class="n">variance</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">link_deriv</span><span class="p">,</span><span class="w"> </span><span class="n">config</span><span class="p">.</span><span class="n">min_weight</span><span class="p">);</span>
+</span><span id="__span-3-21"><a id="__codelineno-3-21" name="__codelineno-3-21" href="#__codelineno-3-21"></a>
+</span><span id="__span-3-22"><a id="__codelineno-3-22" name="__codelineno-3-22" href="#__codelineno-3-22"></a><span class="w">        </span><span class="c1">// 2b: Compute working response</span>
+</span><span id="__span-3-23"><a id="__codelineno-3-23" name="__codelineno-3-23" href="#__codelineno-3-23"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">z</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">compute_working_response</span><span class="p">(</span><span class="o">&amp;</span><span class="n">eta</span><span class="p">,</span><span class="w"> </span><span class="n">y</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">mu</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">link_deriv</span><span class="p">);</span>
+</span><span id="__span-3-24"><a id="__codelineno-3-24" name="__codelineno-3-24" href="#__codelineno-3-24"></a>
+</span><span id="__span-3-25"><a id="__codelineno-3-25" name="__codelineno-3-25" href="#__codelineno-3-25"></a><span class="w">        </span><span class="c1">// 2c: Solve weighted least squares</span>
+</span><span id="__span-3-26"><a id="__codelineno-3-26" name="__codelineno-3-26" href="#__codelineno-3-26"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">xtwx</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">compute_xtwx</span><span class="p">(</span><span class="n">x</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">weights</span><span class="p">);</span>
+</span><span id="__span-3-27"><a id="__codelineno-3-27" name="__codelineno-3-27" href="#__codelineno-3-27"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">xtwz</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">compute_xtwz</span><span class="p">(</span><span class="n">x</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">weights</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">z</span><span class="p">);</span>
+</span><span id="__span-3-28"><a id="__codelineno-3-28" name="__codelineno-3-28" href="#__codelineno-3-28"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">beta</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cholesky_solve</span><span class="p">(</span><span class="o">&amp;</span><span class="n">xtwx</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">xtwz</span><span class="p">)</span><span class="o">?</span><span class="p">;</span>
+</span><span id="__span-3-29"><a id="__codelineno-3-29" name="__codelineno-3-29" href="#__codelineno-3-29"></a>
+</span><span id="__span-3-30"><a id="__codelineno-3-30" name="__codelineno-3-30" href="#__codelineno-3-30"></a><span class="w">        </span><span class="c1">// 2d: Update</span>
+</span><span id="__span-3-31"><a id="__codelineno-3-31" name="__codelineno-3-31" href="#__codelineno-3-31"></a><span class="w">        </span><span class="n">eta</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">x</span><span class="p">.</span><span class="n">dot</span><span class="p">(</span><span class="o">&amp;</span><span class="n">beta</span><span class="p">);</span>
+</span><span id="__span-3-32"><a id="__codelineno-3-32" name="__codelineno-3-32" href="#__codelineno-3-32"></a><span class="w">        </span><span class="n">mu</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">link</span><span class="p">.</span><span class="n">inverse</span><span class="p">(</span><span class="o">&amp;</span><span class="n">eta</span><span class="p">);</span>
+</span><span id="__span-3-33"><a id="__codelineno-3-33" name="__codelineno-3-33" href="#__codelineno-3-33"></a><span class="w">        </span><span class="n">mu</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">family</span><span class="p">.</span><span class="n">clamp_mu</span><span class="p">(</span><span class="o">&amp;</span><span class="n">mu</span><span class="p">);</span>
+</span><span id="__span-3-34"><a id="__codelineno-3-34" name="__codelineno-3-34" href="#__codelineno-3-34"></a>
+</span><span id="__span-3-35"><a id="__codelineno-3-35" name="__codelineno-3-35" href="#__codelineno-3-35"></a><span class="w">        </span><span class="c1">// 2e: Check convergence</span>
+</span><span id="__span-3-36"><a id="__codelineno-3-36" name="__codelineno-3-36" href="#__codelineno-3-36"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">new_deviance</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">family</span><span class="p">.</span><span class="n">deviance</span><span class="p">(</span><span class="n">y</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">mu</span><span class="p">,</span><span class="w"> </span><span class="nb">None</span><span class="p">);</span>
+</span><span id="__span-3-37"><a id="__codelineno-3-37" name="__codelineno-3-37" href="#__codelineno-3-37"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">relative_change</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">(</span><span class="n">deviance</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">new_deviance</span><span class="p">).</span><span class="n">abs</span><span class="p">()</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">deviance</span><span class="p">.</span><span class="n">max</span><span class="p">(</span><span class="mf">1e-10</span><span class="p">);</span>
+</span><span id="__span-3-38"><a id="__codelineno-3-38" name="__codelineno-3-38" href="#__codelineno-3-38"></a>
+</span><span id="__span-3-39"><a id="__codelineno-3-39" name="__codelineno-3-39" href="#__codelineno-3-39"></a><span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="n">relative_change</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="n">config</span><span class="p">.</span><span class="n">tolerance</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-3-40"><a id="__codelineno-3-40" name="__codelineno-3-40" href="#__codelineno-3-40"></a><span class="w">            </span><span class="k">return</span><span class="w"> </span><span class="nb">Ok</span><span class="p">(</span><span class="n">IRLSResult</span><span class="w"> </span><span class="p">{</span><span class="w"> </span>
+</span><span id="__span-3-41"><a id="__codelineno-3-41" name="__codelineno-3-41" href="#__codelineno-3-41"></a><span class="w">                </span><span class="n">coefficients</span><span class="p">:</span><span class="w"> </span><span class="nc">beta</span><span class="p">,</span><span class="w"> </span>
+</span><span id="__span-3-42"><a id="__codelineno-3-42" name="__codelineno-3-42" href="#__codelineno-3-42"></a><span class="w">                </span><span class="n">converged</span><span class="p">:</span><span class="w"> </span><span class="nc">true</span><span class="p">,</span>
+</span><span id="__span-3-43"><a id="__codelineno-3-43" name="__codelineno-3-43" href="#__codelineno-3-43"></a><span class="w">                </span><span class="n">iterations</span><span class="p">:</span><span class="w"> </span><span class="nc">iteration</span><span class="p">,</span>
+</span><span id="__span-3-44"><a id="__codelineno-3-44" name="__codelineno-3-44" href="#__codelineno-3-44"></a><span class="w">                </span><span class="c1">// ...</span>
+</span><span id="__span-3-45"><a id="__codelineno-3-45" name="__codelineno-3-45" href="#__codelineno-3-45"></a><span class="w">            </span><span class="p">});</span>
+</span><span id="__span-3-46"><a id="__codelineno-3-46" name="__codelineno-3-46" href="#__codelineno-3-46"></a><span class="w">        </span><span class="p">}</span>
+</span><span id="__span-3-47"><a id="__codelineno-3-47" name="__codelineno-3-47" href="#__codelineno-3-47"></a>
+</span><span id="__span-3-48"><a id="__codelineno-3-48" name="__codelineno-3-48" href="#__codelineno-3-48"></a><span class="w">        </span><span class="n">deviance</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">new_deviance</span><span class="p">;</span>
+</span><span id="__span-3-49"><a id="__codelineno-3-49" name="__codelineno-3-49" href="#__codelineno-3-49"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-3-50"><a id="__codelineno-3-50" name="__codelineno-3-50" href="#__codelineno-3-50"></a>
+</span><span id="__span-3-51"><a id="__codelineno-3-51" name="__codelineno-3-51" href="#__codelineno-3-51"></a><span class="w">    </span><span class="c1">// Did not converge</span>
+</span><span id="__span-3-52"><a id="__codelineno-3-52" name="__codelineno-3-52" href="#__codelineno-3-52"></a><span class="w">    </span><span class="nb">Ok</span><span class="p">(</span><span class="n">IRLSResult</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">converged</span><span class="p">:</span><span class="w"> </span><span class="nc">false</span><span class="p">,</span><span class="w"> </span><span class="o">..</span><span class="p">.</span><span class="w"> </span><span class="p">})</span>
+</span><span id="__span-3-53"><a id="__codelineno-3-53" name="__codelineno-3-53" href="#__codelineno-3-53"></a><span class="p">}</span>
+</span></code></pre></div>
+<h3 id="84-parallel-computation">8.4 Parallel Computation<a class="headerlink" href="#84-parallel-computation" title="Permanent link">&para;</a></h3>
+<p>The most expensive operation is computing <span class="arithmatex">\(\mathbf{X}^T\mathbf{W}\mathbf{X}\)</span>, which is <span class="arithmatex">\(O(np^2)\)</span>. RustyStats parallelizes this using Rayon:</p>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">fn</span><span class="w"> </span><span class="nf">compute_xtwx_parallel</span><span class="p">(</span><span class="n">x</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array2</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">,</span><span class="w"> </span><span class="n">w</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Array2</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">n</span><span class="p">,</span><span class="w"> </span><span class="n">p</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">x</span><span class="p">.</span><span class="n">dim</span><span class="p">();</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">    </span><span class="c1">// Parallel fold-reduce pattern</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">    </span><span class="p">(</span><span class="mi">0</span><span class="o">..</span><span class="n">n</span><span class="p">).</span><span class="n">into_par_iter</span><span class="p">()</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">        </span><span class="p">.</span><span class="n">fold</span><span class="p">(</span>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">            </span><span class="c1">// Each thread starts with a zero matrix</span>
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="w">            </span><span class="o">||</span><span class="w"> </span><span class="n">Array2</span><span class="p">::</span><span class="n">zeros</span><span class="p">((</span><span class="n">p</span><span class="p">,</span><span class="w"> </span><span class="n">p</span><span class="p">)),</span>
+</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="w">            </span><span class="c1">// Accumulate: add w_i * x_i * x_i^T</span>
+</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="w">            </span><span class="o">|</span><span class="k">mut</span><span class="w"> </span><span class="n">acc</span><span class="p">,</span><span class="w"> </span><span class="n">i</span><span class="o">|</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="w">                </span><span class="kd">let</span><span class="w"> </span><span class="n">xi</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">x</span><span class="p">.</span><span class="n">row</span><span class="p">(</span><span class="n">i</span><span class="p">);</span>
+</span><span id="__span-4-12"><a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a><span class="w">                </span><span class="kd">let</span><span class="w"> </span><span class="n">wi</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">w</span><span class="p">[</span><span class="n">i</span><span class="p">];</span>
+</span><span id="__span-4-13"><a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a><span class="w">                </span><span class="k">for</span><span class="w"> </span><span class="n">j</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="mi">0</span><span class="o">..</span><span class="n">p</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-4-14"><a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a><span class="w">                    </span><span class="k">for</span><span class="w"> </span><span class="n">k</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="n">j</span><span class="o">..</span><span class="n">p</span><span class="w"> </span><span class="p">{</span><span class="w">  </span><span class="c1">// Only upper triangle (symmetric)</span>
+</span><span id="__span-4-15"><a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a><span class="w">                        </span><span class="n">acc</span><span class="p">[[</span><span class="n">j</span><span class="p">,</span><span class="w"> </span><span class="n">k</span><span class="p">]]</span><span class="w"> </span><span class="o">+=</span><span class="w"> </span><span class="n">wi</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">xi</span><span class="p">[</span><span class="n">j</span><span class="p">]</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">xi</span><span class="p">[</span><span class="n">k</span><span class="p">];</span>
+</span><span id="__span-4-16"><a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a><span class="w">                    </span><span class="p">}</span>
+</span><span id="__span-4-17"><a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a><span class="w">                </span><span class="p">}</span>
+</span><span id="__span-4-18"><a id="__codelineno-4-18" name="__codelineno-4-18" href="#__codelineno-4-18"></a><span class="w">                </span><span class="n">acc</span>
+</span><span id="__span-4-19"><a id="__codelineno-4-19" name="__codelineno-4-19" href="#__codelineno-4-19"></a><span class="w">            </span><span class="p">}</span>
+</span><span id="__span-4-20"><a id="__codelineno-4-20" name="__codelineno-4-20" href="#__codelineno-4-20"></a><span class="w">        </span><span class="p">)</span>
+</span><span id="__span-4-21"><a id="__codelineno-4-21" name="__codelineno-4-21" href="#__codelineno-4-21"></a><span class="w">        </span><span class="p">.</span><span class="n">reduce</span><span class="p">(</span>
+</span><span id="__span-4-22"><a id="__codelineno-4-22" name="__codelineno-4-22" href="#__codelineno-4-22"></a><span class="w">            </span><span class="c1">// Combine thread results</span>
+</span><span id="__span-4-23"><a id="__codelineno-4-23" name="__codelineno-4-23" href="#__codelineno-4-23"></a><span class="w">            </span><span class="o">||</span><span class="w"> </span><span class="n">Array2</span><span class="p">::</span><span class="n">zeros</span><span class="p">((</span><span class="n">p</span><span class="p">,</span><span class="w"> </span><span class="n">p</span><span class="p">)),</span>
+</span><span id="__span-4-24"><a id="__codelineno-4-24" name="__codelineno-4-24" href="#__codelineno-4-24"></a><span class="w">            </span><span class="o">|</span><span class="n">a</span><span class="p">,</span><span class="w"> </span><span class="n">b</span><span class="o">|</span><span class="w"> </span><span class="n">a</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">b</span>
+</span><span id="__span-4-25"><a id="__codelineno-4-25" name="__codelineno-4-25" href="#__codelineno-4-25"></a><span class="w">        </span><span class="p">)</span>
+</span><span id="__span-4-26"><a id="__codelineno-4-26" name="__codelineno-4-26" href="#__codelineno-4-26"></a><span class="w">        </span><span class="c1">// Fill lower triangle from upper</span>
+</span><span id="__span-4-27"><a id="__codelineno-4-27" name="__codelineno-4-27" href="#__codelineno-4-27"></a><span class="w">        </span><span class="p">.</span><span class="n">symmetrize</span><span class="p">()</span>
+</span><span id="__span-4-28"><a id="__codelineno-4-28" name="__codelineno-4-28" href="#__codelineno-4-28"></a><span class="p">}</span>
+</span></code></pre></div>
+<p>This achieves near-linear speedup with the number of cores for large datasets.</p>
+<hr />
+<h2 id="part-9-numerical-stability">Part 9: Numerical Stability<a class="headerlink" href="#part-9-numerical-stability" title="Permanent link">&para;</a></h2>
+<h3 id="91-weight-clamping">9.1 Weight Clamping<a class="headerlink" href="#91-weight-clamping" title="Permanent link">&para;</a></h3>
+<p>Very small weights cause numerical problems:</p>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">fn</span><span class="w"> </span><span class="nf">compute_weights</span><span class="p">(</span><span class="n">variance</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">,</span><span class="w"> </span><span class="n">link_deriv</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">,</span><span class="w"> </span><span class="n">min_weight</span><span class="p">:</span><span class="w"> </span><span class="kt">f64</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">    </span><span class="n">Zip</span><span class="p">::</span><span class="n">from</span><span class="p">(</span><span class="n">variance</span><span class="p">).</span><span class="n">and</span><span class="p">(</span><span class="n">link_deriv</span><span class="p">).</span><span class="n">map_collect</span><span class="p">(</span><span class="o">|&amp;</span><span class="n">v</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">g</span><span class="o">|</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">w</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">1.0</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="p">(</span><span class="n">v</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">g</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">g</span><span class="p">);</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">        </span><span class="n">w</span><span class="p">.</span><span class="n">max</span><span class="p">(</span><span class="n">min_weight</span><span class="p">)</span><span class="w">  </span><span class="c1">// Prevent division by near-zero</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="w">    </span><span class="p">})</span>
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="p">}</span>
+</span></code></pre></div>
+<h3 id="92-mean-clamping">9.2 Mean Clamping<a class="headerlink" href="#92-mean-clamping" title="Permanent link">&para;</a></h3>
+<p>Means must stay in valid ranges:</p>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1">// Poisson: μ must be positive</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="k">impl</span><span class="w"> </span><span class="n">Family</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">PoissonFamily</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">clamp_mu</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">mu</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">        </span><span class="n">mu</span><span class="p">.</span><span class="n">mapv</span><span class="p">(</span><span class="o">|</span><span class="n">m</span><span class="o">|</span><span class="w"> </span><span class="n">m</span><span class="p">.</span><span class="n">max</span><span class="p">(</span><span class="mf">1e-10</span><span class="p">))</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="p">}</span>
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>
+</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="c1">// Binomial: μ must be in (0, 1)</span>
+</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="k">impl</span><span class="w"> </span><span class="n">Family</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">BinomialFamily</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">clamp_mu</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">mu</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a><span class="w">        </span><span class="n">mu</span><span class="p">.</span><span class="n">mapv</span><span class="p">(</span><span class="o">|</span><span class="n">m</span><span class="o">|</span><span class="w"> </span><span class="n">m</span><span class="p">.</span><span class="n">clamp</span><span class="p">(</span><span class="mf">1e-10</span><span class="p">,</span><span class="w"> </span><span class="mf">1.0</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="mf">1e-10</span><span class="p">))</span>
+</span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-6-13"><a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a><span class="p">}</span>
+</span></code></pre></div>
+<h3 id="93-cholesky-decomposition">9.3 Cholesky Decomposition<a class="headerlink" href="#93-cholesky-decomposition" title="Permanent link">&para;</a></h3>
+<p>Instead of computing <span class="arithmatex">\((\mathbf{X}^T\mathbf{W}\mathbf{X})^{-1}\)</span> directly, we use Cholesky decomposition:</p>
+<ol>
+<li><span class="arithmatex">\(\mathbf{X}^T\mathbf{W}\mathbf{X}\)</span> is symmetric positive definite</li>
+<li>Factor: <span class="arithmatex">\(\mathbf{X}^T\mathbf{W}\mathbf{X} = \mathbf{L}\mathbf{L}^T\)</span> where <span class="arithmatex">\(\mathbf{L}\)</span> is lower triangular</li>
+<li>Solve <span class="arithmatex">\(\mathbf{L}\mathbf{L}^T\boldsymbol{\beta} = \mathbf{X}^T\mathbf{W}\mathbf{z}\)</span> by forward/backward substitution</li>
+</ol>
+<p>This is faster and more numerically stable than computing the inverse.</p>
+<hr />
+<h2 id="part-10-summary">Part 10: Summary<a class="headerlink" href="#part-10-summary" title="Permanent link">&para;</a></h2>
+<p>IRLS converts the nonlinear GLM optimization problem into a sequence of weighted linear regressions:</p>
+<ol>
+<li><strong>Linearize</strong> the problem using the working response <span class="arithmatex">\(\mathbf{z}\)</span></li>
+<li><strong>Reweight</strong> based on variance and link curvature using weights <span class="arithmatex">\(\mathbf{W}\)</span></li>
+<li><strong>Solve</strong> weighted least squares to update <span class="arithmatex">\(\boldsymbol{\beta}\)</span></li>
+<li><strong>Repeat</strong> until convergence</li>
+</ol>
+<p>Key insights:
+- Derived from Fisher scoring (Newton-Raphson with expected Hessian)
+- Converges in 1 step for Gaussian/identity (reduces to OLS)
+- Typically 4-10 iterations for other families
+- Parallelizable for large datasets
+- Provides covariance matrix for inference as a byproduct</p>
+<hr />
+<h2 id="exercises">Exercises<a class="headerlink" href="#exercises" title="Permanent link">&para;</a></h2>
+<div class="admonition question">
+<p class="admonition-title">Exercise 1: Weights for Binomial/Logit</p>
+<p>Verify that for Binomial with logit link:</p>
+<p>a) <span class="arithmatex">\(g'(\mu) = \frac{1}{\mu(1-\mu)}\)</span></p>
+<p>b) The weight simplifies to <span class="arithmatex">\(w_i = \mu_i(1-\mu_i)\)</span></p>
+<p>c) Why are weights smallest when <span class="arithmatex">\(\mu \approx 0\)</span> or <span class="arithmatex">\(\mu \approx 1\)</span>?</p>
+</div>
+<div class="admonition question">
+<p class="admonition-title">Exercise 2: Working Response</p>
+<p>For Poisson with log link, show that the working response can be written as:</p>
+<div class="arithmatex">\[z_i = \log(\mu_i) + \frac{y_i - \mu_i}{\mu_i} = \log(\mu_i) + \frac{y_i}{\mu_i} - 1\]</div>
+<p>Interpret this: what happens when <span class="arithmatex">\(y_i = \mu_i\)</span> (perfect prediction)?</p>
+</div>
+<div class="admonition question">
+<p class="admonition-title">Exercise 3: Hand Calculation</p>
+<p>For the data: <span class="arithmatex">\(y = (2, 5)\)</span>, <span class="arithmatex">\(x = (0, 1)\)</span>, fit a Poisson model <span class="arithmatex">\(\log(\mu) = \beta_0 + \beta_1 x\)</span>.</p>
+<p>a) Initialize with <span class="arithmatex">\(\mu^{(0)} = y\)</span></p>
+<p>b) Compute <span class="arithmatex">\(\mathbf{W}^{(0)}\)</span>, <span class="arithmatex">\(\mathbf{z}^{(0)}\)</span></p>
+<p>c) Solve for <span class="arithmatex">\(\boldsymbol{\beta}^{(1)}\)</span></p>
+<p>d) How does this compare to the true MLE?</p>
+</div>
+<div class="admonition question">
+<p class="admonition-title">Exercise 4: Gaussian Convergence</p>
+<p>Prove algebraically that for Gaussian/identity:</p>
+<p>a) The weights are <span class="arithmatex">\(w_i = 1\)</span></p>
+<p>b) The working response is <span class="arithmatex">\(z_i = y_i\)</span></p>
+<p>c) One IRLS iteration gives <span class="arithmatex">\(\boldsymbol{\beta} = (\mathbf{X}^T\mathbf{X})^{-1}\mathbf{X}^T\mathbf{y}\)</span></p>
+<p>d) This is the OLS solution, so no further iterations change <span class="arithmatex">\(\boldsymbol{\beta}\)</span></p>
+</div>
+<hr />
+<h2 id="further-reading">Further Reading<a class="headerlink" href="#further-reading" title="Permanent link">&para;</a></h2>
+<ul>
+<li>McCullagh, P. and Nelder, J.A. (1989). <em>Generalized Linear Models</em>, Chapter 2. — Original derivation</li>
+<li>Green, P.J. (1984). Iteratively Reweighted Least Squares for Maximum Likelihood Estimation. <em>JRSS B</em>. — Theoretical foundations</li>
+<li>Hastie, T. and Tibshirani, R. (1990). <em>Generalized Additive Models</em>. — Extensions to GAMs</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.expand", "navigation.top", "search.suggest", "search.highlight", "content.code.copy", "content.code.annotate"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+        <script src="../../javascripts/mathjax.js"></script>
+      
+        <script src="https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js"></script>
+      
+    
+  </body>
+</html>

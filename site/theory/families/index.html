@@ -1,0 +1,4804 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="High-performance Generalized Linear Models with Rust backend and Python API">
+      
+      
+        <meta name="author" content="RustyStats Team">
+      
+      
+      
+        <link rel="prev" href="../glm-intro/">
+      
+      
+        <link rel="next" href="../links/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.1">
+    
+    
+      
+        <title>Distribution Families - RustyStats Documentation</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="amber">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#distribution-families" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="RustyStats Documentation" class="md-header__button md-logo" aria-label="RustyStats Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            RustyStats Documentation
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Distribution Families
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="amber"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="amber"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/your-org/rustystats" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../guides/glm-workflow/" class="md-tabs__link">
+          
+  
+  
+  Guides
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../getting-started/installation/" class="md-tabs__link">
+          
+  
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../glm-intro/" class="md-tabs__link">
+          
+  
+  
+  GLM Theory
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../architecture/overview/" class="md-tabs__link">
+          
+  
+  
+  Architecture
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../components/solvers/" class="md-tabs__link">
+          
+  
+  
+  Components
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../api/array-api/" class="md-tabs__link">
+          
+  
+  
+  Python API
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../rust-guide/fundamentals/" class="md-tabs__link">
+          
+  
+  
+  Rust Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../maintenance/rust-best-practices/" class="md-tabs__link">
+          
+  
+  
+  Maintenance Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../reference/glossary/" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="RustyStats Documentation" class="md-nav__button md-logo" aria-label="RustyStats Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    RustyStats Documentation
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/your-org/rustystats" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/glm-workflow/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GLM Workflow
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GLM Theory
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    GLM Theory
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../glm-intro/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Introduction to GLMs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Distribution Families
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Distribution Families
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#part-1-the-exponential-family-foundation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 1: The Exponential Family Foundation
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 1: The Exponential Family Foundation">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#11-recap-exponential-family-form" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.1 Recap: Exponential Family Form
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#12-key-derived-quantities" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.2 Key Derived Quantities
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#13-the-family-trait-in-rustystats" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.3 The Family Trait in RustyStats
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-2-the-gaussian-family" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 2: The Gaussian Family
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 2: The Gaussian Family">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21-the-distribution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.1 The Distribution
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#22-exponential-family-form" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.2 Exponential Family Form
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#23-derived-quantities" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.3 Derived Quantities
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#24-unit-deviance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.4 Unit Deviance
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#25-canonical-link" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.5 Canonical Link
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#26-irls-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.6 IRLS Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#27-implementation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.7 Implementation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#28-when-to-use" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.8 When to Use
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-3-the-poisson-family" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 3: The Poisson Family
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 3: The Poisson Family">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-the-distribution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 The Distribution
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32-exponential-family-form" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 Exponential Family Form
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33-derived-quantities" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.3 Derived Quantities
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#34-unit-deviance-derivation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.4 Unit Deviance Derivation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#35-canonical-link" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.5 Canonical Link
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#36-irls-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.6 IRLS Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#37-worked-example-claim-frequency" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.7 Worked Example: Claim Frequency
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#38-checking-overdispersion" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.8 Checking Overdispersion
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#39-implementation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.9 Implementation
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-4-the-binomial-family" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 4: The Binomial Family
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 4: The Binomial Family">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-the-distribution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 The Distribution
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-exponential-family-form" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 Exponential Family Form
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#43-derived-quantities" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.3 Derived Quantities
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#44-unit-deviance-derivation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.4 Unit Deviance Derivation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#45-canonical-link-the-logit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.5 Canonical Link: The Logit
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#46-irls-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.6 IRLS Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#47-interpretation-odds-ratios" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.7 Interpretation: Odds Ratios
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#48-worked-example-claims-occurrence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.8 Worked Example: Claims Occurrence
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#49-complete-separation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.9 Complete Separation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#410-implementation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.10 Implementation
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-5-the-gamma-family" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 5: The Gamma Family
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 5: The Gamma Family">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#51-the-distribution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.1 The Distribution
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#52-exponential-family-form" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.2 Exponential Family Form
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#53-derived-quantities" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.3 Derived Quantities
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#54-key-property-constant-cv" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.4 Key Property: Constant CV
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#55-unit-deviance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.5 Unit Deviance
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#56-links" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.6 Links
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#57-irls-with-log-link" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.7 IRLS with Log Link
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#58-worked-example-claim-severity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.8 Worked Example: Claim Severity
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#59-implementation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.9 Implementation
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-6-the-tweedie-family" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 6: The Tweedie Family
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 6: The Tweedie Family">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#61-the-power-variance-family" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.1 The Power Variance Family
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#62-the-sweet-spot-1-p-2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.2 The Sweet Spot: \(1 &lt; p &lt; 2\)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#63-connection-to-frequency-severity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.3 Connection to Frequency-Severity
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#64-unit-deviance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.4 Unit Deviance
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#65-choosing-the-variance-power-p" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.5 Choosing the Variance Power \(p\)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#66-implementation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.6 Implementation
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-7-quasi-families" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 7: Quasi-Families
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 7: Quasi-Families">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#71-the-quasi-likelihood-approach" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.1 The Quasi-Likelihood Approach
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#72-quasipoisson" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.2 QuasiPoisson
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#73-quasibinomial" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.3 QuasiBinomial
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#74-dispersion-estimation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.4 Dispersion Estimation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#75-when-to-use-quasi-families" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.5 When to Use Quasi-Families
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-8-the-negative-binomial-family" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 8: The Negative Binomial Family
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 8: The Negative Binomial Family">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#81-the-distribution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.1 The Distribution
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#82-variance-function" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.2 Variance Function
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#83-the-theta-parameter" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.3 The \(\theta\) Parameter
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#84-comparison-quasipoisson-vs-negative-binomial" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.4 Comparison: QuasiPoisson vs. Negative Binomial
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#85-estimating-theta" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.5 Estimating \(\theta\)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-9-summary-and-selection-guide" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 9: Summary and Selection Guide
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 9: Summary and Selection Guide">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#91-decision-tree" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.1 Decision Tree
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#92-key-formulas-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.2 Key Formulas Summary
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#exercises" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exercises
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#further-reading" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Further Reading
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../links/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Link Functions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../irls/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The IRLS Algorithm
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../coordinate-descent/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Coordinate Descent
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../diagnostics/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Model Diagnostics
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../regularization/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Regularization
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/rust-core/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rust Core Library
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/python-bindings/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Python Bindings
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/data-flow/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Data Flow
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Components
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Components
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../components/solvers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Solvers
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../components/families/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Families
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../components/links/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Link Functions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../components/design-matrix/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design Matrix
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../components/splines/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Splines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../components/target-encoding/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Target Encoding
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../components/diagnostics/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Diagnostics
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Python API
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Python API
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/array-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Array API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/formula-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Formula API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/results/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Results Object
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/regularization/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Regularization
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/diagnostics/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Diagnostics
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rust Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Rust Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../rust-guide/fundamentals/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rust Fundamentals
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Maintenance Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Maintenance Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../maintenance/rust-best-practices/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rust Best Practices
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../maintenance/adding-family/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Adding a New Family
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../maintenance/adding-link/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Adding a New Link
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../maintenance/testing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Testing Strategy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../maintenance/performance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Performance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/glossary/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Glossary
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/notation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mathematical Notation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#part-1-the-exponential-family-foundation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 1: The Exponential Family Foundation
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 1: The Exponential Family Foundation">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#11-recap-exponential-family-form" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.1 Recap: Exponential Family Form
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#12-key-derived-quantities" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.2 Key Derived Quantities
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#13-the-family-trait-in-rustystats" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.3 The Family Trait in RustyStats
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-2-the-gaussian-family" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 2: The Gaussian Family
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 2: The Gaussian Family">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21-the-distribution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.1 The Distribution
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#22-exponential-family-form" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.2 Exponential Family Form
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#23-derived-quantities" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.3 Derived Quantities
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#24-unit-deviance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.4 Unit Deviance
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#25-canonical-link" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.5 Canonical Link
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#26-irls-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.6 IRLS Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#27-implementation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.7 Implementation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#28-when-to-use" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.8 When to Use
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-3-the-poisson-family" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 3: The Poisson Family
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 3: The Poisson Family">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-the-distribution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 The Distribution
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32-exponential-family-form" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 Exponential Family Form
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33-derived-quantities" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.3 Derived Quantities
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#34-unit-deviance-derivation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.4 Unit Deviance Derivation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#35-canonical-link" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.5 Canonical Link
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#36-irls-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.6 IRLS Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#37-worked-example-claim-frequency" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.7 Worked Example: Claim Frequency
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#38-checking-overdispersion" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.8 Checking Overdispersion
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#39-implementation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.9 Implementation
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-4-the-binomial-family" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 4: The Binomial Family
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 4: The Binomial Family">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-the-distribution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 The Distribution
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-exponential-family-form" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 Exponential Family Form
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#43-derived-quantities" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.3 Derived Quantities
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#44-unit-deviance-derivation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.4 Unit Deviance Derivation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#45-canonical-link-the-logit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.5 Canonical Link: The Logit
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#46-irls-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.6 IRLS Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#47-interpretation-odds-ratios" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.7 Interpretation: Odds Ratios
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#48-worked-example-claims-occurrence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.8 Worked Example: Claims Occurrence
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#49-complete-separation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.9 Complete Separation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#410-implementation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.10 Implementation
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-5-the-gamma-family" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 5: The Gamma Family
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 5: The Gamma Family">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#51-the-distribution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.1 The Distribution
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#52-exponential-family-form" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.2 Exponential Family Form
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#53-derived-quantities" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.3 Derived Quantities
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#54-key-property-constant-cv" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.4 Key Property: Constant CV
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#55-unit-deviance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.5 Unit Deviance
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#56-links" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.6 Links
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#57-irls-with-log-link" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.7 IRLS with Log Link
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#58-worked-example-claim-severity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.8 Worked Example: Claim Severity
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#59-implementation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.9 Implementation
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-6-the-tweedie-family" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 6: The Tweedie Family
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 6: The Tweedie Family">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#61-the-power-variance-family" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.1 The Power Variance Family
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#62-the-sweet-spot-1-p-2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.2 The Sweet Spot: \(1 &lt; p &lt; 2\)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#63-connection-to-frequency-severity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.3 Connection to Frequency-Severity
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#64-unit-deviance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.4 Unit Deviance
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#65-choosing-the-variance-power-p" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.5 Choosing the Variance Power \(p\)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#66-implementation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.6 Implementation
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-7-quasi-families" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 7: Quasi-Families
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 7: Quasi-Families">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#71-the-quasi-likelihood-approach" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.1 The Quasi-Likelihood Approach
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#72-quasipoisson" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.2 QuasiPoisson
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#73-quasibinomial" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.3 QuasiBinomial
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#74-dispersion-estimation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.4 Dispersion Estimation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#75-when-to-use-quasi-families" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.5 When to Use Quasi-Families
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-8-the-negative-binomial-family" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 8: The Negative Binomial Family
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 8: The Negative Binomial Family">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#81-the-distribution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.1 The Distribution
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#82-variance-function" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.2 Variance Function
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#83-the-theta-parameter" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.3 The \(\theta\) Parameter
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#84-comparison-quasipoisson-vs-negative-binomial" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.4 Comparison: QuasiPoisson vs. Negative Binomial
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#85-estimating-theta" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.5 Estimating \(\theta\)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-9-summary-and-selection-guide" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 9: Summary and Selection Guide
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 9: Summary and Selection Guide">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#91-decision-tree" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.1 Decision Tree
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#92-key-formulas-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.2 Key Formulas Summary
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#exercises" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exercises
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#further-reading" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Further Reading
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="distribution-families">Distribution Families<a class="headerlink" href="#distribution-families" title="Permanent link">&para;</a></h1>
+<p>This chapter provides a comprehensive treatment of the distribution families available in RustyStats. For each family, we derive the key quantities from first principles and show how they connect to the exponential family framework.</p>
+<p><strong>Prerequisites</strong>: Familiarity with the <a href="../glm-intro/">exponential family and GLM framework</a>.</p>
+<hr />
+<h2 id="part-1-the-exponential-family-foundation">Part 1: The Exponential Family Foundation<a class="headerlink" href="#part-1-the-exponential-family-foundation" title="Permanent link">&para;</a></h2>
+<h3 id="11-recap-exponential-family-form">1.1 Recap: Exponential Family Form<a class="headerlink" href="#11-recap-exponential-family-form" title="Permanent link">&para;</a></h3>
+<p>A distribution belongs to the exponential family if its density can be written as:</p>
+<div class="arithmatex">\[
+f(y; \theta, \phi) = \exp\left\{\frac{y\theta - b(\theta)}{\phi} + c(y, \phi)\right\}
+\]</div>
+<p>where:
+- <span class="arithmatex">\(\theta\)</span> = canonical parameter (related to the mean)
+- <span class="arithmatex">\(\phi\)</span> = dispersion parameter
+- <span class="arithmatex">\(b(\theta)\)</span> = cumulant function
+- <span class="arithmatex">\(c(y, \phi)\)</span> = normalization term</p>
+<h3 id="12-key-derived-quantities">1.2 Key Derived Quantities<a class="headerlink" href="#12-key-derived-quantities" title="Permanent link">&para;</a></h3>
+<p>From <span class="arithmatex">\(b(\theta)\)</span>, we derive:</p>
+<table>
+<thead>
+<tr>
+<th>Quantity</th>
+<th>Formula</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Mean</td>
+<td><span class="arithmatex">\(\mu = b'(\theta)\)</span></td>
+<td>Expected value of <span class="arithmatex">\(Y\)</span></td>
+</tr>
+<tr>
+<td>Variance</td>
+<td><span class="arithmatex">\(\text{Var}(Y) = \phi \cdot b''(\theta)\)</span></td>
+<td>Spread of <span class="arithmatex">\(Y\)</span></td>
+</tr>
+<tr>
+<td>Variance function</td>
+<td><span class="arithmatex">\(V(\mu) = b''(\theta)\)</span></td>
+<td>Variance as function of mean</td>
+</tr>
+</tbody>
+</table>
+<h3 id="13-the-family-trait-in-rustystats">1.3 The Family Trait in RustyStats<a class="headerlink" href="#13-the-family-trait-in-rustystats" title="Permanent link">&para;</a></h3>
+<p>Every family in RustyStats implements:</p>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="k">pub</span><span class="w"> </span><span class="k">trait</span><span class="w"> </span><span class="n">Family</span><span class="p">:</span><span class="w"> </span><span class="nb">Send</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Sync</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">    </span><span class="sd">/// Distribution name</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">name</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="kp">&amp;</span><span class="kt">str</span><span class="p">;</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">    </span><span class="sd">/// Variance function V(μ): how variance depends on mean</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">variance</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">mu</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">;</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">    </span><span class="sd">/// Unit deviance d(y, μ): contribution of each observation</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">unit_deviance</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">y</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">,</span><span class="w"> </span><span class="n">mu</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">;</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="w">    </span><span class="sd">/// Total deviance (sum of weighted unit deviances)</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">deviance</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">y</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">,</span><span class="w"> </span><span class="n">mu</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">,</span><span class="w"> </span>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="w">                </span><span class="n">weights</span><span class="p">:</span><span class="w"> </span><span class="nb">Option</span><span class="o">&lt;&amp;</span><span class="n">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="kt">f64</span><span class="p">;</span>
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>
+</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="w">    </span><span class="sd">/// Canonical link function for this family</span>
+</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">default_link</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Box</span><span class="o">&lt;</span><span class="k">dyn</span><span class="w"> </span><span class="n">Link</span><span class="o">&gt;</span><span class="p">;</span>
+</span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>
+</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="w">    </span><span class="sd">/// Initialize μ from y for IRLS</span>
+</span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">initialize_mu</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">y</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">;</span>
+</span><span id="__span-0-20"><a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>
+</span><span id="__span-0-21"><a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a><span class="w">    </span><span class="sd">/// Check if μ values are in valid range</span>
+</span><span id="__span-0-22"><a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">is_valid_mu</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">mu</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="kt">bool</span><span class="p">;</span>
+</span><span id="__span-0-23"><a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a><span class="p">}</span>
+</span></code></pre></div>
+<hr />
+<h2 id="part-2-the-gaussian-family">Part 2: The Gaussian Family<a class="headerlink" href="#part-2-the-gaussian-family" title="Permanent link">&para;</a></h2>
+<h3 id="21-the-distribution">2.1 The Distribution<a class="headerlink" href="#21-the-distribution" title="Permanent link">&para;</a></h3>
+<p>The Gaussian (Normal) distribution has density:</p>
+<div class="arithmatex">\[
+f(y; \mu, \sigma^2) = \frac{1}{\sqrt{2\pi\sigma^2}} \exp\left\{-\frac{(y-\mu)^2}{2\sigma^2}\right\}
+\]</div>
+<p><strong>Support</strong>: <span class="arithmatex">\(y \in (-\infty, +\infty)\)</span></p>
+<p><strong>Parameters</strong>: 
+- <span class="arithmatex">\(\mu\)</span> = mean (location)
+- <span class="arithmatex">\(\sigma^2\)</span> = variance (spread)</p>
+<h3 id="22-exponential-family-form">2.2 Exponential Family Form<a class="headerlink" href="#22-exponential-family-form" title="Permanent link">&para;</a></h3>
+<p>Rewrite the density:</p>
+<div class="arithmatex">\[
+f(y; \mu, \sigma^2) = \exp\left\{-\frac{(y-\mu)^2}{2\sigma^2} - \frac{1}{2}\log(2\pi\sigma^2)\right\}
+\]</div>
+<p>Expand the quadratic:</p>
+<div class="arithmatex">\[
+= \exp\left\{-\frac{y^2 - 2y\mu + \mu^2}{2\sigma^2} - \frac{1}{2}\log(2\pi\sigma^2)\right\}
+\]</div>
+<div class="arithmatex">\[
+= \exp\left\{\frac{y\mu - \mu^2/2}{\sigma^2} - \frac{y^2}{2\sigma^2} - \frac{1}{2}\log(2\pi\sigma^2)\right\}
+\]</div>
+<p>Matching to exponential family form:</p>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span class="arithmatex">\(\theta\)</span></td>
+<td><span class="arithmatex">\(\mu\)</span></td>
+</tr>
+<tr>
+<td><span class="arithmatex">\(\phi\)</span></td>
+<td><span class="arithmatex">\(\sigma^2\)</span></td>
+</tr>
+<tr>
+<td><span class="arithmatex">\(b(\theta)\)</span></td>
+<td><span class="arithmatex">\(\theta^2/2 = \mu^2/2\)</span></td>
+</tr>
+<tr>
+<td><span class="arithmatex">\(c(y, \phi)\)</span></td>
+<td><span class="arithmatex">\(-\frac{y^2}{2\phi} - \frac{1}{2}\log(2\pi\phi)\)</span></td>
+</tr>
+</tbody>
+</table>
+<h3 id="23-derived-quantities">2.3 Derived Quantities<a class="headerlink" href="#23-derived-quantities" title="Permanent link">&para;</a></h3>
+<p><strong>Mean</strong>: <span class="arithmatex">\(\mu = b'(\theta) = \theta\)</span> ✓</p>
+<p><strong>Variance function</strong>: <span class="arithmatex">\(V(\mu) = b''(\theta) = 1\)</span></p>
+<p><strong>Variance</strong>: <span class="arithmatex">\(\text{Var}(Y) = \phi \cdot V(\mu) = \sigma^2 \cdot 1 = \sigma^2\)</span> ✓</p>
+<h3 id="24-unit-deviance">2.4 Unit Deviance<a class="headerlink" href="#24-unit-deviance" title="Permanent link">&para;</a></h3>
+<p>The deviance compares the saturated model (one parameter per observation) to the fitted model. For Gaussian:</p>
+<div class="arithmatex">\[
+D = 2[\ell_{\text{saturated}} - \ell_{\text{fitted}}]
+\]</div>
+<p>The log-likelihood is:
+$$
+\ell = -\frac{1}{2\sigma^2}\sum_i (y_i - \mu_i)^2 - \frac{n}{2}\log(2\pi\sigma^2)
+$$</p>
+<p>For the saturated model, <span class="arithmatex">\(\hat{\mu}_i = y_i\)</span>, so <span class="arithmatex">\(\ell_{\text{sat}} = -\frac{n}{2}\log(2\pi\sigma^2)\)</span>.</p>
+<p>For the fitted model with predicted means <span class="arithmatex">\(\hat{\mu}_i\)</span>:
+$$
+\ell_{\text{fit}} = -\frac{1}{2\sigma^2}\sum_i (y_i - \hat{\mu}_i)^2 - \frac{n}{2}\log(2\pi\sigma^2)
+$$</p>
+<p>Thus:
+$$
+D = 2[\ell_{\text{sat}} - \ell_{\text{fit}}] = \frac{1}{\sigma^2}\sum_i (y_i - \hat{\mu}_i)^2
+$$</p>
+<p>The <strong>scaled deviance</strong> is <span class="arithmatex">\(D^* = D/\phi = \sum_i (y_i - \hat{\mu}_i)^2\)</span>.</p>
+<p>The <strong>unit deviance</strong> is:
+$$
+\boxed{d(y, \mu) = (y - \mu)^2}
+$$</p>
+<p>This is just the squared residual!</p>
+<h3 id="25-canonical-link">2.5 Canonical Link<a class="headerlink" href="#25-canonical-link" title="Permanent link">&para;</a></h3>
+<p>For Gaussian, <span class="arithmatex">\(\theta = \mu\)</span>, so the canonical link is the <strong>identity</strong>:
+$$
+\eta = g(\mu) = \mu
+$$</p>
+<h3 id="26-irls-properties">2.6 IRLS Properties<a class="headerlink" href="#26-irls-properties" title="Permanent link">&para;</a></h3>
+<p>With identity link:
+- Weights: <span class="arithmatex">\(w_i = 1/[V(\mu_i) \cdot g'(\mu_i)^2] = 1/[1 \cdot 1] = 1\)</span>
+- Working response: <span class="arithmatex">\(z_i = \eta_i + (y_i - \mu_i) \cdot 1 = y_i\)</span></p>
+<p>IRLS reduces to <strong>ordinary least squares</strong> and converges in <strong>one iteration</strong>.</p>
+<h3 id="27-implementation">2.7 Implementation<a class="headerlink" href="#27-implementation" title="Permanent link">&para;</a></h3>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">GaussianFamily</span><span class="p">;</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="k">impl</span><span class="w"> </span><span class="n">Family</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">GaussianFamily</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">name</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="kp">&amp;</span><span class="kt">str</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="s">&quot;Gaussian&quot;</span><span class="w"> </span><span class="p">}</span>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">variance</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">mu</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">        </span><span class="n">Array1</span><span class="p">::</span><span class="n">ones</span><span class="p">(</span><span class="n">mu</span><span class="p">.</span><span class="n">len</span><span class="p">())</span><span class="w">  </span><span class="c1">// V(μ) = 1</span>
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>
+</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">unit_deviance</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">y</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">,</span><span class="w"> </span><span class="n">mu</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">        </span><span class="p">(</span><span class="n">y</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">mu</span><span class="p">).</span><span class="n">mapv</span><span class="p">(</span><span class="o">|</span><span class="n">r</span><span class="o">|</span><span class="w"> </span><span class="n">r</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">r</span><span class="p">)</span><span class="w">  </span><span class="c1">// d(y,μ) = (y-μ)²</span>
+</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>
+</span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">default_link</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Box</span><span class="o">&lt;</span><span class="k">dyn</span><span class="w"> </span><span class="n">Link</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-1-15"><a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="w">        </span><span class="nb">Box</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">IdentityLink</span><span class="p">)</span>
+</span><span id="__span-1-16"><a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-1-17"><a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a>
+</span><span id="__span-1-18"><a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">initialize_mu</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">y</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-1-19"><a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="w">        </span><span class="n">y</span><span class="p">.</span><span class="n">clone</span><span class="p">()</span><span class="w">  </span><span class="c1">// Start with μ = y</span>
+</span><span id="__span-1-20"><a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-1-21"><a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a>
+</span><span id="__span-1-22"><a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">is_valid_mu</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">_mu</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="kt">bool</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-1-23"><a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a><span class="w">        </span><span class="kc">true</span><span class="w">  </span><span class="c1">// Any real μ is valid</span>
+</span><span id="__span-1-24"><a id="__codelineno-1-24" name="__codelineno-1-24" href="#__codelineno-1-24"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-1-25"><a id="__codelineno-1-25" name="__codelineno-1-25" href="#__codelineno-1-25"></a><span class="p">}</span>
+</span></code></pre></div>
+<h3 id="28-when-to-use">2.8 When to Use<a class="headerlink" href="#28-when-to-use" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Continuous responses that can be positive or negative</li>
+<li>When variance doesn't depend on the mean</li>
+<li>Traditional linear regression problems</li>
+</ul>
+<hr />
+<h2 id="part-3-the-poisson-family">Part 3: The Poisson Family<a class="headerlink" href="#part-3-the-poisson-family" title="Permanent link">&para;</a></h2>
+<h3 id="31-the-distribution">3.1 The Distribution<a class="headerlink" href="#31-the-distribution" title="Permanent link">&para;</a></h3>
+<p>The Poisson distribution models counts:</p>
+<div class="arithmatex">\[
+P(Y = y) = \frac{\mu^y e^{-\mu}}{y!}, \quad y = 0, 1, 2, \ldots
+\]</div>
+<p><strong>Support</strong>: <span class="arithmatex">\(y \in \{0, 1, 2, \ldots\}\)</span></p>
+<p><strong>Parameter</strong>: <span class="arithmatex">\(\mu &gt; 0\)</span> = mean (and variance)</p>
+<h3 id="32-exponential-family-form">3.2 Exponential Family Form<a class="headerlink" href="#32-exponential-family-form" title="Permanent link">&para;</a></h3>
+<p>Take the log:
+$$
+\log P(Y = y) = y \log\mu - \mu - \log(y!)
+$$</p>
+<p>Exponentiating:
+$$
+P(Y = y) = \exp{y \log\mu - \mu - \log(y!)}
+$$</p>
+<p>Matching to exponential family:</p>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span class="arithmatex">\(\theta\)</span></td>
+<td><span class="arithmatex">\(\log\mu\)</span></td>
+</tr>
+<tr>
+<td><span class="arithmatex">\(\phi\)</span></td>
+<td><span class="arithmatex">\(1\)</span> (fixed)</td>
+</tr>
+<tr>
+<td><span class="arithmatex">\(b(\theta)\)</span></td>
+<td><span class="arithmatex">\(e^\theta = \mu\)</span></td>
+</tr>
+<tr>
+<td><span class="arithmatex">\(c(y, \phi)\)</span></td>
+<td><span class="arithmatex">\(-\log(y!)\)</span></td>
+</tr>
+</tbody>
+</table>
+<h3 id="33-derived-quantities">3.3 Derived Quantities<a class="headerlink" href="#33-derived-quantities" title="Permanent link">&para;</a></h3>
+<p><strong>Mean</strong>: <span class="arithmatex">\(\mu = b'(\theta) = e^\theta\)</span> ✓ (since <span class="arithmatex">\(\theta = \log\mu\)</span>)</p>
+<p><strong>Variance function</strong>: <span class="arithmatex">\(V(\mu) = b''(\theta) = e^\theta = \mu\)</span></p>
+<p><strong>Variance</strong>: <span class="arithmatex">\(\text{Var}(Y) = \phi \cdot V(\mu) = 1 \cdot \mu = \mu\)</span></p>
+<div class="admonition info">
+<p class="admonition-title">Equidispersion</p>
+<p>For Poisson, mean = variance. This is called <strong>equidispersion</strong> and is a key assumption to check.</p>
+</div>
+<h3 id="34-unit-deviance-derivation">3.4 Unit Deviance Derivation<a class="headerlink" href="#34-unit-deviance-derivation" title="Permanent link">&para;</a></h3>
+<p>The log-likelihood for one observation:
+$$
+\ell(y; \mu) = y\log\mu - \mu - \log(y!)
+$$</p>
+<p>Saturated model (<span class="arithmatex">\(\hat{\mu} = y\)</span>):
+$$
+\ell_{\text{sat}} = y\log y - y - \log(y!) \quad \text{(for } y &gt; 0\text{)}
+$$</p>
+<p>Fitted model:
+$$
+\ell_{\text{fit}} = y\log\mu - \mu - \log(y!)
+$$</p>
+<p>Unit deviance:
+$$
+d(y, \mu) = 2[\ell_{\text{sat}} - \ell_{\text{fit}}] = 2[y\log y - y - y\log\mu + \mu]
+$$</p>
+<div class="arithmatex">\[
+\boxed{d(y, \mu) = 2\left[y\log\frac{y}{\mu} - (y - \mu)\right]}
+\]</div>
+<p><strong>Special case</strong>: When <span class="arithmatex">\(y = 0\)</span>:
+$$
+d(0, \mu) = 2[0 - 0 - 0 + \mu] = 2\mu
+$$</p>
+<h3 id="35-canonical-link">3.5 Canonical Link<a class="headerlink" href="#35-canonical-link" title="Permanent link">&para;</a></h3>
+<p>Since <span class="arithmatex">\(\theta = \log\mu\)</span>, the canonical link is the <strong>log</strong>:
+$$
+\eta = g(\mu) = \log\mu
+$$</p>
+<h3 id="36-irls-properties">3.6 IRLS Properties<a class="headerlink" href="#36-irls-properties" title="Permanent link">&para;</a></h3>
+<p>With log link:
+- <span class="arithmatex">\(g'(\mu) = 1/\mu\)</span>
+- Weights: <span class="arithmatex">\(w_i = 1/[V(\mu_i) \cdot g'(\mu_i)^2] = 1/[\mu_i \cdot (1/\mu_i)^2] = \mu_i\)</span>
+- Working response: <span class="arithmatex">\(z_i = \log\mu_i + (y_i - \mu_i)/\mu_i\)</span></p>
+<p>Observations with larger predicted means get higher weight.</p>
+<h3 id="37-worked-example-claim-frequency">3.7 Worked Example: Claim Frequency<a class="headerlink" href="#37-worked-example-claim-frequency" title="Permanent link">&para;</a></h3>
+<p><strong>Data</strong>: 5 policyholders with claim counts</p>
+<table>
+<thead>
+<tr>
+<th>Policyholder</th>
+<th>Exposure</th>
+<th>Claims</th>
+<th>Rate</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>1.0</td>
+<td>0</td>
+<td>0.0</td>
+</tr>
+<tr>
+<td>2</td>
+<td>0.5</td>
+<td>1</td>
+<td>2.0</td>
+</tr>
+<tr>
+<td>3</td>
+<td>1.0</td>
+<td>2</td>
+<td>2.0</td>
+</tr>
+<tr>
+<td>4</td>
+<td>0.75</td>
+<td>1</td>
+<td>1.33</td>
+</tr>
+<tr>
+<td>5</td>
+<td>1.0</td>
+<td>3</td>
+<td>3.0</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Model</strong>: <span class="arithmatex">\(\log(\mu_i) = \beta_0 + \log(\text{exposure}_i)\)</span></p>
+<p>The offset <span class="arithmatex">\(\log(\text{exposure})\)</span> makes this a <strong>rate model</strong>:
+$$
+\log(\mu_i/\text{exposure}_i) = \beta_0
+$$</p>
+<p><strong>MLE for constant rate model</strong>:
+$$
+\hat{\beta}_0 = \log\left(\frac{\sum y_i}{\sum \text{exposure}_i}\right) = \log\left(\frac{7}{4.25}\right) = 0.499
+$$</p>
+<p><strong>Predicted rate</strong>: <span class="arithmatex">\(e^{0.499} = 1.65\)</span> claims per exposure unit.</p>
+<p><strong>Deviance</strong>:
+$$
+D = 2\sum_i \left[y_i\log\frac{y_i}{\hat{\mu}_i} - (y_i - \hat{\mu}_i)\right]
+$$</p>
+<p>where <span class="arithmatex">\(\hat{\mu}_i = 1.65 \times \text{exposure}_i\)</span>.</p>
+<h3 id="38-checking-overdispersion">3.8 Checking Overdispersion<a class="headerlink" href="#38-checking-overdispersion" title="Permanent link">&para;</a></h3>
+<p>If Var<span class="arithmatex">\((Y) &gt; \mu\)</span>, the data is <strong>overdispersed</strong>. Test using:</p>
+<div class="arithmatex">\[
+\text{Dispersion ratio} = \frac{\text{Pearson } \chi^2}{n - p} = \frac{\sum (y_i - \hat{\mu}_i)^2/\hat{\mu}_i}{n - p}
+\]</div>
+<ul>
+<li>Ratio <span class="arithmatex">\(\approx 1\)</span>: Poisson is appropriate</li>
+<li>Ratio <span class="arithmatex">\(&gt; 1\)</span>: Consider QuasiPoisson or Negative Binomial</li>
+</ul>
+<h3 id="39-implementation">3.9 Implementation<a class="headerlink" href="#39-implementation" title="Permanent link">&para;</a></h3>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">PoissonFamily</span><span class="p">;</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="k">impl</span><span class="w"> </span><span class="n">Family</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">PoissonFamily</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">name</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="kp">&amp;</span><span class="kt">str</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="s">&quot;Poisson&quot;</span><span class="w"> </span><span class="p">}</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">variance</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">mu</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">        </span><span class="n">mu</span><span class="p">.</span><span class="n">clone</span><span class="p">()</span><span class="w">  </span><span class="c1">// V(μ) = μ</span>
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>
+</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">unit_deviance</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">y</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">,</span><span class="w"> </span><span class="n">mu</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="w">        </span><span class="n">Zip</span><span class="p">::</span><span class="n">from</span><span class="p">(</span><span class="n">y</span><span class="p">).</span><span class="n">and</span><span class="p">(</span><span class="n">mu</span><span class="p">).</span><span class="n">map_collect</span><span class="p">(</span><span class="o">|&amp;</span><span class="n">yi</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">mui</span><span class="o">|</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="w">            </span><span class="k">if</span><span class="w"> </span><span class="n">yi</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mf">0.0</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="w">                </span><span class="mf">2.0</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="p">(</span><span class="n">yi</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="p">(</span><span class="n">yi</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">mui</span><span class="p">).</span><span class="n">ln</span><span class="p">()</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="p">(</span><span class="n">yi</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">mui</span><span class="p">))</span>
+</span><span id="__span-2-14"><a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="w">            </span><span class="p">}</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-2-15"><a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="w">                </span><span class="mf">2.0</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">mui</span><span class="w">  </span><span class="c1">// Special case for y = 0</span>
+</span><span id="__span-2-16"><a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a><span class="w">            </span><span class="p">}</span>
+</span><span id="__span-2-17"><a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a><span class="w">        </span><span class="p">})</span>
+</span><span id="__span-2-18"><a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-2-19"><a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a>
+</span><span id="__span-2-20"><a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">default_link</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Box</span><span class="o">&lt;</span><span class="k">dyn</span><span class="w"> </span><span class="n">Link</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-2-21"><a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a><span class="w">        </span><span class="nb">Box</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">LogLink</span><span class="p">)</span>
+</span><span id="__span-2-22"><a id="__codelineno-2-22" name="__codelineno-2-22" href="#__codelineno-2-22"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-2-23"><a id="__codelineno-2-23" name="__codelineno-2-23" href="#__codelineno-2-23"></a>
+</span><span id="__span-2-24"><a id="__codelineno-2-24" name="__codelineno-2-24" href="#__codelineno-2-24"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">initialize_mu</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">y</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-2-25"><a id="__codelineno-2-25" name="__codelineno-2-25" href="#__codelineno-2-25"></a><span class="w">        </span><span class="n">y</span><span class="p">.</span><span class="n">mapv</span><span class="p">(</span><span class="o">|</span><span class="n">yi</span><span class="o">|</span><span class="w"> </span><span class="p">(</span><span class="n">yi</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="mf">0.1</span><span class="p">).</span><span class="n">max</span><span class="p">(</span><span class="mf">0.1</span><span class="p">))</span><span class="w">  </span><span class="c1">// Avoid log(0)</span>
+</span><span id="__span-2-26"><a id="__codelineno-2-26" name="__codelineno-2-26" href="#__codelineno-2-26"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-2-27"><a id="__codelineno-2-27" name="__codelineno-2-27" href="#__codelineno-2-27"></a>
+</span><span id="__span-2-28"><a id="__codelineno-2-28" name="__codelineno-2-28" href="#__codelineno-2-28"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">is_valid_mu</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">mu</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="kt">bool</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-2-29"><a id="__codelineno-2-29" name="__codelineno-2-29" href="#__codelineno-2-29"></a><span class="w">        </span><span class="n">mu</span><span class="p">.</span><span class="n">iter</span><span class="p">().</span><span class="n">all</span><span class="p">(</span><span class="o">|&amp;</span><span class="n">m</span><span class="o">|</span><span class="w"> </span><span class="n">m</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mf">0.0</span><span class="p">)</span>
+</span><span id="__span-2-30"><a id="__codelineno-2-30" name="__codelineno-2-30" href="#__codelineno-2-30"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-2-31"><a id="__codelineno-2-31" name="__codelineno-2-31" href="#__codelineno-2-31"></a><span class="p">}</span>
+</span></code></pre></div>
+<hr />
+<h2 id="part-4-the-binomial-family">Part 4: The Binomial Family<a class="headerlink" href="#part-4-the-binomial-family" title="Permanent link">&para;</a></h2>
+<h3 id="41-the-distribution">4.1 The Distribution<a class="headerlink" href="#41-the-distribution" title="Permanent link">&para;</a></h3>
+<p>For <span class="arithmatex">\(n\)</span> trials with success probability <span class="arithmatex">\(p\)</span>:</p>
+<div class="arithmatex">\[
+P(Y = y) = \binom{n}{y} p^y (1-p)^{n-y}, \quad y = 0, 1, \ldots, n
+\]</div>
+<p>For binary data (<span class="arithmatex">\(n = 1\)</span>):
+$$
+P(Y = 1) = \mu, \quad P(Y = 0) = 1 - \mu
+$$</p>
+<p><strong>Support</strong>: <span class="arithmatex">\(y \in \{0, 1\}\)</span> (binary) or <span class="arithmatex">\(y \in [0, 1]\)</span> (proportion)</p>
+<p><strong>Parameter</strong>: <span class="arithmatex">\(\mu = p \in (0, 1)\)</span></p>
+<h3 id="42-exponential-family-form">4.2 Exponential Family Form<a class="headerlink" href="#42-exponential-family-form" title="Permanent link">&para;</a></h3>
+<p>For binary <span class="arithmatex">\(Y \in \{0, 1\}\)</span>:
+$$
+P(Y = y) = \mu^y (1-\mu)^{1-y}
+$$</p>
+<p>Take the log:
+$$
+\log P(Y = y) = y\log\mu + (1-y)\log(1-\mu) = y\log\frac{\mu}{1-\mu} + \log(1-\mu)
+$$</p>
+<p>Exponentiating:
+$$
+P(Y = y) = \exp\left{y\log\frac{\mu}{1-\mu} + \log(1-\mu)\right}
+$$</p>
+<p>Matching to exponential family:</p>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span class="arithmatex">\(\theta\)</span></td>
+<td><span class="arithmatex">\(\log\frac{\mu}{1-\mu}\)</span> (log-odds)</td>
+</tr>
+<tr>
+<td><span class="arithmatex">\(\phi\)</span></td>
+<td><span class="arithmatex">\(1\)</span> (fixed)</td>
+</tr>
+<tr>
+<td><span class="arithmatex">\(b(\theta)\)</span></td>
+<td><span class="arithmatex">\(\log(1 + e^\theta)\)</span></td>
+</tr>
+<tr>
+<td><span class="arithmatex">\(c(y, \phi)\)</span></td>
+<td><span class="arithmatex">\(0\)</span></td>
+</tr>
+</tbody>
+</table>
+<h3 id="43-derived-quantities">4.3 Derived Quantities<a class="headerlink" href="#43-derived-quantities" title="Permanent link">&para;</a></h3>
+<p><strong>Mean</strong>: We have <span class="arithmatex">\(\mu = \frac{e^\theta}{1 + e^\theta}\)</span>. Check:
+$$
+b'(\theta) = \frac{e^\theta}{1 + e^\theta} = \mu \quad ✓
+$$</p>
+<p><strong>Variance function</strong>:
+$$
+b''(\theta) = \frac{e^\theta}{(1 + e^\theta)^2} = \mu(1-\mu)
+$$</p>
+<p>So <span class="arithmatex">\(V(\mu) = \mu(1-\mu)\)</span>.</p>
+<p><strong>Variance</strong>: <span class="arithmatex">\(\text{Var}(Y) = \phi \cdot V(\mu) = \mu(1-\mu)\)</span></p>
+<p>The variance is maximized at <span class="arithmatex">\(\mu = 0.5\)</span> and goes to zero at <span class="arithmatex">\(\mu \to 0\)</span> or <span class="arithmatex">\(\mu \to 1\)</span>.</p>
+<h3 id="44-unit-deviance-derivation">4.4 Unit Deviance Derivation<a class="headerlink" href="#44-unit-deviance-derivation" title="Permanent link">&para;</a></h3>
+<p>Log-likelihood for binary <span class="arithmatex">\(y\)</span>:
+$$
+\ell(y; \mu) = y\log\mu + (1-y)\log(1-\mu)
+$$</p>
+<p>Saturated model: <span class="arithmatex">\(\hat{\mu} = y\)</span>, but this gives <span class="arithmatex">\(\log 0\)</span> when <span class="arithmatex">\(y \in \{0, 1\}\)</span>. By convention, <span class="arithmatex">\(\ell_{\text{sat}} = 0\)</span>.</p>
+<p>Fitted model:
+$$
+\ell_{\text{fit}} = y\log\mu + (1-y)\log(1-\mu)
+$$</p>
+<p>Unit deviance:
+$$
+d(y, \mu) = -2\ell_{\text{fit}} = -2[y\log\mu + (1-y)\log(1-\mu)]
+$$</p>
+<p>Rewriting:
+$$
+\boxed{d(y, \mu) = 2\left[y\log\frac{y}{\mu} + (1-y)\log\frac{1-y}{1-\mu}\right]}
+$$</p>
+<p><strong>Special cases</strong>:
+- <span class="arithmatex">\(y = 1\)</span>: <span class="arithmatex">\(d(1, \mu) = -2\log\mu\)</span>
+- <span class="arithmatex">\(y = 0\)</span>: <span class="arithmatex">\(d(0, \mu) = -2\log(1-\mu)\)</span></p>
+<h3 id="45-canonical-link-the-logit">4.5 Canonical Link: The Logit<a class="headerlink" href="#45-canonical-link-the-logit" title="Permanent link">&para;</a></h3>
+<p>The canonical link is:
+$$
+\eta = g(\mu) = \log\frac{\mu}{1-\mu} \quad \text{(log-odds or logit)}
+$$</p>
+<p>The inverse (logistic function):
+$$
+\mu = g^{-1}(\eta) = \frac{e^\eta}{1 + e^\eta} = \frac{1}{1 + e^{-\eta}}
+$$</p>
+<p>The derivative:
+$$
+g'(\mu) = \frac{d}{d\mu}\log\frac{\mu}{1-\mu} = \frac{1}{\mu} + \frac{1}{1-\mu} = \frac{1}{\mu(1-\mu)}
+$$</p>
+<h3 id="46-irls-properties">4.6 IRLS Properties<a class="headerlink" href="#46-irls-properties" title="Permanent link">&para;</a></h3>
+<p>With logit link:
+- Weights: <span class="arithmatex">\(w_i = 1/[V(\mu_i) \cdot g'(\mu_i)^2] = 1/[\mu_i(1-\mu_i) \cdot 1/(\mu_i(1-\mu_i))^2] = \mu_i(1-\mu_i)\)</span>
+- Working response: <span class="arithmatex">\(z_i = \log\frac{\mu_i}{1-\mu_i} + \frac{y_i - \mu_i}{\mu_i(1-\mu_i)}\)</span></p>
+<p>Weights are largest when <span class="arithmatex">\(\mu \approx 0.5\)</span> (most uncertainty) and smallest near 0 or 1.</p>
+<h3 id="47-interpretation-odds-ratios">4.7 Interpretation: Odds Ratios<a class="headerlink" href="#47-interpretation-odds-ratios" title="Permanent link">&para;</a></h3>
+<p>The logit model:
+$$
+\log\frac{\mu}{1-\mu} = \beta_0 + \beta_1 x_1 + \cdots + \beta_p x_p
+$$</p>
+<p>For a one-unit increase in <span class="arithmatex">\(x_j\)</span>:
+$$
+\log\frac{\mu_{\text{new}}}{1-\mu_{\text{new}}} - \log\frac{\mu_{\text{old}}}{1-\mu_{\text{old}}} = \beta_j
+$$</p>
+<p>Thus:
+$$
+\frac{\text{Odds}<em _text_old="\text{old">{\text{new}}}{\text{Odds}</em>
+$$}}} = e^{\beta_j</p>
+<p><strong><span class="arithmatex">\(e^{\beta_j}\)</span> is the odds ratio</strong> for a one-unit increase in <span class="arithmatex">\(x_j\)</span>.</p>
+<h3 id="48-worked-example-claims-occurrence">4.8 Worked Example: Claims Occurrence<a class="headerlink" href="#48-worked-example-claims-occurrence" title="Permanent link">&para;</a></h3>
+<p><strong>Data</strong>: Whether policyholder had a claim</p>
+<table>
+<thead>
+<tr>
+<th>Age</th>
+<th>Has Claim</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>25</td>
+<td>1</td>
+</tr>
+<tr>
+<td>35</td>
+<td>0</td>
+</tr>
+<tr>
+<td>45</td>
+<td>1</td>
+</tr>
+<tr>
+<td>55</td>
+<td>1</td>
+</tr>
+<tr>
+<td>65</td>
+<td>0</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Model</strong>: <span class="arithmatex">\(\text{logit}(\mu_i) = \beta_0 + \beta_1 \cdot \text{age}_i\)</span></p>
+<p>Let <span class="arithmatex">\(x = (\text{age} - 45)/10\)</span> for numerical stability.</p>
+<p><strong>Iteration 1</strong>:
+- Initialize: <span class="arithmatex">\(\mu^{(0)} = (0.55, 0.45, 0.55, 0.55, 0.45)\)</span> (slightly toward observed)
+- Compute weights: <span class="arithmatex">\(w_i = \mu_i(1-\mu_i)\)</span>
+- Compute working response
+- Solve WLS...</p>
+<p>After convergence (typically 5-8 iterations):
+- <span class="arithmatex">\(\hat{\beta}_0 \approx 0.4\)</span> (log-odds at age 45)
+- <span class="arithmatex">\(\hat{\beta}_1 \approx 0.05\)</span> (effect of 10-year age increase)
+- Odds ratio for 10-year increase: <span class="arithmatex">\(e^{0.05} \approx 1.05\)</span></p>
+<h3 id="49-complete-separation">4.9 Complete Separation<a class="headerlink" href="#49-complete-separation" title="Permanent link">&para;</a></h3>
+<p>A special problem in logistic regression: if a predictor perfectly separates 0s from 1s, the MLE doesn't exist.</p>
+<p><strong>Example</strong>: All young people have claims, all old people don't.</p>
+<p>The algorithm tries <span class="arithmatex">\(\beta_1 \to \infty\)</span>, which never converges.</p>
+<p><strong>Solutions</strong>:
+1. Remove the separating variable
+2. Add regularization (Ridge/Lasso)
+3. Use Firth's penalized likelihood</p>
+<h3 id="410-implementation">4.10 Implementation<a class="headerlink" href="#410-implementation" title="Permanent link">&para;</a></h3>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">BinomialFamily</span><span class="p">;</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="k">impl</span><span class="w"> </span><span class="n">Family</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">BinomialFamily</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">name</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="kp">&amp;</span><span class="kt">str</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="s">&quot;Binomial&quot;</span><span class="w"> </span><span class="p">}</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">variance</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">mu</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">        </span><span class="n">mu</span><span class="p">.</span><span class="n">mapv</span><span class="p">(</span><span class="o">|</span><span class="n">m</span><span class="o">|</span><span class="w"> </span><span class="n">m</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="p">(</span><span class="mf">1.0</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">m</span><span class="p">))</span><span class="w">  </span><span class="c1">// V(μ) = μ(1-μ)</span>
+</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>
+</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">unit_deviance</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">y</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">,</span><span class="w"> </span><span class="n">mu</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="w">        </span><span class="n">Zip</span><span class="p">::</span><span class="n">from</span><span class="p">(</span><span class="n">y</span><span class="p">).</span><span class="n">and</span><span class="p">(</span><span class="n">mu</span><span class="p">).</span><span class="n">map_collect</span><span class="p">(</span><span class="o">|&amp;</span><span class="n">yi</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">mui</span><span class="o">|</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-3-12"><a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="w">            </span><span class="kd">let</span><span class="w"> </span><span class="n">term1</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="n">yi</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mf">0.0</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">yi</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="p">(</span><span class="n">yi</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">mui</span><span class="p">).</span><span class="n">ln</span><span class="p">()</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="mf">0.0</span><span class="w"> </span><span class="p">};</span>
+</span><span id="__span-3-13"><a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a><span class="w">            </span><span class="kd">let</span><span class="w"> </span><span class="n">term2</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="n">yi</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="mf">1.0</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="p">(</span><span class="mf">1.0</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">yi</span><span class="p">)</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="p">((</span><span class="mf">1.0</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">yi</span><span class="p">)</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="p">(</span><span class="mf">1.0</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">mui</span><span class="p">)).</span><span class="n">ln</span><span class="p">()</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="mf">0.0</span><span class="w"> </span><span class="p">};</span>
+</span><span id="__span-3-14"><a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a><span class="w">            </span><span class="mf">2.0</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="p">(</span><span class="n">term1</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">term2</span><span class="p">)</span>
+</span><span id="__span-3-15"><a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a><span class="w">        </span><span class="p">})</span>
+</span><span id="__span-3-16"><a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-3-17"><a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a>
+</span><span id="__span-3-18"><a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">default_link</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Box</span><span class="o">&lt;</span><span class="k">dyn</span><span class="w"> </span><span class="n">Link</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-3-19"><a id="__codelineno-3-19" name="__codelineno-3-19" href="#__codelineno-3-19"></a><span class="w">        </span><span class="nb">Box</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">LogitLink</span><span class="p">)</span>
+</span><span id="__span-3-20"><a id="__codelineno-3-20" name="__codelineno-3-20" href="#__codelineno-3-20"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-3-21"><a id="__codelineno-3-21" name="__codelineno-3-21" href="#__codelineno-3-21"></a>
+</span><span id="__span-3-22"><a id="__codelineno-3-22" name="__codelineno-3-22" href="#__codelineno-3-22"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">initialize_mu</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">y</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-3-23"><a id="__codelineno-3-23" name="__codelineno-3-23" href="#__codelineno-3-23"></a><span class="w">        </span><span class="n">y</span><span class="p">.</span><span class="n">mapv</span><span class="p">(</span><span class="o">|</span><span class="n">yi</span><span class="o">|</span><span class="w"> </span><span class="p">(</span><span class="n">yi</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="mf">0.5</span><span class="p">)</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="mf">2.0</span><span class="p">)</span><span class="w">  </span><span class="c1">// Shrink toward 0.5</span>
+</span><span id="__span-3-24"><a id="__codelineno-3-24" name="__codelineno-3-24" href="#__codelineno-3-24"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-3-25"><a id="__codelineno-3-25" name="__codelineno-3-25" href="#__codelineno-3-25"></a>
+</span><span id="__span-3-26"><a id="__codelineno-3-26" name="__codelineno-3-26" href="#__codelineno-3-26"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">is_valid_mu</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">mu</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="kt">bool</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-3-27"><a id="__codelineno-3-27" name="__codelineno-3-27" href="#__codelineno-3-27"></a><span class="w">        </span><span class="n">mu</span><span class="p">.</span><span class="n">iter</span><span class="p">().</span><span class="n">all</span><span class="p">(</span><span class="o">|&amp;</span><span class="n">m</span><span class="o">|</span><span class="w"> </span><span class="n">m</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mf">0.0</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="n">m</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="mf">1.0</span><span class="p">)</span>
+</span><span id="__span-3-28"><a id="__codelineno-3-28" name="__codelineno-3-28" href="#__codelineno-3-28"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-3-29"><a id="__codelineno-3-29" name="__codelineno-3-29" href="#__codelineno-3-29"></a><span class="p">}</span>
+</span></code></pre></div>
+<hr />
+<h2 id="part-5-the-gamma-family">Part 5: The Gamma Family<a class="headerlink" href="#part-5-the-gamma-family" title="Permanent link">&para;</a></h2>
+<h3 id="51-the-distribution">5.1 The Distribution<a class="headerlink" href="#51-the-distribution" title="Permanent link">&para;</a></h3>
+<p>The Gamma distribution for positive continuous data:</p>
+<div class="arithmatex">\[
+f(y; \alpha, \beta) = \frac{\beta^\alpha}{\Gamma(\alpha)} y^{\alpha-1} e^{-\beta y}, \quad y &gt; 0
+\]</div>
+<p>Reparameterized in terms of mean <span class="arithmatex">\(\mu\)</span> and shape <span class="arithmatex">\(\nu\)</span>:
+- <span class="arithmatex">\(\mu = \alpha/\beta\)</span> (mean)
+- <span class="arithmatex">\(\nu = \alpha\)</span> (shape)</p>
+<div class="arithmatex">\[
+E(Y) = \mu, \quad \text{Var}(Y) = \mu^2/\nu
+\]</div>
+<h3 id="52-exponential-family-form">5.2 Exponential Family Form<a class="headerlink" href="#52-exponential-family-form" title="Permanent link">&para;</a></h3>
+<p>With <span class="arithmatex">\(\alpha = \nu\)</span> and <span class="arithmatex">\(\beta = \nu/\mu\)</span>:</p>
+<div class="arithmatex">\[
+f(y; \mu, \nu) = \frac{(\nu/\mu)^\nu}{\Gamma(\nu)} y^{\nu-1} \exp\{-\nu y/\mu\}
+\]</div>
+<p>Rewriting:
+$$
+\log f = \nu[\log(\nu/\mu) + (\nu-1)/\nu \cdot \log y - y/\mu] - \log\Gamma(\nu)
+$$</p>
+<p>This is messy, but the key matching gives:</p>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span class="arithmatex">\(\theta\)</span></td>
+<td><span class="arithmatex">\(-1/\mu\)</span></td>
+</tr>
+<tr>
+<td><span class="arithmatex">\(\phi\)</span></td>
+<td><span class="arithmatex">\(1/\nu\)</span></td>
+</tr>
+<tr>
+<td><span class="arithmatex">\(b(\theta)\)</span></td>
+<td><span class="arithmatex">\(-\log(-\theta)\)</span></td>
+</tr>
+</tbody>
+</table>
+<h3 id="53-derived-quantities">5.3 Derived Quantities<a class="headerlink" href="#53-derived-quantities" title="Permanent link">&para;</a></h3>
+<p><strong>Mean</strong>: <span class="arithmatex">\(\mu = b'(\theta) = -1/\theta = \mu\)</span> ✓</p>
+<p><strong>Variance function</strong>: 
+$$
+b''(\theta) = 1/\theta^2 = \mu^2
+$$</p>
+<p>So <span class="arithmatex">\(V(\mu) = \mu^2\)</span>.</p>
+<p><strong>Variance</strong>: <span class="arithmatex">\(\text{Var}(Y) = \phi \cdot V(\mu) = \mu^2/\nu\)</span></p>
+<h3 id="54-key-property-constant-cv">5.4 Key Property: Constant CV<a class="headerlink" href="#54-key-property-constant-cv" title="Permanent link">&para;</a></h3>
+<p>The coefficient of variation (CV) is:
+$$
+\text{CV} = \frac{\text{SD}}{\text{Mean}} = \frac{\sqrt{\mu^2/\nu}}{\mu} = \frac{1}{\sqrt{\nu}}
+$$</p>
+<p>This is <strong>constant</strong> regardless of the mean! This makes Gamma ideal for:
+- Claim severity (larger claims are more variable, proportionally)
+- Financial data with percentage-based volatility</p>
+<h3 id="55-unit-deviance">5.5 Unit Deviance<a class="headerlink" href="#55-unit-deviance" title="Permanent link">&para;</a></h3>
+<div class="arithmatex">\[
+\boxed{d(y, \mu) = 2\left[-\log\frac{y}{\mu} + \frac{y - \mu}{\mu}\right]}
+\]</div>
+<p>Or equivalently:
+$$
+d(y, \mu) = 2\left[\frac{y - \mu}{\mu} - \log\frac{y}{\mu}\right]
+$$</p>
+<h3 id="56-links">5.6 Links<a class="headerlink" href="#56-links" title="Permanent link">&para;</a></h3>
+<p><strong>Canonical link</strong> (inverse): <span class="arithmatex">\(\eta = -1/\mu\)</span></p>
+<p>This is rarely used because:
+- <span class="arithmatex">\(\mu &gt; 0\)</span> but <span class="arithmatex">\(\eta\)</span> can be any real number
+- The relationship is awkward to interpret</p>
+<p><strong>Common link</strong> (log): <span class="arithmatex">\(\eta = \log\mu\)</span>
+- <span class="arithmatex">\(\mu = e^\eta\)</span> is always positive
+- Coefficients have multiplicative interpretation
+- Recommended in most applications</p>
+<h3 id="57-irls-with-log-link">5.7 IRLS with Log Link<a class="headerlink" href="#57-irls-with-log-link" title="Permanent link">&para;</a></h3>
+<p>With log link:
+- <span class="arithmatex">\(g'(\mu) = 1/\mu\)</span>
+- Weights: <span class="arithmatex">\(w_i = 1/[\mu_i^2 \cdot (1/\mu_i)^2] = 1\)</span></p>
+<p><strong>Constant weights!</strong> This is a happy coincidence when <span class="arithmatex">\(V(\mu) = \mu^2\)</span> and <span class="arithmatex">\(g'(\mu) = 1/\mu\)</span>.</p>
+<h3 id="58-worked-example-claim-severity">5.8 Worked Example: Claim Severity<a class="headerlink" href="#58-worked-example-claim-severity" title="Permanent link">&para;</a></h3>
+<p><strong>Data</strong>: Claim amounts for 4 claims</p>
+<table>
+<thead>
+<tr>
+<th>Claim</th>
+<th>Amount</th>
+<th>log(Amount)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>500</td>
+<td>6.21</td>
+</tr>
+<tr>
+<td>2</td>
+<td>1200</td>
+<td>7.09</td>
+</tr>
+<tr>
+<td>3</td>
+<td>800</td>
+<td>6.68</td>
+</tr>
+<tr>
+<td>4</td>
+<td>2500</td>
+<td>7.82</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Model</strong>: <span class="arithmatex">\(\log(\mu_i) = \beta_0\)</span> (constant model)</p>
+<p><strong>MLE</strong>: <span class="arithmatex">\(\hat{\beta}_0 = \frac{1}{4}\sum \log(y_i) = 6.95\)</span></p>
+<p>(Note: For Gamma, the MLE of log-mean is the mean of logs, not log of means!)</p>
+<p><strong>Predicted mean</strong>: <span class="arithmatex">\(\hat{\mu} = e^{6.95} = 1047\)</span></p>
+<p><strong>Dispersion</strong>: Estimated from residuals, <span class="arithmatex">\(\hat{\phi} \approx 0.15\)</span>, so <span class="arithmatex">\(\hat{\nu} \approx 6.7\)</span>.</p>
+<h3 id="59-implementation">5.9 Implementation<a class="headerlink" href="#59-implementation" title="Permanent link">&para;</a></h3>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">GammaFamily</span><span class="p">;</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="k">impl</span><span class="w"> </span><span class="n">Family</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">GammaFamily</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">name</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="kp">&amp;</span><span class="kt">str</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="s">&quot;Gamma&quot;</span><span class="w"> </span><span class="p">}</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">variance</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">mu</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">        </span><span class="n">mu</span><span class="p">.</span><span class="n">mapv</span><span class="p">(</span><span class="o">|</span><span class="n">m</span><span class="o">|</span><span class="w"> </span><span class="n">m</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">m</span><span class="p">)</span><span class="w">  </span><span class="c1">// V(μ) = μ²</span>
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>
+</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">unit_deviance</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">y</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">,</span><span class="w"> </span><span class="n">mu</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="w">        </span><span class="n">Zip</span><span class="p">::</span><span class="n">from</span><span class="p">(</span><span class="n">y</span><span class="p">).</span><span class="n">and</span><span class="p">(</span><span class="n">mu</span><span class="p">).</span><span class="n">map_collect</span><span class="p">(</span><span class="o">|&amp;</span><span class="n">yi</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">mui</span><span class="o">|</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-4-12"><a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a><span class="w">            </span><span class="mf">2.0</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="p">((</span><span class="n">yi</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">mui</span><span class="p">)</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">mui</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="p">(</span><span class="n">yi</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">mui</span><span class="p">).</span><span class="n">ln</span><span class="p">())</span>
+</span><span id="__span-4-13"><a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a><span class="w">        </span><span class="p">})</span>
+</span><span id="__span-4-14"><a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-4-15"><a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a>
+</span><span id="__span-4-16"><a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">default_link</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Box</span><span class="o">&lt;</span><span class="k">dyn</span><span class="w"> </span><span class="n">Link</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-4-17"><a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a><span class="w">        </span><span class="nb">Box</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">LogLink</span><span class="p">)</span><span class="w">  </span><span class="c1">// Log is more practical than canonical inverse</span>
+</span><span id="__span-4-18"><a id="__codelineno-4-18" name="__codelineno-4-18" href="#__codelineno-4-18"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-4-19"><a id="__codelineno-4-19" name="__codelineno-4-19" href="#__codelineno-4-19"></a>
+</span><span id="__span-4-20"><a id="__codelineno-4-20" name="__codelineno-4-20" href="#__codelineno-4-20"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">initialize_mu</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">y</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-4-21"><a id="__codelineno-4-21" name="__codelineno-4-21" href="#__codelineno-4-21"></a><span class="w">        </span><span class="n">y</span><span class="p">.</span><span class="n">mapv</span><span class="p">(</span><span class="o">|</span><span class="n">yi</span><span class="o">|</span><span class="w"> </span><span class="n">yi</span><span class="p">.</span><span class="n">max</span><span class="p">(</span><span class="mf">1e-10</span><span class="p">))</span><span class="w">  </span><span class="c1">// Ensure positive</span>
+</span><span id="__span-4-22"><a id="__codelineno-4-22" name="__codelineno-4-22" href="#__codelineno-4-22"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-4-23"><a id="__codelineno-4-23" name="__codelineno-4-23" href="#__codelineno-4-23"></a>
+</span><span id="__span-4-24"><a id="__codelineno-4-24" name="__codelineno-4-24" href="#__codelineno-4-24"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">is_valid_mu</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">mu</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="kt">bool</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-4-25"><a id="__codelineno-4-25" name="__codelineno-4-25" href="#__codelineno-4-25"></a><span class="w">        </span><span class="n">mu</span><span class="p">.</span><span class="n">iter</span><span class="p">().</span><span class="n">all</span><span class="p">(</span><span class="o">|&amp;</span><span class="n">m</span><span class="o">|</span><span class="w"> </span><span class="n">m</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mf">0.0</span><span class="p">)</span>
+</span><span id="__span-4-26"><a id="__codelineno-4-26" name="__codelineno-4-26" href="#__codelineno-4-26"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-4-27"><a id="__codelineno-4-27" name="__codelineno-4-27" href="#__codelineno-4-27"></a><span class="p">}</span>
+</span></code></pre></div>
+<hr />
+<h2 id="part-6-the-tweedie-family">Part 6: The Tweedie Family<a class="headerlink" href="#part-6-the-tweedie-family" title="Permanent link">&para;</a></h2>
+<h3 id="61-the-power-variance-family">6.1 The Power Variance Family<a class="headerlink" href="#61-the-power-variance-family" title="Permanent link">&para;</a></h3>
+<p>Tweedie distributions have variance function:
+$$
+V(\mu) = \mu^p
+$$</p>
+<p>where <span class="arithmatex">\(p\)</span> is the <strong>variance power</strong>.</p>
+<table>
+<thead>
+<tr>
+<th>Power <span class="arithmatex">\(p\)</span></th>
+<th>Distribution</th>
+<th>Support</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span class="arithmatex">\(p = 0\)</span></td>
+<td>Gaussian</td>
+<td><span class="arithmatex">\((-\infty, \infty)\)</span></td>
+</tr>
+<tr>
+<td><span class="arithmatex">\(p = 1\)</span></td>
+<td>Poisson</td>
+<td><span class="arithmatex">\(\{0, 1, 2, \ldots\}\)</span></td>
+</tr>
+<tr>
+<td><span class="arithmatex">\(1 &lt; p &lt; 2\)</span></td>
+<td>Compound Poisson-Gamma</td>
+<td><span class="arithmatex">\(\{0\} \cup (0, \infty)\)</span></td>
+</tr>
+<tr>
+<td><span class="arithmatex">\(p = 2\)</span></td>
+<td>Gamma</td>
+<td><span class="arithmatex">\((0, \infty)\)</span></td>
+</tr>
+<tr>
+<td><span class="arithmatex">\(p = 3\)</span></td>
+<td>Inverse Gaussian</td>
+<td><span class="arithmatex">\((0, \infty)\)</span></td>
+</tr>
+</tbody>
+</table>
+<h3 id="62-the-sweet-spot-1-p-2">6.2 The Sweet Spot: <span class="arithmatex">\(1 &lt; p &lt; 2\)</span><a class="headerlink" href="#62-the-sweet-spot-1-p-2" title="Permanent link">&para;</a></h3>
+<p>For <span class="arithmatex">\(1 &lt; p &lt; 2\)</span>, Tweedie has a remarkable property: it supports <strong>exact zeros AND positive continuous values</strong>.</p>
+<p>This is modeled as a compound Poisson process:
+$$
+Y = \sum_{j=1}^{N} Z_j
+$$</p>
+<p>where:
+- <span class="arithmatex">\(N \sim \text{Poisson}(\lambda)\)</span> — number of events
+- <span class="arithmatex">\(Z_j \sim \text{Gamma}(\alpha, \beta)\)</span> — individual event sizes (i.i.d.)</p>
+<p><strong>When <span class="arithmatex">\(N = 0\)</span></strong>: <span class="arithmatex">\(Y = 0\)</span> (exact zero)
+<strong>When <span class="arithmatex">\(N &gt; 0\)</span></strong>: <span class="arithmatex">\(Y &gt; 0\)</span> (sum of positive Gammas)</p>
+<h3 id="63-connection-to-frequency-severity">6.3 Connection to Frequency-Severity<a class="headerlink" href="#63-connection-to-frequency-severity" title="Permanent link">&para;</a></h3>
+<p>In insurance, this naturally models <strong>pure premium</strong>:
+- <span class="arithmatex">\(N\)</span> = number of claims (Poisson)
+- <span class="arithmatex">\(Z_j\)</span> = individual claim amount (Gamma)
+- <span class="arithmatex">\(Y\)</span> = total claims = pure premium</p>
+<p>The parameters connect:
+- <span class="arithmatex">\(E(N) = \lambda\)</span>
+- <span class="arithmatex">\(E(Z) = \alpha/\beta\)</span>
+- <span class="arithmatex">\(E(Y) = \lambda \cdot \alpha/\beta = \mu\)</span></p>
+<h3 id="64-unit-deviance">6.4 Unit Deviance<a class="headerlink" href="#64-unit-deviance" title="Permanent link">&para;</a></h3>
+<p>For <span class="arithmatex">\(1 &lt; p &lt; 2\)</span>:</p>
+<div class="arithmatex">\[
+\boxed{d(y, \mu) = 2\left[\frac{y^{2-p}}{(1-p)(2-p)} - \frac{y\mu^{1-p}}{1-p} + \frac{\mu^{2-p}}{2-p}\right]}
+\]</div>
+<p>When <span class="arithmatex">\(y = 0\)</span>:
+$$
+d(0, \mu) = \frac{2\mu^{2-p}}{2-p}
+$$</p>
+<h3 id="65-choosing-the-variance-power-p">6.5 Choosing the Variance Power <span class="arithmatex">\(p\)</span><a class="headerlink" href="#65-choosing-the-variance-power-p" title="Permanent link">&para;</a></h3>
+<ul>
+<li><span class="arithmatex">\(p \to 1\)</span>: More Poisson-like (frequency dominates)</li>
+<li><span class="arithmatex">\(p = 1.5\)</span>: Balanced (common default)</li>
+<li><span class="arithmatex">\(p \to 2\)</span>: More Gamma-like (severity dominates)</li>
+</ul>
+<p><strong>Estimating <span class="arithmatex">\(p\)</span></strong>: Profile the likelihood over a grid of <span class="arithmatex">\(p\)</span> values.</p>
+<h3 id="66-implementation">6.6 Implementation<a class="headerlink" href="#66-implementation" title="Permanent link">&para;</a></h3>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">TweedieFamily</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="n">var_power</span><span class="p">:</span><span class="w"> </span><span class="kt">f64</span><span class="p">,</span><span class="w">  </span><span class="c1">// p in V(μ) = μ^p</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="p">}</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="k">impl</span><span class="w"> </span><span class="n">Family</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">TweedieFamily</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">variance</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">mu</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="w">        </span><span class="n">mu</span><span class="p">.</span><span class="n">mapv</span><span class="p">(</span><span class="o">|</span><span class="n">m</span><span class="o">|</span><span class="w"> </span><span class="n">m</span><span class="p">.</span><span class="n">powf</span><span class="p">(</span><span class="bp">self</span><span class="p">.</span><span class="n">var_power</span><span class="p">))</span>
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>
+</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">unit_deviance</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">y</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">,</span><span class="w"> </span><span class="n">mu</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">p</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">var_power</span><span class="p">;</span>
+</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a><span class="w">        </span><span class="n">Zip</span><span class="p">::</span><span class="n">from</span><span class="p">(</span><span class="n">y</span><span class="p">).</span><span class="n">and</span><span class="p">(</span><span class="n">mu</span><span class="p">).</span><span class="n">map_collect</span><span class="p">(</span><span class="o">|&amp;</span><span class="n">yi</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">mui</span><span class="o">|</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-5-13"><a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a><span class="w">            </span><span class="k">if</span><span class="w"> </span><span class="n">yi</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="mf">0.0</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-5-14"><a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a><span class="w">                </span><span class="mf">2.0</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">mui</span><span class="p">.</span><span class="n">powf</span><span class="p">(</span><span class="mf">2.0</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">p</span><span class="p">)</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="p">(</span><span class="mf">2.0</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">p</span><span class="p">)</span>
+</span><span id="__span-5-15"><a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a><span class="w">            </span><span class="p">}</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-5-16"><a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a><span class="w">                </span><span class="kd">let</span><span class="w"> </span><span class="n">t1</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">yi</span><span class="p">.</span><span class="n">powf</span><span class="p">(</span><span class="mf">2.0</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">p</span><span class="p">)</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="p">((</span><span class="mf">1.0</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">p</span><span class="p">)</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="p">(</span><span class="mf">2.0</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">p</span><span class="p">));</span>
+</span><span id="__span-5-17"><a id="__codelineno-5-17" name="__codelineno-5-17" href="#__codelineno-5-17"></a><span class="w">                </span><span class="kd">let</span><span class="w"> </span><span class="n">t2</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">yi</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">mui</span><span class="p">.</span><span class="n">powf</span><span class="p">(</span><span class="mf">1.0</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">p</span><span class="p">)</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="p">(</span><span class="mf">1.0</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">p</span><span class="p">);</span>
+</span><span id="__span-5-18"><a id="__codelineno-5-18" name="__codelineno-5-18" href="#__codelineno-5-18"></a><span class="w">                </span><span class="kd">let</span><span class="w"> </span><span class="n">t3</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mui</span><span class="p">.</span><span class="n">powf</span><span class="p">(</span><span class="mf">2.0</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">p</span><span class="p">)</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="p">(</span><span class="mf">2.0</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">p</span><span class="p">);</span>
+</span><span id="__span-5-19"><a id="__codelineno-5-19" name="__codelineno-5-19" href="#__codelineno-5-19"></a><span class="w">                </span><span class="mf">2.0</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="p">(</span><span class="n">t1</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">t2</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">t3</span><span class="p">)</span>
+</span><span id="__span-5-20"><a id="__codelineno-5-20" name="__codelineno-5-20" href="#__codelineno-5-20"></a><span class="w">            </span><span class="p">}</span>
+</span><span id="__span-5-21"><a id="__codelineno-5-21" name="__codelineno-5-21" href="#__codelineno-5-21"></a><span class="w">        </span><span class="p">})</span>
+</span><span id="__span-5-22"><a id="__codelineno-5-22" name="__codelineno-5-22" href="#__codelineno-5-22"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-5-23"><a id="__codelineno-5-23" name="__codelineno-5-23" href="#__codelineno-5-23"></a>
+</span><span id="__span-5-24"><a id="__codelineno-5-24" name="__codelineno-5-24" href="#__codelineno-5-24"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">default_link</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Box</span><span class="o">&lt;</span><span class="k">dyn</span><span class="w"> </span><span class="n">Link</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-5-25"><a id="__codelineno-5-25" name="__codelineno-5-25" href="#__codelineno-5-25"></a><span class="w">        </span><span class="nb">Box</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">LogLink</span><span class="p">)</span>
+</span><span id="__span-5-26"><a id="__codelineno-5-26" name="__codelineno-5-26" href="#__codelineno-5-26"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-5-27"><a id="__codelineno-5-27" name="__codelineno-5-27" href="#__codelineno-5-27"></a><span class="p">}</span>
+</span></code></pre></div>
+<hr />
+<h2 id="part-7-quasi-families">Part 7: Quasi-Families<a class="headerlink" href="#part-7-quasi-families" title="Permanent link">&para;</a></h2>
+<h3 id="71-the-quasi-likelihood-approach">7.1 The Quasi-Likelihood Approach<a class="headerlink" href="#71-the-quasi-likelihood-approach" title="Permanent link">&para;</a></h3>
+<p>Sometimes we don't have a full probability distribution—just:
+- A mean model: <span class="arithmatex">\(E(Y) = \mu\)</span>
+- A variance model: <span class="arithmatex">\(\text{Var}(Y) = \phi \cdot V(\mu)\)</span></p>
+<p><strong>Quasi-likelihood</strong> uses just these two relationships without specifying the full distribution.</p>
+<h3 id="72-quasipoisson">7.2 QuasiPoisson<a class="headerlink" href="#72-quasipoisson" title="Permanent link">&para;</a></h3>
+<p>Same variance function as Poisson, but <span class="arithmatex">\(\phi\)</span> is estimated:</p>
+<div class="arithmatex">\[
+V(\mu) = \mu, \quad \phi \text{ estimated from data}
+\]</div>
+<p><strong>Effect</strong>:
+- Point estimates: Identical to Poisson
+- Standard errors: Multiplied by <span class="arithmatex">\(\sqrt{\hat{\phi}}\)</span>
+- Confidence intervals: Wider if <span class="arithmatex">\(\hat{\phi} &gt; 1\)</span></p>
+<h3 id="73-quasibinomial">7.3 QuasiBinomial<a class="headerlink" href="#73-quasibinomial" title="Permanent link">&para;</a></h3>
+<p>Same idea for binomial:</p>
+<div class="arithmatex">\[
+V(\mu) = \mu(1-\mu), \quad \phi \text{ estimated}
+\]</div>
+<h3 id="74-dispersion-estimation">7.4 Dispersion Estimation<a class="headerlink" href="#74-dispersion-estimation" title="Permanent link">&para;</a></h3>
+<div class="arithmatex">\[
+\hat{\phi} = \frac{1}{n-p} \sum_{i=1}^n \frac{(y_i - \hat{\mu}_i)^2}{V(\hat{\mu}_i)}
+\]</div>
+<p>This is the Pearson chi-square divided by residual degrees of freedom.</p>
+<h3 id="75-when-to-use-quasi-families">7.5 When to Use Quasi-Families<a class="headerlink" href="#75-when-to-use-quasi-families" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Quick fix</strong> for overdispersion</li>
+<li>When you don't trust the full distributional assumption</li>
+<li>When AIC/BIC aren't the primary concern</li>
+</ul>
+<p><strong>Caution</strong>: Quasi-likelihood inference is valid for large samples. AIC/BIC interpretation is murky.</p>
+<hr />
+<h2 id="part-8-the-negative-binomial-family">Part 8: The Negative Binomial Family<a class="headerlink" href="#part-8-the-negative-binomial-family" title="Permanent link">&para;</a></h2>
+<h3 id="81-the-distribution">8.1 The Distribution<a class="headerlink" href="#81-the-distribution" title="Permanent link">&para;</a></h3>
+<p>The Negative Binomial with mean <span class="arithmatex">\(\mu\)</span> and shape <span class="arithmatex">\(\theta\)</span>:</p>
+<div class="arithmatex">\[
+P(Y = y) = \frac{\Gamma(y + \theta)}{\Gamma(\theta) \cdot y!} \left(\frac{\theta}{\theta + \mu}\right)^\theta \left(\frac{\mu}{\theta + \mu}\right)^y
+\]</div>
+<p><strong>Variance</strong>:
+$$
+\text{Var}(Y) = \mu + \frac{\mu^2}{\theta}
+$$</p>
+<h3 id="82-variance-function">8.2 Variance Function<a class="headerlink" href="#82-variance-function" title="Permanent link">&para;</a></h3>
+<div class="arithmatex">\[
+V(\mu) = \mu + \frac{\mu^2}{\theta}
+\]</div>
+<p>This is <strong>quadratic</strong> in <span class="arithmatex">\(\mu\)</span>, unlike QuasiPoisson's linear variance.</p>
+<h3 id="83-the-theta-parameter">8.3 The <span class="arithmatex">\(\theta\)</span> Parameter<a class="headerlink" href="#83-the-theta-parameter" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Large <span class="arithmatex">\(\theta\)</span> (<span class="arithmatex">\(\to \infty\)</span>): Approaches Poisson (<span class="arithmatex">\(V \to \mu\)</span>)</li>
+<li>Small <span class="arithmatex">\(\theta\)</span> (near 0): Strong overdispersion (<span class="arithmatex">\(V \to \mu^2/\theta\)</span>)</li>
+</ul>
+<h3 id="84-comparison-quasipoisson-vs-negative-binomial">8.4 Comparison: QuasiPoisson vs. Negative Binomial<a class="headerlink" href="#84-comparison-quasipoisson-vs-negative-binomial" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Aspect</th>
+<th>QuasiPoisson</th>
+<th>Negative Binomial</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Variance</td>
+<td><span class="arithmatex">\(\phi \cdot \mu\)</span> (linear)</td>
+<td><span class="arithmatex">\(\mu + \mu^2/\theta\)</span> (quadratic)</td>
+</tr>
+<tr>
+<td>True distribution</td>
+<td>No</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>AIC/BIC valid</td>
+<td>No</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Estimation</td>
+<td><span class="arithmatex">\(\phi\)</span> from residuals</td>
+<td><span class="arithmatex">\(\theta\)</span> from likelihood</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Rule of thumb</strong>: Use NegBin when overdispersion increases with the mean.</p>
+<h3 id="85-estimating-theta">8.5 Estimating <span class="arithmatex">\(\theta\)</span><a class="headerlink" href="#85-estimating-theta" title="Permanent link">&para;</a></h3>
+<p>RustyStats estimates <span class="arithmatex">\(\theta\)</span> by profiling:
+1. For fixed <span class="arithmatex">\(\theta\)</span>, fit GLM to get <span class="arithmatex">\(\hat{\boldsymbol{\beta}}(\theta)\)</span>
+2. Compute profile log-likelihood <span class="arithmatex">\(\ell_p(\theta)\)</span>
+3. Maximize over <span class="arithmatex">\(\theta\)</span></p>
+<p>Or use an iterative algorithm alternating between <span class="arithmatex">\(\boldsymbol{\beta}\)</span> and <span class="arithmatex">\(\theta\)</span>.</p>
+<hr />
+<h2 id="part-9-summary-and-selection-guide">Part 9: Summary and Selection Guide<a class="headerlink" href="#part-9-summary-and-selection-guide" title="Permanent link">&para;</a></h2>
+<h3 id="91-decision-tree">9.1 Decision Tree<a class="headerlink" href="#91-decision-tree" title="Permanent link">&para;</a></h3>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>Response type?
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>│
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>├── Continuous
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>│   ├── Can be negative → Gaussian
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>│   └── Always positive
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>│       ├── Has exact zeros → Tweedie (p ∈ (1,2))
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>│       └── No zeros → Gamma
+</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>│
+</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>└── Discrete
+</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a>    ├── Binary (0/1) → Binomial
+</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a>    │   └── Overdispersed? → QuasiBinomial
+</span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a>    │
+</span><span id="__span-6-13"><a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a>    └── Counts (0, 1, 2, ...)
+</span><span id="__span-6-14"><a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a>        ├── Var ≈ Mean → Poisson
+</span><span id="__span-6-15"><a id="__codelineno-6-15" name="__codelineno-6-15" href="#__codelineno-6-15"></a>        └── Var &gt; Mean (overdispersion)
+</span><span id="__span-6-16"><a id="__codelineno-6-16" name="__codelineno-6-16" href="#__codelineno-6-16"></a>            ├── Quick fix → QuasiPoisson
+</span><span id="__span-6-17"><a id="__codelineno-6-17" name="__codelineno-6-17" href="#__codelineno-6-17"></a>            └── Better model → Negative Binomial
+</span></code></pre></div>
+<h3 id="92-key-formulas-summary">9.2 Key Formulas Summary<a class="headerlink" href="#92-key-formulas-summary" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Family</th>
+<th><span class="arithmatex">\(V(\mu)\)</span></th>
+<th><span class="arithmatex">\(\phi\)</span></th>
+<th>Canonical Link</th>
+<th>Support</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Gaussian</td>
+<td><span class="arithmatex">\(1\)</span></td>
+<td>estimated</td>
+<td>Identity</td>
+<td><span class="arithmatex">\(\mathbb{R}\)</span></td>
+</tr>
+<tr>
+<td>Poisson</td>
+<td><span class="arithmatex">\(\mu\)</span></td>
+<td><span class="arithmatex">\(1\)</span></td>
+<td>Log</td>
+<td><span class="arithmatex">\(\mathbb{N}_0\)</span></td>
+</tr>
+<tr>
+<td>Binomial</td>
+<td><span class="arithmatex">\(\mu(1-\mu)\)</span></td>
+<td><span class="arithmatex">\(1\)</span></td>
+<td>Logit</td>
+<td><span class="arithmatex">\(\{0,1\}\)</span></td>
+</tr>
+<tr>
+<td>Gamma</td>
+<td><span class="arithmatex">\(\mu^2\)</span></td>
+<td>estimated</td>
+<td>Inverse (Log used)</td>
+<td><span class="arithmatex">\(\mathbb{R}^+\)</span></td>
+</tr>
+<tr>
+<td>Tweedie</td>
+<td><span class="arithmatex">\(\mu^p\)</span></td>
+<td>estimated</td>
+<td>Log</td>
+<td><span class="arithmatex">\(\{0\} \cup \mathbb{R}^+\)</span></td>
+</tr>
+<tr>
+<td>NegBin</td>
+<td><span class="arithmatex">\(\mu + \mu^2/\theta\)</span></td>
+<td><span class="arithmatex">\(1\)</span></td>
+<td>Log</td>
+<td><span class="arithmatex">\(\mathbb{N}_0\)</span></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="exercises">Exercises<a class="headerlink" href="#exercises" title="Permanent link">&para;</a></h2>
+<div class="admonition question">
+<p class="admonition-title">Exercise 1: Exponential Family</p>
+<p>Show that the Exponential distribution (<span class="arithmatex">\(f(y) = \lambda e^{-\lambda y}\)</span>) is a special case of the Gamma family with <span class="arithmatex">\(\nu = 1\)</span>.</p>
+</div>
+<div class="admonition question">
+<p class="admonition-title">Exercise 2: Deviance Calculation</p>
+<p>For data <span class="arithmatex">\(y = (3, 0, 2, 5)\)</span> with fitted means <span class="arithmatex">\(\mu = (2.5, 0.5, 2.5, 4.5)\)</span>:</p>
+<p>a) Calculate the unit deviances for Poisson</p>
+<p>b) Calculate the total deviance</p>
+<p>c) What does a high deviance indicate?</p>
+</div>
+<div class="admonition question">
+<p class="admonition-title">Exercise 3: Overdispersion</p>
+<p>You fit a Poisson model and get Pearson <span class="arithmatex">\(\chi^2 = 180\)</span> with 90 degrees of freedom.</p>
+<p>a) Calculate the dispersion ratio</p>
+<p>b) Is this evidence of overdispersion?</p>
+<p>c) How would QuasiPoisson adjust the standard errors?</p>
+</div>
+<div class="admonition question">
+<p class="admonition-title">Exercise 4: Tweedie</p>
+<p>A Tweedie model with <span class="arithmatex">\(p = 1.6\)</span> and <span class="arithmatex">\(\mu = 100\)</span> has <span class="arithmatex">\(\phi = 2\)</span>.</p>
+<p>a) Calculate <span class="arithmatex">\(V(\mu)\)</span></p>
+<p>b) Calculate <span class="arithmatex">\(\text{Var}(Y)\)</span></p>
+<p>c) What's the CV?</p>
+</div>
+<hr />
+<h2 id="further-reading">Further Reading<a class="headerlink" href="#further-reading" title="Permanent link">&para;</a></h2>
+<ul>
+<li>McCullagh, P. and Nelder, J.A. (1989). <em>Generalized Linear Models</em>, 2nd ed. Chapter 2.</li>
+<li>Jørgensen, B. (1997). <em>The Theory of Dispersion Models</em>. — Comprehensive treatment of Tweedie</li>
+<li>Hilbe, J.M. (2014). <em>Modeling Count Data</em>. — Poisson, NegBin, and overdispersion</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.expand", "navigation.top", "search.suggest", "search.highlight", "content.code.copy", "content.code.annotate"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+        <script src="../../javascripts/mathjax.js"></script>
+      
+        <script src="https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js"></script>
+      
+    
+  </body>
+</html>

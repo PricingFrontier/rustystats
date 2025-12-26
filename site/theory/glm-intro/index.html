@@ -1,0 +1,3801 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="High-performance Generalized Linear Models with Rust backend and Python API">
+      
+      
+        <meta name="author" content="RustyStats Team">
+      
+      
+      
+        <link rel="prev" href="../../getting-started/quickstart/">
+      
+      
+        <link rel="next" href="../families/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.1">
+    
+    
+      
+        <title>Introduction to GLMs - RustyStats Documentation</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="amber">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#introduction-to-generalized-linear-models" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="RustyStats Documentation" class="md-header__button md-logo" aria-label="RustyStats Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            RustyStats Documentation
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Introduction to GLMs
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="amber"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="amber"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/your-org/rustystats" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../guides/glm-workflow/" class="md-tabs__link">
+          
+  
+  
+  Guides
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../getting-started/installation/" class="md-tabs__link">
+          
+  
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="./" class="md-tabs__link">
+          
+  
+  
+  GLM Theory
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../architecture/overview/" class="md-tabs__link">
+          
+  
+  
+  Architecture
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../components/solvers/" class="md-tabs__link">
+          
+  
+  
+  Components
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../api/array-api/" class="md-tabs__link">
+          
+  
+  
+  Python API
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../rust-guide/fundamentals/" class="md-tabs__link">
+          
+  
+  
+  Rust Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../maintenance/rust-best-practices/" class="md-tabs__link">
+          
+  
+  
+  Maintenance Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../reference/glossary/" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="RustyStats Documentation" class="md-nav__button md-logo" aria-label="RustyStats Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    RustyStats Documentation
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/your-org/rustystats" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/glm-workflow/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GLM Workflow
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GLM Theory
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    GLM Theory
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Introduction to GLMs
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Introduction to GLMs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#part-1-from-linear-regression-to-glms" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 1: From Linear Regression to GLMs
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 1: From Linear Regression to GLMs">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#11-ordinary-linear-regression-a-review" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.1 Ordinary Linear Regression: A Review
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1.1 Ordinary Linear Regression: A Review">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The Model
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-assumptions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The Assumptions
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#estimation-least-squares" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Estimation: Least Squares
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#a-worked-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A Worked Example
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#12-the-limitations-of-linear-regression" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.2 The Limitations of Linear Regression
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1.2 The Limitations of Linear Regression">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#problem-1-count-data" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Problem 1: Count Data
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#problem-2-binary-data" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Problem 2: Binary Data
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#problem-3-positive-continuous-data" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Problem 3: Positive Continuous Data
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#13-the-glm-solution-three-components" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.3 The GLM Solution: Three Components
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1.3 The GLM Solution: Three Components">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#component-1-random-component-distribution-family" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Component 1: Random Component (Distribution Family)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#component-2-systematic-component-linear-predictor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Component 2: Systematic Component (Linear Predictor)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#component-3-link-function" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Component 3: Link Function
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#14-putting-it-together-the-full-glm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.4 Putting It Together: The Full GLM
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-2-the-exponential-family-foundation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 2: The Exponential Family Foundation
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 2: The Exponential Family Foundation">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21-what-is-the-exponential-family" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.1 What is the Exponential Family?
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#22-key-properties-of-the-exponential-family" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.2 Key Properties of the Exponential Family
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2.2 Key Properties of the Exponential Family">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#proof-of-properties-1-and-2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Proof of Properties 1 and 2
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#23-examples-deriving-variance-functions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.3 Examples: Deriving Variance Functions
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2.3 Examples: Deriving Variance Functions">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#poisson-distribution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Poisson Distribution
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#bernoulli-binomial-with-n1-distribution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bernoulli (Binomial with n=1) Distribution
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#normal-gaussian-distribution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Normal (Gaussian) Distribution
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-3-maximum-likelihood-estimation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 3: Maximum Likelihood Estimation
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 3: Maximum Likelihood Estimation">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-the-likelihood-principle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 The Likelihood Principle
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32-the-log-likelihood" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 The Log-Likelihood
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33-the-score-function" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.3 The Score Function
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#34-why-we-need-iteration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.4 Why We Need Iteration
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-4-deviance-and-model-assessment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 4: Deviance and Model Assessment
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 4: Deviance and Model Assessment">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-the-concept-of-deviance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 The Concept of Deviance
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-unit-deviance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 Unit Deviance
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#43-using-deviance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.3 Using Deviance
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-5-summary-and-next-steps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 5: Summary and Next Steps
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#exercises" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exercises
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#solutions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Solutions
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#further-reading" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Further Reading
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../families/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Distribution Families
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../links/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Link Functions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../irls/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The IRLS Algorithm
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../coordinate-descent/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Coordinate Descent
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../diagnostics/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Model Diagnostics
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../regularization/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Regularization
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/rust-core/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rust Core Library
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/python-bindings/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Python Bindings
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/data-flow/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Data Flow
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Components
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Components
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../components/solvers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Solvers
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../components/families/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Families
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../components/links/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Link Functions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../components/design-matrix/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design Matrix
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../components/splines/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Splines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../components/target-encoding/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Target Encoding
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../components/diagnostics/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Diagnostics
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Python API
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Python API
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/array-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Array API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/formula-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Formula API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/results/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Results Object
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/regularization/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Regularization
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/diagnostics/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Diagnostics
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rust Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Rust Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../rust-guide/fundamentals/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rust Fundamentals
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Maintenance Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Maintenance Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../maintenance/rust-best-practices/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rust Best Practices
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../maintenance/adding-family/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Adding a New Family
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../maintenance/adding-link/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Adding a New Link
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../maintenance/testing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Testing Strategy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../maintenance/performance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Performance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/glossary/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Glossary
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/notation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mathematical Notation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#part-1-from-linear-regression-to-glms" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 1: From Linear Regression to GLMs
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 1: From Linear Regression to GLMs">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#11-ordinary-linear-regression-a-review" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.1 Ordinary Linear Regression: A Review
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1.1 Ordinary Linear Regression: A Review">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The Model
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-assumptions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The Assumptions
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#estimation-least-squares" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Estimation: Least Squares
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#a-worked-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A Worked Example
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#12-the-limitations-of-linear-regression" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.2 The Limitations of Linear Regression
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1.2 The Limitations of Linear Regression">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#problem-1-count-data" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Problem 1: Count Data
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#problem-2-binary-data" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Problem 2: Binary Data
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#problem-3-positive-continuous-data" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Problem 3: Positive Continuous Data
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#13-the-glm-solution-three-components" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.3 The GLM Solution: Three Components
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1.3 The GLM Solution: Three Components">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#component-1-random-component-distribution-family" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Component 1: Random Component (Distribution Family)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#component-2-systematic-component-linear-predictor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Component 2: Systematic Component (Linear Predictor)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#component-3-link-function" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Component 3: Link Function
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#14-putting-it-together-the-full-glm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.4 Putting It Together: The Full GLM
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-2-the-exponential-family-foundation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 2: The Exponential Family Foundation
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 2: The Exponential Family Foundation">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21-what-is-the-exponential-family" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.1 What is the Exponential Family?
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#22-key-properties-of-the-exponential-family" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.2 Key Properties of the Exponential Family
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2.2 Key Properties of the Exponential Family">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#proof-of-properties-1-and-2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Proof of Properties 1 and 2
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#23-examples-deriving-variance-functions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.3 Examples: Deriving Variance Functions
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2.3 Examples: Deriving Variance Functions">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#poisson-distribution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Poisson Distribution
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#bernoulli-binomial-with-n1-distribution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bernoulli (Binomial with n=1) Distribution
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#normal-gaussian-distribution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Normal (Gaussian) Distribution
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-3-maximum-likelihood-estimation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 3: Maximum Likelihood Estimation
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 3: Maximum Likelihood Estimation">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-the-likelihood-principle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 The Likelihood Principle
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32-the-log-likelihood" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 The Log-Likelihood
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33-the-score-function" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.3 The Score Function
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#34-why-we-need-iteration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.4 Why We Need Iteration
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-4-deviance-and-model-assessment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 4: Deviance and Model Assessment
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 4: Deviance and Model Assessment">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-the-concept-of-deviance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 The Concept of Deviance
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-unit-deviance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 Unit Deviance
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#43-using-deviance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.3 Using Deviance
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-5-summary-and-next-steps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 5: Summary and Next Steps
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#exercises" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exercises
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#solutions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Solutions
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#further-reading" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Further Reading
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="introduction-to-generalized-linear-models">Introduction to Generalized Linear Models<a class="headerlink" href="#introduction-to-generalized-linear-models" title="Permanent link">&para;</a></h1>
+<p>This chapter provides a comprehensive mathematical foundation for understanding Generalized Linear Models (GLMs). We build from first principles, starting with ordinary linear regression and systematically extending it to the full GLM framework. By the end of this chapter, you will understand not just <em>what</em> GLMs are, but <em>why</em> they work the way they do.</p>
+<p><strong>Prerequisites</strong>: Basic calculus (derivatives, chain rule), linear algebra (matrix multiplication, inverses), and probability (expected value, variance). No prior statistics knowledge is assumed.</p>
+<hr />
+<h2 id="part-1-from-linear-regression-to-glms">Part 1: From Linear Regression to GLMs<a class="headerlink" href="#part-1-from-linear-regression-to-glms" title="Permanent link">&para;</a></h2>
+<h3 id="11-ordinary-linear-regression-a-review">1.1 Ordinary Linear Regression: A Review<a class="headerlink" href="#11-ordinary-linear-regression-a-review" title="Permanent link">&para;</a></h3>
+<p>Before diving into GLMs, let's establish a solid foundation with ordinary linear regression (OLS). Even if you've seen this before, this section introduces the notation and concepts we'll generalize later.</p>
+<h4 id="the-model">The Model<a class="headerlink" href="#the-model" title="Permanent link">&para;</a></h4>
+<p>In linear regression, we model a continuous response variable <span class="arithmatex">\(Y\)</span> as a linear function of predictors plus random noise:</p>
+<div class="arithmatex">\[
+Y_i = \beta_0 + \beta_1 x_{i1} + \beta_2 x_{i2} + \cdots + \beta_{p-1} x_{i,p-1} + \varepsilon_i
+\]</div>
+<p>where:</p>
+<ul>
+<li><span class="arithmatex">\(Y_i\)</span> is the response for observation <span class="arithmatex">\(i\)</span> (what we're trying to predict)</li>
+<li><span class="arithmatex">\(x_{i1}, x_{i2}, \ldots\)</span> are the predictor values for observation <span class="arithmatex">\(i\)</span></li>
+<li><span class="arithmatex">\(\beta_0, \beta_1, \ldots\)</span> are the coefficients (what we estimate)</li>
+<li><span class="arithmatex">\(\varepsilon_i\)</span> is the random error term</li>
+</ul>
+<p>We can write this more compactly using matrix notation. Define:</p>
+<div class="arithmatex">\[
+\mathbf{y} = \begin{pmatrix} y_1 \\ y_2 \\ \vdots \\ y_n \end{pmatrix}, \quad
+\mathbf{X} = \begin{pmatrix} 
+1 &amp; x_{11} &amp; x_{12} &amp; \cdots &amp; x_{1,p-1} \\
+1 &amp; x_{21} &amp; x_{22} &amp; \cdots &amp; x_{2,p-1} \\
+\vdots &amp; \vdots &amp; \vdots &amp; \ddots &amp; \vdots \\
+1 &amp; x_{n1} &amp; x_{n2} &amp; \cdots &amp; x_{n,p-1}
+\end{pmatrix}, \quad
+\boldsymbol{\beta} = \begin{pmatrix} \beta_0 \\ \beta_1 \\ \vdots \\ \beta_{p-1} \end{pmatrix}
+\]</div>
+<p>The column of 1s in <span class="arithmatex">\(\mathbf{X}\)</span> corresponds to the intercept <span class="arithmatex">\(\beta_0\)</span>. Now we can write:</p>
+<div class="arithmatex">\[
+\mathbf{y} = \mathbf{X}\boldsymbol{\beta} + \boldsymbol{\varepsilon}
+\]</div>
+<div class="admonition info">
+<p class="admonition-title">Matrix Multiplication Refresher</p>
+<p>The product <span class="arithmatex">\(\mathbf{X}\boldsymbol{\beta}\)</span> gives an <span class="arithmatex">\(n \times 1\)</span> vector where each element is:</p>
+<div class="arithmatex">\[(\mathbf{X}\boldsymbol{\beta})_i = \sum_{j=0}^{p-1} X_{ij} \beta_j = \beta_0 + \beta_1 x_{i1} + \cdots\]</div>
+<p>This is exactly the linear combination we want.</p>
+</div>
+<h4 id="the-assumptions">The Assumptions<a class="headerlink" href="#the-assumptions" title="Permanent link">&para;</a></h4>
+<p>Linear regression makes several key assumptions:</p>
+<ol>
+<li><strong>Linearity</strong>: <span class="arithmatex">\(E(Y_i | \mathbf{x}_i) = \mathbf{x}_i^T \boldsymbol{\beta}\)</span> (the mean is a linear function of predictors)</li>
+<li><strong>Normality</strong>: <span class="arithmatex">\(\varepsilon_i \sim N(0, \sigma^2)\)</span> (errors are normally distributed)</li>
+<li><strong>Homoscedasticity</strong>: <span class="arithmatex">\(\text{Var}(\varepsilon_i) = \sigma^2\)</span> (constant variance)</li>
+<li><strong>Independence</strong>: The <span class="arithmatex">\(\varepsilon_i\)</span> are independent of each other</li>
+</ol>
+<p>Under these assumptions, we can write:</p>
+<div class="arithmatex">\[
+Y_i \sim N(\mu_i, \sigma^2) \quad \text{where} \quad \mu_i = \mathbf{x}_i^T \boldsymbol{\beta}
+\]</div>
+<p>This says: "The response <span class="arithmatex">\(Y_i\)</span> follows a normal distribution with mean <span class="arithmatex">\(\mu_i\)</span> (which depends on the predictors) and constant variance <span class="arithmatex">\(\sigma^2\)</span>."</p>
+<h4 id="estimation-least-squares">Estimation: Least Squares<a class="headerlink" href="#estimation-least-squares" title="Permanent link">&para;</a></h4>
+<p>The ordinary least squares (OLS) estimator minimizes the sum of squared residuals:</p>
+<div class="arithmatex">\[
+\hat{\boldsymbol{\beta}}_{\text{OLS}} = \arg\min_{\boldsymbol{\beta}} \sum_{i=1}^n (y_i - \mathbf{x}_i^T \boldsymbol{\beta})^2 = \arg\min_{\boldsymbol{\beta}} \|\mathbf{y} - \mathbf{X}\boldsymbol{\beta}\|^2
+\]</div>
+<p>Let's derive the solution step by step. Define the sum of squares:</p>
+<div class="arithmatex">\[
+S(\boldsymbol{\beta}) = (\mathbf{y} - \mathbf{X}\boldsymbol{\beta})^T(\mathbf{y} - \mathbf{X}\boldsymbol{\beta})
+\]</div>
+<p>Expanding this (using <span class="arithmatex">\((A-B)^T(A-B) = A^TA - 2A^TB + B^TB\)</span>):</p>
+<div class="arithmatex">\[
+S(\boldsymbol{\beta}) = \mathbf{y}^T\mathbf{y} - 2\boldsymbol{\beta}^T\mathbf{X}^T\mathbf{y} + \boldsymbol{\beta}^T\mathbf{X}^T\mathbf{X}\boldsymbol{\beta}
+\]</div>
+<p>Taking the derivative with respect to <span class="arithmatex">\(\boldsymbol{\beta}\)</span>:</p>
+<div class="arithmatex">\[
+\frac{\partial S}{\partial \boldsymbol{\beta}} = -2\mathbf{X}^T\mathbf{y} + 2\mathbf{X}^T\mathbf{X}\boldsymbol{\beta}
+\]</div>
+<div class="admonition note">
+<p class="admonition-title">Matrix Calculus Rule</p>
+<p>For a vector <span class="arithmatex">\(\mathbf{x}\)</span> and matrix <span class="arithmatex">\(\mathbf{A}\)</span>:</p>
+<ul>
+<li><span class="arithmatex">\(\frac{\partial}{\partial \mathbf{x}} (\mathbf{a}^T\mathbf{x}) = \mathbf{a}\)</span></li>
+<li><span class="arithmatex">\(\frac{\partial}{\partial \mathbf{x}} (\mathbf{x}^T\mathbf{A}\mathbf{x}) = 2\mathbf{A}\mathbf{x}\)</span> (if <span class="arithmatex">\(\mathbf{A}\)</span> is symmetric)</li>
+</ul>
+</div>
+<p>Setting the derivative to zero and solving:</p>
+<div class="arithmatex">\[
+-2\mathbf{X}^T\mathbf{y} + 2\mathbf{X}^T\mathbf{X}\boldsymbol{\beta} = \mathbf{0}
+\]</div>
+<div class="arithmatex">\[
+\mathbf{X}^T\mathbf{X}\boldsymbol{\beta} = \mathbf{X}^T\mathbf{y}
+\]</div>
+<div class="arithmatex">\[
+\hat{\boldsymbol{\beta}} = (\mathbf{X}^T\mathbf{X})^{-1}\mathbf{X}^T\mathbf{y}
+\]</div>
+<p>This is the famous <strong>normal equations</strong> solution.</p>
+<div class="admonition info">
+<p class="admonition-title">Why 'Normal Equations'?</p>
+<p>The name comes from the fact that the residual vector <span class="arithmatex">\(\mathbf{y} - \mathbf{X}\hat{\boldsymbol{\beta}}\)</span> is <em>orthogonal</em> (perpendicular, or "normal" in geometric terms) to the column space of <span class="arithmatex">\(\mathbf{X}\)</span>. Geometrically, we're projecting <span class="arithmatex">\(\mathbf{y}\)</span> onto the space spanned by the columns of <span class="arithmatex">\(\mathbf{X}\)</span>.</p>
+</div>
+<h4 id="a-worked-example">A Worked Example<a class="headerlink" href="#a-worked-example" title="Permanent link">&para;</a></h4>
+<p>Let's do a tiny example by hand. Suppose we have 3 observations:</p>
+<table>
+<thead>
+<tr>
+<th><span class="arithmatex">\(i\)</span></th>
+<th><span class="arithmatex">\(y_i\)</span></th>
+<th><span class="arithmatex">\(x_{i1}\)</span></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>2</td>
+<td>1</td>
+</tr>
+<tr>
+<td>2</td>
+<td>4</td>
+<td>2</td>
+</tr>
+<tr>
+<td>3</td>
+<td>5</td>
+<td>3</td>
+</tr>
+</tbody>
+</table>
+<p>Our model is <span class="arithmatex">\(Y = \beta_0 + \beta_1 x_1 + \varepsilon\)</span>.</p>
+<p>The matrices are:</p>
+<div class="arithmatex">\[
+\mathbf{y} = \begin{pmatrix} 2 \\ 4 \\ 5 \end{pmatrix}, \quad
+\mathbf{X} = \begin{pmatrix} 1 &amp; 1 \\ 1 &amp; 2 \\ 1 &amp; 3 \end{pmatrix}, \quad
+\boldsymbol{\beta} = \begin{pmatrix} \beta_0 \\ \beta_1 \end{pmatrix}
+\]</div>
+<p>Computing <span class="arithmatex">\(\mathbf{X}^T\mathbf{X}\)</span>:</p>
+<div class="arithmatex">\[
+\mathbf{X}^T\mathbf{X} = \begin{pmatrix} 1 &amp; 1 &amp; 1 \\ 1 &amp; 2 &amp; 3 \end{pmatrix} \begin{pmatrix} 1 &amp; 1 \\ 1 &amp; 2 \\ 1 &amp; 3 \end{pmatrix} = \begin{pmatrix} 3 &amp; 6 \\ 6 &amp; 14 \end{pmatrix}
+\]</div>
+<p>Computing <span class="arithmatex">\(\mathbf{X}^T\mathbf{y}\)</span>:</p>
+<div class="arithmatex">\[
+\mathbf{X}^T\mathbf{y} = \begin{pmatrix} 1 &amp; 1 &amp; 1 \\ 1 &amp; 2 &amp; 3 \end{pmatrix} \begin{pmatrix} 2 \\ 4 \\ 5 \end{pmatrix} = \begin{pmatrix} 11 \\ 25 \end{pmatrix}
+\]</div>
+<p>Computing <span class="arithmatex">\((\mathbf{X}^T\mathbf{X})^{-1}\)</span>:</p>
+<p>For a 2×2 matrix <span class="arithmatex">\(\begin{pmatrix} a &amp; b \\ c &amp; d \end{pmatrix}\)</span>, the inverse is <span class="arithmatex">\(\frac{1}{ad-bc}\begin{pmatrix} d &amp; -b \\ -c &amp; a \end{pmatrix}\)</span>.</p>
+<div class="arithmatex">\[
+(\mathbf{X}^T\mathbf{X})^{-1} = \frac{1}{3 \cdot 14 - 6 \cdot 6}\begin{pmatrix} 14 &amp; -6 \\ -6 &amp; 3 \end{pmatrix} = \frac{1}{6}\begin{pmatrix} 14 &amp; -6 \\ -6 &amp; 3 \end{pmatrix}
+\]</div>
+<p>Finally:</p>
+<div class="arithmatex">\[
+\hat{\boldsymbol{\beta}} = \frac{1}{6}\begin{pmatrix} 14 &amp; -6 \\ -6 &amp; 3 \end{pmatrix} \begin{pmatrix} 11 \\ 25 \end{pmatrix} = \frac{1}{6}\begin{pmatrix} 154 - 150 \\ -66 + 75 \end{pmatrix} = \frac{1}{6}\begin{pmatrix} 4 \\ 9 \end{pmatrix} = \begin{pmatrix} 2/3 \\ 3/2 \end{pmatrix}
+\]</div>
+<p>So <span class="arithmatex">\(\hat{\beta}_0 = 0.667\)</span> and <span class="arithmatex">\(\hat{\beta}_1 = 1.5\)</span>. The fitted line is <span class="arithmatex">\(\hat{y} = 0.667 + 1.5x\)</span>.</p>
+<hr />
+<h3 id="12-the-limitations-of-linear-regression">1.2 The Limitations of Linear Regression<a class="headerlink" href="#12-the-limitations-of-linear-regression" title="Permanent link">&para;</a></h3>
+<p>Linear regression works beautifully for continuous data that can reasonably be assumed normal. But many real-world problems involve data that violate these assumptions:</p>
+<h4 id="problem-1-count-data">Problem 1: Count Data<a class="headerlink" href="#problem-1-count-data" title="Permanent link">&para;</a></h4>
+<p><strong>Example</strong>: Number of insurance claims per policy, number of website visits, number of defects in manufacturing.</p>
+<p>Counts are:</p>
+<ul>
+<li>Non-negative integers (0, 1, 2, 3, ...)</li>
+<li>Often right-skewed (many zeros, few large values)</li>
+<li>Variance typically increases with the mean</li>
+</ul>
+<p>Linear regression can predict negative counts (nonsense!) and assumes constant variance (wrong!).</p>
+<p><strong>Concrete example</strong>: If we model claim counts with linear regression and get <span class="arithmatex">\(\hat{y} = -0.5\)</span>, what does that mean? Negative half a claim? This is meaningless.</p>
+<h4 id="problem-2-binary-data">Problem 2: Binary Data<a class="headerlink" href="#problem-2-binary-data" title="Permanent link">&para;</a></h4>
+<p><strong>Example</strong>: Did a customer churn? (yes/no), Did a patient survive? (yes/no), Is this email spam? (yes/no)</p>
+<p>Binary outcomes are:</p>
+<ul>
+<li>Either 0 or 1</li>
+<li>What we really want to model is <span class="arithmatex">\(P(Y=1)\)</span>, a probability between 0 and 1</li>
+</ul>
+<p>Linear regression can predict probabilities outside [0, 1] (impossible!) and the normality assumption makes no sense for binary data.</p>
+<p><strong>Concrete example</strong>: If we model churn with linear regression and get <span class="arithmatex">\(\hat{y} = 1.3\)</span> for a customer, what's their churn probability? 130%? Impossible.</p>
+<h4 id="problem-3-positive-continuous-data">Problem 3: Positive Continuous Data<a class="headerlink" href="#problem-3-positive-continuous-data" title="Permanent link">&para;</a></h4>
+<p><strong>Example</strong>: Insurance claim amounts, time until failure, income.</p>
+<p>Positive continuous data is:</p>
+<ul>
+<li>Strictly positive</li>
+<li>Often right-skewed</li>
+<li>Variance often proportional to mean (or mean squared)</li>
+</ul>
+<p>Linear regression can predict negative values and assumes the wrong variance structure.</p>
+<p><strong>Concrete example</strong>: Claim amounts can't be negative, but a linear model might predict <span class="arithmatex">\(\hat{y} = -\$500\)</span>. Also, larger claims are more variable than smaller ones—the variance isn't constant.</p>
+<hr />
+<h3 id="13-the-glm-solution-three-components">1.3 The GLM Solution: Three Components<a class="headerlink" href="#13-the-glm-solution-three-components" title="Permanent link">&para;</a></h3>
+<p>GLMs solve these problems elegantly by generalizing linear regression in three ways. A GLM has three components:</p>
+<h4 id="component-1-random-component-distribution-family">Component 1: Random Component (Distribution Family)<a class="headerlink" href="#component-1-random-component-distribution-family" title="Permanent link">&para;</a></h4>
+<p>Instead of assuming <span class="arithmatex">\(Y \sim N(\mu, \sigma^2)\)</span>, we allow <span class="arithmatex">\(Y\)</span> to follow any distribution from the <strong>exponential family</strong>, which includes:</p>
+<table>
+<thead>
+<tr>
+<th>Distribution</th>
+<th>Typical Use Case</th>
+<th>Support</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Normal (Gaussian)</td>
+<td>Continuous data</td>
+<td><span class="arithmatex">\((-\infty, +\infty)\)</span></td>
+</tr>
+<tr>
+<td>Poisson</td>
+<td>Count data</td>
+<td><span class="arithmatex">\(\{0, 1, 2, \ldots\}\)</span></td>
+</tr>
+<tr>
+<td>Binomial</td>
+<td>Binary/proportion data</td>
+<td><span class="arithmatex">\(\{0, 1\}\)</span> or <span class="arithmatex">\([0, 1]\)</span></td>
+</tr>
+<tr>
+<td>Gamma</td>
+<td>Positive continuous data</td>
+<td><span class="arithmatex">\((0, +\infty)\)</span></td>
+</tr>
+<tr>
+<td>Inverse Gaussian</td>
+<td>Positive continuous data</td>
+<td><span class="arithmatex">\((0, +\infty)\)</span></td>
+</tr>
+<tr>
+<td>Negative Binomial</td>
+<td>Overdispersed counts</td>
+<td><span class="arithmatex">\(\{0, 1, 2, \ldots\}\)</span></td>
+</tr>
+</tbody>
+</table>
+<p>Each distribution has a <strong>variance function</strong> <span class="arithmatex">\(V(\mu)\)</span> that describes how variance relates to the mean:</p>
+<table>
+<thead>
+<tr>
+<th>Distribution</th>
+<th>Variance Function <span class="arithmatex">\(V(\mu)\)</span></th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Normal</td>
+<td><span class="arithmatex">\(1\)</span> (constant)</td>
+<td>Variance doesn't depend on mean</td>
+</tr>
+<tr>
+<td>Poisson</td>
+<td><span class="arithmatex">\(\mu\)</span></td>
+<td>Higher mean → higher variance</td>
+</tr>
+<tr>
+<td>Binomial</td>
+<td><span class="arithmatex">\(\mu(1-\mu)\)</span></td>
+<td>Max variance at <span class="arithmatex">\(\mu=0.5\)</span></td>
+</tr>
+<tr>
+<td>Gamma</td>
+<td><span class="arithmatex">\(\mu^2\)</span></td>
+<td>Variance grows quadratically</td>
+</tr>
+</tbody>
+</table>
+<h4 id="component-2-systematic-component-linear-predictor">Component 2: Systematic Component (Linear Predictor)<a class="headerlink" href="#component-2-systematic-component-linear-predictor" title="Permanent link">&para;</a></h4>
+<p>We keep the linear structure, defining the <strong>linear predictor</strong>:</p>
+<div class="arithmatex">\[
+\eta_i = \beta_0 + \beta_1 x_{i1} + \beta_2 x_{i2} + \cdots = \mathbf{x}_i^T \boldsymbol{\beta}
+\]</div>
+<p>This is exactly like linear regression—a linear combination of predictors. The <span class="arithmatex">\(\eta_i\)</span> can be any real number.</p>
+<h4 id="component-3-link-function">Component 3: Link Function<a class="headerlink" href="#component-3-link-function" title="Permanent link">&para;</a></h4>
+<p>The innovation of GLMs is the <strong>link function</strong> <span class="arithmatex">\(g(\cdot)\)</span> that connects the mean <span class="arithmatex">\(\mu\)</span> to the linear predictor <span class="arithmatex">\(\eta\)</span>:</p>
+<div class="arithmatex">\[
+g(\mu_i) = \eta_i = \mathbf{x}_i^T \boldsymbol{\beta}
+\]</div>
+<p>Or equivalently, the <strong>inverse link</strong> (also called the <strong>mean function</strong>):</p>
+<div class="arithmatex">\[
+\mu_i = g^{-1}(\eta_i) = g^{-1}(\mathbf{x}_i^T \boldsymbol{\beta})
+\]</div>
+<p>The link function serves two critical purposes:</p>
+<p><strong>Purpose 1: Maps the mean to the correct range</strong></p>
+<p>For Poisson, <span class="arithmatex">\(\mu &gt; 0\)</span> (means must be positive). Using <span class="arithmatex">\(g(\mu) = \log(\mu)\)</span> (log link):</p>
+<ul>
+<li>The linear predictor <span class="arithmatex">\(\eta = \mathbf{x}^T\boldsymbol{\beta}\)</span> can be any real number</li>
+<li>But <span class="arithmatex">\(\mu = e^\eta &gt; 0\)</span> is always positive</li>
+</ul>
+<p>For Binomial, <span class="arithmatex">\(\mu \in (0, 1)\)</span> (probabilities). Using <span class="arithmatex">\(g(\mu) = \log\frac{\mu}{1-\mu}\)</span> (logit link):</p>
+<ul>
+<li>The linear predictor <span class="arithmatex">\(\eta\)</span> can be any real number</li>
+<li>But <span class="arithmatex">\(\mu = \frac{e^\eta}{1+e^\eta} \in (0, 1)\)</span> is always a valid probability</li>
+</ul>
+<p><strong>Purpose 2: Enables meaningful interpretation</strong></p>
+<p>With log link, <span class="arithmatex">\(\eta = \log(\mu)\)</span>, so:</p>
+<div class="arithmatex">\[
+\log(\mu) = \beta_0 + \beta_1 x_1 + \cdots
+\]</div>
+<p>A one-unit increase in <span class="arithmatex">\(x_1\)</span> increases <span class="arithmatex">\(\log(\mu)\)</span> by <span class="arithmatex">\(\beta_1\)</span>, which means it <em>multiplies</em> <span class="arithmatex">\(\mu\)</span> by <span class="arithmatex">\(e^{\beta_1}\)</span>.</p>
+<p>Example: If <span class="arithmatex">\(\beta_1 = 0.2\)</span>, then each unit increase in <span class="arithmatex">\(x_1\)</span> multiplies the expected count by <span class="arithmatex">\(e^{0.2} \approx 1.22\)</span>, a 22% increase.</p>
+<hr />
+<h3 id="14-putting-it-together-the-full-glm">1.4 Putting It Together: The Full GLM<a class="headerlink" href="#14-putting-it-together-the-full-glm" title="Permanent link">&para;</a></h3>
+<p>A GLM specifies:</p>
+<ol>
+<li><strong>Distribution</strong>: <span class="arithmatex">\(Y_i \sim \text{SomeDistribution}(\mu_i)\)</span> with variance <span class="arithmatex">\(\text{Var}(Y_i) = \phi \cdot V(\mu_i)\)</span></li>
+<li><strong>Linear predictor</strong>: <span class="arithmatex">\(\eta_i = \mathbf{x}_i^T \boldsymbol{\beta}\)</span></li>
+<li><strong>Link</strong>: <span class="arithmatex">\(g(\mu_i) = \eta_i\)</span></li>
+</ol>
+<p>The parameter <span class="arithmatex">\(\phi\)</span> is called the <strong>dispersion parameter</strong>. For some families (Poisson, Binomial) it equals 1 by definition. For others (Gaussian, Gamma) it must be estimated.</p>
+<p><strong>Example: Poisson Regression for Count Data</strong></p>
+<p>For modeling counts (like insurance claims):</p>
+<ul>
+<li>Distribution: <span class="arithmatex">\(Y_i \sim \text{Poisson}(\mu_i)\)</span></li>
+<li>Variance function: <span class="arithmatex">\(V(\mu) = \mu\)</span>, and <span class="arithmatex">\(\phi = 1\)</span></li>
+<li>Link function: <span class="arithmatex">\(g(\mu) = \log(\mu)\)</span> (the "log link")</li>
+</ul>
+<p>This means:</p>
+<div class="arithmatex">\[
+\log(\mu_i) = \beta_0 + \beta_1 x_{i1} + \cdots
+\]</div>
+<div class="arithmatex">\[
+\mu_i = \exp(\beta_0 + \beta_1 x_{i1} + \cdots)
+\]</div>
+<p>The mean is always positive (good for counts!), and the variance equals the mean (a property of the Poisson distribution).</p>
+<p><strong>Example: Logistic Regression for Binary Data</strong></p>
+<p>For modeling binary outcomes (like customer churn):</p>
+<ul>
+<li>Distribution: <span class="arithmatex">\(Y_i \sim \text{Bernoulli}(\mu_i)\)</span> where <span class="arithmatex">\(\mu_i = P(Y_i = 1)\)</span></li>
+<li>Variance function: <span class="arithmatex">\(V(\mu) = \mu(1-\mu)\)</span>, and <span class="arithmatex">\(\phi = 1\)</span></li>
+<li>Link function: <span class="arithmatex">\(g(\mu) = \log\frac{\mu}{1-\mu}\)</span> (the "logit link")</li>
+</ul>
+<p>This means:</p>
+<div class="arithmatex">\[
+\log\frac{\mu_i}{1-\mu_i} = \beta_0 + \beta_1 x_{i1} + \cdots
+\]</div>
+<p>The quantity <span class="arithmatex">\(\frac{\mu}{1-\mu}\)</span> is called the <strong>odds</strong>. If <span class="arithmatex">\(\mu = 0.75\)</span>, the odds are <span class="arithmatex">\(\frac{0.75}{0.25} = 3\)</span> ("3 to 1 in favor"). </p>
+<p>The <span class="arithmatex">\(\log\frac{\mu}{1-\mu}\)</span> is the <strong>log-odds</strong>. Solving for <span class="arithmatex">\(\mu\)</span>:</p>
+<div class="arithmatex">\[
+\mu_i = \frac{e^{\eta_i}}{1 + e^{\eta_i}} = \frac{1}{1 + e^{-\eta_i}}
+\]</div>
+<p>This is the famous <strong>logistic function</strong> (also called sigmoid), which maps any real number to the interval (0, 1)—perfect for probabilities!</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>μ
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>1 |                 ___________
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>  |              __/
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>  |           __/
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>  |        __/
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>  |     __/
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>0 |____/
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>  +---------------------------- η
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>      -4  -2   0   2   4
+</span></code></pre></div>
+<p>The logistic function looks like an S-curve: very small <span class="arithmatex">\(\eta\)</span> gives <span class="arithmatex">\(\mu \approx 0\)</span>, very large <span class="arithmatex">\(\eta\)</span> gives <span class="arithmatex">\(\mu \approx 1\)</span>, and <span class="arithmatex">\(\eta = 0\)</span> gives <span class="arithmatex">\(\mu = 0.5\)</span>.</p>
+<hr />
+<h2 id="part-2-the-exponential-family-foundation">Part 2: The Exponential Family Foundation<a class="headerlink" href="#part-2-the-exponential-family-foundation" title="Permanent link">&para;</a></h2>
+<p>Understanding <em>why</em> certain distributions work well in GLMs requires understanding the <strong>exponential family</strong>. This section develops the mathematical theory that underlies everything. It's more technical, but understanding it will give you deep insight into how GLMs work.</p>
+<h3 id="21-what-is-the-exponential-family">2.1 What is the Exponential Family?<a class="headerlink" href="#21-what-is-the-exponential-family" title="Permanent link">&para;</a></h3>
+<p>A probability distribution belongs to the exponential family if its probability density (or mass) function can be written as:</p>
+<div class="arithmatex">\[
+f(y; \theta, \phi) = \exp\left(\frac{y\theta - b(\theta)}{a(\phi)} + c(y, \phi)\right)
+\]</div>
+<p>where:</p>
+<ul>
+<li><span class="arithmatex">\(\theta\)</span> is the <strong>canonical parameter</strong> (related to the mean)</li>
+<li><span class="arithmatex">\(\phi\)</span> is the <strong>dispersion parameter</strong> (scale parameter)</li>
+<li><span class="arithmatex">\(a(\phi)\)</span> is typically just <span class="arithmatex">\(\phi\)</span> (we'll use this simplification)</li>
+<li><span class="arithmatex">\(b(\theta)\)</span> is the <strong>cumulant function</strong> (determines the distribution)</li>
+<li><span class="arithmatex">\(c(y, \phi)\)</span> is the <strong>normalizing term</strong> (ensures probabilities sum/integrate to 1)</li>
+</ul>
+<div class="admonition note">
+<p class="admonition-title">Why This Form Matters</p>
+<p>This might look like arbitrary notation, but this specific form has powerful mathematical properties:</p>
+<ol>
+<li>Derivatives of <span class="arithmatex">\(b(\theta)\)</span> give us moments of the distribution</li>
+<li>The likelihood equations have a nice form</li>
+<li>The canonical link simplifies everything further</li>
+</ol>
+</div>
+<h3 id="22-key-properties-of-the-exponential-family">2.2 Key Properties of the Exponential Family<a class="headerlink" href="#22-key-properties-of-the-exponential-family" title="Permanent link">&para;</a></h3>
+<p>Here are the key results (we'll prove them):</p>
+<p><strong>Property 1: Mean equals derivative of b</strong></p>
+<div class="arithmatex">\[
+E(Y) = \mu = b'(\theta) = \frac{db(\theta)}{d\theta}
+\]</div>
+<p><strong>Property 2: Variance from second derivative</strong></p>
+<div class="arithmatex">\[
+\text{Var}(Y) = a(\phi) \cdot b''(\theta) = \phi \cdot V(\mu)
+\]</div>
+<p>where <span class="arithmatex">\(V(\mu) = b''(\theta)\)</span> is the variance function, expressed in terms of <span class="arithmatex">\(\mu\)</span>.</p>
+<p><strong>Property 3: Canonical link</strong></p>
+<p>The <strong>canonical link</strong> is defined by <span class="arithmatex">\(g(\mu) = \theta\)</span>. This directly links the mean to the canonical parameter.</p>
+<p>Let's prove Property 1 and 2.</p>
+<h4 id="proof-of-properties-1-and-2">Proof of Properties 1 and 2<a class="headerlink" href="#proof-of-properties-1-and-2" title="Permanent link">&para;</a></h4>
+<p>The density must integrate to 1:</p>
+<div class="arithmatex">\[
+\int f(y; \theta, \phi) dy = 1
+\]</div>
+<p>Substituting the exponential family form:</p>
+<div class="arithmatex">\[
+\int \exp\left(\frac{y\theta - b(\theta)}{\phi} + c(y, \phi)\right) dy = 1
+\]</div>
+<p>This can be rewritten as:</p>
+<div class="arithmatex">\[
+\exp\left(-\frac{b(\theta)}{\phi}\right) \int \exp\left(\frac{y\theta}{\phi} + c(y, \phi)\right) dy = 1
+\]</div>
+<p>Taking the derivative with respect to <span class="arithmatex">\(\theta\)</span> of both sides:</p>
+<div class="arithmatex">\[
+\frac{d}{d\theta}\left[\int f(y; \theta, \phi) dy\right] = \frac{d}{d\theta}[1] = 0
+\]</div>
+<p>By Leibniz's rule (swapping derivative and integral):</p>
+<div class="arithmatex">\[
+\int \frac{\partial f(y; \theta, \phi)}{\partial \theta} dy = 0
+\]</div>
+<p>Now, <span class="arithmatex">\(\frac{\partial}{\partial \theta}\left[\frac{y\theta - b(\theta)}{\phi}\right] = \frac{y - b'(\theta)}{\phi}\)</span>, so:</p>
+<div class="arithmatex">\[
+\frac{\partial f}{\partial \theta} = f(y; \theta, \phi) \cdot \frac{y - b'(\theta)}{\phi}
+\]</div>
+<p>Therefore:</p>
+<div class="arithmatex">\[
+\int f(y) \cdot \frac{y - b'(\theta)}{\phi} dy = 0
+\]</div>
+<div class="arithmatex">\[
+\frac{1}{\phi}\left[\int y \cdot f(y) dy - b'(\theta) \int f(y) dy\right] = 0
+\]</div>
+<div class="arithmatex">\[
+E(Y) - b'(\theta) \cdot 1 = 0
+\]</div>
+<div class="arithmatex">\[
+E(Y) = b'(\theta) = \mu \quad \checkmark
+\]</div>
+<p>For the variance, differentiate again with respect to <span class="arithmatex">\(\theta\)</span>. After similar calculations:</p>
+<div class="arithmatex">\[
+\text{Var}(Y) = \phi \cdot b''(\theta) \quad \checkmark
+\]</div>
+<h3 id="23-examples-deriving-variance-functions">2.3 Examples: Deriving Variance Functions<a class="headerlink" href="#23-examples-deriving-variance-functions" title="Permanent link">&para;</a></h3>
+<p>Let's verify these properties for specific distributions by putting them in exponential family form.</p>
+<h4 id="poisson-distribution">Poisson Distribution<a class="headerlink" href="#poisson-distribution" title="Permanent link">&para;</a></h4>
+<p>The Poisson probability mass function is:</p>
+<div class="arithmatex">\[
+P(Y = y) = \frac{\mu^y e^{-\mu}}{y!} \quad \text{for } y = 0, 1, 2, \ldots
+\]</div>
+<p><strong>Step 1: Rewrite using exponential</strong></p>
+<div class="arithmatex">\[
+P(Y = y) = \exp\left(\log\left(\frac{\mu^y e^{-\mu}}{y!}\right)\right) = \exp\left(y\log\mu - \mu - \log(y!)\right)
+\]</div>
+<p><strong>Step 2: Match to exponential family form</strong></p>
+<p>Comparing with <span class="arithmatex">\(\exp\left(\frac{y\theta - b(\theta)}{\phi} + c(y, \phi)\right)\)</span>:</p>
+<ul>
+<li><span class="arithmatex">\(\theta = \log\mu\)</span> (canonical parameter)</li>
+<li><span class="arithmatex">\(b(\theta) = e^\theta = \mu\)</span> (since <span class="arithmatex">\(\theta = \log\mu\)</span> means <span class="arithmatex">\(\mu = e^\theta\)</span>)</li>
+<li><span class="arithmatex">\(\phi = 1\)</span> (no separate dispersion for Poisson)</li>
+<li><span class="arithmatex">\(c(y, \phi) = -\log(y!)\)</span></li>
+</ul>
+<p><strong>Step 3: Verify properties</strong></p>
+<ul>
+<li><span class="arithmatex">\(b'(\theta) = \frac{d}{d\theta}e^\theta = e^\theta = \mu\)</span> ✓ (confirms <span class="arithmatex">\(E(Y) = \mu\)</span>)</li>
+<li><span class="arithmatex">\(b''(\theta) = \frac{d^2}{d\theta^2}e^\theta = e^\theta = \mu\)</span>, so <span class="arithmatex">\(V(\mu) = \mu\)</span> ✓ (variance equals mean)</li>
+<li>Canonical link: <span class="arithmatex">\(g(\mu) = \theta = \log\mu\)</span> (the log link) ✓</li>
+</ul>
+<h4 id="bernoulli-binomial-with-n1-distribution">Bernoulli (Binomial with n=1) Distribution<a class="headerlink" href="#bernoulli-binomial-with-n1-distribution" title="Permanent link">&para;</a></h4>
+<p>The Bernoulli PMF is:</p>
+<div class="arithmatex">\[
+P(Y = y) = \mu^y (1-\mu)^{1-y} \quad \text{for } y \in \{0, 1\}
+\]</div>
+<p><strong>Step 1: Rewrite</strong></p>
+<div class="arithmatex">\[
+P(Y = y) = \exp\left(y\log\mu + (1-y)\log(1-\mu)\right)
+\]</div>
+<div class="arithmatex">\[
+= \exp\left(y\log\mu - y\log(1-\mu) + \log(1-\mu)\right)
+\]</div>
+<div class="arithmatex">\[
+= \exp\left(y\log\frac{\mu}{1-\mu} + \log(1-\mu)\right)
+\]</div>
+<p><strong>Step 2: Match to exponential family form</strong></p>
+<ul>
+<li><span class="arithmatex">\(\theta = \log\frac{\mu}{1-\mu}\)</span> (log-odds)</li>
+<li><span class="arithmatex">\(b(\theta) = \log(1 + e^\theta)\)</span> (since <span class="arithmatex">\(\log(1-\mu) = -\log(1+e^\theta)\)</span> when <span class="arithmatex">\(\theta = \log\frac{\mu}{1-\mu}\)</span>)</li>
+<li><span class="arithmatex">\(\phi = 1\)</span></li>
+<li><span class="arithmatex">\(c(y, \phi) = 0\)</span></li>
+</ul>
+<p><strong>Step 3: Verify properties</strong></p>
+<p>To check <span class="arithmatex">\(b'(\theta) = \mu\)</span>:</p>
+<div class="arithmatex">\[
+b'(\theta) = \frac{e^\theta}{1+e^\theta}
+\]</div>
+<p>And indeed, if <span class="arithmatex">\(\theta = \log\frac{\mu}{1-\mu}\)</span>, then <span class="arithmatex">\(e^\theta = \frac{\mu}{1-\mu}\)</span>, so:</p>
+<div class="arithmatex">\[
+b'(\theta) = \frac{\mu/(1-\mu)}{1 + \mu/(1-\mu)} = \frac{\mu/(1-\mu)}{(1-\mu+\mu)/(1-\mu)} = \frac{\mu/(1-\mu)}{1/(1-\mu)} = \mu \quad \checkmark
+\]</div>
+<p>For the variance:</p>
+<div class="arithmatex">\[
+b''(\theta) = \frac{e^\theta}{(1+e^\theta)^2} = \frac{\mu/(1-\mu)}{(1/(1-\mu))^2} = \mu(1-\mu) \quad \checkmark
+\]</div>
+<p>So <span class="arithmatex">\(V(\mu) = \mu(1-\mu)\)</span>, which is the variance of a Bernoulli distribution.</p>
+<p>Canonical link: <span class="arithmatex">\(g(\mu) = \theta = \log\frac{\mu}{1-\mu}\)</span> (logit) ✓</p>
+<h4 id="normal-gaussian-distribution">Normal (Gaussian) Distribution<a class="headerlink" href="#normal-gaussian-distribution" title="Permanent link">&para;</a></h4>
+<p>The Normal PDF is:</p>
+<div class="arithmatex">\[
+f(y) = \frac{1}{\sqrt{2\pi\sigma^2}} \exp\left(-\frac{(y-\mu)^2}{2\sigma^2}\right)
+\]</div>
+<p><strong>Step 1: Expand the square</strong></p>
+<div class="arithmatex">\[
+-\frac{(y-\mu)^2}{2\sigma^2} = -\frac{y^2 - 2y\mu + \mu^2}{2\sigma^2} = \frac{y\mu}{\sigma^2} - \frac{\mu^2}{2\sigma^2} - \frac{y^2}{2\sigma^2}
+\]</div>
+<p>So:</p>
+<div class="arithmatex">\[
+f(y) = \exp\left(\frac{y\mu - \mu^2/2}{\sigma^2} - \frac{y^2}{2\sigma^2} - \frac{1}{2}\log(2\pi\sigma^2)\right)
+\]</div>
+<p><strong>Step 2: Match to exponential family form</strong></p>
+<ul>
+<li><span class="arithmatex">\(\theta = \mu\)</span> (canonical parameter equals mean!)</li>
+<li><span class="arithmatex">\(b(\theta) = \theta^2/2 = \mu^2/2\)</span></li>
+<li><span class="arithmatex">\(\phi = \sigma^2\)</span> (dispersion is variance)</li>
+<li><span class="arithmatex">\(c(y, \phi) = -\frac{y^2}{2\phi} - \frac{1}{2}\log(2\pi\phi)\)</span></li>
+</ul>
+<p><strong>Step 3: Verify</strong></p>
+<ul>
+<li><span class="arithmatex">\(b'(\theta) = \theta = \mu\)</span> ✓</li>
+<li><span class="arithmatex">\(b''(\theta) = 1\)</span>, so <span class="arithmatex">\(V(\mu) = 1\)</span> ✓ (constant variance)</li>
+<li>Canonical link: <span class="arithmatex">\(g(\mu) = \theta = \mu\)</span> (identity link) ✓</li>
+</ul>
+<hr />
+<h2 id="part-3-maximum-likelihood-estimation">Part 3: Maximum Likelihood Estimation<a class="headerlink" href="#part-3-maximum-likelihood-estimation" title="Permanent link">&para;</a></h2>
+<p>Now that we understand the GLM structure, how do we estimate the parameters <span class="arithmatex">\(\boldsymbol{\beta}\)</span>? The answer is <strong>maximum likelihood estimation (MLE)</strong>.</p>
+<h3 id="31-the-likelihood-principle">3.1 The Likelihood Principle<a class="headerlink" href="#31-the-likelihood-principle" title="Permanent link">&para;</a></h3>
+<p>The <strong>likelihood function</strong> answers: "Given the data we observed, how likely is it that the true parameters are <span class="arithmatex">\(\boldsymbol{\beta}\)</span>?"</p>
+<p>Mathematically, if we observe data <span class="arithmatex">\(y_1, \ldots, y_n\)</span> (assumed independent), the likelihood is:</p>
+<div class="arithmatex">\[
+L(\boldsymbol{\beta}) = \prod_{i=1}^n f(y_i; \mu_i(\boldsymbol{\beta}), \phi)
+\]</div>
+<p>where <span class="arithmatex">\(\mu_i(\boldsymbol{\beta}) = g^{-1}(\mathbf{x}_i^T\boldsymbol{\beta})\)</span> is the predicted mean for observation <span class="arithmatex">\(i\)</span>.</p>
+<p>The <strong>maximum likelihood estimate</strong> <span class="arithmatex">\(\hat{\boldsymbol{\beta}}\)</span> is the value that maximizes <span class="arithmatex">\(L(\boldsymbol{\beta})\)</span>.</p>
+<h3 id="32-the-log-likelihood">3.2 The Log-Likelihood<a class="headerlink" href="#32-the-log-likelihood" title="Permanent link">&para;</a></h3>
+<p>Working with products is cumbersome, so we take the logarithm:</p>
+<div class="arithmatex">\[
+\ell(\boldsymbol{\beta}) = \log L(\boldsymbol{\beta}) = \sum_{i=1}^n \log f(y_i; \mu_i, \phi)
+\]</div>
+<p>Since <span class="arithmatex">\(\log\)</span> is monotonically increasing, maximizing <span class="arithmatex">\(\ell\)</span> is equivalent to maximizing <span class="arithmatex">\(L\)</span>.</p>
+<p>For exponential family distributions:</p>
+<div class="arithmatex">\[
+\ell(\boldsymbol{\beta}) = \sum_{i=1}^n \left[\frac{y_i\theta_i - b(\theta_i)}{\phi} + c(y_i, \phi)\right]
+\]</div>
+<p>The <span class="arithmatex">\(c(y_i, \phi)\)</span> term doesn't depend on <span class="arithmatex">\(\boldsymbol{\beta}\)</span>, so for optimization we can ignore it:</p>
+<div class="arithmatex">\[
+\ell(\boldsymbol{\beta}) \propto \sum_{i=1}^n \frac{y_i\theta_i - b(\theta_i)}{\phi}
+\]</div>
+<h3 id="33-the-score-function">3.3 The Score Function<a class="headerlink" href="#33-the-score-function" title="Permanent link">&para;</a></h3>
+<p>To find the maximum, we take the derivative of <span class="arithmatex">\(\ell\)</span> with respect to <span class="arithmatex">\(\boldsymbol{\beta}\)</span> and set it to zero.</p>
+<p>The <strong>score function</strong> is:</p>
+<div class="arithmatex">\[
+\mathbf{U}(\boldsymbol{\beta}) = \frac{\partial \ell}{\partial \boldsymbol{\beta}} = \begin{pmatrix} \frac{\partial \ell}{\partial \beta_0} \\ \frac{\partial \ell}{\partial \beta_1} \\ \vdots \end{pmatrix}
+\]</div>
+<p>Let's compute <span class="arithmatex">\(\frac{\partial \ell}{\partial \beta_j}\)</span> using the chain rule:</p>
+<div class="arithmatex">\[
+\frac{\partial \ell}{\partial \beta_j} = \sum_{i=1}^n \frac{\partial \ell_i}{\partial \theta_i} \cdot \frac{\partial \theta_i}{\partial \mu_i} \cdot \frac{\partial \mu_i}{\partial \eta_i} \cdot \frac{\partial \eta_i}{\partial \beta_j}
+\]</div>
+<p>Let's compute each piece:</p>
+<p><strong>Piece 1</strong>: <span class="arithmatex">\(\frac{\partial \ell_i}{\partial \theta_i}\)</span></p>
+<div class="arithmatex">\[
+\ell_i = \frac{y_i\theta_i - b(\theta_i)}{\phi}
+\]</div>
+<div class="arithmatex">\[
+\frac{\partial \ell_i}{\partial \theta_i} = \frac{y_i - b'(\theta_i)}{\phi} = \frac{y_i - \mu_i}{\phi}
+\]</div>
+<p><strong>Piece 2</strong>: <span class="arithmatex">\(\frac{\partial \theta_i}{\partial \mu_i}\)</span></p>
+<p>Since <span class="arithmatex">\(\mu = b'(\theta)\)</span>, we have <span class="arithmatex">\(\frac{d\mu}{d\theta} = b''(\theta) = V(\mu)\)</span>, so:</p>
+<div class="arithmatex">\[
+\frac{d\theta}{d\mu} = \frac{1}{V(\mu)}
+\]</div>
+<p><strong>Piece 3</strong>: <span class="arithmatex">\(\frac{\partial \mu_i}{\partial \eta_i}\)</span></p>
+<p>Since <span class="arithmatex">\(\mu = g^{-1}(\eta)\)</span>, we have:</p>
+<div class="arithmatex">\[
+\frac{d\mu}{d\eta} = \frac{d g^{-1}(\eta)}{d\eta} = \frac{1}{g'(\mu)}
+\]</div>
+<p>(This uses the inverse function derivative rule: if <span class="arithmatex">\(\eta = g(\mu)\)</span>, then <span class="arithmatex">\(\frac{d\mu}{d\eta} = 1/\frac{d\eta}{d\mu} = 1/g'(\mu)\)</span>.)</p>
+<p><strong>Piece 4</strong>: <span class="arithmatex">\(\frac{\partial \eta_i}{\partial \beta_j}\)</span></p>
+<p>Since <span class="arithmatex">\(\eta_i = \mathbf{x}_i^T\boldsymbol{\beta} = \sum_k x_{ik}\beta_k\)</span>:</p>
+<div class="arithmatex">\[
+\frac{\partial \eta_i}{\partial \beta_j} = x_{ij}
+\]</div>
+<p><strong>Putting it all together</strong>:</p>
+<div class="arithmatex">\[
+\frac{\partial \ell}{\partial \beta_j} = \sum_{i=1}^n \frac{y_i - \mu_i}{\phi} \cdot \frac{1}{V(\mu_i)} \cdot \frac{1}{g'(\mu_i)} \cdot x_{ij}
+\]</div>
+<div class="arithmatex">\[
+= \sum_{i=1}^n \frac{(y_i - \mu_i) x_{ij}}{\phi \cdot V(\mu_i) \cdot g'(\mu_i)}
+\]</div>
+<p>Setting this to zero for each <span class="arithmatex">\(j\)</span> gives the <strong>score equations</strong>:</p>
+<div class="arithmatex">\[
+\sum_{i=1}^n \frac{(y_i - \mu_i) x_{ij}}{V(\mu_i) \cdot g'(\mu_i)} = 0 \quad \text{for } j = 0, 1, \ldots, p-1
+\]</div>
+<h3 id="34-why-we-need-iteration">3.4 Why We Need Iteration<a class="headerlink" href="#34-why-we-need-iteration" title="Permanent link">&para;</a></h3>
+<p>Unlike linear regression, these equations are <strong>nonlinear</strong> in <span class="arithmatex">\(\boldsymbol{\beta}\)</span>.</p>
+<p>For linear regression:
+- <span class="arithmatex">\(\mu_i = \eta_i = \mathbf{x}_i^T\boldsymbol{\beta}\)</span> (linear in <span class="arithmatex">\(\boldsymbol{\beta}\)</span>)
+- Score equations are linear → closed-form solution</p>
+<p>For GLMs:
+- <span class="arithmatex">\(\mu_i = g^{-1}(\mathbf{x}_i^T\boldsymbol{\beta})\)</span> (nonlinear in <span class="arithmatex">\(\boldsymbol{\beta}\)</span> through <span class="arithmatex">\(g^{-1}\)</span>)
+- <span class="arithmatex">\(V(\mu_i)\)</span> and <span class="arithmatex">\(g'(\mu_i)\)</span> also depend on <span class="arithmatex">\(\boldsymbol{\beta}\)</span>
+- Score equations are nonlinear → need iterative solution</p>
+<p>Example for Poisson:
+$$
+\mu_i = e^{\mathbf{x}_i^T\boldsymbol{\beta}}
+$$</p>
+<p>The score equation involves <span class="arithmatex">\(e^{\mathbf{x}_i^T\boldsymbol{\beta}}\)</span> terms—clearly nonlinear!</p>
+<hr />
+<h2 id="part-4-deviance-and-model-assessment">Part 4: Deviance and Model Assessment<a class="headerlink" href="#part-4-deviance-and-model-assessment" title="Permanent link">&para;</a></h2>
+<p>Before moving to the estimation algorithm, let's understand how we measure model fit.</p>
+<h3 id="41-the-concept-of-deviance">4.1 The Concept of Deviance<a class="headerlink" href="#41-the-concept-of-deviance" title="Permanent link">&para;</a></h3>
+<p>The <strong>deviance</strong> measures how much our model deviates from a perfect fit. It's defined as:</p>
+<div class="arithmatex">\[
+D = 2[\ell(\text{saturated}) - \ell(\text{fitted})]
+\]</div>
+<p>where:
+- <strong>Saturated model</strong>: A model with one parameter per observation, achieving <span class="arithmatex">\(\hat{\mu}_i = y_i\)</span> (perfect fit to data)
+- <strong>Fitted model</strong>: Our actual model with <span class="arithmatex">\(p\)</span> parameters</p>
+<p>The deviance is always non-negative (the saturated model has the highest possible likelihood).</p>
+<h3 id="42-unit-deviance">4.2 Unit Deviance<a class="headerlink" href="#42-unit-deviance" title="Permanent link">&para;</a></h3>
+<p>Each observation contributes to the total deviance:</p>
+<div class="arithmatex">\[
+D = \sum_{i=1}^n d(y_i, \mu_i)
+\]</div>
+<p>where <span class="arithmatex">\(d(y, \mu)\)</span> is the <strong>unit deviance</strong>.</p>
+<table>
+<thead>
+<tr>
+<th>Family</th>
+<th>Unit Deviance <span class="arithmatex">\(d(y, \mu)\)</span></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Gaussian</td>
+<td><span class="arithmatex">\((y - \mu)^2\)</span></td>
+</tr>
+<tr>
+<td>Poisson</td>
+<td><span class="arithmatex">\(2[y\log(y/\mu) - (y - \mu)]\)</span></td>
+</tr>
+<tr>
+<td>Binomial</td>
+<td><span class="arithmatex">\(2[y\log(y/\mu) + (1-y)\log((1-y)/(1-\mu))]\)</span></td>
+</tr>
+<tr>
+<td>Gamma</td>
+<td><span class="arithmatex">\(2[-\log(y/\mu) + (y - \mu)/\mu]\)</span></td>
+</tr>
+</tbody>
+</table>
+<div class="admonition note">
+<p class="admonition-title">Deviance for Gaussian</p>
+<p>For Gaussian, the deviance is <span class="arithmatex">\(D = \sum_i (y_i - \mu_i)^2\)</span>, the residual sum of squares! </p>
+<p>This is why linear regression minimizes sum of squares—it's equivalent to maximizing likelihood for normal data.</p>
+</div>
+<h3 id="43-using-deviance">4.3 Using Deviance<a class="headerlink" href="#43-using-deviance" title="Permanent link">&para;</a></h3>
+<p><strong>Model comparison</strong>: For nested models (Model 1 is a special case of Model 2):</p>
+<div class="arithmatex">\[
+D_1 - D_2 \sim \chi^2_{p_2 - p_1} \quad \text{(approximately)}
+\]</div>
+<p>This is the <strong>likelihood ratio test</strong>.</p>
+<p><strong>Assessing fit</strong>: The residual deviance should be roughly equal to its degrees of freedom (<span class="arithmatex">\(n - p\)</span>). If deviance &gt;&gt; <span class="arithmatex">\(n - p\)</span>, the model fits poorly.</p>
+<hr />
+<h2 id="part-5-summary-and-next-steps">Part 5: Summary and Next Steps<a class="headerlink" href="#part-5-summary-and-next-steps" title="Permanent link">&para;</a></h2>
+<p>We've built up GLMs from first principles:</p>
+<ol>
+<li><strong>Linear regression</strong> works for normal data but fails for counts, binary data, etc.</li>
+<li><strong>GLMs</strong> generalize by allowing different distributions (families) and using link functions</li>
+<li><strong>The exponential family</strong> provides the mathematical foundation with nice properties</li>
+<li><strong>Maximum likelihood</strong> gives us the estimation framework</li>
+<li><strong>Deviance</strong> measures model fit</li>
+</ol>
+<p><strong>What's next</strong>: The <a href="../irls/">IRLS Algorithm</a> chapter shows how we actually solve the nonlinear score equations efficiently by converting them to iterated weighted least squares problems.</p>
+<hr />
+<h2 id="exercises">Exercises<a class="headerlink" href="#exercises" title="Permanent link">&para;</a></h2>
+<div class="admonition question">
+<p class="admonition-title">Exercise 1: Link Function Practice</p>
+<p>For each scenario, which link function is most appropriate and why?</p>
+<p>a) Modeling the probability a customer will click an ad<br />
+b) Modeling the number of cars passing a sensor per hour<br />
+c) Modeling a student's test score (0-100 continuous)<br />
+d) Modeling insurance claim severity (positive dollar amounts)</p>
+</div>
+<div class="admonition question">
+<p class="admonition-title">Exercise 2: Exponential Family - Gamma Distribution</p>
+<p>The Gamma PDF is:</p>
+<div class="arithmatex">\[f(y; \mu, \nu) = \frac{1}{\Gamma(\nu)}\left(\frac{\nu}{\mu}\right)^\nu y^{\nu-1} e^{-\nu y/\mu}\]</div>
+<p>where <span class="arithmatex">\(\nu\)</span> is the shape parameter.</p>
+<p>a) Put this in exponential family form. What is <span class="arithmatex">\(\theta\)</span>?<br />
+b) Find <span class="arithmatex">\(b(\theta)\)</span> and compute <span class="arithmatex">\(b'(\theta)\)</span> to verify <span class="arithmatex">\(E(Y) = \mu\)</span><br />
+c) Find <span class="arithmatex">\(V(\mu)\)</span>. What is the canonical link?</p>
+</div>
+<div class="admonition question">
+<p class="admonition-title">Exercise 3: Score Equations for Poisson</p>
+<p>For Poisson regression with log link:</p>
+<p>a) Write out the log-likelihood explicitly<br />
+b) Compute <span class="arithmatex">\(\frac{\partial \ell}{\partial \beta_j}\)</span> directly (not using the chain rule result)<br />
+c) Verify it matches the general formula with <span class="arithmatex">\(V(\mu) = \mu\)</span> and <span class="arithmatex">\(g'(\mu) = 1/\mu\)</span></p>
+</div>
+<div class="admonition question">
+<p class="admonition-title">Exercise 4: Hand Calculation</p>
+<p>Given the tiny dataset:</p>
+<table>
+<thead>
+<tr>
+<th><span class="arithmatex">\(y\)</span></th>
+<th><span class="arithmatex">\(x\)</span></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>0</td>
+</tr>
+<tr>
+<td>3</td>
+<td>1</td>
+</tr>
+<tr>
+<td>7</td>
+<td>2</td>
+</tr>
+</tbody>
+</table>
+<p>For a Poisson model <span class="arithmatex">\(\log(\mu) = \beta_0 + \beta_1 x\)</span>:</p>
+<p>a) If <span class="arithmatex">\(\beta_0 = 0.5\)</span> and <span class="arithmatex">\(\beta_1 = 0.8\)</span>, what are the fitted means <span class="arithmatex">\(\mu_i\)</span>?<br />
+b) Compute the deviance<br />
+c) Compute the Pearson residuals <span class="arithmatex">\((y_i - \mu_i)/\sqrt{\mu_i}\)</span></p>
+</div>
+<hr />
+<h2 id="solutions">Solutions<a class="headerlink" href="#solutions" title="Permanent link">&para;</a></h2>
+<details class="success">
+<summary>Solution to Exercise 1</summary>
+<p>a) <strong>Logit link</strong> - probability must be in (0,1)<br />
+b) <strong>Log link</strong> - counts must be positive<br />
+c) <strong>Identity link</strong> - continuous on full range (or bounded, could consider)<br />
+d) <strong>Log link</strong> - amounts must be positive</p>
+</details>
+<details class="success">
+<summary>Solution to Exercise 4</summary>
+<p>a) <span class="arithmatex">\(\mu_1 = e^{0.5} \approx 1.65\)</span>, <span class="arithmatex">\(\mu_2 = e^{0.5+0.8} \approx 3.67\)</span>, <span class="arithmatex">\(\mu_3 = e^{0.5+1.6} \approx 8.17\)</span></p>
+<p>b) Deviance = <span class="arithmatex">\(2\sum[y_i\log(y_i/\mu_i) - (y_i - \mu_i)]\)</span></p>
+<p><span class="arithmatex">\(= 2[(1)\log(1/1.65) - (1-1.65) + (3)\log(3/3.67) - (3-3.67) + (7)\log(7/8.17) - (7-8.17)]\)</span></p>
+<p><span class="arithmatex">\(= 2[(-0.50 + 0.65) + (-0.60 + 0.67) + (-1.10 + 1.17)]\)</span></p>
+<p><span class="arithmatex">\(= 2[0.15 + 0.07 + 0.07] = 0.58\)</span></p>
+<p>c) Pearson residuals: <span class="arithmatex">\((1-1.65)/\sqrt{1.65} \approx -0.51\)</span>, <span class="arithmatex">\((3-3.67)/\sqrt{3.67} \approx -0.35\)</span>, <span class="arithmatex">\((7-8.17)/\sqrt{8.17} \approx -0.41\)</span></p>
+</details>
+<hr />
+<h2 id="further-reading">Further Reading<a class="headerlink" href="#further-reading" title="Permanent link">&para;</a></h2>
+<ul>
+<li>McCullagh, P. and Nelder, J.A. (1989). <em>Generalized Linear Models</em>, 2nd ed. Chapman &amp; Hall. — The classic reference.</li>
+<li>Dobson, A.J. and Barnett, A.G. (2018). <em>An Introduction to Generalized Linear Models</em>, 4th ed. CRC Press. — More accessible introduction.</li>
+<li>Wood, S.N. (2017). <em>Generalized Additive Models: An Introduction with R</em>, 2nd ed. CRC Press. — Extends to nonlinear effects.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.expand", "navigation.top", "search.suggest", "search.highlight", "content.code.copy", "content.code.annotate"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+        <script src="../../javascripts/mathjax.js"></script>
+      
+        <script src="https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js"></script>
+      
+    
+  </body>
+</html>
