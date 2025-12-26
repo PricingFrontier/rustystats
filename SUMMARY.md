@@ -21,6 +21,7 @@ A high-performance Generalized Linear Models (GLM) library with a Rust backend a
 | **Statistical Inference** | ✅ Complete | Standard errors, z-values, p-values, confidence intervals |
 | **Robust Standard Errors** | ✅ Complete | Sandwich estimators (HC0, HC1, HC2, HC3) |
 | **Model Diagnostics** | ✅ Complete | Residuals, dispersion, AIC, BIC, log-likelihood |
+| **Advanced Diagnostics** | ✅ Complete | Calibration (A/E, Gini, Lorenz), discrimination, per-factor diagnostics, interaction detection |
 
 ### Python Bindings (`crates/rustystats`)
 
@@ -48,14 +49,15 @@ A high-performance Generalized Linear Models (GLM) library with a Rust backend a
 | **Target Encoding** | ✅ Complete | `target_encode()`, `TE()` in formulas, `TargetEncoder` class |
 | **Quasi-Families** | ✅ Complete | `quasipoisson`, `quasibinomial` for overdispersion |
 | **Negative Binomial** | ✅ Complete | `negbinomial` with auto θ estimation |
+| **Model Diagnostics** | ✅ Complete | `compute_diagnostics()`, `explore_data()`, JSON export for LLM consumption |
 | **Minimal Dependencies** | ✅ Complete | Core requires only numpy; polars optional |
 
 ### Testing
 
 | Component | Count | Description |
 |-----------|-------|-------------|
-| **Rust Unit Tests** | 175+ | Core library tests (families, diagnostics, solvers, regularization, inference, interactions, splines, formula, design_matrix, target_encoding) |
-| **Python Tests** | 256 | API, integration, regularization, robust SE, interaction, spline, quasi-family, negative binomial, and target encoding tests |
+| **Rust Unit Tests** | 190+ | Core library tests (families, diagnostics, solvers, regularization, inference, interactions, splines, formula, design_matrix, target_encoding, calibration, loss) |
+| **Python Tests** | 280 | API, integration, regularization, robust SE, interaction, spline, quasi-family, negative binomial, target encoding, and diagnostics tests |
 
 ### Examples
 
@@ -102,7 +104,6 @@ A high-performance Generalized Linear Models (GLM) library with a Rust backend a
 
 - **Broader model coverage** - OLS, WLS, GLS, mixed effects, time series
 - **Established ecosystem** - More documentation, Stack Overflow answers
-- **Advanced diagnostics** - Influence plots, leverage, Cook's distance
 
 ---
 
@@ -434,6 +435,152 @@ result = rs.glm(
 
 ---
 
+### Model Diagnostics with JSON Export (NEW)
+```python
+import rustystats as rs
+import polars as pl
+
+data = pl.read_parquet("insurance.parquet")
+
+# Fit a model
+result = rs.glm(
+    "ClaimNb ~ Age + C(Region) + C(VehBrand)",
+    data=data,
+    family="poisson",
+    offset="Exposure"
+).fit()
+
+# =============================
+# COMPREHENSIVE DIAGNOSTICS
+# =============================
+
+# Compute all diagnostics at once (returns ModelDiagnostics object)
+diagnostics = result.diagnostics(
+    data=data,
+    categorical_factors=["Region", "VehBrand", "Area"],  # Including non-fitted
+    continuous_factors=["Age", "Income", "VehPower"],    # Including non-fitted
+)
+
+# Export as compact JSON (optimized for LLM consumption)
+json_str = diagnostics.to_json()
+print(json_str)
+
+# Or use the convenience method
+json_str = result.diagnostics_json(
+    data=data,
+    categorical_factors=["Region", "VehBrand"],
+    continuous_factors=["Age", "Income"],
+)
+
+# =============================
+# WHAT'S IN THE JSON OUTPUT
+# =============================
+
+# Model summary
+diagnostics.model_summary
+# {"family": "poisson", "n_observations": 678012, "n_parameters": 15, ...}
+
+# Fit statistics
+diagnostics.fit_statistics
+# {"deviance": 123456.7, "aic": 123500.1, "bic": 123600.2, "dispersion_pearson": 1.05, ...}
+
+# Calibration metrics
+diagnostics.calibration
+# {"actual_expected_ratio": 0.998, "gini_coefficient": 0.42, "by_decile": [...], ...}
+
+# Per-factor diagnostics (both fitted AND non-fitted factors)
+for factor in diagnostics.factors:
+    print(f"{factor.name}: in_model={factor.in_model}")
+    print(f"  A/E by level: {len(factor.actual_vs_expected)} bins")
+    print(f"  Residual correlation: {factor.residual_pattern.correlation_with_residuals:.3f}")
+
+# Interaction candidates (greedy residual-based detection)
+for ic in diagnostics.interaction_candidates:
+    print(f"{ic.factor1} x {ic.factor2}: strength={ic.interaction_strength:.3f}")
+
+# Warnings (auto-generated from diagnostics)
+for warning in diagnostics.warnings:
+    print(f"[{warning['type']}] {warning['message']}")
+
+# =============================
+# PRE-FIT DATA EXPLORATION
+# =============================
+
+# Explore data BEFORE fitting (no model needed)
+exploration = rs.explore_data(
+    data=data,
+    response="ClaimNb",
+    categorical_factors=["Region", "VehBrand", "Area"],
+    continuous_factors=["Age", "VehPower", "Income"],
+    exposure="Exposure",
+    family="poisson",
+    detect_interactions=True,
+)
+
+# View response distribution
+print(exploration.response_stats)
+# {"n_observations": 678012, "mean_rate": 0.045, "zeros_pct": 95.2, ...}
+
+# Factor statistics (before fitting)
+for factor in exploration.factor_stats:
+    print(f"{factor['name']}: {factor['type']}")
+    
+# Interaction candidates (based on response variance)
+for ic in exploration.interaction_candidates:
+    print(f"Consider: {ic.factor1} * {ic.factor2}")
+
+# Export as JSON
+print(exploration.to_json())
+```
+
+**JSON Output Structure:**
+```json
+{
+  "model_summary": {"family": "poisson", "n_observations": 678012, ...},
+  "fit_statistics": {"deviance": 123456.7, "aic": 123500.1, ...},
+  "calibration": {"actual_expected_ratio": 0.998, "by_decile": [...], ...},
+  "discrimination": {"gini_coefficient": 0.42, "auc": 0.71, ...},
+  "factors": [
+    {
+      "name": "Region",
+      "factor_type": "categorical",
+      "in_model": true,
+      "actual_vs_expected": [{"level": "A", "ae_ratio": 1.02, ...}, ...],
+      "residual_pattern": {"correlation": 0.01, ...}
+    },
+    {
+      "name": "Income",
+      "factor_type": "continuous", 
+      "in_model": false,
+      "actual_vs_expected": [{"bin": 1, "ae_ratio": 1.15, ...}, ...],
+      "residual_pattern": {"correlation": 0.08, ...}
+    }
+  ],
+  "interaction_candidates": [{"factor1": "Age", "factor2": "Region", "strength": 0.03}],
+  "warnings": [{"type": "missing_factor", "message": "Income explains 2% of residual variance"}]
+}
+```
+
+**Key Features:**
+| Feature | Description |
+|---------|-------------|
+| **Calibration** | Overall A/E ratio, calibration by decile with CIs, Hosmer-Lemeshow test |
+| **Discrimination** | Gini coefficient, AUC, KS statistic, lift metrics, Lorenz curve |
+| **Factor Diagnostics** | A/E by level/bin for ALL factors (fitted and non-fitted) |
+| **Residual Patterns** | Correlation of residuals with each factor (identifies missing effects) |
+| **Interaction Detection** | Greedy residual-based detection of potential interactions |
+| **Warnings** | Auto-generated alerts for high dispersion, poor calibration, missing factors |
+| **JSON Export** | Token-efficient serialization for LLM consumption |
+
+**Use Cases:**
+- **Model Validation**: Check calibration across risk segments
+- **Variable Selection**: Identify non-fitted factors with residual signal
+- **Interaction Discovery**: Find missing interactions automatically
+- **LLM Integration**: Feed compact JSON to AI for model analysis
+- **Reporting**: Generate model assessment reports
+
+---
+
 ## Features To Be Added
 
 ### Lower Priority
@@ -478,7 +625,7 @@ rustystats/
 │   │       ├── design_matrix/    # Categorical encoding, interaction matrices
 │   │       ├── formula/          # R-style formula parsing
 │   │       ├── target_encoding/  # CatBoost-style ordered target statistics
-│   │       └── diagnostics/      # Residuals, dispersion, AIC/BIC
+│   │       └── diagnostics/      # Residuals, dispersion, AIC/BIC, calibration, loss, factor diagnostics
 │   │
 │   └── rustystats/               # Python bindings (PyO3)
 │       └── src/lib.rs
@@ -490,6 +637,7 @@ rustystats/
 │   ├── interactions.py           # Optimized interaction term handling
 │   ├── splines.py                # bs() and ns() spline basis functions
 │   ├── target_encoding.py        # CatBoost-style target encoding
+│   ├── diagnostics.py            # Model diagnostics with JSON export
 │   ├── families.py               # Family wrappers
 │   └── links.py                  # Link wrappers
 │
@@ -508,7 +656,8 @@ rustystats/
         ├── test_splines.py       # Spline basis function tests
         ├── test_quasi_families.py # QuasiPoisson/QuasiBinomial tests
         ├── test_negative_binomial.py # Negative Binomial tests
-        └── test_target_encoding.py # Target encoding tests
+        ├── test_target_encoding.py # Target encoding tests
+        └── test_diagnostics.py   # Model diagnostics tests
 ```
 
 ---
