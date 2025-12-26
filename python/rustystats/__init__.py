@@ -108,6 +108,16 @@ from rustystats.target_encoding import (
     TargetEncodingTerm,
 )
 
+# Model diagnostics
+from rustystats.diagnostics import (
+    compute_diagnostics,
+    ModelDiagnostics,
+    DiagnosticsComputer,
+    explore_data,
+    DataExploration,
+    DataExplorer,
+)
+
 # Variable selection utilities
 from rustystats.selection import (
     regularization_path,
@@ -159,6 +169,13 @@ __all__ = [
     "cv_elasticnet",
     "RegularizationPath",
     "CVResult",
+    # Model diagnostics
+    "compute_diagnostics",
+    "ModelDiagnostics",
+    "DiagnosticsComputer",
+    "explore_data",
+    "DataExploration",
+    "DataExplorer",
     # Direct access to classes (for convenience)
     "IdentityLink",
     "LogLink",

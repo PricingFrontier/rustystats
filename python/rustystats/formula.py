@@ -180,6 +180,82 @@ class FormulaGLM:
         """Degrees of freedom for residuals (n - p)."""
         return self.n_obs - self.n_params
     
+    def explore(
+        self,
+        categorical_factors: Optional[List[str]] = None,
+        continuous_factors: Optional[List[str]] = None,
+        n_bins: int = 10,
+        rare_threshold_pct: float = 1.0,
+        max_categorical_levels: int = 20,
+        detect_interactions: bool = True,
+        max_interaction_factors: int = 10,
+    ):
+        """
+        Explore data before fitting the model.
+        
+        This provides pre-fit analysis including factor statistics and
+        interaction detection based on the response variable.
+        
+        Parameters
+        ----------
+        categorical_factors : list of str, optional
+            Names of categorical factors to analyze.
+        continuous_factors : list of str, optional
+            Names of continuous factors to analyze.
+        n_bins : int, default=10
+            Number of bins for continuous factors.
+        rare_threshold_pct : float, default=1.0
+            Threshold (%) below which categorical levels are grouped.
+        max_categorical_levels : int, default=20
+            Maximum categorical levels to show.
+        detect_interactions : bool, default=True
+            Whether to detect potential interactions.
+        max_interaction_factors : int, default=10
+            Maximum factors for interaction detection.
+        
+        Returns
+        -------
+        DataExploration
+            Pre-fit exploration results with to_json() method.
+        
+        Examples
+        --------
+        >>> model = rs.glm("ClaimNb ~ Age + C(Region)", data, family="poisson")
+        >>> 
+        >>> # Explore before fitting
+        >>> exploration = model.explore(
+        ...     categorical_factors=["Region", "VehBrand"],
+        ...     continuous_factors=["Age", "VehPower"],
+        ... )
+        >>> print(exploration.to_json())
+        >>> 
+        >>> # Then fit
+        >>> result = model.fit()
+        """
+        from rustystats.diagnostics import explore_data
+        
+        # Parse formula to get response column name
+        response = self.formula.split("~")[0].strip()
+        
+        # Get exposure column if set
+        exposure_col = None
+        if isinstance(self._offset_spec, str):
+            exposure_col = self._offset_spec
+        
+        return explore_data(
+            data=self.data,
+            response=response,
+            categorical_factors=categorical_factors,
+            continuous_factors=continuous_factors,
+            exposure=exposure_col,
+            family=self.family,
+            n_bins=n_bins,
+            rare_threshold_pct=rare_threshold_pct,
+            max_categorical_levels=max_categorical_levels,
+            detect_interactions=detect_interactions,
+            max_interaction_factors=max_interaction_factors,
+        )
+    
     def fit(
         self,
         alpha: float = 0.0,
@@ -601,6 +677,120 @@ class FormulaGLMResults:
         """
         from rustystats.glm import summary
         return summary(self._result, feature_names=self.feature_names)
+    
+    def diagnostics(
+        self,
+        data: "pl.DataFrame",
+        categorical_factors: Optional[List[str]] = None,
+        continuous_factors: Optional[List[str]] = None,
+        n_calibration_bins: int = 10,
+        n_factor_bins: int = 10,
+        rare_threshold_pct: float = 1.0,
+        max_categorical_levels: int = 20,
+        detect_interactions: bool = True,
+        max_interaction_factors: int = 10,
+    ):
+        """
+        Compute comprehensive model diagnostics.
+        
+        Parameters
+        ----------
+        data : pl.DataFrame
+            Original data used for fitting.
+        categorical_factors : list of str, optional
+            Names of categorical factors to analyze (both fitted and unfitted).
+        continuous_factors : list of str, optional
+            Names of continuous factors to analyze (both fitted and unfitted).
+        n_calibration_bins : int, default=10
+            Number of bins for calibration curve.
+        n_factor_bins : int, default=10
+            Number of quantile bins for continuous factors.
+        rare_threshold_pct : float, default=1.0
+            Threshold (%) below which categorical levels are grouped into "Other".
+        max_categorical_levels : int, default=20
+            Maximum number of categorical levels to show.
+        detect_interactions : bool, default=True
+            Whether to detect potential interactions.
+        max_interaction_factors : int, default=10
+            Maximum factors to consider for interaction detection.
+        
+        Returns
+        -------
+        ModelDiagnostics
+            Complete diagnostics object with to_json() method.
+        
+        Examples
+        --------
+        >>> result = rs.glm("ClaimNb ~ Age + C(Region)", data, family="poisson").fit()
+        >>> diagnostics = result.diagnostics(
+        ...     data=data,
+        ...     categorical_factors=["Region", "VehBrand"],
+        ...     continuous_factors=["Age", "VehPower"]
+        ... )
+        >>> print(diagnostics.to_json())
+        """
+        from rustystats.diagnostics import compute_diagnostics
+        
+        return compute_diagnostics(
+            result=self,
+            data=data,
+            categorical_factors=categorical_factors,
+            continuous_factors=continuous_factors,
+            n_calibration_bins=n_calibration_bins,
+            n_factor_bins=n_factor_bins,
+            rare_threshold_pct=rare_threshold_pct,
+            max_categorical_levels=max_categorical_levels,
+            detect_interactions=detect_interactions,
+            max_interaction_factors=max_interaction_factors,
+        )
+    
+    def diagnostics_json(
+        self,
+        data: "pl.DataFrame",
+        categorical_factors: Optional[List[str]] = None,
+        continuous_factors: Optional[List[str]] = None,
+        n_calibration_bins: int = 10,
+        n_factor_bins: int = 10,
+        rare_threshold_pct: float = 1.0,
+        max_categorical_levels: int = 20,
+        detect_interactions: bool = True,
+        max_interaction_factors: int = 10,
+        indent: Optional[int] = None,
+    ) -> str:
+        """
+        Compute diagnostics and return as JSON string.
+        
+        This is a convenience method that calls diagnostics() and converts
+        the result to JSON. The output is optimized for LLM consumption.
+        
+        Parameters
+        ----------
+        data : pl.DataFrame
+            Original data used for fitting.
+        categorical_factors : list of str, optional
+            Names of categorical factors to analyze.
+        continuous_factors : list of str, optional
+            Names of continuous factors to analyze.
+        indent : int, optional
+            JSON indentation. None for compact output.
+        
+        Returns
+        -------
+        str
+            JSON string containing all diagnostics.
+        """
+        diag = self.diagnostics(
+            data=data,
+            categorical_factors=categorical_factors,
+            continuous_factors=continuous_factors,
+            n_calibration_bins=n_calibration_bins,
+            n_factor_bins=n_factor_bins,
+            rare_threshold_pct=rare_threshold_pct,
+            max_categorical_levels=max_categorical_levels,
+            detect_interactions=detect_interactions,
+            max_interaction_factors=max_interaction_factors,
+        )
+        return diag.to_json(indent=indent)
     
     def __repr__(self) -> str:
         return (

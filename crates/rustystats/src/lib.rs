@@ -45,6 +45,16 @@ use rustystats_core::diagnostics::{
     log_likelihood_gaussian, log_likelihood_poisson, log_likelihood_binomial, log_likelihood_gamma,
     aic, bic, null_deviance,
     estimate_theta_profile, estimate_theta_moments,
+    // Calibration and discrimination
+    compute_calibration_curve, compute_discrimination_stats, compute_lorenz_curve,
+    hosmer_lemeshow_test,
+    // Factor diagnostics
+    compute_ae_continuous, compute_ae_categorical,
+    compute_residual_pattern_continuous, compute_continuous_stats,
+    // Interactions
+    detect_interactions, InteractionConfig, FactorData,
+    // Loss
+    mse, rmse, mae, compute_family_loss,
 };
 
 // =============================================================================
@@ -2356,6 +2366,555 @@ fn parse_formula_py(formula_str: &str) -> PyResult<std::collections::HashMap<Str
 }
 
 // =============================================================================
+// Diagnostics Bindings
+// =============================================================================
+
+/// Compute calibration curve bins from Rust
+#[pyfunction]
+#[pyo3(signature = (y, mu, exposure=None, n_bins=10))]
+fn compute_calibration_curve_py<'py>(
+    py: Python<'py>,
+    y: PyReadonlyArray1<f64>,
+    mu: PyReadonlyArray1<f64>,
+    exposure: Option<PyReadonlyArray1<f64>>,
+    n_bins: usize,
+) -> PyResult<Vec<PyObject>> {
+    let y_arr = y.as_array().to_owned();
+    let mu_arr = mu.as_array().to_owned();
+    let exp_arr = exposure.map(|e| e.as_array().to_owned());
+    
+    let bins = compute_calibration_curve(
+        &y_arr,
+        &mu_arr,
+        exp_arr.as_ref(),
+        n_bins,
+    );
+    
+    let result: Vec<PyObject> = bins.into_iter().map(|bin| {
+        let dict = pyo3::types::PyDict::new_bound(py);
+        dict.set_item("bin_index", bin.bin_index).unwrap();
+        dict.set_item("predicted_lower", bin.predicted_lower).unwrap();
+        dict.set_item("predicted_upper", bin.predicted_upper).unwrap();
+        dict.set_item("predicted_mean", bin.predicted_mean).unwrap();
+        dict.set_item("actual_mean", bin.actual_mean).unwrap();
+        dict.set_item("actual_expected_ratio", bin.actual_expected_ratio).unwrap();
+        dict.set_item("count", bin.count).unwrap();
+        dict.set_item("exposure", bin.exposure).unwrap();
+        dict.set_item("actual_sum", bin.actual_sum).unwrap();
+        dict.set_item("predicted_sum", bin.predicted_sum).unwrap();
+        dict.set_item("ae_ci_lower", bin.ae_ci_lower).unwrap();
+        dict.set_item("ae_ci_upper", bin.ae_ci_upper).unwrap();
+        dict.into_py(py)
+    }).collect();
+    
+    Ok(result)
+}
+
+/// Compute discrimination stats (Gini, AUC, etc.) from Rust
+#[pyfunction]
+#[pyo3(signature = (y, mu, exposure=None))]
+fn compute_discrimination_stats_py<'py>(
+    py: Python<'py>,
+    y: PyReadonlyArray1<f64>,
+    mu: PyReadonlyArray1<f64>,
+    exposure: Option<PyReadonlyArray1<f64>>,
+) -> PyResult<PyObject> {
+    let y_arr = y.as_array().to_owned();
+    let mu_arr = mu.as_array().to_owned();
+    let exp_arr = exposure.map(|e| e.as_array().to_owned());
+    
+    let stats = compute_discrimination_stats(&y_arr, &mu_arr, exp_arr.as_ref());
+    
+    let dict = pyo3::types::PyDict::new_bound(py);
+    dict.set_item("gini", stats.gini_coefficient)?;
+    dict.set_item("auc", stats.auc)?;
+    dict.set_item("ks_statistic", stats.ks_statistic)?;
+    dict.set_item("lift_at_10pct", stats.lift_at_10pct)?;
+    dict.set_item("lift_at_20pct", stats.lift_at_20pct)?;
+    
+    Ok(dict.into_py(py))
+}
+
+/// Compute A/E bins for continuous factor from Rust
+#[pyfunction]
+#[pyo3(signature = (values, y, mu, exposure=None, n_bins=10, family="poisson"))]
+fn compute_ae_continuous_py<'py>(
+    py: Python<'py>,
+    values: PyReadonlyArray1<f64>,
+    y: PyReadonlyArray1<f64>,
+    mu: PyReadonlyArray1<f64>,
+    exposure: Option<PyReadonlyArray1<f64>>,
+    n_bins: usize,
+    family: &str,
+) -> PyResult<Vec<PyObject>> {
+    let values_arr = values.as_array().to_owned();
+    let y_arr = y.as_array().to_owned();
+    let mu_arr = mu.as_array().to_owned();
+    let exp_arr = exposure.map(|e| e.as_array().to_owned());
+    
+    let bins = compute_ae_continuous(
+        values_arr.as_slice().unwrap(),
+        &y_arr,
+        &mu_arr,
+        exp_arr.as_ref(),
+        family,
+        n_bins,
+        None,  // var_power
+        None,  // theta
+    );
+    
+    let result: Vec<PyObject> = bins.into_iter().map(|bin| {
+        let dict = pyo3::types::PyDict::new_bound(py);
+        dict.set_item("bin_index", bin.bin_index).unwrap();
+        dict.set_item("bin_label", &bin.bin_label).unwrap();
+        dict.set_item("bin_lower", bin.bin_lower).unwrap();
+        dict.set_item("bin_upper", bin.bin_upper).unwrap();
+        dict.set_item("count", bin.count).unwrap();
+        dict.set_item("exposure", bin.exposure).unwrap();
+        dict.set_item("actual_sum", bin.actual_sum).unwrap();
+        dict.set_item("predicted_sum", bin.predicted_sum).unwrap();
+        dict.set_item("actual_mean", bin.actual_mean).unwrap();
+        dict.set_item("predicted_mean", bin.predicted_mean).unwrap();
+        dict.set_item("actual_expected_ratio", bin.actual_expected_ratio).unwrap();
+        dict.set_item("loss", bin.loss).unwrap();
+        dict.set_item("ae_ci_lower", bin.ae_ci_lower).unwrap();
+        dict.set_item("ae_ci_upper", bin.ae_ci_upper).unwrap();
+        dict.into_py(py)
+    }).collect();
+    
+    Ok(result)
+}
+
+/// Compute A/E bins for categorical factor from Rust
+#[pyfunction]
+#[pyo3(signature = (levels, y, mu, exposure=None, rare_threshold_pct=1.0, max_levels=20, family="poisson"))]
+fn compute_ae_categorical_py<'py>(
+    py: Python<'py>,
+    levels: Vec<String>,
+    y: PyReadonlyArray1<f64>,
+    mu: PyReadonlyArray1<f64>,
+    exposure: Option<PyReadonlyArray1<f64>>,
+    rare_threshold_pct: f64,
+    max_levels: usize,
+    family: &str,
+) -> PyResult<Vec<PyObject>> {
+    let y_arr = y.as_array().to_owned();
+    let mu_arr = mu.as_array().to_owned();
+    let exp_arr = exposure.map(|e| e.as_array().to_owned());
+    
+    let bins = compute_ae_categorical(
+        &levels,
+        &y_arr,
+        &mu_arr,
+        exp_arr.as_ref(),
+        family,
+        None,  // var_power
+        None,  // theta
+        rare_threshold_pct,
+        max_levels,
+    );
+    
+    let result: Vec<PyObject> = bins.into_iter().map(|bin| {
+        let dict = pyo3::types::PyDict::new_bound(py);
+        dict.set_item("bin_index", bin.bin_index).unwrap();
+        dict.set_item("bin_label", &bin.bin_label).unwrap();
+        dict.set_item("count", bin.count).unwrap();
+        dict.set_item("exposure", bin.exposure).unwrap();
+        dict.set_item("actual_sum", bin.actual_sum).unwrap();
+        dict.set_item("predicted_sum", bin.predicted_sum).unwrap();
+        dict.set_item("actual_mean", bin.actual_mean).unwrap();
+        dict.set_item("predicted_mean", bin.predicted_mean).unwrap();
+        dict.set_item("actual_expected_ratio", bin.actual_expected_ratio).unwrap();
+        dict.set_item("loss", bin.loss).unwrap();
+        dict.set_item("ae_ci_lower", bin.ae_ci_lower).unwrap();
+        dict.set_item("ae_ci_upper", bin.ae_ci_upper).unwrap();
+        dict.into_py(py)
+    }).collect();
+    
+    Ok(result)
+}
+
+/// Compute loss metrics from Rust
+#[pyfunction]
+fn compute_loss_metrics_py<'py>(
+    py: Python<'py>,
+    y: PyReadonlyArray1<f64>,
+    mu: PyReadonlyArray1<f64>,
+    family: &str,
+) -> PyResult<PyObject> {
+    let y_arr = y.as_array().to_owned();
+    let mu_arr = mu.as_array().to_owned();
+    
+    let dict = pyo3::types::PyDict::new_bound(py);
+    dict.set_item("mse", mse(&y_arr, &mu_arr, None))?;
+    dict.set_item("rmse", rmse(&y_arr, &mu_arr, None))?;
+    dict.set_item("mae", mae(&y_arr, &mu_arr, None))?;
+    dict.set_item("family_loss", compute_family_loss(family, &y_arr, &mu_arr, None, None, None))?;
+    
+    Ok(dict.into_py(py))
+}
+
+/// Detect interactions from Rust
+#[pyfunction]
+#[pyo3(signature = (residuals, factor_names, factor_values, factor_is_categorical, max_factors=10, max_candidates=5))]
+fn detect_interactions_py<'py>(
+    py: Python<'py>,
+    residuals: PyReadonlyArray1<f64>,
+    factor_names: Vec<String>,
+    factor_values: Vec<Vec<String>>,
+    factor_is_categorical: Vec<bool>,
+    max_factors: usize,
+    max_candidates: usize,
+) -> PyResult<Vec<PyObject>> {
+    let resid_arr = residuals.as_array().to_owned();
+    
+    use std::collections::HashMap;
+    let mut factors: HashMap<String, FactorData> = HashMap::new();
+    for (i, name) in factor_names.iter().enumerate() {
+        let is_cat = factor_is_categorical.get(i).copied().unwrap_or(false);
+        let values = factor_values.get(i).cloned().unwrap_or_default();
+        if is_cat {
+            factors.insert(name.clone(), FactorData::Categorical(values));
+        } else {
+            // Parse as f64
+            let floats: Vec<f64> = values.iter().map(|s| s.parse().unwrap_or(f64::NAN)).collect();
+            factors.insert(name.clone(), FactorData::Continuous(floats));
+        }
+    }
+    
+    let config = InteractionConfig {
+        max_factors_to_check: max_factors,
+        min_residual_correlation: 0.01,
+        max_candidates,
+        min_cell_count: 30,
+    };
+    
+    let interactions = detect_interactions(&factors, &resid_arr, &config);
+    
+    let result: Vec<PyObject> = interactions.into_iter().map(|int| {
+        let dict = pyo3::types::PyDict::new_bound(py);
+        dict.set_item("factor1", &int.factor1).unwrap();
+        dict.set_item("factor2", &int.factor2).unwrap();
+        dict.set_item("strength", int.interaction_strength).unwrap();
+        dict.set_item("pvalue", int.pvalue).unwrap();
+        dict.set_item("n_cells", int.n_cells).unwrap();
+        dict.into_py(py)
+    }).collect();
+    
+    Ok(result)
+}
+
+/// Compute Lorenz curve from Rust
+#[pyfunction]
+#[pyo3(signature = (y, mu, exposure=None, n_points=20))]
+fn compute_lorenz_curve_py<'py>(
+    py: Python<'py>,
+    y: PyReadonlyArray1<f64>,
+    mu: PyReadonlyArray1<f64>,
+    exposure: Option<PyReadonlyArray1<f64>>,
+    n_points: usize,
+) -> PyResult<Vec<PyObject>> {
+    let y_arr = y.as_array().to_owned();
+    let mu_arr = mu.as_array().to_owned();
+    let exp_arr = exposure.map(|e| e.as_array().to_owned());
+    
+    let points = compute_lorenz_curve(&y_arr, &mu_arr, exp_arr.as_ref(), n_points);
+    
+    let result: Vec<PyObject> = points.into_iter().map(|p| {
+        let dict = pyo3::types::PyDict::new_bound(py);
+        dict.set_item("cumulative_exposure_pct", p.cumulative_exposure_pct).unwrap();
+        dict.set_item("cumulative_actual_pct", p.cumulative_actual_pct).unwrap();
+        dict.set_item("cumulative_predicted_pct", p.cumulative_predicted_pct).unwrap();
+        dict.into_py(py)
+    }).collect();
+    
+    Ok(result)
+}
+
+/// Compute Hosmer-Lemeshow test from Rust
+#[pyfunction]
+fn hosmer_lemeshow_test_py<'py>(
+    py: Python<'py>,
+    y: PyReadonlyArray1<f64>,
+    mu: PyReadonlyArray1<f64>,
+    n_bins: usize,
+) -> PyResult<PyObject> {
+    let y_arr = y.as_array().to_owned();
+    let mu_arr = mu.as_array().to_owned();
+    
+    let result = hosmer_lemeshow_test(&y_arr, &mu_arr, n_bins);
+    
+    let dict = pyo3::types::PyDict::new_bound(py);
+    dict.set_item("chi2_statistic", result.statistic)?;
+    dict.set_item("pvalue", result.pvalue)?;
+    dict.set_item("degrees_of_freedom", result.degrees_of_freedom)?;
+    
+    Ok(dict.into_py(py))
+}
+
+/// Compute fit statistics from Rust
+#[pyfunction]
+fn compute_fit_statistics_py<'py>(
+    py: Python<'py>,
+    y: PyReadonlyArray1<f64>,
+    mu: PyReadonlyArray1<f64>,
+    deviance: f64,
+    null_dev: f64,
+    n_params: usize,
+    family: &str,
+) -> PyResult<PyObject> {
+    let y_arr = y.as_array().to_owned();
+    let mu_arr = mu.as_array().to_owned();
+    let n_obs = y_arr.len();
+    let df_resid = n_obs.saturating_sub(n_params);
+    
+    // Compute pearson chi2 based on family
+    let pchi2 = match family.to_lowercase().as_str() {
+        "gaussian" | "normal" => pearson_chi2(&y_arr, &mu_arr, &GaussianFamily, None),
+        "poisson" | "quasipoisson" => pearson_chi2(&y_arr, &mu_arr, &PoissonFamily, None),
+        "binomial" | "quasibinomial" => pearson_chi2(&y_arr, &mu_arr, &BinomialFamily, None),
+        "gamma" => pearson_chi2(&y_arr, &mu_arr, &GammaFamily, None),
+        _ => pearson_chi2(&y_arr, &mu_arr, &PoissonFamily, None),
+    };
+    
+    // Compute log-likelihood based on family
+    // Use estimated scale for gaussian
+    let scale = if df_resid > 0 {
+        y_arr.iter().zip(mu_arr.iter()).map(|(y, m)| (y - m).powi(2)).sum::<f64>() / df_resid as f64
+    } else { 1.0 };
+    
+    let llf = match family.to_lowercase().as_str() {
+        "gaussian" | "normal" => log_likelihood_gaussian(&y_arr, &mu_arr, scale, None),
+        "poisson" | "quasipoisson" => log_likelihood_poisson(&y_arr, &mu_arr, None),
+        "binomial" | "quasibinomial" => log_likelihood_binomial(&y_arr, &mu_arr, None),
+        "gamma" => log_likelihood_gamma(&y_arr, &mu_arr, scale, None),
+        _ => -deviance / 2.0,
+    };
+    
+    let aic_val = aic(llf, n_params);
+    let bic_val = bic(llf, n_params, n_obs);
+    
+    let deviance_explained = if null_dev > 0.0 { 1.0 - deviance / null_dev } else { 0.0 };
+    let dispersion_deviance = if df_resid > 0 { deviance / df_resid as f64 } else { 1.0 };
+    let dispersion_pearson = if df_resid > 0 { pchi2 / df_resid as f64 } else { 1.0 };
+    
+    let dict = pyo3::types::PyDict::new_bound(py);
+    dict.set_item("deviance", deviance)?;
+    dict.set_item("null_deviance", null_dev)?;
+    dict.set_item("deviance_explained", deviance_explained)?;
+    dict.set_item("log_likelihood", llf)?;
+    dict.set_item("aic", aic_val)?;
+    dict.set_item("bic", bic_val)?;
+    dict.set_item("pearson_chi2", pchi2)?;
+    dict.set_item("dispersion_deviance", dispersion_deviance)?;
+    dict.set_item("dispersion_pearson", dispersion_pearson)?;
+    
+    Ok(dict.into_py(py))
+}
+
+/// Compute residual summary statistics from Rust
+#[pyfunction]
+fn compute_residual_summary_py<'py>(
+    py: Python<'py>,
+    residuals: PyReadonlyArray1<f64>,
+) -> PyResult<PyObject> {
+    let resid = residuals.as_array();
+    let n = resid.len() as f64;
+    
+    if n == 0.0 {
+        return Err(PyValueError::new_err("Empty residuals array"));
+    }
+    
+    let mean = resid.iter().sum::<f64>() / n;
+    let variance = resid.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n;
+    let std = variance.sqrt();
+    let min = resid.iter().cloned().fold(f64::INFINITY, f64::min);
+    let max = resid.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    
+    // Skewness and kurtosis
+    let skewness = if std > 0.0 {
+        resid.iter().map(|x| ((x - mean) / std).powi(3)).sum::<f64>() / n
+    } else { 0.0 };
+    
+    let kurtosis = if std > 0.0 {
+        resid.iter().map(|x| ((x - mean) / std).powi(4)).sum::<f64>() / n - 3.0
+    } else { 0.0 };
+    
+    // Percentiles
+    let mut sorted: Vec<f64> = resid.iter().cloned().collect();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    
+    let percentile = |p: f64| -> f64 {
+        let idx = (p / 100.0 * (sorted.len() - 1) as f64).round() as usize;
+        sorted[idx.min(sorted.len() - 1)]
+    };
+    
+    let dict = pyo3::types::PyDict::new_bound(py);
+    dict.set_item("mean", mean)?;
+    dict.set_item("std", std)?;
+    dict.set_item("min", min)?;
+    dict.set_item("max", max)?;
+    dict.set_item("skewness", skewness)?;
+    dict.set_item("kurtosis", kurtosis)?;
+    dict.set_item("p1", percentile(1.0))?;
+    dict.set_item("p5", percentile(5.0))?;
+    dict.set_item("p10", percentile(10.0))?;
+    dict.set_item("p25", percentile(25.0))?;
+    dict.set_item("p50", percentile(50.0))?;
+    dict.set_item("p75", percentile(75.0))?;
+    dict.set_item("p90", percentile(90.0))?;
+    dict.set_item("p95", percentile(95.0))?;
+    dict.set_item("p99", percentile(99.0))?;
+    
+    Ok(dict.into_py(py))
+}
+
+/// Compute residual pattern for continuous factor from Rust
+#[pyfunction]
+#[pyo3(signature = (values, residuals, n_bins=10))]
+fn compute_residual_pattern_py<'py>(
+    py: Python<'py>,
+    values: PyReadonlyArray1<f64>,
+    residuals: PyReadonlyArray1<f64>,
+    n_bins: usize,
+) -> PyResult<PyObject> {
+    let values_arr = values.as_array().to_owned();
+    let resid_arr = residuals.as_array().to_owned();
+    
+    let pattern = compute_residual_pattern_continuous(
+        values_arr.as_slice().unwrap(),
+        &resid_arr,
+        n_bins,
+    );
+    
+    let dict = pyo3::types::PyDict::new_bound(py);
+    dict.set_item("correlation_with_residuals", pattern.correlation_with_residuals)?;
+    
+    let means: Vec<PyObject> = pattern.mean_residual_by_bin.into_iter().enumerate().map(|(i, m)| {
+        let d = pyo3::types::PyDict::new_bound(py);
+        d.set_item("bin_index", i).unwrap();
+        d.set_item("mean_residual", m).unwrap();
+        d.into_py(py)
+    }).collect();
+    
+    dict.set_item("mean_residual_by_bin", means)?;
+    
+    Ok(dict.into_py(py))
+}
+
+/// Compute Pearson residuals from Rust
+#[pyfunction]
+fn compute_pearson_residuals_py<'py>(
+    py: Python<'py>,
+    y: PyReadonlyArray1<f64>,
+    mu: PyReadonlyArray1<f64>,
+    family: &str,
+) -> PyResult<Py<PyArray1<f64>>> {
+    let y_arr = y.as_array().to_owned();
+    let mu_arr = mu.as_array().to_owned();
+    
+    let resid = match family.to_lowercase().as_str() {
+        "gaussian" | "normal" => resid_pearson(&y_arr, &mu_arr, &GaussianFamily),
+        "poisson" | "quasipoisson" => resid_pearson(&y_arr, &mu_arr, &PoissonFamily),
+        "binomial" | "quasibinomial" => resid_pearson(&y_arr, &mu_arr, &BinomialFamily),
+        "gamma" => resid_pearson(&y_arr, &mu_arr, &GammaFamily),
+        _ => resid_pearson(&y_arr, &mu_arr, &PoissonFamily),
+    };
+    
+    Ok(resid.into_pyarray_bound(py).unbind())
+}
+
+/// Compute deviance residuals from Rust
+#[pyfunction]
+fn compute_deviance_residuals_py<'py>(
+    py: Python<'py>,
+    y: PyReadonlyArray1<f64>,
+    mu: PyReadonlyArray1<f64>,
+    family: &str,
+) -> PyResult<Py<PyArray1<f64>>> {
+    let y_arr = y.as_array().to_owned();
+    let mu_arr = mu.as_array().to_owned();
+    
+    let resid = match family.to_lowercase().as_str() {
+        "gaussian" | "normal" => resid_deviance(&y_arr, &mu_arr, &GaussianFamily),
+        "poisson" | "quasipoisson" => resid_deviance(&y_arr, &mu_arr, &PoissonFamily),
+        "binomial" | "quasibinomial" => resid_deviance(&y_arr, &mu_arr, &BinomialFamily),
+        "gamma" => resid_deviance(&y_arr, &mu_arr, &GammaFamily),
+        _ => resid_deviance(&y_arr, &mu_arr, &PoissonFamily),
+    };
+    
+    Ok(resid.into_pyarray_bound(py).unbind())
+}
+
+/// Compute null deviance from Rust
+#[pyfunction]
+fn compute_null_deviance_py(
+    y: PyReadonlyArray1<f64>,
+    family: &str,
+    exposure: Option<PyReadonlyArray1<f64>>,
+) -> PyResult<f64> {
+    let y_arr = y.as_array().to_owned();
+    let exp_arr = exposure.map(|e| e.as_array().to_owned());
+    
+    Ok(null_deviance(&y_arr, family, exp_arr.as_ref()))
+}
+
+/// Compute unit deviance from Rust
+#[pyfunction]
+fn compute_unit_deviance_py<'py>(
+    py: Python<'py>,
+    y: PyReadonlyArray1<f64>,
+    mu: PyReadonlyArray1<f64>,
+    family: &str,
+) -> PyResult<Py<PyArray1<f64>>> {
+    let y_arr = y.as_array().to_owned();
+    let mu_arr = mu.as_array().to_owned();
+    
+    // Compute unit deviance based on family
+    let unit_dev: Array1<f64> = match family.to_lowercase().as_str() {
+        "gaussian" | "normal" => {
+            y_arr.iter().zip(mu_arr.iter()).map(|(yi, mi)| (yi - mi).powi(2)).collect()
+        }
+        "poisson" | "quasipoisson" => {
+            y_arr.iter().zip(mu_arr.iter()).map(|(yi, mi)| {
+                let y_safe = yi.max(0.0);
+                let mu_safe = mi.max(1e-10);
+                if y_safe == 0.0 {
+                    2.0 * mu_safe
+                } else {
+                    2.0 * (y_safe * (y_safe / mu_safe).ln() - (y_safe - mu_safe))
+                }
+            }).collect()
+        }
+        "binomial" | "quasibinomial" => {
+            y_arr.iter().zip(mu_arr.iter()).map(|(yi, mi)| {
+                let mu_clip = mi.max(1e-10).min(1.0 - 1e-10);
+                let mut dev = 0.0;
+                if *yi > 0.0 {
+                    dev += 2.0 * yi * (yi / mu_clip).ln();
+                }
+                if *yi < 1.0 {
+                    dev += 2.0 * (1.0 - yi) * ((1.0 - yi) / (1.0 - mu_clip)).ln();
+                }
+                dev
+            }).collect()
+        }
+        "gamma" => {
+            y_arr.iter().zip(mu_arr.iter()).map(|(yi, mi)| {
+                let y_safe = yi.max(1e-10);
+                let mu_safe = mi.max(1e-10);
+                2.0 * ((y_safe - mu_safe) / mu_safe - (y_safe / mu_safe).ln())
+            }).collect()
+        }
+        _ => {
+            y_arr.iter().zip(mu_arr.iter()).map(|(yi, mi)| (yi - mi).powi(2)).collect()
+        }
+    };
+    
+    Ok(unit_dev.into_pyarray_bound(py).unbind())
+}
+
+// =============================================================================
 // Module Registration
 // =============================================================================
 //
@@ -2411,6 +2970,23 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Add target encoding (CatBoost-style)
     m.add_function(wrap_pyfunction!(target_encode_py, m)?)?;
     m.add_function(wrap_pyfunction!(apply_target_encoding_py, m)?)?;
+    
+    // Add diagnostics functions
+    m.add_function(wrap_pyfunction!(compute_calibration_curve_py, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_discrimination_stats_py, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_ae_continuous_py, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_ae_categorical_py, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_loss_metrics_py, m)?)?;
+    m.add_function(wrap_pyfunction!(detect_interactions_py, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_lorenz_curve_py, m)?)?;
+    m.add_function(wrap_pyfunction!(hosmer_lemeshow_test_py, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_fit_statistics_py, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_residual_summary_py, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_residual_pattern_py, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_pearson_residuals_py, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_deviance_residuals_py, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_null_deviance_py, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_unit_deviance_py, m)?)?;
     
     Ok(())
 }
