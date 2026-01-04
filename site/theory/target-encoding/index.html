@@ -13,10 +13,10 @@
       
       
       
-        <link rel="prev" href="../target-encoding/">
+        <link rel="prev" href="../coordinate-descent/">
       
       
-        <link rel="next" href="../regularization/">
+        <link rel="next" href="../diagnostics/">
       
       
         
@@ -27,7 +27,7 @@
     
     
       
-        <title>Model Diagnostics - RustyStats Documentation</title>
+        <title>Target Encoding - RustyStats Documentation</title>
       
     
     
@@ -78,7 +78,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#model-diagnostics" class="md-skip">
+        <a href="#target-encoding-the-catboost-approach" class="md-skip">
           Skip to content
         </a>
       
@@ -112,7 +112,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Model Diagnostics
+              Target Encoding
             
           </span>
         </div>
@@ -899,34 +899,6 @@
                 
   
   
-  
-  
-    <li class="md-nav__item">
-      <a href="../target-encoding/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Target Encoding
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
     
   
   
@@ -946,7 +918,7 @@
   <span class="md-ellipsis">
     
   
-    Model Diagnostics
+    Target Encoding
   
 
     
@@ -964,7 +936,7 @@
   <span class="md-ellipsis">
     
   
-    Model Diagnostics
+    Target Encoding
   
 
     
@@ -990,22 +962,22 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#residuals" class="md-nav__link">
+  <a href="#the-problem-high-cardinality-categoricals" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Residuals
+        The Problem: High-Cardinality Categoricals
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Residuals">
+    <nav class="md-nav" aria-label="The Problem: High-Cardinality Categoricals">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#response-residuals" class="md-nav__link">
+  <a href="#whats-a-high-cardinality-categorical" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Response Residuals
+        What's a High-Cardinality Categorical?
       
     </span>
   </a>
@@ -1013,32 +985,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#pearson-residuals" class="md-nav__link">
+  <a href="#why-are-they-problematic" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Pearson Residuals
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#deviance-residuals" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Deviance Residuals
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#working-residuals" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Working Residuals
+        Why Are They Problematic?
       
     </span>
   </a>
@@ -1051,22 +1001,22 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#goodness-of-fit-statistics" class="md-nav__link">
+  <a href="#naive-solution-mean-target-encoding" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Goodness-of-Fit Statistics
+        Naive Solution: Mean Target Encoding
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Goodness-of-Fit Statistics">
+    <nav class="md-nav" aria-label="Naive Solution: Mean Target Encoding">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#deviance" class="md-nav__link">
+  <a href="#the-idea" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Deviance
+        The Idea
       
     </span>
   </a>
@@ -1074,43 +1024,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#null-deviance" class="md-nav__link">
+  <a href="#the-fatal-flaw-target-leakage" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Null Deviance
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#pearson-chi-squared" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Pearson Chi-Squared
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#dispersion-estimation" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Dispersion Estimation
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#checking-for-overdispersion" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Checking for Overdispersion
+        The Fatal Flaw: Target Leakage
       
     </span>
   </a>
@@ -1123,22 +1040,22 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#information-criteria" class="md-nav__link">
+  <a href="#the-catboost-solution-ordered-target-statistics" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Information Criteria
+        The CatBoost Solution: Ordered Target Statistics
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Information Criteria">
+    <nav class="md-nav" aria-label="The CatBoost Solution: Ordered Target Statistics">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#log-likelihood" class="md-nav__link">
+  <a href="#the-key-insight" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Log-Likelihood
+        The Key Insight
       
     </span>
   </a>
@@ -1146,10 +1063,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#aic-akaike-information-criterion" class="md-nav__link">
+  <a href="#step-by-step-example" class="md-nav__link">
     <span class="md-ellipsis">
       
-        AIC (Akaike Information Criterion)
+        Step-by-Step Example
       
     </span>
   </a>
@@ -1157,21 +1074,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#bic-bayesian-information-criterion" class="md-nav__link">
+  <a href="#why-this-prevents-leakage" class="md-nav__link">
     <span class="md-ellipsis">
       
-        BIC (Bayesian Information Criterion)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#when-to-use-each" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        When to Use Each
+        Why This Prevents Leakage
       
     </span>
   </a>
@@ -1184,22 +1090,22 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#calibration-diagnostics" class="md-nav__link">
+  <a href="#adding-regularization-the-prior" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Calibration Diagnostics
+        Adding Regularization: The Prior
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Calibration Diagnostics">
+    <nav class="md-nav" aria-label="Adding Regularization: The Prior">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#actual-vs-expected-ratio" class="md-nav__link">
+  <a href="#the-problem-with-raw-statistics" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Actual vs. Expected Ratio
+        The Problem with Raw Statistics
       
     </span>
   </a>
@@ -1207,10 +1113,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#calibration-by-decile" class="md-nav__link">
+  <a href="#the-solution-blend-with-prior" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Calibration by Decile
+        The Solution: Blend with Prior
       
     </span>
   </a>
@@ -1218,10 +1124,21 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#hosmer-lemeshow-test" class="md-nav__link">
+  <a href="#example-with-prior_weight-10" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Hosmer-Lemeshow Test
+        Example with prior_weight = 1.0
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#interpretation-of-prior-weight" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Interpretation of Prior Weight
       
     </span>
   </a>
@@ -1234,22 +1151,22 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#discrimination-diagnostics" class="md-nav__link">
+  <a href="#multiple-permutations-reducing-variance" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Discrimination Diagnostics
+        Multiple Permutations: Reducing Variance
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Discrimination Diagnostics">
+    <nav class="md-nav" aria-label="Multiple Permutations: Reducing Variance">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#gini-coefficient" class="md-nav__link">
+  <a href="#the-problem" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Gini Coefficient
+        The Problem
       
     </span>
   </a>
@@ -1257,10 +1174,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#lorenz-curve" class="md-nav__link">
+  <a href="#the-solution" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Lorenz Curve
+        The Solution
       
     </span>
   </a>
@@ -1268,10 +1185,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#lift" class="md-nav__link">
+  <a href="#how-many-permutations" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Lift
+        How Many Permutations?
       
     </span>
   </a>
@@ -1284,22 +1201,44 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#factor-diagnostics" class="md-nav__link">
+  <a href="#the-complete-algorithm" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Factor Diagnostics
+        The Complete Algorithm
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Factor Diagnostics">
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#applying-to-new-data" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Applying to New Data
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rustystats-implementation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        RustyStats Implementation
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="RustyStats Implementation">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#ae-by-factor-level" class="md-nav__link">
+  <a href="#basic-usage" class="md-nav__link">
     <span class="md-ellipsis">
       
-        A/E by Factor Level
+        Basic Usage
       
     </span>
   </a>
@@ -1307,10 +1246,32 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#residual-patterns" class="md-nav__link">
+  <a href="#for-prediction" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Residual Patterns
+        For Prediction
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#scikit-learn-style-api" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scikit-learn Style API
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#in-formulas" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        In Formulas
       
     </span>
   </a>
@@ -1323,43 +1284,49 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#interaction-detection" class="md-nav__link">
+  <a href="#when-to-use-target-encoding" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Interaction Detection
+        When to Use Target Encoding
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="When to Use Target Encoding">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#good-use-cases" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Good Use Cases
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#pre-fit-data-exploration" class="md-nav__link">
+        
+          <li class="md-nav__item">
+  <a href="#when-not-to-use" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Pre-Fit Data Exploration
+        When NOT to Use
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#json-export-for-llm-integration" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        JSON Export for LLM Integration
-      
-    </span>
-  </a>
+        
+      </ul>
+    </nav>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#diagnostic-plots-external" class="md-nav__link">
+  <a href="#comparison-with-alternatives" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Diagnostic Plots (External)
+        Comparison with Alternatives
       
     </span>
   </a>
@@ -1377,10 +1344,60 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        References
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#next-steps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Next Steps
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
       
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../diagnostics/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Model Diagnostics
+  
+
+    
+  </span>
+  
+  
+
+      </a>
     </li>
   
 
@@ -2514,22 +2531,22 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#residuals" class="md-nav__link">
+  <a href="#the-problem-high-cardinality-categoricals" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Residuals
+        The Problem: High-Cardinality Categoricals
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Residuals">
+    <nav class="md-nav" aria-label="The Problem: High-Cardinality Categoricals">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#response-residuals" class="md-nav__link">
+  <a href="#whats-a-high-cardinality-categorical" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Response Residuals
+        What's a High-Cardinality Categorical?
       
     </span>
   </a>
@@ -2537,32 +2554,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#pearson-residuals" class="md-nav__link">
+  <a href="#why-are-they-problematic" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Pearson Residuals
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#deviance-residuals" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Deviance Residuals
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#working-residuals" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Working Residuals
+        Why Are They Problematic?
       
     </span>
   </a>
@@ -2575,22 +2570,22 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#goodness-of-fit-statistics" class="md-nav__link">
+  <a href="#naive-solution-mean-target-encoding" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Goodness-of-Fit Statistics
+        Naive Solution: Mean Target Encoding
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Goodness-of-Fit Statistics">
+    <nav class="md-nav" aria-label="Naive Solution: Mean Target Encoding">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#deviance" class="md-nav__link">
+  <a href="#the-idea" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Deviance
+        The Idea
       
     </span>
   </a>
@@ -2598,43 +2593,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#null-deviance" class="md-nav__link">
+  <a href="#the-fatal-flaw-target-leakage" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Null Deviance
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#pearson-chi-squared" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Pearson Chi-Squared
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#dispersion-estimation" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Dispersion Estimation
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#checking-for-overdispersion" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Checking for Overdispersion
+        The Fatal Flaw: Target Leakage
       
     </span>
   </a>
@@ -2647,22 +2609,22 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#information-criteria" class="md-nav__link">
+  <a href="#the-catboost-solution-ordered-target-statistics" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Information Criteria
+        The CatBoost Solution: Ordered Target Statistics
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Information Criteria">
+    <nav class="md-nav" aria-label="The CatBoost Solution: Ordered Target Statistics">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#log-likelihood" class="md-nav__link">
+  <a href="#the-key-insight" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Log-Likelihood
+        The Key Insight
       
     </span>
   </a>
@@ -2670,10 +2632,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#aic-akaike-information-criterion" class="md-nav__link">
+  <a href="#step-by-step-example" class="md-nav__link">
     <span class="md-ellipsis">
       
-        AIC (Akaike Information Criterion)
+        Step-by-Step Example
       
     </span>
   </a>
@@ -2681,21 +2643,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#bic-bayesian-information-criterion" class="md-nav__link">
+  <a href="#why-this-prevents-leakage" class="md-nav__link">
     <span class="md-ellipsis">
       
-        BIC (Bayesian Information Criterion)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#when-to-use-each" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        When to Use Each
+        Why This Prevents Leakage
       
     </span>
   </a>
@@ -2708,22 +2659,22 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#calibration-diagnostics" class="md-nav__link">
+  <a href="#adding-regularization-the-prior" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Calibration Diagnostics
+        Adding Regularization: The Prior
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Calibration Diagnostics">
+    <nav class="md-nav" aria-label="Adding Regularization: The Prior">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#actual-vs-expected-ratio" class="md-nav__link">
+  <a href="#the-problem-with-raw-statistics" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Actual vs. Expected Ratio
+        The Problem with Raw Statistics
       
     </span>
   </a>
@@ -2731,10 +2682,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#calibration-by-decile" class="md-nav__link">
+  <a href="#the-solution-blend-with-prior" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Calibration by Decile
+        The Solution: Blend with Prior
       
     </span>
   </a>
@@ -2742,10 +2693,21 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#hosmer-lemeshow-test" class="md-nav__link">
+  <a href="#example-with-prior_weight-10" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Hosmer-Lemeshow Test
+        Example with prior_weight = 1.0
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#interpretation-of-prior-weight" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Interpretation of Prior Weight
       
     </span>
   </a>
@@ -2758,22 +2720,22 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#discrimination-diagnostics" class="md-nav__link">
+  <a href="#multiple-permutations-reducing-variance" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Discrimination Diagnostics
+        Multiple Permutations: Reducing Variance
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Discrimination Diagnostics">
+    <nav class="md-nav" aria-label="Multiple Permutations: Reducing Variance">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#gini-coefficient" class="md-nav__link">
+  <a href="#the-problem" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Gini Coefficient
+        The Problem
       
     </span>
   </a>
@@ -2781,10 +2743,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#lorenz-curve" class="md-nav__link">
+  <a href="#the-solution" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Lorenz Curve
+        The Solution
       
     </span>
   </a>
@@ -2792,10 +2754,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#lift" class="md-nav__link">
+  <a href="#how-many-permutations" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Lift
+        How Many Permutations?
       
     </span>
   </a>
@@ -2808,22 +2770,44 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#factor-diagnostics" class="md-nav__link">
+  <a href="#the-complete-algorithm" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Factor Diagnostics
+        The Complete Algorithm
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Factor Diagnostics">
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#applying-to-new-data" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Applying to New Data
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rustystats-implementation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        RustyStats Implementation
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="RustyStats Implementation">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#ae-by-factor-level" class="md-nav__link">
+  <a href="#basic-usage" class="md-nav__link">
     <span class="md-ellipsis">
       
-        A/E by Factor Level
+        Basic Usage
       
     </span>
   </a>
@@ -2831,10 +2815,32 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#residual-patterns" class="md-nav__link">
+  <a href="#for-prediction" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Residual Patterns
+        For Prediction
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#scikit-learn-style-api" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scikit-learn Style API
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#in-formulas" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        In Formulas
       
     </span>
   </a>
@@ -2847,43 +2853,49 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#interaction-detection" class="md-nav__link">
+  <a href="#when-to-use-target-encoding" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Interaction Detection
+        When to Use Target Encoding
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="When to Use Target Encoding">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#good-use-cases" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Good Use Cases
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#pre-fit-data-exploration" class="md-nav__link">
+        
+          <li class="md-nav__item">
+  <a href="#when-not-to-use" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Pre-Fit Data Exploration
+        When NOT to Use
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#json-export-for-llm-integration" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        JSON Export for LLM Integration
-      
-    </span>
-  </a>
+        
+      </ul>
+    </nav>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#diagnostic-plots-external" class="md-nav__link">
+  <a href="#comparison-with-alternatives" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Diagnostic Plots (External)
+        Comparison with Alternatives
       
     </span>
   </a>
@@ -2895,6 +2907,28 @@
     <span class="md-ellipsis">
       
         Summary
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        References
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#next-steps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Next Steps
       
     </span>
   </a>
@@ -2921,272 +2955,531 @@
   
 
 
-<h1 id="model-diagnostics">Model Diagnostics<a class="headerlink" href="#model-diagnostics" title="Permanent link">&para;</a></h1>
-<p>After fitting a GLM, you need to assess whether the model fits well and identify areas for improvement. This chapter covers the diagnostic tools available in RustyStats.</p>
-<h2 id="residuals">Residuals<a class="headerlink" href="#residuals" title="Permanent link">&para;</a></h2>
-<p>Residuals measure the discrepancy between observed and fitted values. GLMs have several types of residuals, each with different properties.</p>
-<h3 id="response-residuals">Response Residuals<a class="headerlink" href="#response-residuals" title="Permanent link">&para;</a></h3>
-<p>The simplest residual - just the difference:</p>
-<div class="arithmatex">\[
-r_i^{\text{response}} = y_i - \hat{\mu}_i
-\]</div>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">resid</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">resid_response</span><span class="p">()</span>
-</span></code></pre></div>
-<p><strong>Properties:</strong>
-- Easy to interpret
-- Not standardized (scale depends on <span class="arithmatex">\(\mu\)</span>)
-- Variance is not constant</p>
-<h3 id="pearson-residuals">Pearson Residuals<a class="headerlink" href="#pearson-residuals" title="Permanent link">&para;</a></h3>
-<p>Standardized by the variance function:</p>
-<div class="arithmatex">\[
-r_i^{\text{Pearson}} = \frac{y_i - \hat{\mu}_i}{\sqrt{V(\hat{\mu}_i)}}
-\]</div>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">resid</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">resid_pearson</span><span class="p">()</span>
-</span></code></pre></div>
-<p><strong>Properties:</strong>
-- Approximately standardized (unit variance under the model)
-- Useful for detecting outliers
-- Sum of squares = Pearson <span class="arithmatex">\(\chi^2\)</span> statistic</p>
-<h3 id="deviance-residuals">Deviance Residuals<a class="headerlink" href="#deviance-residuals" title="Permanent link">&para;</a></h3>
-<p>Based on the contribution to deviance:</p>
-<div class="arithmatex">\[
-r_i^{\text{deviance}} = \text{sign}(y_i - \hat{\mu}_i) \sqrt{d_i}
-\]</div>
-<p>where <span class="arithmatex">\(d_i\)</span> is the unit deviance.</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">resid</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">resid_deviance</span><span class="p">()</span>
-</span></code></pre></div>
-<p><strong>Properties:</strong>
-- Sum of squares = Model deviance
-- More normally distributed than Pearson residuals
-- Preferred for most diagnostic plots</p>
-<h3 id="working-residuals">Working Residuals<a class="headerlink" href="#working-residuals" title="Permanent link">&para;</a></h3>
-<p>Used internally by IRLS:</p>
-<div class="arithmatex">\[
-r_i^{\text{working}} = (y_i - \hat{\mu}_i) \cdot g'(\hat{\mu}_i)
-\]</div>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="n">resid</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">resid_working</span><span class="p">()</span>
-</span></code></pre></div>
-<p><strong>Properties:</strong>
-- On the linear predictor scale
-- Useful for partial residual plots</p>
-<h2 id="goodness-of-fit-statistics">Goodness-of-Fit Statistics<a class="headerlink" href="#goodness-of-fit-statistics" title="Permanent link">&para;</a></h2>
-<h3 id="deviance">Deviance<a class="headerlink" href="#deviance" title="Permanent link">&para;</a></h3>
-<p>The deviance measures overall model fit:</p>
-<div class="arithmatex">\[
-D = 2[\ell(\text{saturated}) - \ell(\text{fitted})]
-\]</div>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="n">deviance</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">deviance</span>
-</span></code></pre></div>
-<p>Lower deviance = better fit. For comparing nested models:</p>
-<div class="arithmatex">\[
-D_{\text{reduced}} - D_{\text{full}} \sim \chi^2_{p_{\text{full}} - p_{\text{reduced}}}
-\]</div>
-<h3 id="null-deviance">Null Deviance<a class="headerlink" href="#null-deviance" title="Permanent link">&para;</a></h3>
-<p>Deviance of the intercept-only model:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">null_dev</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">null_deviance</span><span class="p">()</span>
-</span></code></pre></div>
-<p><strong>Pseudo-R²</strong> (one of many definitions):
-[
-R^2_{\text{pseudo}} = 1 - \frac{D}{D_{\text{null}}}
-]</p>
-<h3 id="pearson-chi-squared">Pearson Chi-Squared<a class="headerlink" href="#pearson-chi-squared" title="Permanent link">&para;</a></h3>
-<div class="arithmatex">\[
-\chi^2_{\text{Pearson}} = \sum_i \frac{(y_i - \hat{\mu}_i)^2}{V(\hat{\mu}_i)}
-\]</div>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="n">chi2</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">pearson_chi2</span><span class="p">()</span>
-</span></code></pre></div>
-<h3 id="dispersion-estimation">Dispersion Estimation<a class="headerlink" href="#dispersion-estimation" title="Permanent link">&para;</a></h3>
-<p>For families with unknown dispersion (Gaussian, Gamma, Quasi-families):</p>
-<div class="arithmatex">\[
-\hat{\phi}_{\text{Pearson}} = \frac{\chi^2_{\text{Pearson}}}{n - p}
-\]</div>
-<div class="arithmatex">\[
-\hat{\phi}_{\text{deviance}} = \frac{D}{n - p}
-\]</div>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="n">phi_deviance</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">scale</span><span class="p">()</span>
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="n">phi_pearson</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">scale_pearson</span><span class="p">()</span>
-</span></code></pre></div>
-<h3 id="checking-for-overdispersion">Checking for Overdispersion<a class="headerlink" href="#checking-for-overdispersion" title="Permanent link">&para;</a></h3>
-<p>For Poisson/Binomial, dispersion should be ≈ 1:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="n">dispersion_ratio</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">pearson_chi2</span><span class="p">()</span> <span class="o">/</span> <span class="n">result</span><span class="o">.</span><span class="n">df_resid</span>
-</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Dispersion ratio: </span><span class="si">{</span><span class="n">dispersion_ratio</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>
-</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="c1"># &gt; 1.5 suggests overdispersion</span>
-</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="c1"># &lt; 0.7 suggests underdispersion</span>
-</span></code></pre></div>
-<h2 id="information-criteria">Information Criteria<a class="headerlink" href="#information-criteria" title="Permanent link">&para;</a></h2>
-<h3 id="log-likelihood">Log-Likelihood<a class="headerlink" href="#log-likelihood" title="Permanent link">&para;</a></h3>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="n">ll</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">llf</span><span class="p">()</span>
-</span></code></pre></div>
-<h3 id="aic-akaike-information-criterion">AIC (Akaike Information Criterion)<a class="headerlink" href="#aic-akaike-information-criterion" title="Permanent link">&para;</a></h3>
-<div class="arithmatex">\[
-\text{AIC} = -2\ell + 2p
-\]</div>
-<p>Balances fit (likelihood) with complexity (number of parameters).</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="n">aic</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">aic</span><span class="p">()</span>
-</span></code></pre></div>
-<p><strong>Lower is better.</strong> AIC favors parsimony.</p>
-<h3 id="bic-bayesian-information-criterion">BIC (Bayesian Information Criterion)<a class="headerlink" href="#bic-bayesian-information-criterion" title="Permanent link">&para;</a></h3>
-<div class="arithmatex">\[
-\text{BIC} = -2\ell + p \log(n)
-\]</div>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="n">bic</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">bic</span><span class="p">()</span>
-</span></code></pre></div>
-<p><strong>More conservative</strong> than AIC for large samples (penalizes complexity more).</p>
-<h3 id="when-to-use-each">When to Use Each<a class="headerlink" href="#when-to-use-each" title="Permanent link">&para;</a></h3>
+<h1 id="target-encoding-the-catboost-approach">Target Encoding: The CatBoost Approach<a class="headerlink" href="#target-encoding-the-catboost-approach" title="Permanent link">&para;</a></h1>
+<p>This chapter explains how RustyStats handles high-cardinality categorical variables using CatBoost-style ordered target encoding. We'll build the intuition step-by-step, show why naive approaches fail, and explain why the CatBoost method works.</p>
+<hr />
+<h2 id="the-problem-high-cardinality-categoricals">The Problem: High-Cardinality Categoricals<a class="headerlink" href="#the-problem-high-cardinality-categoricals" title="Permanent link">&para;</a></h2>
+<h3 id="whats-a-high-cardinality-categorical">What's a High-Cardinality Categorical?<a class="headerlink" href="#whats-a-high-cardinality-categorical" title="Permanent link">&para;</a></h3>
+<p>A categorical variable with many unique values:</p>
 <table>
 <thead>
 <tr>
-<th>Criterion</th>
-<th>Penalty</th>
-<th>Best For</th>
+<th>Variable</th>
+<th>Example Values</th>
+<th>Cardinality</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>AIC</td>
-<td>2p</td>
-<td>Prediction, model averaging</td>
+<td>Gender</td>
+<td>Male, Female, Other</td>
+<td>Low (3)</td>
 </tr>
 <tr>
-<td>BIC</td>
-<td>p log(n)</td>
-<td>Model selection, large samples</td>
+<td>US State</td>
+<td>CA, TX, NY, ...</td>
+<td>Medium (50)</td>
+</tr>
+<tr>
+<td>ZIP Code</td>
+<td>90210, 10001, ...</td>
+<td>High (40,000+)</td>
+</tr>
+<tr>
+<td>Brand</td>
+<td>Toyota, Ford, ...</td>
+<td>High (varies)</td>
+</tr>
+<tr>
+<td>Customer ID</td>
+<td>C001, C002, ...</td>
+<td>Very High (millions)</td>
 </tr>
 </tbody>
 </table>
-<h2 id="calibration-diagnostics">Calibration Diagnostics<a class="headerlink" href="#calibration-diagnostics" title="Permanent link">&para;</a></h2>
-<p>Calibration measures how well predicted probabilities/means match observed values.</p>
-<h3 id="actual-vs-expected-ratio">Actual vs. Expected Ratio<a class="headerlink" href="#actual-vs-expected-ratio" title="Permanent link">&para;</a></h3>
+<h3 id="why-are-they-problematic">Why Are They Problematic?<a class="headerlink" href="#why-are-they-problematic" title="Permanent link">&para;</a></h3>
+<p><strong>One-hot encoding</strong> creates a column for each category:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>Brand_Toyota  Brand_Ford  Brand_Honda  ...  (10,000 columns!)
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    1             0           0
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    0             1           0
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    0             0           1
+</span></code></pre></div>
+<p>Problems:
+- <strong>Dimensionality explosion</strong>: 10,000 brands = 10,000 new columns
+- <strong>Sparse data</strong>: Most columns are 0
+- <strong>Rare categories</strong>: Some brands appear only once—can't estimate a reliable coefficient
+- <strong>Overfitting</strong>: Model memorizes rare categories instead of learning patterns</p>
+<hr />
+<h2 id="naive-solution-mean-target-encoding">Naive Solution: Mean Target Encoding<a class="headerlink" href="#naive-solution-mean-target-encoding" title="Permanent link">&para;</a></h2>
+<h3 id="the-idea">The Idea<a class="headerlink" href="#the-idea" title="Permanent link">&para;</a></h3>
+<p>Replace each category with the mean of the target for that category:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>Category    Target    →    Encoded
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>   A          1              0.67   (mean of A&#39;s: 1,1,0)
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>   B          0              0.33   (mean of B&#39;s: 1,0,0)
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>   A          1              0.67
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>   B          1              0.33
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>   A          0              0.67
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>   B          0              0.33
+</span></code></pre></div>
+<p>This seems clever—we compress arbitrary categories into a single informative number!</p>
+<h3 id="the-fatal-flaw-target-leakage">The Fatal Flaw: Target Leakage<a class="headerlink" href="#the-fatal-flaw-target-leakage" title="Permanent link">&para;</a></h3>
+<p><strong>Target leakage</strong> occurs when information about the target "leaks" into the features.</p>
+<p>Consider a rare category that appears only once:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>Category    Target    →    Encoded
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>   RARE        1              1.0   (mean of just this one observation)
+</span></code></pre></div>
+<p>The encoding for "RARE" is <strong>exactly its target value</strong>! The model can achieve perfect prediction on training data by memorizing these encodings—but it will fail on new data.</p>
+<p><strong>This is overfitting in disguise.</strong></p>
+<p>Even for categories with a few observations, the encoding contains substantial information about the specific target values in those rows.</p>
+<hr />
+<h2 id="the-catboost-solution-ordered-target-statistics">The CatBoost Solution: Ordered Target Statistics<a class="headerlink" href="#the-catboost-solution-ordered-target-statistics" title="Permanent link">&para;</a></h2>
+<h3 id="the-key-insight">The Key Insight<a class="headerlink" href="#the-key-insight" title="Permanent link">&para;</a></h3>
+<p><strong>Don't let an observation see its own target</strong> (or targets from "future" observations).</p>
+<p>CatBoost's solution:
+1. Randomly order all observations
+2. For each observation, compute the encoding using <strong>only observations that came before it</strong> in the random order</p>
+<h3 id="step-by-step-example">Step-by-Step Example<a class="headerlink" href="#step-by-step-example" title="Permanent link">&para;</a></h3>
+<p>Data (6 observations):
+<div class="language-text highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>Index   Category   Target
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>  0        A         1
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>  1        B         0  
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>  2        A         1
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>  3        B         0
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>  4        A         0
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>  5        B         1
+</span></code></pre></div></p>
+<p><strong>Step 1</strong>: Random permutation order: [3, 0, 5, 2, 4, 1]</p>
+<p><strong>Step 2</strong>: Process in order, tracking running statistics:</p>
+<table>
+<thead>
+<tr>
+<th>Process Order</th>
+<th>Original Index</th>
+<th>Category</th>
+<th>Target</th>
+<th>Sum_before</th>
+<th>Count_before</th>
+<th>Encoded</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1st</td>
+<td>3</td>
+<td>B</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td><strong>prior</strong></td>
+</tr>
+<tr>
+<td>2nd</td>
+<td>0</td>
+<td>A</td>
+<td>1</td>
+<td>0</td>
+<td>0</td>
+<td><strong>prior</strong></td>
+</tr>
+<tr>
+<td>3rd</td>
+<td>5</td>
+<td>B</td>
+<td>1</td>
+<td>0</td>
+<td>1</td>
+<td>0/1 = 0.0</td>
+</tr>
+<tr>
+<td>4th</td>
+<td>2</td>
+<td>A</td>
+<td>1</td>
+<td>1</td>
+<td>1</td>
+<td>1/1 = 1.0</td>
+</tr>
+<tr>
+<td>5th</td>
+<td>4</td>
+<td>A</td>
+<td>0</td>
+<td>2</td>
+<td>2</td>
+<td>2/2 = 1.0</td>
+</tr>
+<tr>
+<td>6th</td>
+<td>1</td>
+<td>B</td>
+<td>0</td>
+<td>1</td>
+<td>2</td>
+<td>1/2 = 0.5</td>
+</tr>
+</tbody>
+</table>
+<p>The first observation of each category <strong>sees no data</strong> for that category—it gets the prior (global mean).</p>
+<h3 id="why-this-prevents-leakage">Why This Prevents Leakage<a class="headerlink" href="#why-this-prevents-leakage" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Each observation is encoded using <strong>only data it hasn't "seen"</strong></li>
+<li>An observation's own target is <strong>never used</strong> in its encoding</li>
+<li>Rare categories get the prior (global mean) as their first encoding—no memorization!</li>
+</ul>
+<hr />
+<h2 id="adding-regularization-the-prior">Adding Regularization: The Prior<a class="headerlink" href="#adding-regularization-the-prior" title="Permanent link">&para;</a></h2>
+<h3 id="the-problem-with-raw-statistics">The Problem with Raw Statistics<a class="headerlink" href="#the-problem-with-raw-statistics" title="Permanent link">&para;</a></h3>
+<p>What if a category has only 1 observation before the current one?</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>Encoded = 1/1 = 1.0   (or 0/1 = 0.0)
+</span></code></pre></div>
+<p>This is very noisy! One observation doesn't give reliable information.</p>
+<h3 id="the-solution-blend-with-prior">The Solution: Blend with Prior<a class="headerlink" href="#the-solution-blend-with-prior" title="Permanent link">&para;</a></h3>
+<p>Add a "pseudo-count" that pulls the estimate toward the global mean:</p>
 <div class="arithmatex">\[
-\text{A/E} = \frac{\sum y_i}{\sum \hat{\mu}_i}
+\text{Encoded} = \frac{\text{sum\_target} + \text{prior} \times \text{prior\_weight}}{\text{count} + \text{prior\_weight}}
 \]</div>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="n">diagnostics</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">diagnostics</span><span class="p">(</span><span class="n">data</span><span class="o">=</span><span class="n">data</span><span class="p">,</span> <span class="n">categorical_factors</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;Region&quot;</span><span class="p">])</span>
-</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Overall A/E: </span><span class="si">{</span><span class="n">diagnostics</span><span class="o">.</span><span class="n">calibration</span><span class="p">[</span><span class="s1">&#39;actual_expected_ratio&#39;</span><span class="p">]</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-</span></code></pre></div>
-<p><strong>Interpretation:</strong>
-- A/E = 1.0: Perfect overall calibration
-- A/E &gt; 1.0: Model underpredicts
-- A/E &lt; 1.0: Model overpredicts</p>
-<h3 id="calibration-by-decile">Calibration by Decile<a class="headerlink" href="#calibration-by-decile" title="Permanent link">&para;</a></h3>
-<p>Split predictions into 10 groups and compare A/E in each:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="k">for</span> <span class="n">decile</span> <span class="ow">in</span> <span class="n">diagnostics</span><span class="o">.</span><span class="n">calibration</span><span class="p">[</span><span class="s1">&#39;by_decile&#39;</span><span class="p">]:</span>
-</span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Decile </span><span class="si">{</span><span class="n">decile</span><span class="p">[</span><span class="s1">&#39;decile&#39;</span><span class="p">]</span><span class="si">}</span><span class="s2">: A/E = </span><span class="si">{</span><span class="n">decile</span><span class="p">[</span><span class="s1">&#39;ae_ratio&#39;</span><span class="p">]</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-</span></code></pre></div>
-<p>Good calibration: A/E ≈ 1 in all deciles.</p>
-<h3 id="hosmer-lemeshow-test">Hosmer-Lemeshow Test<a class="headerlink" href="#hosmer-lemeshow-test" title="Permanent link">&para;</a></h3>
-<p>Formal test for calibration (Binomial models):</p>
+<p>Where:
+- <strong>prior</strong> = global mean of target (e.g., 0.5)
+- <strong>prior_weight</strong> = regularization strength (e.g., 1.0)</p>
+<h3 id="example-with-prior_weight-10">Example with prior_weight = 1.0<a class="headerlink" href="#example-with-prior_weight-10" title="Permanent link">&para;</a></h3>
+<p>If prior = 0.5 and we've seen 1 observation with target = 1:</p>
 <div class="arithmatex">\[
-H = \sum_{g=1}^{G} \frac{(O_g - E_g)^2}{E_g(1 - E_g/n_g)}
+\text{Encoded} = \frac{1.0 + 0.5 \times 1.0}{1 + 1.0} = \frac{1.5}{2} = 0.75
 \]</div>
-<p>Under <span class="arithmatex">\(H_0\)</span> (good calibration): <span class="arithmatex">\(H \sim \chi^2_{G-2}\)</span></p>
-<h2 id="discrimination-diagnostics">Discrimination Diagnostics<a class="headerlink" href="#discrimination-diagnostics" title="Permanent link">&para;</a></h2>
-<p>Discrimination measures how well the model separates high and low values.</p>
-<h3 id="gini-coefficient">Gini Coefficient<a class="headerlink" href="#gini-coefficient" title="Permanent link">&para;</a></h3>
-<p>Measures the area between the Lorenz curve and the line of equality:</p>
+<p>Instead of 1.0, we get 0.75—pulled toward the global mean.</p>
+<h3 id="interpretation-of-prior-weight">Interpretation of Prior Weight<a class="headerlink" href="#interpretation-of-prior-weight" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>prior_weight</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>No regularization (raw statistics)</td>
+</tr>
+<tr>
+<td>1</td>
+<td>Balance: 1 observation ≈ 1 "prior observation"</td>
+</tr>
+<tr>
+<td>10</td>
+<td>Heavy regularization: need 10+ observations to overcome prior</td>
+</tr>
+<tr>
+<td>100</td>
+<td>Very heavy: rare categories essentially get the prior</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Rule of thumb</strong>: Start with prior_weight = 1.0. Increase if overfitting on rare categories.</p>
+<hr />
+<h2 id="multiple-permutations-reducing-variance">Multiple Permutations: Reducing Variance<a class="headerlink" href="#multiple-permutations-reducing-variance" title="Permanent link">&para;</a></h2>
+<h3 id="the-problem">The Problem<a class="headerlink" href="#the-problem" title="Permanent link">&para;</a></h3>
+<p>The encoding depends on the random permutation order:</p>
+<ul>
+<li>Permutation [0,1,2,3,4,5] gives different encodings than [5,4,3,2,1,0]</li>
+<li>This adds noise to the features</li>
+</ul>
+<h3 id="the-solution">The Solution<a class="headerlink" href="#the-solution" title="Permanent link">&para;</a></h3>
+<p>Average encodings across multiple random permutations:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">encoded</span> <span class="o">=</span> <span class="n">average</span><span class="p">([</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>    <span class="n">encode_with_permutation</span><span class="p">(</span><span class="n">seed</span><span class="o">=</span><span class="mi">1</span><span class="p">),</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>    <span class="n">encode_with_permutation</span><span class="p">(</span><span class="n">seed</span><span class="o">=</span><span class="mi">2</span><span class="p">),</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="n">encode_with_permutation</span><span class="p">(</span><span class="n">seed</span><span class="o">=</span><span class="mi">3</span><span class="p">),</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>    <span class="n">encode_with_permutation</span><span class="p">(</span><span class="n">seed</span><span class="o">=</span><span class="mi">4</span><span class="p">),</span>
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="p">])</span>
+</span></code></pre></div>
+<h3 id="how-many-permutations">How Many Permutations?<a class="headerlink" href="#how-many-permutations" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>n_permutations</th>
+<th>Variance</th>
+<th>Speed</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>High</td>
+<td>Fast</td>
+</tr>
+<tr>
+<td>4 (default)</td>
+<td>Medium</td>
+<td>Good balance</td>
+</tr>
+<tr>
+<td>10</td>
+<td>Low</td>
+<td>Slower</td>
+</tr>
+<tr>
+<td>100</td>
+<td>Very low</td>
+<td>Much slower</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Rule of thumb</strong>: 4 permutations is usually sufficient. Increase if you see high variance in cross-validation.</p>
+<hr />
+<h2 id="the-complete-algorithm">The Complete Algorithm<a class="headerlink" href="#the-complete-algorithm" title="Permanent link">&para;</a></h2>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>Algorithm: CatBoost-style Ordered Target Encoding
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>Input:
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>  - categories[n]: categorical values
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>  - target[n]: target variable
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>  - prior_weight: regularization strength (default: 1.0)
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>  - n_permutations: number of random orderings (default: 4)
+</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>
+</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>Output:
+</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a>  - encoded[n]: encoded values
+</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a>
+</span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a>1. Compute prior = mean(target)
+</span><span id="__span-6-13"><a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a>
+</span><span id="__span-6-14"><a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a>2. For each permutation p = 1 to n_permutations:
+</span><span id="__span-6-15"><a id="__codelineno-6-15" name="__codelineno-6-15" href="#__codelineno-6-15"></a>
+</span><span id="__span-6-16"><a id="__codelineno-6-16" name="__codelineno-6-16" href="#__codelineno-6-16"></a>   a. Generate random permutation order π
+</span><span id="__span-6-17"><a id="__codelineno-6-17" name="__codelineno-6-17" href="#__codelineno-6-17"></a>
+</span><span id="__span-6-18"><a id="__codelineno-6-18" name="__codelineno-6-18" href="#__codelineno-6-18"></a>   b. Initialize: sum_by_category = {}, count_by_category = {}
+</span><span id="__span-6-19"><a id="__codelineno-6-19" name="__codelineno-6-19" href="#__codelineno-6-19"></a>
+</span><span id="__span-6-20"><a id="__codelineno-6-20" name="__codelineno-6-20" href="#__codelineno-6-20"></a>   c. For i in permutation order π:
+</span><span id="__span-6-21"><a id="__codelineno-6-21" name="__codelineno-6-21" href="#__codelineno-6-21"></a>      category = categories[i]
+</span><span id="__span-6-22"><a id="__codelineno-6-22" name="__codelineno-6-22" href="#__codelineno-6-22"></a>      sum_before = sum_by_category.get(category, 0)
+</span><span id="__span-6-23"><a id="__codelineno-6-23" name="__codelineno-6-23" href="#__codelineno-6-23"></a>      count_before = count_by_category.get(category, 0)
+</span><span id="__span-6-24"><a id="__codelineno-6-24" name="__codelineno-6-24" href="#__codelineno-6-24"></a>
+</span><span id="__span-6-25"><a id="__codelineno-6-25" name="__codelineno-6-25" href="#__codelineno-6-25"></a>      encoded_p[i] = (sum_before + prior × prior_weight) / (count_before + prior_weight)
+</span><span id="__span-6-26"><a id="__codelineno-6-26" name="__codelineno-6-26" href="#__codelineno-6-26"></a>
+</span><span id="__span-6-27"><a id="__codelineno-6-27" name="__codelineno-6-27" href="#__codelineno-6-27"></a>      sum_by_category[category] += target[i]
+</span><span id="__span-6-28"><a id="__codelineno-6-28" name="__codelineno-6-28" href="#__codelineno-6-28"></a>      count_by_category[category] += 1
+</span><span id="__span-6-29"><a id="__codelineno-6-29" name="__codelineno-6-29" href="#__codelineno-6-29"></a>
+</span><span id="__span-6-30"><a id="__codelineno-6-30" name="__codelineno-6-30" href="#__codelineno-6-30"></a>3. Return average across permutations: encoded = mean(encoded_1, ..., encoded_p)
+</span></code></pre></div>
+<hr />
+<h2 id="applying-to-new-data">Applying to New Data<a class="headerlink" href="#applying-to-new-data" title="Permanent link">&para;</a></h2>
+<p>For <strong>prediction on new data</strong>, we don't need ordering—we use the full training statistics:</p>
 <div class="arithmatex">\[
-\text{Gini} = 2 \times \text{AUC} - 1
+\text{Encoded}_{\text{new}} = \frac{\text{sum\_target\_train} + \text{prior} \times \text{prior\_weight}}{\text{count\_train} + \text{prior\_weight}}
 \]</div>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="n">gini</span> <span class="o">=</span> <span class="n">diagnostics</span><span class="o">.</span><span class="n">discrimination</span><span class="p">[</span><span class="s1">&#39;gini_coefficient&#39;</span><span class="p">]</span>
-</span></code></pre></div>
-<p><strong>Interpretation:</strong>
-- Gini = 0: No discrimination (random predictions)
-- Gini = 1: Perfect discrimination
-- Typical values: 0.3-0.5 for insurance models</p>
-<h3 id="lorenz-curve">Lorenz Curve<a class="headerlink" href="#lorenz-curve" title="Permanent link">&para;</a></h3>
-<p>Plots cumulative % of response vs. cumulative % of exposure, ordered by predicted risk:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="n">lorenz</span> <span class="o">=</span> <span class="n">diagnostics</span><span class="o">.</span><span class="n">discrimination</span><span class="p">[</span><span class="s1">&#39;lorenz_curve&#39;</span><span class="p">]</span>
-</span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="c1"># Plot: x = cumulative exposure %, y = cumulative claims %</span>
-</span></code></pre></div>
-<h3 id="lift">Lift<a class="headerlink" href="#lift" title="Permanent link">&para;</a></h3>
-<p>How much better is the model than random in the top decile?</p>
+<p>For <strong>unseen categories</strong> (not in training), use the prior:</p>
 <div class="arithmatex">\[
-\text{Lift} = \frac{\text{Response rate in top decile}}{\text{Overall response rate}}
+\text{Encoded}_{\text{unseen}} = \text{prior}
 \]</div>
-<h2 id="factor-diagnostics">Factor Diagnostics<a class="headerlink" href="#factor-diagnostics" title="Permanent link">&para;</a></h2>
-<p>Analyze model performance by individual factors.</p>
-<h3 id="ae-by-factor-level">A/E by Factor Level<a class="headerlink" href="#ae-by-factor-level" title="Permanent link">&para;</a></h3>
-<p>For categorical factors:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="k">for</span> <span class="n">factor</span> <span class="ow">in</span> <span class="n">diagnostics</span><span class="o">.</span><span class="n">factors</span><span class="p">:</span>
-</span><span id="__span-16-2"><a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>    <span class="k">if</span> <span class="n">factor</span><span class="o">.</span><span class="n">factor_type</span> <span class="o">==</span> <span class="s2">&quot;categorical&quot;</span><span class="p">:</span>
-</span><span id="__span-16-3"><a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a>        <span class="k">for</span> <span class="n">level</span> <span class="ow">in</span> <span class="n">factor</span><span class="o">.</span><span class="n">actual_vs_expected</span><span class="p">:</span>
-</span><span id="__span-16-4"><a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a>            <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">factor</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">=</span><span class="si">{</span><span class="n">level</span><span class="p">[</span><span class="s1">&#39;level&#39;</span><span class="p">]</span><span class="si">}</span><span class="s2">: A/E=</span><span class="si">{</span><span class="n">level</span><span class="p">[</span><span class="s1">&#39;ae_ratio&#39;</span><span class="p">]</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<hr />
+<h2 id="rustystats-implementation">RustyStats Implementation<a class="headerlink" href="#rustystats-implementation" title="Permanent link">&para;</a></h2>
+<h3 id="basic-usage">Basic Usage<a class="headerlink" href="#basic-usage" title="Permanent link">&para;</a></h3>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">rustystats</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">rs</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="c1"># Training data</span>
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="n">categories</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot;Toyota&quot;</span><span class="p">,</span> <span class="s2">&quot;Ford&quot;</span><span class="p">,</span> <span class="s2">&quot;Toyota&quot;</span><span class="p">,</span> <span class="s2">&quot;Honda&quot;</span><span class="p">,</span> <span class="s2">&quot;Ford&quot;</span><span class="p">,</span> <span class="s2">&quot;Toyota&quot;</span><span class="p">]</span>
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="n">target</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">,</span> <span class="mf">0.5</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.8</span><span class="p">])</span>
+</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a>
+</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="c1"># Encode</span>
+</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="n">encoded</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">prior</span><span class="p">,</span> <span class="n">stats</span> <span class="o">=</span> <span class="n">rs</span><span class="o">.</span><span class="n">target_encode</span><span class="p">(</span>
+</span><span id="__span-7-10"><a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>    <span class="n">categories</span><span class="p">,</span> 
+</span><span id="__span-7-11"><a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a>    <span class="n">target</span><span class="p">,</span> 
+</span><span id="__span-7-12"><a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a>    <span class="n">var_name</span><span class="o">=</span><span class="s2">&quot;brand&quot;</span><span class="p">,</span>
+</span><span id="__span-7-13"><a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a>    <span class="n">prior_weight</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span>
+</span><span id="__span-7-14"><a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a>    <span class="n">n_permutations</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span>
+</span><span id="__span-7-15"><a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a>    <span class="n">seed</span><span class="o">=</span><span class="mi">42</span>  <span class="c1"># For reproducibility</span>
+</span><span id="__span-7-16"><a id="__codelineno-7-16" name="__codelineno-7-16" href="#__codelineno-7-16"></a><span class="p">)</span>
+</span><span id="__span-7-17"><a id="__codelineno-7-17" name="__codelineno-7-17" href="#__codelineno-7-17"></a>
+</span><span id="__span-7-18"><a id="__codelineno-7-18" name="__codelineno-7-18" href="#__codelineno-7-18"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Encoded values: </span><span class="si">{</span><span class="n">encoded</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+</span><span id="__span-7-19"><a id="__codelineno-7-19" name="__codelineno-7-19" href="#__codelineno-7-19"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Column name: </span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>  <span class="c1"># &quot;TE(brand)&quot;</span>
+</span><span id="__span-7-20"><a id="__codelineno-7-20" name="__codelineno-7-20" href="#__codelineno-7-20"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Prior (global mean): </span><span class="si">{</span><span class="n">prior</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
 </span></code></pre></div>
-<h3 id="residual-patterns">Residual Patterns<a class="headerlink" href="#residual-patterns" title="Permanent link">&para;</a></h3>
-<p>Check if residuals are correlated with factors:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="k">for</span> <span class="n">factor</span> <span class="ow">in</span> <span class="n">diagnostics</span><span class="o">.</span><span class="n">factors</span><span class="p">:</span>
-</span><span id="__span-17-2"><a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>    <span class="n">corr</span> <span class="o">=</span> <span class="n">factor</span><span class="o">.</span><span class="n">residual_pattern</span><span class="p">[</span><span class="s1">&#39;correlation_with_residuals&#39;</span><span class="p">]</span>
-</span><span id="__span-17-3"><a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a>    <span class="k">if</span> <span class="nb">abs</span><span class="p">(</span><span class="n">corr</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mf">0.05</span><span class="p">:</span>
-</span><span id="__span-17-4"><a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a>        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Warning: </span><span class="si">{</span><span class="n">factor</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2"> has residual correlation </span><span class="si">{</span><span class="n">corr</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<h3 id="for-prediction">For Prediction<a class="headerlink" href="#for-prediction" title="Permanent link">&para;</a></h3>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># New data (including unseen category)</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="n">new_categories</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot;Toyota&quot;</span><span class="p">,</span> <span class="s2">&quot;Ford&quot;</span><span class="p">,</span> <span class="s2">&quot;BMW&quot;</span><span class="p">]</span>  <span class="c1"># BMW not in training</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="c1"># Apply encoding using training statistics</span>
+</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="n">new_encoded</span> <span class="o">=</span> <span class="n">rs</span><span class="o">.</span><span class="n">apply_target_encoding</span><span class="p">(</span>
+</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>    <span class="n">new_categories</span><span class="p">,</span> 
+</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>    <span class="n">stats</span><span class="p">,</span>      <span class="c1"># From training</span>
+</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>    <span class="n">prior</span><span class="p">,</span>      <span class="c1"># From training</span>
+</span><span id="__span-8-9"><a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>    <span class="n">prior_weight</span><span class="o">=</span><span class="mf">1.0</span>
+</span><span id="__span-8-10"><a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a><span class="p">)</span>
+</span><span id="__span-8-11"><a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>
+</span><span id="__span-8-12"><a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a><span class="nb">print</span><span class="p">(</span><span class="n">new_encoded</span><span class="p">)</span>
+</span><span id="__span-8-13"><a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a><span class="c1"># Toyota: uses training stats</span>
+</span><span id="__span-8-14"><a id="__codelineno-8-14" name="__codelineno-8-14" href="#__codelineno-8-14"></a><span class="c1"># Ford: uses training stats  </span>
+</span><span id="__span-8-15"><a id="__codelineno-8-15" name="__codelineno-8-15" href="#__codelineno-8-15"></a><span class="c1"># BMW: gets prior (unseen category)</span>
 </span></code></pre></div>
-<p>High correlation suggests the factor effect is misspecified.</p>
-<h2 id="interaction-detection">Interaction Detection<a class="headerlink" href="#interaction-detection" title="Permanent link">&para;</a></h2>
-<p>RustyStats can automatically detect potential interactions:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-18-1"><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="n">diagnostics</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">diagnostics</span><span class="p">(</span>
-</span><span id="__span-18-2"><a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a>    <span class="n">data</span><span class="o">=</span><span class="n">data</span><span class="p">,</span>
-</span><span id="__span-18-3"><a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a>    <span class="n">categorical_factors</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;Region&quot;</span><span class="p">,</span> <span class="s2">&quot;VehBrand&quot;</span><span class="p">],</span>
-</span><span id="__span-18-4"><a id="__codelineno-18-4" name="__codelineno-18-4" href="#__codelineno-18-4"></a>    <span class="n">continuous_factors</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;Age&quot;</span><span class="p">],</span>
-</span><span id="__span-18-5"><a id="__codelineno-18-5" name="__codelineno-18-5" href="#__codelineno-18-5"></a><span class="p">)</span>
-</span><span id="__span-18-6"><a id="__codelineno-18-6" name="__codelineno-18-6" href="#__codelineno-18-6"></a>
-</span><span id="__span-18-7"><a id="__codelineno-18-7" name="__codelineno-18-7" href="#__codelineno-18-7"></a><span class="k">for</span> <span class="n">ic</span> <span class="ow">in</span> <span class="n">diagnostics</span><span class="o">.</span><span class="n">interaction_candidates</span><span class="p">:</span>
-</span><span id="__span-18-8"><a id="__codelineno-18-8" name="__codelineno-18-8" href="#__codelineno-18-8"></a>    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Consider: </span><span class="si">{</span><span class="n">ic</span><span class="p">[</span><span class="s1">&#39;factor1&#39;</span><span class="p">]</span><span class="si">}</span><span class="s2"> × </span><span class="si">{</span><span class="n">ic</span><span class="p">[</span><span class="s1">&#39;factor2&#39;</span><span class="p">]</span><span class="si">}</span><span class="s2"> (strength=</span><span class="si">{</span><span class="n">ic</span><span class="p">[</span><span class="s1">&#39;strength&#39;</span><span class="p">]</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2">)&quot;</span><span class="p">)</span>
+<h3 id="scikit-learn-style-api">Scikit-learn Style API<a class="headerlink" href="#scikit-learn-style-api" title="Permanent link">&para;</a></h3>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># Fit-transform pattern</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="n">encoder</span> <span class="o">=</span> <span class="n">rs</span><span class="o">.</span><span class="n">TargetEncoder</span><span class="p">(</span><span class="n">prior_weight</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">n_permutations</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span> <span class="n">seed</span><span class="o">=</span><span class="mi">42</span><span class="p">)</span>
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>
+</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="c1"># Training: uses ordered statistics</span>
+</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="n">train_encoded</span> <span class="o">=</span> <span class="n">encoder</span><span class="o">.</span><span class="n">fit_transform</span><span class="p">(</span><span class="n">train_categories</span><span class="p">,</span> <span class="n">train_target</span><span class="p">)</span>
+</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a>
+</span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="c1"># Prediction: uses full training statistics</span>
+</span><span id="__span-9-8"><a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="n">test_encoded</span> <span class="o">=</span> <span class="n">encoder</span><span class="o">.</span><span class="n">transform</span><span class="p">(</span><span class="n">test_categories</span><span class="p">)</span>
 </span></code></pre></div>
-<p>The algorithm uses greedy residual-based detection to find factor pairs that explain residual variance.</p>
-<h2 id="pre-fit-data-exploration">Pre-Fit Data Exploration<a class="headerlink" href="#pre-fit-data-exploration" title="Permanent link">&para;</a></h2>
-<p>Explore data before fitting any model:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-19-1"><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="n">exploration</span> <span class="o">=</span> <span class="n">rs</span><span class="o">.</span><span class="n">explore_data</span><span class="p">(</span>
-</span><span id="__span-19-2"><a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a>    <span class="n">data</span><span class="o">=</span><span class="n">data</span><span class="p">,</span>
-</span><span id="__span-19-3"><a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a>    <span class="n">response</span><span class="o">=</span><span class="s2">&quot;ClaimNb&quot;</span><span class="p">,</span>
-</span><span id="__span-19-4"><a id="__codelineno-19-4" name="__codelineno-19-4" href="#__codelineno-19-4"></a>    <span class="n">categorical_factors</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;Region&quot;</span><span class="p">,</span> <span class="s2">&quot;VehBrand&quot;</span><span class="p">],</span>
-</span><span id="__span-19-5"><a id="__codelineno-19-5" name="__codelineno-19-5" href="#__codelineno-19-5"></a>    <span class="n">continuous_factors</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;Age&quot;</span><span class="p">,</span> <span class="s2">&quot;VehPower&quot;</span><span class="p">],</span>
-</span><span id="__span-19-6"><a id="__codelineno-19-6" name="__codelineno-19-6" href="#__codelineno-19-6"></a>    <span class="n">exposure</span><span class="o">=</span><span class="s2">&quot;Exposure&quot;</span><span class="p">,</span>
-</span><span id="__span-19-7"><a id="__codelineno-19-7" name="__codelineno-19-7" href="#__codelineno-19-7"></a>    <span class="n">family</span><span class="o">=</span><span class="s2">&quot;poisson&quot;</span><span class="p">,</span>
-</span><span id="__span-19-8"><a id="__codelineno-19-8" name="__codelineno-19-8" href="#__codelineno-19-8"></a>    <span class="n">detect_interactions</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
-</span><span id="__span-19-9"><a id="__codelineno-19-9" name="__codelineno-19-9" href="#__codelineno-19-9"></a><span class="p">)</span>
-</span><span id="__span-19-10"><a id="__codelineno-19-10" name="__codelineno-19-10" href="#__codelineno-19-10"></a>
-</span><span id="__span-19-11"><a id="__codelineno-19-11" name="__codelineno-19-11" href="#__codelineno-19-11"></a><span class="nb">print</span><span class="p">(</span><span class="n">exploration</span><span class="o">.</span><span class="n">response_stats</span><span class="p">)</span>
-</span><span id="__span-19-12"><a id="__codelineno-19-12" name="__codelineno-19-12" href="#__codelineno-19-12"></a><span class="nb">print</span><span class="p">(</span><span class="n">exploration</span><span class="o">.</span><span class="n">to_json</span><span class="p">())</span>
+<h3 id="in-formulas">In Formulas<a class="headerlink" href="#in-formulas" title="Permanent link">&para;</a></h3>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1"># TE() in formulas automatically applies target encoding</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="n">result</span> <span class="o">=</span> <span class="n">rs</span><span class="o">.</span><span class="n">glm</span><span class="p">(</span>
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>    <span class="s2">&quot;claims ~ TE(brand) + TE(region) + age + C(gender)&quot;</span><span class="p">,</span>
+</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>    <span class="n">data</span><span class="p">,</span>
+</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>    <span class="n">family</span><span class="o">=</span><span class="s2">&quot;poisson&quot;</span>
+</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="p">)</span><span class="o">.</span><span class="n">fit</span><span class="p">()</span>
 </span></code></pre></div>
-<h2 id="json-export-for-llm-integration">JSON Export for LLM Integration<a class="headerlink" href="#json-export-for-llm-integration" title="Permanent link">&para;</a></h2>
-<p>Export diagnostics in compact JSON format:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-20-1"><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="n">json_str</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">diagnostics_json</span><span class="p">(</span>
-</span><span id="__span-20-2"><a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a>    <span class="n">data</span><span class="o">=</span><span class="n">data</span><span class="p">,</span>
-</span><span id="__span-20-3"><a id="__codelineno-20-3" name="__codelineno-20-3" href="#__codelineno-20-3"></a>    <span class="n">categorical_factors</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;Region&quot;</span><span class="p">],</span>
-</span><span id="__span-20-4"><a id="__codelineno-20-4" name="__codelineno-20-4" href="#__codelineno-20-4"></a>    <span class="n">continuous_factors</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;Age&quot;</span><span class="p">],</span>
-</span><span id="__span-20-5"><a id="__codelineno-20-5" name="__codelineno-20-5" href="#__codelineno-20-5"></a><span class="p">)</span>
-</span><span id="__span-20-6"><a id="__codelineno-20-6" name="__codelineno-20-6" href="#__codelineno-20-6"></a>
-</span><span id="__span-20-7"><a id="__codelineno-20-7" name="__codelineno-20-7" href="#__codelineno-20-7"></a><span class="c1"># Feed to LLM for analysis</span>
-</span><span id="__span-20-8"><a id="__codelineno-20-8" name="__codelineno-20-8" href="#__codelineno-20-8"></a><span class="n">response</span> <span class="o">=</span> <span class="n">llm</span><span class="o">.</span><span class="n">analyze</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Analyze this model: </span><span class="si">{</span><span class="n">json_str</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-</span></code></pre></div>
-<h2 id="diagnostic-plots-external">Diagnostic Plots (External)<a class="headerlink" href="#diagnostic-plots-external" title="Permanent link">&para;</a></h2>
-<p>RustyStats focuses on computation. For visualization, use matplotlib/plotly:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-21-1"><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">matplotlib.pyplot</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">plt</span>
-</span><span id="__span-21-2"><a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a>
-</span><span id="__span-21-3"><a id="__codelineno-21-3" name="__codelineno-21-3" href="#__codelineno-21-3"></a><span class="c1"># Residual vs. Fitted</span>
-</span><span id="__span-21-4"><a id="__codelineno-21-4" name="__codelineno-21-4" href="#__codelineno-21-4"></a><span class="n">plt</span><span class="o">.</span><span class="n">scatter</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">fittedvalues</span><span class="p">,</span> <span class="n">result</span><span class="o">.</span><span class="n">resid_deviance</span><span class="p">())</span>
-</span><span id="__span-21-5"><a id="__codelineno-21-5" name="__codelineno-21-5" href="#__codelineno-21-5"></a><span class="n">plt</span><span class="o">.</span><span class="n">axhline</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">color</span><span class="o">=</span><span class="s1">&#39;red&#39;</span><span class="p">,</span> <span class="n">linestyle</span><span class="o">=</span><span class="s1">&#39;--&#39;</span><span class="p">)</span>
-</span><span id="__span-21-6"><a id="__codelineno-21-6" name="__codelineno-21-6" href="#__codelineno-21-6"></a><span class="n">plt</span><span class="o">.</span><span class="n">xlabel</span><span class="p">(</span><span class="s1">&#39;Fitted Values&#39;</span><span class="p">)</span>
-</span><span id="__span-21-7"><a id="__codelineno-21-7" name="__codelineno-21-7" href="#__codelineno-21-7"></a><span class="n">plt</span><span class="o">.</span><span class="n">ylabel</span><span class="p">(</span><span class="s1">&#39;Deviance Residuals&#39;</span><span class="p">)</span>
-</span><span id="__span-21-8"><a id="__codelineno-21-8" name="__codelineno-21-8" href="#__codelineno-21-8"></a>
-</span><span id="__span-21-9"><a id="__codelineno-21-9" name="__codelineno-21-9" href="#__codelineno-21-9"></a><span class="c1"># Q-Q plot</span>
-</span><span id="__span-21-10"><a id="__codelineno-21-10" name="__codelineno-21-10" href="#__codelineno-21-10"></a><span class="kn">from</span><span class="w"> </span><span class="nn">scipy</span><span class="w"> </span><span class="kn">import</span> <span class="n">stats</span>
-</span><span id="__span-21-11"><a id="__codelineno-21-11" name="__codelineno-21-11" href="#__codelineno-21-11"></a><span class="n">stats</span><span class="o">.</span><span class="n">probplot</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">resid_deviance</span><span class="p">(),</span> <span class="n">plot</span><span class="o">=</span><span class="n">plt</span><span class="p">)</span>
-</span><span id="__span-21-12"><a id="__codelineno-21-12" name="__codelineno-21-12" href="#__codelineno-21-12"></a>
-</span><span id="__span-21-13"><a id="__codelineno-21-13" name="__codelineno-21-13" href="#__codelineno-21-13"></a><span class="c1"># Calibration plot</span>
-</span><span id="__span-21-14"><a id="__codelineno-21-14" name="__codelineno-21-14" href="#__codelineno-21-14"></a><span class="c1"># ... using diagnostics.calibration data</span>
-</span></code></pre></div>
+<hr />
+<h2 id="when-to-use-target-encoding">When to Use Target Encoding<a class="headerlink" href="#when-to-use-target-encoding" title="Permanent link">&para;</a></h2>
+<h3 id="good-use-cases">Good Use Cases<a class="headerlink" href="#good-use-cases" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Why Target Encoding Helps</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>High-cardinality categoricals (100+ levels)</td>
+<td>Avoids dimensionality explosion</td>
+</tr>
+<tr>
+<td>Rare categories</td>
+<td>Prior regularization prevents overfitting</td>
+</tr>
+<tr>
+<td>Tree-unfriendly models (GLMs)</td>
+<td>Compresses categories to single feature</td>
+</tr>
+<tr>
+<td>Memory constraints</td>
+<td>One column instead of thousands</td>
+</tr>
+</tbody>
+</table>
+<h3 id="when-not-to-use">When NOT to Use<a class="headerlink" href="#when-not-to-use" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Better Alternative</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Low-cardinality (&lt; 10 levels)</td>
+<td>One-hot encoding or C()</td>
+</tr>
+<tr>
+<td>Very few observations</td>
+<td>Just use prior (or drop variable)</td>
+</tr>
+<tr>
+<td>Categories have no relationship to target</td>
+<td>Drop the variable</td>
+</tr>
+<tr>
+<td>Interpretability is critical</td>
+<td>One-hot (coefficients are clearer)</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="comparison-with-alternatives">Comparison with Alternatives<a class="headerlink" href="#comparison-with-alternatives" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Handles High Cardinality</th>
+<th>Prevents Leakage</th>
+<th>Regularization</th>
+<th>Interpretable</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>One-hot encoding</td>
+<td>❌</td>
+<td>✅</td>
+<td>❌</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>Label encoding</td>
+<td>✅</td>
+<td>✅</td>
+<td>❌</td>
+<td>❌</td>
+</tr>
+<tr>
+<td>Naive mean encoding</td>
+<td>✅</td>
+<td>❌</td>
+<td>❌</td>
+<td>⚠️</td>
+</tr>
+<tr>
+<td><strong>CatBoost target encoding</strong></td>
+<td>✅</td>
+<td>✅</td>
+<td>✅</td>
+<td>⚠️</td>
+</tr>
+<tr>
+<td>Leave-one-out encoding</td>
+<td>✅</td>
+<td>⚠️</td>
+<td>❌</td>
+<td>⚠️</td>
+</tr>
+</tbody>
+</table>
+<p><strong>CatBoost-style is the only method that handles all three challenges</strong>: high cardinality, target leakage, and rare categories.</p>
+<hr />
 <h2 id="summary">Summary<a class="headerlink" href="#summary" title="Permanent link">&para;</a></h2>
-<p>Key diagnostics workflow:</p>
-<ol>
-<li><strong>Check convergence</strong>: <code>result.converged</code>, <code>result.iterations</code></li>
-<li><strong>Assess overall fit</strong>: Deviance, AIC, BIC</li>
-<li><strong>Check dispersion</strong>: Pearson χ²/df ≈ 1</li>
-<li><strong>Examine residuals</strong>: Patterns suggest model misspecification</li>
-<li><strong>Verify calibration</strong>: A/E by decile</li>
-<li><strong>Assess discrimination</strong>: Gini coefficient</li>
-<li><strong>Factor analysis</strong>: A/E by level, residual correlations</li>
-<li><strong>Detect interactions</strong>: Automated candidates</li>
-</ol>
+<table>
+<thead>
+<tr>
+<th>Concept</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Target leakage</strong></td>
+<td>When features contain information about the target they shouldn't have</td>
+</tr>
+<tr>
+<td><strong>Ordered statistics</strong></td>
+<td>Encode each observation using only "past" data in random order</td>
+</tr>
+<tr>
+<td><strong>Prior</strong></td>
+<td>Global mean used for regularization and unseen categories</td>
+</tr>
+<tr>
+<td><strong>Prior weight</strong></td>
+<td>Controls regularization strength (higher = more pull toward prior)</td>
+</tr>
+<tr>
+<td><strong>Multiple permutations</strong></td>
+<td>Average across random orderings to reduce variance</td>
+</tr>
+</tbody>
+</table>
+<p><strong>The CatBoost approach is elegant</strong>: by simply changing the order of computation and adding a prior, we solve both overfitting and high-cardinality problems in one technique.</p>
+<hr />
+<h2 id="references">References<a class="headerlink" href="#references" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Prokhorenkova et al. (2018). <a href="https://arxiv.org/abs/1706.09516">CatBoost: unbiased boosting with categorical features</a>. NeurIPS.</li>
+<li>Micci-Barreca (2001). A preprocessing scheme for high-cardinality categorical attributes in classification and prediction problems. ACM SIGKDD.</li>
+</ul>
+<hr />
+<h2 id="next-steps">Next Steps<a class="headerlink" href="#next-steps" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="../../guides/glm-workflow/">GLM Workflow Guide</a> — Using target encoding in practice</li>
+<li><a href="../../api/formula-api/">Formula API</a> — TE() syntax in formulas</li>
+<li><a href="../../rust-guide/code-walkthrough/">Code Walkthrough</a> — Implementation details</li>
+</ul>
 
 
 

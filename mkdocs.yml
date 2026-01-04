@@ -70,6 +70,7 @@ nav:
     - Link Functions: theory/links.md
     - The IRLS Algorithm: theory/irls.md
     - Coordinate Descent: theory/coordinate-descent.md
+    - Target Encoding: theory/target-encoding.md
     - Model Diagnostics: theory/diagnostics.md
     - Regularization: theory/regularization.md
   - Architecture:

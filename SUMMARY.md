@@ -35,29 +35,25 @@ A high-performance Generalized Linear Models (GLM) library with a Rust backend a
 
 | Component | Status | Description |
 |-----------|--------|-------------|
-| **`fit_glm()`** | ✅ Complete | Array-based fitting function with regularization |
-| **`GLM` Class** | ✅ Complete | OOP interface (statsmodels-style) |
 | **`glm()` Formula API** | ✅ Complete | R-style formula interface with DataFrame support |
 | **Polars Support** | ✅ Complete | Native Polars DataFrame integration |
 | **`summary()`** | ✅ Complete | Formatted regression tables |
-| **`summary_relativities()`** | ✅ Complete | Factor tables for pricing |
-| **`predict()`** | ✅ Complete | Predictions on new data |
-| **`lasso_path()`** | ✅ Complete | Coefficient paths over alpha grid |
-| **`cv_glm()`** | ✅ Complete | Cross-validation for optimal regularization |
+| **`relativities()`** | ✅ Complete | Factor tables for pricing (exp(coef) for log-link) |
+| **Regularization** | ✅ Complete | Ridge, Lasso, Elastic Net via `fit(alpha=..., l1_ratio=...)` |
 | **Interaction Terms** | ✅ Complete | `x1*x2`, `C(cat):x`, `C(cat1)*C(cat2)` in formulas |
 | **Spline Basis Functions** | ✅ Complete | `bs(x, df)`, `ns(x, df)` for non-linear effects |
-| **Target Encoding** | ✅ Complete | `target_encode()`, `TE()` in formulas, `TargetEncoder` class |
+| **Target Encoding** | ✅ Complete | `TE()` in formulas, `TargetEncoder` class |
 | **Quasi-Families** | ✅ Complete | `quasipoisson`, `quasibinomial` for overdispersion |
 | **Negative Binomial** | ✅ Complete | `negbinomial` with auto θ estimation |
-| **Model Diagnostics** | ✅ Complete | `compute_diagnostics()`, `explore_data()`, JSON export for LLM consumption |
-| **Minimal Dependencies** | ✅ Complete | Core requires only numpy; polars optional |
+| **Model Diagnostics** | ✅ Complete | `result.diagnostics()`, `explore_data()`, JSON export |
+| **Minimal Dependencies** | ✅ Complete | Core requires only numpy; polars required for formula API |
 
 ### Testing
 
 | Component | Count | Description |
 |-----------|-------|-------------|
 | **Rust Unit Tests** | 190+ | Core library tests (families, diagnostics, solvers, regularization, inference, interactions, splines, formula, design_matrix, target_encoding, calibration, loss) |
-| **Python Tests** | 280 | API, integration, regularization, robust SE, interaction, spline, quasi-family, negative binomial, target encoding, and diagnostics tests |
+| **Python Tests** | 100+ | Formula API, interaction, spline, target encoding, and diagnostics tests |
 
 ### Examples
 
@@ -65,7 +61,6 @@ A high-performance Generalized Linear Models (GLM) library with a Rust backend a
 |----------|-------------|
 | `examples/getting_started.ipynb` | Comprehensive tutorial with all families |
 | `examples/frequency.ipynb` | Claim frequency model with real insurance data |
-| `examples/regularization.ipynb` | Ridge, Lasso, Elastic Net with cross-validation |
 
 ---
 
@@ -78,8 +73,7 @@ A high-performance Generalized Linear Models (GLM) library with a Rust backend a
 | **Parallel IRLS Solver** | ✅ Multi-threaded via Rayon | ❌ Single-threaded only |
 | **Native Polars Support** | ✅ Formula API works with Polars DataFrames | ❌ Pandas only |
 | **Built-in Lasso/Elastic Net for GLMs** | ✅ Fast coordinate descent with all families | ⚠️ Limited (regularized linear only) |
-| **Variable Selection Utilities** | ✅ `lasso_path()`, `cv_glm()` | ❌ Not built-in |
-| **Relativities Table** | ✅ `summary_relativities()` for pricing | ❌ Must compute manually |
+| **Relativities Table** | ✅ `result.relativities()` for pricing | ❌ Must compute manually |
 | **Robust Standard Errors** | ✅ HC0, HC1, HC2, HC3 sandwich estimators | ✅ HC0-HC3 |
 | **Performance on Large Data** | ✅ 678K rows in ~1s | ⚠️ Significantly slower |
 
@@ -90,7 +84,6 @@ A high-performance Generalized Linear Models (GLM) library with a Rust backend a
 | Poisson GLM | ~1.0s | ~5-10s |
 | Ridge GLM | ~1.0s | ~5-10s |
 | Lasso GLM | ~2.8s | Not available for GLMs |
-| Elastic Net GLM | ~2.6s | Not available for GLMs |
 
 ### When to Use RustyStats
 
@@ -98,7 +91,6 @@ A high-performance Generalized Linear Models (GLM) library with a Rust backend a
 - **Regularized GLMs** - Built-in Lasso/Ridge/Elastic Net for any family
 - **Actuarial/Insurance** - Relativities tables, Tweedie, exposure offsets
 - **Polars workflows** - Native Polars DataFrame support
-- **Variable selection** - Automatic feature selection with cross-validation
 
 ### When to Use Statsmodels
 
@@ -109,24 +101,7 @@ A high-performance Generalized Linear Models (GLM) library with a Rust backend a
 
 ## API Overview
 
-### Array-Based API
-```python
-import rustystats as rs
-import numpy as np
-
-# Fit a GLM with numpy arrays
-result = rs.fit_glm(
-    y, X,
-    family="poisson",           # or "gaussian", "binomial", "gamma", "tweedie", "quasipoisson", "negbinomial"
-    offset=np.log(exposure),
-    weights=weights
-)
-
-# Negative Binomial for overdispersed count data
-result = rs.fit_glm(y, X, family="negbinomial", theta=1.0)  # θ controls overdispersion
-```
-
-### Formula-Based API (NEW)
+### Formula-Based API
 ```python
 import rustystats as rs
 import polars as pl
@@ -136,7 +111,7 @@ data = pl.read_parquet("insurance.parquet")
 result = rs.glm(
     formula="ClaimCount ~ VehPower + VehAge + C(Area) + C(Region)",
     data=data,
-    family="poisson",      # or "negbinomial" (auto-estimates θ)
+    family="poisson",      # or "gaussian", "binomial", "gamma", "tweedie", "quasipoisson", "negbinomial"
     offset="Exposure"
 ).fit()
 
@@ -180,6 +155,31 @@ result.scale_pearson()     # Dispersion (Pearson-based)
 result.family              # Family name
 ```
 
+### Regularization
+```python
+import rustystats as rs
+import polars as pl
+
+data = pl.read_parquet("insurance.parquet")
+
+# Ridge (L2) - shrinks coefficients, keeps all variables
+result = rs.glm("y ~ x1 + x2 + C(cat)", data, family="gaussian").fit(
+    alpha=0.1, l1_ratio=0.0
+)
+
+# Lasso (L1) - variable selection, zeros out weak predictors
+result = rs.glm("y ~ x1 + x2 + C(cat)", data, family="poisson").fit(
+    alpha=0.1, l1_ratio=1.0
+)
+print(f"Selected {result.n_nonzero()} variables")
+print(f"Features: {result.selected_features()}")
+
+# Elastic Net - mix of L1 and L2
+result = rs.glm("y ~ x1 + x2 + C(cat)", data, family="gaussian").fit(
+    alpha=0.1, l1_ratio=0.5
+)
+```
+
 ### Interaction Terms
 ```python
 import rustystats as rs
@@ -216,43 +216,12 @@ print(result.summary())
 print(result.coef_table())
 ```
 
-### Regularization API (NEW)
+### Spline Basis Functions
 ```python
 import rustystats as rs
+import polars as pl
 
-# Ridge (L2) - shrinks coefficients, keeps all variables
-result = rs.fit_glm(y, X, family="gaussian", alpha=0.1, l1_ratio=0.0)
-
-# Lasso (L1) - variable selection, zeros out weak predictors
-result = rs.fit_glm(y, X, family="poisson", alpha=0.1, l1_ratio=1.0)
-print(f"Selected {result.n_nonzero()} variables")
-print(f"Features: {result.selected_features()}")
-
-# Elastic Net - mix of L1 and L2
-result = rs.fit_glm(y, X, family="gaussian", alpha=0.1, l1_ratio=0.5)
-
-# Coefficient path - see how coefficients shrink with alpha
-path = rs.lasso_path(y, X, family="gaussian", n_alphas=50)
-path.plot()  # Visualize the path
-
-# Cross-validation - find optimal alpha
-cv_result = rs.cv_glm(y, X, family="poisson", l1_ratio=1.0, cv=5)
-print(f"Best alpha: {cv_result.alpha_best}")
-print(f"1-SE alpha: {cv_result.alpha_1se}")  # More parsimonious model
-cv_result.plot()  # Visualize CV curve
-```
-
-### Spline Basis Functions (NEW)
-```python
-import rustystats as rs
-import numpy as np
-
-# B-spline basis - flexible piecewise polynomials
-x = np.linspace(0, 10, 100)
-basis = rs.bs(x, df=5)  # 5 degrees of freedom (4 basis columns)
-
-# Natural splines - linear extrapolation at boundaries
-basis_ns = rs.ns(x, df=5)  # Better for prediction outside training range
+data = pl.read_parquet("insurance.parquet")
 
 # Use splines in formulas - automatic parsing
 result = rs.glm(
@@ -270,38 +239,39 @@ result = rs.glm(
 ).fit()
 
 # Direct basis computation for custom use
-basis = rs.bs(age_values, df=6, degree=3, boundary_knots=(18, 80))
+import numpy as np
+x = np.linspace(0, 10, 100)
+basis = rs.bs(x, df=5)  # 5 degrees of freedom (4 basis columns)
+basis_ns = rs.ns(x, df=5)  # Natural splines - linear extrapolation at boundaries
 ```
 
 **When to use each spline type:**
 - **B-splines (`bs`)**: Standard choice, more flexible at boundaries
 - **Natural splines (`ns`)**: Better extrapolation, linear beyond boundaries (recommended for actuarial work)
 
-### Quasi-Families for Overdispersion (NEW)
+### Quasi-Families for Overdispersion
 ```python
 import rustystats as rs
-import numpy as np
+import polars as pl
+
+data = pl.read_parquet("insurance.parquet")
 
 # Fit a standard Poisson model first
-result_poisson = rs.fit_glm(y, X, family="poisson")
+result_poisson = rs.glm("ClaimNb ~ Age + C(Region)", data, family="poisson", offset="Exposure").fit()
 
 # Check for overdispersion: Pearson χ² / df >> 1 indicates overdispersion
 dispersion_ratio = result_poisson.pearson_chi2() / result_poisson.df_resid
 print(f"Dispersion ratio: {dispersion_ratio:.2f}")  # If >> 1, use quasi-family
 
 # Fit QuasiPoisson if overdispersed
-result_quasi = rs.fit_glm(y, X, family="quasipoisson")
+result_quasi = rs.glm("ClaimNb ~ Age + C(Region)", data, family="quasipoisson", offset="Exposure").fit()
 
 # Coefficients are IDENTICAL to Poisson
-np.allclose(result_quasi.params, result_poisson.params)  # True
-
 # But standard errors are inflated by √φ
 print(f"Estimated dispersion (φ): {result_quasi.scale():.3f}")
-print(f"Poisson SE: {result_poisson.bse()}")
-print(f"QuasiPoisson SE: {result_quasi.bse()}")  # Larger by √φ
 
 # For binary data with overdispersion
-result_qb = rs.fit_glm(y_binary, X, family="quasibinomial")
+result_qb = rs.glm("Binary ~ x1 + x2", data, family="quasibinomial").fit()
 ```
 
 **Key properties of quasi-families:**
@@ -314,38 +284,25 @@ result_qb = rs.fit_glm(y_binary, X, family="quasibinomial")
 - **QuasiPoisson**: Count data where Pearson χ²/df >> 1
 - **QuasiBinomial**: Binary data with clusters or unobserved heterogeneity
 
-### Negative Binomial for Overdispersed Counts (NEW)
+### Negative Binomial for Overdispersed Counts
 ```python
 import rustystats as rs
-import numpy as np
+import polars as pl
 
-# Negative Binomial with θ=1.0 (moderate overdispersion)
-result = rs.fit_glm(y, X, family="negbinomial", theta=1.0)
+data = pl.read_parquet("insurance.parquet")
+
+# Automatic θ estimation (default when theta not supplied)
+result = rs.glm("ClaimNb ~ Age + C(Region)", data, family="negbinomial", offset="Exposure").fit()
+print(result.family)  # "NegativeBinomial(theta=2.1234)"
+
+# Fixed θ value
+result = rs.glm("ClaimNb ~ Age + C(Region)", data, family="negbinomial", theta=1.0, offset="Exposure").fit()
 
 # θ controls overdispersion: Var(Y) = μ + μ²/θ
 # - θ=0.5: Strong overdispersion (variance = μ + 2μ²)
 # - θ=1.0: Moderate overdispersion (variance = μ + μ²)
 # - θ=10: Mild overdispersion (close to Poisson)
 # - θ→∞: Approaches Poisson (variance = μ)
-
-# Compare to QuasiPoisson
-result_quasi = rs.fit_glm(y, X, family="quasipoisson")
-result_nb = rs.fit_glm(y, X, family="negbinomial", theta=2.0)
-
-# NB is a proper probability distribution - AIC/BIC are valid
-print(f"NB AIC: {result_nb.aic():.1f}")
-
-# AUTOMATIC THETA ESTIMATION
-# Option 1: Array API
-result_auto = rs.fit_negbinomial(y, X)
-print(result_auto.family)  # "NegativeBinomial(theta=2.1234)"
-
-# Option 2: Formula API (auto when theta not supplied)
-result = rs.glm("y ~ x1 + x2", data, family="negbinomial").fit()
-print(result.family)  # "NegativeBinomial(theta=2.1234)"
-
-# Option 3: Fixed theta
-result = rs.glm("y ~ x1 + x2", data, family="negbinomial", theta=1.0).fit()
 ```
 
 **NegativeBinomial vs QuasiPoisson:**
@@ -361,34 +318,12 @@ result = rs.glm("y ~ x1 + x2", data, family="negbinomial", theta=1.0).fit()
 - **QuasiPoisson**: Quick fix, no θ to specify
 - **NegativeBinomial**: Proper inference, prediction intervals
 
-### Target Encoding for High-Cardinality Categoricals (NEW)
+### Target Encoding for High-Cardinality Categoricals
 ```python
 import rustystats as rs
-import numpy as np
+import polars as pl
 
-# CatBoost-style ordered target statistics
-# Prevents target leakage during training
-
-# Direct API
-categories = ["Toyota", "Ford", "BMW", "Toyota", "Ford", "BMW"]
-target = np.array([1.0, 0.0, 1.0, 0.5, 0.2, 0.8])
-
-encoded, name, prior, stats = rs.target_encode(
-    categories, target, "brand",
-    prior_weight=1.0,      # Regularization toward global mean
-    n_permutations=4,      # Average across permutations for stability
-    seed=42                # For reproducibility
-)
-
-# For prediction on new data (uses full training statistics)
-new_cats = ["Toyota", "Honda"]  # Honda is unseen
-new_encoded = rs.apply_target_encoding(new_cats, stats, prior)
-# Unseen categories get the prior (global mean)
-
-# Sklearn-style API
-encoder = rs.TargetEncoder(prior_weight=1.0, n_permutations=4)
-train_encoded = encoder.fit_transform(train_categories, train_target)
-test_encoded = encoder.transform(test_categories)
+data = pl.read_parquet("insurance.parquet")
 
 # Formula API - TE() in formulas
 result = rs.glm(
@@ -404,6 +339,23 @@ result = rs.glm(
     data=data,
     family="gaussian"
 ).fit()
+
+# Direct API for custom use
+import numpy as np
+categories = ["Toyota", "Ford", "BMW", "Toyota", "Ford", "BMW"]
+target = np.array([1.0, 0.0, 1.0, 0.5, 0.2, 0.8])
+
+encoded, name, prior, stats = rs.target_encode(
+    categories, target, "brand",
+    prior_weight=1.0,      # Regularization toward global mean
+    n_permutations=4,      # Average across permutations for stability
+    seed=42                # For reproducibility
+)
+
+# Sklearn-style API
+encoder = rs.TargetEncoder(prior_weight=1.0, n_permutations=4)
+train_encoded = encoder.fit_transform(train_categories, train_target)
+test_encoded = encoder.transform(test_categories)
 ```
 
 **How it works (CatBoost algorithm):**
@@ -419,23 +371,7 @@ result = rs.glm(
 - **High-cardinality**: Single column instead of thousands of dummies
 - **Rare categories**: Automatically regularized toward global mean
 
-**When to use:**
-- High-cardinality categorical features (100s or 1000s of levels)
-- When one-hot encoding would create too many columns
-- When you want the model to learn category-target relationships
-
-**Target Encoding vs One-Hot Encoding:**
-| Aspect | Target Encoding | One-Hot Encoding |
-|--------|-----------------|------------------|
-| **Columns** | 1 per feature | k-1 per feature |
-| **High cardinality** | Efficient | Explosive |
-| **Target info** | Embedded | None |
-| **Overfitting risk** | Controlled by prior | Lower |
-| **Interpretability** | Single effect | Per-level effects |
-
----
-
-### Model Diagnostics with JSON Export (NEW)
+### Model Diagnostics with JSON Export
 ```python
 import rustystats as rs
 import polars as pl
@@ -450,11 +386,7 @@ result = rs.glm(
     offset="Exposure"
 ).fit()
 
-# =============================
-# COMPREHENSIVE DIAGNOSTICS
-# =============================
-
-# Compute all diagnostics at once (returns ModelDiagnostics object)
+# Compute all diagnostics at once
 diagnostics = result.diagnostics(
     data=data,
     categorical_factors=["Region", "VehBrand", "Area"],  # Including non-fitted
@@ -465,48 +397,7 @@ diagnostics = result.diagnostics(
 json_str = diagnostics.to_json()
 print(json_str)
 
-# Or use the convenience method
-json_str = result.diagnostics_json(
-    data=data,
-    categorical_factors=["Region", "VehBrand"],
-    continuous_factors=["Age", "Income"],
-)
-
-# =============================
-# WHAT'S IN THE JSON OUTPUT
-# =============================
-
-# Model summary
-diagnostics.model_summary
-# {"family": "poisson", "n_observations": 678012, "n_parameters": 15, ...}
-
-# Fit statistics
-diagnostics.fit_statistics
-# {"deviance": 123456.7, "aic": 123500.1, "bic": 123600.2, "dispersion_pearson": 1.05, ...}
-
-# Calibration metrics
-diagnostics.calibration
-# {"actual_expected_ratio": 0.998, "gini_coefficient": 0.42, "by_decile": [...], ...}
-
-# Per-factor diagnostics (both fitted AND non-fitted factors)
-for factor in diagnostics.factors:
-    print(f"{factor.name}: in_model={factor.in_model}")
-    print(f"  A/E by level: {len(factor.actual_vs_expected)} bins")
-    print(f"  Residual correlation: {factor.residual_pattern.correlation_with_residuals:.3f}")
-
-# Interaction candidates (greedy residual-based detection)
-for ic in diagnostics.interaction_candidates:
-    print(f"{ic.factor1} x {ic.factor2}: strength={ic.interaction_strength:.3f}")
-
-# Warnings (auto-generated from diagnostics)
-for warning in diagnostics.warnings:
-    print(f"[{warning['type']}] {warning['message']}")
-
-# =============================
-# PRE-FIT DATA EXPLORATION
-# =============================
-
-# Explore data BEFORE fitting (no model needed)
+# Pre-fit data exploration (no model needed)
 exploration = rs.explore_data(
     data=data,
     response="ClaimNb",
@@ -516,49 +407,7 @@ exploration = rs.explore_data(
     family="poisson",
     detect_interactions=True,
 )
-
-# View response distribution
-print(exploration.response_stats)
-# {"n_observations": 678012, "mean_rate": 0.045, "zeros_pct": 95.2, ...}
-
-# Factor statistics (before fitting)
-for factor in exploration.factor_stats:
-    print(f"{factor['name']}: {factor['type']}")
-    
-# Interaction candidates (based on response variance)
-for ic in exploration.interaction_candidates:
-    print(f"Consider: {ic.factor1} * {ic.factor2}")
-
-# Export as JSON
 print(exploration.to_json())
-```
-
-**JSON Output Structure:**
-```json
-{
-  "model_summary": {"family": "poisson", "n_observations": 678012, ...},
-  "fit_statistics": {"deviance": 123456.7, "aic": 123500.1, ...},
-  "calibration": {"actual_expected_ratio": 0.998, "by_decile": [...], ...},
-  "discrimination": {"gini_coefficient": 0.42, "auc": 0.71, ...},
-  "factors": [
-    {
-      "name": "Region",
-      "factor_type": "categorical",
-      "in_model": true,
-      "actual_vs_expected": [{"level": "A", "ae_ratio": 1.02, ...}, ...],
-      "residual_pattern": {"correlation": 0.01, ...}
-    },
-    {
-      "name": "Income",
-      "factor_type": "continuous", 
-      "in_model": false,
-      "actual_vs_expected": [{"bin": 1, "ae_ratio": 1.15, ...}, ...],
-      "residual_pattern": {"correlation": 0.08, ...}
-    }
-  ],
-  "interaction_candidates": [{"factor1": "Age", "factor2": "Region", "strength": 0.03}],
-  "warnings": [{"type": "missing_factor", "message": "Income explains 2% of residual variance"}]
-}
 ```
 
 **Key Features:**
@@ -571,13 +420,6 @@ print(exploration.to_json())
 | **Interaction Detection** | Greedy residual-based detection of potential interactions |
 | **Warnings** | Auto-generated alerts for high dispersion, poor calibration, missing factors |
 | **JSON Export** | Token-efficient serialization for LLM consumption |
-
-**Use Cases:**
-- **Model Validation**: Check calibration across risk segments
-- **Variable Selection**: Identify non-fitted factors with residual signal
-- **Interaction Discovery**: Find missing interactions automatically
-- **LLM Integration**: Feed compact JSON to AI for model analysis
-- **Reporting**: Generate model assessment reports
 
 ---
 
@@ -632,7 +474,7 @@ rustystats/
 │
 ├── python/rustystats/            # Python package
 │   ├── __init__.py               # Main exports
-│   ├── glm.py                    # GLM class, fit_glm, summary
+│   ├── glm.py                    # Summary formatting functions
 │   ├── formula.py                # Formula API with DataFrame support
 │   ├── interactions.py           # Optimized interaction term handling
 │   ├── splines.py                # bs() and ns() spline basis functions
@@ -647,15 +489,10 @@ rustystats/
 │
 └── tests/
     └── python/
-        ├── test_glm.py           # GLM tests
         ├── test_families.py      # Family tests
         ├── test_links.py         # Link tests
         ├── test_interactions.py  # Interaction term tests
-        ├── test_regularization.py # Lasso/Ridge/Elastic Net tests
-        ├── test_robust_se.py     # Robust standard error tests
         ├── test_splines.py       # Spline basis function tests
-        ├── test_quasi_families.py # QuasiPoisson/QuasiBinomial tests
-        ├── test_negative_binomial.py # Negative Binomial tests
         ├── test_target_encoding.py # Target encoding tests
         └── test_diagnostics.py   # Model diagnostics tests
 ```
@@ -693,9 +530,7 @@ rustystats/
 
 ### Python (Core)
 - `numpy` - Array operations (required)
-
-### Python (Optional)
-- `polars` - DataFrame support (for formula API with DataFrames)
+- `polars` - DataFrame support (required for formula API)
 
 ---
 
