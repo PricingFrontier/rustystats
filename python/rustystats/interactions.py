@@ -587,7 +587,157 @@ class InteractionBuilder:
             X = np.ones((self._n, 1), dtype=self.dtype)
             names = ['Intercept']
         
+        # Store for validation
+        self._last_X = X
+        self._last_names = names
+        
         return y, X, names
+    
+    def validate_design_matrix(
+        self,
+        X: np.ndarray = None,
+        names: List[str] = None,
+        corr_threshold: float = 0.999,
+        verbose: bool = True,
+    ) -> dict:
+        """
+        Validate design matrix for common issues that cause fitting failures.
+        
+        Parameters
+        ----------
+        X : np.ndarray, optional
+            Design matrix to validate. If None, uses last built matrix.
+        names : list of str, optional
+            Feature names. If None, uses last built names.
+        corr_threshold : float, default=0.999
+            Correlation threshold above which columns are flagged as problematic.
+        verbose : bool, default=True
+            Print diagnostic messages.
+            
+        Returns
+        -------
+        dict
+            Validation results with keys:
+            - 'valid': bool, True if matrix is suitable for fitting
+            - 'rank': int, matrix rank
+            - 'expected_rank': int, number of columns
+            - 'condition_number': float, condition number (large = ill-conditioned)
+            - 'problematic_columns': list of tuples (col1, col2, correlation)
+            - 'zero_variance_columns': list of column names with zero variance
+            - 'suggestions': list of actionable fix suggestions
+        """
+        if X is None:
+            X = getattr(self, '_last_X', None)
+            names = getattr(self, '_last_names', None)
+        if X is None:
+            raise ValueError("No design matrix to validate. Call build_design_matrix() first.")
+        
+        n_rows, n_cols = X.shape
+        results = {
+            'valid': True,
+            'rank': None,
+            'expected_rank': n_cols,
+            'condition_number': None,
+            'problematic_columns': [],
+            'zero_variance_columns': [],
+            'suggestions': [],
+        }
+        
+        # Check for NaN/Inf
+        if np.isnan(X).any():
+            results['valid'] = False
+            nan_cols = [names[i] for i in range(n_cols) if np.isnan(X[:, i]).any()]
+            results['suggestions'].append(f"Columns contain NaN values: {nan_cols}")
+        
+        if np.isinf(X).any():
+            results['valid'] = False
+            inf_cols = [names[i] for i in range(n_cols) if np.isinf(X[:, i]).any()]
+            results['suggestions'].append(f"Columns contain Inf values: {inf_cols}")
+        
+        # Check for zero variance columns (exclude Intercept which is supposed to be constant)
+        variances = np.var(X, axis=0)
+        zero_var_idx = np.where(variances < 1e-10)[0]
+        if len(zero_var_idx) > 0:
+            zero_var_cols = [names[i] for i in zero_var_idx if i < len(names) and names[i] != 'Intercept']
+            if zero_var_cols:
+                results['zero_variance_columns'] = zero_var_cols
+                results['valid'] = False
+                results['suggestions'].append(
+                    f"Columns have zero/near-zero variance: {zero_var_cols}. "
+                    "This often happens with splines on highly skewed data where most values are identical."
+                )
+        
+        # Check matrix rank
+        try:
+            results['rank'] = np.linalg.matrix_rank(X)
+            if results['rank'] < n_cols:
+                results['valid'] = False
+                results['suggestions'].append(
+                    f"Matrix is rank-deficient: rank={results['rank']}, expected={n_cols}. "
+                    f"{n_cols - results['rank']} columns are linearly dependent."
+                )
+        except Exception:
+            pass
+        
+        # Check condition number
+        try:
+            results['condition_number'] = np.linalg.cond(X)
+            if results['condition_number'] > 1e10:
+                results['valid'] = False
+                results['suggestions'].append(
+                    f"Matrix is ill-conditioned (condition number={results['condition_number']:.2e}). "
+                    "This indicates near-linear dependence between columns."
+                )
+        except Exception:
+            pass
+        
+        # Check for highly correlated columns (skip intercept)
+        try:
+            # Compute correlations only for non-constant columns
+            non_const_idx = [i for i in range(n_cols) if variances[i] > 1e-10]
+            if len(non_const_idx) > 1:
+                X_subset = X[:, non_const_idx]
+                corr_matrix = np.corrcoef(X_subset.T)
+                
+                for i in range(len(non_const_idx)):
+                    for j in range(i + 1, len(non_const_idx)):
+                        corr = abs(corr_matrix[i, j])
+                        if corr > corr_threshold:
+                            col1 = names[non_const_idx[i]]
+                            col2 = names[non_const_idx[j]]
+                            results['problematic_columns'].append((col1, col2, corr))
+                            
+                if results['problematic_columns']:
+                    results['valid'] = False
+                    pairs = [f"'{c1}' <-> '{c2}' (r={r:.4f})" for c1, c2, r in results['problematic_columns']]
+                    results['suggestions'].append(
+                        f"Highly correlated column pairs detected:\n  " + "\n  ".join(pairs) + "\n"
+                        "This often happens with natural splines (ns) on skewed data. Fixes:\n"
+                        "  1. Use B-splines instead: bs(VarName, df=4) - more robust to skewed data\n"
+                        "  2. Use log transform: ns(log_VarName, df=4) for skewed variables\n"
+                        "  3. Reduce degrees of freedom: ns(VarName, df=2)\n"
+                        "  4. Use linear term instead: just 'VarName' without spline"
+                    )
+        except Exception:
+            pass
+        
+        if verbose:
+            print("=" * 60)
+            print("DESIGN MATRIX VALIDATION")
+            print("=" * 60)
+            print(f"Shape: {n_rows} rows × {n_cols} columns")
+            print(f"Rank: {results['rank']} / {n_cols}")
+            if results['condition_number']:
+                print(f"Condition number: {results['condition_number']:.2e}")
+            print(f"Status: {'✓ VALID' if results['valid'] else '✗ INVALID'}")
+            
+            if not results['valid']:
+                print("\nPROBLEMS DETECTED:")
+                for i, suggestion in enumerate(results['suggestions'], 1):
+                    print(f"\n{i}. {suggestion}")
+            print("=" * 60)
+        
+        return results
     
     def transform_new_data(
         self,

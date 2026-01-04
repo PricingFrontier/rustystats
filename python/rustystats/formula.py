@@ -131,6 +131,9 @@ class FormulaGLM:
         self.n_obs = len(self.y)
         self.n_params = self.X.shape[1]
         
+        # Store validation results (computed lazily)
+        self._validation_results = None
+        
         # Process offset
         self.offset = self._process_offset(offset)
         
@@ -181,6 +184,38 @@ class FormulaGLM:
     def df_resid(self) -> int:
         """Degrees of freedom for residuals (n - p)."""
         return self.n_obs - self.n_params
+    
+    def validate(self, verbose: bool = True) -> dict:
+        """
+        Validate the design matrix before fitting.
+        
+        Checks for common issues that cause fitting failures:
+        - Rank deficiency (linearly dependent columns)
+        - High multicollinearity
+        - Zero variance columns
+        - NaN/Inf values
+        
+        Parameters
+        ----------
+        verbose : bool, default=True
+            Print diagnostic messages with fix suggestions.
+            
+        Returns
+        -------
+        dict
+            Validation results including 'valid' (bool) and 'suggestions' (list).
+            
+        Examples
+        --------
+        >>> model = rs.glm("y ~ ns(x, df=4) + C(cat)", data, family="poisson")
+        >>> results = model.validate()
+        >>> if not results['valid']:
+        ...     print("Issues found:", results['suggestions'])
+        """
+        self._validation_results = self._builder.validate_design_matrix(
+            self.X, self.feature_names, verbose=verbose
+        )
+        return self._validation_results
     
     def explore(
         self,
@@ -308,39 +343,55 @@ class FormulaGLM:
         is_negbinomial = self.family in ("negbinomial", "negativebinomial", "negative_binomial", "neg-binomial", "nb")
         auto_theta = is_negbinomial and self.theta is None
         
-        if auto_theta:
-            # Use profile likelihood to auto-estimate theta
-            result = _fit_negbinomial_rust(
-                self.y,
-                self.X,
-                self.link,
-                None,  # init_theta (use method-of-moments)
-                1e-5,  # theta_tol
-                10,    # max_theta_iter
-                self.offset,
-                self.weights,
-                max_iter,
-                tol,
-            )
-            result_family = result.family  # Contains estimated theta
-        else:
-            # Use fixed theta (default 1.0 for negbinomial if not auto)
-            theta = self.theta if self.theta is not None else 1.0
-            result = _fit_glm_rust(
-                self.y,
-                self.X,
-                self.family,
-                self.link,
-                self.var_power,
-                theta,
-                self.offset,
-                self.weights,
-                alpha,
-                l1_ratio,
-                max_iter,
-                tol,
-            )
-            result_family = self.family
+        try:
+            if auto_theta:
+                # Use profile likelihood to auto-estimate theta
+                result = _fit_negbinomial_rust(
+                    self.y,
+                    self.X,
+                    self.link,
+                    None,  # init_theta (use method-of-moments)
+                    1e-5,  # theta_tol
+                    10,    # max_theta_iter
+                    self.offset,
+                    self.weights,
+                    max_iter,
+                    tol,
+                )
+                result_family = result.family  # Contains estimated theta
+            else:
+                # Use fixed theta (default 1.0 for negbinomial if not auto)
+                theta = self.theta if self.theta is not None else 1.0
+                result = _fit_glm_rust(
+                    self.y,
+                    self.X,
+                    self.family,
+                    self.link,
+                    self.var_power,
+                    theta,
+                    self.offset,
+                    self.weights,
+                    alpha,
+                    l1_ratio,
+                    max_iter,
+                    tol,
+                )
+                result_family = self.family
+        except ValueError as e:
+            if "singular" in str(e).lower() or "multicollinearity" in str(e).lower():
+                # Run validation to provide helpful diagnostics
+                print("\n" + "=" * 60)
+                print("MODEL FITTING FAILED - Running diagnostics...")
+                print("=" * 60)
+                validation = self.validate(verbose=True)
+                raise ValueError(
+                    f"GLM fitting failed due to design matrix issues. "
+                    f"See diagnostics above for specific problems and fixes.\n"
+                    f"You can also run model.validate() before fit() to check for issues.\n"
+                    f"Original error: {e}"
+                ) from None
+            else:
+                raise
         
         # Wrap result with formula metadata
         return FormulaGLMResults(
