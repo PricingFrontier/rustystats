@@ -35,8 +35,8 @@ def _get_column(data: "pl.DataFrame", column: str) -> np.ndarray:
     return data[column].to_numpy()
 
 
-# Import build_design_matrix from interactions module (the canonical implementation)
-from rustystats.interactions import build_design_matrix
+# Import from interactions module (the canonical implementation)
+from rustystats.interactions import build_design_matrix, InteractionBuilder
 
 
 class FormulaGLM:
@@ -125,7 +125,9 @@ class FormulaGLM:
         self._weights_spec = weights
         
         # Build design matrix (uses optimized backend for interactions)
-        self.y, self.X, self.feature_names = build_design_matrix(formula, data)
+        # Keep the builder for prediction on new data
+        self._builder = InteractionBuilder(data)
+        self.y, self.X, self.feature_names = self._builder.build_design_matrix(formula)
         self.n_obs = len(self.y)
         self.n_params = self.X.shape[1]
         
@@ -147,8 +149,8 @@ class FormulaGLM:
             # It's a column name
             offset_values = _get_column(self.data, offset)
             
-            # For Poisson/Gamma with log link, auto-apply log to exposure
-            if self.family in ("poisson", "gamma") and self.link in (None, "log"):
+            # For Poisson/Gamma/QuasiPoisson/NegBinomial with log link, auto-apply log to exposure
+            if self.family in ("poisson", "quasipoisson", "negbinomial", "gamma") and self.link in (None, "log"):
                 # Check if values look like exposure (positive, not already logged)
                 if np.all(offset_values > 0) and np.mean(offset_values) > 0.01:
                     offset_values = np.log(offset_values)
@@ -347,6 +349,9 @@ class FormulaGLM:
             formula=self.formula,
             family=result_family,
             link=self.link,
+            builder=self._builder,
+            offset_spec=self._offset_spec,
+            offset_is_exposure=(self.family in ("poisson", "quasipoisson", "negbinomial", "gamma") and self.link in (None, "log")),
         )
 
 
@@ -374,22 +379,36 @@ class FormulaGLMResults:
         formula: str,
         family: str,
         link: Optional[str],
+        builder: Optional["InteractionBuilder"] = None,
+        offset_spec: Optional[Union[str, np.ndarray]] = None,
+        offset_is_exposure: bool = False,
     ):
         self._result = result
         self.feature_names = feature_names
         self.formula = formula
         self.family = family
         self.link = link or self._default_link(family)
+        self._builder = builder
+        self._offset_spec = offset_spec
+        self._offset_is_exposure = offset_is_exposure
     
     @staticmethod
     def _default_link(family: str) -> str:
         """Get default link for family."""
+        # Handle NegativeBinomial(theta=...) format
+        family_lower = family.lower()
+        if family_lower.startswith("negativebinomial"):
+            return "log"
         return {
             "gaussian": "identity",
             "poisson": "log",
+            "quasipoisson": "log",
+            "negbinomial": "log",
             "binomial": "logit",
             "gamma": "log",
-        }.get(family, "identity")
+            "inversegaussian": "inverse",
+            "tweedie": "log",
+        }.get(family_lower, "identity")
     
     # Delegate to underlying result
     @property
@@ -791,6 +810,83 @@ class FormulaGLMResults:
             max_interaction_factors=max_interaction_factors,
         )
         return diag.to_json(indent=indent)
+    
+    def predict(
+        self,
+        new_data: "pl.DataFrame",
+        offset: Optional[Union[str, np.ndarray]] = None,
+    ) -> np.ndarray:
+        """
+        Predict on new data using the fitted model.
+        
+        Parameters
+        ----------
+        new_data : pl.DataFrame
+            New data to predict on. Must have the same columns as training data.
+        offset : str or array-like, optional
+            Offset for new data. If None and the model was fit with an offset
+            column name, that column will be extracted from new_data.
+            For Poisson/Gamma with log link, log() is auto-applied to exposure.
+            
+        Returns
+        -------
+        np.ndarray
+            Predicted values (on the response scale, i.e., μ = E[Y]).
+            
+        Examples
+        --------
+        >>> model = rs.glm("ClaimNb ~ Age + C(Region)", data, family="poisson", offset="Exposure")
+        >>> result = model.fit()
+        >>> 
+        >>> # Predict on new data
+        >>> predictions = result.predict(new_data)
+        >>> 
+        >>> # Predict with custom offset
+        >>> predictions = result.predict(new_data, offset=np.log(new_exposures))
+        """
+        if self._builder is None:
+            raise ValueError(
+                "Cannot predict: model was not fitted with formula API. "
+                "Use fittedvalues for training data predictions."
+            )
+        
+        # Build design matrix for new data using stored encoding state
+        X_new = self._builder.transform_new_data(new_data)
+        
+        # Compute linear predictor: η = X @ β
+        linear_pred = X_new @ self.params
+        
+        # Handle offset
+        # If offset is provided as a string, extract column and apply log() for log-link models
+        # If offset is provided as array, use directly (user handles transformation)
+        # If offset is None, no offset is applied
+        if offset is not None:
+            if isinstance(offset, str):
+                offset_values = new_data[offset].to_numpy().astype(np.float64)
+                # Apply log() for log-link models (same as fitting)
+                if self.link == "log":
+                    offset_values = np.log(offset_values)
+            else:
+                offset_values = np.asarray(offset, dtype=np.float64)
+            linear_pred = linear_pred + offset_values
+        
+        # Apply inverse link function to get predictions on response scale
+        return self._apply_inverse_link(linear_pred)
+    
+    def _apply_inverse_link(self, eta: np.ndarray) -> np.ndarray:
+        """Apply inverse link function to linear predictor."""
+        link = self.link
+        if link == "identity":
+            return eta
+        elif link == "log":
+            return np.exp(eta)
+        elif link == "logit":
+            return 1.0 / (1.0 + np.exp(-eta))
+        elif link == "inverse":
+            return 1.0 / eta
+        else:
+            # Default to identity
+            return eta
     
     def __repr__(self) -> str:
         return (

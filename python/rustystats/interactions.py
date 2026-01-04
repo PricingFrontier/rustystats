@@ -196,6 +196,12 @@ class InteractionBuilder:
         self._cat_cache: Dict[str, Tuple[np.ndarray, List[str]]] = {}
         # Cache for categorical indices (for interaction building)
         self._cat_indices_cache: Dict[str, Tuple[np.ndarray, List[str]]] = {}
+        # Store categorical levels for prediction on new data
+        self._cat_levels: Dict[str, List[str]] = {}
+        # Store spline terms with fitted knots for prediction
+        self._fitted_splines: Dict[str, SplineTerm] = {}
+        # Store parsed formula for prediction
+        self._parsed_formula: Optional[ParsedFormula] = None
     
     def _get_column(self, name: str) -> np.ndarray:
         """Extract column as numpy array."""
@@ -234,6 +240,8 @@ class InteractionBuilder:
         # Cache both the encoding and the indices/levels for interaction building
         self._cat_cache[cache_key] = (encoding, names)
         self._cat_indices_cache[name] = (np.array(indices, dtype=np.int32), levels)
+        # Store levels for prediction on new data
+        self._cat_levels[name] = levels
         
         return encoding, names
     
@@ -546,6 +554,8 @@ class InteractionBuilder:
             spline_cols, spline_names = self._build_spline_columns(spline)
             columns.append(spline_cols)
             names.extend(spline_names)
+            # Store fitted spline for prediction
+            self._fitted_splines[spline.var_name] = spline
         
         # Add interactions
         for interaction in parsed.interactions:
@@ -554,6 +564,9 @@ class InteractionBuilder:
                 int_cols = int_cols.reshape(-1, 1)
             columns.append(int_cols)
             names.extend(int_names)
+        
+        # Store parsed formula for prediction
+        self._parsed_formula = parsed
         
         # Get response (needed for target encoding)
         y = self._get_column(parsed.response)
@@ -575,6 +588,214 @@ class InteractionBuilder:
             names = ['Intercept']
         
         return y, X, names
+    
+    def transform_new_data(
+        self,
+        new_data: "pl.DataFrame",
+    ) -> np.ndarray:
+        """
+        Transform new data using the encoding state from training.
+        
+        This method applies the same transformations learned during
+        build_design_matrix() to new data for prediction.
+        
+        Parameters
+        ----------
+        new_data : pl.DataFrame
+            New data to transform. Must have same columns as training data.
+            
+        Returns
+        -------
+        X : np.ndarray
+            Design matrix for new data
+            
+        Raises
+        ------
+        ValueError
+            If build_design_matrix() was not called first, or if new data
+            contains unseen categorical levels.
+        """
+        if self._parsed_formula is None:
+            raise ValueError(
+                "Must call build_design_matrix() before transform_new_data(). "
+                "No formula has been fitted yet."
+            )
+        
+        parsed = self._parsed_formula
+        n_new = len(new_data)
+        columns = []
+        
+        # Add intercept
+        if parsed.has_intercept:
+            columns.append(np.ones(n_new, dtype=self.dtype))
+        
+        # Add main effects
+        for var in parsed.main_effects:
+            if var in parsed.categorical_vars:
+                enc = self._encode_categorical_new(new_data, var)
+                columns.append(enc)
+            else:
+                col = new_data[var].to_numpy().astype(self.dtype)
+                columns.append(col.reshape(-1, 1))
+        
+        # Add spline terms using fitted knots
+        for spline in parsed.spline_terms:
+            x = new_data[spline.var_name].to_numpy().astype(self.dtype)
+            # Use the fitted spline which has the same knots as training
+            fitted_spline = self._fitted_splines.get(spline.var_name, spline)
+            spline_cols, _ = fitted_spline.transform(x)
+            columns.append(spline_cols)
+        
+        # Add interactions
+        for interaction in parsed.interactions:
+            int_cols = self._build_interaction_new(new_data, interaction, n_new)
+            if int_cols.ndim == 1:
+                int_cols = int_cols.reshape(-1, 1)
+            columns.append(int_cols)
+        
+        # Add target encoding terms using stored statistics
+        for te_term in parsed.target_encoding_terms:
+            te_col = self._encode_target_new(new_data, te_term)
+            columns.append(te_col.reshape(-1, 1))
+        
+        # Stack all columns
+        if columns:
+            X = np.hstack([c if c.ndim == 2 else c.reshape(-1, 1) for c in columns])
+        else:
+            X = np.ones((n_new, 1), dtype=self.dtype)
+        
+        return X
+    
+    def _encode_categorical_new(
+        self,
+        new_data: "pl.DataFrame",
+        var_name: str,
+    ) -> np.ndarray:
+        """Encode categorical variable using levels from training."""
+        if var_name not in self._cat_levels:
+            raise ValueError(
+                f"Categorical variable '{var_name}' was not seen during training."
+            )
+        
+        levels = self._cat_levels[var_name]
+        col = new_data[var_name].to_numpy()
+        n = len(col)
+        
+        # Create level to index mapping (reference level is index 0)
+        level_to_idx = {level: i for i, level in enumerate(levels)}
+        
+        # Number of dummy columns (excluding reference level)
+        n_dummies = len(levels) - 1
+        encoding = np.zeros((n, n_dummies), dtype=self.dtype)
+        
+        for i, val in enumerate(col):
+            val_str = str(val)
+            if val_str in level_to_idx:
+                idx = level_to_idx[val_str]
+                if idx > 0:  # Skip reference level
+                    encoding[i, idx - 1] = 1.0
+            # Unknown levels get all zeros (mapped to reference)
+        
+        return encoding
+    
+    def _build_interaction_new(
+        self,
+        new_data: "pl.DataFrame",
+        interaction: InteractionTerm,
+        n: int,
+    ) -> np.ndarray:
+        """Build interaction columns for new data."""
+        if interaction.is_pure_continuous:
+            # Continuous × continuous
+            result = new_data[interaction.factors[0]].to_numpy().astype(self.dtype)
+            for factor in interaction.factors[1:]:
+                result = result * new_data[factor].to_numpy().astype(self.dtype)
+            return result.reshape(-1, 1)
+        
+        elif interaction.is_pure_categorical:
+            # Categorical × categorical
+            encodings = []
+            for factor in interaction.factors:
+                enc = self._encode_categorical_new(new_data, factor)
+                encodings.append(enc)
+            
+            # Build interaction by taking outer product
+            result = encodings[0]
+            for enc in encodings[1:]:
+                # Kronecker-style expansion
+                n_cols1, n_cols2 = result.shape[1], enc.shape[1]
+                new_result = np.zeros((n, n_cols1 * n_cols2), dtype=self.dtype)
+                for i in range(n_cols1):
+                    for j in range(n_cols2):
+                        new_result[:, i * n_cols2 + j] = result[:, i] * enc[:, j]
+                result = new_result
+            return result
+        
+        else:
+            # Mixed: categorical × continuous
+            cat_factors = []
+            cont_factors = []
+            for factor, is_cat in zip(interaction.factors, interaction.categorical_flags):
+                if is_cat:
+                    cat_factors.append(factor)
+                else:
+                    cont_factors.append(factor)
+            
+            # Build continuous product
+            cont_product = new_data[cont_factors[0]].to_numpy().astype(self.dtype)
+            for factor in cont_factors[1:]:
+                cont_product = cont_product * new_data[factor].to_numpy().astype(self.dtype)
+            
+            # Build categorical encoding
+            if len(cat_factors) == 1:
+                cat_enc = self._encode_categorical_new(new_data, cat_factors[0])
+            else:
+                # Multiple categorical - build their interaction
+                cat_enc = self._encode_categorical_new(new_data, cat_factors[0])
+                for factor in cat_factors[1:]:
+                    enc = self._encode_categorical_new(new_data, factor)
+                    n_cols1, n_cols2 = cat_enc.shape[1], enc.shape[1]
+                    new_enc = np.zeros((n, n_cols1 * n_cols2), dtype=self.dtype)
+                    for i in range(n_cols1):
+                        for j in range(n_cols2):
+                            new_enc[:, i * n_cols2 + j] = cat_enc[:, i] * enc[:, j]
+                    cat_enc = new_enc
+            
+            # Multiply categorical dummies by continuous
+            result = cat_enc * cont_product.reshape(-1, 1)
+            return result
+    
+    def _encode_target_new(
+        self,
+        new_data: "pl.DataFrame",
+        te_term: TargetEncodingTermSpec,
+    ) -> np.ndarray:
+        """Encode using target statistics from training."""
+        if te_term.var_name not in self._te_stats:
+            raise ValueError(
+                f"Target encoding for '{te_term.var_name}' was not fitted during training."
+            )
+        
+        stats = self._te_stats[te_term.var_name]
+        prior = stats['prior']
+        level_stats = stats['stats']  # Dict[str, (sum, count)]
+        prior_weight = stats['prior_weight']
+        
+        col = new_data[te_term.var_name].to_numpy()
+        n = len(col)
+        encoded = np.zeros(n, dtype=self.dtype)
+        
+        for i, val in enumerate(col):
+            val_str = str(val)
+            if val_str in level_stats:
+                level_sum, level_count = level_stats[val_str]
+                # Use full training statistics for prediction
+                encoded[i] = (level_sum + prior * prior_weight) / (level_count + prior_weight)
+            else:
+                # Unknown level - use global prior
+                encoded[i] = prior
+        
+        return encoded
 
 
 def build_design_matrix(
