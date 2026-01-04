@@ -4,39 +4,6 @@ This guide walks through the essential RustyStats functionality in 10 minutes.
 
 ## Your First GLM
 
-### Using NumPy Arrays
-
-```python
-import rustystats as rs
-import numpy as np
-
-# Generate sample data
-np.random.seed(42)
-n = 1000
-x1 = np.random.normal(0, 1, n)
-x2 = np.random.normal(0, 1, n)
-
-# True model: y ~ Poisson(exp(0.5 + 0.3*x1 - 0.2*x2))
-eta = 0.5 + 0.3 * x1 - 0.2 * x2
-y = np.random.poisson(np.exp(eta))
-
-# Build design matrix (include intercept!)
-X = np.column_stack([np.ones(n), x1, x2])
-
-# Fit the model
-result = rs.fit_glm(y, X, family="poisson")
-
-# View results
-print(f"Coefficients: {result.params}")      # [0.50, 0.30, -0.20] approximately
-print(f"Standard Errors: {result.bse()}")
-print(f"P-values: {result.pvalues()}")
-print(f"Deviance: {result.deviance:.2f}")
-```
-
-### Using the Formula API
-
-The formula API is more intuitive for real-world data:
-
 ```python
 import rustystats as rs
 import polars as pl
@@ -94,11 +61,11 @@ result.linear_predictor    # Linear predictor (η = Xβ)
 
 ```python
 # Examples
-result = rs.fit_glm(y, X, family="gaussian")     # Linear regression
-result = rs.fit_glm(y, X, family="poisson")      # Count data
-result = rs.fit_glm(y, X, family="binomial")     # Binary outcomes
-result = rs.fit_glm(y, X, family="gamma")        # Positive continuous
-result = rs.fit_glm(y, X, family="tweedie", var_power=1.5)  # Pure premium
+result = rs.glm("y ~ x1 + x2", data, family="gaussian").fit()     # Linear regression
+result = rs.glm("y ~ x1 + x2", data, family="poisson").fit()      # Count data
+result = rs.glm("y ~ x1 + x2", data, family="binomial").fit()     # Binary outcomes
+result = rs.glm("y ~ x1 + x2", data, family="gamma").fit()        # Positive continuous
+result = rs.glm("y ~ x1 + x2", data, family="tweedie", var_power=1.5).fit()  # Pure premium
 ```
 
 ## Working with Categorical Variables
@@ -120,18 +87,20 @@ print(result.relativities())
 
 ```python
 # Lasso (L1) - variable selection
-result = rs.fit_glm(y, X, family="poisson", alpha=0.1, l1_ratio=1.0)
+result = rs.glm("claims ~ age + C(region)", data, family="poisson").fit(
+    alpha=0.1, l1_ratio=1.0
+)
 print(f"Non-zero coefficients: {result.n_nonzero()}")
 
 # Ridge (L2) - shrinkage without selection
-result = rs.fit_glm(y, X, family="gaussian", alpha=0.1, l1_ratio=0.0)
+result = rs.glm("y ~ x1 + x2", data, family="gaussian").fit(
+    alpha=0.1, l1_ratio=0.0
+)
 
 # Elastic Net - mix of both
-result = rs.fit_glm(y, X, family="gaussian", alpha=0.1, l1_ratio=0.5)
-
-# Cross-validation for optimal alpha
-cv_result = rs.cv_glm(y, X, family="poisson", l1_ratio=1.0, cv=5)
-print(f"Best alpha: {cv_result.alpha_best}")
+result = rs.glm("y ~ x1 + x2", data, family="gaussian").fit(
+    alpha=0.1, l1_ratio=0.5
+)
 ```
 
 ## Non-linear Effects with Splines
@@ -158,19 +127,19 @@ When variance exceeds what the model predicts:
 
 ```python
 # Check for overdispersion
-result = rs.fit_glm(y, X, family="poisson")
+result = rs.glm("claims ~ age + C(region)", data, family="poisson").fit()
 dispersion = result.pearson_chi2() / result.df_resid
 print(f"Dispersion ratio: {dispersion:.2f}")  # >> 1 indicates overdispersion
 
 # Use QuasiPoisson for inflated standard errors
-result_quasi = rs.fit_glm(y, X, family="quasipoisson")
+result_quasi = rs.glm("claims ~ age + C(region)", data, family="quasipoisson").fit()
 
 # Or Negative Binomial for proper likelihood
-result_nb = rs.fit_glm(y, X, family="negbinomial", theta=1.0)
+result_nb = rs.glm("claims ~ age + C(region)", data, family="negbinomial", theta=1.0).fit()
 ```
 
 ## Next Steps
 
 - [GLM Theory](../theory/glm-intro.md) - Understand the mathematics
 - [Architecture](../architecture/overview.md) - How the code is organized
-- [Python API](../api/array-api.md) - Complete API reference
+- [Formula API](../api/formula-api.md) - Complete API reference

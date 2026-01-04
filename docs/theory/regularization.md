@@ -56,9 +56,7 @@ P_{\text{Ridge}}(\boldsymbol{\beta}) = \sum_{j=1}^{p} \beta_j^2 = \|\boldsymbol{
 import rustystats as rs
 
 # Ridge regression (l1_ratio = 0)
-result = rs.fit_glm(
-    y, X,
-    family="gaussian",
+result = rs.glm("y ~ x1 + x2 + C(cat)", data, family="gaussian").fit(
     alpha=0.1,      # Penalty strength
     l1_ratio=0.0    # Pure L2 (Ridge)
 )
@@ -115,9 +113,7 @@ pub fn soft_threshold(z: f64, gamma: f64) -> f64 {
 
 ```python
 # Lasso (l1_ratio = 1)
-result = rs.fit_glm(
-    y, X,
-    family="poisson",
+result = rs.glm("y ~ x1 + x2 + C(cat)", data, family="poisson").fit(
     alpha=0.1,      # Penalty strength
     l1_ratio=1.0    # Pure L1 (Lasso)
 )
@@ -160,9 +156,7 @@ where \(\rho \in [0, 1]\) is the L1 ratio.
 
 ```python
 # Elastic Net (0 < l1_ratio < 1)
-result = rs.fit_glm(
-    y, X,
-    family="gaussian",
+result = rs.glm("y ~ x1 + x2 + C(cat)", data, family="gaussian").fit(
     alpha=0.1,
     l1_ratio=0.5    # 50% L1, 50% L2
 )
@@ -204,40 +198,17 @@ Key optimizations:
 
 The penalty strength λ (called `alpha` in RustyStats API) is crucial.
 
-### Lasso Path
+### Tuning Alpha
 
-Trace coefficients as λ varies:
-
-```python
-path = rs.lasso_path(y, X, family="gaussian", n_alphas=50)
-
-# View path
-print(path.alphas)        # λ values
-print(path.coefs)         # Coefficients at each λ
-
-# Plot
-path.plot()
-```
-
-### Cross-Validation
-
-Find optimal λ by cross-validation:
+Try different alpha values to find the right balance:
 
 ```python
-cv_result = rs.cv_glm(
-    y, X,
-    family="poisson",
-    l1_ratio=1.0,    # Lasso
-    cv=5,            # 5-fold CV
-    n_alphas=100
-)
-
-print(f"Best α (min CV error): {cv_result.alpha_best}")
-print(f"1-SE α (more parsimonious): {cv_result.alpha_1se}")
-
-# Refit with optimal α
-result = rs.fit_glm(y, X, family="poisson", 
-                     alpha=cv_result.alpha_best, l1_ratio=1.0)
+# Test different regularization strengths
+for alpha in [0.001, 0.01, 0.1, 1.0]:
+    result = rs.glm("y ~ x1 + x2 + C(cat)", data, family="poisson").fit(
+        alpha=alpha, l1_ratio=1.0
+    )
+    print(f"α={alpha}: {result.n_nonzero()} features, deviance={result.deviance:.2f}")
 ```
 
 ### The 1-SE Rule
@@ -263,7 +234,7 @@ RustyStats internally standardizes features before fitting:
 ```python
 # Features are standardized internally
 # Coefficients are returned on original scale
-result = rs.fit_glm(y, X, family="gaussian", alpha=0.1, l1_ratio=1.0)
+result = rs.glm("y ~ x1 + x2", data, family="gaussian").fit(alpha=0.1, l1_ratio=1.0)
 ```
 
 ### Intercept
@@ -280,13 +251,13 @@ Regularization works with all GLM families:
 
 ```python
 # Regularized Poisson
-result = rs.fit_glm(y, X, family="poisson", alpha=0.1, l1_ratio=1.0)
+result = rs.glm("y ~ x1 + x2", data, family="poisson").fit(alpha=0.1, l1_ratio=1.0)
 
 # Regularized Binomial (Logistic)
-result = rs.fit_glm(y, X, family="binomial", alpha=0.1, l1_ratio=0.5)
+result = rs.glm("y ~ x1 + x2", data, family="binomial").fit(alpha=0.1, l1_ratio=0.5)
 
 # Regularized Gamma
-result = rs.fit_glm(y, X, family="gamma", alpha=0.1, l1_ratio=0.0)
+result = rs.glm("y ~ x1 + x2", data, family="gamma").fit(alpha=0.1, l1_ratio=0.0)
 ```
 
 The coordinate descent algorithm adapts to each family's variance function and link.

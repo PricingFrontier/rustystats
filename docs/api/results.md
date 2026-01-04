@@ -4,12 +4,12 @@ This page provides complete documentation for the `GLMResults` and `FormulaGLMRe
 
 ## GLMResults
 
-Returned by `fit_glm()`. Contains all fitted model information.
+Core results object returned when fitting a GLM. Contains all fitted model information.
 
 ### Construction
 
 ```python
-result = rs.fit_glm(y, X, family="poisson")
+result = rs.glm("y ~ x1 + x2", data, family="poisson").fit()
 ```
 
 ---
@@ -359,7 +359,7 @@ phi = result.scale_pearson()
 Number of non-zero coefficients (for regularized models).
 
 ```python
-result = rs.fit_glm(y, X, alpha=0.1, l1_ratio=1.0)
+result = rs.glm("y ~ x1 + x2 + C(cat)", data).fit(alpha=0.1, l1_ratio=1.0)
 print(f"Selected {result.n_nonzero()} of {len(result.params)} features")
 ```
 

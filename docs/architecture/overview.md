@@ -159,13 +159,13 @@ High-level Python API:
 ```
 python/rustystats/
 ├── __init__.py             # Public exports
-├── glm.py                  # GLM class, fit_glm()
+├── glm.py                  # Summary formatting functions
 ├── formula.py              # Formula API, glm()
 ├── families.py             # Python family wrappers
 ├── links.py                # Python link wrappers
 ├── splines.py              # bs(), ns() functions
 ├── target_encoding.py      # target_encode(), TargetEncoder
-├── selection.py            # lasso_path(), cv_glm()
+├── interactions.py         # Interaction term utilities
 └── diagnostics.py          # ModelDiagnostics, explore_data()
 ```
 
@@ -174,14 +174,16 @@ python/rustystats/
 ### Fitting a Model
 
 ```
-User calls rs.fit_glm(y, X, family="poisson")
+User calls rs.glm("y ~ x1 + C(cat)", data).fit()
            │
            ▼
 ┌──────────────────────────────────────────┐
-│ python/rustystats/glm.py: fit_glm()      │
-│ - Parse family string → Family object    │
-│ - Validate inputs                         │
-│ - Call Rust via _rustystats.fit_glm()    │
+│ python/rustystats/formula.py             │
+│ - Parse formula string                   │
+│ - Extract columns from DataFrame         │
+│ - Build design matrix                    │
+│ - Handle categoricals, splines, etc.     │
+│ - Call Rust via _rustystats              │
 └──────────────────────────────────────────┘
            │
            ▼
@@ -206,27 +208,8 @@ User calls rs.fit_glm(y, X, family="poisson")
 │ Back to Python                           │
 │ - Wrap IRLSResult as PyGLMResults        │
 │ - Convert arrays back to NumPy           │
-│ - Return GLMResults to user              │
+│ - Return FormulaGLMResults to user       │
 └──────────────────────────────────────────┘
-```
-
-### Formula API Flow
-
-```
-User calls rs.glm("y ~ x1 + C(cat)", data).fit()
-           │
-           ▼
-┌──────────────────────────────────────────┐
-│ python/rustystats/formula.py             │
-│ - Parse formula string                   │
-│ - Extract columns from DataFrame         │
-│ - Build design matrix                    │
-│ - Handle categoricals, splines, etc.     │
-│ - Call fit_glm() with arrays             │
-└──────────────────────────────────────────┘
-           │
-           ▼
-        (Same as array API from here)
 ```
 
 ## Error Handling
@@ -339,9 +322,11 @@ Located in `tests/python/`:
 
 ```python
 def test_poisson_fit():
-    y = np.random.poisson(5, 100)
-    X = np.column_stack([np.ones(100), np.random.randn(100)])
-    result = rs.fit_glm(y, X, family="poisson")
+    data = pl.DataFrame({
+        "y": np.random.poisson(5, 100),
+        "x": np.random.randn(100),
+    })
+    result = rs.glm("y ~ x", data, family="poisson").fit()
     assert result.converged
 ```
 
@@ -353,11 +338,13 @@ Compare against statsmodels:
 
 ```python
 def test_vs_statsmodels():
+    data = pl.DataFrame({"y": y, "x": x})
+    
     # Fit with RustyStats
-    rs_result = rs.fit_glm(y, X, family="gaussian")
+    rs_result = rs.glm("y ~ x", data, family="gaussian").fit()
     
     # Fit with statsmodels
-    sm_result = sm.GLM(y, X, family=sm.families.Gaussian()).fit()
+    sm_result = sm.GLM(y, sm.add_constant(x), family=sm.families.Gaussian()).fit()
     
     # Compare coefficients
     np.testing.assert_allclose(rs_result.params, sm_result.params, rtol=1e-5)

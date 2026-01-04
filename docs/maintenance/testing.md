@@ -15,10 +15,12 @@ rustystats/
 └── tests/
     └── python/
         ├── __init__.py
-        ├── test_glm.py
         ├── test_families.py
         ├── test_links.py
-        ├── test_regularization.py
+        ├── test_interactions.py
+        ├── test_splines.py
+        ├── test_target_encoding.py
+        ├── test_diagnostics.py
         └── ...
 ```
 
@@ -83,10 +85,10 @@ cargo test --release
 uv run pytest tests/python/ -v
 
 # Specific file
-uv run pytest tests/python/test_glm.py -v
+uv run pytest tests/python/test_interactions.py -v
 
 # Specific test
-uv run pytest tests/python/test_glm.py::test_poisson_fit -v
+uv run pytest tests/python/test_interactions.py::TestGLMInteractions -v
 
 # With coverage
 uv run pytest tests/python/ --cov=rustystats
@@ -226,20 +228,24 @@ class TestPoissonFit:
     
     def test_basic_fit(self):
         """Test basic Poisson fit converges."""
-        y = np.array([1, 2, 3, 4, 5])
-        X = np.column_stack([np.ones(5), [1, 2, 3, 4, 5]])
+        data = pl.DataFrame({
+            "y": [1, 2, 3, 4, 5],
+            "x": [1.0, 2.0, 3.0, 4.0, 5.0],
+        })
         
-        result = rs.fit_glm(y, X, family="poisson")
+        result = rs.glm("y ~ x", data, family="poisson").fit()
         
         assert result.converged
         assert len(result.params) == 2
     
     def test_predictions_positive(self):
         """Test that Poisson predictions are positive."""
-        y = np.random.poisson(5, 100)
-        X = np.column_stack([np.ones(100), np.random.randn(100)])
+        data = pl.DataFrame({
+            "y": np.random.poisson(5, 100),
+            "x": np.random.randn(100),
+        })
         
-        result = rs.fit_glm(y, X, family="poisson")
+        result = rs.glm("y ~ x", data, family="poisson").fit()
         
         assert np.all(result.fittedvalues > 0)
 ```

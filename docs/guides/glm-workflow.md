@@ -22,7 +22,7 @@ Building a good GLM is iterative. At each stage, diagnostics guide your next dec
 │     └─► Response distribution → Choose appropriate family/link       │
 │                                                                      │
 │  3. INITIAL MODEL FIT                                                │
-│     └─► fit_glm() → Baseline model with key predictors              │
+│     └─► rs.glm().fit() → Baseline model with key predictors         │
 │                                                                      │
 │  4. DIAGNOSTICS CHECK                                                │
 │     └─► result.diagnostics() → Assess fit quality                   │
@@ -37,7 +37,7 @@ Building a good GLM is iterative. At each stage, diagnostics guide your next dec
 │     └─► Add splines, interactions, transformations                  │
 │                                                                      │
 │  7. REGULARIZATION (optional)                                        │
-│     └─► cv_lasso() → Variable selection for many predictors         │
+│     └─► fit(alpha=...) → Variable selection for many predictors     │
 │                                                                      │
 │  8. FINAL VALIDATION                                                 │
 │     └─► Out-of-sample testing, stability checks                     │
@@ -172,34 +172,14 @@ print(f"Suggested family: {suggested}")
 
 Start with a baseline model using your most important predictors.
 
-### 3.1 Prepare Design Matrix
+### 3.1 Fit Initial Model
 
 ```python
-# Option A: Array API (explicit control)
-from rustystats import fit_glm
-
-X = np.column_stack([
-    np.ones(len(data)),  # Intercept
-    data["vehicle_age"].to_numpy(),
-    data["driver_experience"].to_numpy(),
-    # Add dummy variables for categoricals
-])
-
-result = fit_glm(
-    y=data["claim_amount"].to_numpy(),
-    X=X,
-    family="gamma",
-    offset=np.log(data["exposure"].to_numpy()),
-)
-```
-
-```python
-# Option B: Formula API (recommended for most cases)
 result = rs.glm(
     "claim_amount ~ vehicle_age + driver_experience + C(region)",
     data=data,
     family="gamma",
-    exposure="exposure",
+    offset="exposure",
 ).fit()
 ```
 
@@ -718,72 +698,70 @@ print(f"Gini:        {gini_before:.4f} → {gini_after:.4f}")
 
 When you have many predictors, use regularization to select the important ones.
 
-### 7.1 Lasso Path Visualization
+### 7.1 Ridge Regularization (L2)
+
+Ridge shrinks coefficients toward zero but keeps all variables:
 
 ```python
-# Compute Lasso path
-path = rs.lasso_path(
-    y=data["claim_amount"].to_numpy(),
-    X=X,  # Design matrix with all candidate features
+# Fit with Ridge regularization
+result_ridge = rs.glm(
+    "claim_amount ~ vehicle_age + driver_experience + C(region) + C(vehicle_type)",
+    data=data,
     family="gamma",
-    n_alphas=50,
-)
+    offset="exposure",
+).fit(alpha=0.1, l1_ratio=0.0)
 
-# Plot coefficient paths
-path.plot()
-plt.title("Lasso Coefficient Paths")
-plt.show()
-
-# See which features are selected at each sparsity level
-print("\nFeatures by regularization strength:")
-for i in [0, len(path.alphas)//4, len(path.alphas)//2, -1]:
-    n_nonzero = path.n_nonzero[i]
-    print(f"  α={path.alphas[i]:.4f}: {n_nonzero} features")
+print(f"Ridge coefficients: {result_ridge.params}")
 ```
 
-### 7.2 Cross-Validated Selection
+### 7.2 Lasso Regularization (L1)
+
+Lasso performs variable selection by zeroing out weak predictors:
 
 ```python
-# Find optimal regularization via CV
-cv_result = rs.cv_lasso(
-    y=data["claim_amount"].to_numpy(),
-    X=X,
+# Fit with Lasso regularization
+result_lasso = rs.glm(
+    "claim_amount ~ vehicle_age + driver_experience + C(region) + C(vehicle_type)",
+    data=data,
     family="gamma",
-    cv=5,
-    n_alphas=30,
-)
-
-print(f"Best α:        {cv_result.alpha_best:.6f}")
-print(f"1-SE α:        {cv_result.alpha_1se:.6f}")
-print(f"Features (best): {cv_result.n_nonzero_best}")
-
-# Plot CV curve
-cv_result.plot()
-plt.show()
-
-# Get the selected model
-best_model = cv_result.best_result
-selected_features = [i for i, c in enumerate(best_model.params) if abs(c) > 1e-8]
-print(f"Selected feature indices: {selected_features}")
-```
-
-### 7.3 Using Regularized Model
-
-```python
-# Fit with optimal regularization
-result_lasso = rs.fit_glm(
-    y=data["claim_amount"].to_numpy(),
-    X=X,
-    family="gamma",
-    alpha=cv_result.alpha_1se,  # Use 1-SE rule for more parsimony
-    l1_ratio=1.0,
-)
+    offset="exposure",
+).fit(alpha=0.1, l1_ratio=1.0)
 
 print(f"Non-zero coefficients: {result_lasso.n_nonzero()}")
+print(f"Selected features: {result_lasso.selected_features()}")
+```
 
-# Compare to unregularized
-print(f"\nUnregularized deviance: {result.deviance:.2f}")
-print(f"Lasso deviance:         {result_lasso.deviance:.2f}")
+### 7.3 Elastic Net (L1 + L2)
+
+Elastic Net combines Ridge and Lasso:
+
+```python
+# Fit with Elastic Net (50% L1, 50% L2)
+result_enet = rs.glm(
+    "claim_amount ~ vehicle_age + driver_experience + C(region) + C(vehicle_type)",
+    data=data,
+    family="gamma",
+    offset="exposure",
+).fit(alpha=0.1, l1_ratio=0.5)
+
+print(f"Non-zero coefficients: {result_enet.n_nonzero()}")
+```
+
+### 7.4 Tuning Alpha
+
+Try different alpha values to find the right sparsity level:
+
+```python
+# Test different regularization strengths
+for alpha in [0.001, 0.01, 0.1, 1.0]:
+    result = rs.glm(
+        "claim_amount ~ vehicle_age + driver_experience + C(region) + C(vehicle_type)",
+        data=data,
+        family="gamma",
+        offset="exposure",
+    ).fit(alpha=alpha, l1_ratio=1.0)
+    
+    print(f"α={alpha}: {result.n_nonzero()} features, deviance={result.deviance:.2f}")
 ```
 
 ---

@@ -14,41 +14,23 @@ RustyStats is a statistical modeling library designed for actuarial and data sci
 | **Performance (678K rows)** | ~1 second | ~5-10 seconds |
 
 ## Quick Example
+it_g
+```python
+import rustystats as rs
+import polars as pl
 
-=== "Formula API"
+data = pl.read_parquet("insurance.parquet")
 
-    ```python
-    import rustystats as rs
-    import polars as pl
+result = rs.glm(
+    formula="ClaimCount ~ VehPower + VehAge + C(Area) + C(Region)",
+    data=data,
+    family="poisson",
+    offset="Exposure"
+).fit()
 
-    data = pl.read_parquet("insurance.parquet")
-
-    result = rs.glm(
-        formula="ClaimCount ~ VehPower + VehAge + C(Area) + C(Region)",
-        data=data,
-        family="poisson",
-        offset="Exposure"
-    ).fit()
-
-    print(result.summary())
-    print(result.relativities())  # exp(coef) for pricing
-    ```
-
-=== "Array API"
-
-    ```python
-    import rustystats as rs
-    import numpy as np
-
-    result = rs.fit_glm(
-        y, X,
-        family="poisson",
-        offset=np.log(exposure)
-    )
-
-    print(f"Coefficients: {result.params}")
-    print(f"Deviance: {result.deviance}")
-    ```
+print(result.summary())
+print(result.relativities())  # exp(coef) for pricing
+```
 
 ## Documentation Structure
 
@@ -127,12 +109,11 @@ rustystats/
 │
 ├── python/rustystats/          # Python package
 │   ├── __init__.py             # Public API exports
-│   ├── glm.py                  # GLMResults, fit_glm()
+│   ├── glm.py                  # Summary formatting functions
 │   ├── formula.py              # Formula API, glm()
 │   ├── families.py             # Python family wrappers
 │   ├── links.py                # Python link wrappers
 │   ├── splines.py              # bs(), ns() functions
-│   ├── selection.py            # lasso_path(), cv_glm()
 │   ├── diagnostics.py          # ModelDiagnostics, explore_data()
 │   ├── interactions.py         # Interaction utilities
 │   └── target_encoding.py      # TargetEncoder class

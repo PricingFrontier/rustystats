@@ -420,7 +420,7 @@ impl PyGammaFamily {
 /// --------
 /// >>> import rustystats as rs
 /// >>> # Fit Tweedie with p=1.5 for pure premium
-/// >>> result = rs.fit_glm(y, X, family="tweedie", var_power=1.5)
+/// >>> result = rs.glm("y ~ x1 + x2", data, family="tweedie", var_power=1.5).fit()
 #[pyclass(name = "TweedieFamily")]
 #[derive(Clone)]
 pub struct PyTweedieFamily {
@@ -492,7 +492,7 @@ impl PyTweedieFamily {
 /// --------
 /// >>> import rustystats as rs
 /// >>> # Fit QuasiPoisson when Pearson chi²/df >> 1
-/// >>> result = rs.fit_glm(y, X, family="quasipoisson")
+/// >>> result = rs.glm("y ~ x1 + x2", data, family="quasipoisson").fit()
 /// >>> print(f"Dispersion: {result.scale():.3f}")  # Estimated φ
 #[pyclass(name = "QuasiPoissonFamily")]
 #[derive(Clone)]
@@ -552,7 +552,7 @@ impl PyQuasiPoissonFamily {
 /// --------
 /// >>> import rustystats as rs
 /// >>> # Fit QuasiBinomial when data shows overdispersion
-/// >>> result = rs.fit_glm(y, X, family="quasibinomial")
+/// >>> result = rs.glm("y ~ x1 + x2", data, family="quasibinomial").fit()
 /// >>> print(f"Dispersion: {result.scale():.3f}")  # Estimated φ
 #[pyclass(name = "QuasiBinomialFamily")]
 #[derive(Clone)]
@@ -621,7 +621,7 @@ impl PyQuasiBinomialFamily {
 /// --------
 /// >>> import rustystats as rs
 /// >>> # Fit Negative Binomial with θ=1.0
-/// >>> result = rs.fit_glm(y, X, family="negbinomial", theta=1.0)
+/// >>> result = rs.glm("y ~ x1 + x2", data, family="negbinomial", theta=1.0).fit()
 /// >>> # Or use the family object directly
 /// >>> family = rs.families.NegativeBinomial(theta=2.0)
 #[pyclass(name = "NegativeBinomialFamily")]
@@ -1094,7 +1094,7 @@ impl PyGLMResults {
     ///
     /// Example
     /// -------
-    /// >>> result = rs.fit_glm(y, X, family="poisson")
+    /// >>> result = rs.glm("y ~ x1 + x2", data, family="poisson").fit()
     /// >>> se_model = result.bse()       # Model-based SE
     /// >>> se_robust = result.bse_robust("HC1")  # Robust SE
     #[pyo3(signature = (cov_type="HC1"))]
@@ -1464,15 +1464,11 @@ impl PyGLMResults {
 ///
 /// Examples
 /// --------
+/// This is an internal function. Use the formula API instead:
 /// >>> import rustystats as rs
-/// >>> # Unregularized GLM
-/// >>> result = rs.fit_glm(y, X, family="poisson")
-/// >>> # Ridge regression
-/// >>> result = rs.fit_glm(y, X, family="gaussian", alpha=0.1, l1_ratio=0.0)
-/// >>> # Lasso regression  
-/// >>> result = rs.fit_glm(y, X, family="gaussian", alpha=0.1, l1_ratio=1.0)
-/// >>> # Elastic Net
-/// >>> result = rs.fit_glm(y, X, family="gaussian", alpha=0.1, l1_ratio=0.5)
+/// >>> result = rs.glm("y ~ x1 + x2", data, family="poisson").fit()
+/// >>> # With regularization
+/// >>> result = rs.glm("y ~ x1 + x2", data, family="gaussian").fit(alpha=0.1, l1_ratio=0.5)
 #[pyfunction]
 #[pyo3(signature = (y, x, family, link=None, var_power=1.5, theta=1.0, offset=None, weights=None, alpha=0.0, l1_ratio=0.0, max_iter=25, tol=1e-8))]
 fn fit_glm_py(
@@ -1701,13 +1697,11 @@ fn fit_glm_py(
 ///
 /// Examples
 /// --------
+/// This is an internal function. Use the formula API instead:
 /// >>> import rustystats as rs
-/// >>> # Auto-estimate theta
-/// >>> result = rs.fit_negbinomial(y, X)
+/// >>> # Auto-estimate theta (default when theta not supplied)
+/// >>> result = rs.glm("y ~ x1 + x2", data, family="negbinomial").fit()
 /// >>> print(f"Estimated theta: {result.theta:.3f}")
-/// >>>
-/// >>> # With initial theta guess
-/// >>> result = rs.fit_negbinomial(y, X, init_theta=2.0)
 #[pyfunction]
 #[pyo3(signature = (y, x, link=None, init_theta=None, theta_tol=1e-5, max_theta_iter=10, offset=None, weights=None, max_iter=25, tol=1e-8))]
 fn fit_negbinomial_py(

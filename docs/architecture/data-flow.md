@@ -7,8 +7,7 @@ This chapter traces data through the system from user input to final results, he
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │ User Input                                                       │
-│   • NumPy arrays (y, X)                                         │
-│   • Or: DataFrame + formula string                              │
+│   • DataFrame + formula string                                   │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -49,141 +48,7 @@ This chapter traces data through the system from user input to final results, he
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-## Path 1: Array API
-
-### User Code
-
-```python
-import rustystats as rs
-import numpy as np
-
-y = np.array([1, 2, 3, 4, 5], dtype=np.float64)
-X = np.column_stack([np.ones(5), [1, 2, 3, 4, 5]])
-
-result = rs.fit_glm(y, X, family="poisson")
-```
-
-### Step 1: Python API (`python/rustystats/glm.py`)
-
-```python
-def fit_glm(y, X, family="gaussian", link=None, offset=None, 
-            weights=None, alpha=0.0, l1_ratio=1.0, ...):
-    
-    # 1. Convert to numpy arrays
-    y = np.asarray(y, dtype=np.float64)
-    X = np.asarray(X, dtype=np.float64)
-    
-    # 2. Validate dimensions
-    if y.ndim != 1:
-        raise ValueError("y must be 1-dimensional")
-    if X.ndim != 2:
-        raise ValueError("X must be 2-dimensional")
-    if y.shape[0] != X.shape[0]:
-        raise ValueError("y and X must have same number of rows")
-    
-    # 3. Call Rust binding
-    from rustystats._rustystats import fit_glm as _fit_glm
-    rust_result = _fit_glm(y, X, family, alpha, l1_ratio, offset, weights)
-    
-    # 4. Return wrapped result
-    return GLMResults(rust_result)
-```
-
-### Step 2: PyO3 Binding (`crates/rustystats/src/lib.rs`)
-
-```rust
-#[pyfunction]
-#[pyo3(signature = (y, x, family="gaussian", alpha=0.0, l1_ratio=1.0, offset=None, weights=None))]
-fn fit_glm<'py>(
-    py: Python<'py>,
-    y: PyReadonlyArray1<f64>,
-    x: PyReadonlyArray2<f64>,
-    family: &str,
-    alpha: f64,
-    l1_ratio: f64,
-    offset: Option<PyReadonlyArray1<f64>>,
-    weights: Option<PyReadonlyArray1<f64>>,
-) -> PyResult<PyGLMResults> {
-    
-    // 1. Convert NumPy to ndarray (owned copies)
-    let y_arr = y.as_array().to_owned();
-    let x_arr = x.as_array().to_owned();
-    let offset_arr = offset.map(|o| o.as_array().to_owned());
-    let weights_arr = weights.map(|w| w.as_array().to_owned());
-    
-    // 2. Create Family and Link objects
-    let (family_obj, link_obj): (Box<dyn Family>, Box<dyn Link>) = 
-        match family {
-            "gaussian" => (Box::new(GaussianFamily), Box::new(IdentityLink)),
-            "poisson" => (Box::new(PoissonFamily), Box::new(LogLink)),
-            // ... other families
-        };
-    
-    // 3. Release GIL and call core library
-    let result = py.allow_threads(|| {
-        if alpha > 0.0 {
-            fit_glm_regularized(...)
-        } else {
-            fit_glm_full(...)
-        }
-    })?;
-    
-    // 4. Wrap result
-    Ok(PyGLMResults::from_irls_result(result, family))
-}
-```
-
-### Step 3: Rust Core (`crates/rustystats-core/src/solvers/irls.rs`)
-
-```rust
-pub fn fit_glm_full(
-    y: &Array1<f64>,
-    x: &Array2<f64>,
-    family: &dyn Family,
-    link: &dyn Link,
-    config: &IRLSConfig,
-    offset: Option<&Array1<f64>>,
-    weights: Option<&Array1<f64>>,
-) -> Result<IRLSResult> {
-    
-    // 1. Initialize
-    let n = y.len();
-    let p = x.ncols();
-    let mut mu = family.initialize_mu(y);
-    
-    // 2. IRLS iterations
-    for iter in 0..config.max_iterations {
-        // Compute weights, working response
-        // Solve WLS
-        // Update predictions
-        // Check convergence
-    }
-    
-    // 3. Return result
-    Ok(IRLSResult {
-        coefficients,
-        fitted_values: mu,
-        deviance,
-        converged,
-        // ...
-    })
-}
-```
-
-### Step 4: Return Path
-
-The `IRLSResult` is wrapped as `PyGLMResults` and returned to Python. Arrays are converted to NumPy only when accessed:
-
-```rust
-// In PyGLMResults
-#[getter]
-fn params<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-    // Conversion happens here, when user accesses .params
-    self.coefficients.clone().into_pyarray_bound(py)
-}
-```
-
-## Path 2: Formula API
+## Formula API Data Flow
 
 ### User Code
 
@@ -271,9 +136,9 @@ def _build_design_matrix(self):
     return np.column_stack(columns)
 ```
 
-### Subsequent Steps
+### Step 3: Rust Core Fitting
 
-After design matrix construction, the flow follows the Array API path.
+After design matrix construction, the formula API calls the Rust core library via PyO3 bindings to run the IRLS solver.
 
 ## Data Type Conversions
 
@@ -332,7 +197,7 @@ Memory estimate: ~5× the size of the design matrix during fitting.
 
 ### Debug Points
 
-1. **Python input validation**: Add prints in `fit_glm()`
+1. **Python input validation**: Add prints in formula.py
 2. **Design matrix**: Check `X.shape`, `X.dtype`, look for NaN/Inf
 3. **Rust entry**: Add `println!` in the binding function
 4. **IRLS iterations**: Enable `verbose=True` in config
@@ -349,14 +214,17 @@ Memory estimate: ~5× the size of the design matrix during fitting.
 ### Example Debug Session
 
 ```python
-# Enable verbose IRLS
-result = rs.fit_glm(y, X, family="poisson", verbose=True)
+import polars as pl
 
-# Check intermediate values
-print(f"y range: [{y.min()}, {y.max()}]")
-print(f"X shape: {X.shape}")
-print(f"Any NaN in X: {np.isnan(X).any()}")
-print(f"X condition number: {np.linalg.cond(X)}")
+# Check your data
+data = pl.read_parquet("insurance.parquet")
+print(f"Data shape: {data.shape}")
+print(f"Columns: {data.columns}")
+
+# Fit with verbose output
+result = rs.glm("y ~ x1 + C(cat)", data, family="poisson").fit()
+print(f"Converged: {result.converged}")
+print(f"Iterations: {result.iterations}")
 ```
 
 ## Performance Profiling
@@ -367,7 +235,7 @@ print(f"X condition number: {np.linalg.cond(X)}")
 import time
 
 start = time.time()
-result = rs.fit_glm(y, X, family="poisson")
+result = rs.glm("y ~ x1 + x2 + C(cat)", data, family="poisson").fit()
 print(f"Total time: {time.time() - start:.3f}s")
 print(f"IRLS iterations: {result.iterations}")
 ```
