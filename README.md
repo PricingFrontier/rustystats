@@ -25,8 +25,6 @@ uv run pytest tests/python/
 
 ## Quick Start
 
-### Formula API (recommended)
-
 ```python
 import rustystats as rs
 import polars as pl
@@ -45,25 +43,6 @@ result = rs.glm(
 # View results
 print(result.summary())
 print(result.relativities())  # exp(coef) for pricing
-```
-
-### Array API
-
-```python
-import rustystats as rs
-import numpy as np
-
-# Fit with numpy arrays
-result = rs.fit_glm(
-    y, X,
-    family="poisson",
-    offset=np.log(exposure),
-    alpha=0.1,        # Regularization strength
-    l1_ratio=0.5      # Elastic net mixing (0=Ridge, 1=Lasso)
-)
-
-print(f"Coefficients: {result.params}")
-print(f"Deviance: {result.deviance}")
 ```
 
 ## Families & Links
@@ -99,20 +78,20 @@ print(f"Deviance: {result.deviance}")
 
 ```python
 # Ridge (L2) - shrinks coefficients
-result = rs.fit_glm(y, X, family="poisson", alpha=0.1, l1_ratio=0.0)
+result = rs.glm("y ~ x1 + x2 + C(cat)", data, family="poisson").fit(
+    alpha=0.1, l1_ratio=0.0
+)
 
 # Lasso (L1) - variable selection
-result = rs.fit_glm(y, X, family="poisson", alpha=0.1, l1_ratio=1.0)
+result = rs.glm("y ~ x1 + x2 + C(cat)", data, family="poisson").fit(
+    alpha=0.1, l1_ratio=1.0
+)
+print(f"Selected {result.n_nonzero()} features")
 
 # Elastic Net - mix of both
-result = rs.fit_glm(y, X, family="poisson", alpha=0.1, l1_ratio=0.5)
-
-# Cross-validation for optimal alpha
-cv = rs.cv_glm(y, X, family="poisson", l1_ratio=1.0, cv=5)
-print(f"Best alpha: {cv.alpha_best}")
-
-# Coefficient path
-path = rs.lasso_path(y, X, family="poisson", n_alphas=50)
+result = rs.glm("y ~ x1 + x2 + C(cat)", data, family="poisson").fit(
+    alpha=0.1, l1_ratio=0.5
+)
 ```
 
 ## Results Methods
@@ -144,10 +123,7 @@ result.resid_deviance()    # Deviance residuals
 
 ## Dependencies
 
-**Required:** `numpy`
-
-**Optional:**
-- `polars` — DataFrame support for formula API
+**Required:** `numpy and polars`
 
 ## Documentation
 
