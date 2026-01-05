@@ -118,14 +118,13 @@ class TestDiagnosticsComputer:
         
         calibration = computer.compute_calibration(n_bins=10)
         
-        assert "actual_expected_ratio" in calibration
-        assert "actual_total" in calibration
-        assert "predicted_total" in calibration
-        assert "by_decile" in calibration
-        assert len(calibration["by_decile"]) == 10
+        assert "ae_ratio" in calibration
+        assert "hl_pvalue" in calibration
+        assert "problem_deciles" in calibration
+        # problem_deciles only includes deciles with A/E outside [0.9, 1.1]
         
         # A/E should be close to 1 for perfect predictions
-        ae = calibration["actual_expected_ratio"]
+        ae = calibration["ae_ratio"]
         assert 0.5 < ae < 2.0  # Reasonable range
     
     def test_discrimination(self, sample_data):
@@ -145,13 +144,13 @@ class TestDiagnosticsComputer:
         disc = computer.compute_discrimination()
         
         assert disc is not None
-        assert "gini_coefficient" in disc
+        assert "gini" in disc
         assert "auc" in disc
-        assert "ks_statistic" in disc
-        assert "lorenz_curve" in disc
+        assert "ks" in disc
+        # lorenz_curve removed for token efficiency
         
         # Gini should be between -1 and 1
-        assert -1 <= disc["gini_coefficient"] <= 1
+        assert -1 <= disc["gini"] <= 1
         # AUC should be between 0 and 1
         assert 0 <= disc["auc"] <= 1
     
@@ -176,7 +175,7 @@ class TestDiagnosticsComputer:
         pearson = resid_summary["pearson"]
         assert hasattr(pearson, "mean")
         assert hasattr(pearson, "std")
-        assert hasattr(pearson, "percentiles")
+        assert hasattr(pearson, "skewness")  # percentiles removed for compression
     
     def test_factor_diagnostics_continuous(self, sample_data):
         """Test factor diagnostics for continuous variables."""
@@ -430,7 +429,7 @@ class TestCalibrationBins:
     """Tests for calibration bin computation."""
     
     def test_calibration_bins_count(self):
-        """Test that correct number of bins are created."""
+        """Test that calibration returns compressed format with problem_deciles."""
         from rustystats.diagnostics import DiagnosticsComputer
         
         np.random.seed(42)
@@ -444,12 +443,14 @@ class TestCalibrationBins:
             family="poisson", n_params=1, deviance=100.0,
         )
         
-        for n_bins in [5, 10, 20]:
-            calibration = computer.compute_calibration(n_bins=n_bins)
-            assert len(calibration["by_decile"]) == n_bins
+        calibration = computer.compute_calibration(n_bins=10)
+        # Compressed format: problem_deciles only contains deciles with A/E outside [0.9, 1.1]
+        assert "ae_ratio" in calibration
+        assert "problem_deciles" in calibration
+        assert isinstance(calibration["problem_deciles"], list)
     
     def test_calibration_bins_coverage(self):
-        """Test that calibration bins cover all data."""
+        """Test that calibration returns problem_deciles in compressed format."""
         from rustystats.diagnostics import DiagnosticsComputer
         
         np.random.seed(42)
@@ -465,15 +466,19 @@ class TestCalibrationBins:
         
         calibration = computer.compute_calibration(n_bins=10)
         
-        total_count = sum(b["count"] for b in calibration["by_decile"])
-        assert total_count == n
+        # Compressed format only includes problem deciles (A/E outside [0.9, 1.1])
+        assert "problem_deciles" in calibration
+        for decile in calibration["problem_deciles"]:
+            assert "decile" in decile
+            assert "ae" in decile
+            assert "n" in decile
 
 
-class TestLorenzCurve:
-    """Tests for Lorenz curve computation."""
+class TestDiscriminationMetrics:
+    """Tests for discrimination metrics (Lorenz curve removed for compression)."""
     
-    def test_lorenz_curve_endpoints(self):
-        """Test that Lorenz curve has correct endpoints."""
+    def test_discrimination_compressed_format(self):
+        """Test that discrimination uses compressed format without lorenz_curve."""
         from rustystats.diagnostics import DiagnosticsComputer
         
         np.random.seed(42)
@@ -488,15 +493,14 @@ class TestLorenzCurve:
         )
         
         disc = computer.compute_discrimination()
-        lorenz = disc["lorenz_curve"]
         
-        # First point should be near (0, 0, 0)
-        assert lorenz[0]["cumulative_exposure_pct"] < 0.1
-        
-        # Last point should be (1, 1, 1)
-        last = lorenz[-1]
-        assert 0.99 <= last["cumulative_exposure_pct"] <= 1.01
-        assert 0.99 <= last["cumulative_actual_pct"] <= 1.01
+        # Compressed format: no lorenz_curve, shortened field names
+        assert "gini" in disc
+        assert "auc" in disc
+        assert "ks" in disc
+        assert "lift_10pct" in disc
+        assert "lift_20pct" in disc
+        assert "lorenz_curve" not in disc  # Removed for token efficiency
 
 
 class TestPreFitExploration:
@@ -683,6 +687,6 @@ class TestDifferentFamilies:
         )
         
         assert diag.fit_statistics["deviance"] > 0
-        # Should have discrimination metrics for binomial
+        # Should have discrimination metrics for binomial (compressed field names)
         assert diag.discrimination is not None
-        assert "gini_coefficient" in diag.discrimination
+        assert "gini" in diag.discrimination

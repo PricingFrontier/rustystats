@@ -86,6 +86,7 @@ nav:
     - Splines: components/splines.md
     - Target Encoding: components/target-encoding.md
     - Diagnostics: components/diagnostics.md
+    - Interaction Detection: components/interaction-detection.md
   - Python API:
     - Array API: api/array-api.md
     - Formula API: api/formula-api.md

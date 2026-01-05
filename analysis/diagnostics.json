@@ -1,0 +1,270 @@
+{
+  "model_summary": {
+    "formula": "y ~ x",
+    "family": "binomial",
+    "link": "logit",
+    "n_observations": 300,
+    "n_parameters": 2,
+    "degrees_of_freedom_residual": 298,
+    "converged": true,
+    "iterations": 3
+  },
+  "convergence_details": {
+    "max_iterations_allowed": 25,
+    "iterations_used": 3,
+    "converged": true,
+    "reason": "converged"
+  },
+  "fit_statistics": {
+    "deviance": 363.18,
+    "null_deviance": 415.23,
+    "deviance_explained": 0.125368,
+    "log_likelihood": -181.59,
+    "aic": 367.18,
+    "bic": 374.59,
+    "pearson_chi2": 297.38,
+    "dispersion_deviance": 1.2187,
+    "dispersion_pearson": 0.99793
+  },
+  "loss_metrics": {
+    "family_deviance_loss": 0.605296,
+    "mse": 0.209886,
+    "mae": 0.419168,
+    "rmse": 0.458133
+  },
+  "calibration": {
+    "ae_ratio": 1.0,
+    "hl_pvalue": 0.883,
+    "problem_deciles": [
+      {
+        "decile": 0,
+        "ae": 0.64,
+        "n": 30,
+        "ae_ci": [
+          0.0,
+          1.37
+        ]
+      },
+      {
+        "decile": 1,
+        "ae": 1.35,
+        "n": 30,
+        "ae_ci": [
+          0.52,
+          2.19
+        ]
+      },
+      {
+        "decile": 2,
+        "ae": 1.26,
+        "n": 30,
+        "ae_ci": [
+          0.55,
+          1.98
+        ]
+      },
+      {
+        "decile": 4,
+        "ae": 0.82,
+        "n": 30,
+        "ae_ci": [
+          0.34,
+          1.3
+        ]
+      },
+      {
+        "decile": 6,
+        "ae": 0.83,
+        "n": 30,
+        "ae_ci": [
+          0.39,
+          1.26
+        ]
+      },
+      {
+        "decile": 9,
+        "ae": 1.13,
+        "n": 30,
+        "ae_ci": [
+          0.71,
+          1.54
+        ]
+      }
+    ]
+  },
+  "discrimination": {
+    "gini": 0.236,
+    "auc": 0.618,
+    "ks": 0.185,
+    "lift_10pct": 0.21,
+    "lift_20pct": 0.455
+  },
+  "residual_summary": {
+    "pearson": {
+      "mean": 0.0,
+      "std": 1.0,
+      "skewness": 0.1
+    },
+    "deviance": {
+      "mean": -0.01,
+      "std": 1.1,
+      "skewness": 0.1
+    }
+  },
+  "factors": [
+    {
+      "name": "x",
+      "factor_type": "continuous",
+      "in_model": true,
+      "transformation": null,
+      "univariate_stats": {
+        "mean": -0.005549,
+        "std": 0.982552,
+        "min": -1.9879,
+        "max": 3.8527,
+        "missing_count": 0,
+        "percentiles": {
+          "p1": -1.9879,
+          "p5": -1.5151,
+          "p10": -1.2386,
+          "p25": -0.683246,
+          "p50": 0.059219,
+          "p75": 0.626658,
+          "p90": 1.1444,
+          "p95": 1.5796,
+          "p99": 2.3161
+        }
+      },
+      "actual_vs_expected": [
+        {
+          "bin": "-3.24--1.24",
+          "n": 30,
+          "actual": 3,
+          "predicted": 5,
+          "ae": 0.64,
+          "ae_ci": [
+            0.0,
+            1.365
+          ]
+        },
+        {
+          "bin": "-1.24--0.82",
+          "n": 30,
+          "actual": 10,
+          "predicted": 7,
+          "ae": 1.355,
+          "ae_ci": [
+            0.515,
+            2.194
+          ]
+        },
+        {
+          "bin": "-0.82--0.52",
+          "n": 30,
+          "actual": 12,
+          "predicted": 9,
+          "ae": 1.265,
+          "ae_ci": [
+            0.549,
+            1.98
+          ]
+        },
+        {
+          "bin": "-0.52--0.25",
+          "n": 30,
+          "actual": 11,
+          "predicted": 11,
+          "ae": 0.969,
+          "ae_ci": [
+            0.396,
+            1.541
+          ]
+        },
+        {
+          "bin": "-0.25-0.06",
+          "n": 30,
+          "actual": 11,
+          "predicted": 13,
+          "ae": 0.82,
+          "ae_ci": [
+            0.336,
+            1.305
+          ]
+        },
+        {
+          "bin": "0.06-0.26",
+          "n": 29,
+          "actual": 16,
+          "predicted": 15,
+          "ae": 1.076,
+          "ae_ci": [
+            0.549,
+            1.604
+          ]
+        },
+        {
+          "bin": "0.26-0.47",
+          "n": 30,
+          "actual": 14,
+          "predicted": 17,
+          "ae": 0.832,
+          "ae_ci": [
+            0.396,
+            1.268
+          ]
+        },
+        {
+          "bin": "0.47-0.78",
+          "n": 30,
+          "actual": 19,
+          "predicted": 19,
+          "ae": 1.017,
+          "ae_ci": [
+            0.56,
+            1.474
+          ]
+        },
+        {
+          "bin": "0.78-1.14",
+          "n": 30,
+          "actual": 18,
+          "predicted": 21,
+          "ae": 0.87,
+          "ae_ci": [
+            0.468,
+            1.271
+          ]
+        },
+        {
+          "bin": "1.14-3.85",
+          "n": 31,
+          "actual": 29,
+          "predicted": 26,
+          "ae": 1.133,
+          "ae_ci": [
+            0.72,
+            1.545
+          ]
+        }
+      ],
+      "residual_pattern": {
+        "resid_corr": 0.0063,
+        "var_explained": 3.9e-05
+      },
+      "significance": {
+        "chi2": 40.27,
+        "p": 0.0,
+        "dev_contrib": 40.27
+      }
+    }
+  ],
+  "interaction_candidates": [],
+  "model_comparison": {
+    "likelihood_ratio_chi2": 52.057,
+    "likelihood_ratio_df": 1,
+    "likelihood_ratio_pvalue": 0.0,
+    "deviance_reduction_pct": 12.5368,
+    "aic_improvement": 50.057
+  },
+  "warnings": []
+}

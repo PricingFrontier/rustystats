@@ -75,14 +75,10 @@ class Percentiles:
 
 @dataclass
 class ResidualSummary:
-    """Summary statistics for residuals."""
+    """Summary statistics for residuals (compressed: mean, std, skewness only)."""
     mean: float
     std: float
-    min: float
-    max: float
     skewness: float
-    kurtosis: float
-    percentiles: Percentiles
 
 
 @dataclass
@@ -112,31 +108,20 @@ class LorenzPoint:
 
 @dataclass
 class ActualExpectedBin:
-    """A/E statistics for a single bin or categorical level."""
-    bin_index: int
-    bin_label: str
-    bin_lower: Optional[float]
-    bin_upper: Optional[float]
-    count: int
-    exposure: float
-    actual_sum: float
-    predicted_sum: float
-    actual_mean: float
-    predicted_mean: float
-    actual_expected_ratio: float
-    loss: float
-    ae_confidence_interval_lower: float
-    ae_confidence_interval_upper: float
+    """A/E statistics for a single bin (compressed format)."""
+    bin: str  # bin label or range
+    n: int  # count
+    actual: int  # actual_sum (rounded)
+    predicted: int  # predicted_sum (rounded)
+    ae: float  # actual/expected ratio
+    ae_ci: List[float]  # [lower, upper] confidence interval
 
 
 @dataclass
 class ResidualPattern:
-    """Residual pattern analysis for a factor."""
-    correlation_with_residuals: float
-    mean_residual_by_bin: List[float]
-    trend_slope: float
-    trend_pvalue: float
-    residual_variance_explained: float
+    """Residual pattern analysis for a factor (compressed)."""
+    resid_corr: float  # correlation_with_residuals
+    var_explained: float  # residual_variance_explained
 
 
 @dataclass
@@ -160,11 +145,18 @@ class CategoricalLevelStats:
 
 @dataclass
 class CategoricalFactorStats:
-    """Distribution statistics for a categorical factor."""
+    """Distribution statistics for a categorical factor (compressed: no levels array)."""
     n_levels: int
-    levels: List[CategoricalLevelStats]
     n_rare_levels: int
     rare_level_total_pct: float
+
+
+@dataclass
+class FactorSignificance:
+    """Statistical significance tests for a factor (compressed field names)."""
+    chi2: Optional[float]  # Wald chi-square test statistic
+    p: Optional[float]  # p-value for Wald test
+    dev_contrib: Optional[float]  # Drop-in-deviance if term removed
 
 
 @dataclass
@@ -177,6 +169,7 @@ class FactorDiagnostics:
     univariate_stats: Union[ContinuousFactorStats, CategoricalFactorStats]
     actual_vs_expected: List[ActualExpectedBin]
     residual_pattern: ResidualPattern
+    significance: Optional[FactorSignificance] = None  # Significance tests (only for in_model factors)
 
 
 @dataclass
@@ -187,6 +180,17 @@ class InteractionCandidate:
     interaction_strength: float
     pvalue: float
     n_cells: int
+    current_terms: Optional[List[str]] = None  # How factors currently appear in model
+    recommendation: Optional[str] = None  # Suggested action
+
+
+@dataclass
+class ConvergenceDetails:
+    """Details about model convergence."""
+    max_iterations_allowed: int
+    iterations_used: int
+    converged: bool
+    reason: str  # "converged", "max_iterations_reached", "gradient_tolerance", etc.
 
 
 @dataclass
@@ -198,6 +202,27 @@ class DataExploration:
     
     # Factor statistics
     factor_stats: List[Dict[str, Any]]
+    
+    # Missing value analysis
+    missing_values: Dict[str, Any]
+    
+    # Univariate significance tests (each factor vs response)
+    univariate_tests: List[Dict[str, Any]]
+    
+    # Correlation matrix for continuous factors
+    correlations: Dict[str, Any]
+    
+    # Cramér's V matrix for categorical factors
+    cramers_v: Dict[str, Any]
+    
+    # Variance inflation factors (multicollinearity)
+    vif: List[Dict[str, Any]]
+    
+    # Zero inflation check (for count data)
+    zero_inflation: Dict[str, Any]
+    
+    # Overdispersion check
+    overdispersion: Dict[str, Any]
     
     # Interaction candidates
     interaction_candidates: List[InteractionCandidate]
@@ -220,6 +245,9 @@ class ModelDiagnostics:
     
     # Model summary
     model_summary: Dict[str, Any]
+    
+    # Convergence details (especially important when converged=False)
+    convergence_details: Optional[ConvergenceDetails]
     
     # Fit statistics
     fit_statistics: Dict[str, float]
@@ -269,6 +297,19 @@ def _json_default(obj):
     return str(obj)
 
 
+def _round_float(x: float, decimals: int = 4) -> float:
+    """Round float for token-efficient JSON output."""
+    if x == 0:
+        return 0.0
+    # Use fewer decimals for large numbers, more for small
+    if abs(x) >= 100:
+        return round(x, 2)
+    elif abs(x) >= 1:
+        return round(x, 4)
+    else:
+        return round(x, 6)
+
+
 def _to_dict_recursive(obj) -> Any:
     """Recursively convert dataclasses and handle special values."""
     if isinstance(obj, dict):
@@ -280,11 +321,13 @@ def _to_dict_recursive(obj) -> Any:
     elif isinstance(obj, float):
         if math.isnan(obj) or math.isinf(obj):
             return None
-        return obj
+        return _round_float(obj)
     elif isinstance(obj, np.ndarray):
-        return obj.tolist()
-    elif isinstance(obj, (np.floating, np.integer)):
-        return float(obj)
+        return [_to_dict_recursive(v) for v in obj.tolist()]
+    elif isinstance(obj, np.floating):
+        return _round_float(float(obj))
+    elif isinstance(obj, np.integer):
+        return int(obj)
     else:
         return obj
 
@@ -348,15 +391,22 @@ class _CalibrationComputer:
         bins = self._compute_bins(n_bins)
         hl_stat, hl_pvalue = self._hosmer_lemeshow(n_bins)
         
+        # Compressed format: only include problem deciles (A/E outside [0.9, 1.1])
+        problem_deciles = [
+            {
+                "decile": b.bin_index,
+                "ae": round(b.actual_expected_ratio, 2),
+                "n": b.count,
+                "ae_ci": [round(b.ae_confidence_interval_lower, 2), round(b.ae_confidence_interval_upper, 2)],
+            }
+            for b in bins
+            if b.actual_expected_ratio < 0.9 or b.actual_expected_ratio > 1.1
+        ]
+        
         return {
-            "actual_expected_ratio": ae_ratio,
-            "actual_total": actual_total,
-            "predicted_total": predicted_total,
-            "exposure_total": exposure_total,
-            "calibration_error": abs(1 - ae_ratio) if not np.isnan(ae_ratio) else float('nan'),
-            "by_decile": [asdict(b) for b in bins],
-            "hosmer_lemeshow_statistic": hl_stat,
-            "hosmer_lemeshow_pvalue": hl_pvalue,
+            "ae_ratio": round(ae_ratio, 3),
+            "hl_pvalue": round(hl_pvalue, 4) if not np.isnan(hl_pvalue) else None,
+            "problem_deciles": problem_deciles,
         }
     
     def _compute_bins(self, n_bins: int) -> List[CalibrationBin]:
@@ -388,14 +438,13 @@ class _DiscriminationComputer:
     
     def compute(self) -> Dict[str, Any]:
         stats = _rust_discrimination_stats(self.y, self.mu, self.exposure)
-        lorenz_points = _rust_lorenz_curve(self.y, self.mu, self.exposure, 20)
+        # Removed lorenz_curve - Gini coefficient provides sufficient discrimination info
         return {
-            "gini_coefficient": stats["gini"],
-            "auc": stats["auc"],
-            "ks_statistic": stats["ks_statistic"],
-            "lift_at_10pct": stats["lift_at_10pct"],
-            "lift_at_20pct": stats["lift_at_20pct"],
-            "lorenz_curve": lorenz_points,
+            "gini": round(stats["gini"], 3),
+            "auc": round(stats["auc"], 3),
+            "ks": round(stats["ks_statistic"], 3),
+            "lift_10pct": round(stats["lift_at_10pct"], 3),
+            "lift_20pct": round(stats["lift_at_20pct"], 3),
         }
 
 
@@ -473,13 +522,11 @@ class DiagnosticsComputer:
     def compute_loss_metrics(self) -> Dict[str, float]:
         """Compute various loss metrics using Rust backend."""
         rust_loss = _rust_loss_metrics(self.y, self.mu, self.family)
-        weighted_loss = np.average(self._compute_unit_deviance(self.y, self.mu), weights=self.exposure)
         return {
             "family_deviance_loss": rust_loss["family_loss"],
             "mse": rust_loss["mse"],
             "mae": rust_loss["mae"],
             "rmse": rust_loss["rmse"],
-            "weighted_loss": weighted_loss,
         }
     
     def compute_calibration(self, n_bins: int = 10) -> Dict[str, Any]:
@@ -491,21 +538,13 @@ class DiagnosticsComputer:
         return self._discrimination.compute()
     
     def compute_residual_summary(self) -> Dict[str, ResidualSummary]:
-        """Compute residual summary statistics using Rust backend."""
+        """Compute residual summary statistics using Rust backend (compressed)."""
         def summarize(resid: np.ndarray) -> ResidualSummary:
             stats = _rust_residual_summary(resid)
             return ResidualSummary(
-                mean=stats["mean"],
-                std=stats["std"],
-                min=stats["min"],
-                max=stats["max"],
-                skewness=stats["skewness"],
-                kurtosis=stats["kurtosis"],
-                percentiles=Percentiles(
-                    p1=stats["p1"], p5=stats["p5"], p10=stats["p10"],
-                    p25=stats["p25"], p50=stats["p50"], p75=stats["p75"],
-                    p90=stats["p90"], p95=stats["p95"], p99=stats["p99"],
-                ),
+                mean=round(stats["mean"], 2),
+                std=round(stats["std"], 2),
+                skewness=round(stats["skewness"], 1),
             )
         
         return {
@@ -518,6 +557,7 @@ class DiagnosticsComputer:
         data: "pl.DataFrame",
         categorical_factors: List[str],
         continuous_factors: List[str],
+        result=None,  # GLMResults for significance tests
         n_bins: int = 10,
         rare_threshold_pct: float = 1.0,
         max_categorical_levels: int = 20,
@@ -533,23 +573,18 @@ class DiagnosticsComputer:
             values = data[name].to_numpy().astype(str)
             in_model = any(name in fn for fn in self.feature_names)
             
-            # Univariate stats
+            # Univariate stats (compressed: no levels array, info is in actual_vs_expected)
             unique, counts = np.unique(values, return_counts=True)
             total = len(values)
-            levels = [CategoricalLevelStats(
-                level=str(u),
-                count=int(c),
-                percentage=100.0 * c / total
-            ) for u, c in sorted(zip(unique, counts), key=lambda x: -x[1])]
+            percentages = [100.0 * c / total for c in counts]
             
-            n_rare = sum(1 for l in levels if l.percentage < rare_threshold_pct)
-            rare_pct = sum(l.percentage for l in levels if l.percentage < rare_threshold_pct)
+            n_rare = sum(1 for pct in percentages if pct < rare_threshold_pct)
+            rare_pct = sum(pct for pct in percentages if pct < rare_threshold_pct)
             
             univariate = CategoricalFactorStats(
                 n_levels=len(unique),
-                levels=levels[:max_categorical_levels],
                 n_rare_levels=n_rare,
-                rare_level_total_pct=rare_pct,
+                rare_level_total_pct=round(rare_pct, 2),
             )
             
             # A/E by level
@@ -560,6 +595,9 @@ class DiagnosticsComputer:
             # Residual pattern
             resid_pattern = self._compute_residual_pattern_categorical(values)
             
+            # Factor significance (only for factors in model)
+            significance = self.compute_factor_significance(name, result) if in_model and result else None
+            
             factors.append(FactorDiagnostics(
                 name=name,
                 factor_type="categorical",
@@ -568,6 +606,7 @@ class DiagnosticsComputer:
                 univariate_stats=univariate,
                 actual_vs_expected=ae_bins,
                 residual_pattern=resid_pattern,
+                significance=significance,
             ))
         
         # Process continuous factors
@@ -609,6 +648,9 @@ class DiagnosticsComputer:
             # Residual pattern
             resid_pattern = self._compute_residual_pattern_continuous(values, n_bins)
             
+            # Factor significance (only for factors in model)
+            significance = self.compute_factor_significance(name, result) if in_model and result else None
+            
             factors.append(FactorDiagnostics(
                 name=name,
                 factor_type="continuous",
@@ -617,6 +659,7 @@ class DiagnosticsComputer:
                 univariate_stats=univariate,
                 actual_vs_expected=ae_bins,
                 residual_pattern=resid_pattern,
+                significance=significance,
             ))
         
         return factors
@@ -628,27 +671,79 @@ class DiagnosticsComputer:
                 return fn
         return None
     
+    def _get_factor_terms(self, name: str) -> List[str]:
+        """Get all model terms that include this factor."""
+        return [fn for fn in self.feature_names if name in fn]
+    
+    def compute_factor_significance(
+        self,
+        name: str,
+        result,  # GLMResults or FormulaGLMResults
+    ) -> Optional[FactorSignificance]:
+        """
+        Compute significance tests for a factor in the model.
+        
+        Returns Wald chi-square test and deviance contribution.
+        """
+        if not hasattr(result, 'params') or not hasattr(result, 'bse'):
+            return None
+        
+        # Find indices of parameters related to this factor
+        param_indices = []
+        for i, fn in enumerate(self.feature_names):
+            if name in fn and fn != 'Intercept':
+                param_indices.append(i)
+        
+        if not param_indices:
+            return None
+        
+        try:
+            params = np.asarray(result.params)
+            bse = np.asarray(result.bse())
+            
+            # Wald chi-square: sum of (coef/se)^2 for all related parameters
+            wald_chi2 = 0.0
+            for idx in param_indices:
+                if bse[idx] > 0:
+                    wald_chi2 += (params[idx] / bse[idx]) ** 2
+            
+            # Degrees of freedom = number of parameters for this term
+            df = len(param_indices)
+            
+            # P-value from chi-square distribution
+            try:
+                from scipy.stats import chi2
+                wald_pvalue = 1 - chi2.cdf(wald_chi2, df) if df > 0 else 1.0
+            except ImportError:
+                wald_pvalue = float('nan')
+            
+            # Deviance contribution: approximate using sum of z^2 (scaled)
+            # This is an approximation; true drop-in-deviance requires refitting
+            deviance_contribution = float(wald_chi2)  # Approximate
+            
+            return FactorSignificance(
+                chi2=round(float(wald_chi2), 2),
+                p=round(float(wald_pvalue), 4),
+                dev_contrib=round(deviance_contribution, 2),
+            )
+        except Exception:
+            return None
+    
     def _compute_ae_continuous(self, values: np.ndarray, n_bins: int) -> List[ActualExpectedBin]:
-        """Compute A/E for continuous factor using Rust backend."""
+        """Compute A/E for continuous factor using Rust backend (compressed format)."""
         rust_bins = _rust_ae_continuous(values, self.y, self.mu, self.exposure, n_bins, self.family)
+        # Filter out empty bins (count=0)
+        non_empty_bins = [b for b in rust_bins if b["count"] > 0]
         return [
             ActualExpectedBin(
-                bin_index=b["bin_index"],
-                bin_label=b["bin_label"],
-                bin_lower=b.get("bin_lower"),
-                bin_upper=b.get("bin_upper"),
-                count=b["count"],
-                exposure=b["exposure"],
-                actual_sum=b["actual_sum"],
-                predicted_sum=b["predicted_sum"],
-                actual_mean=b["actual_mean"],
-                predicted_mean=b["predicted_mean"],
-                actual_expected_ratio=b["actual_expected_ratio"],
-                loss=b["loss"],
-                ae_confidence_interval_lower=b["ae_ci_lower"],
-                ae_confidence_interval_upper=b["ae_ci_upper"],
+                bin=b["bin_label"],  # includes range for continuous
+                n=b["count"],
+                actual=int(round(b["actual_sum"])),
+                predicted=int(round(b["predicted_sum"])),
+                ae=round(b["actual_expected_ratio"], 3),
+                ae_ci=[round(b["ae_ci_lower"], 3), round(b["ae_ci_upper"], 3)],
             )
-            for b in rust_bins
+            for b in non_empty_bins
         ]
     
     def _compute_ae_categorical(
@@ -657,26 +752,18 @@ class DiagnosticsComputer:
         rare_threshold_pct: float,
         max_levels: int,
     ) -> List[ActualExpectedBin]:
-        """Compute A/E for categorical factor using Rust backend."""
+        """Compute A/E for categorical factor using Rust backend (compressed format)."""
         levels = [str(v) for v in values]
         rust_bins = _rust_ae_categorical(levels, self.y, self.mu, self.exposure, 
                                           rare_threshold_pct, max_levels, self.family)
         return [
             ActualExpectedBin(
-                bin_index=b["bin_index"],
-                bin_label=b["bin_label"],
-                bin_lower=None,
-                bin_upper=None,
-                count=b["count"],
-                exposure=b["exposure"],
-                actual_sum=b["actual_sum"],
-                predicted_sum=b["predicted_sum"],
-                actual_mean=b["actual_mean"],
-                predicted_mean=b["predicted_mean"],
-                actual_expected_ratio=b["actual_expected_ratio"],
-                loss=b["loss"],
-                ae_confidence_interval_lower=b["ae_ci_lower"],
-                ae_confidence_interval_upper=b["ae_ci_upper"],
+                bin=b["bin_label"],
+                n=b["count"],
+                actual=int(round(b["actual_sum"])),
+                predicted=int(round(b["predicted_sum"])),
+                ae=round(b["actual_expected_ratio"], 3),
+                ae_ci=[round(b["ae_ci_lower"], 3), round(b["ae_ci_upper"], 3)],
             )
             for b in rust_bins
         ]
@@ -686,59 +773,44 @@ class DiagnosticsComputer:
         values: np.ndarray,
         n_bins: int,
     ) -> ResidualPattern:
-        """Compute residual pattern using Rust backend."""
+        """Compute residual pattern using Rust backend (compressed: no mean_by_bin)."""
         valid_mask = ~np.isnan(values) & ~np.isinf(values)
         
         if not np.any(valid_mask):
-            return ResidualPattern(
-                correlation_with_residuals=float('nan'),
-                mean_residual_by_bin=[],
-                trend_slope=float('nan'),
-                trend_pvalue=float('nan'),
-                residual_variance_explained=float('nan'),
-            )
+            return ResidualPattern(resid_corr=0.0, var_explained=0.0)
         
         result = _rust_residual_pattern(values, self.pearson_residuals, n_bins)
         corr = result["correlation_with_residuals"]
-        mean_bins = [b["mean_residual"] for b in result["mean_residual_by_bin"]]
+        corr_val = float(corr) if not np.isnan(corr) else 0.0
         
         return ResidualPattern(
-            correlation_with_residuals=float(corr) if not np.isnan(corr) else 0.0,
-            mean_residual_by_bin=mean_bins,
-            trend_slope=float('nan'),
-            trend_pvalue=float('nan'),
-            residual_variance_explained=corr ** 2 if not np.isnan(corr) else 0.0,
+            resid_corr=round(corr_val, 4),
+            var_explained=round(corr_val ** 2, 6),
         )
     
     def _compute_residual_pattern_categorical(self, values: np.ndarray) -> ResidualPattern:
-        """Compute residual pattern for categorical factor."""
+        """Compute residual pattern for categorical factor (compressed)."""
         unique_levels = np.unique(values)
         
-        # Mean residual by level
-        level_means = []
+        # Compute eta-squared (variance explained)
         overall_mean = np.mean(self.pearson_residuals)
         ss_total = np.sum((self.pearson_residuals - overall_mean) ** 2)
         ss_between = 0.0
+        level_means = []
         
         for level in unique_levels:
             mask = values == level
             level_resid = self.pearson_residuals[mask]
             level_mean = np.mean(level_resid)
-            level_means.append(float(level_mean))
+            level_means.append(level_mean)
             ss_between += len(level_resid) * (level_mean - overall_mean) ** 2
         
-        # Eta-squared
         eta_squared = ss_between / ss_total if ss_total > 0 else 0.0
-        
-        # Mean absolute residual as proxy for correlation
         mean_abs_resid = np.mean(np.abs(level_means))
         
         return ResidualPattern(
-            correlation_with_residuals=float(mean_abs_resid),
-            mean_residual_by_bin=level_means[:20],  # Limit to 20 levels
-            trend_slope=float('nan'),  # Not applicable
-            trend_pvalue=float('nan'),
-            residual_variance_explained=float(eta_squared),
+            resid_corr=round(float(mean_abs_resid), 4),
+            var_explained=round(float(eta_squared), 6),
         )
     
     def _linear_trend_test(self, x: np.ndarray, y: np.ndarray) -> tuple:
@@ -838,11 +910,58 @@ class DiagnosticsComputer:
                 )
                 
                 if candidate is not None:
+                    # Add current_terms and recommendation
+                    terms1 = self._get_factor_terms(name1)
+                    terms2 = self._get_factor_terms(name2)
+                    candidate.current_terms = terms1 + terms2 if (terms1 or terms2) else None
+                    
+                    # Generate recommendation based on current terms and factor types
+                    candidate.recommendation = self._generate_interaction_recommendation(
+                        name1, name2, terms1, terms2, values1, values2
+                    )
                     candidates.append(candidate)
         
         # Sort by strength and return top candidates
         candidates.sort(key=lambda x: -x.interaction_strength)
         return candidates[:max_candidates]
+    
+    def _generate_interaction_recommendation(
+        self,
+        name1: str,
+        name2: str,
+        terms1: List[str],
+        terms2: List[str],
+        values1: np.ndarray,
+        values2: np.ndarray,
+    ) -> str:
+        """Generate a recommendation for how to model an interaction."""
+        is_cat1 = values1.dtype == object or str(values1.dtype).startswith('str')
+        is_cat2 = values2.dtype == object or str(values2.dtype).startswith('str')
+        
+        # Check if factors have spline/polynomial terms
+        has_spline1 = any('bs(' in t or 'ns(' in t or 's(' in t for t in terms1)
+        has_spline2 = any('bs(' in t or 'ns(' in t or 's(' in t for t in terms2)
+        has_poly1 = any('I(' in t and '**' in t for t in terms1)
+        has_poly2 = any('I(' in t and '**' in t for t in terms2)
+        
+        if is_cat1 and is_cat2:
+            return f"Consider C({name1}):C({name2}) interaction term"
+        elif is_cat1 and not is_cat2:
+            if has_spline2:
+                return f"Consider C({name1}):{name2} or separate splines by {name1} level"
+            else:
+                return f"Consider C({name1}):{name2} interaction term"
+        elif not is_cat1 and is_cat2:
+            if has_spline1:
+                return f"Consider {name1}:C({name2}) or separate splines by {name2} level"
+            else:
+                return f"Consider {name1}:C({name2}) interaction term"
+        else:
+            # Both continuous
+            if has_spline1 or has_spline2 or has_poly1 or has_poly2:
+                return f"Consider {name1}:{name2} or tensor product spline"
+            else:
+                return f"Consider {name1}:{name2} interaction or joint spline"
     
     def _compute_eta_squared(self, categories: np.ndarray) -> float:
         """Compute eta-squared for categorical association with residuals."""
@@ -1131,6 +1250,9 @@ class DataExplorer:
             # Response by quantile bins
             quantiles = np.percentile(valid_values, np.linspace(0, 100, n_bins + 1))
             bins_data = []
+            bin_rates = []
+            thin_cells = []
+            total_exposure = np.sum(self.exposure)
             
             for i in range(n_bins):
                 if i == n_bins - 1:
@@ -1143,18 +1265,39 @@ class DataExplorer:
                 
                 y_bin = self.y[bin_mask]
                 exp_bin = self.exposure[bin_mask]
+                bin_exposure = float(np.sum(exp_bin))
+                rate = float(np.sum(y_bin) / bin_exposure) if bin_exposure > 0 else 0
                 
                 bins_data.append({
                     "bin_index": i,
                     "bin_lower": float(quantiles[i]),
                     "bin_upper": float(quantiles[i + 1]),
                     "count": int(np.sum(bin_mask)),
-                    "exposure": float(np.sum(exp_bin)),
+                    "exposure": bin_exposure,
                     "response_sum": float(np.sum(y_bin)),
-                    "response_rate": float(np.sum(y_bin) / np.sum(exp_bin)) if np.sum(exp_bin) > 0 else 0,
+                    "response_rate": rate,
                 })
+                bin_rates.append(rate)
+                
+                # Check for thin cells (< 1% exposure)
+                if bin_exposure / total_exposure < 0.01:
+                    thin_cells.append(i)
             
             stats["response_by_bin"] = bins_data
+            
+            # Compute shape recommendation
+            if len(bin_rates) >= 3:
+                shape_hint = self._compute_shape_hint(bin_rates)
+            else:
+                shape_hint = {"shape": "insufficient_data", "recommendation": "linear"}
+            
+            stats["modeling_hints"] = {
+                "shape": shape_hint["shape"],
+                "recommendation": shape_hint["recommendation"],
+                "thin_cells": thin_cells if thin_cells else None,
+                "thin_cell_warning": f"Bins {thin_cells} have <1% exposure" if thin_cells else None,
+            }
+            
             factors.append(stats)
         
         # Categorical factors
@@ -1211,16 +1354,580 @@ class DataExplorer:
                     "response_rate": float(np.sum(y_other) / np.sum(exp_other)) if np.sum(exp_other) > 0 else 0,
                 })
             
+            # Compute modeling hints for categorical
+            main_levels = [l for l in levels_data if l["level"] != "_Other"]
+            
+            # Suggested base level: highest exposure among non-Other levels
+            suggested_base = main_levels[0]["level"] if main_levels else None
+            
+            # Check for thin cells
+            thin_levels = [l["level"] for l in main_levels if l["exposure_pct"] < 1.0]
+            
+            # Check if ordinal (levels are numeric or follow A-Z pattern)
+            ordinal_hint = self._detect_ordinal_pattern(unique_levels)
+            
             stats = {
                 "name": name,
                 "type": "categorical",
                 "n_levels": len(unique_levels),
                 "n_levels_shown": len(levels_data),
                 "levels": levels_data,
+                "modeling_hints": {
+                    "suggested_base_level": suggested_base,
+                    "ordinal": ordinal_hint["is_ordinal"],
+                    "ordinal_pattern": ordinal_hint["pattern"],
+                    "thin_levels": thin_levels if thin_levels else None,
+                    "thin_level_warning": f"Levels {thin_levels} have <1% exposure" if thin_levels else None,
+                },
             }
             factors.append(stats)
         
         return factors
+    
+    def _compute_shape_hint(self, bin_rates: List[float]) -> Dict[str, str]:
+        """Analyze binned response rates to suggest transformation."""
+        n = len(bin_rates)
+        if n < 3:
+            return {"shape": "insufficient_data", "recommendation": "linear"}
+        
+        # Check monotonicity
+        diffs = [bin_rates[i+1] - bin_rates[i] for i in range(n-1)]
+        increasing = sum(1 for d in diffs if d > 0)
+        decreasing = sum(1 for d in diffs if d < 0)
+        
+        # Strong monotonic pattern
+        if increasing >= n - 2:
+            return {"shape": "monotonic_increasing", "recommendation": "linear or log"}
+        if decreasing >= n - 2:
+            return {"shape": "monotonic_decreasing", "recommendation": "linear or log"}
+        
+        # Check for U-shape or inverted U
+        mid = n // 2
+        left_trend = sum(diffs[:mid])
+        right_trend = sum(diffs[mid:])
+        
+        if left_trend < 0 and right_trend > 0:
+            return {"shape": "u_shaped", "recommendation": "spline or polynomial"}
+        if left_trend > 0 and right_trend < 0:
+            return {"shape": "inverted_u", "recommendation": "spline or polynomial"}
+        
+        # Check for step function (large jump)
+        max_diff = max(abs(d) for d in diffs)
+        avg_rate = sum(bin_rates) / n
+        if max_diff > avg_rate * 0.5:
+            return {"shape": "step_function", "recommendation": "banding or categorical"}
+        
+        # Non-linear but no clear pattern
+        variance = sum((r - avg_rate)**2 for r in bin_rates) / n
+        if variance > avg_rate * 0.1:
+            return {"shape": "non_linear", "recommendation": "spline"}
+        
+        return {"shape": "flat", "recommendation": "may not need in model"}
+    
+    def _detect_ordinal_pattern(self, levels: np.ndarray) -> Dict[str, Any]:
+        """Detect if categorical levels follow an ordinal pattern."""
+        levels_str = [str(l) for l in levels]
+        
+        # Check for numeric levels
+        try:
+            numeric = [float(l) for l in levels_str]
+            return {"is_ordinal": True, "pattern": "numeric"}
+        except ValueError:
+            pass
+        
+        # Check for single letter A-Z pattern
+        if all(len(l) == 1 and l.isalpha() for l in levels_str):
+            return {"is_ordinal": True, "pattern": "alphabetic"}
+        
+        # Check for common ordinal patterns
+        ordinal_patterns = [
+            (["low", "medium", "high"], "low_medium_high"),
+            (["small", "medium", "large"], "size"),
+            (["young", "middle", "old"], "age"),
+            (["1", "2", "3", "4", "5"], "numeric_string"),
+        ]
+        
+        levels_lower = [l.lower() for l in levels_str]
+        for pattern, name in ordinal_patterns:
+            if all(p in levels_lower for p in pattern):
+                return {"is_ordinal": True, "pattern": name}
+        
+        # Check for prefix + number pattern (e.g., "Region1", "Region2")
+        import re
+        if all(re.match(r'^[A-Za-z]+\d+$', l) for l in levels_str):
+            return {"is_ordinal": True, "pattern": "prefix_numeric"}
+        
+        return {"is_ordinal": False, "pattern": None}
+    
+    def compute_univariate_tests(
+        self,
+        data: "pl.DataFrame",
+        categorical_factors: List[str],
+        continuous_factors: List[str],
+    ) -> List[Dict[str, Any]]:
+        """
+        Compute univariate significance tests for each factor vs response.
+        
+        For continuous factors: Pearson correlation + F-test from simple regression
+        For categorical factors: ANOVA F-test (eta-squared based)
+        """
+        results = []
+        y_rate = self.y / self.exposure
+        
+        for name in continuous_factors:
+            if name not in data.columns:
+                continue
+            
+            values = data[name].to_numpy().astype(np.float64)
+            valid_mask = ~np.isnan(values) & ~np.isinf(values)
+            
+            if np.sum(valid_mask) < 10:
+                continue
+            
+            x_valid = values[valid_mask]
+            y_valid = y_rate[valid_mask]
+            w_valid = self.exposure[valid_mask]
+            
+            # Weighted correlation
+            x_mean = np.average(x_valid, weights=w_valid)
+            y_mean = np.average(y_valid, weights=w_valid)
+            
+            cov_xy = np.sum(w_valid * (x_valid - x_mean) * (y_valid - y_mean)) / np.sum(w_valid)
+            std_x = np.sqrt(np.sum(w_valid * (x_valid - x_mean) ** 2) / np.sum(w_valid))
+            std_y = np.sqrt(np.sum(w_valid * (y_valid - y_mean) ** 2) / np.sum(w_valid))
+            
+            corr = cov_xy / (std_x * std_y) if std_x > 0 and std_y > 0 else 0.0
+            
+            # F-test from regression
+            n = len(x_valid)
+            r2 = corr ** 2
+            f_stat = (r2 / 1) / ((1 - r2) / (n - 2)) if r2 < 1 and n > 2 else 0
+            
+            try:
+                from scipy.stats import f
+                pvalue = 1 - f.cdf(f_stat, 1, n - 2) if n > 2 else 1.0
+            except ImportError:
+                pvalue = float('nan')
+            
+            results.append({
+                "factor": name,
+                "type": "continuous",
+                "test": "correlation_f_test",
+                "correlation": float(corr),
+                "r_squared": float(r2),
+                "f_statistic": float(f_stat),
+                "pvalue": float(pvalue),
+                "significant_01": pvalue < 0.01 if not np.isnan(pvalue) else False,
+                "significant_05": pvalue < 0.05 if not np.isnan(pvalue) else False,
+            })
+        
+        for name in categorical_factors:
+            if name not in data.columns:
+                continue
+            
+            values = data[name].to_numpy().astype(str)
+            
+            # ANOVA: eta-squared and F-test
+            eta_sq = self._compute_eta_squared_response(values)
+            
+            unique_levels = np.unique(values)
+            k = len(unique_levels)
+            n = len(values)
+            
+            if k > 1 and n > k:
+                f_stat = (eta_sq / (k - 1)) / ((1 - eta_sq) / (n - k)) if eta_sq < 1 else 0
+                
+                try:
+                    from scipy.stats import f
+                    pvalue = 1 - f.cdf(f_stat, k - 1, n - k)
+                except ImportError:
+                    pvalue = float('nan')
+            else:
+                f_stat = 0.0
+                pvalue = 1.0
+            
+            results.append({
+                "factor": name,
+                "type": "categorical",
+                "test": "anova_f_test",
+                "n_levels": k,
+                "eta_squared": float(eta_sq),
+                "f_statistic": float(f_stat),
+                "pvalue": float(pvalue),
+                "significant_01": pvalue < 0.01 if not np.isnan(pvalue) else False,
+                "significant_05": pvalue < 0.05 if not np.isnan(pvalue) else False,
+            })
+        
+        # Sort by p-value (most significant first)
+        results.sort(key=lambda x: x["pvalue"] if not np.isnan(x["pvalue"]) else 1.0)
+        return results
+    
+    def compute_correlations(
+        self,
+        data: "pl.DataFrame",
+        continuous_factors: List[str],
+    ) -> Dict[str, Any]:
+        """
+        Compute pairwise correlations between continuous factors.
+        
+        Returns correlation matrix and flags for high correlations.
+        """
+        valid_factors = [f for f in continuous_factors if f in data.columns]
+        
+        if len(valid_factors) < 2:
+            return {"factors": valid_factors, "matrix": [], "high_correlations": []}
+        
+        # Build matrix of valid values
+        arrays = []
+        for name in valid_factors:
+            arr = data[name].to_numpy().astype(np.float64)
+            arrays.append(arr)
+        
+        X = np.column_stack(arrays)
+        
+        # Handle missing values - use pairwise complete observations
+        n_factors = len(valid_factors)
+        corr_matrix = np.eye(n_factors)
+        
+        for i in range(n_factors):
+            for j in range(i + 1, n_factors):
+                xi, xj = X[:, i], X[:, j]
+                valid = ~np.isnan(xi) & ~np.isnan(xj) & ~np.isinf(xi) & ~np.isinf(xj)
+                
+                if np.sum(valid) > 2:
+                    corr = np.corrcoef(xi[valid], xj[valid])[0, 1]
+                    corr_matrix[i, j] = corr
+                    corr_matrix[j, i] = corr
+                else:
+                    corr_matrix[i, j] = float('nan')
+                    corr_matrix[j, i] = float('nan')
+        
+        # Find high correlations (|r| > 0.7)
+        high_corrs = []
+        for i in range(n_factors):
+            for j in range(i + 1, n_factors):
+                r = corr_matrix[i, j]
+                if not np.isnan(r) and abs(r) > 0.7:
+                    high_corrs.append({
+                        "factor1": valid_factors[i],
+                        "factor2": valid_factors[j],
+                        "correlation": float(r),
+                        "severity": "high" if abs(r) > 0.9 else "moderate",
+                    })
+        
+        high_corrs.sort(key=lambda x: -abs(x["correlation"]))
+        
+        return {
+            "factors": valid_factors,
+            "matrix": corr_matrix.tolist(),
+            "high_correlations": high_corrs,
+        }
+    
+    def compute_vif(
+        self,
+        data: "pl.DataFrame",
+        continuous_factors: List[str],
+    ) -> List[Dict[str, Any]]:
+        """
+        Compute Variance Inflation Factors for multicollinearity detection.
+        
+        VIF > 5 indicates moderate multicollinearity
+        VIF > 10 indicates severe multicollinearity
+        """
+        valid_factors = [f for f in continuous_factors if f in data.columns]
+        
+        if len(valid_factors) < 2:
+            return [{"factor": f, "vif": 1.0, "severity": "none"} for f in valid_factors]
+        
+        # Build design matrix
+        arrays = []
+        for name in valid_factors:
+            arr = data[name].to_numpy().astype(np.float64)
+            arrays.append(arr)
+        
+        X = np.column_stack(arrays)
+        
+        # Remove rows with any NaN/Inf
+        valid_rows = np.all(~np.isnan(X) & ~np.isinf(X), axis=1)
+        X = X[valid_rows]
+        
+        if len(X) < len(valid_factors) + 1:
+            return [{"factor": f, "vif": float('nan'), "severity": "unknown"} for f in valid_factors]
+        
+        # Standardize
+        X = (X - np.mean(X, axis=0)) / (np.std(X, axis=0) + 1e-10)
+        
+        results = []
+        for i, name in enumerate(valid_factors):
+            # Regress factor i on all others
+            y = X[:, i]
+            others = np.delete(X, i, axis=1)
+            
+            # Add intercept
+            others_with_int = np.column_stack([np.ones(len(others)), others])
+            
+            try:
+                # OLS: beta = (X'X)^-1 X'y
+                beta = np.linalg.lstsq(others_with_int, y, rcond=None)[0]
+                y_pred = others_with_int @ beta
+                
+                ss_res = np.sum((y - y_pred) ** 2)
+                ss_tot = np.sum((y - np.mean(y)) ** 2)
+                
+                r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0
+                vif = 1 / (1 - r2) if r2 < 1 else float('inf')
+            except:
+                vif = float('nan')
+            
+            if np.isnan(vif) or np.isinf(vif):
+                severity = "unknown"
+            elif vif > 10:
+                severity = "severe"
+            elif vif > 5:
+                severity = "moderate"
+            else:
+                severity = "none"
+            
+            results.append({
+                "factor": name,
+                "vif": float(vif) if not np.isinf(vif) else 999.0,
+                "severity": severity,
+            })
+        
+        results.sort(key=lambda x: -x["vif"] if not np.isnan(x["vif"]) else 0)
+        return results
+    
+    def compute_missing_values(
+        self,
+        data: "pl.DataFrame",
+        categorical_factors: List[str],
+        continuous_factors: List[str],
+    ) -> Dict[str, Any]:
+        """
+        Analyze missing values across all factors.
+        """
+        all_factors = categorical_factors + continuous_factors
+        factor_missing = []
+        total_rows = len(data)
+        
+        for name in all_factors:
+            if name not in data.columns:
+                continue
+            
+            col = data[name]
+            n_missing = col.null_count()
+            pct_missing = 100.0 * n_missing / total_rows if total_rows > 0 else 0
+            
+            factor_missing.append({
+                "factor": name,
+                "n_missing": int(n_missing),
+                "pct_missing": float(pct_missing),
+                "severity": "high" if pct_missing > 10 else ("moderate" if pct_missing > 1 else "none"),
+            })
+        
+        factor_missing.sort(key=lambda x: -x["pct_missing"])
+        
+        # Count rows with any missing
+        any_missing = 0
+        for name in all_factors:
+            if name in data.columns:
+                any_missing += data[name].null_count()
+        
+        return {
+            "total_rows": total_rows,
+            "factors_with_missing": [f for f in factor_missing if f["n_missing"] > 0],
+            "n_complete_rows": total_rows - sum(f["n_missing"] for f in factor_missing),
+            "summary": "No missing values" if all(f["n_missing"] == 0 for f in factor_missing) else "Missing values present",
+        }
+    
+    def compute_zero_inflation(self) -> Dict[str, Any]:
+        """
+        Check for zero inflation in count data.
+        
+        Compares observed zeros to expected zeros under Poisson assumption.
+        """
+        y = self.y
+        n = len(y)
+        
+        observed_zeros = int(np.sum(y == 0))
+        observed_zero_pct = 100.0 * observed_zeros / n if n > 0 else 0
+        
+        # Expected zeros under Poisson: P(Y=0) = exp(-lambda) where lambda = mean
+        mean_y = np.mean(y)
+        if mean_y > 0:
+            expected_zero_pct = 100.0 * np.exp(-mean_y)
+            excess_zeros = observed_zero_pct - expected_zero_pct
+        else:
+            expected_zero_pct = 100.0
+            excess_zeros = 0.0
+        
+        # Severity assessment
+        if excess_zeros > 20:
+            severity = "severe"
+            recommendation = "Consider zero-inflated model (ZIP, ZINB)"
+        elif excess_zeros > 10:
+            severity = "moderate"
+            recommendation = "Consider zero-inflated or hurdle model"
+        elif excess_zeros > 5:
+            severity = "mild"
+            recommendation = "Monitor; may need zero-inflated model"
+        else:
+            severity = "none"
+            recommendation = "Standard Poisson/NegBin likely adequate"
+        
+        return {
+            "observed_zeros": observed_zeros,
+            "observed_zero_pct": float(observed_zero_pct),
+            "expected_zero_pct_poisson": float(expected_zero_pct),
+            "excess_zero_pct": float(excess_zeros),
+            "severity": severity,
+            "recommendation": recommendation,
+        }
+    
+    def compute_overdispersion(self) -> Dict[str, Any]:
+        """
+        Check for overdispersion in count data.
+        
+        Compares variance to mean (Poisson assumes Var = Mean).
+        """
+        y = self.y
+        exposure = self.exposure
+        
+        # Compute rate
+        rate = y / exposure
+        
+        # Weighted mean and variance
+        total_exp = np.sum(exposure)
+        mean_rate = np.sum(y) / total_exp
+        
+        # Variance of rates (exposure-weighted)
+        var_rate = np.sum(exposure * (rate - mean_rate) ** 2) / total_exp
+        
+        # For Poisson with exposure, expected variance of rate is mean_rate / exposure
+        # Aggregate expected variance
+        expected_var = mean_rate * np.sum(1.0 / exposure * exposure) / total_exp  # = mean_rate
+        
+        # Dispersion ratio
+        if expected_var > 0:
+            dispersion_ratio = var_rate / expected_var
+        else:
+            dispersion_ratio = 1.0
+        
+        # Also compute using counts directly
+        mean_count = np.mean(y)
+        var_count = np.var(y, ddof=1)
+        count_dispersion = var_count / mean_count if mean_count > 0 else 1.0
+        
+        # Severity assessment
+        if count_dispersion > 5:
+            severity = "severe"
+            recommendation = "Use Negative Binomial or QuasiPoisson"
+        elif count_dispersion > 2:
+            severity = "moderate"
+            recommendation = "Consider Negative Binomial or QuasiPoisson"
+        elif count_dispersion > 1.5:
+            severity = "mild"
+            recommendation = "Monitor; Poisson may underestimate standard errors"
+        else:
+            severity = "none"
+            recommendation = "Poisson assumption reasonable"
+        
+        return {
+            "mean_count": float(mean_count),
+            "var_count": float(var_count),
+            "dispersion_ratio": float(count_dispersion),
+            "severity": severity,
+            "recommendation": recommendation,
+        }
+    
+    def compute_cramers_v(
+        self,
+        data: "pl.DataFrame",
+        categorical_factors: List[str],
+    ) -> Dict[str, Any]:
+        """
+        Compute Cramér's V matrix for categorical factor pairs.
+        
+        Cramér's V measures association between categorical variables (0 to 1).
+        """
+        valid_factors = [f for f in categorical_factors if f in data.columns]
+        
+        if len(valid_factors) < 2:
+            return {"factors": valid_factors, "matrix": [], "high_associations": []}
+        
+        n_factors = len(valid_factors)
+        v_matrix = np.eye(n_factors)
+        
+        for i in range(n_factors):
+            for j in range(i + 1, n_factors):
+                v = self._compute_cramers_v_pair(
+                    data[valid_factors[i]].to_numpy(),
+                    data[valid_factors[j]].to_numpy(),
+                )
+                v_matrix[i, j] = v
+                v_matrix[j, i] = v
+        
+        # Find high associations (V > 0.3)
+        high_assoc = []
+        for i in range(n_factors):
+            for j in range(i + 1, n_factors):
+                v = v_matrix[i, j]
+                if not np.isnan(v) and v > 0.3:
+                    high_assoc.append({
+                        "factor1": valid_factors[i],
+                        "factor2": valid_factors[j],
+                        "cramers_v": float(v),
+                        "severity": "high" if v > 0.5 else "moderate",
+                    })
+        
+        high_assoc.sort(key=lambda x: -x["cramers_v"])
+        
+        return {
+            "factors": valid_factors,
+            "matrix": v_matrix.tolist(),
+            "high_associations": high_assoc,
+        }
+    
+    def _compute_cramers_v_pair(self, x: np.ndarray, y: np.ndarray) -> float:
+        """Compute Cramér's V for a pair of categorical variables."""
+        # Build contingency table
+        x_str = x.astype(str)
+        y_str = y.astype(str)
+        
+        x_cats = np.unique(x_str)
+        y_cats = np.unique(y_str)
+        
+        r, k = len(x_cats), len(y_cats)
+        if r < 2 or k < 2:
+            return 0.0
+        
+        # Count frequencies
+        contingency = np.zeros((r, k))
+        for i, xc in enumerate(x_cats):
+            for j, yc in enumerate(y_cats):
+                contingency[i, j] = np.sum((x_str == xc) & (y_str == yc))
+        
+        n = contingency.sum()
+        if n == 0:
+            return 0.0
+        
+        # Chi-squared statistic
+        row_sums = contingency.sum(axis=1, keepdims=True)
+        col_sums = contingency.sum(axis=0, keepdims=True)
+        expected = row_sums * col_sums / n
+        
+        # Avoid division by zero
+        with np.errstate(divide='ignore', invalid='ignore'):
+            chi2 = np.sum((contingency - expected) ** 2 / expected)
+            chi2 = np.nan_to_num(chi2, nan=0.0, posinf=0.0, neginf=0.0)
+        
+        # Cramér's V
+        min_dim = min(r - 1, k - 1)
+        if min_dim == 0 or n == 0:
+            return 0.0
+        
+        v = np.sqrt(chi2 / (n * min_dim))
+        return float(v)
     
     def detect_interactions(
         self,
@@ -1423,6 +2130,8 @@ def explore_data(
     This function provides pre-fit analysis including factor statistics
     and interaction detection without requiring a fitted model.
     
+    Results are automatically saved to 'analysis/exploration.json'.
+    
     Parameters
     ----------
     data : pl.DataFrame
@@ -1474,8 +2183,8 @@ def explore_data(
     >>> # Export as JSON
     >>> print(exploration.to_json())
     """
-    categorical_factors = categorical_factors or []
-    continuous_factors = continuous_factors or []
+    categorical_factors = list(dict.fromkeys(categorical_factors or []))  # Dedupe preserving order
+    continuous_factors = list(dict.fromkeys(continuous_factors or []))  # Dedupe preserving order
     
     # Extract response and exposure
     y = data[response].to_numpy().astype(np.float64)
@@ -1496,6 +2205,44 @@ def explore_data(
         max_categorical_levels=max_categorical_levels,
     )
     
+    # Univariate significance tests
+    univariate_tests = explorer.compute_univariate_tests(
+        data=data,
+        categorical_factors=categorical_factors,
+        continuous_factors=continuous_factors,
+    )
+    
+    # Correlations between continuous factors
+    correlations = explorer.compute_correlations(
+        data=data,
+        continuous_factors=continuous_factors,
+    )
+    
+    # VIF for multicollinearity
+    vif = explorer.compute_vif(
+        data=data,
+        continuous_factors=continuous_factors,
+    )
+    
+    # Missing value analysis
+    missing_values = explorer.compute_missing_values(
+        data=data,
+        categorical_factors=categorical_factors,
+        continuous_factors=continuous_factors,
+    )
+    
+    # Cramér's V for categorical pairs
+    cramers_v = explorer.compute_cramers_v(
+        data=data,
+        categorical_factors=categorical_factors,
+    )
+    
+    # Zero inflation check (for count data)
+    zero_inflation = explorer.compute_zero_inflation()
+    
+    # Overdispersion check
+    overdispersion = explorer.compute_overdispersion()
+    
     # Interaction detection
     interaction_candidates = []
     if detect_interactions and len(categorical_factors) + len(continuous_factors) >= 2:
@@ -1504,6 +2251,7 @@ def explore_data(
             data=data,
             factor_names=all_factors,
             max_factors=max_interaction_factors,
+            min_effect_size=0.001,  # Lower threshold to catch more interactions
         )
     
     # Data summary
@@ -1516,12 +2264,27 @@ def explore_data(
         "n_continuous_factors": len(continuous_factors),
     }
     
-    return DataExploration(
+    result = DataExploration(
         data_summary=data_summary,
         factor_stats=factor_stats,
+        missing_values=missing_values,
+        univariate_tests=univariate_tests,
+        correlations=correlations,
+        cramers_v=cramers_v,
+        vif=vif,
+        zero_inflation=zero_inflation,
+        overdispersion=overdispersion,
         interaction_candidates=interaction_candidates,
         response_stats=response_stats,
     )
+    
+    # Auto-save JSON to analysis folder
+    import os
+    os.makedirs("analysis", exist_ok=True)
+    with open("analysis/exploration.json", "w") as f:
+        f.write(result.to_json(indent=2))
+    
+    return result
 
 
 # =============================================================================
@@ -1542,6 +2305,8 @@ def compute_diagnostics(
 ) -> ModelDiagnostics:
     """
     Compute comprehensive model diagnostics.
+    
+    Results are automatically saved to 'analysis/diagnostics.json'.
     
     Parameters
     ----------
@@ -1571,8 +2336,11 @@ def compute_diagnostics(
     ModelDiagnostics
         Complete diagnostics object with to_json() method.
     """
-    categorical_factors = categorical_factors or []
-    continuous_factors = continuous_factors or []
+    # Deduplicate factors while preserving order
+    categorical_factors = list(dict.fromkeys(categorical_factors or []))
+    continuous_factors = list(dict.fromkeys(continuous_factors or []))
+    # Remove any overlap (a factor can't be both categorical and continuous)
+    continuous_factors = [f for f in continuous_factors if f not in categorical_factors]
     
     # Extract what we need from result
     # Get y from the residuals (y = mu + response_residuals)
@@ -1629,6 +2397,7 @@ def compute_diagnostics(
         data=data,
         categorical_factors=categorical_factors,
         continuous_factors=continuous_factors,
+        result=result,  # Pass result for significance tests
         n_bins=n_factor_bins,
         rare_threshold_pct=rare_threshold_pct,
         max_categorical_levels=max_categorical_levels,
@@ -1647,19 +2416,41 @@ def compute_diagnostics(
     model_comparison = computer.compute_model_comparison()
     warnings = computer.generate_warnings(fit_stats, calibration, factors)
     
+    # Extract convergence info
+    converged = result.converged if hasattr(result, 'converged') else True
+    iterations = result.iterations if hasattr(result, 'iterations') else 0
+    max_iter = 25  # Default max iterations
+    
+    # Determine convergence reason
+    if converged:
+        reason = "converged"
+    elif iterations >= max_iter:
+        reason = "max_iterations_reached"
+    else:
+        reason = "unknown"
+    
+    convergence_details = ConvergenceDetails(
+        max_iterations_allowed=max_iter,
+        iterations_used=iterations,
+        converged=converged,
+        reason=reason,
+    )
+    
     # Model summary
     model_summary = {
+        "formula": result.formula if hasattr(result, 'formula') else None,
         "family": family,
         "link": result.link if hasattr(result, 'link') else "unknown",
         "n_observations": computer.n_obs,
         "n_parameters": n_params,
         "degrees_of_freedom_residual": computer.df_resid,
-        "converged": result.converged if hasattr(result, 'converged') else True,
-        "iterations": result.iterations if hasattr(result, 'iterations') else 0,
+        "converged": converged,
+        "iterations": iterations,
     }
     
-    return ModelDiagnostics(
+    diagnostics = ModelDiagnostics(
         model_summary=model_summary,
+        convergence_details=convergence_details,
         fit_statistics=fit_stats,
         loss_metrics=loss_metrics,
         calibration=calibration,
@@ -1670,3 +2461,11 @@ def compute_diagnostics(
         model_comparison=model_comparison,
         warnings=warnings,
     )
+    
+    # Auto-save JSON to analysis folder
+    import os
+    os.makedirs("analysis", exist_ok=True)
+    with open("analysis/diagnostics.json", "w") as f:
+        f.write(diagnostics.to_json(indent=2))
+    
+    return diagnostics
