@@ -34,7 +34,7 @@ Clone and build from source:
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/rustystats.git
+git clone https://github.com/PricingFrontier/rustystats.git
 cd rustystats
 
 # Install in development mode

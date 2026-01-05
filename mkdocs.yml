@@ -1,7 +1,7 @@
 site_name: RustyStats Documentation
 site_description: High-performance Generalized Linear Models with Rust backend and Python API
 site_author: RustyStats Team
-repo_url: https://github.com/your-org/rustystats
+repo_url: https://github.com/PricingFrontier/rustystats
 
 theme:
   name: material

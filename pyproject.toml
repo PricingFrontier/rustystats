@@ -41,7 +41,6 @@ keywords = ["statistics", "glm", "actuarial", "regression", "modeling"]
 
 # Python package dependencies (minimal for users)
 dependencies = [
-    "matplotlib>=3.9.4",
     "numpy>=1.20",
     "polars>=1.0",
 ]
@@ -57,8 +56,8 @@ dev = [
 ]
 
 [project.urls]
-Repository = "https://github.com/your-org/rustystats"
-Documentation = "https://rustystats.readthedocs.io"
+Repository = "https://github.com/PricingFrontier/rustystats"
+Documentation = "https://github.com/PricingFrontier/rustystats#readme"
 
 # =============================================================================
 # Maturin Configuration
