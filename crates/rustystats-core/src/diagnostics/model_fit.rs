@@ -35,6 +35,7 @@
 
 use ndarray::Array1;
 use std::f64::consts::PI;
+use crate::constants::{MU_MIN_PROBABILITY, MU_MAX_PROBABILITY};
 
 // =============================================================================
 // Log-Likelihood Functions
@@ -144,7 +145,7 @@ pub fn log_likelihood_binomial(
         .and(mu)
         .map_collect(|&yi, &mui| {
             // Clamp μ to avoid log(0)
-            let mui_safe = mui.max(1e-10).min(1.0 - 1e-10);
+            let mui_safe = mui.max(MU_MIN_PROBABILITY).min(MU_MAX_PROBABILITY);
             
             // y × log(μ) + (1-y) × log(1-μ)
             let ll = if yi > 0.0 {
@@ -170,15 +171,15 @@ pub fn log_likelihood_binomial(
 
 /// Log-likelihood for Gamma family.
 ///
-/// For Gamma with shape α and scale β where μ = αβ and φ = 1/α:
-/// ℓ = Σ[(-y/μ - log(μ))/φ - log(y) - log(φ)/φ - log(Γ(1/φ))]
+/// For Gamma with shape α and scale θ where μ = αθ and φ = 1/α:
+/// ℓ_i = (α-1)·log(y) - α·y/μ + α·log(α/μ) - log(Γ(α))
 ///
-/// Simplified for GLM purposes using the deviance formulation.
+/// This matches the statsmodels implementation exactly.
 ///
 /// # Arguments
 /// * `y` - Observed response values (positive)
 /// * `mu` - Fitted mean values
-/// * `scale` - Dispersion parameter (1/shape)
+/// * `scale` - Dispersion parameter φ = 1/α (inverse of shape)
 /// * `weights` - Optional observation weights
 ///
 /// # Returns
@@ -191,20 +192,19 @@ pub fn log_likelihood_gamma(
 ) -> f64 {
     use statrs::function::gamma::ln_gamma;
     
-    // shape = 1/scale
-    let shape = 1.0 / scale;
+    // shape α = 1/scale = 1/φ
+    let alpha = 1.0 / scale;
     
     let contributions: Array1<f64> = ndarray::Zip::from(y)
         .and(mu)
         .map_collect(|&yi, &mui| {
-            // Gamma log-likelihood:
-            // (shape - 1) × log(y) - y/(μ/shape) - shape×log(μ/shape) - log(Γ(shape))
-            // Simplified for GLM:
-            // -y/μ/φ - log(μ)/φ + (1/φ - 1)×log(y) - log(Γ(1/φ)) - log(φ)/φ
-            
-            let ll = shape * (shape * yi / mui).ln() 
-                   - shape * yi / mui 
-                   - ln_gamma(shape);
+            // Full Gamma log-likelihood (statsmodels formula):
+            // ℓ_i = (α-1)·log(y) - α·y/μ + α·log(α/μ) - log(Γ(α))
+            //     = (α-1)·log(y) - α·y/μ + α·log(α) - α·log(μ) - log(Γ(α))
+            let ll = (alpha - 1.0) * yi.ln()
+                   - alpha * yi / mui
+                   + alpha * (alpha / mui).ln()
+                   - ln_gamma(alpha);
             ll
         });
     
@@ -286,9 +286,9 @@ pub fn null_deviance(
     // Create mu array with constant mean
     let mu_null = Array1::from_elem(y.len(), y_mean);
     
-    // Compute unit deviances based on family
-    let unit_dev: Array1<f64> = match family_name {
-        "Gaussian" => {
+    // Compute unit deviances based on family (case-insensitive matching)
+    let unit_dev: Array1<f64> = match family_name.to_lowercase().as_str() {
+        "gaussian" | "normal" => {
             // (y - μ)²
             ndarray::Zip::from(y)
                 .and(&mu_null)
@@ -297,7 +297,7 @@ pub fn null_deviance(
                     diff * diff
                 })
         }
-        "Poisson" => {
+        "poisson" | "quasipoisson" => {
             // 2 × [y × log(y/μ) - (y - μ)]
             ndarray::Zip::from(y)
                 .and(&mu_null)
@@ -309,10 +309,10 @@ pub fn null_deviance(
                     }
                 })
         }
-        "Binomial" => {
+        "binomial" | "quasibinomial" => {
             // 2 × [y × log(y/μ) + (1-y) × log((1-y)/(1-μ))]
             // Clamp mean for numerical stability
-            let mu_safe = y_mean.max(1e-10).min(1.0 - 1e-10);
+            let mu_safe = y_mean.max(MU_MIN_PROBABILITY).min(MU_MAX_PROBABILITY);
             let mu_null_safe = Array1::from_elem(y.len(), mu_safe);
             
             ndarray::Zip::from(y)
@@ -328,7 +328,7 @@ pub fn null_deviance(
                     2.0 * dev
                 })
         }
-        "Gamma" => {
+        "gamma" => {
             // 2 × [(y - μ)/μ - log(y/μ)]
             ndarray::Zip::from(y)
                 .and(&mu_null)
@@ -337,14 +337,9 @@ pub fn null_deviance(
                     2.0 * ((yi - mui) / mui - ratio.ln())
                 })
         }
-        _ => {
-            // Default to Gaussian-like
-            ndarray::Zip::from(y)
-                .and(&mu_null)
-                .map_collect(|&yi, &mui| {
-                    let diff = yi - mui;
-                    diff * diff
-                })
+        other => {
+            panic!("Unknown family '{}' in null_deviance computation. \
+                   Supported families: gaussian, poisson, binomial, gamma, quasipoisson, quasibinomial.", other)
         }
     };
     

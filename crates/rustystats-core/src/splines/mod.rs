@@ -27,8 +27,10 @@
 use ndarray::{Array1, Array2};
 use rayon::prelude::*;
 
+use crate::constants::{DEFAULT_SPLINE_DEGREE, KNOT_TOL};
+
 /// Default degree for B-splines (cubic)
-pub const DEFAULT_DEGREE: usize = 3;
+pub const DEFAULT_DEGREE: usize = DEFAULT_SPLINE_DEGREE;
 
 // =============================================================================
 // KNOT COMPUTATION
@@ -172,14 +174,14 @@ fn bspline_basis_single(x: f64, i: usize, degree: usize, knots: &[f64]) -> f64 {
     
     // First term
     let denom1 = knots[i + degree] - knots[i];
-    if denom1.abs() > 1e-10 {
+    if denom1.abs() > KNOT_TOL {
         let w1 = (x - knots[i]) / denom1;
         result += w1 * bspline_basis_single(x, i, degree - 1, knots);
     }
     
     // Second term
     let denom2 = knots[i + degree + 1] - knots[i + 1];
-    if denom2.abs() > 1e-10 {
+    if denom2.abs() > KNOT_TOL {
         let w2 = (knots[i + degree + 1] - x) / denom2;
         result += w2 * bspline_basis_single(x, i + 1, degree - 1, knots);
     }
@@ -217,14 +219,14 @@ fn bspline_all_basis_at_point(x: f64, degree: usize, knots: &[f64], n_basis: usi
             
             // First term
             let denom1 = knots[i + d] - knots[i];
-            if denom1.abs() > 1e-10 && i < prev.len() {
+            if denom1.abs() > KNOT_TOL && i < prev.len() {
                 let w1 = (x - knots[i]) / denom1;
                 val += w1 * prev[i];
             }
             
             // Second term
             let denom2 = knots[i + d + 1] - knots[i + 1];
-            if denom2.abs() > 1e-10 && i + 1 < prev.len() {
+            if denom2.abs() > KNOT_TOL && i + 1 < prev.len() {
                 let w2 = (knots[i + d + 1] - x) / denom2;
                 val += w2 * prev[i + 1];
             }
@@ -377,7 +379,7 @@ fn compute_ns_row(x: f64, knots: &[f64], n_basis: usize, include_intercept: bool
     let d = |v: f64, j: usize| -> f64 {
         let xi_j = knots[j];
         let denom = xi_k - xi_j;
-        if denom.abs() < 1e-10 {
+        if denom.abs() < KNOT_TOL {
             0.0
         } else {
             (tp(v, xi_j) - tp(v, xi_k)) / denom

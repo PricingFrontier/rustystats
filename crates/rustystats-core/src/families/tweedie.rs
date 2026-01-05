@@ -34,6 +34,7 @@
 use ndarray::Array1;
 use crate::families::Family;
 use crate::links::{Link, LogLink};
+use crate::constants::{MU_MIN_POSITIVE, ZERO_TOL};
 
 /// Tweedie distribution family.
 ///
@@ -96,7 +97,7 @@ impl Family for TweedieFamily {
 
     /// Variance function: V(μ) = μ^p
     fn variance(&self, mu: &Array1<f64>) -> Array1<f64> {
-        mu.mapv(|m| m.powf(self.var_power).max(1e-10))
+        mu.mapv(|m| m.powf(self.var_power).max(MU_MIN_POSITIVE))
     }
 
     /// Unit deviance for Tweedie distribution.
@@ -114,20 +115,20 @@ impl Family for TweedieFamily {
             .map_collect(|&yi, &mui| {
                 // Ensure positive values for numerical stability
                 let yi_safe = yi.max(0.0);
-                let mui_safe = mui.max(1e-10);
+                let mui_safe = mui.max(MU_MIN_POSITIVE);
 
-                if (p - 0.0).abs() < 1e-10 {
+                if (p - 0.0).abs() < ZERO_TOL {
                     // p = 0: Gaussian
                     let diff = yi_safe - mui_safe;
                     diff * diff
-                } else if (p - 1.0).abs() < 1e-10 {
+                } else if (p - 1.0).abs() < ZERO_TOL {
                     // p = 1: Poisson
                     if yi_safe == 0.0 {
                         2.0 * mui_safe
                     } else {
                         2.0 * (yi_safe * (yi_safe / mui_safe).ln() - (yi_safe - mui_safe))
                     }
-                } else if (p - 2.0).abs() < 1e-10 {
+                } else if (p - 2.0).abs() < ZERO_TOL {
                     // p = 2: Gamma
                     2.0 * ((yi_safe - mui_safe) / mui_safe - (yi_safe / mui_safe).ln())
                 } else {

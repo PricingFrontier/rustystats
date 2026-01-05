@@ -32,6 +32,7 @@
 use ndarray::Array1;
 use crate::families::Family;
 use crate::links::Link;
+use crate::constants::ZERO_TOL;
 
 /// Compute response (raw) residuals: y - μ
 ///
@@ -77,7 +78,7 @@ pub fn resid_pearson(y: &Array1<f64>, mu: &Array1<f64>, family: &dyn Family) -> 
         .and(mu)
         .and(&variance)
         .map_collect(|&yi, &mui, &vi| {
-            let std_dev = vi.sqrt().max(1e-10);
+            let std_dev = vi.sqrt().max(ZERO_TOL);
             (yi - mui) / std_dev
         })
 }

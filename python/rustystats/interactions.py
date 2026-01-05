@@ -32,6 +32,7 @@ from rustystats._rustystats import (
     encode_categorical_py as _encode_categorical_rust,
     build_cat_cat_interaction_py as _build_cat_cat_rust,
     build_cat_cont_interaction_py as _build_cat_cont_rust,
+    build_cont_cont_interaction_py as _build_cont_cont_rust,
     multiply_matrix_by_continuous_py as _multiply_matrix_cont_rust,
     parse_formula_py as _parse_formula_rust,
     target_encode_py as _target_encode_rust,
@@ -74,11 +75,26 @@ from rustystats.splines import SplineTerm
 
 
 @dataclass
+class CategoricalEncoding:
+    """Cached categorical encoding data for a variable."""
+    encoding: np.ndarray  # (n, k-1) dummy matrix
+    names: List[str]  # Column names like ['var[T.B]', 'var[T.C]']
+    indices: np.ndarray  # (n,) level indices (int32)
+    levels: List[str]  # All categorical levels
+
+
+@dataclass
 class TargetEncodingTermSpec:
     """Parsed target encoding term specification from formula."""
     var_name: str
     prior_weight: float = 1.0
     n_permutations: int = 4
+
+
+@dataclass
+class IdentityTermSpec:
+    """Parsed identity term specification from formula (I() expressions)."""
+    expression: str  # The raw expression inside I(), e.g., "x ** 2" or "x + y"
 
 
 @dataclass 
@@ -91,6 +107,7 @@ class ParsedFormula:
     categorical_vars: Set[str]  # Variables marked as categorical with C()
     spline_terms: List[SplineTerm] = field(default_factory=list)  # Spline terms
     target_encoding_terms: List[TargetEncodingTermSpec] = field(default_factory=list)  # TE() terms
+    identity_terms: List[IdentityTermSpec] = field(default_factory=list)  # I() terms
     has_intercept: bool = True
 
 
@@ -147,6 +164,12 @@ def parse_formula_interactions(formula: str) -> ParsedFormula:
         for t in parsed.get('target_encoding_terms', [])
     ]
     
+    # Parse identity terms (I() expressions)
+    identity_terms = [
+        IdentityTermSpec(expression=i['expression'])
+        for i in parsed.get('identity_terms', [])
+    ]
+    
     # Filter out "1" from main effects (it's just an explicit intercept indicator)
     main_effects = [m for m in parsed['main_effects'] if m != '1']
     
@@ -157,6 +180,7 @@ def parse_formula_interactions(formula: str) -> ParsedFormula:
         categorical_vars=set(parsed['categorical_vars']),
         spline_terms=spline_terms,
         target_encoding_terms=target_encoding_terms,
+        identity_terms=identity_terms,
         has_intercept=parsed['has_intercept'],
     )
 
@@ -192,12 +216,8 @@ class InteractionBuilder:
         self.dtype = dtype
         self._n = len(data)
         
-        # Cache for encoded categorical variables
-        self._cat_cache: Dict[str, Tuple[np.ndarray, List[str]]] = {}
-        # Cache for categorical indices (for interaction building)
-        self._cat_indices_cache: Dict[str, Tuple[np.ndarray, List[str]]] = {}
-        # Store categorical levels for prediction on new data
-        self._cat_levels: Dict[str, List[str]] = {}
+        # Consolidated cache for categorical encodings (keyed by "varname_dropfirst")
+        self._cat_encoding_cache: Dict[str, CategoricalEncoding] = {}
         # Store spline terms with fitted knots for prediction
         self._fitted_splines: Dict[str, SplineTerm] = {}
         # Store parsed formula for prediction
@@ -206,6 +226,21 @@ class InteractionBuilder:
     def _get_column(self, name: str) -> np.ndarray:
         """Extract column as numpy array."""
         return self.data[name].to_numpy().astype(self.dtype)
+    
+    def _get_categorical_indices(self, name: str) -> Tuple[np.ndarray, List[str]]:
+        """Get cached categorical indices and levels for a variable."""
+        cache_key = f"{name}_True"  # Always use drop_first=True for indices
+        if cache_key not in self._cat_encoding_cache:
+            self._get_categorical_encoding(name)  # Populate cache
+        cached = self._cat_encoding_cache[cache_key]
+        return cached.indices, cached.levels
+    
+    def _get_categorical_levels(self, name: str) -> List[str]:
+        """Get cached categorical levels for a variable."""
+        cache_key = f"{name}_True"
+        if cache_key not in self._cat_encoding_cache:
+            raise ValueError(f"Categorical variable '{name}' was not seen during training.")
+        return self._cat_encoding_cache[cache_key].levels
     
     def _get_categorical_encoding(
         self, 
@@ -226,8 +261,9 @@ class InteractionBuilder:
             Column names like ['var[T.B]', 'var[T.C]', ...]
         """
         cache_key = f"{name}_{drop_first}"
-        if cache_key in self._cat_cache:
-            return self._cat_cache[cache_key]
+        if cache_key in self._cat_encoding_cache:
+            cached = self._cat_encoding_cache[cache_key]
+            return cached.encoding, cached.names
         
         col = self.data[name].to_numpy()
         
@@ -237,11 +273,13 @@ class InteractionBuilder:
         # Use Rust for factorization + matrix construction
         encoding, names, indices, levels = _encode_categorical_rust(values, name, drop_first)
         
-        # Cache both the encoding and the indices/levels for interaction building
-        self._cat_cache[cache_key] = (encoding, names)
-        self._cat_indices_cache[name] = (np.array(indices, dtype=np.int32), levels)
-        # Store levels for prediction on new data
-        self._cat_levels[name] = levels
+        # Cache all encoding data in a single consolidated object
+        self._cat_encoding_cache[cache_key] = CategoricalEncoding(
+            encoding=encoding,
+            names=names,
+            indices=np.array(indices, dtype=np.int32),
+            levels=levels,
+        )
         
         return encoding, names
     
@@ -275,18 +313,25 @@ class InteractionBuilder:
         self, 
         interaction: InteractionTerm
     ) -> Tuple[np.ndarray, List[str]]:
-        """Build continuous × continuous interaction."""
-        # Start with first factor
-        result = self._get_column(interaction.factors[0])
+        """Build continuous × continuous interaction using Rust for computation."""
+        factors = interaction.factors
         
-        # Multiply remaining factors
-        for factor in interaction.factors[1:]:
-            result = result * self._get_column(factor)
-        
-        # Name is "x1:x2:x3"
-        name = ':'.join(interaction.factors)
-        
-        return result.reshape(-1, 1), [name]
+        if len(factors) == 2:
+            # Optimized 2-way: direct Rust call
+            x1 = self._get_column(factors[0])
+            x2 = self._get_column(factors[1])
+            result, name = _build_cont_cont_rust(x1, x2, factors[0], factors[1])
+            return result.reshape(-1, 1), [name]
+        else:
+            # N-way: chain pairwise Rust calls
+            result = self._get_column(factors[0])
+            current_name = factors[0]
+            
+            for factor in factors[1:]:
+                x2 = self._get_column(factor)
+                result, current_name = _build_cont_cont_rust(result, x2, current_name, factor)
+            
+            return result.reshape(-1, 1), [current_name]
     
     def _build_categorical_interaction(
         self,
@@ -329,14 +374,9 @@ class InteractionBuilder:
         # Get original indices (from cache or compute via encoding)
         cat1, cat2 = factors
         
-        # Ensure we have indices cached (this will populate cache if not already)
-        if cat1 not in self._cat_indices_cache:
-            self._get_categorical_encoding(cat1)
-        if cat2 not in self._cat_indices_cache:
-            self._get_categorical_encoding(cat2)
-        
-        idx1, levels1 = self._cat_indices_cache[cat1]
-        idx2, levels2 = self._cat_indices_cache[cat2]
+        # Get indices and levels using consolidated cache
+        idx1, levels1 = self._get_categorical_indices(cat1)
+        idx2, levels2 = self._get_categorical_indices(cat2)
         
         # Number of non-reference levels
         n1 = len(levels1) - 1
@@ -414,11 +454,8 @@ class InteractionBuilder:
             # Single categorical - use Rust directly
             cat_name = cat_factors[0]
             
-            # Ensure indices are cached
-            if cat_name not in self._cat_indices_cache:
-                self._get_categorical_encoding(cat_name)
-            
-            cat_indices, levels = self._cat_indices_cache[cat_name]
+            # Get indices and levels using consolidated cache
+            cat_indices, levels = self._get_categorical_indices(cat_name)
             n_levels = len(levels) - 1  # Excluding reference
             
             if n_levels == 0:
@@ -508,6 +545,110 @@ class InteractionBuilder:
         
         return encoded, name, {'prior': prior, 'stats': stats, 'prior_weight': te_term.prior_weight}
     
+    def _build_identity_columns(
+        self,
+        identity: IdentityTermSpec,
+        data: "pl.DataFrame",
+    ) -> Tuple[np.ndarray, str]:
+        """
+        Build column for an identity term (I() expression).
+        
+        Evaluates expressions like I(x ** 2), I(x + y), I(x * y) against DataFrame columns.
+        
+        Parameters
+        ----------
+        identity : IdentityTermSpec
+            Identity term specification with the expression
+        data : pl.DataFrame
+            DataFrame containing the columns referenced in the expression
+            
+        Returns
+        -------
+        values : np.ndarray
+            Evaluated expression values (n,)
+        name : str
+            Column name like "I(x ** 2)"
+        """
+        import polars as pl
+        
+        expr = identity.expression
+        name = f"I({expr})"
+        
+        # Convert Python ** to Polars pow() and evaluate
+        # Common patterns: x ** 2, x ** 3, x + y, x * y, x / y
+        try:
+            # Use Polars eval with SQL-like syntax
+            # Convert ** to .pow() for polars
+            polars_expr = self._convert_expression_to_polars(expr)
+            result = data.select(polars_expr.alias("__result__"))["__result__"].to_numpy()
+            return result.astype(self.dtype), name
+        except Exception as e:
+            raise ValueError(
+                f"Failed to evaluate I() expression '{expr}': {e}\n"
+                f"Supported operations: +, -, *, /, ** (power)\n"
+                f"Example: I(x ** 2), I(x + y), I(x * y)"
+            ) from e
+    
+    def _convert_expression_to_polars(self, expr: str) -> "pl.Expr":
+        """
+        Convert a Python-style expression to a Polars expression.
+        
+        Handles:
+        - x ** 2 -> col("x").pow(2)
+        - x + y -> col("x") + col("y")
+        - x * y -> col("x") * col("y")
+        - x / y -> col("x") / col("y")
+        - x - y -> col("x") - col("y")
+        """
+        import polars as pl
+        import re
+        
+        expr = expr.strip()
+        
+        # Handle power operator: var ** num or var ** var
+        power_match = re.match(r'^(\w+)\s*\*\*\s*(\d+(?:\.\d+)?|\w+)$', expr)
+        if power_match:
+            var_name = power_match.group(1)
+            power = power_match.group(2)
+            try:
+                # Try to parse as number
+                power_val = float(power)
+                return pl.col(var_name).pow(power_val)
+            except ValueError:
+                # It's a column name
+                return pl.col(var_name).pow(pl.col(power))
+        
+        # Handle binary operations: var op var or var op num
+        binary_ops = [
+            (r'^(\w+)\s*\+\s*(\w+|\d+(?:\.\d+)?)$', lambda a, b: a + b),
+            (r'^(\w+)\s*-\s*(\w+|\d+(?:\.\d+)?)$', lambda a, b: a - b),
+            (r'^(\w+)\s*\*\s*(\w+|\d+(?:\.\d+)?)$', lambda a, b: a * b),
+            (r'^(\w+)\s*/\s*(\w+|\d+(?:\.\d+)?)$', lambda a, b: a / b),
+        ]
+        
+        for pattern, op_func in binary_ops:
+            match = re.match(pattern, expr)
+            if match:
+                left = match.group(1)
+                right = match.group(2)
+                left_expr = pl.col(left)
+                try:
+                    right_val = float(right)
+                    right_expr = pl.lit(right_val)
+                except ValueError:
+                    right_expr = pl.col(right)
+                return op_func(left_expr, right_expr)
+        
+        # If no pattern matched, try direct column reference (simple case)
+        # This handles cases like I(x) which is just the column itself
+        if re.match(r'^\w+$', expr):
+            return pl.col(expr)
+        
+        raise ValueError(
+            f"Cannot parse expression '{expr}'. "
+            f"Supported formats: 'x ** 2', 'x + y', 'x * y', 'x / y', 'x - y'"
+        )
+    
     def build_design_matrix(
         self,
         formula: str,
@@ -579,6 +720,12 @@ class InteractionBuilder:
             columns.append(te_col.reshape(-1, 1))
             names.append(te_name)
             self._te_stats[te_term.var_name] = te_stats
+        
+        # Add identity terms (I() expressions like I(x ** 2))
+        for identity in parsed.identity_terms:
+            id_col, id_name = self._build_identity_columns(identity, self.data)
+            columns.append(id_col.reshape(-1, 1))
+            names.append(id_name)
         
         # Stack all columns
         if columns:
@@ -676,8 +823,8 @@ class InteractionBuilder:
                     f"Matrix is rank-deficient: rank={results['rank']}, expected={n_cols}. "
                     f"{n_cols - results['rank']} columns are linearly dependent."
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            results['suggestions'].append(f"Warning: Could not compute matrix rank: {e}")
         
         # Check condition number
         try:
@@ -688,8 +835,8 @@ class InteractionBuilder:
                     f"Matrix is ill-conditioned (condition number={results['condition_number']:.2e}). "
                     "This indicates near-linear dependence between columns."
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            results['suggestions'].append(f"Warning: Could not compute condition number: {e}")
         
         # Check for highly correlated columns (skip intercept)
         try:
@@ -718,8 +865,8 @@ class InteractionBuilder:
                         "  3. Reduce degrees of freedom: ns(VarName, df=2)\n"
                         "  4. Use linear term instead: just 'VarName' without spline"
                     )
-        except Exception:
-            pass
+        except Exception as e:
+            results['suggestions'].append(f"Warning: Could not compute column correlations: {e}")
         
         if verbose:
             print("=" * 60)
@@ -808,6 +955,11 @@ class InteractionBuilder:
             te_col = self._encode_target_new(new_data, te_term)
             columns.append(te_col.reshape(-1, 1))
         
+        # Add identity terms (I() expressions) - same evaluation on new data
+        for identity in parsed.identity_terms:
+            id_col, _ = self._build_identity_columns(identity, new_data)
+            columns.append(id_col.reshape(-1, 1))
+        
         # Stack all columns
         if columns:
             X = np.hstack([c if c.ndim == 2 else c.reshape(-1, 1) for c in columns])
@@ -822,12 +974,7 @@ class InteractionBuilder:
         var_name: str,
     ) -> np.ndarray:
         """Encode categorical variable using levels from training."""
-        if var_name not in self._cat_levels:
-            raise ValueError(
-                f"Categorical variable '{var_name}' was not seen during training."
-            )
-        
-        levels = self._cat_levels[var_name]
+        levels = self._get_categorical_levels(var_name)
         col = new_data[var_name].to_numpy()
         n = len(col)
         

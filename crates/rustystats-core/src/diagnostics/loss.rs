@@ -13,6 +13,7 @@
 // =============================================================================
 
 use ndarray::Array1;
+use crate::constants::{MU_MIN_POSITIVE, ZERO_TOL};
 
 /// Mean Squared Error (MSE)
 /// 
@@ -97,7 +98,7 @@ pub fn poisson_deviance_loss(y: &Array1<f64>, mu: &Array1<f64>, weights: Option<
     let unit_deviances: Vec<f64> = y.iter()
         .zip(mu.iter())
         .map(|(&yi, &mui)| {
-            let mui_safe = mui.max(1e-10);
+            let mui_safe = mui.max(MU_MIN_POSITIVE);
             if yi == 0.0 {
                 2.0 * mui_safe
             } else {
@@ -138,8 +139,8 @@ pub fn gamma_deviance_loss(y: &Array1<f64>, mu: &Array1<f64>, weights: Option<&A
     let unit_deviances: Vec<f64> = y.iter()
         .zip(mu.iter())
         .map(|(&yi, &mui)| {
-            let yi_safe = yi.max(1e-10);
-            let mui_safe = mui.max(1e-10);
+            let yi_safe = yi.max(MU_MIN_POSITIVE);
+            let mui_safe = mui.max(MU_MIN_POSITIVE);
             let ratio = yi_safe / mui_safe;
             2.0 * ((yi_safe - mui_safe) / mui_safe - ratio.ln())
         })
@@ -221,7 +222,7 @@ pub fn tweedie_deviance_loss(
     let unit_deviances: Vec<f64> = y.iter()
         .zip(mu.iter())
         .map(|(&yi, &mui)| {
-            let mui_safe = mui.max(1e-10);
+            let mui_safe = mui.max(MU_MIN_POSITIVE);
             tweedie_unit_deviance(yi, mui_safe, var_power)
         })
         .collect();
@@ -246,23 +247,23 @@ pub fn tweedie_deviance_loss(
 
 /// Compute Tweedie unit deviance for a single observation
 fn tweedie_unit_deviance(y: f64, mu: f64, p: f64) -> f64 {
-    if (p - 0.0).abs() < 1e-10 {
+    if (p - 0.0).abs() < ZERO_TOL {
         // Gaussian: (y - μ)²
         (y - mu).powi(2)
-    } else if (p - 1.0).abs() < 1e-10 {
+    } else if (p - 1.0).abs() < ZERO_TOL {
         // Poisson: 2 * (y * log(y/μ) - (y - μ))
         if y == 0.0 {
             2.0 * mu
         } else {
             2.0 * (y * (y / mu).ln() - (y - mu))
         }
-    } else if (p - 2.0).abs() < 1e-10 {
+    } else if (p - 2.0).abs() < ZERO_TOL {
         // Gamma: 2 * ((y - μ)/μ - log(y/μ))
-        let y_safe = y.max(1e-10);
+        let y_safe = y.max(MU_MIN_POSITIVE);
         2.0 * ((y_safe - mu) / mu - (y_safe / mu).ln())
     } else {
         // General Tweedie
-        let y_safe = y.max(1e-10);
+        let y_safe = y.max(MU_MIN_POSITIVE);
         2.0 * (
             y_safe.powf(2.0 - p) / ((1.0 - p) * (2.0 - p))
             - y_safe * mu.powf(1.0 - p) / (1.0 - p)
@@ -288,7 +289,7 @@ pub fn negbinomial_deviance_loss(
     let unit_deviances: Vec<f64> = y.iter()
         .zip(mu.iter())
         .map(|(&yi, &mui)| {
-            let mui_safe = mui.max(1e-10);
+            let mui_safe = mui.max(MU_MIN_POSITIVE);
             let yi_safe = yi.max(0.0);
             
             // NB deviance: 2 * (y * log(y/μ) - (y + θ) * log((y + θ)/(μ + θ)))
@@ -320,7 +321,8 @@ pub fn negbinomial_deviance_loss(
     }
 }
 
-/// Get the default loss function name for a family
+/// Get the default loss function name for a family.
+/// Panics on unknown family - callers should validate family names first.
 pub fn default_loss_name(family: &str) -> &'static str {
     match family.to_lowercase().as_str() {
         "gaussian" | "normal" => "mse",
@@ -329,11 +331,12 @@ pub fn default_loss_name(family: &str) -> &'static str {
         "binomial" | "quasibinomial" => "log_loss",
         "tweedie" => "tweedie_deviance",
         "negativebinomial" | "negbinomial" | "nb" => "negbinomial_deviance",
-        _ => "mse",
+        other => panic!("Unknown family '{}' in default_loss_name", other),
     }
 }
 
-/// Compute the default loss for a given family
+/// Compute the default loss for a given family.
+/// Panics on unknown family - callers should validate family names first.
 pub fn compute_family_loss(
     family: &str,
     y: &Array1<f64>,
@@ -351,7 +354,7 @@ pub fn compute_family_loss(
         "negativebinomial" | "negbinomial" | "nb" => {
             negbinomial_deviance_loss(y, mu, theta.unwrap_or(1.0), weights)
         }
-        _ => mse(y, mu, weights),
+        other => panic!("Unknown family '{}' in compute_family_loss", other),
     }
 }
 

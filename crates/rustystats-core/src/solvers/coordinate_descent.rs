@@ -46,6 +46,7 @@
 use ndarray::{Array1, Array2};
 use rayon::prelude::*;
 
+use crate::constants::ZERO_TOL;
 use crate::error::{RustyStatsError, Result};
 use crate::families::Family;
 use crate::links::Link;
@@ -317,7 +318,7 @@ pub fn fit_glm_coordinate_descent(
                     rho / xwx_jj
                 } else {
                     let denom = xwx_jj + l2_penalty;
-                    if denom.abs() < 1e-10 {
+                    if denom.abs() < ZERO_TOL {
                         0.0
                     } else {
                         soft_threshold(rho, l1_penalty) / denom
@@ -360,14 +361,14 @@ pub fn fit_glm_coordinate_descent(
         deviance = family.deviance(y, &mu, Some(&prior_weights_vec));
 
         let abs_change = (deviance_old - deviance).abs();
-        let rel_change = if deviance_old.abs() > 1e-10 {
+        let rel_change = if deviance_old.abs() > ZERO_TOL {
             abs_change / deviance_old.abs()
         } else {
             abs_change
         };
 
         if irls_config.verbose {
-            let n_nonzero = coefficients.iter().skip(pen_start).filter(|&&c| c.abs() > 1e-10).count();
+            let n_nonzero = coefficients.iter().skip(pen_start).filter(|&&c| c.abs() > ZERO_TOL).count();
             eprintln!(
                 "IRLS iter {}: deviance = {:.6}, rel_change = {:.2e}, nonzero = {}",
                 outer_iteration, deviance, rel_change, n_nonzero
@@ -375,7 +376,7 @@ pub fn fit_glm_coordinate_descent(
         }
 
         // Converge if relative change is small OR if deviance is very small (nearly perfect fit)
-        if rel_change < irls_config.tolerance || (deviance < 1e-10 && abs_change < 1e-12) {
+        if rel_change < irls_config.tolerance || (deviance < ZERO_TOL && abs_change < ZERO_TOL) {
             converged = true;
             break;
         }
@@ -483,10 +484,11 @@ fn initialize_mu_safe(y: &Array1<f64>, family: &dyn Family) -> Array1<f64> {
 
 /// Clamp μ to valid range for the family
 fn clamp_mu(mu: &Array1<f64>, family: &dyn Family) -> Array1<f64> {
+    use crate::constants::{MU_MIN_POSITIVE, MU_MIN_PROBABILITY, MU_MAX_PROBABILITY};
     let name = family.name();
     mu.mapv(|x| match name {
-        "Poisson" | "Gamma" => x.max(1e-10),
-        "Binomial" => x.max(1e-10).min(1.0 - 1e-10),
+        "Poisson" | "Gamma" => x.max(MU_MIN_POSITIVE),
+        "Binomial" => x.max(MU_MIN_PROBABILITY).min(MU_MAX_PROBABILITY),
         _ => x,
     })
 }

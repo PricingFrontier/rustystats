@@ -28,6 +28,8 @@
 // OVERDISPERSION:
 // ---------------
 // If φ >> 1 for Poisson or Binomial, you have overdispersion.
+
+use crate::constants::ZERO_TOL;
 // Solutions:
 // - Use Quasi-Poisson/Quasi-Binomial (scale SE's by √φ)
 // - Use Negative Binomial (for count data)
@@ -69,7 +71,7 @@ pub fn pearson_chi2(
         .and(&variance)
         .map_collect(|&yi, &mui, &vi| {
             let diff = yi - mui;
-            (diff * diff) / vi.max(1e-10)
+            (diff * diff) / vi.max(ZERO_TOL)
         });
     
     match weights {

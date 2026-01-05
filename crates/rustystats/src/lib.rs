@@ -50,7 +50,7 @@ use rustystats_core::diagnostics::{
     hosmer_lemeshow_test,
     // Factor diagnostics
     compute_ae_continuous, compute_ae_categorical,
-    compute_residual_pattern_continuous, compute_continuous_stats,
+    compute_residual_pattern_continuous,
     // Interactions
     detect_interactions, InteractionConfig, FactorData,
     // Loss
@@ -58,348 +58,161 @@ use rustystats_core::diagnostics::{
 };
 
 // =============================================================================
-// Link Function Wrappers
+// Family and Link Helper Functions
+// =============================================================================
+//
+// These helper functions consolidate the repeated family/link dispatch logic
+// that was previously duplicated across multiple functions.
+// =============================================================================
+
+/// Get a Family trait object from a family name string.
+/// 
+/// Handles case-insensitive matching and common aliases.
+/// Returns an error for unknown family names instead of silently defaulting.
+fn family_from_name(name: &str) -> PyResult<Box<dyn Family>> {
+    match name.to_lowercase().as_str() {
+        "gaussian" | "normal" => Ok(Box::new(GaussianFamily)),
+        "poisson" => Ok(Box::new(PoissonFamily)),
+        "binomial" => Ok(Box::new(BinomialFamily)),
+        "gamma" => Ok(Box::new(GammaFamily)),
+        "quasipoisson" => Ok(Box::new(QuasiPoissonFamily)),
+        "quasibinomial" => Ok(Box::new(QuasiBinomialFamily)),
+        "negativebinomial" | "negbinomial" | "negbin" => Ok(Box::new(NegativeBinomialFamily::default())),
+        _ => Err(PyValueError::new_err(format!(
+            "Unknown family '{}'. Use 'gaussian', 'poisson', 'binomial', 'gamma', \
+             'quasipoisson', 'quasibinomial', or 'negativebinomial'.", name
+        ))),
+    }
+}
+
+/// Get the default Link function for a given family name.
+/// Panics on unknown family - this should only be called with validated family names.
+fn default_link_from_family(family_name: &str) -> Box<dyn Link> {
+    match family_name.to_lowercase().as_str() {
+        "gaussian" | "normal" => Box::new(IdentityLink),
+        "poisson" | "quasipoisson" | "negativebinomial" | "negbinomial" | "negbin" | "gamma" | "tweedie" => Box::new(LogLink),
+        "binomial" | "quasibinomial" => Box::new(LogitLink),
+        other => panic!("default_link_from_family called with unknown family '{}' - this is a bug", other),
+    }
+}
+
+/// Get a Link trait object from a link name string.
+/// Returns an error for unknown link names instead of silently defaulting.
+fn link_from_name(name: &str) -> PyResult<Box<dyn Link>> {
+    match name.to_lowercase().as_str() {
+        "identity" => Ok(Box::new(IdentityLink)),
+        "log" => Ok(Box::new(LogLink)),
+        "logit" => Ok(Box::new(LogitLink)),
+        _ => Err(PyValueError::new_err(format!(
+            "Unknown link '{}'. Use 'identity', 'log', or 'logit'.", name
+        ))),
+    }
+}
+
+// =============================================================================
+// Link Function Wrappers (Macro-Generated)
 // =============================================================================
 //
 // These wrap the Rust link functions so Python can use them.
 // Each class provides the same interface: link(), inverse(), derivative()
 // =============================================================================
 
-/// Identity link function: η = μ
-/// 
-/// The simplest link - no transformation at all.
-/// Default for Gaussian family (linear regression).
-#[pyclass(name = "IdentityLink")]
-#[derive(Clone)]
-pub struct PyIdentityLink {
-    inner: IdentityLink,
+/// Macro to generate PyO3 link function wrappers.
+/// Eliminates ~40 lines of boilerplate per link type.
+macro_rules! impl_py_link {
+    ($py_name:ident, $py_str:literal, $inner_type:ty, $inner_expr:expr) => {
+        #[pyclass(name = $py_str)]
+        #[derive(Clone)]
+        pub struct $py_name {
+            inner: $inner_type,
+        }
+
+        #[pymethods]
+        impl $py_name {
+            #[new]
+            fn new() -> Self {
+                Self { inner: $inner_expr }
+            }
+
+            fn name(&self) -> &str {
+                self.inner.name()
+            }
+
+            fn link<'py>(&self, py: Python<'py>, mu: PyReadonlyArray1<f64>) -> Bound<'py, PyArray1<f64>> {
+                self.inner.link(&mu.as_array().to_owned()).into_pyarray_bound(py)
+            }
+
+            fn inverse<'py>(&self, py: Python<'py>, eta: PyReadonlyArray1<f64>) -> Bound<'py, PyArray1<f64>> {
+                self.inner.inverse(&eta.as_array().to_owned()).into_pyarray_bound(py)
+            }
+
+            fn derivative<'py>(&self, py: Python<'py>, mu: PyReadonlyArray1<f64>) -> Bound<'py, PyArray1<f64>> {
+                self.inner.derivative(&mu.as_array().to_owned()).into_pyarray_bound(py)
+            }
+        }
+    };
 }
 
-#[pymethods]
-impl PyIdentityLink {
-    #[new]
-    fn new() -> Self {
-        Self { inner: IdentityLink }
-    }
-    
-    /// Get the name of this link function
-    fn name(&self) -> &str {
-        self.inner.name()
-    }
-    
-    /// Apply link function: η = g(μ)
-    fn link<'py>(&self, py: Python<'py>, mu: PyReadonlyArray1<f64>) -> Bound<'py, PyArray1<f64>> {
-        let mu_array = mu.as_array().to_owned();
-        let result = self.inner.link(&mu_array);
-        result.into_pyarray_bound(py)
-    }
-    
-    /// Apply inverse link: μ = g⁻¹(η)
-    fn inverse<'py>(&self, py: Python<'py>, eta: PyReadonlyArray1<f64>) -> Bound<'py, PyArray1<f64>> {
-        let eta_array = eta.as_array().to_owned();
-        let result = self.inner.inverse(&eta_array);
-        result.into_pyarray_bound(py)
-    }
-    
-    /// Compute derivative: dη/dμ
-    fn derivative<'py>(&self, py: Python<'py>, mu: PyReadonlyArray1<f64>) -> Bound<'py, PyArray1<f64>> {
-        let mu_array = mu.as_array().to_owned();
-        let result = self.inner.derivative(&mu_array);
-        result.into_pyarray_bound(py)
-    }
-}
-
-/// Log link function: η = log(μ)
-/// 
-/// Ensures predictions are always positive.
-/// Default for Poisson (counts) and Gamma (severity) families.
-#[pyclass(name = "LogLink")]
-#[derive(Clone)]
-pub struct PyLogLink {
-    inner: LogLink,
-}
-
-#[pymethods]
-impl PyLogLink {
-    #[new]
-    fn new() -> Self {
-        Self { inner: LogLink }
-    }
-    
-    fn name(&self) -> &str {
-        self.inner.name()
-    }
-    
-    fn link<'py>(&self, py: Python<'py>, mu: PyReadonlyArray1<f64>) -> Bound<'py, PyArray1<f64>> {
-        let mu_array = mu.as_array().to_owned();
-        let result = self.inner.link(&mu_array);
-        result.into_pyarray_bound(py)
-    }
-    
-    fn inverse<'py>(&self, py: Python<'py>, eta: PyReadonlyArray1<f64>) -> Bound<'py, PyArray1<f64>> {
-        let eta_array = eta.as_array().to_owned();
-        let result = self.inner.inverse(&eta_array);
-        result.into_pyarray_bound(py)
-    }
-    
-    fn derivative<'py>(&self, py: Python<'py>, mu: PyReadonlyArray1<f64>) -> Bound<'py, PyArray1<f64>> {
-        let mu_array = mu.as_array().to_owned();
-        let result = self.inner.derivative(&mu_array);
-        result.into_pyarray_bound(py)
-    }
-}
-
-/// Logit link function: η = log(μ/(1-μ))
-/// 
-/// Transforms probabilities to log-odds scale.
-/// Default for Binomial family (logistic regression).
-#[pyclass(name = "LogitLink")]
-#[derive(Clone)]
-pub struct PyLogitLink {
-    inner: LogitLink,
-}
-
-#[pymethods]
-impl PyLogitLink {
-    #[new]
-    fn new() -> Self {
-        Self { inner: LogitLink }
-    }
-    
-    fn name(&self) -> &str {
-        self.inner.name()
-    }
-    
-    fn link<'py>(&self, py: Python<'py>, mu: PyReadonlyArray1<f64>) -> Bound<'py, PyArray1<f64>> {
-        let mu_array = mu.as_array().to_owned();
-        let result = self.inner.link(&mu_array);
-        result.into_pyarray_bound(py)
-    }
-    
-    fn inverse<'py>(&self, py: Python<'py>, eta: PyReadonlyArray1<f64>) -> Bound<'py, PyArray1<f64>> {
-        let eta_array = eta.as_array().to_owned();
-        let result = self.inner.inverse(&eta_array);
-        result.into_pyarray_bound(py)
-    }
-    
-    fn derivative<'py>(&self, py: Python<'py>, mu: PyReadonlyArray1<f64>) -> Bound<'py, PyArray1<f64>> {
-        let mu_array = mu.as_array().to_owned();
-        let result = self.inner.derivative(&mu_array);
-        result.into_pyarray_bound(py)
-    }
-}
+// Generate all link wrappers (3 types × ~40 lines = ~120 lines → ~3 lines each)
+impl_py_link!(PyIdentityLink, "IdentityLink", IdentityLink, IdentityLink);
+impl_py_link!(PyLogLink, "LogLink", LogLink, LogLink);
+impl_py_link!(PyLogitLink, "LogitLink", LogitLink, LogitLink);
 
 // =============================================================================
-// Family Wrappers
+// Family Wrappers (Macro-Generated)
 // =============================================================================
 //
 // These wrap the Rust distribution families for Python.
-// Each provides: variance(), unit_deviance(), deviance()
+// Each provides: variance(), unit_deviance(), deviance(), default_link()
 // =============================================================================
 
-/// Gaussian (Normal) family for continuous response data.
-/// 
-/// Use for standard linear regression.
-/// Variance function: V(μ) = 1 (constant variance)
-#[pyclass(name = "GaussianFamily")]
-#[derive(Clone)]
-pub struct PyGaussianFamily {
-    inner: GaussianFamily,
+/// Macro to generate PyO3 family wrappers for simple (no-parameter) families.
+/// Eliminates ~50 lines of boilerplate per family type.
+macro_rules! impl_py_family {
+    ($py_name:ident, $py_str:literal, $inner_type:ty, $inner_expr:expr, $default_link:ty) => {
+        #[pyclass(name = $py_str)]
+        #[derive(Clone)]
+        pub struct $py_name {
+            inner: $inner_type,
+        }
+
+        #[pymethods]
+        impl $py_name {
+            #[new]
+            fn new() -> Self {
+                Self { inner: $inner_expr }
+            }
+
+            fn name(&self) -> &str {
+                self.inner.name()
+            }
+
+            fn variance<'py>(&self, py: Python<'py>, mu: PyReadonlyArray1<f64>) -> Bound<'py, PyArray1<f64>> {
+                self.inner.variance(&mu.as_array().to_owned()).into_pyarray_bound(py)
+            }
+
+            fn unit_deviance<'py>(&self, py: Python<'py>, y: PyReadonlyArray1<f64>, mu: PyReadonlyArray1<f64>) -> Bound<'py, PyArray1<f64>> {
+                self.inner.unit_deviance(&y.as_array().to_owned(), &mu.as_array().to_owned()).into_pyarray_bound(py)
+            }
+
+            fn deviance(&self, y: PyReadonlyArray1<f64>, mu: PyReadonlyArray1<f64>) -> f64 {
+                self.inner.deviance(&y.as_array().to_owned(), &mu.as_array().to_owned(), None)
+            }
+
+            fn default_link(&self) -> $default_link {
+                <$default_link>::new()
+            }
+        }
+    };
 }
 
-#[pymethods]
-impl PyGaussianFamily {
-    #[new]
-    fn new() -> Self {
-        Self { inner: GaussianFamily }
-    }
-    
-    fn name(&self) -> &str {
-        self.inner.name()
-    }
-    
-    /// Compute variance function V(μ). Returns array of 1s.
-    fn variance<'py>(&self, py: Python<'py>, mu: PyReadonlyArray1<f64>) -> Bound<'py, PyArray1<f64>> {
-        let mu_array = mu.as_array().to_owned();
-        let result = self.inner.variance(&mu_array);
-        result.into_pyarray_bound(py)
-    }
-    
-    /// Compute unit deviance: (y - μ)² for each observation.
-    fn unit_deviance<'py>(
-        &self,
-        py: Python<'py>,
-        y: PyReadonlyArray1<f64>,
-        mu: PyReadonlyArray1<f64>,
-    ) -> Bound<'py, PyArray1<f64>> {
-        let y_array = y.as_array().to_owned();
-        let mu_array = mu.as_array().to_owned();
-        let result = self.inner.unit_deviance(&y_array, &mu_array);
-        result.into_pyarray_bound(py)
-    }
-    
-    /// Compute total deviance (sum of squared residuals).
-    fn deviance(&self, y: PyReadonlyArray1<f64>, mu: PyReadonlyArray1<f64>) -> f64 {
-        let y_array = y.as_array().to_owned();
-        let mu_array = mu.as_array().to_owned();
-        self.inner.deviance(&y_array, &mu_array, None)
-    }
-    
-    /// Get the default link function (Identity for Gaussian).
-    fn default_link(&self) -> PyIdentityLink {
-        PyIdentityLink::new()
-    }
-}
-
-/// Poisson family for count data.
-/// 
-/// Use for claim frequency, event counts, etc.
-/// Variance function: V(μ) = μ (variance equals mean)
-#[pyclass(name = "PoissonFamily")]
-#[derive(Clone)]
-pub struct PyPoissonFamily {
-    inner: PoissonFamily,
-}
-
-#[pymethods]
-impl PyPoissonFamily {
-    #[new]
-    fn new() -> Self {
-        Self { inner: PoissonFamily }
-    }
-    
-    fn name(&self) -> &str {
-        self.inner.name()
-    }
-    
-    fn variance<'py>(&self, py: Python<'py>, mu: PyReadonlyArray1<f64>) -> Bound<'py, PyArray1<f64>> {
-        let mu_array = mu.as_array().to_owned();
-        let result = self.inner.variance(&mu_array);
-        result.into_pyarray_bound(py)
-    }
-    
-    fn unit_deviance<'py>(
-        &self,
-        py: Python<'py>,
-        y: PyReadonlyArray1<f64>,
-        mu: PyReadonlyArray1<f64>,
-    ) -> Bound<'py, PyArray1<f64>> {
-        let y_array = y.as_array().to_owned();
-        let mu_array = mu.as_array().to_owned();
-        let result = self.inner.unit_deviance(&y_array, &mu_array);
-        result.into_pyarray_bound(py)
-    }
-    
-    fn deviance(&self, y: PyReadonlyArray1<f64>, mu: PyReadonlyArray1<f64>) -> f64 {
-        let y_array = y.as_array().to_owned();
-        let mu_array = mu.as_array().to_owned();
-        self.inner.deviance(&y_array, &mu_array, None)
-    }
-    
-    fn default_link(&self) -> PyLogLink {
-        PyLogLink::new()
-    }
-}
-
-/// Binomial family for binary/proportion data.
-/// 
-/// Use for logistic regression (yes/no outcomes).
-/// Variance function: V(μ) = μ(1-μ)
-#[pyclass(name = "BinomialFamily")]
-#[derive(Clone)]
-pub struct PyBinomialFamily {
-    inner: BinomialFamily,
-}
-
-#[pymethods]
-impl PyBinomialFamily {
-    #[new]
-    fn new() -> Self {
-        Self { inner: BinomialFamily }
-    }
-    
-    fn name(&self) -> &str {
-        self.inner.name()
-    }
-    
-    fn variance<'py>(&self, py: Python<'py>, mu: PyReadonlyArray1<f64>) -> Bound<'py, PyArray1<f64>> {
-        let mu_array = mu.as_array().to_owned();
-        let result = self.inner.variance(&mu_array);
-        result.into_pyarray_bound(py)
-    }
-    
-    fn unit_deviance<'py>(
-        &self,
-        py: Python<'py>,
-        y: PyReadonlyArray1<f64>,
-        mu: PyReadonlyArray1<f64>,
-    ) -> Bound<'py, PyArray1<f64>> {
-        let y_array = y.as_array().to_owned();
-        let mu_array = mu.as_array().to_owned();
-        let result = self.inner.unit_deviance(&y_array, &mu_array);
-        result.into_pyarray_bound(py)
-    }
-    
-    fn deviance(&self, y: PyReadonlyArray1<f64>, mu: PyReadonlyArray1<f64>) -> f64 {
-        let y_array = y.as_array().to_owned();
-        let mu_array = mu.as_array().to_owned();
-        self.inner.deviance(&y_array, &mu_array, None)
-    }
-    
-    fn default_link(&self) -> PyLogitLink {
-        PyLogitLink::new()
-    }
-}
-
-/// Gamma family for positive continuous data.
-/// 
-/// Use for claim severity, amounts, durations.
-/// Variance function: V(μ) = μ² (constant CV)
-#[pyclass(name = "GammaFamily")]
-#[derive(Clone)]
-pub struct PyGammaFamily {
-    inner: GammaFamily,
-}
-
-#[pymethods]
-impl PyGammaFamily {
-    #[new]
-    fn new() -> Self {
-        Self { inner: GammaFamily }
-    }
-    
-    fn name(&self) -> &str {
-        self.inner.name()
-    }
-    
-    fn variance<'py>(&self, py: Python<'py>, mu: PyReadonlyArray1<f64>) -> Bound<'py, PyArray1<f64>> {
-        let mu_array = mu.as_array().to_owned();
-        let result = self.inner.variance(&mu_array);
-        result.into_pyarray_bound(py)
-    }
-    
-    fn unit_deviance<'py>(
-        &self,
-        py: Python<'py>,
-        y: PyReadonlyArray1<f64>,
-        mu: PyReadonlyArray1<f64>,
-    ) -> Bound<'py, PyArray1<f64>> {
-        let y_array = y.as_array().to_owned();
-        let mu_array = mu.as_array().to_owned();
-        let result = self.inner.unit_deviance(&y_array, &mu_array);
-        result.into_pyarray_bound(py)
-    }
-    
-    fn deviance(&self, y: PyReadonlyArray1<f64>, mu: PyReadonlyArray1<f64>) -> f64 {
-        let y_array = y.as_array().to_owned();
-        let mu_array = mu.as_array().to_owned();
-        self.inner.deviance(&y_array, &mu_array, None)
-    }
-    
-    fn default_link(&self) -> PyLogLink {
-        PyLogLink::new()
-    }
-}
+// Generate simple family wrappers (6 types × ~50 lines = ~300 lines → ~6 lines each)
+impl_py_family!(PyGaussianFamily, "GaussianFamily", GaussianFamily, GaussianFamily, PyIdentityLink);
+impl_py_family!(PyPoissonFamily, "PoissonFamily", PoissonFamily, PoissonFamily, PyLogLink);
+impl_py_family!(PyBinomialFamily, "BinomialFamily", BinomialFamily, BinomialFamily, PyLogitLink);
+impl_py_family!(PyGammaFamily, "GammaFamily", GammaFamily, GammaFamily, PyLogLink);
+impl_py_family!(PyQuasiPoissonFamily, "QuasiPoissonFamily", QuasiPoissonFamily, QuasiPoissonFamily, PyLogLink);
+impl_py_family!(PyQuasiBinomialFamily, "QuasiBinomialFamily", QuasiBinomialFamily, QuasiBinomialFamily, PyLogitLink);
 
 /// Tweedie family for mixed zeros and positive continuous data.
 /// 
@@ -479,126 +292,8 @@ impl PyTweedieFamily {
     }
 }
 
-/// QuasiPoisson family for overdispersed count data.
-///
-/// Uses the same variance function as Poisson (V(μ) = μ) but estimates
-/// the dispersion parameter φ from data instead of fixing it at 1.
-///
-/// This is the simplest approach to handling overdispersion in count data.
-/// Point estimates are identical to Poisson, but standard errors are
-/// inflated by √φ to account for extra variance.
-///
-/// Examples
-/// --------
-/// >>> import rustystats as rs
-/// >>> # Fit QuasiPoisson when Pearson chi²/df >> 1
-/// >>> result = rs.glm("y ~ x1 + x2", data, family="quasipoisson").fit()
-/// >>> print(f"Dispersion: {result.scale():.3f}")  # Estimated φ
-#[pyclass(name = "QuasiPoissonFamily")]
-#[derive(Clone)]
-pub struct PyQuasiPoissonFamily {
-    inner: QuasiPoissonFamily,
-}
-
-#[pymethods]
-impl PyQuasiPoissonFamily {
-    #[new]
-    fn new() -> Self {
-        Self { inner: QuasiPoissonFamily }
-    }
-
-    fn name(&self) -> &str {
-        self.inner.name()
-    }
-
-    fn variance<'py>(&self, py: Python<'py>, mu: PyReadonlyArray1<f64>) -> Bound<'py, PyArray1<f64>> {
-        let mu_array = mu.as_array().to_owned();
-        let result = self.inner.variance(&mu_array);
-        result.into_pyarray_bound(py)
-    }
-
-    fn unit_deviance<'py>(
-        &self,
-        py: Python<'py>,
-        y: PyReadonlyArray1<f64>,
-        mu: PyReadonlyArray1<f64>,
-    ) -> Bound<'py, PyArray1<f64>> {
-        let y_array = y.as_array().to_owned();
-        let mu_array = mu.as_array().to_owned();
-        let result = self.inner.unit_deviance(&y_array, &mu_array);
-        result.into_pyarray_bound(py)
-    }
-
-    fn deviance(&self, y: PyReadonlyArray1<f64>, mu: PyReadonlyArray1<f64>) -> f64 {
-        let y_array = y.as_array().to_owned();
-        let mu_array = mu.as_array().to_owned();
-        self.inner.deviance(&y_array, &mu_array, None)
-    }
-
-    fn default_link(&self) -> PyLogLink {
-        PyLogLink::new()
-    }
-}
-
-/// QuasiBinomial family for overdispersed binary/proportion data.
-///
-/// Uses the same variance function as Binomial (V(μ) = μ(1-μ)) but estimates
-/// the dispersion parameter φ from data instead of fixing it at 1.
-///
-/// Useful when binary outcomes are more variable than Binomial predicts,
-/// which can happen with clustered data or unobserved heterogeneity.
-///
-/// Examples
-/// --------
-/// >>> import rustystats as rs
-/// >>> # Fit QuasiBinomial when data shows overdispersion
-/// >>> result = rs.glm("y ~ x1 + x2", data, family="quasibinomial").fit()
-/// >>> print(f"Dispersion: {result.scale():.3f}")  # Estimated φ
-#[pyclass(name = "QuasiBinomialFamily")]
-#[derive(Clone)]
-pub struct PyQuasiBinomialFamily {
-    inner: QuasiBinomialFamily,
-}
-
-#[pymethods]
-impl PyQuasiBinomialFamily {
-    #[new]
-    fn new() -> Self {
-        Self { inner: QuasiBinomialFamily }
-    }
-
-    fn name(&self) -> &str {
-        self.inner.name()
-    }
-
-    fn variance<'py>(&self, py: Python<'py>, mu: PyReadonlyArray1<f64>) -> Bound<'py, PyArray1<f64>> {
-        let mu_array = mu.as_array().to_owned();
-        let result = self.inner.variance(&mu_array);
-        result.into_pyarray_bound(py)
-    }
-
-    fn unit_deviance<'py>(
-        &self,
-        py: Python<'py>,
-        y: PyReadonlyArray1<f64>,
-        mu: PyReadonlyArray1<f64>,
-    ) -> Bound<'py, PyArray1<f64>> {
-        let y_array = y.as_array().to_owned();
-        let mu_array = mu.as_array().to_owned();
-        let result = self.inner.unit_deviance(&y_array, &mu_array);
-        result.into_pyarray_bound(py)
-    }
-
-    fn deviance(&self, y: PyReadonlyArray1<f64>, mu: PyReadonlyArray1<f64>) -> f64 {
-        let y_array = y.as_array().to_owned();
-        let mu_array = mu.as_array().to_owned();
-        self.inner.deviance(&y_array, &mu_array, None)
-    }
-
-    fn default_link(&self) -> PyLogitLink {
-        PyLogitLink::new()
-    }
-}
+// Parameterized families (Tweedie, NegativeBinomial) are defined manually below
+// as they require constructor arguments.
 
 /// Negative Binomial family for overdispersed count data.
 ///
@@ -742,24 +437,16 @@ pub struct PyGLMResults {
 impl PyGLMResults {
     /// Get the appropriate Family trait object based on family_name.
     /// Used internally by diagnostics and robust SE methods.
+    /// Note: family_name is validated at model creation, so this should never fail.
     fn get_family(&self) -> Box<dyn Family> {
-        match self.family_name.as_str() {
-            "Gaussian" => Box::new(GaussianFamily),
-            "Poisson" => Box::new(PoissonFamily),
-            "Binomial" => Box::new(BinomialFamily),
-            "Gamma" => Box::new(GammaFamily),
-            "QuasiPoisson" => Box::new(QuasiPoissonFamily),
-            "QuasiBinomial" => Box::new(QuasiBinomialFamily),
-            "NegativeBinomial" => Box::new(NegativeBinomialFamily::default()),
-            // Tweedie falls back to Gaussian for now (would need var_power stored)
-            _ => Box::new(GaussianFamily),
-        }
+        family_from_name(&self.family_name)
+            .expect("Invalid family name stored in results - this is a bug")
     }
     
     /// Get prior weights as Option, returning None if all weights are 1.0.
     /// Many functions accept Option<&Array1<f64>> for weights.
     fn maybe_weights(&self) -> Option<&Array1<f64>> {
-        if self.prior_weights.iter().all(|&w| (w - 1.0).abs() < 1e-10) {
+        if self.prior_weights.iter().all(|&w| (w - 1.0).abs() < rustystats_core::constants::ZERO_TOL) {
             None
         } else {
             Some(&self.prior_weights)
@@ -1250,13 +937,7 @@ impl PyGLMResults {
     /// Useful for understanding the fitting process.
     fn resid_working<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         // Determine link from family (using default links)
-        let link: Box<dyn Link> = match self.family_name.as_str() {
-            "Gaussian" => Box::new(IdentityLink),
-            "Poisson" | "QuasiPoisson" | "NegativeBinomial" => Box::new(LogLink),
-            "Binomial" | "QuasiBinomial" => Box::new(LogitLink),
-            "Gamma" => Box::new(LogLink),
-            _ => Box::new(IdentityLink),
-        };
+        let link = default_link_from_family(&self.family_name);
         let resid = resid_working(&self.y, &self.fitted_values, link.as_ref());
         resid.into_pyarray_bound(py)
     }
@@ -1732,14 +1413,14 @@ fn fit_negbinomial_py(
         verbose: false,
     };
 
-    // Get link
-    let link_fn: Box<dyn Link> = match link.unwrap_or("log") {
-        "log" => Box::new(LogLink),
-        "identity" => Box::new(IdentityLink),
-        other => return Err(PyValueError::new_err(format!(
-            "Unknown link '{}' for NegativeBinomial. Use 'log' or 'identity'.", other
-        ))),
-    };
+    // Get link (default to log for NegativeBinomial)
+    let link_name = link.unwrap_or("log");
+    let link_fn = link_from_name(link_name)?;
+    if link_name != "log" && link_name != "identity" {
+        return Err(PyValueError::new_err(format!(
+            "Unknown link '{}' for NegativeBinomial. Use 'log' or 'identity'.", link_name
+        )));
+    }
 
     // Initialize theta using method-of-moments or provided value
     let mut theta = match init_theta {
@@ -2299,6 +1980,8 @@ use rustystats_core::formula;
 ///     - interactions: list[dict] with 'factors' and 'categorical_flags'
 ///     - categorical_vars: list[str]
 ///     - spline_terms: list[dict] with 'var_name', 'spline_type', 'df', 'degree'
+///     - target_encoding_terms: list[dict] with 'var_name', 'prior_weight', 'n_permutations'
+///     - identity_terms: list[dict] with 'expression'
 ///     - has_intercept: bool
 #[pyfunction]
 fn parse_formula_py(formula_str: &str) -> PyResult<std::collections::HashMap<String, pyo3::PyObject>> {
@@ -2354,6 +2037,17 @@ fn parse_formula_py(formula_str: &str) -> PyResult<std::collections::HashMap<Str
             })
             .collect();
         result.insert("target_encoding_terms".to_string(), te_terms.into_py(py));
+        
+        // Convert identity terms (I() expressions)
+        let identity_terms: Vec<_> = parsed.identity_terms
+            .into_iter()
+            .map(|i| {
+                let dict = PyDict::new_bound(py);
+                dict.set_item("expression", i.expression).unwrap();
+                dict.into_py(py)
+            })
+            .collect();
+        result.insert("identity_terms".to_string(), identity_terms.into_py(py));
         
         Ok(result)
     })
@@ -2663,13 +2357,8 @@ fn compute_fit_statistics_py<'py>(
     let df_resid = n_obs.saturating_sub(n_params);
     
     // Compute pearson chi2 based on family
-    let pchi2 = match family.to_lowercase().as_str() {
-        "gaussian" | "normal" => pearson_chi2(&y_arr, &mu_arr, &GaussianFamily, None),
-        "poisson" | "quasipoisson" => pearson_chi2(&y_arr, &mu_arr, &PoissonFamily, None),
-        "binomial" | "quasibinomial" => pearson_chi2(&y_arr, &mu_arr, &BinomialFamily, None),
-        "gamma" => pearson_chi2(&y_arr, &mu_arr, &GammaFamily, None),
-        _ => pearson_chi2(&y_arr, &mu_arr, &PoissonFamily, None),
-    };
+    let fam = family_from_name(family)?;
+    let pchi2 = pearson_chi2(&y_arr, &mu_arr, fam.as_ref(), None);
     
     // Compute log-likelihood based on family
     // Use estimated scale for gaussian
@@ -2806,15 +2495,8 @@ fn compute_pearson_residuals_py<'py>(
 ) -> PyResult<Py<PyArray1<f64>>> {
     let y_arr = y.as_array().to_owned();
     let mu_arr = mu.as_array().to_owned();
-    
-    let resid = match family.to_lowercase().as_str() {
-        "gaussian" | "normal" => resid_pearson(&y_arr, &mu_arr, &GaussianFamily),
-        "poisson" | "quasipoisson" => resid_pearson(&y_arr, &mu_arr, &PoissonFamily),
-        "binomial" | "quasibinomial" => resid_pearson(&y_arr, &mu_arr, &BinomialFamily),
-        "gamma" => resid_pearson(&y_arr, &mu_arr, &GammaFamily),
-        _ => resid_pearson(&y_arr, &mu_arr, &PoissonFamily),
-    };
-    
+    let fam = family_from_name(family)?;
+    let resid = resid_pearson(&y_arr, &mu_arr, fam.as_ref());
     Ok(resid.into_pyarray_bound(py).unbind())
 }
 
@@ -2828,20 +2510,14 @@ fn compute_deviance_residuals_py<'py>(
 ) -> PyResult<Py<PyArray1<f64>>> {
     let y_arr = y.as_array().to_owned();
     let mu_arr = mu.as_array().to_owned();
-    
-    let resid = match family.to_lowercase().as_str() {
-        "gaussian" | "normal" => resid_deviance(&y_arr, &mu_arr, &GaussianFamily),
-        "poisson" | "quasipoisson" => resid_deviance(&y_arr, &mu_arr, &PoissonFamily),
-        "binomial" | "quasibinomial" => resid_deviance(&y_arr, &mu_arr, &BinomialFamily),
-        "gamma" => resid_deviance(&y_arr, &mu_arr, &GammaFamily),
-        _ => resid_deviance(&y_arr, &mu_arr, &PoissonFamily),
-    };
-    
+    let fam = family_from_name(family)?;
+    let resid = resid_deviance(&y_arr, &mu_arr, fam.as_ref());
     Ok(resid.into_pyarray_bound(py).unbind())
 }
 
 /// Compute null deviance from Rust
 #[pyfunction]
+#[pyo3(signature = (y, family, exposure=None))]
 fn compute_null_deviance_py(
     y: PyReadonlyArray1<f64>,
     family: &str,
@@ -2863,48 +2539,8 @@ fn compute_unit_deviance_py<'py>(
 ) -> PyResult<Py<PyArray1<f64>>> {
     let y_arr = y.as_array().to_owned();
     let mu_arr = mu.as_array().to_owned();
-    
-    // Compute unit deviance based on family
-    let unit_dev: Array1<f64> = match family.to_lowercase().as_str() {
-        "gaussian" | "normal" => {
-            y_arr.iter().zip(mu_arr.iter()).map(|(yi, mi)| (yi - mi).powi(2)).collect()
-        }
-        "poisson" | "quasipoisson" => {
-            y_arr.iter().zip(mu_arr.iter()).map(|(yi, mi)| {
-                let y_safe = yi.max(0.0);
-                let mu_safe = mi.max(1e-10);
-                if y_safe == 0.0 {
-                    2.0 * mu_safe
-                } else {
-                    2.0 * (y_safe * (y_safe / mu_safe).ln() - (y_safe - mu_safe))
-                }
-            }).collect()
-        }
-        "binomial" | "quasibinomial" => {
-            y_arr.iter().zip(mu_arr.iter()).map(|(yi, mi)| {
-                let mu_clip = mi.max(1e-10).min(1.0 - 1e-10);
-                let mut dev = 0.0;
-                if *yi > 0.0 {
-                    dev += 2.0 * yi * (yi / mu_clip).ln();
-                }
-                if *yi < 1.0 {
-                    dev += 2.0 * (1.0 - yi) * ((1.0 - yi) / (1.0 - mu_clip)).ln();
-                }
-                dev
-            }).collect()
-        }
-        "gamma" => {
-            y_arr.iter().zip(mu_arr.iter()).map(|(yi, mi)| {
-                let y_safe = yi.max(1e-10);
-                let mu_safe = mi.max(1e-10);
-                2.0 * ((y_safe - mu_safe) / mu_safe - (y_safe / mu_safe).ln())
-            }).collect()
-        }
-        _ => {
-            y_arr.iter().zip(mu_arr.iter()).map(|(yi, mi)| (yi - mi).powi(2)).collect()
-        }
-    };
-    
+    let fam = family_from_name(family)?;
+    let unit_dev = fam.unit_deviance(&y_arr, &mu_arr);
     Ok(unit_dev.into_pyarray_bound(py).unbind())
 }
 

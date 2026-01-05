@@ -50,6 +50,7 @@
 
 use ndarray::Array1;
 use crate::links::{Link, LogLink};
+use crate::constants::MU_MIN_POSITIVE;
 use super::Family;
 
 /// Negative Binomial family for overdispersed count data.
@@ -142,7 +143,7 @@ impl Family for NegativeBinomialFamily {
         ndarray::Zip::from(y)
             .and(mu)
             .map_collect(|&yi, &mui| {
-                let mui_safe = mui.max(1e-10);
+                let mui_safe = mui.max(MU_MIN_POSITIVE);
                 
                 if yi == 0.0 {
                     // When y = 0: 2θ × log((μ+θ)/θ)

@@ -22,6 +22,13 @@ pub struct TargetEncodingTermSpec {
     pub n_permutations: usize,
 }
 
+/// Parsed identity term specification for I() expressions
+/// I() protects expressions from formula interpretation, e.g., I(x**2) for polynomial
+#[derive(Debug, Clone, PartialEq)]
+pub struct IdentityTermSpec {
+    pub expression: String,  // The raw expression inside I(), e.g., "x**2" or "x + y"
+}
+
 /// Parsed interaction term
 #[derive(Debug, Clone, PartialEq)]
 pub struct InteractionTerm {
@@ -38,6 +45,7 @@ pub struct ParsedFormula {
     pub categorical_vars: HashSet<String>,
     pub spline_terms: Vec<SplineTerm>,
     pub target_encoding_terms: Vec<TargetEncodingTermSpec>,
+    pub identity_terms: Vec<IdentityTermSpec>,
     pub has_intercept: bool,
 }
 
@@ -76,16 +84,18 @@ fn parse_target_encoding_term(term: &str) -> Option<TargetEncodingTermSpec> {
             let value = part[eq_pos + 1..].trim();
             match key {
                 "prior_weight" | "pw" => {
-                    if let Ok(v) = value.parse() {
-                        prior_weight = v;
-                    }
+                    prior_weight = value.parse().unwrap_or_else(|_| {
+                        panic!("Invalid prior_weight value '{}' in TE() - expected a number", value)
+                    });
                 }
                 "n_permutations" | "nperm" => {
-                    if let Ok(v) = value.parse() {
-                        n_permutations = v;
-                    }
+                    n_permutations = value.parse().unwrap_or_else(|_| {
+                        panic!("Invalid n_permutations value '{}' in TE() - expected an integer", value)
+                    });
                 }
-                _ => {}
+                other => {
+                    panic!("Unknown argument '{}' in TE(). Supported: prior_weight (pw), n_permutations (nperm)", other)
+                }
             }
         }
     }
@@ -95,6 +105,31 @@ fn parse_target_encoding_term(term: &str) -> Option<TargetEncodingTermSpec> {
         prior_weight,
         n_permutations,
     })
+}
+
+/// Parse an identity term like "I(x**2)" or "I(x + y)"
+/// The I() function protects expressions from formula interpretation
+fn parse_identity_term(term: &str) -> Option<IdentityTermSpec> {
+    let term = term.trim();
+    
+    // Check if starts with I(
+    if !term.starts_with("I(") {
+        return None;
+    }
+    
+    // Find matching parenthesis
+    let start = term.find('(')?;
+    let end = term.rfind(')')?;
+    if end <= start {
+        return None;
+    }
+    
+    let expression = term[start + 1..end].trim().to_string();
+    if expression.is_empty() {
+        return None;
+    }
+    
+    Some(IdentityTermSpec { expression })
 }
 
 /// Parse a spline term like "bs(age, df=5)" or "ns(income, df=4)"
@@ -136,20 +171,24 @@ fn parse_spline_term(term: &str) -> Option<SplineTerm> {
             let value = part[eq_pos + 1..].trim();
             match key {
                 "df" => {
-                    if let Ok(v) = value.parse() {
-                        df = v;
-                    }
+                    df = value.parse().unwrap_or_else(|_| {
+                        panic!("Invalid df value '{}' in {}() - expected an integer", value, spline_type)
+                    });
                 }
                 "degree" => {
-                    if let Ok(v) = value.parse() {
-                        degree = v;
-                    }
+                    degree = value.parse().unwrap_or_else(|_| {
+                        panic!("Invalid degree value '{}' in {}() - expected an integer", value, spline_type)
+                    });
                 }
-                _ => {}
+                other => {
+                    panic!("Unknown argument '{}' in {}(). Supported: df, degree", other, spline_type)
+                }
             }
         } else if let Ok(v) = part.parse::<usize>() {
             // Positional argument assumed to be df
             df = v;
+        } else {
+            panic!("Invalid argument '{}' in {}() - expected 'key=value' or a number for df", part, spline_type)
         }
     }
     
@@ -206,6 +245,27 @@ fn clean_var_name(term: &str) -> String {
     } else {
         term.to_string()
     }
+}
+
+/// Check if a term looks like an unsupported function call.
+/// Returns Some(function_name) if unsupported, None if it's a valid term.
+fn check_unsupported_function(term: &str) -> Option<String> {
+    let term = term.trim();
+    
+    // Check if it looks like a function call: name(...)
+    if let Some(paren_pos) = term.find('(') {
+        if term.ends_with(')') {
+            let func_name = term[..paren_pos].trim();
+            
+            // Skip supported functions
+            let supported = ["C", "bs", "ns", "TE", "I"];
+            if !supported.contains(&func_name) && !func_name.is_empty() {
+                // This looks like an unsupported function call
+                return Some(func_name.to_string());
+            }
+        }
+    }
+    None
 }
 
 /// Check if term is categorical
@@ -282,8 +342,26 @@ pub fn parse_formula(formula: &str) -> Result<ParsedFormula, String> {
     let mut interactions = Vec::new();
     let mut spline_terms = Vec::new();
     let mut target_encoding_terms = Vec::new();
+    let mut identity_terms = Vec::new();
     
     for term in terms {
+        // Check for unsupported function-like terms FIRST before any other processing
+        // This catches things like I(), poly(), log() that look like function calls
+        if let Some(func_name) = check_unsupported_function(&term) {
+            return Err(format!(
+                "Unsupported function '{}()' in formula term '{}'. \
+                Supported functions are: C() for categorical, bs() for B-splines, \
+                ns() for natural splines, TE() for target encoding.",
+                func_name, term
+            ));
+        }
+        
+        // Check for identity term (I() for polynomial/transformation expressions)
+        if let Some(identity) = parse_identity_term(&term) {
+            identity_terms.push(identity);
+            continue;
+        }
+        
         // Check for target encoding term
         if let Some(te_term) = parse_target_encoding_term(&term) {
             target_encoding_terms.push(te_term);
@@ -348,6 +426,7 @@ pub fn parse_formula(formula: &str) -> Result<ParsedFormula, String> {
         categorical_vars,
         spline_terms,
         target_encoding_terms,
+        identity_terms,
         has_intercept,
     })
 }
@@ -437,5 +516,47 @@ mod tests {
         assert_eq!(parsed.spline_terms.len(), 1);
         assert!(parsed.categorical_vars.contains("region"));
         assert_eq!(parsed.main_effects, vec!["region"]);
+    }
+
+    #[test]
+    fn test_unsupported_function_error() {
+        // poly() is an R function - not supported
+        let result = parse_formula("y ~ poly(age, 2) + x");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("Unsupported function 'poly()'"));
+        
+        // log() transformation - not supported in formula syntax
+        let result = parse_formula("y ~ log(income) + age");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("Unsupported function 'log()'"));
+    }
+
+    #[test]
+    fn test_parse_identity_term() {
+        // I() for polynomial terms
+        let parsed = parse_formula("y ~ I(x ** 2) + age").unwrap();
+        assert_eq!(parsed.identity_terms.len(), 1);
+        assert_eq!(parsed.identity_terms[0].expression, "x ** 2");
+        assert_eq!(parsed.main_effects, vec!["age"]);
+        
+        // Multiple I() terms
+        let parsed = parse_formula("y ~ I(x ** 2) + I(x ** 3) + z").unwrap();
+        assert_eq!(parsed.identity_terms.len(), 2);
+        assert_eq!(parsed.identity_terms[0].expression, "x ** 2");
+        assert_eq!(parsed.identity_terms[1].expression, "x ** 3");
+        
+        // I() with addition inside (protected from formula interpretation)
+        let parsed = parse_formula("y ~ I(a + b)").unwrap();
+        assert_eq!(parsed.identity_terms.len(), 1);
+        assert_eq!(parsed.identity_terms[0].expression, "a + b");
+        
+        // I() combined with other term types
+        let parsed = parse_formula("y ~ I(DrivAge ** 2) + bs(VehAge, df=4) + C(Region)").unwrap();
+        assert_eq!(parsed.identity_terms.len(), 1);
+        assert_eq!(parsed.identity_terms[0].expression, "DrivAge ** 2");
+        assert_eq!(parsed.spline_terms.len(), 1);
+        assert!(parsed.categorical_vars.contains("Region"));
     }
 }

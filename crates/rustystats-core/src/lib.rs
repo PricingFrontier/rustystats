@@ -27,6 +27,7 @@
 // =============================================================================
 
 // Declare our modules - each is in its own file or folder
+pub mod constants;
 pub mod error;
 pub mod families;
 pub mod inference;

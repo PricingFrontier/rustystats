@@ -51,6 +51,10 @@ use ndarray::{Array1, Array2};
 use rayon::prelude::*;
 use nalgebra::{DMatrix, DVector};
 
+use crate::constants::{
+    CONVERGENCE_TOL, MIN_IRLS_WEIGHT, DEFAULT_MAX_ITER, ZERO_TOL,
+    MU_MIN_POSITIVE, MU_MIN_PROBABILITY, MU_MAX_PROBABILITY,
+};
 use crate::error::{RustyStatsError, Result};
 use crate::families::Family;
 use crate::links::Link;
@@ -88,9 +92,9 @@ pub struct IRLSConfig {
 impl Default for IRLSConfig {
     fn default() -> Self {
         Self {
-            max_iterations: 25,
-            tolerance: 1e-8,
-            min_weight: 1e-10,
+            max_iterations: DEFAULT_MAX_ITER,
+            tolerance: CONVERGENCE_TOL,
+            min_weight: MIN_IRLS_WEIGHT,
             verbose: false,
         }
     }
@@ -411,7 +415,7 @@ pub fn fit_glm_full(
         deviance = family.deviance(y, &mu, Some(&prior_weights_vec));
 
         // Relative change in deviance
-        let rel_change = if deviance_old.abs() > 1e-10 {
+        let rel_change = if deviance_old.abs() > ZERO_TOL {
             (deviance_old - deviance).abs() / deviance_old.abs()
         } else {
             (deviance_old - deviance).abs()
@@ -664,7 +668,7 @@ pub fn fit_glm_regularized(
         deviance_old = deviance;
         deviance = family.deviance(y, &mu, Some(&prior_weights_vec));
 
-        let rel_change = if deviance_old.abs() > 1e-10 {
+        let rel_change = if deviance_old.abs() > ZERO_TOL {
             (deviance_old - deviance).abs() / deviance_old.abs()
         } else {
             (deviance_old - deviance).abs()
@@ -805,7 +809,12 @@ fn solve_weighted_least_squares(
             match xtx.clone().lu().solve(&xtz) {
                 Some(sol) => {
                     let coef_array: Array1<f64> = sol.iter().copied().collect();
-                    let xtx_inv = xtx.try_inverse().unwrap_or_else(|| DMatrix::zeros(p, p));
+                    let xtx_inv = xtx.try_inverse().ok_or_else(|| {
+                        RustyStatsError::LinearAlgebraError(
+                            "Failed to compute covariance matrix - X'WX is not invertible. \
+                             This often indicates multicollinearity in predictors.".to_string()
+                        )
+                    })?;
                     let mut cov_array = Array2::zeros((p, p));
                     for i in 0..p {
                         for j in 0..p {
@@ -942,7 +951,12 @@ fn solve_weighted_least_squares_penalized(
                 Some(sol) => {
                     // LU worked for solve, try inverse
                     let coef_array: Array1<f64> = sol.iter().copied().collect();
-                    let xtx_inv = xtx.try_inverse().unwrap_or_else(|| DMatrix::zeros(p, p));
+                    let xtx_inv = xtx.try_inverse().ok_or_else(|| {
+                        RustyStatsError::LinearAlgebraError(
+                            "Failed to compute covariance matrix - X'WX is not invertible. \
+                             This often indicates multicollinearity in predictors.".to_string()
+                        )
+                    })?;
                     let mut cov_array = Array2::zeros((p, p));
                     for i in 0..p {
                         for j in 0..p {
@@ -1020,8 +1034,8 @@ fn initialize_mu_safe(y: &Array1<f64>, family: &dyn Family) -> Array1<f64> {
 fn clamp_mu(mu: &Array1<f64>, family: &dyn Family) -> Array1<f64> {
     let name = family.name();
     mu.mapv(|x| match name {
-        "Poisson" | "Gamma" => x.max(1e-10), // Must be positive
-        "Binomial" => x.max(1e-10).min(1.0 - 1e-10), // Must be in (0, 1)
+        "Poisson" | "Gamma" => x.max(MU_MIN_POSITIVE), // Must be positive
+        "Binomial" => x.max(MU_MIN_PROBABILITY).min(MU_MAX_PROBABILITY), // Must be in (0, 1)
         _ => x, // Gaussian allows any value
     })
 }

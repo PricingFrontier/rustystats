@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import dataclass, field, asdict
+from functools import cached_property
 
 # Import Rust diagnostics functions
 from rustystats._rustystats import (
@@ -289,6 +290,116 @@ def _to_dict_recursive(obj) -> Any:
 
 
 # =============================================================================
+# Focused Diagnostic Components
+# =============================================================================
+#
+# Each component handles a specific type of diagnostic computation.
+# DiagnosticsComputer coordinates these components to produce unified output.
+# =============================================================================
+
+class _ResidualComputer:
+    """Computes and caches residuals."""
+    
+    def __init__(self, y: np.ndarray, mu: np.ndarray, family: str, exposure: np.ndarray):
+        self.y = y
+        self.mu = mu
+        self.family = family
+        self.exposure = exposure
+        self._pearson = None
+        self._deviance = None
+        self._null_dev = None
+    
+    @property
+    def pearson(self) -> np.ndarray:
+        if self._pearson is None:
+            self._pearson = np.asarray(_rust_pearson_residuals(self.y, self.mu, self.family))
+        return self._pearson
+    
+    @property
+    def deviance(self) -> np.ndarray:
+        if self._deviance is None:
+            self._deviance = np.asarray(_rust_deviance_residuals(self.y, self.mu, self.family))
+        return self._deviance
+    
+    @property
+    def null_deviance(self) -> float:
+        if self._null_dev is None:
+            self._null_dev = _rust_null_deviance(self.y, self.family, self.exposure)
+        return self._null_dev
+    
+    def unit_deviance(self, y: np.ndarray, mu: np.ndarray) -> np.ndarray:
+        return np.asarray(_rust_unit_deviance(y, mu, self.family))
+
+
+class _CalibrationComputer:
+    """Computes calibration metrics."""
+    
+    def __init__(self, y: np.ndarray, mu: np.ndarray, exposure: np.ndarray):
+        self.y = y
+        self.mu = mu
+        self.exposure = exposure
+    
+    def compute(self, n_bins: int = 10) -> Dict[str, Any]:
+        actual_total = float(np.sum(self.y))
+        predicted_total = float(np.sum(self.mu))
+        exposure_total = float(np.sum(self.exposure))
+        ae_ratio = actual_total / predicted_total if predicted_total > 0 else float('nan')
+        
+        bins = self._compute_bins(n_bins)
+        hl_stat, hl_pvalue = self._hosmer_lemeshow(n_bins)
+        
+        return {
+            "actual_expected_ratio": ae_ratio,
+            "actual_total": actual_total,
+            "predicted_total": predicted_total,
+            "exposure_total": exposure_total,
+            "calibration_error": abs(1 - ae_ratio) if not np.isnan(ae_ratio) else float('nan'),
+            "by_decile": [asdict(b) for b in bins],
+            "hosmer_lemeshow_statistic": hl_stat,
+            "hosmer_lemeshow_pvalue": hl_pvalue,
+        }
+    
+    def _compute_bins(self, n_bins: int) -> List[CalibrationBin]:
+        rust_bins = _rust_calibration_curve(self.y, self.mu, self.exposure, n_bins)
+        return [
+            CalibrationBin(
+                bin_index=b["bin_index"], predicted_lower=b["predicted_lower"],
+                predicted_upper=b["predicted_upper"], predicted_mean=b["predicted_mean"],
+                actual_mean=b["actual_mean"], actual_expected_ratio=b["actual_expected_ratio"],
+                count=b["count"], exposure=b["exposure"], actual_sum=b["actual_sum"],
+                predicted_sum=b["predicted_sum"], ae_confidence_interval_lower=b["ae_ci_lower"],
+                ae_confidence_interval_upper=b["ae_ci_upper"],
+            )
+            for b in rust_bins
+        ]
+    
+    def _hosmer_lemeshow(self, n_bins: int) -> tuple:
+        result = _rust_hosmer_lemeshow(self.y, self.mu, n_bins)
+        return result["chi2_statistic"], result["pvalue"]
+
+
+class _DiscriminationComputer:
+    """Computes discrimination metrics."""
+    
+    def __init__(self, y: np.ndarray, mu: np.ndarray, exposure: np.ndarray):
+        self.y = y
+        self.mu = mu
+        self.exposure = exposure
+    
+    def compute(self) -> Dict[str, Any]:
+        stats = _rust_discrimination_stats(self.y, self.mu, self.exposure)
+        lorenz_points = _rust_lorenz_curve(self.y, self.mu, self.exposure, 20)
+        return {
+            "gini_coefficient": stats["gini"],
+            "auc": stats["auc"],
+            "ks_statistic": stats["ks_statistic"],
+            "lift_at_10pct": stats["lift_at_10pct"],
+            "lift_at_20pct": stats["lift_at_20pct"],
+            "lorenz_curve": lorenz_points,
+        }
+
+
+# =============================================================================
 # Main Diagnostics Computation
 # =============================================================================
 
@@ -296,8 +407,8 @@ class DiagnosticsComputer:
     """
     Computes comprehensive model diagnostics.
     
-    This class is instantiated with fitted model results and computes
-    all diagnostics on demand with caching for efficiency.
+    Coordinates focused component classes to produce unified diagnostics output.
+    All results are cached for efficiency.
     """
     
     def __init__(
@@ -327,38 +438,27 @@ class DiagnosticsComputer:
         self.n_obs = len(y)
         self.df_resid = self.n_obs - n_params
         
-        # Cached computations
-        self._pearson_residuals: Optional[np.ndarray] = None
-        self._deviance_residuals: Optional[np.ndarray] = None
-        self._null_deviance: Optional[float] = None
+        # Initialize focused components
+        self._residuals = _ResidualComputer(self.y, self.mu, self.family, self.exposure)
+        self._calibration = _CalibrationComputer(self.y, self.mu, self.exposure)
+        self._discrimination = _DiscriminationComputer(self.y, self.mu, self.exposure)
     
     @property
     def pearson_residuals(self) -> np.ndarray:
-        """Pearson residuals using Rust backend."""
-        if self._pearson_residuals is None:
-            self._pearson_residuals = np.asarray(_rust_pearson_residuals(self.y, self.mu, self.family))
-        return self._pearson_residuals
+        return self._residuals.pearson
     
     @property
     def deviance_residuals(self) -> np.ndarray:
-        """Deviance residuals using Rust backend."""
-        if self._deviance_residuals is None:
-            self._deviance_residuals = np.asarray(_rust_deviance_residuals(self.y, self.mu, self.family))
-        return self._deviance_residuals
+        return self._residuals.deviance
     
     @property
     def null_deviance(self) -> float:
-        """Null deviance using Rust backend."""
-        if self._null_deviance is None:
-            self._null_deviance = _rust_null_deviance(self.y, self.family, self.exposure)
-        return self._null_deviance
+        return self._residuals.null_deviance
     
     def _compute_unit_deviance(self, y: np.ndarray, mu: np.ndarray) -> np.ndarray:
-        """Compute unit deviance using Rust backend."""
-        return np.asarray(_rust_unit_deviance(y, mu, self.family))
+        return self._residuals.unit_deviance(y, mu)
     
     def _compute_loss(self, y: np.ndarray, mu: np.ndarray, weights: Optional[np.ndarray] = None) -> float:
-        """Compute family-specific loss."""
         unit_dev = self._compute_unit_deviance(y, mu)
         if weights is not None:
             return np.average(unit_dev, weights=weights)
@@ -383,65 +483,12 @@ class DiagnosticsComputer:
         }
     
     def compute_calibration(self, n_bins: int = 10) -> Dict[str, Any]:
-        """Compute calibration metrics using Rust backend."""
-        actual_total = float(np.sum(self.y))
-        predicted_total = float(np.sum(self.mu))
-        exposure_total = float(np.sum(self.exposure))
-        ae_ratio = actual_total / predicted_total if predicted_total > 0 else float('nan')
-        
-        bins = self._compute_calibration_bins(n_bins)
-        hl_stat, hl_pvalue = self._hosmer_lemeshow_test(n_bins)
-        
-        return {
-            "actual_expected_ratio": ae_ratio,
-            "actual_total": actual_total,
-            "predicted_total": predicted_total,
-            "exposure_total": exposure_total,
-            "calibration_error": abs(1 - ae_ratio) if not np.isnan(ae_ratio) else float('nan'),
-            "by_decile": [asdict(b) for b in bins],
-            "hosmer_lemeshow_statistic": hl_stat,
-            "hosmer_lemeshow_pvalue": hl_pvalue,
-        }
-    
-    def _compute_calibration_bins(self, n_bins: int) -> List[CalibrationBin]:
-        """Compute calibration bins using Rust backend."""
-        rust_bins = _rust_calibration_curve(self.y, self.mu, self.exposure, n_bins)
-        return [
-            CalibrationBin(
-                bin_index=b["bin_index"],
-                predicted_lower=b["predicted_lower"],
-                predicted_upper=b["predicted_upper"],
-                predicted_mean=b["predicted_mean"],
-                actual_mean=b["actual_mean"],
-                actual_expected_ratio=b["actual_expected_ratio"],
-                count=b["count"],
-                exposure=b["exposure"],
-                actual_sum=b["actual_sum"],
-                predicted_sum=b["predicted_sum"],
-                ae_confidence_interval_lower=b["ae_ci_lower"],
-                ae_confidence_interval_upper=b["ae_ci_upper"],
-            )
-            for b in rust_bins
-        ]
-    
-    def _hosmer_lemeshow_test(self, n_bins: int = 10) -> tuple:
-        """Compute Hosmer-Lemeshow test using Rust backend."""
-        result = _rust_hosmer_lemeshow(self.y, self.mu, n_bins)
-        return result["chi2_statistic"], result["pvalue"]
+        """Compute calibration metrics using focused component."""
+        return self._calibration.compute(n_bins)
     
     def compute_discrimination(self) -> Optional[Dict[str, Any]]:
-        """Compute discrimination metrics using Rust backend."""
-        stats = _rust_discrimination_stats(self.y, self.mu, self.exposure)
-        lorenz_points = _rust_lorenz_curve(self.y, self.mu, self.exposure, 20)
-        
-        return {
-            "gini_coefficient": stats["gini"],
-            "auc": stats["auc"],
-            "ks_statistic": stats["ks_statistic"],
-            "lift_at_10pct": stats["lift_at_10pct"],
-            "lift_at_20pct": stats["lift_at_20pct"],
-            "lorenz_curve": lorenz_points,
-        }
+        """Compute discrimination metrics using focused component."""
+        return self._discrimination.compute()
     
     def compute_residual_summary(self) -> Dict[str, ResidualSummary]:
         """Compute residual summary statistics using Rust backend."""

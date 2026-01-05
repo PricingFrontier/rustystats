@@ -105,11 +105,9 @@ def summary(
         lines.append(f"{'Scale:':<20} {scale:<15.4f} {'Alpha (λ):':<20} {result.alpha:>10.4f}")
         l1_val = result.l1_ratio if result.l1_ratio is not None else 0.0
         lines.append(f"{'L1 Ratio:':<20} {l1_val:<15.2f} {'Iterations:':<20} {result.iterations:>10}")
-        try:
-            n_nonzero = result.n_nonzero()
-            lines.append(f"{'Non-zero coefs:':<20} {n_nonzero:<15}")
-        except Exception:
-            pass
+        # n_nonzero should always be available for regularized models
+        n_nonzero = result.n_nonzero()
+        lines.append(f"{'Non-zero coefs:':<20} {n_nonzero:<15}")
     else:
         lines.append(f"{'Method:':<20} {'IRLS':<15} {'Df Model:':<20} {result.df_model:>10}")
         lines.append(f"{'Scale:':<20} {scale:<15.4f} {'Iterations:':<20} {result.iterations:>10}")
