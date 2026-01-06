@@ -59,10 +59,13 @@ RustyStats uses significantly less RAM by reusing buffers and avoiding Python ob
 
 ## Features
 
-- **Fast** - Parallel computation in Rust
-- **Complete** - Families, regularization, inference, diagnostics
-- **Flexible** - R-style formulas with interactions and splines
-- **Minimal** - Core requires only `numpy` and `polars`
+- **Fast** - Parallel Rust backend, 4-30x faster than statsmodels
+- **Memory Efficient** - 4x less RAM than statsmodels at scale
+- **Stable** - Step-halving IRLS, warm starts for robust convergence
+- **Splines** - B-splines `bs()` and natural splines `ns()` in formulas
+- **Regularisation** - Ridge, Lasso, and Elastic Net penalties
+- **Complete** - 7 families, robust SEs, full diagnostics
+- **Minimal** - Only `numpy` and `polars` required
 
 ## Installation
 
