@@ -596,5 +596,4 @@ let new_coef = if j < pen_start {
 ## Next Steps
 
 - [Regularization Theory](regularization.md) — Ridge, Lasso, Elastic Net penalties
-- [Cross-Validation](../guides/glm-workflow.md#step-7-regularization-for-variable-selection) — Choosing optimal λ
 - [IRLS Algorithm](irls.md) — The unpenalized solver

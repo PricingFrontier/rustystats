@@ -59,8 +59,6 @@ plugins:
 
 nav:
   - Home: index.md
-  - Guides:
-    - GLM Workflow: guides/glm-workflow.md
   - Getting Started:
     - Installation: getting-started/installation.md
     - Quick Start: getting-started/quickstart.md
@@ -88,10 +86,8 @@ nav:
     - Diagnostics: components/diagnostics.md
     - Interaction Detection: components/interaction-detection.md
   - Python API:
-    - Array API: api/array-api.md
     - Formula API: api/formula-api.md
     - Results Object: api/results.md
-    - Regularization: api/regularization.md
     - Diagnostics: api/diagnostics.md
   - Rust Guide:
     - Rust Fundamentals: rust-guide/fundamentals.md

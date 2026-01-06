@@ -387,6 +387,5 @@ result = rs.glm(
 
 ## Next Steps
 
-- [GLM Workflow Guide](../guides/glm-workflow.md) — Using target encoding in practice
 - [Formula API](../api/formula-api.md) — TE() syntax in formulas
 - [Code Walkthrough](../rust-guide/code-walkthrough.md) — Implementation details
