@@ -66,7 +66,7 @@ This documentation is organized for maintainers who may be new to Rust and/or GL
 ### Advanced Features
 - **Regularization** - Ridge, Lasso, Elastic Net with cross-validation
 - **Splines** - B-splines and natural splines for non-linear effects
-- **Target Encoding** - CatBoost-style encoding for high-cardinality categoricals
+- **Target Encoding** - Encoding for high-cardinality categoricals
 - **Robust Standard Errors** - HC0, HC1, HC2, HC3 sandwich estimators
 - **Model Diagnostics** - Calibration, discrimination, residual analysis
 
@@ -100,7 +100,7 @@ rustystats/
 │   │       ├── formula/        # Formula parsing
 │   │       ├── design_matrix/  # Design matrix construction
 │   │       ├── regularization/ # Lasso, Ridge, Elastic Net
-│   │       ├── target_encoding/# CatBoost-style encoding
+│   │       ├── target_encoding/# Ordered target encoding
 │   │       └── interactions/   # Interaction term handling
 │   │
 │   └── rustystats/             # Python bindings (PyO3)

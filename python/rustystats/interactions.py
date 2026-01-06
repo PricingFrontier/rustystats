@@ -511,7 +511,7 @@ class InteractionBuilder:
         """
         Build target-encoded column for a categorical variable.
         
-        Uses CatBoost-style ordered target statistics to prevent target leakage.
+        Uses ordered target statistics to prevent target leakage.
         
         Parameters
         ----------

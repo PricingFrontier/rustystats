@@ -14,7 +14,7 @@ pub struct SplineTerm {
     pub degree: usize,
 }
 
-/// Parsed target encoding term specification (CatBoost-style)
+/// Parsed target encoding term specification
 #[derive(Debug, Clone, PartialEq)]
 pub struct TargetEncodingTermSpec {
     pub var_name: String,

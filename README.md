@@ -4,23 +4,64 @@
 
 Built for actuarial applications. Fits 678K rows in ~1 second.
 
+**Documentation**: [pricingfrontier.github.io/rustystats/](https://pricingfrontier.github.io/rustystats/)
+
+## Performance Benchmarks
+
+**RustyStats vs Statsmodels** — Synthetic data, 101 features (10 continuous + 10 categorical with 10 levels each).
+
+| Family | 10K rows | 250K rows | 500K rows |
+|--------|----------|-----------|-----------|
+| Gaussian | **15.6x** | **5.7x** | **4.3x** |
+| Poisson | **16.3x** | **6.2x** | **4.2x** |
+| Binomial | **19.5x** | **6.8x** | **4.4x** |
+| Gamma | **33.7x** | **13.4x** | **8.4x** |
+| NegBinomial | **26.7x** | **6.7x** | **5.0x** |
+| Ridge | **5.0x** | **1.4x** | 0.9x |
+
+**Average speedup: 9.5x** (range: 0.9x – 33.7x)
+
+<details>
+<summary>Full benchmark details</summary>
+
+| Family | Rows | RustyStats | Statsmodels | Speedup |
+|--------|------|------------|-------------|---------|
+| Gaussian | 10,000 | 0.100s | 1.559s | **15.6x** |
+| Gaussian | 250,000 | 1.991s | 11.363s | **5.7x** |
+| Gaussian | 500,000 | 4.023s | 17.386s | **4.3x** |
+| Poisson | 10,000 | 0.165s | 2.692s | **16.3x** |
+| Poisson | 250,000 | 2.429s | 15.072s | **6.2x** |
+| Poisson | 500,000 | 5.668s | 23.693s | **4.2x** |
+| Binomial | 10,000 | 0.112s | 2.189s | **19.5x** |
+| Binomial | 250,000 | 1.946s | 13.155s | **6.8x** |
+| Binomial | 500,000 | 4.708s | 20.862s | **4.4x** |
+| Gamma | 10,000 | 0.129s | 4.353s | **33.7x** |
+| Gamma | 250,000 | 2.385s | 31.885s | **13.4x** |
+| Gamma | 500,000 | 5.499s | 46.167s | **8.4x** |
+| NegBinomial | 10,000 | 0.119s | 3.177s | **26.7x** |
+| NegBinomial | 250,000 | 2.281s | 15.278s | **6.7x** |
+| NegBinomial | 500,000 | 4.821s | 24.331s | **5.0x** |
+| Ridge | 10,000 | 0.110s | 0.551s | **5.0x** |
+| Ridge | 250,000 | 1.716s | 2.393s | **1.4x** |
+| Ridge | 500,000 | 4.083s | 3.769s | 0.9x |
+
+*Times are median of 3 runs. Benchmark scripts in `benchmarks/`.*
+
+</details>
+
+---
+
 ## Features
 
-- **Fast** — Parallel IRLS solver in Rust (Rayon)
-- **Complete** — Families, regularization, inference, diagnostics
-- **Flexible** — R-style formulas with interactions and splines
-- **Minimal** — Core requires only `numpy` and `polars`
+- **Fast** - Parallel computation in Rust
+- **Complete** - Families, regularization, inference, diagnostics
+- **Flexible** - R-style formulas with interactions and splines
+- **Minimal** - Core requires only `numpy` and `polars`
 
 ## Installation
 
 ```bash
-# Development install
-git clone https://github.com/PricingFrontier/rustystats.git
-cd rustystats
-uv run maturin develop --release
-
-# Run tests
-uv run pytest tests/python/
+uv add rustystats
 ```
 
 ## Quick Start
@@ -42,7 +83,6 @@ result = rs.glm(
 
 # View results
 print(result.summary())
-print(result.relativities())  # exp(coef) for pricing
 ```
 
 ---
@@ -97,7 +137,6 @@ result.bse()               # Standard errors
 result.tvalues()           # z-statistics
 result.pvalues()           # P-values
 result.conf_int(alpha)     # Confidence intervals
-result.significance_codes()# *, **, *** markers
 
 # Robust Standard Errors (sandwich estimators)
 result.bse_robust("HC1")   # Robust SE (HC0, HC1, HC2, HC3)
@@ -285,7 +324,7 @@ test_encoded = encoder.transform(test_categories)
 ```
 
 **Key benefits:**
-- **No target leakage**: CatBoost-style ordered target statistics
+- **No target leakage**: Ordered target statistics
 - **Regularization**: Prior weight controls shrinkage toward global mean
 - **High-cardinality**: Single column instead of thousands of dummies
 
@@ -373,7 +412,7 @@ rustystats/
 │   │       ├── splines/          # B-spline and natural spline basis functions
 │   │       ├── design_matrix/    # Categorical encoding, interaction matrices
 │   │       ├── formula/          # R-style formula parsing
-│   │       ├── target_encoding/  # CatBoost-style ordered target statistics
+│   │       ├── target_encoding/  # Ordered target statistics
 │   │       └── diagnostics/      # Residuals, dispersion, AIC/BIC, calibration, loss
 │   │
 │   └── rustystats/               # Python bindings (PyO3)
@@ -383,7 +422,7 @@ rustystats/
 │   ├── __init__.py               # Main exports
 │   ├── formula.py                # Formula API with DataFrame support
 │   ├── splines.py                # bs() and ns() spline basis functions
-│   ├── target_encoding.py        # CatBoost-style target encoding
+│   ├── target_encoding.py        # Target encoding
 │   ├── diagnostics.py            # Model diagnostics with JSON export
 │   └── families.py               # Family wrappers
 │

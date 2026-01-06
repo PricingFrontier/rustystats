@@ -1257,6 +1257,18 @@ fn fit_glm_py(
             }
         }
         "gamma" => {
+            // Gamma requires y > 0 (strictly positive)
+            let n_invalid = y_array.iter().filter(|&&v| v <= 0.0).count();
+            if n_invalid > 0 {
+                return Err(PyValueError::new_err(format!(
+                    "Gamma family requires strictly positive response values (y > 0). \
+                     Found {} values <= 0 out of {} observations. \
+                     For severity modeling, filter to only records with claims: \
+                     data.filter(pl.col('ClaimAmount') > 0)",
+                    n_invalid, y_array.len()
+                )));
+            }
+            
             let fam = GammaFamily;
             match link.unwrap_or("log") {
                 "log" => fit_model!(&fam, &LogLink),
@@ -1849,12 +1861,12 @@ fn multiply_matrix_by_continuous_py<'py>(
 }
 
 // =============================================================================
-// Target Encoding (CatBoost-style Ordered Target Statistics)
+// Target Encoding (Ordered Target Statistics)
 // =============================================================================
 
 use rustystats_core::target_encoding;
 
-/// Target encode categorical variables using CatBoost-style ordered target statistics.
+/// Target encode categorical variables using ordered target statistics.
 ///
 /// This encoding prevents target leakage during training by computing statistics
 /// using only "past" observations in a random permutation order.
@@ -2597,7 +2609,7 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Add formula parsing
     m.add_function(wrap_pyfunction!(parse_formula_py, m)?)?;
     
-    // Add target encoding (CatBoost-style)
+    // Add target encoding
     m.add_function(wrap_pyfunction!(target_encode_py, m)?)?;
     m.add_function(wrap_pyfunction!(apply_target_encoding_py, m)?)?;
     

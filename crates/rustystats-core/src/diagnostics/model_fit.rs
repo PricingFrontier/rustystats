@@ -35,7 +35,7 @@
 
 use ndarray::Array1;
 use std::f64::consts::PI;
-use crate::constants::{MU_MIN_PROBABILITY, MU_MAX_PROBABILITY};
+use crate::constants::{MU_MIN_PROBABILITY, MU_MAX_PROBABILITY, MU_MIN_POSITIVE};
 
 // =============================================================================
 // Log-Likelihood Functions
@@ -191,6 +191,7 @@ pub fn log_likelihood_gamma(
     weights: Option<&Array1<f64>>,
 ) -> f64 {
     use statrs::function::gamma::ln_gamma;
+    use crate::constants::MU_MIN_POSITIVE;
     
     // shape α = 1/scale = 1/φ
     let alpha = 1.0 / scale;
@@ -198,12 +199,17 @@ pub fn log_likelihood_gamma(
     let contributions: Array1<f64> = ndarray::Zip::from(y)
         .and(mu)
         .map_collect(|&yi, &mui| {
+            // Floor y and mu to prevent log(0) issues
+            // Note: Gamma requires y > 0, but we handle zeros gracefully
+            let yi_safe = yi.max(MU_MIN_POSITIVE);
+            let mui_safe = mui.max(MU_MIN_POSITIVE);
+            
             // Full Gamma log-likelihood (statsmodels formula):
             // ℓ_i = (α-1)·log(y) - α·y/μ + α·log(α/μ) - log(Γ(α))
             //     = (α-1)·log(y) - α·y/μ + α·log(α) - α·log(μ) - log(Γ(α))
-            let ll = (alpha - 1.0) * yi.ln()
-                   - alpha * yi / mui
-                   + alpha * (alpha / mui).ln()
+            let ll = (alpha - 1.0) * yi_safe.ln()
+                   - alpha * yi_safe / mui_safe
+                   + alpha * (alpha / mui_safe).ln()
                    - ln_gamma(alpha);
             ll
         });
@@ -330,11 +336,14 @@ pub fn null_deviance(
         }
         "gamma" => {
             // 2 × [(y - μ)/μ - log(y/μ)]
+            // Floor y to prevent log(0) issues
             ndarray::Zip::from(y)
                 .and(&mu_null)
                 .map_collect(|&yi, &mui| {
-                    let ratio = yi / mui;
-                    2.0 * ((yi - mui) / mui - ratio.ln())
+                    let yi_safe = yi.max(MU_MIN_POSITIVE);
+                    let mui_safe = mui.max(MU_MIN_POSITIVE);
+                    let ratio = yi_safe / mui_safe;
+                    2.0 * ((yi_safe - mui_safe) / mui_safe - ratio.ln())
                 })
         }
         other => {

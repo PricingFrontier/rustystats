@@ -1,5 +1,5 @@
 // =============================================================================
-// TARGET ENCODING (CATBOOST-STYLE ORDERED TARGET STATISTICS)
+// TARGET ENCODING (ORDERED TARGET STATISTICS)
 // =============================================================================
 //
 // Implements CatBoost's ordered target statistics for categorical encoding.
@@ -67,7 +67,7 @@ impl Default for TargetEncodingConfig {
     }
 }
 
-/// Compute ordered target statistics encoding (CatBoost-style).
+/// Compute ordered target statistics encoding.
 ///
 /// For training data: uses ordered statistics to prevent target leakage.
 /// Multiple random permutations are averaged to reduce variance.
