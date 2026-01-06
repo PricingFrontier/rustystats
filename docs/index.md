@@ -14,7 +14,7 @@ RustyStats is a statistical modeling library designed for actuarial and data sci
 | **Performance (678K rows)** | ~1 second | ~5-10 seconds |
 
 ## Quick Example
-it_g
+
 ```python
 import rustystats as rs
 import polars as pl

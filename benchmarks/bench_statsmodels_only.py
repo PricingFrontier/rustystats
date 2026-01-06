@@ -1,8 +1,10 @@
 """Statsmodels-only benchmark."""
 import time
+import threading
 import numpy as np
 import pandas as pd
 import gc
+import psutil
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -64,6 +66,38 @@ def time_fn(func, n_runs=3):
     return np.median(times)
 
 
+def measure_memory(func):
+    """Measure peak memory usage during function execution in MB.
+    
+    Tracks total process RSS.
+    Baseline is taken after data generation, before model fitting.
+    """
+    process = psutil.Process()
+    gc.collect()
+    
+    # Baseline memory after data is ready
+    baseline = process.memory_info().rss
+    peak_mem = baseline
+    stop_flag = threading.Event()
+    
+    def monitor():
+        nonlocal peak_mem
+        while not stop_flag.is_set():
+            current = process.memory_info().rss
+            peak_mem = max(peak_mem, current)
+            time.sleep(0.01)  # Sample every 10ms
+    
+    monitor_thread = threading.Thread(target=monitor)
+    monitor_thread.start()
+    
+    func()
+    
+    stop_flag.set()
+    monitor_thread.join()
+    
+    return (peak_mem - baseline) / (1024 * 1024)  # Convert to MB
+
+
 SM_FAMILIES = {
     "gaussian": Gaussian(),
     "poisson": Poisson(),
@@ -92,35 +126,36 @@ def main():
             X, y = generate_data(n_rows, family)
             sm_family = SM_FAMILIES[family]
             
-            t = time_fn(lambda: sm.GLM(y, X, family=sm_family).fit())
+            fit_fn = lambda: sm.GLM(y, X, family=sm_family).fit()
+            t = time_fn(fit_fn)
+            mem = measure_memory(fit_fn)
             
-            results[family].append((n_rows, t))
-            print(f"{t:.3f}s")
+            results[family].append((n_rows, t, mem))
+            print(f"{t:.3f}s, {mem:.1f}MB")
             
             del X, y
             gc.collect()
     
-    # Ridge
-    print(f"\nRIDGE")
-    results["ridge"] = []
-    for n_rows in SIZES:
-        print(f"  n={n_rows:,}...", end=" ", flush=True)
-        X, y = generate_data(n_rows, "gaussian")
-        t = time_fn(lambda: sm.GLM(y, X, family=Gaussian()).fit_regularized(alpha=0.1, L1_wt=0.0))
-        results["ridge"].append((n_rows, t))
-        print(f"{t:.3f}s")
-        del X, y
-        gc.collect()
-    
     print("\n" + "=" * 50)
     print("STATSMODELS RESULTS")
     print("=" * 50)
-    print("\n| Family | 10K | 250K | 500K |")
+    
+    print("\n### Time")
+    print("| Family | 10K | 250K | 500K |")
     print("|--------|-----|------|------|")
-    for family in families + ["ridge"]:
+    for family in families:
         row = f"| {family.capitalize()} |"
-        for _, t in results[family]:
+        for _, t, _ in results[family]:
             row += f" {t:.3f}s |"
+        print(row)
+    
+    print("\n### Peak Memory")
+    print("| Family | 10K | 250K | 500K |")
+    print("|--------|-----|------|------|")
+    for family in families:
+        row = f"| {family.capitalize()} |"
+        for _, _, mem in results[family]:
+            row += f" {mem:.0f}MB |"
         print(row)
     
     # Save results
@@ -129,12 +164,21 @@ def main():
         f.write("=" * 30 + "\n")
         f.write(f"Features: {N_CONTINUOUS} continuous + {N_CATEGORICAL} categorical\n")
         f.write("Total columns after encoding: 101\n\n")
+        f.write("### Time\n")
         f.write("| Family | 10K | 250K | 500K |\n")
         f.write("|--------|-----|------|------|\n")
-        for family in families + ["ridge"]:
+        for family in families:
             row = f"| {family.capitalize()} |"
-            for _, t in results[family]:
+            for _, t, _ in results[family]:
                 row += f" {t:.3f}s |"
+            f.write(row + "\n")
+        f.write("\n### Peak Memory\n")
+        f.write("| Family | 10K | 250K | 500K |\n")
+        f.write("|--------|-----|------|------|\n")
+        for family in families:
+            row = f"| {family.capitalize()} |"
+            for _, _, mem in results[family]:
+                row += f" {mem:.0f}MB |"
             f.write(row + "\n")
     
     print("\nResults saved to benchmarks/statsmodels_results.txt")

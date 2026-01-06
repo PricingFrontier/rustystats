@@ -15,9 +15,20 @@
 | Binomial | **19.5x** | **6.8x** | **4.4x** |
 | Gamma | **33.7x** | **13.4x** | **8.4x** |
 | NegBinomial | **26.7x** | **6.7x** | **5.0x** |
-| Ridge | **5.0x** | **1.4x** | 0.9x |
 
-**Average speedup: 9.5x** (range: 0.9x – 33.7x)
+**Average speedup: 10.5x** (range: 4.2x – 33.7x)
+
+### Memory Usage
+
+RustyStats uses significantly less RAM by reusing buffers and avoiding Python object overhead:
+
+| Rows | RustyStats | Statsmodels | Reduction |
+|------|------------|-------------|-----------|
+| 10K | 38 MB | 72 MB | **1.9x** |
+| 250K | 460 MB | 1,796 MB | **3.9x** |
+| 500K | 836 MB | 3,590 MB | **4.3x** |
+
+*Memory advantage grows with data size — at 500K rows, RustyStats uses ~4x less RAM.*
 
 <details>
 <summary>Full benchmark details</summary>
@@ -39,9 +50,6 @@
 | NegBinomial | 10,000 | 0.119s | 3.177s | **26.7x** |
 | NegBinomial | 250,000 | 2.281s | 15.278s | **6.7x** |
 | NegBinomial | 500,000 | 4.821s | 24.331s | **5.0x** |
-| Ridge | 10,000 | 0.110s | 0.551s | **5.0x** |
-| Ridge | 250,000 | 1.716s | 2.393s | **1.4x** |
-| Ridge | 500,000 | 4.083s | 3.769s | 0.9x |
 
 *Times are median of 3 runs. Benchmark scripts in `benchmarks/`.*
 

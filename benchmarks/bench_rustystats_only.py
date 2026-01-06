@@ -1,8 +1,10 @@
-"""RustyStats-only benchmark to isolate crash source."""
+"""RustyStats-only benchmark."""
 import time
+import threading
 import numpy as np
 import polars as pl
 import gc
+import psutil
 
 import rustystats as rs
 
@@ -55,6 +57,38 @@ def time_fn(func, n_runs=3):
     return np.median(times)
 
 
+def measure_memory(func):
+    """Measure peak memory usage during function execution in MB.
+    
+    Tracks total process RSS (includes Rust allocations).
+    Baseline is taken after data generation, before model fitting.
+    """
+    process = psutil.Process()
+    gc.collect()
+    
+    # Baseline memory after data is ready
+    baseline = process.memory_info().rss
+    peak_mem = baseline
+    stop_flag = threading.Event()
+    
+    def monitor():
+        nonlocal peak_mem
+        while not stop_flag.is_set():
+            current = process.memory_info().rss
+            peak_mem = max(peak_mem, current)
+            time.sleep(0.01)  # Sample every 10ms
+    
+    monitor_thread = threading.Thread(target=monitor)
+    monitor_thread.start()
+    
+    func()
+    
+    stop_flag.set()
+    monitor_thread.join()
+    
+    return (peak_mem - baseline) / (1024 * 1024)  # Convert to MB
+
+
 def main():
     families = ["gaussian", "poisson", "binomial", "gamma", "negbinomial"]
     results = {}
@@ -73,37 +107,40 @@ def main():
             df = generate_data(n_rows, family)
             
             if family == "negbinomial":
-                t = time_fn(lambda: rs.glm(FORMULA, data=df, family=family, theta=2.0).fit())
+                fit_fn = lambda: rs.glm(FORMULA, data=df, family=family, theta=2.0).fit()
             else:
-                t = time_fn(lambda: rs.glm(FORMULA, data=df, family=family).fit())
+                fit_fn = lambda: rs.glm(FORMULA, data=df, family=family).fit()
             
-            results[family].append((n_rows, t))
-            print(f"{t:.3f}s")
+            t = time_fn(fit_fn)
+            mem = measure_memory(fit_fn)
+            
+            results[family].append((n_rows, t, mem))
+            print(f"{t:.3f}s, {mem:.1f}MB")
             
             del df
             gc.collect()
     
-    # Ridge
-    print(f"\nRIDGE")
-    results["ridge"] = []
-    for n_rows in SIZES:
-        print(f"  n={n_rows:,}...", end=" ", flush=True)
-        df = generate_data(n_rows, "gaussian")
-        t = time_fn(lambda: rs.glm(FORMULA, data=df, family="gaussian").fit(alpha=0.1, l1_ratio=0.0))
-        results["ridge"].append((n_rows, t))
-        print(f"{t:.3f}s")
-        del df
-        gc.collect()
     
     print("\n" + "=" * 50)
     print("RUSTYSTATS RESULTS")
     print("=" * 50)
-    print("\n| Family | 10K | 250K | 500K |")
+    
+    print("\n### Time")
+    print("| Family | 10K | 250K | 500K |")
     print("|--------|-----|------|------|")
-    for family in families + ["ridge"]:
+    for family in families:
         row = f"| {family.capitalize()} |"
-        for _, t in results[family]:
+        for _, t, _ in results[family]:
             row += f" {t:.3f}s |"
+        print(row)
+    
+    print("\n### Peak Memory")
+    print("| Family | 10K | 250K | 500K |")
+    print("|--------|-----|------|------|")
+    for family in families:
+        row = f"| {family.capitalize()} |"
+        for _, _, mem in results[family]:
+            row += f" {mem:.0f}MB |"
         print(row)
     
     print("\nRustyStats benchmark complete. Now run bench_statsmodels_only.py")

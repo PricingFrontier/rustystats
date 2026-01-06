@@ -53,6 +53,7 @@ dev = [
     "maturin>=1.4",
     "jupyter>=1.0",
     "pyarrow>=14.0",
+    "psutil>=5.9",  # For memory benchmarking
 ]
 
 [project.urls]

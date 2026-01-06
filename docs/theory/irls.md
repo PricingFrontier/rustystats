@@ -271,7 +271,10 @@ $$
 
 !!! note "Constant Weights"
     For Gamma + Log, the weights are constant! This is because $V(\mu) = \mu^2$ and $g'(\mu) = 1/\mu$, so:
-    $$w = \frac{1}{\mu^2 \cdot (1/\mu)^2} = 1$$
+    
+    $$
+    w = \frac{1}{\mu^2 \cdot (1/\mu)^2} = 1
+    $$
 
 ### 4.3 Why "Reweighted"?
 
@@ -301,7 +304,9 @@ Let's trace through IRLS by hand for a tiny Poisson regression problem.
 **Model**: $\log(\mu_i) = \beta_0 + \beta_1 x_i$
 
 **Design matrix**: 
-$$\mathbf{X} = \begin{pmatrix} 1 & 0 \\ 1 & 1 \\ 1 & 2 \end{pmatrix}$$
+$$
+\mathbf{X} = \begin{pmatrix} 1 & 0 \\ 1 & 1 \\ 1 & 2 \end{pmatrix}
+$$
 
 **Link function**: $g(\mu) = \log(\mu)$, so $g'(\mu) = 1/\mu$ and $g^{-1}(\eta) = e^\eta$
 
@@ -311,10 +316,14 @@ $$\mathbf{X} = \begin{pmatrix} 1 & 0 \\ 1 & 1 \\ 1 & 2 \end{pmatrix}$$
 
 Initialize $\mu_i$ from the data (common choice: $\mu_i^{(0)} = y_i + 0.1$ to avoid $\log(0)$):
 
-$$\boldsymbol{\mu}^{(0)} = \begin{pmatrix} 1.1 \\ 4.1 \\ 7.1 \end{pmatrix}$$
+$$
+\boldsymbol{\mu}^{(0)} = \begin{pmatrix} 1.1 \\ 4.1 \\ 7.1 \end{pmatrix}
+$$
 
 Compute initial linear predictor:
-$$\boldsymbol{\eta}^{(0)} = \log(\boldsymbol{\mu}^{(0)}) = \begin{pmatrix} 0.095 \\ 1.411 \\ 1.960 \end{pmatrix}$$
+$$
+\boldsymbol{\eta}^{(0)} = \log(\boldsymbol{\mu}^{(0)}) = \begin{pmatrix} 0.095 \\ 1.411 \\ 1.960 \end{pmatrix}
+$$
 
 We could solve for initial $\boldsymbol{\beta}^{(0)}$ by WLS, but let's just proceed to iteration 1.
 
@@ -322,57 +331,99 @@ We could solve for initial $\boldsymbol{\beta}^{(0)}$ by WLS, but let's just pro
 
 **Step 1: Compute weights**
 
-$$w_i = \frac{1}{V(\mu_i)[g'(\mu_i)]^2} = \frac{1}{\mu_i \cdot (1/\mu_i)^2} = \mu_i$$
+$$
+w_i = \frac{1}{V(\mu_i)[g'(\mu_i)]^2} = \frac{1}{\mu_i \cdot (1/\mu_i)^2} = \mu_i
+$$
 
-$$\mathbf{W}^{(0)} = \text{diag}(1.1, 4.1, 7.1)$$
+$$
+\mathbf{W}^{(0)} = \text{diag}(1.1, 4.1, 7.1)
+$$
 
 **Step 2: Compute working response**
 
-$$z_i = \eta_i + (y_i - \mu_i) g'(\mu_i) = \eta_i + \frac{y_i - \mu_i}{\mu_i}$$
+$$
+z_i = \eta_i + (y_i - \mu_i) g'(\mu_i) = \eta_i + \frac{y_i - \mu_i}{\mu_i}
+$$
 
-$$z_1 = 0.095 + \frac{1 - 1.1}{1.1} = 0.095 - 0.091 = 0.004$$
-$$z_2 = 1.411 + \frac{4 - 4.1}{4.1} = 1.411 - 0.024 = 1.387$$
-$$z_3 = 1.960 + \frac{7 - 7.1}{7.1} = 1.960 - 0.014 = 1.946$$
+$$
+z_1 = 0.095 + \frac{1 - 1.1}{1.1} = 0.095 - 0.091 = 0.004
+$$
 
-$$\mathbf{z}^{(0)} = \begin{pmatrix} 0.004 \\ 1.387 \\ 1.946 \end{pmatrix}$$
+$$
+z_2 = 1.411 + \frac{4 - 4.1}{4.1} = 1.411 - 0.024 = 1.387
+$$
+
+$$
+z_3 = 1.960 + \frac{7 - 7.1}{7.1} = 1.960 - 0.014 = 1.946
+$$
+
+$$
+\mathbf{z}^{(0)} = \begin{pmatrix} 0.004 \\ 1.387 \\ 1.946 \end{pmatrix}
+$$
 
 **Step 3: Compute $\mathbf{X}^T\mathbf{W}\mathbf{X}$**
 
-$$\mathbf{X}^T\mathbf{W}\mathbf{X} = \begin{pmatrix} 1 & 1 & 1 \\ 0 & 1 & 2 \end{pmatrix} \begin{pmatrix} 1.1 & 0 & 0 \\ 0 & 4.1 & 0 \\ 0 & 0 & 7.1 \end{pmatrix} \begin{pmatrix} 1 & 0 \\ 1 & 1 \\ 1 & 2 \end{pmatrix}$$
+$$
+\mathbf{X}^T\mathbf{W}\mathbf{X} = \begin{pmatrix} 1 & 1 & 1 \\ 0 & 1 & 2 \end{pmatrix} \begin{pmatrix} 1.1 & 0 & 0 \\ 0 & 4.1 & 0 \\ 0 & 0 & 7.1 \end{pmatrix} \begin{pmatrix} 1 & 0 \\ 1 & 1 \\ 1 & 2 \end{pmatrix}
+$$
 
-$$= \begin{pmatrix} 1.1 & 4.1 & 7.1 \\ 0 & 4.1 & 14.2 \end{pmatrix} \begin{pmatrix} 1 & 0 \\ 1 & 1 \\ 1 & 2 \end{pmatrix} = \begin{pmatrix} 12.3 & 18.3 \\ 18.3 & 32.5 \end{pmatrix}$$
+$$
+= \begin{pmatrix} 1.1 & 4.1 & 7.1 \\ 0 & 4.1 & 14.2 \end{pmatrix} \begin{pmatrix} 1 & 0 \\ 1 & 1 \\ 1 & 2 \end{pmatrix} = \begin{pmatrix} 12.3 & 18.3 \\ 18.3 & 32.5 \end{pmatrix}
+$$
 
 **Step 4: Compute $\mathbf{X}^T\mathbf{W}\mathbf{z}$**
 
-$$\mathbf{X}^T\mathbf{W}\mathbf{z} = \begin{pmatrix} 1.1 & 4.1 & 7.1 \\ 0 & 4.1 & 14.2 \end{pmatrix} \begin{pmatrix} 0.004 \\ 1.387 \\ 1.946 \end{pmatrix} = \begin{pmatrix} 19.51 \\ 33.32 \end{pmatrix}$$
+$$
+\mathbf{X}^T\mathbf{W}\mathbf{z} = \begin{pmatrix} 1.1 & 4.1 & 7.1 \\ 0 & 4.1 & 14.2 \end{pmatrix} \begin{pmatrix} 0.004 \\ 1.387 \\ 1.946 \end{pmatrix} = \begin{pmatrix} 19.51 \\ 33.32 \end{pmatrix}
+$$
 
 **Step 5: Solve for $\boldsymbol{\beta}^{(1)}$**
 
-$$\boldsymbol{\beta}^{(1)} = (\mathbf{X}^T\mathbf{W}\mathbf{X})^{-1} \mathbf{X}^T\mathbf{W}\mathbf{z}$$
+$$
+\boldsymbol{\beta}^{(1)} = (\mathbf{X}^T\mathbf{W}\mathbf{X})^{-1} \mathbf{X}^T\mathbf{W}\mathbf{z}
+$$
 
 First, compute the inverse:
-$$(\mathbf{X}^T\mathbf{W}\mathbf{X})^{-1} = \frac{1}{12.3 \times 32.5 - 18.3^2} \begin{pmatrix} 32.5 & -18.3 \\ -18.3 & 12.3 \end{pmatrix}$$
+$$
+(\mathbf{X}^T\mathbf{W}\mathbf{X})^{-1} = \frac{1}{12.3 \times 32.5 - 18.3^2} \begin{pmatrix} 32.5 & -18.3 \\ -18.3 & 12.3 \end{pmatrix}
+$$
 
-$$= \frac{1}{64.86} \begin{pmatrix} 32.5 & -18.3 \\ -18.3 & 12.3 \end{pmatrix} = \begin{pmatrix} 0.501 & -0.282 \\ -0.282 & 0.190 \end{pmatrix}$$
+$$
+= \frac{1}{64.86} \begin{pmatrix} 32.5 & -18.3 \\ -18.3 & 12.3 \end{pmatrix} = \begin{pmatrix} 0.501 & -0.282 \\ -0.282 & 0.190 \end{pmatrix}
+$$
 
 Then:
-$$\boldsymbol{\beta}^{(1)} = \begin{pmatrix} 0.501 & -0.282 \\ -0.282 & 0.190 \end{pmatrix} \begin{pmatrix} 19.51 \\ 33.32 \end{pmatrix} = \begin{pmatrix} 0.38 \\ 0.83 \end{pmatrix}$$
+$$
+\boldsymbol{\beta}^{(1)} = \begin{pmatrix} 0.501 & -0.282 \\ -0.282 & 0.190 \end{pmatrix} \begin{pmatrix} 19.51 \\ 33.32 \end{pmatrix} = \begin{pmatrix} 0.38 \\ 0.83 \end{pmatrix}
+$$
 
 **Step 6: Update linear predictor and means**
 
-$$\boldsymbol{\eta}^{(1)} = \mathbf{X}\boldsymbol{\beta}^{(1)} = \begin{pmatrix} 0.38 \\ 1.21 \\ 2.04 \end{pmatrix}$$
+$$
+\boldsymbol{\eta}^{(1)} = \mathbf{X}\boldsymbol{\beta}^{(1)} = \begin{pmatrix} 0.38 \\ 1.21 \\ 2.04 \end{pmatrix}
+$$
 
-$$\boldsymbol{\mu}^{(1)} = e^{\boldsymbol{\eta}^{(1)}} = \begin{pmatrix} 1.46 \\ 3.35 \\ 7.69 \end{pmatrix}$$
+$$
+\boldsymbol{\mu}^{(1)} = e^{\boldsymbol{\eta}^{(1)}} = \begin{pmatrix} 1.46 \\ 3.35 \\ 7.69 \end{pmatrix}
+$$
 
 **Step 7: Compute deviance**
 
-$$D = 2\sum_i [y_i \log(y_i/\mu_i) - (y_i - \mu_i)]$$
+$$
+D = 2\sum_i [y_i \log(y_i/\mu_i) - (y_i - \mu_i)]
+$$
 
-$$= 2[(1)\log(1/1.46) - (1-1.46) + (4)\log(4/3.35) - (4-3.35) + (7)\log(7/7.69) - (7-7.69)]$$
+$$
+= 2[(1)\log(1/1.46) - (1-1.46) + (4)\log(4/3.35) - (4-3.35) + (7)\log(7/7.69) - (7-7.69)]
+$$
 
-$$= 2[(-0.378 + 0.46) + (0.716 - 0.65) + (-0.661 + 0.69)]$$
+$$
+= 2[(-0.378 + 0.46) + (0.716 - 0.65) + (-0.661 + 0.69)]
+$$
 
-$$= 2[0.082 + 0.066 + 0.029] = 0.354$$
+$$
+= 2[0.082 + 0.066 + 0.029] = 0.354
+$$
 
 ### 5.4 Iteration 2 (Summary)
 
@@ -388,7 +439,9 @@ Repeating with $\boldsymbol{\mu}^{(1)}$:
 
 ### 5.5 Final Results
 
-$$\hat{\beta}_0 = 0.38, \quad \hat{\beta}_1 = 0.83$$
+$$
+\hat{\beta}_0 = 0.38, \quad \hat{\beta}_1 = 0.83
+$$
 
 Interpretation: Each unit increase in $x$ multiplies the expected count by $e^{0.83} \approx 2.29$.
 
@@ -757,7 +810,9 @@ Key insights:
 !!! question "Exercise 2: Working Response"
     For Poisson with log link, show that the working response can be written as:
     
-    $$z_i = \log(\mu_i) + \frac{y_i - \mu_i}{\mu_i} = \log(\mu_i) + \frac{y_i}{\mu_i} - 1$$
+    $$
+    z_i = \log(\mu_i) + \frac{y_i - \mu_i}{\mu_i} = \log(\mu_i) + \frac{y_i}{\mu_i} - 1
+    $$
     
     Interpret this: what happens when $y_i = \mu_i$ (perfect prediction)?
 

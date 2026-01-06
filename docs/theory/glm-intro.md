@@ -49,7 +49,9 @@ $$
 !!! info "Matrix Multiplication Refresher"
     The product $\mathbf{X}\boldsymbol{\beta}$ gives an $n \times 1$ vector where each element is:
     
-    $$(\mathbf{X}\boldsymbol{\beta})_i = \sum_{j=0}^{p-1} X_{ij} \beta_j = \beta_0 + \beta_1 x_{i1} + \cdots$$
+    $$
+    (\mathbf{X}\boldsymbol{\beta})_i = \sum_{j=0}^{p-1} X_{ij} \beta_j = \beta_0 + \beta_1 x_{i1} + \cdots
+    $$
     
     This is exactly the linear combination we want.
 
@@ -813,7 +815,9 @@ We've built up GLMs from first principles:
 !!! question "Exercise 2: Exponential Family - Gamma Distribution"
     The Gamma PDF is:
     
-    $$f(y; \mu, \nu) = \frac{1}{\Gamma(\nu)}\left(\frac{\nu}{\mu}\right)^\nu y^{\nu-1} e^{-\nu y/\mu}$$
+    $$
+    f(y; \mu, \nu) = \frac{1}{\Gamma(\nu)}\left(\frac{\nu}{\mu}\right)^\nu y^{\nu-1} e^{-\nu y/\mu}
+    $$
     
     where $\nu$ is the shape parameter.
     

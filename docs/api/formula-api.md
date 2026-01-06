@@ -163,8 +163,7 @@ result.summary()
 result.coef_table()
 
 # Relativities (exp(coef) for log-link models)
-result.relativities()
-result.relativities_table()  # As DataFrame
+result.relativities()  # Returns DataFrame
 ```
 
 ### summary()
@@ -215,26 +214,17 @@ print(table)
 
 ### relativities()
 
-Get multiplicative effects (exp(coef)) for log-link models:
+Get multiplicative effects (exp(coef)) for log-link models as a DataFrame:
 
 ```python
 rel = result.relativities()
-# Returns array: [exp(β0), exp(β1), ...]
 ```
 
-### relativities_table()
-
-Get relativities as formatted DataFrame:
-
-```python
-table = result.relativities_table()
-```
-
-| feature | coef | relativity | ci_lower | ci_upper |
-|---------|------|------------|----------|----------|
-| Intercept | 0.523 | 1.687 | 1.526 | 1.868 |
-| C(region)_B | -0.234 | 0.791 | 0.722 | 0.868 |
-| ... | ... | ... | ... | ... |
+| Feature | Relativity | CI_Lower | CI_Upper |
+|---------|------------|----------|----------|
+| Intercept | 1.687 | 1.526 | 1.868 |
+| C(region)_B | 0.791 | 0.722 | 0.868 |
+| ... | ... | ... | ... |
 
 ---
 
@@ -257,17 +247,17 @@ predictions = result.predict(new_data)
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `data` | DataFrame | New data with same columns as training |
-| `type` | str | `"response"` (default) or `"link"` |
+| `new_data` | DataFrame | New data with same columns as training |
+| `offset` | str or array | Offset for predictions (optional) |
 
 ### Example
 
 ```python
-# Predict on response scale (default)
-mu = result.predict(new_data)
+# Predict on response scale (μ = E[Y])
+predictions = result.predict(new_data)
 
-# Predict on link scale (linear predictor)
-eta = result.predict(new_data, type="link")
+# With custom offset
+predictions = result.predict(new_data, offset="Exposure")
 ```
 
 ---
