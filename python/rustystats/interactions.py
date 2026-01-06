@@ -589,20 +589,28 @@ class InteractionBuilder:
         te_term: TargetEncodingTermSpec,
         target: np.ndarray,
         seed: Optional[int] = None,
+        exposure: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, str, dict]:
         """
         Build target-encoded column for a categorical variable.
         
         Uses ordered target statistics to prevent target leakage.
         
+        For frequency models with exposure, uses claim rate (target/exposure)
+        instead of raw counts to produce more meaningful encoded values.
+        
         Parameters
         ----------
         te_term : TargetEncodingTermSpec
             Target encoding term specification
         target : np.ndarray
-            Target variable values
+            Target variable values (e.g., ClaimCount)
         seed : int, optional
             Random seed for reproducibility
+        exposure : np.ndarray, optional
+            Exposure values. If provided, target encoding uses rate (target/exposure)
+            instead of raw target values. This prevents collapse to near-constant
+            values for low-frequency count data.
             
         Returns
         -------
@@ -616,16 +624,29 @@ class InteractionBuilder:
         col = self.data[te_term.var_name].to_numpy()
         categories = [str(v) for v in col]
         
+        # Use rate (target/exposure) for encoding when exposure is available
+        # This prevents near-constant encoded values for low-frequency count data
+        if exposure is not None:
+            encoding_target = (target / np.maximum(exposure, 1e-10)).astype(np.float64)
+        else:
+            encoding_target = target.astype(np.float64)
+        
         encoded, name, prior, stats = _target_encode_rust(
             categories,
-            target.astype(np.float64),
+            encoding_target,
             te_term.var_name,
             te_term.prior_weight,
             te_term.n_permutations,
             seed,
         )
         
-        return encoded, name, {'prior': prior, 'stats': stats, 'prior_weight': te_term.prior_weight}
+        # Store whether we used rate encoding for prediction
+        return encoded, name, {
+            'prior': prior, 
+            'stats': stats, 
+            'prior_weight': te_term.prior_weight,
+            'used_rate_encoding': exposure is not None,
+        }
     
     def _build_identity_columns(
         self,
@@ -734,6 +755,7 @@ class InteractionBuilder:
     def build_design_matrix(
         self,
         formula: str,
+        exposure: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, np.ndarray, List[str]]:
         """
         Build complete design matrix from formula.
@@ -742,6 +764,10 @@ class InteractionBuilder:
         ----------
         formula : str
             R-style formula like "y ~ x1*x2 + C(cat) + bs(age, df=5)"
+        exposure : np.ndarray, optional
+            Exposure values. If provided, target encoding (TE) will use
+            rate (y/exposure) instead of raw y values. This is important
+            for frequency models to prevent TE values collapsing to near-constant.
             
         Returns
         -------
@@ -796,9 +822,12 @@ class InteractionBuilder:
         
         # Add target encoding terms (CatBoost-style)
         # Store stats for prediction on new data
+        # When exposure is provided, use rate (y/exposure) for encoding
         self._te_stats: Dict[str, dict] = {}
         for te_term in parsed.target_encoding_terms:
-            te_col, te_name, te_stats = self._build_target_encoding_columns(te_term, y)
+            te_col, te_name, te_stats = self._build_target_encoding_columns(
+                te_term, y, exposure=exposure
+            )
             columns.append(te_col.reshape(-1, 1))
             names.append(te_name)
             self._te_stats[te_term.var_name] = te_stats

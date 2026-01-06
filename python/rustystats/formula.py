@@ -124,17 +124,24 @@ class FormulaGLM:
         self._offset_spec = offset
         self._weights_spec = weights
         
+        # Extract raw exposure for target encoding BEFORE building design matrix
+        # For frequency models with log link, offset is typically log(exposure)
+        # but target encoding needs raw exposure to compute claim rates
+        raw_exposure = self._get_raw_exposure(offset)
+        
         # Build design matrix (uses optimized backend for interactions)
-        # Keep the builder for prediction on new data
+        # Pass raw exposure so target encoding can use rate (y/exposure) instead of raw y
         self._builder = InteractionBuilder(data)
-        self.y, self.X, self.feature_names = self._builder.build_design_matrix(formula)
+        self.y, self.X, self.feature_names = self._builder.build_design_matrix(
+            formula, exposure=raw_exposure
+        )
         self.n_obs = len(self.y)
         self.n_params = self.X.shape[1]
         
         # Store validation results (computed lazily)
         self._validation_results = None
         
-        # Process offset
+        # Process offset (applies log for Poisson/Gamma families)
         self.offset = self._process_offset(offset)
         
         # Process weights
@@ -174,6 +181,30 @@ class FormulaGLM:
             return _get_column(self.data, weights).astype(np.float64)
         else:
             return np.asarray(weights, dtype=np.float64)
+    
+    def _get_raw_exposure(
+        self,
+        offset: Optional[Union[str, np.ndarray]]
+    ) -> Optional[np.ndarray]:
+        """
+        Get raw exposure values for target encoding.
+        
+        For frequency models (Poisson, NegBinomial, etc.), the offset is typically
+        log(exposure). However, target encoding needs the raw exposure values
+        to compute claim rates (claims/exposure) instead of raw claim counts.
+        
+        This method extracts the raw exposure BEFORE log transformation.
+        """
+        if offset is None:
+            return None
+        
+        if isinstance(offset, str):
+            # It's a column name - extract raw values
+            return _get_column(self.data, offset).astype(np.float64)
+        else:
+            # It's an array - assume it's raw exposure values
+            # (if user passed log(exposure), they'll get log-rate encoding which is also valid)
+            return np.asarray(offset, dtype=np.float64)
     
     @property
     def df_model(self) -> int:
