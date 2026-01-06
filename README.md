@@ -2,7 +2,7 @@
 
 **High-performance Generalized Linear Models with a Rust backend and Python API**
 
-**Documentation**: [pricingfrontier.github.io/rustystats/](https://pricingfrontier.github.io/rustystats/)
+**Codebase Documentation**: [pricingfrontier.github.io/rustystats/](https://pricingfrontier.github.io/rustystats/)
 
 ## Performance Benchmarks
 
@@ -63,7 +63,7 @@ RustyStats uses significantly less RAM by reusing buffers and avoiding Python ob
 - **Memory Efficient** - 4x less RAM than statsmodels at scale
 - **Stable** - Step-halving IRLS, warm starts for robust convergence
 - **Splines** - B-splines `bs()` and natural splines `ns()` in formulas
-- **Regularisation** - Ridge, Lasso, and Elastic Net penalties
+- **Regularisation** - Ridge, Lasso, and Elastic Net via coordinate descent
 - **Complete** - 7 families, robust SEs, full diagnostics
 - **Minimal** - Only `numpy` and `polars` required
 

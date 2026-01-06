@@ -265,6 +265,44 @@ pub fn fit_glm_full(
 }
 ```
 
+### Step-Halving
+
+When deviance increases (step too large), we reduce step size to prevent oscillation:
+
+```rust
+// If deviance increased, try smaller steps
+if deviance_new > deviance_old * 1.0001 {
+    let mut step_size = 0.5;
+    for _ in 0..4 {
+        // Blend old and new eta
+        let eta_blend = (1.0 - step_size) * eta_old + step_size * eta_new;
+        let mu_blend = link.inverse(&eta_blend);
+        let dev_blend = family.deviance(y, &mu_blend, weights);
+        
+        if dev_blend <= deviance_old * 1.0001 {
+            break;
+        }
+        step_size *= 0.5;
+    }
+}
+```
+
+### Warm Starts
+
+For Negative Binomial theta estimation, reuse coefficients:
+
+```rust
+pub fn fit_glm_warm_start(
+    ...,
+    init_coefficients: &Array1<f64>,
+) -> Result<IRLSResult> {
+    // Start from provided coefficients
+    let eta = x.dot(init_coefficients) + offset;
+    let mu = link.inverse(&eta);
+    // Continue IRLS...
+}
+```
+
 ### Parallel WLS
 
 The weighted least squares step is parallelized:

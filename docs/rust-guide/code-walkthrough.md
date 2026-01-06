@@ -517,6 +517,38 @@ pub fn fit_glm_full(
 | `&eta_base + &offset_vec` | Element-wise addition of array references |
 | `link.inverse(&eta)` | Apply inverse link function |
 
+### Step-Halving for Stability
+
+When deviance increases (step too aggressive), we halve the step size:
+
+```rust
+        // Step-halving: if deviance increased, try smaller steps
+        if deviance_new > deviance_old * 1.0001 && iteration > 1 {
+            let mut step_size = 0.5;
+            for _half_step in 0..4 {
+                // Blend: eta = (1-step)*old + step*new
+                let eta_blend: Array1<f64> = eta_old.iter()
+                    .zip(eta_new.iter())
+                    .map(|(&old, &new)| (1.0 - step_size) * old + step_size * new)
+                    .collect();
+                
+                let mu_blend = link.inverse(&eta_blend);
+                let dev_blend = family.deviance(y, &mu_blend, weights);
+                
+                if dev_blend <= deviance_old * 1.0001 {
+                    break;  // Accept this step
+                }
+                step_size *= 0.5;
+            }
+        }
+```
+
+| Code | Explanation |
+|------|-------------|
+| `deviance_new > deviance_old * 1.0001` | Check if deviance increased by >0.01% |
+| `step_size *= 0.5` | Halve the step size |
+| `(1.0 - step_size) * old + step_size * new` | Linear interpolation between old and new |
+
 ### Convergence Check
 
 ```rust

@@ -129,6 +129,65 @@ fn solve_wls_parallel(
 }
 ```
 
+### Step-Halving for Stability
+
+When the deviance increases (indicating the step is too large), we use step-halving to find a better update:
+
+```rust
+// Try full step first
+let eta_new = x.dot(&new_coefficients) + &offset_vec;
+let mu_new = link.inverse(&eta_new);
+let deviance_new = family.deviance(y, &mu_new, weights);
+
+// Step-halving: if deviance increased, reduce step size
+if deviance_new > deviance_old * 1.0001 && iteration > 1 {
+    let mut step_size = 0.5;
+    for _half_step in 0..4 {
+        // Blend: eta = (1-step)*eta_old + step*eta_full
+        let eta_blend = eta_old.iter()
+            .zip(eta_new.iter())
+            .map(|(&old, &new)| (1.0 - step_size) * old + step_size * new)
+            .collect();
+        
+        let mu_blend = link.inverse(&eta_blend);
+        let dev_blend = family.deviance(y, &mu_blend, weights);
+        
+        if dev_blend <= deviance_old * 1.0001 {
+            break;  // Accept this step
+        }
+        step_size *= 0.5;  // Try smaller step
+    }
+}
+```
+
+This prevents oscillation that can occur with difficult models like Negative Binomial with complex design matrices.
+
+### Warm Starts for IRLS
+
+For iterative theta estimation in Negative Binomial, we reuse coefficients between iterations:
+
+```rust
+pub fn fit_glm_warm_start(
+    y: &Array1<f64>,
+    x: &Array2<f64>,
+    family: &dyn Family,
+    link: &dyn Link,
+    config: &IRLSConfig,
+    offset: Option<&Array1<f64>>,
+    weights: Option<&Array1<f64>>,
+    init_coefficients: &Array1<f64>,  // Start from previous solution
+) -> Result<IRLSResult> {
+    // Initialize from coefficients instead of family method
+    let eta = x.dot(init_coefficients) + offset;
+    let mu = link.inverse(&eta);
+    
+    // Continue IRLS from this starting point
+    // ...
+}
+```
+
+This dramatically speeds up Negative Binomial fitting where theta estimation requires multiple GLM fits with slightly different variance functions.
+
 ### Numerical Stability
 
 ```rust
