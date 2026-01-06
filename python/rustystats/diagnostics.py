@@ -1133,8 +1133,8 @@ class DiagnosticsComputer:
         # Factors with high residual correlation (not in model)
         for factor in factors:
             if not factor.in_model:
-                corr = factor.residual_pattern.correlation_with_residuals
-                r2 = factor.residual_pattern.residual_variance_explained
+                corr = factor.residual_pattern.resid_corr
+                r2 = factor.residual_pattern.var_explained
                 if r2 > 0.02:
                     warnings.append({
                         "type": "missing_factor",
