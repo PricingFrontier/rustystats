@@ -2945,7 +2945,9 @@ Y_i = \beta_0 + \beta_1 x_{i1} + \beta_2 x_{i2} + \cdots + \beta_{p-1} x_{i,p-1}
 <div class="admonition info">
 <p class="admonition-title">Matrix Multiplication Refresher</p>
 <p>The product <span class="arithmatex">\(\mathbf{X}\boldsymbol{\beta}\)</span> gives an <span class="arithmatex">\(n \times 1\)</span> vector where each element is:</p>
-<div class="arithmatex">\[(\mathbf{X}\boldsymbol{\beta})_i = \sum_{j=0}^{p-1} X_{ij} \beta_j = \beta_0 + \beta_1 x_{i1} + \cdots\]</div>
+<div class="arithmatex">\[
+(\mathbf{X}\boldsymbol{\beta})_i = \sum_{j=0}^{p-1} X_{ij} \beta_j = \beta_0 + \beta_1 x_{i1} + \cdots
+\]</div>
 <p>This is exactly the linear combination we want.</p>
 </div>
 <h4 id="the-assumptions">The Assumptions<a class="headerlink" href="#the-assumptions" title="Permanent link">&para;</a></h4>
@@ -3583,7 +3585,9 @@ d) Modeling insurance claim severity (positive dollar amounts)</p>
 <div class="admonition question">
 <p class="admonition-title">Exercise 2: Exponential Family - Gamma Distribution</p>
 <p>The Gamma PDF is:</p>
-<div class="arithmatex">\[f(y; \mu, \nu) = \frac{1}{\Gamma(\nu)}\left(\frac{\nu}{\mu}\right)^\nu y^{\nu-1} e^{-\nu y/\mu}\]</div>
+<div class="arithmatex">\[
+f(y; \mu, \nu) = \frac{1}{\Gamma(\nu)}\left(\frac{\nu}{\mu}\right)^\nu y^{\nu-1} e^{-\nu y/\mu}
+\]</div>
 <p>where <span class="arithmatex">\(\nu\)</span> is the shape parameter.</p>
 <p>a) Put this in exponential family form. What is <span class="arithmatex">\(\theta\)</span>?<br />
 b) Find <span class="arithmatex">\(b(\theta)\)</span> and compute <span class="arithmatex">\(b'(\theta)\)</span> to verify <span class="arithmatex">\(E(Y) = \mu\)</span><br />

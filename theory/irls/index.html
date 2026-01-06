@@ -3260,8 +3260,10 @@ w_i = \frac{1}{V(\mu_i)[g'(\mu_i)]^2}
 </table>
 <div class="admonition note">
 <p class="admonition-title">Constant Weights</p>
-<p>For Gamma + Log, the weights are constant! This is because <span class="arithmatex">\(V(\mu) = \mu^2\)</span> and <span class="arithmatex">\(g'(\mu) = 1/\mu\)</span>, so:
-$<span class="arithmatex">\(w = \frac{1}{\mu^2 \cdot (1/\mu)^2} = 1\)</span>$</p>
+<p>For Gamma + Log, the weights are constant! This is because <span class="arithmatex">\(V(\mu) = \mu^2\)</span> and <span class="arithmatex">\(g'(\mu) = 1/\mu\)</span>, so:</p>
+<div class="arithmatex">\[
+w = \frac{1}{\mu^2 \cdot (1/\mu)^2} = 1
+\]</div>
 </div>
 <h3 id="43-why-reweighted">4.3 Why "Reweighted"?<a class="headerlink" href="#43-why-reweighted" title="Permanent link">&para;</a></h3>
 <p>The weights <span class="arithmatex">\(w_i\)</span> depend on <span class="arithmatex">\(\mu_i\)</span>, which depends on the current <span class="arithmatex">\(\boldsymbol{\beta}^{(t)}\)</span>. Each iteration:</p>
@@ -3283,45 +3285,91 @@ $<span class="arithmatex">\(w = \frac{1}{\mu^2 \cdot (1/\mu)^2} = 1\)</span>$</p
 | 3 | 7 | 2 |</p>
 <p><strong>Model</strong>: <span class="arithmatex">\(\log(\mu_i) = \beta_0 + \beta_1 x_i\)</span></p>
 <p><strong>Design matrix</strong>: 
-$<span class="arithmatex">\(\mathbf{X} = \begin{pmatrix} 1 &amp; 0 \\ 1 &amp; 1 \\ 1 &amp; 2 \end{pmatrix}\)</span>$</p>
+$$
+\mathbf{X} = \begin{pmatrix} 1 &amp; 0 \ 1 &amp; 1 \ 1 &amp; 2 \end{pmatrix}
+$$</p>
 <p><strong>Link function</strong>: <span class="arithmatex">\(g(\mu) = \log(\mu)\)</span>, so <span class="arithmatex">\(g'(\mu) = 1/\mu\)</span> and <span class="arithmatex">\(g^{-1}(\eta) = e^\eta\)</span></p>
 <p><strong>Variance function</strong>: <span class="arithmatex">\(V(\mu) = \mu\)</span></p>
 <h3 id="52-iteration-0-initialization">5.2 Iteration 0: Initialization<a class="headerlink" href="#52-iteration-0-initialization" title="Permanent link">&para;</a></h3>
 <p>Initialize <span class="arithmatex">\(\mu_i\)</span> from the data (common choice: <span class="arithmatex">\(\mu_i^{(0)} = y_i + 0.1\)</span> to avoid <span class="arithmatex">\(\log(0)\)</span>):</p>
-<div class="arithmatex">\[\boldsymbol{\mu}^{(0)} = \begin{pmatrix} 1.1 \\ 4.1 \\ 7.1 \end{pmatrix}\]</div>
+<div class="arithmatex">\[
+\boldsymbol{\mu}^{(0)} = \begin{pmatrix} 1.1 \\ 4.1 \\ 7.1 \end{pmatrix}
+\]</div>
 <p>Compute initial linear predictor:
-$<span class="arithmatex">\(\boldsymbol{\eta}^{(0)} = \log(\boldsymbol{\mu}^{(0)}) = \begin{pmatrix} 0.095 \\ 1.411 \\ 1.960 \end{pmatrix}\)</span>$</p>
+$$
+\boldsymbol{\eta}^{(0)} = \log(\boldsymbol{\mu}^{(0)}) = \begin{pmatrix} 0.095 \ 1.411 \ 1.960 \end{pmatrix}
+$$</p>
 <p>We could solve for initial <span class="arithmatex">\(\boldsymbol{\beta}^{(0)}\)</span> by WLS, but let's just proceed to iteration 1.</p>
 <h3 id="53-iteration-1">5.3 Iteration 1<a class="headerlink" href="#53-iteration-1" title="Permanent link">&para;</a></h3>
 <p><strong>Step 1: Compute weights</strong></p>
-<div class="arithmatex">\[w_i = \frac{1}{V(\mu_i)[g'(\mu_i)]^2} = \frac{1}{\mu_i \cdot (1/\mu_i)^2} = \mu_i\]</div>
-<div class="arithmatex">\[\mathbf{W}^{(0)} = \text{diag}(1.1, 4.1, 7.1)\]</div>
+<div class="arithmatex">\[
+w_i = \frac{1}{V(\mu_i)[g'(\mu_i)]^2} = \frac{1}{\mu_i \cdot (1/\mu_i)^2} = \mu_i
+\]</div>
+<div class="arithmatex">\[
+\mathbf{W}^{(0)} = \text{diag}(1.1, 4.1, 7.1)
+\]</div>
 <p><strong>Step 2: Compute working response</strong></p>
-<div class="arithmatex">\[z_i = \eta_i + (y_i - \mu_i) g'(\mu_i) = \eta_i + \frac{y_i - \mu_i}{\mu_i}\]</div>
-<div class="arithmatex">\[z_1 = 0.095 + \frac{1 - 1.1}{1.1} = 0.095 - 0.091 = 0.004$$
-$$z_2 = 1.411 + \frac{4 - 4.1}{4.1} = 1.411 - 0.024 = 1.387$$
-$$z_3 = 1.960 + \frac{7 - 7.1}{7.1} = 1.960 - 0.014 = 1.946\]</div>
-<div class="arithmatex">\[\mathbf{z}^{(0)} = \begin{pmatrix} 0.004 \\ 1.387 \\ 1.946 \end{pmatrix}\]</div>
+<div class="arithmatex">\[
+z_i = \eta_i + (y_i - \mu_i) g'(\mu_i) = \eta_i + \frac{y_i - \mu_i}{\mu_i}
+\]</div>
+<div class="arithmatex">\[
+z_1 = 0.095 + \frac{1 - 1.1}{1.1} = 0.095 - 0.091 = 0.004
+\]</div>
+<div class="arithmatex">\[
+z_2 = 1.411 + \frac{4 - 4.1}{4.1} = 1.411 - 0.024 = 1.387
+\]</div>
+<div class="arithmatex">\[
+z_3 = 1.960 + \frac{7 - 7.1}{7.1} = 1.960 - 0.014 = 1.946
+\]</div>
+<div class="arithmatex">\[
+\mathbf{z}^{(0)} = \begin{pmatrix} 0.004 \\ 1.387 \\ 1.946 \end{pmatrix}
+\]</div>
 <p><strong>Step 3: Compute <span class="arithmatex">\(\mathbf{X}^T\mathbf{W}\mathbf{X}\)</span></strong></p>
-<div class="arithmatex">\[\mathbf{X}^T\mathbf{W}\mathbf{X} = \begin{pmatrix} 1 &amp; 1 &amp; 1 \\ 0 &amp; 1 &amp; 2 \end{pmatrix} \begin{pmatrix} 1.1 &amp; 0 &amp; 0 \\ 0 &amp; 4.1 &amp; 0 \\ 0 &amp; 0 &amp; 7.1 \end{pmatrix} \begin{pmatrix} 1 &amp; 0 \\ 1 &amp; 1 \\ 1 &amp; 2 \end{pmatrix}\]</div>
-<div class="arithmatex">\[= \begin{pmatrix} 1.1 &amp; 4.1 &amp; 7.1 \\ 0 &amp; 4.1 &amp; 14.2 \end{pmatrix} \begin{pmatrix} 1 &amp; 0 \\ 1 &amp; 1 \\ 1 &amp; 2 \end{pmatrix} = \begin{pmatrix} 12.3 &amp; 18.3 \\ 18.3 &amp; 32.5 \end{pmatrix}\]</div>
+<div class="arithmatex">\[
+\mathbf{X}^T\mathbf{W}\mathbf{X} = \begin{pmatrix} 1 &amp; 1 &amp; 1 \\ 0 &amp; 1 &amp; 2 \end{pmatrix} \begin{pmatrix} 1.1 &amp; 0 &amp; 0 \\ 0 &amp; 4.1 &amp; 0 \\ 0 &amp; 0 &amp; 7.1 \end{pmatrix} \begin{pmatrix} 1 &amp; 0 \\ 1 &amp; 1 \\ 1 &amp; 2 \end{pmatrix}
+\]</div>
+<div class="arithmatex">\[
+= \begin{pmatrix} 1.1 &amp; 4.1 &amp; 7.1 \\ 0 &amp; 4.1 &amp; 14.2 \end{pmatrix} \begin{pmatrix} 1 &amp; 0 \\ 1 &amp; 1 \\ 1 &amp; 2 \end{pmatrix} = \begin{pmatrix} 12.3 &amp; 18.3 \\ 18.3 &amp; 32.5 \end{pmatrix}
+\]</div>
 <p><strong>Step 4: Compute <span class="arithmatex">\(\mathbf{X}^T\mathbf{W}\mathbf{z}\)</span></strong></p>
-<div class="arithmatex">\[\mathbf{X}^T\mathbf{W}\mathbf{z} = \begin{pmatrix} 1.1 &amp; 4.1 &amp; 7.1 \\ 0 &amp; 4.1 &amp; 14.2 \end{pmatrix} \begin{pmatrix} 0.004 \\ 1.387 \\ 1.946 \end{pmatrix} = \begin{pmatrix} 19.51 \\ 33.32 \end{pmatrix}\]</div>
+<div class="arithmatex">\[
+\mathbf{X}^T\mathbf{W}\mathbf{z} = \begin{pmatrix} 1.1 &amp; 4.1 &amp; 7.1 \\ 0 &amp; 4.1 &amp; 14.2 \end{pmatrix} \begin{pmatrix} 0.004 \\ 1.387 \\ 1.946 \end{pmatrix} = \begin{pmatrix} 19.51 \\ 33.32 \end{pmatrix}
+\]</div>
 <p><strong>Step 5: Solve for <span class="arithmatex">\(\boldsymbol{\beta}^{(1)}\)</span></strong></p>
-<div class="arithmatex">\[\boldsymbol{\beta}^{(1)} = (\mathbf{X}^T\mathbf{W}\mathbf{X})^{-1} \mathbf{X}^T\mathbf{W}\mathbf{z}\]</div>
+<div class="arithmatex">\[
+\boldsymbol{\beta}^{(1)} = (\mathbf{X}^T\mathbf{W}\mathbf{X})^{-1} \mathbf{X}^T\mathbf{W}\mathbf{z}
+\]</div>
 <p>First, compute the inverse:
-$<span class="arithmatex">\((\mathbf{X}^T\mathbf{W}\mathbf{X})^{-1} = \frac{1}{12.3 \times 32.5 - 18.3^2} \begin{pmatrix} 32.5 &amp; -18.3 \\ -18.3 &amp; 12.3 \end{pmatrix}\)</span>$</p>
-<div class="arithmatex">\[= \frac{1}{64.86} \begin{pmatrix} 32.5 &amp; -18.3 \\ -18.3 &amp; 12.3 \end{pmatrix} = \begin{pmatrix} 0.501 &amp; -0.282 \\ -0.282 &amp; 0.190 \end{pmatrix}\]</div>
+$$
+(\mathbf{X}^T\mathbf{W}\mathbf{X})^{-1} = \frac{1}{12.3 \times 32.5 - 18.3^2} \begin{pmatrix} 32.5 &amp; -18.3 \ -18.3 &amp; 12.3 \end{pmatrix}
+$$</p>
+<div class="arithmatex">\[
+= \frac{1}{64.86} \begin{pmatrix} 32.5 &amp; -18.3 \\ -18.3 &amp; 12.3 \end{pmatrix} = \begin{pmatrix} 0.501 &amp; -0.282 \\ -0.282 &amp; 0.190 \end{pmatrix}
+\]</div>
 <p>Then:
-$<span class="arithmatex">\(\boldsymbol{\beta}^{(1)} = \begin{pmatrix} 0.501 &amp; -0.282 \\ -0.282 &amp; 0.190 \end{pmatrix} \begin{pmatrix} 19.51 \\ 33.32 \end{pmatrix} = \begin{pmatrix} 0.38 \\ 0.83 \end{pmatrix}\)</span>$</p>
+$$
+\boldsymbol{\beta}^{(1)} = \begin{pmatrix} 0.501 &amp; -0.282 \ -0.282 &amp; 0.190 \end{pmatrix} \begin{pmatrix} 19.51 \ 33.32 \end{pmatrix} = \begin{pmatrix} 0.38 \ 0.83 \end{pmatrix}
+$$</p>
 <p><strong>Step 6: Update linear predictor and means</strong></p>
-<div class="arithmatex">\[\boldsymbol{\eta}^{(1)} = \mathbf{X}\boldsymbol{\beta}^{(1)} = \begin{pmatrix} 0.38 \\ 1.21 \\ 2.04 \end{pmatrix}\]</div>
-<div class="arithmatex">\[\boldsymbol{\mu}^{(1)} = e^{\boldsymbol{\eta}^{(1)}} = \begin{pmatrix} 1.46 \\ 3.35 \\ 7.69 \end{pmatrix}\]</div>
+<div class="arithmatex">\[
+\boldsymbol{\eta}^{(1)} = \mathbf{X}\boldsymbol{\beta}^{(1)} = \begin{pmatrix} 0.38 \\ 1.21 \\ 2.04 \end{pmatrix}
+\]</div>
+<div class="arithmatex">\[
+\boldsymbol{\mu}^{(1)} = e^{\boldsymbol{\eta}^{(1)}} = \begin{pmatrix} 1.46 \\ 3.35 \\ 7.69 \end{pmatrix}
+\]</div>
 <p><strong>Step 7: Compute deviance</strong></p>
-<div class="arithmatex">\[D = 2\sum_i [y_i \log(y_i/\mu_i) - (y_i - \mu_i)]\]</div>
-<div class="arithmatex">\[= 2[(1)\log(1/1.46) - (1-1.46) + (4)\log(4/3.35) - (4-3.35) + (7)\log(7/7.69) - (7-7.69)]\]</div>
-<div class="arithmatex">\[= 2[(-0.378 + 0.46) + (0.716 - 0.65) + (-0.661 + 0.69)]\]</div>
-<div class="arithmatex">\[= 2[0.082 + 0.066 + 0.029] = 0.354\]</div>
+<div class="arithmatex">\[
+D = 2\sum_i [y_i \log(y_i/\mu_i) - (y_i - \mu_i)]
+\]</div>
+<div class="arithmatex">\[
+= 2[(1)\log(1/1.46) - (1-1.46) + (4)\log(4/3.35) - (4-3.35) + (7)\log(7/7.69) - (7-7.69)]
+\]</div>
+<div class="arithmatex">\[
+= 2[(-0.378 + 0.46) + (0.716 - 0.65) + (-0.661 + 0.69)]
+\]</div>
+<div class="arithmatex">\[
+= 2[0.082 + 0.066 + 0.029] = 0.354
+\]</div>
 <h3 id="54-iteration-2-summary">5.4 Iteration 2 (Summary)<a class="headerlink" href="#54-iteration-2-summary" title="Permanent link">&para;</a></h3>
 <p>Repeating with <span class="arithmatex">\(\boldsymbol{\mu}^{(1)}\)</span>:</p>
 <ul>
@@ -3333,7 +3381,9 @@ $<span class="arithmatex">\(\boldsymbol{\beta}^{(1)} = \begin{pmatrix} 0.501 &am
 </ul>
 <p><strong>Converged!</strong> The change in deviance is below tolerance.</p>
 <h3 id="55-final-results">5.5 Final Results<a class="headerlink" href="#55-final-results" title="Permanent link">&para;</a></h3>
-<div class="arithmatex">\[\hat{\beta}_0 = 0.38, \quad \hat{\beta}_1 = 0.83\]</div>
+<div class="arithmatex">\[
+\hat{\beta}_0 = 0.38, \quad \hat{\beta}_1 = 0.83
+\]</div>
 <p>Interpretation: Each unit increase in <span class="arithmatex">\(x\)</span> multiplies the expected count by <span class="arithmatex">\(e^{0.83} \approx 2.29\)</span>.</p>
 <hr />
 <h2 id="part-6-the-complete-irls-algorithm">Part 6: The Complete IRLS Algorithm<a class="headerlink" href="#part-6-the-complete-irls-algorithm" title="Permanent link">&para;</a></h2>
@@ -3669,7 +3719,9 @@ $<span class="arithmatex">\(\boldsymbol{\beta}^{(1)} = \begin{pmatrix} 0.501 &am
 <div class="admonition question">
 <p class="admonition-title">Exercise 2: Working Response</p>
 <p>For Poisson with log link, show that the working response can be written as:</p>
-<div class="arithmatex">\[z_i = \log(\mu_i) + \frac{y_i - \mu_i}{\mu_i} = \log(\mu_i) + \frac{y_i}{\mu_i} - 1\]</div>
+<div class="arithmatex">\[
+z_i = \log(\mu_i) + \frac{y_i - \mu_i}{\mu_i} = \log(\mu_i) + \frac{y_i}{\mu_i} - 1
+\]</div>
 <p>Interpret this: what happens when <span class="arithmatex">\(y_i = \mu_i\)</span> (perfect prediction)?</p>
 </div>
 <div class="admonition question">
