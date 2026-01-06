@@ -2,8 +2,6 @@
 
 **High-performance Generalized Linear Models with a Rust backend and Python API**
 
-Built for actuarial applications. Fits 678K rows in ~1 second.
-
 **Documentation**: [pricingfrontier.github.io/rustystats/](https://pricingfrontier.github.io/rustystats/)
 
 ## Performance Benchmarks
@@ -373,24 +371,6 @@ exploration = rs.explore_data(
 | **Built-in Lasso/Elastic Net for GLMs** | ✅ Fast coordinate descent with all families | ⚠️ Limited |
 | **Relativities Table** | ✅ `result.relativities()` for pricing | ❌ Must compute manually |
 | **Robust Standard Errors** | ✅ HC0, HC1, HC2, HC3 sandwich estimators | ✅ HC0-HC3 |
-
-### Performance Comparison (678,012 rows × 28 features)
-
-| Operation | RustyStats | Statsmodels |
-|-----------|------------|-------------|
-| Poisson GLM | ~1.0s | ~5-10s |
-| Ridge GLM | ~1.0s | ~5-10s |
-| Lasso GLM | ~2.8s | Not available for GLMs |
-
-### When to Use RustyStats
-- **Large datasets** - Parallel solver scales better
-- **Regularized GLMs** - Built-in Lasso/Ridge/Elastic Net for any family
-- **Actuarial/Insurance** - Relativities tables, Tweedie, exposure offsets
-- **Polars workflows** - Native Polars DataFrame support
-
-### When to Use Statsmodels
-- **Broader model coverage** - OLS, WLS, GLS, mixed effects, time series
-- **Established ecosystem** - More documentation, Stack Overflow answers
 
 ---
 
