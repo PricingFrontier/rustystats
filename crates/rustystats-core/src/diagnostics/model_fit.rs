@@ -346,9 +346,33 @@ pub fn null_deviance(
                     2.0 * ((yi_safe - mui_safe) / mui_safe - ratio.ln())
                 })
         }
+        other if other.starts_with("negativebinomial") || other.starts_with("negbinomial") => {
+            // Parse theta from family string like "negativebinomial(theta=1.3802)"
+            let theta = if let Some(start) = other.find("theta=") {
+                let rest = &other[start + 6..];
+                let end = rest.find(')').unwrap_or(rest.len());
+                rest[..end].parse::<f64>().unwrap_or(1.0)
+            } else {
+                1.0  // Default theta
+            };
+            
+            // 2 × [y × log(y/μ) - (y + θ) × log((y + θ)/(μ + θ))]
+            ndarray::Zip::from(y)
+                .and(&mu_null)
+                .map_collect(|&yi, &mui| {
+                    let yi_safe = yi.max(MU_MIN_POSITIVE);
+                    let mui_safe = mui.max(MU_MIN_POSITIVE);
+                    let mut dev = 0.0;
+                    if yi_safe > 0.0 {
+                        dev += yi_safe * (yi_safe / mui_safe).ln();
+                    }
+                    dev -= (yi_safe + theta) * ((yi_safe + theta) / (mui_safe + theta)).ln();
+                    2.0 * dev
+                })
+        }
         other => {
             panic!("Unknown family '{}' in null_deviance computation. \
-                   Supported families: gaussian, poisson, binomial, gamma, quasipoisson, quasibinomial.", other)
+                   Supported families: gaussian, poisson, binomial, gamma, quasipoisson, quasibinomial, negativebinomial.", other)
         }
     };
     

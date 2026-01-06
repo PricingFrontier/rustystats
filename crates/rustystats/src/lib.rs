@@ -70,14 +70,28 @@ use rustystats_core::diagnostics::{
 /// Handles case-insensitive matching and common aliases.
 /// Returns an error for unknown family names instead of silently defaulting.
 fn family_from_name(name: &str) -> PyResult<Box<dyn Family>> {
-    match name.to_lowercase().as_str() {
+    let lower = name.to_lowercase();
+    
+    // Handle negativebinomial with optional theta parameter like "negativebinomial(theta=1.38)"
+    if lower.starts_with("negativebinomial") || lower.starts_with("negbinomial") || lower.starts_with("negbin") {
+        // Parse theta if present
+        let theta = if let Some(start) = lower.find("theta=") {
+            let rest = &lower[start + 6..];
+            let end = rest.find(')').unwrap_or(rest.len());
+            rest[..end].parse::<f64>().unwrap_or(1.0)
+        } else {
+            1.0
+        };
+        return Ok(Box::new(NegativeBinomialFamily::new(theta)));
+    }
+    
+    match lower.as_str() {
         "gaussian" | "normal" => Ok(Box::new(GaussianFamily)),
         "poisson" => Ok(Box::new(PoissonFamily)),
         "binomial" => Ok(Box::new(BinomialFamily)),
         "gamma" => Ok(Box::new(GammaFamily)),
         "quasipoisson" => Ok(Box::new(QuasiPoissonFamily)),
         "quasibinomial" => Ok(Box::new(QuasiBinomialFamily)),
-        "negativebinomial" | "negbinomial" | "negbin" => Ok(Box::new(NegativeBinomialFamily::default())),
         _ => Err(PyValueError::new_err(format!(
             "Unknown family '{}'. Use 'gaussian', 'poisson', 'binomial', 'gamma', \
              'quasipoisson', 'quasibinomial', or 'negativebinomial'.", name

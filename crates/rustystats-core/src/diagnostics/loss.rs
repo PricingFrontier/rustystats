@@ -345,15 +345,27 @@ pub fn compute_family_loss(
     var_power: Option<f64>,
     theta: Option<f64>,
 ) -> f64 {
-    match family.to_lowercase().as_str() {
+    let lower = family.to_lowercase();
+    
+    // Handle negativebinomial with optional theta parameter like "negativebinomial(theta=1.38)"
+    if lower.starts_with("negativebinomial") || lower.starts_with("negbinomial") || lower.starts_with("nb(") || lower == "nb" {
+        // Parse theta from family string if present, otherwise use provided theta
+        let parsed_theta = if let Some(start) = lower.find("theta=") {
+            let rest = &lower[start + 6..];
+            let end = rest.find(')').unwrap_or(rest.len());
+            rest[..end].parse::<f64>().unwrap_or(1.0)
+        } else {
+            theta.unwrap_or(1.0)
+        };
+        return negbinomial_deviance_loss(y, mu, parsed_theta, weights);
+    }
+    
+    match lower.as_str() {
         "gaussian" | "normal" => mse(y, mu, weights),
         "poisson" | "quasipoisson" => poisson_deviance_loss(y, mu, weights),
         "gamma" => gamma_deviance_loss(y, mu, weights),
         "binomial" | "quasibinomial" => log_loss(y, mu, weights),
         "tweedie" => tweedie_deviance_loss(y, mu, var_power.unwrap_or(1.5), weights),
-        "negativebinomial" | "negbinomial" | "nb" => {
-            negbinomial_deviance_loss(y, mu, theta.unwrap_or(1.0), weights)
-        }
         other => panic!("Unknown family '{}' in compute_family_loss", other),
     }
 }
