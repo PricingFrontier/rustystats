@@ -223,6 +223,29 @@ class InteractionBuilder:
         # Store parsed formula for prediction
         self._parsed_formula: Optional[ParsedFormula] = None
     
+    def _parse_spline_factor(self, factor: str) -> Optional[SplineTerm]:
+        """Parse a spline term from a factor name like 'bs(VehAge, df=4)' or 'ns(age, df=3)'."""
+        factor_lower = factor.strip().lower()
+        if factor_lower.startswith('bs(') or factor_lower.startswith('ns('):
+            spline_type = 'bs' if factor_lower.startswith('bs(') else 'ns'
+            # Extract content inside parentheses
+            content = factor[3:-1] if factor.endswith(')') else factor[3:]
+            parts = [p.strip() for p in content.split(',')]
+            var_name = parts[0]
+            df = 4  # default
+            degree = 3  # default for B-splines
+            for part in parts[1:]:
+                if '=' in part:
+                    key, val = part.split('=', 1)
+                    key = key.strip().lower()
+                    val = val.strip()
+                    if key == 'df':
+                        df = int(val)
+                    elif key == 'degree':
+                        degree = int(val)
+            return SplineTerm(var_name=var_name, spline_type=spline_type, df=df, degree=degree)
+        return None
+    
     def _get_column(self, name: str) -> np.ndarray:
         """Extract column as numpy array."""
         return self.data[name].to_numpy().astype(self.dtype)
@@ -436,14 +459,73 @@ class InteractionBuilder:
         # Separate categorical and continuous factors
         cat_factors = []
         cont_factors = []
+        spline_factors = []  # Spline terms need special handling
         
         for factor, is_cat in zip(interaction.factors, interaction.categorical_flags):
             if is_cat:
                 cat_factors.append(factor)
             else:
-                cont_factors.append(factor)
+                # Check if this is a spline term
+                spline = self._parse_spline_factor(factor)
+                if spline is not None:
+                    spline_factors.append((factor, spline))
+                else:
+                    cont_factors.append(factor)
         
-        # Build continuous part (product of all continuous)
+        # Build categorical encoding first
+        if len(cat_factors) == 1:
+            cat_name = cat_factors[0]
+            cat_encoding, cat_names = self._get_categorical_encoding(cat_name)
+        else:
+            cat_interaction = InteractionTerm(
+                factors=cat_factors,
+                categorical_flags=[True] * len(cat_factors)
+            )
+            cat_encoding, cat_names = self._build_categorical_interaction(cat_interaction)
+        
+        if cat_encoding.shape[1] == 0:
+            return np.zeros((self._n, 0), dtype=self.dtype), []
+        
+        # Handle spline × categorical interactions
+        if spline_factors:
+            # Build spline basis for each spline factor
+            all_columns = []
+            all_names = []
+            
+            for spline_str, spline in spline_factors:
+                x = self._get_column(spline.var_name)
+                spline_basis, spline_names = spline.transform(x)
+                # Store fitted spline for prediction
+                self._fitted_splines[spline.var_name] = spline
+                
+                # Multiply each spline column by each categorical column
+                for j, spl_name in enumerate(spline_names):
+                    for i, cat_name in enumerate(cat_names):
+                        col = cat_encoding[:, i] * spline_basis[:, j]
+                        all_columns.append(col)
+                        all_names.append(f"{cat_name}:{spl_name}")
+            
+            # Also include any regular continuous factors
+            if cont_factors:
+                cont_product = self._get_column(cont_factors[0])
+                for factor in cont_factors[1:]:
+                    cont_product = cont_product * self._get_column(factor)
+                cont_name = ':'.join(cont_factors)
+                
+                # Multiply by continuous
+                final_columns = []
+                final_names = []
+                for col, name in zip(all_columns, all_names):
+                    final_columns.append(col * cont_product)
+                    final_names.append(f"{name}:{cont_name}")
+                all_columns = final_columns
+                all_names = final_names
+            
+            if all_columns:
+                return np.column_stack(all_columns), all_names
+            return np.zeros((self._n, 0), dtype=self.dtype), []
+        
+        # Standard continuous × categorical (no splines)
         cont_product = self._get_column(cont_factors[0])
         for factor in cont_factors[1:]:
             cont_product = cont_product * self._get_column(factor)

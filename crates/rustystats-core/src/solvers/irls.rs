@@ -396,23 +396,49 @@ pub fn fit_glm_full(
             solve_weighted_least_squares(x, &working_response, &combined_weights)?;
 
         // ---------------------------------------------------------------------
-        // Step 4d: Update η and μ
+        // Step 4d: Update η and μ with step-halving for stability
         // ---------------------------------------------------------------------
-        // η = Xβ + offset (full linear predictor)
-        // μ = g⁻¹(η) (fitted values on response scale)
-        // ---------------------------------------------------------------------
-        let eta_base = x.dot(&new_coefficients);
-        eta = &eta_base + &offset_vec;
-        mu = link.inverse(&eta);
-
-        // Ensure μ stays valid
-        mu = clamp_mu(&mu, family);
-
-        // ---------------------------------------------------------------------
-        // Step 4e: Check convergence
+        // If deviance increases, reduce step size to prevent oscillation
         // ---------------------------------------------------------------------
         deviance_old = deviance;
-        deviance = family.deviance(y, &mu, Some(&prior_weights_vec));
+        
+        // Try full step first
+        let eta_base = x.dot(&new_coefficients);
+        let mut eta_new = &eta_base + &offset_vec;
+        let mut mu_new = link.inverse(&eta_new);
+        mu_new = clamp_mu(&mu_new, family);
+        let mut deviance_new = family.deviance(y, &mu_new, Some(&prior_weights_vec));
+        
+        // Step-halving: if deviance increased, try smaller steps
+        if deviance_new > deviance_old * 1.0001 && iteration > 1 {
+            // Get old eta without offset for blending
+            let eta_old_base: Array1<f64> = eta.iter()
+                .zip(offset_vec.iter())
+                .map(|(&e, &o)| e - o)
+                .collect();
+            
+            let mut step_size = 0.5;
+            for _half_step in 0..4 {
+                // Blend: eta_new = (1-step)*eta_old + step*eta_full
+                let eta_blend: Array1<f64> = eta_old_base.iter()
+                    .zip(eta_base.iter())
+                    .map(|(&old, &new)| (1.0 - step_size) * old + step_size * new)
+                    .collect();
+                eta_new = &eta_blend + &offset_vec;
+                mu_new = link.inverse(&eta_new);
+                mu_new = clamp_mu(&mu_new, family);
+                deviance_new = family.deviance(y, &mu_new, Some(&prior_weights_vec));
+                
+                if deviance_new <= deviance_old * 1.0001 {
+                    break;
+                }
+                step_size *= 0.5;
+            }
+        }
+        
+        eta = eta_new;
+        mu = mu_new;
+        deviance = deviance_new;
 
         // Relative change in deviance
         let rel_change = if deviance_old.abs() > ZERO_TOL {
@@ -475,6 +501,159 @@ pub fn fit_glm_full(
         family_name: family.name().to_string(),
         penalty: Penalty::None,
         design_matrix: None,  // Computed lazily in Python layer to avoid expensive copy
+    })
+}
+
+/// Fit a GLM with warm start (initial coefficients) for faster convergence.
+///
+/// This version accepts initial coefficients from a previous fit, which is useful for:
+/// - Iterative theta estimation in Negative Binomial
+/// - Sequential model fitting with similar data
+/// - Continuation from a partially converged model
+///
+/// # Arguments
+/// * `y` - Response variable (n × 1)
+/// * `x` - Design matrix (n × p)
+/// * `family` - Distribution family
+/// * `link` - Link function
+/// * `config` - Algorithm configuration
+/// * `offset` - Optional offset term
+/// * `weights` - Optional prior weights
+/// * `init_coefficients` - Initial coefficient estimates (p × 1)
+///
+/// # Returns
+/// * `Ok(IRLSResult)` - Fitted model results
+/// * `Err(RustyStatsError)` - If fitting fails
+pub fn fit_glm_warm_start(
+    y: &Array1<f64>,
+    x: &Array2<f64>,
+    family: &dyn Family,
+    link: &dyn Link,
+    config: &IRLSConfig,
+    offset: Option<&Array1<f64>>,
+    weights: Option<&Array1<f64>>,
+    init_coefficients: &Array1<f64>,
+) -> Result<IRLSResult> {
+    let n = y.len();
+    let p = x.ncols();
+
+    if x.nrows() != n {
+        return Err(RustyStatsError::DimensionMismatch(format!(
+            "X has {} rows but y has {} elements", x.nrows(), n
+        )));
+    }
+
+    if init_coefficients.len() != p {
+        return Err(RustyStatsError::DimensionMismatch(format!(
+            "init_coefficients has {} elements but X has {} columns",
+            init_coefficients.len(), p
+        )));
+    }
+
+    let offset_vec = match offset {
+        Some(o) => o.clone(),
+        None => Array1::zeros(n),
+    };
+
+    let prior_weights_vec = match weights {
+        Some(w) => w.clone(),
+        None => Array1::ones(n),
+    };
+
+    // Initialize from provided coefficients instead of family method
+    let mut eta: Array1<f64> = x.dot(init_coefficients) + &offset_vec;
+    let mut mu = link.inverse(&eta);
+    
+    // Clamp mu to valid range for the family (using same function as fit_glm_full)
+    mu = clamp_mu(&mu, family);
+
+    let mut deviance = family.deviance(y, &mu, Some(&prior_weights_vec));
+    let mut deviance_old: f64;
+    let mut converged = false;
+    let mut iteration = 0;
+    let mut cov_unscaled = Array2::zeros((p, p));
+    let mut final_weights = Array1::zeros(n);
+
+    while iteration < config.max_iterations {
+        iteration += 1;
+
+        let variance = family.variance(&mu);
+        let link_deriv = link.derivative(&mu);
+
+        let min_weight = config.min_weight;
+        let results: Vec<(f64, f64, f64)> = (0..n)
+            .into_par_iter()
+            .map(|i| {
+                let v = variance[i];
+                let d = link_deriv[i];
+                let iw = (1.0 / (v * d * d)).max(min_weight).min(1e10);
+                let cw = prior_weights_vec[i] * iw;
+                let e = eta[i] - offset_vec[i];
+                let wr = e + (y[i] - mu[i]) * d;
+                (iw, cw, wr)
+            })
+            .collect();
+
+        let mut irls_weights = Array1::zeros(n);
+        let mut combined_weights = Array1::zeros(n);
+        let mut working_response = Array1::zeros(n);
+        for i in 0..n {
+            irls_weights[i] = results[i].0;
+            combined_weights[i] = results[i].1;
+            working_response[i] = results[i].2;
+        }
+
+        let (beta, covariance) = solve_weighted_least_squares(x, &working_response, &combined_weights)?;
+        cov_unscaled = covariance;
+        final_weights = irls_weights;
+
+        eta = x.dot(&beta) + &offset_vec;
+        mu = link.inverse(&eta);
+        
+        // Clamp mu to valid range for the family
+        mu = clamp_mu(&mu, family);
+
+        deviance_old = deviance;
+        deviance = family.deviance(y, &mu, Some(&prior_weights_vec));
+
+        // Use same convergence criterion as fit_glm_full: relative change in deviance
+        let rel_change = if deviance_old.abs() > 1e-10 {
+            (deviance_old - deviance).abs() / deviance_old.abs()
+        } else {
+            (deviance_old - deviance).abs()
+        };
+
+        if rel_change < config.tolerance {
+            converged = true;
+            break;
+        }
+    }
+
+    let eta_no_offset: Array1<f64> = eta.iter().zip(offset_vec.iter())
+        .map(|(&e, &o)| e - o).collect();
+    
+    let combined_final_weights: Array1<f64> = prior_weights_vec.iter()
+        .zip(final_weights.iter())
+        .map(|(&pw, &iw)| pw * iw).collect();
+
+    let (final_coefficients, _) =
+        solve_weighted_least_squares(x, &compute_working_response(y, &mu, &eta_no_offset, link), &combined_final_weights)?;
+
+    Ok(IRLSResult {
+        coefficients: final_coefficients,
+        fitted_values: mu,
+        linear_predictor: eta,
+        deviance,
+        iterations: iteration,
+        converged,
+        covariance_unscaled: cov_unscaled,
+        irls_weights: final_weights,
+        prior_weights: prior_weights_vec,
+        offset: offset_vec,
+        y: y.to_owned(),
+        family_name: family.name().to_string(),
+        penalty: Penalty::None,
+        design_matrix: None,
     })
 }
 

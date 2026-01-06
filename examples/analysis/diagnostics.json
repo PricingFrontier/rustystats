@@ -16,13 +16,13 @@
     "reason": "converged"
   },
   "fit_statistics": {
-    "deviance": 196741.36,
+    "deviance": 196741.4,
     "null_deviance": 192800.38,
     "deviance_explained": -0.020441,
-    "log_likelihood": -98370.68,
-    "aic": 196797.36,
-    "bic": 197117.32,
-    "pearson_chi2": 1678923.19,
+    "log_likelihood": -98370.7,
+    "aic": 196797.4,
+    "bic": 197117.35,
+    "pearson_chi2": 1678923.23,
     "dispersion_deviance": 0.290186,
     "dispersion_pearson": 2.4763
   },
@@ -1112,11 +1112,11 @@
     }
   ],
   "model_comparison": {
-    "likelihood_ratio_chi2": -3940.99,
+    "likelihood_ratio_chi2": -3941.02,
     "likelihood_ratio_df": 27,
     "likelihood_ratio_pvalue": 1.0,
     "deviance_reduction_pct": -2.0441,
-    "aic_improvement": -3994.99
+    "aic_improvement": -3995.02
   },
   "warnings": [
     {

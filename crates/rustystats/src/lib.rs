@@ -36,7 +36,7 @@ use ndarray::{Array1, Array2};
 // Import our core library
 use rustystats_core::families::{Family, GaussianFamily, PoissonFamily, BinomialFamily, GammaFamily, TweedieFamily, QuasiPoissonFamily, QuasiBinomialFamily, NegativeBinomialFamily};
 use rustystats_core::links::{Link, IdentityLink, LogLink, LogitLink};
-use rustystats_core::solvers::{fit_glm_full, fit_glm_regularized, fit_glm_coordinate_descent, IRLSConfig, IRLSResult};
+use rustystats_core::solvers::{fit_glm_full, fit_glm_warm_start, fit_glm_regularized, fit_glm_coordinate_descent, IRLSConfig, IRLSResult};
 use rustystats_core::regularization::{Penalty, RegularizationConfig};
 use rustystats_core::inference::{pvalue_z, confidence_interval_z, HCType, robust_covariance, robust_standard_errors};
 use rustystats_core::diagnostics::{
@@ -1432,9 +1432,19 @@ fn fit_negbinomial_py(
     let offset_array: Option<Array1<f64>> = offset.map(|o| o.as_array().to_owned());
     let weights_array: Option<Array1<f64>> = weights.map(|w| w.as_array().to_owned());
 
-    let irls_config = IRLSConfig {
+    // Use looser tolerance during theta iteration, tighter for final fit
+    let irls_config_loose = IRLSConfig {
         max_iterations: max_iter,
-        tolerance: tol,
+        tolerance: 1e-4,  // Looser tolerance during theta iteration
+        min_weight: 1e-10,
+        verbose: false,
+    };
+    
+    // For NegBin, use at least 1e-6 tolerance (statsmodels uses similar)
+    let final_tol = tol.max(1e-6);
+    let irls_config_final = IRLSConfig {
+        max_iterations: max_iter,
+        tolerance: final_tol,
         min_weight: 1e-10,
         verbose: false,
     };
@@ -1463,7 +1473,7 @@ fn fit_negbinomial_py(
             // First fit a Poisson to get initial mu
             let poisson = PoissonFamily;
             let init_result = fit_glm_full(
-                &y_array, &x_array, &poisson, link_fn.as_ref(), &irls_config,
+                &y_array, &x_array, &poisson, link_fn.as_ref(), &irls_config_loose,
                 offset_array.as_ref(), weights_array.as_ref(),
             ).map_err(|e| PyValueError::new_err(format!("Initial Poisson fit failed: {}", e)))?;
             
@@ -1472,16 +1482,32 @@ fn fit_negbinomial_py(
     };
 
     let mut result: IRLSResult;
+    let mut coefficients: Option<Array1<f64>> = None;
 
-    // Profile likelihood iteration
+    // Profile likelihood iteration with warm starts (using loose tolerance)
     for _iter in 0..max_theta_iter {
         let family = NegativeBinomialFamily::new(theta);
         
-        // Fit GLM with current theta
-        result = fit_glm_full(
-            &y_array, &x_array, &family, link_fn.as_ref(), &irls_config,
-            offset_array.as_ref(), weights_array.as_ref(),
-        ).map_err(|e| PyValueError::new_err(format!("GLM fitting failed: {}", e)))?;
+        // Fit GLM with current theta, using warm start if available (loose tolerance)
+        result = match &coefficients {
+            Some(coef) => {
+                // Use warm start from previous iteration
+                fit_glm_warm_start(
+                    &y_array, &x_array, &family, link_fn.as_ref(), &irls_config_loose,
+                    offset_array.as_ref(), weights_array.as_ref(), coef,
+                ).map_err(|e| PyValueError::new_err(format!("GLM fitting failed: {}", e)))?
+            }
+            None => {
+                // First iteration: start from scratch
+                fit_glm_full(
+                    &y_array, &x_array, &family, link_fn.as_ref(), &irls_config_loose,
+                    offset_array.as_ref(), weights_array.as_ref(),
+                ).map_err(|e| PyValueError::new_err(format!("GLM fitting failed: {}", e)))?
+            }
+        };
+        
+        // Store coefficients for warm start in next iteration
+        coefficients = Some(result.coefficients.clone());
 
         // Estimate optimal theta given fitted values
         let new_theta = estimate_theta_profile(
@@ -1502,12 +1528,22 @@ fn fit_negbinomial_py(
         theta = new_theta;
     }
 
-    // Final fit with converged theta
+    // Final fit with converged theta (using warm start, tight tolerance)
     let final_family = NegativeBinomialFamily::new(theta);
-    result = fit_glm_full(
-        &y_array, &x_array, &final_family, link_fn.as_ref(), &irls_config,
-        offset_array.as_ref(), weights_array.as_ref(),
-    ).map_err(|e| PyValueError::new_err(format!("Final GLM fit failed: {}", e)))?;
+    result = match &coefficients {
+        Some(coef) => {
+            fit_glm_warm_start(
+                &y_array, &x_array, &final_family, link_fn.as_ref(), &irls_config_final,
+                offset_array.as_ref(), weights_array.as_ref(), coef,
+            ).map_err(|e| PyValueError::new_err(format!("Final GLM fit failed: {}", e)))?
+        }
+        None => {
+            fit_glm_full(
+                &y_array, &x_array, &final_family, link_fn.as_ref(), &irls_config_final,
+                offset_array.as_ref(), weights_array.as_ref(),
+            ).map_err(|e| PyValueError::new_err(format!("Final GLM fit failed: {}", e)))?
+        }
+    };
 
     Ok(PyGLMResults {
         coefficients: result.coefficients,
