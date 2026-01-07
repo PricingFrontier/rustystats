@@ -1,107 +1,98 @@
 {
   "model_summary": {
-    "formula": "ClaimCount ~ C(Region) + VehPower + bs(VehAge, df=4) + bs(DrivAge, df=4) + BonusMalus + TE(Area) + TE(VehBrand)",
-    "family": "NegativeBinomial(theta=2.1124)",
+    "formula": "ClaimCount ~ VehAge + bs(DrivAge, df=4) + TE(Region) + TE(VehBrand) + TE(VehGas) + TE(Area) + TE(Area):bs(DrivAge, df=4)",
+    "family": "NegativeBinomial(theta=1.2947)",
     "link": "log",
     "n_observations": 678012,
-    "n_parameters": 31,
-    "degrees_of_freedom_residual": 677981,
+    "n_parameters": 10,
+    "degrees_of_freedom_residual": 678002,
     "converged": true,
-    "iterations": 10
+    "iterations": 6
   },
   "convergence_details": {
     "max_iterations_allowed": 25,
-    "iterations_used": 10,
+    "iterations_used": 6,
     "converged": true,
     "reason": "converged"
   },
   "fit_statistics": {
-    "deviance": 198408.75,
-    "null_deviance": 199142.56,
-    "deviance_explained": 0.003685,
-    "log_likelihood": -99204.38,
-    "aic": 198470.75,
-    "bic": 198824.99,
-    "pearson_chi2": 2408052.55,
-    "dispersion_deviance": 0.292646,
-    "dispersion_pearson": 3.5518
+    "deviance": 195075.15,
+    "null_deviance": 191679.85,
+    "deviance_explained": -0.017713,
+    "log_likelihood": -142986.16,
+    "aic": 285992.32,
+    "bic": 286106.59,
+    "pearson_chi2": 1620534.87,
+    "dispersion_deviance": 0.287721,
+    "dispersion_pearson": 2.3902
   },
   "loss_metrics": {
-    "family_deviance_loss": 0.292633,
-    "mse": 0.054618,
-    "mae": 0.097635,
-    "rmse": 0.233704
+    "family_deviance_loss": 0.287715,
+    "mse": 0.055133,
+    "mae": 0.098765,
+    "rmse": 0.234805
   },
   "calibration": {
-    "ae_ratio": 0.994,
+    "ae_ratio": 0.99,
     "hl_pvalue": 0.0,
     "problem_deciles": [
       {
         "decile": 0,
-        "ae": 6.03,
+        "ae": 5.95,
         "n": 67124,
         "ae_ci": [
-          5.72,
-          6.34
+          5.65,
+          6.25
         ]
       },
       {
         "decile": 1,
-        "ae": 2.97,
+        "ae": 2.86,
         "n": 67124,
         "ae_ci": [
-          2.84,
-          3.11
+          2.72,
+          2.99
         ]
       },
       {
         "decile": 2,
-        "ae": 2.04,
+        "ae": 2.14,
         "n": 67124,
         "ae_ci": [
-          1.96,
-          2.13
+          2.05,
+          2.22
         ]
       },
       {
         "decile": 3,
-        "ae": 1.44,
+        "ae": 1.48,
         "n": 67124,
         "ae_ci": [
-          1.39,
-          1.5
+          1.43,
+          1.54
         ]
       },
       {
         "decile": 4,
-        "ae": 1.19,
+        "ae": 1.24,
         "n": 67124,
         "ae_ci": [
-          1.15,
-          1.23
-        ]
-      },
-      {
-        "decile": 5,
-        "ae": 0.86,
-        "n": 67124,
-        "ae_ci": [
-          0.83,
-          0.89
+          1.2,
+          1.28
         ]
       },
       {
         "decile": 6,
-        "ae": 0.82,
+        "ae": 0.87,
         "n": 67124,
         "ae_ci": [
-          0.79,
-          0.84
+          0.85,
+          0.9
         ]
       },
       {
         "decile": 7,
-        "ae": 0.84,
+        "ae": 0.83,
         "n": 67124,
         "ae_ci": [
           0.81,
@@ -110,40 +101,40 @@
       },
       {
         "decile": 8,
-        "ae": 0.82,
+        "ae": 0.78,
         "n": 67124,
         "ae_ci": [
-          0.8,
-          0.84
+          0.76,
+          0.81
         ]
       },
       {
         "decile": 9,
-        "ae": 0.8,
+        "ae": 0.69,
         "n": 73896,
         "ae_ci": [
-          0.78,
-          0.82
+          0.67,
+          0.71
         ]
       }
     ]
   },
   "discrimination": {
-    "gini": 0.258,
-    "auc": 0.629,
-    "ks": 0.18,
-    "lift_10pct": 0.413,
-    "lift_20pct": 0.465
+    "gini": 0.209,
+    "auc": 0.604,
+    "ks": 0.153,
+    "lift_10pct": 0.436,
+    "lift_20pct": 0.469
   },
   "residual_summary": {
     "pearson": {
       "mean": 0.06,
-      "std": 1.88,
-      "skewness": 157.2
+      "std": 1.54,
+      "skewness": 15.0
     },
     "deviance": {
       "mean": -0.18,
-      "std": 0.51,
+      "std": 0.5,
       "skewness": 4.1
     }
   },
@@ -152,7 +143,7 @@
       "name": "Region",
       "factor_type": "categorical",
       "in_model": true,
-      "transformation": "Region[T.Aquitaine]",
+      "transformation": "TE(Region)",
       "univariate_stats": {
         "n_levels": 21,
         "n_rare_levels": 6,
@@ -163,187 +154,187 @@
           "bin": "Centre",
           "n": 160601,
           "actual": 9021,
-          "predicted": 9049,
-          "ae": 0.997,
+          "predicted": 8904,
+          "ae": 1.013,
           "ae_ci": [
-            0.976,
-            1.017
+            0.992,
+            1.034
           ]
         },
         {
           "bin": "Rhone-Alpes",
           "n": 84751,
           "actual": 4991,
-          "predicted": 5022,
-          "ae": 0.994,
+          "predicted": 4608,
+          "ae": 1.083,
           "ae_ci": [
-            0.966,
-            1.021
+            1.053,
+            1.113
           ]
         },
         {
           "bin": "Provence-Alpes-Cotes-D'Azur",
           "n": 79315,
           "actual": 3858,
-          "predicted": 3884,
-          "ae": 0.993,
+          "predicted": 3880,
+          "ae": 0.994,
           "ae_ci": [
-            0.962,
-            1.025
+            0.963,
+            1.026
           ]
         },
         {
           "bin": "Ile-de-France",
           "n": 69791,
           "actual": 3911,
-          "predicted": 3957,
-          "ae": 0.988,
+          "predicted": 4010,
+          "ae": 0.975,
           "ae_ci": [
-            0.957,
-            1.019
+            0.945,
+            1.006
           ]
         },
         {
           "bin": "Bretagne",
           "n": 42122,
           "actual": 2653,
-          "predicted": 2668,
-          "ae": 0.995,
+          "predicted": 2593,
+          "ae": 1.023,
           "ae_ci": [
-            0.957,
-            1.032
+            0.984,
+            1.062
           ]
         },
         {
           "bin": "Nord-Pas-de-Calais",
           "n": 40275,
           "actual": 1769,
-          "predicted": 1780,
-          "ae": 0.994,
+          "predicted": 2077,
+          "ae": 0.852,
           "ae_ci": [
-            0.947,
-            1.04
+            0.812,
+            0.892
           ]
         },
         {
           "bin": "Pays-de-la-Loire",
           "n": 38751,
           "actual": 1987,
-          "predicted": 1995,
-          "ae": 0.996,
+          "predicted": 2073,
+          "ae": 0.958,
           "ae_ci": [
-            0.952,
-            1.04
+            0.916,
+            1.001
           ]
         },
         {
           "bin": "Languedoc-Roussillon",
           "n": 35805,
           "actual": 1523,
-          "predicted": 1538,
-          "ae": 0.99,
+          "predicted": 1570,
+          "ae": 0.97,
           "ae_ci": [
-            0.94,
-            1.04
+            0.921,
+            1.018
           ]
         },
         {
           "bin": "Aquitaine",
           "n": 31329,
           "actual": 1334,
-          "predicted": 1340,
-          "ae": 0.996,
+          "predicted": 1446,
+          "ae": 0.923,
           "ae_ci": [
-            0.942,
-            1.049
+            0.873,
+            0.972
           ]
         },
         {
           "bin": "Poitou-Charentes",
           "n": 19046,
           "actual": 955,
-          "predicted": 958,
-          "ae": 0.997,
+          "predicted": 1021,
+          "ae": 0.935,
           "ae_ci": [
-            0.933,
-            1.06
+            0.876,
+            0.995
           ]
         },
         {
           "bin": "Midi-Pyrenees",
           "n": 17141,
           "actual": 667,
-          "predicted": 672,
-          "ae": 0.992,
+          "predicted": 776,
+          "ae": 0.859,
           "ae_ci": [
-            0.917,
-            1.067
+            0.794,
+            0.924
           ]
         },
         {
           "bin": "Basse-Normandie",
           "n": 10893,
           "actual": 628,
-          "predicted": 632,
-          "ae": 0.994,
+          "predicted": 663,
+          "ae": 0.947,
           "ae_ci": [
-            0.916,
-            1.071
+            0.873,
+            1.021
           ]
         },
         {
           "bin": "Bourgogne",
           "n": 10492,
           "actual": 505,
-          "predicted": 509,
-          "ae": 0.992,
+          "predicted": 516,
+          "ae": 0.979,
           "ae_ci": [
-            0.905,
-            1.078
+            0.893,
+            1.064
           ]
         },
         {
           "bin": "Haute-Normandie",
           "n": 8784,
           "actual": 295,
-          "predicted": 297,
-          "ae": 0.992,
+          "predicted": 317,
+          "ae": 0.93,
           "ae_ci": [
-            0.879,
-            1.106
+            0.824,
+            1.036
           ]
         },
         {
           "bin": "Picardie",
           "n": 7994,
           "actual": 433,
-          "predicted": 438,
-          "ae": 0.989,
+          "predicted": 411,
+          "ae": 1.055,
           "ae_ci": [
-            0.896,
-            1.082
+            0.955,
+            1.154
           ]
         },
         {
           "bin": "_Other",
           "n": 20922,
           "actual": 1030,
-          "predicted": 1040,
-          "ae": 0.991,
+          "predicted": 1047,
+          "ae": 0.983,
           "ae_ci": [
-            0.93,
-            1.051
+            0.923,
+            1.043
           ]
         }
       ],
       "residual_pattern": {
-        "resid_corr": 0.0667,
-        "var_explained": 8.9e-05
+        "resid_corr": 0.0637,
+        "var_explained": 0.000168
       },
       "significance": {
-        "chi2": 76.11,
+        "chi2": 47.52,
         "p": 0.0,
-        "dev_contrib": 76.11
+        "dev_contrib": 47.52
       }
     },
     {
@@ -361,77 +352,77 @@
           "bin": "C",
           "n": 191880,
           "actual": 9719,
-          "predicted": 9931,
-          "ae": 0.979,
+          "predicted": 10038,
+          "ae": 0.968,
           "ae_ci": [
-            0.959,
-            0.998
+            0.949,
+            0.987
           ]
         },
         {
           "bin": "D",
           "n": 151595,
           "actual": 8307,
-          "predicted": 8071,
-          "ae": 1.029,
+          "predicted": 8333,
+          "ae": 0.997,
           "ae_ci": [
-            1.007,
-            1.051
+            0.975,
+            1.018
           ]
         },
         {
           "bin": "E",
           "n": 137167,
           "actual": 7721,
-          "predicted": 7301,
-          "ae": 1.058,
+          "predicted": 7154,
+          "ae": 1.079,
           "ae_ci": [
-            1.034,
-            1.081
+            1.055,
+            1.103
           ]
         },
         {
           "bin": "A",
           "n": 103957,
           "actual": 4958,
-          "predicted": 5279,
-          "ae": 0.939,
+          "predicted": 5140,
+          "ae": 0.965,
           "ae_ci": [
-            0.913,
-            0.965
+            0.938,
+            0.991
           ]
         },
         {
           "bin": "B",
           "n": 75459,
           "actual": 3739,
-          "predicted": 3964,
-          "ae": 0.943,
+          "predicted": 3942,
+          "ae": 0.949,
           "ae_ci": [
-            0.913,
-            0.974
+            0.918,
+            0.979
           ]
         },
         {
           "bin": "F",
           "n": 17954,
           "actual": 1116,
-          "predicted": 1235,
-          "ae": 0.904,
+          "predicted": 1305,
+          "ae": 0.855,
           "ae_ci": [
-            0.851,
-            0.957
+            0.805,
+            0.906
           ]
         }
       ],
       "residual_pattern": {
-        "resid_corr": 0.058,
-        "var_explained": 5.7e-05
+        "resid_corr": 0.056,
+        "var_explained": 5.2e-05
       },
       "significance": {
-        "chi2": 211.21,
+        "chi2": 241.06,
         "p": 0.0,
-        "dev_contrib": 211.21
+        "dev_contrib": 241.06
       }
     },
     {
@@ -449,44 +440,44 @@
           "bin": "B12",
           "n": 166024,
           "actual": 8630,
-          "predicted": 8715,
-          "ae": 0.99,
+          "predicted": 8723,
+          "ae": 0.989,
           "ae_ci": [
-            0.969,
-            1.011
+            0.968,
+            1.01
           ]
         },
         {
           "bin": "B1",
           "n": 162736,
           "actual": 8566,
-          "predicted": 8558,
-          "ae": 1.001,
+          "predicted": 8624,
+          "ae": 0.993,
           "ae_ci": [
-            0.98,
-            1.022
+            0.972,
+            1.014
           ]
         },
         {
           "bin": "B2",
           "n": 159861,
           "actual": 8446,
-          "predicted": 8556,
-          "ae": 0.987,
+          "predicted": 8564,
+          "ae": 0.986,
           "ae_ci": [
-            0.966,
-            1.008
+            0.965,
+            1.007
           ]
         },
         {
           "bin": "B3",
           "n": 53394,
           "actual": 2796,
-          "predicted": 2868,
-          "ae": 0.975,
+          "predicted": 2906,
+          "ae": 0.962,
           "ae_ci": [
-            0.939,
-            1.011
+            0.927,
+            0.998
           ]
         },
         {
@@ -504,84 +495,84 @@
           "bin": "B6",
           "n": 28548,
           "actual": 1451,
-          "predicted": 1509,
-          "ae": 0.962,
+          "predicted": 1525,
+          "ae": 0.951,
           "ae_ci": [
-            0.912,
-            1.011
+            0.902,
+            1.0
           ]
         },
         {
           "bin": "B4",
           "n": 25179,
           "actual": 1300,
-          "predicted": 1340,
-          "ae": 0.97,
+          "predicted": 1385,
+          "ae": 0.939,
           "ae_ci": [
-            0.917,
-            1.023
+            0.888,
+            0.99
           ]
         },
         {
           "bin": "B10",
           "n": 17707,
           "actual": 850,
-          "predicted": 884,
-          "ae": 0.962,
+          "predicted": 848,
+          "ae": 1.003,
           "ae_ci": [
-            0.897,
-            1.027
+            0.935,
+            1.07
           ]
         },
         {
           "bin": "B11",
           "n": 13585,
           "actual": 719,
-          "predicted": 656,
-          "ae": 1.096,
+          "predicted": 649,
+          "ae": 1.107,
           "ae_ci": [
-            1.016,
-            1.176
+            1.026,
+            1.188
           ]
         },
         {
           "bin": "B13",
           "n": 12178,
           "actual": 641,
-          "predicted": 626,
-          "ae": 1.025,
+          "predicted": 614,
+          "ae": 1.044,
           "ae_ci": [
-            0.945,
-            1.104
+            0.963,
+            1.124
           ]
         },
         {
           "bin": "_Other",
           "n": 4047,
           "actual": 164,
-          "predicted": 190,
-          "ae": 0.861,
+          "predicted": 193,
+          "ae": 0.851,
           "ae_ci": [
-            0.729,
-            0.993
+            0.721,
+            0.982
           ]
         }
       ],
       "residual_pattern": {
-        "resid_corr": 0.0431,
-        "var_explained": 0.000297
+        "resid_corr": 0.0466,
+        "var_explained": 0.000357
       },
       "significance": {
-        "chi2": 237.05,
+        "chi2": 481.14,
         "p": 0.0,
-        "dev_contrib": 237.05
+        "dev_contrib": 481.14
       }
     },
     {
       "name": "VehGas",
       "factor_type": "categorical",
-      "in_model": false,
-      "transformation": null,
+      "in_model": true,
+      "transformation": "TE(VehGas)",
       "univariate_stats": {
         "n_levels": 2,
         "n_rare_levels": 0,
@@ -592,35 +583,39 @@
           "bin": "Regular",
           "n": 345876,
           "actual": 19101,
-          "predicted": 18730,
-          "ae": 1.02,
+          "predicted": 19291,
+          "ae": 0.99,
           "ae_ci": [
-            1.005,
-            1.034
+            0.976,
+            1.004
           ]
         },
         {
           "bin": "Diesel",
           "n": 332136,
           "actual": 16459,
-          "predicted": 17050,
-          "ae": 0.965,
+          "predicted": 16621,
+          "ae": 0.99,
           "ae_ci": [
-            0.951,
-            0.98
+            0.975,
+            1.005
           ]
         }
       ],
       "residual_pattern": {
-        "resid_corr": 0.0579,
-        "var_explained": 0.000118
+        "resid_corr": 0.0585,
+        "var_explained": 0.000104
       },
-      "significance": null
+      "significance": {
+        "chi2": 98.31,
+        "p": 0.0,
+        "dev_contrib": 98.31
+      }
     },
     {
       "name": "VehPower",
       "factor_type": "continuous",
-      "in_model": true,
+      "in_model": false,
       "transformation": null,
       "univariate_stats": {
         "mean": 6.4546,
@@ -645,84 +640,80 @@
           "bin": "4.00-5.00",
           "n": 115349,
           "actual": 5605,
-          "predicted": 6096,
-          "ae": 0.919,
+          "predicted": 6247,
+          "ae": 0.897,
           "ae_ci": [
-            0.895,
-            0.943
+            0.874,
+            0.921
           ]
         },
         {
           "bin": "5.00-6.00",
           "n": 124821,
           "actual": 7159,
-          "predicted": 6886,
-          "ae": 1.04,
+          "predicted": 6951,
+          "ae": 1.03,
           "ae_ci": [
-            1.016,
-            1.064
+            1.006,
+            1.054
           ]
         },
         {
           "bin": "6.00-7.00",
           "n": 148976,
           "actual": 8260,
-          "predicted": 7885,
-          "ae": 1.048,
+          "predicted": 7947,
+          "ae": 1.039,
           "ae_ci": [
-            1.025,
-            1.07
+            1.017,
+            1.062
           ]
         },
         {
           "bin": "7.00-8.00",
           "n": 145400,
           "actual": 7503,
-          "predicted": 7661,
+          "predicted": 7662,
           "ae": 0.979,
           "ae_ci": [
             0.957,
-            1.002
+            1.001
           ]
         },
         {
           "bin": "8.00-9.00",
           "n": 46956,
           "actual": 1904,
-          "predicted": 2357,
-          "ae": 0.808,
+          "predicted": 2290,
+          "ae": 0.831,
           "ae_ci": [
-            0.772,
-            0.844
+            0.794,
+            0.869
           ]
         },
         {
           "bin": "9.00-15.00",
           "n": 96510,
           "actual": 5129,
-          "predicted": 4895,
-          "ae": 1.048,
+          "predicted": 4814,
+          "ae": 1.065,
           "ae_ci": [
-            1.019,
-            1.076
+            1.036,
+            1.095
           ]
         }
       ],
       "residual_pattern": {
-        "resid_corr": -0.0022,
-        "var_explained": 5e-06
+        "resid_corr": -0.0006,
+        "var_explained": 0.0
       },
-      "significance": {
-        "chi2": 66.43,
-        "p": 0.0,
-        "dev_contrib": 66.43
-      }
+      "significance": null
     },
     {
       "name": "VehAge",
       "factor_type": "continuous",
       "in_model": true,
-      "transformation": "bs(VehAge, 2/4)",
+      "transformation": null,
       "univariate_stats": {
         "mean": 7.0443,
         "std": 5.6662,
@@ -746,73 +737,84 @@
           "bin": "0.00-1.00",
           "n": 57739,
           "actual": 4996,
-          "predicted": 2538,
-          "ae": 1.968,
+          "predicted": 2301,
+          "ae": 2.171,
           "ae_ci": [
-            1.914,
-            2.023
+            2.111,
+            2.231
           ]
         },
         {
           "bin": "1.00-2.00",
           "n": 71284,
           "actual": 2899,
-          "predicted": 4523,
-          "ae": 0.641,
+          "predicted": 4284,
+          "ae": 0.677,
           "ae_ci": [
-            0.618,
-            0.664
+            0.652,
+            0.701
           ]
         },
         {
           "bin": "2.00-3.00",
           "n": 59124,
           "actual": 2742,
-          "predicted": 3692,
-          "ae": 0.743,
+          "predicted": 3659,
+          "ae": 0.749,
           "ae_ci": [
-            0.715,
-            0.771
+            0.721,
+            0.778
           ]
         },
         {
           "bin": "3.00-4.00",
           "n": 50261,
           "actual": 2296,
-          "predicted": 2989,
-          "ae": 0.768,
+          "predicted": 3047,
+          "ae": 0.754,
           "ae_ci": [
-            0.737,
-            0.8
+            0.723,
+            0.784
           ]
         },
         {
           "bin": "4.00-6.00",
           "n": 82229,
           "actual": 4364,
-          "predicted": 4795,
-          "ae": 0.91,
+          "predicted": 5001,
+          "ae": 0.873,
           "ae_ci": [
-            0.883,
-            0.937
+            0.847,
+            0.898
           ]
         },
         {
           "bin": "6.00-8.00",
           "n": 68597,
           "actual": 4062,
-          "predicted": 3768,
-          "ae": 1.078,
+          "predicted": 3992,
+          "ae": 1.018,
           "ae_ci": [
-            1.045,
-            1.111
+            0.986,
+            1.049
           ]
         },
         {
           "bin": "8.00-10.00",
           "n": 64602,
           "actual": 3629,
-          "predicted": 3313,
+          "predicted": 3530,
+          "ae": 1.028,
+          "ae_ci": [
+            0.995,
+            1.062
+          ]
+        },
+        {
+          "bin": "10.00-12.00",
+          "n": 67824,
+          "actual": 3695,
+          "predicted": 3373,
           "ae": 1.095,
           "ae_ci": [
             1.06,
@@ -820,47 +822,36 @@
           ]
         },
         {
-          "bin": "10.00-12.00",
-          "n": 67824,
-          "actual": 3695,
-          "predicted": 3227,
-          "ae": 1.145,
-          "ae_ci": [
-            1.108,
-            1.182
-          ]
-        },
-        {
           "bin": "12.00-15.00",
           "n": 81010,
           "actual": 3990,
-          "predicted": 3731,
-          "ae": 1.069,
+          "predicted": 3779,
+          "ae": 1.056,
           "ae_ci": [
-            1.036,
-            1.103
+            1.023,
+            1.089
           ]
         },
         {
           "bin": "15.00-100.00",
           "n": 75342,
           "actual": 2887,
-          "predicted": 3205,
-          "ae": 0.901,
+          "predicted": 2947,
+          "ae": 0.98,
           "ae_ci": [
-            0.868,
-            0.934
+            0.944,
+            1.016
           ]
         }
       ],
       "residual_pattern": {
-        "resid_corr": -0.0008,
-        "var_explained": 1e-06
+        "resid_corr": -0.0121,
+        "var_explained": 0.000146
       },
       "significance": {
-        "chi2": 2333.16,
+        "chi2": 2745.31,
         "p": 0.0,
-        "dev_contrib": 2333.16
+        "dev_contrib": 2745.31
       }
     },
     {
@@ -891,127 +882,127 @@
           "bin": "18.00-28.00",
           "n": 61022,
           "actual": 3943,
-          "predicted": 3761,
-          "ae": 1.048,
+          "predicted": 3675,
+          "ae": 1.073,
           "ae_ci": [
-            1.016,
-            1.081
+            1.04,
+            1.107
           ]
         },
         {
           "bin": "28.00-32.00",
           "n": 59483,
           "actual": 2586,
-          "predicted": 3022,
-          "ae": 0.856,
+          "predicted": 3089,
+          "ae": 0.837,
           "ae_ci": [
-            0.823,
-            0.889
+            0.805,
+            0.87
           ]
         },
         {
           "bin": "32.00-36.00",
           "n": 67572,
           "actual": 2860,
-          "predicted": 3175,
-          "ae": 0.901,
+          "predicted": 3302,
+          "ae": 0.866,
           "ae_ci": [
-            0.868,
-            0.934
+            0.834,
+            0.898
           ]
         },
         {
           "bin": "36.00-40.00",
           "n": 69491,
           "actual": 3075,
-          "predicted": 3250,
-          "ae": 0.946,
+          "predicted": 3322,
+          "ae": 0.926,
           "ae_ci": [
-            0.913,
-            0.979
+            0.893,
+            0.958
           ]
         },
         {
           "bin": "40.00-44.00",
           "n": 67679,
           "actual": 3329,
-          "predicted": 3199,
-          "ae": 1.041,
+          "predicted": 3211,
+          "ae": 1.037,
           "ae_ci": [
-            1.005,
-            1.076
+            1.002,
+            1.072
           ]
         },
         {
           "bin": "44.00-48.00",
           "n": 65732,
           "actual": 3667,
-          "predicted": 3182,
-          "ae": 1.152,
+          "predicted": 3160,
+          "ae": 1.16,
           "ae_ci": [
-            1.115,
-            1.19
+            1.123,
+            1.198
           ]
         },
         {
           "bin": "48.00-53.00",
           "n": 83002,
           "actual": 4819,
-          "predicted": 4305,
-          "ae": 1.119,
+          "predicted": 4226,
+          "ae": 1.14,
           "ae_ci": [
-            1.088,
-            1.151
+            1.108,
+            1.173
           ]
         },
         {
           "bin": "53.00-57.00",
           "n": 59596,
           "actual": 3172,
-          "predicted": 3229,
-          "ae": 0.982,
+          "predicted": 3175,
+          "ae": 0.999,
           "ae_ci": [
-            0.948,
-            1.017
+            0.964,
+            1.034
           ]
         },
         {
           "bin": "57.00-65.00",
           "n": 71273,
           "actual": 3648,
-          "predicted": 4086,
-          "ae": 0.893,
+          "predicted": 4063,
+          "ae": 0.898,
           "ae_ci": [
-            0.864,
-            0.922
+            0.869,
+            0.927
           ]
         },
         {
           "bin": "65.00-100.00",
           "n": 73162,
           "actual": 4461,
-          "predicted": 4571,
-          "ae": 0.976,
+          "predicted": 4689,
+          "ae": 0.951,
           "ae_ci": [
-            0.947,
-            1.004
+            0.923,
+            0.979
           ]
         }
       ],
       "residual_pattern": {
-        "resid_corr": -0.0008,
-        "var_explained": 1e-06
+        "resid_corr": -0.0006,
+        "var_explained": 0.0
       },
       "significance": {
-        "chi2": 268.88,
+        "chi2": 2254.63,
         "p": 0.0,
-        "dev_contrib": 268.88
+        "dev_contrib": 2254.63
       }
     },
     {
       "name": "BonusMalus",
       "factor_type": "continuous",
-      "in_model": true,
+      "in_model": false,
       "transformation": null,
       "univariate_stats": {
         "mean": 59.7615,
@@ -1036,81 +1027,93 @@
           "bin": "50.00-53.00",
           "n": 404795,
           "actual": 18535,
-          "predicted": 19445,
-          "ae": 0.953,
+          "predicted": 22427,
+          "ae": 0.826,
           "ae_ci": [
-            0.939,
-            0.967
+            0.815,
+            0.838
           ]
         },
         {
           "bin": "53.00-60.00",
           "n": 56444,
           "actual": 2920,
-          "predicted": 2525,
-          "ae": 1.156,
+          "predicted": 2883,
+          "ae": 1.013,
           "ae_ci": [
-            1.114,
-            1.198
+            0.976,
+            1.05
           ]
         },
         {
           "bin": "60.00-72.00",
           "n": 76348,
           "actual": 4594,
-          "predicted": 3744,
-          "ae": 1.227,
+          "predicted": 3747,
+          "ae": 1.226,
           "ae_ci": [
-            1.192,
-            1.263
+            1.191,
+            1.261
           ]
         },
         {
           "bin": "72.00-85.00",
           "n": 61155,
           "actual": 3293,
-          "predicted": 3514,
-          "ae": 0.937,
+          "predicted": 2971,
+          "ae": 1.109,
           "ae_ci": [
-            0.905,
-            0.969
+            1.071,
+            1.146
           ]
         },
         {
           "bin": "85.00-230.00",
           "n": 79270,
           "actual": 6218,
-          "predicted": 6552,
-          "ae": 0.949,
+          "predicted": 3884,
+          "ae": 1.601,
           "ae_ci": [
-            0.925,
-            0.973
+            1.561,
+            1.641
           ]
         }
       ],
       "residual_pattern": {
-        "resid_corr": 0.0017,
-        "var_explained": 3e-06
+        "resid_corr": 0.0414,
+        "var_explained": 0.001715
       },
-      "significance": {
-        "chi2": 16838.63,
-        "p": 0.0,
-        "dev_contrib": 16838.63
-      }
+      "significance": null
     }
   ],
-  "interaction_candidates": [],
+  "interaction_candidates": [
+    {
+      "factor1": "BonusMalus",
+      "factor2": "VehAge",
+      "interaction_strength": 0.002941,
+      "pvalue": 0.0,
+      "n_cells": 15,
+      "current_terms": [
+        "VehAge"
+      ],
+      "recommendation": "Consider BonusMalus:VehAge interaction or joint spline"
+    }
+  ],
   "model_comparison": {
-    "likelihood_ratio_chi2": 733.81,
-    "likelihood_ratio_df": 30,
-    "likelihood_ratio_pvalue": 0.0,
-    "deviance_reduction_pct": 0.368482,
-    "aic_improvement": 673.81
+    "likelihood_ratio_chi2": -3395.31,
+    "likelihood_ratio_df": 9,
+    "likelihood_ratio_pvalue": 1.0,
+    "deviance_reduction_pct": -1.7713,
+    "aic_improvement": -3413.31
   },
   "warnings": [
     {
+      "type": "negbinomial_regularization",
+      "message": "Negative binomial fitting applies minimum ridge regularization (alpha=1e-6) for numerical stability. Coefficient bias is negligible but inference is approximate."
+    },
+    {
       "type": "high_dispersion",
-      "message": "Dispersion 3.55 suggests overdispersion. Consider quasipoisson or negbinomial."
+      "message": "Dispersion 2.39 suggests overdispersion. Consider quasipoisson or negbinomial."
     }
   ]
 }

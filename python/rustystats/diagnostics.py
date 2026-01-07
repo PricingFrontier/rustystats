@@ -1099,9 +1099,37 @@ class DiagnosticsComputer:
         fit_stats: Dict[str, float],
         calibration: Dict[str, Any],
         factors: List[FactorDiagnostics],
+        family: str = "",
     ) -> List[Dict[str, str]]:
         """Generate warnings based on diagnostics."""
         warnings = []
+        
+        # NegBin-specific warnings
+        family_lower = family.lower() if family else ""
+        if family_lower.startswith("negativebinomial"):
+            # Regularization warning
+            warnings.append({
+                "type": "negbinomial_regularization",
+                "message": "Negative binomial fitting applies minimum ridge regularization (alpha=1e-6) for numerical stability. Coefficient bias is negligible but inference is approximate."
+            })
+            
+            # Large theta warning (essentially Poisson)
+            if "theta=" in family:
+                try:
+                    theta_str = family.split("theta=")[1].rstrip(")")
+                    theta = float(theta_str)
+                    if theta >= 100:
+                        warnings.append({
+                            "type": "negbinomial_large_theta",
+                            "message": f"Estimated theta={theta:.1f} is very large, suggesting minimal overdispersion. Consider using Poisson instead for simpler interpretation."
+                        })
+                    elif theta <= 0.1:
+                        warnings.append({
+                            "type": "negbinomial_small_theta",
+                            "message": f"Estimated theta={theta:.4f} is very small, indicating severe overdispersion. Check for missing covariates or consider zero-inflated models."
+                        })
+                except (ValueError, IndexError):
+                    pass
         
         # High dispersion warning
         dispersion = fit_stats.get("dispersion_pearson", 1.0)
@@ -2414,7 +2442,7 @@ def compute_diagnostics(
         )
     
     model_comparison = computer.compute_model_comparison()
-    warnings = computer.generate_warnings(fit_stats, calibration, factors)
+    warnings = computer.generate_warnings(fit_stats, calibration, factors, family=family)
     
     # Extract convergence info
     converged = result.converged if hasattr(result, 'converged') else True

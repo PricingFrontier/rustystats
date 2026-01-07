@@ -44,7 +44,7 @@ use rustystats_core::diagnostics::{
     estimate_dispersion_pearson, pearson_chi2,
     log_likelihood_gaussian, log_likelihood_poisson, log_likelihood_binomial, log_likelihood_gamma,
     aic, bic, null_deviance,
-    estimate_theta_profile, estimate_theta_moments,
+    estimate_theta_profile, estimate_theta_moments, nb_loglikelihood,
     // Calibration and discrimination
     compute_calibration_curve, compute_discrimination_stats, compute_lorenz_curve,
     hosmer_lemeshow_test,
@@ -997,12 +997,36 @@ impl PyGLMResults {
         let scale = self.scale();
         let weights = self.maybe_weights();
         
+        // Handle NegativeBinomial(theta=X.XXXX) format
+        if self.family_name.starts_with("NegativeBinomial") {
+            // Parse theta from family name like "NegativeBinomial(theta=1.3802)"
+            let theta = if let Some(start) = self.family_name.find("theta=") {
+                let rest = &self.family_name[start + 6..];
+                rest.trim_end_matches(')').parse::<f64>().unwrap_or(1.0)
+            } else {
+                1.0
+            };
+            return nb_loglikelihood(&self.y, &self.fitted_values, theta, weights);
+        }
+        
+        // Handle Tweedie(p=X.XX) format
+        if self.family_name.starts_with("Tweedie") {
+            // For Tweedie, log-likelihood is complex - use deviance-based approximation
+            // This is a limitation; true Tweedie LL requires special functions
+            return -self.deviance / 2.0;
+        }
+        
         match self.family_name.as_str() {
             "Gaussian" => log_likelihood_gaussian(&self.y, &self.fitted_values, scale, weights),
-            "Poisson" => log_likelihood_poisson(&self.y, &self.fitted_values, weights),
-            "Binomial" => log_likelihood_binomial(&self.y, &self.fitted_values, weights),
+            "Poisson" | "QuasiPoisson" => log_likelihood_poisson(&self.y, &self.fitted_values, weights),
+            "Binomial" | "QuasiBinomial" => log_likelihood_binomial(&self.y, &self.fitted_values, weights),
             "Gamma" => log_likelihood_gamma(&self.y, &self.fitted_values, scale, weights),
-            _ => log_likelihood_gaussian(&self.y, &self.fitted_values, scale, weights),
+            other => {
+                // Return NaN for unknown families rather than silently using wrong formula
+                eprintln!("Warning: Unknown family '{}' in llf() - returning NaN. \
+                          Supported: Gaussian, Poisson, Binomial, Gamma, NegativeBinomial, Tweedie, QuasiPoisson, QuasiBinomial", other);
+                f64::NAN
+            }
         }
     }
 
@@ -2428,12 +2452,35 @@ fn compute_fit_statistics_py<'py>(
         y_arr.iter().zip(mu_arr.iter()).map(|(y, m)| (y - m).powi(2)).sum::<f64>() / df_resid as f64
     } else { 1.0 };
     
-    let llf = match family.to_lowercase().as_str() {
-        "gaussian" | "normal" => log_likelihood_gaussian(&y_arr, &mu_arr, scale, None),
-        "poisson" | "quasipoisson" => log_likelihood_poisson(&y_arr, &mu_arr, None),
-        "binomial" | "quasibinomial" => log_likelihood_binomial(&y_arr, &mu_arr, None),
-        "gamma" => log_likelihood_gamma(&y_arr, &mu_arr, scale, None),
-        _ => -deviance / 2.0,
+    let family_lower = family.to_lowercase();
+    
+    // Handle NegativeBinomial with theta parameter
+    let llf = if family_lower.starts_with("negativebinomial") || family_lower.starts_with("negbinomial") {
+        // Parse theta from family string like "negativebinomial(theta=1.38)"
+        let theta = if let Some(start) = family_lower.find("theta=") {
+            let rest = &family_lower[start + 6..];
+            let end = rest.find(')').unwrap_or(rest.len());
+            rest[..end].parse::<f64>().unwrap_or(1.0)
+        } else {
+            1.0
+        };
+        nb_loglikelihood(&y_arr, &mu_arr, theta, None)
+    } else if family_lower.starts_with("tweedie") {
+        // Tweedie LL is complex - use deviance-based approximation
+        -deviance / 2.0
+    } else {
+        match family_lower.as_str() {
+            "gaussian" | "normal" => log_likelihood_gaussian(&y_arr, &mu_arr, scale, None),
+            "poisson" | "quasipoisson" => log_likelihood_poisson(&y_arr, &mu_arr, None),
+            "binomial" | "quasibinomial" => log_likelihood_binomial(&y_arr, &mu_arr, None),
+            "gamma" => log_likelihood_gamma(&y_arr, &mu_arr, scale, None),
+            other => {
+                // Return NaN for unknown families rather than silently using wrong formula
+                eprintln!("Warning: Unknown family '{}' in compute_fit_statistics_py - returning NaN for log-likelihood. \
+                          Supported: gaussian, poisson, binomial, gamma, negativebinomial, tweedie, quasipoisson, quasibinomial", other);
+                f64::NAN
+            }
+        }
     };
     
     let aic_val = aic(llf, n_params);

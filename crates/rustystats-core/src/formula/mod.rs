@@ -49,6 +49,62 @@ pub struct ParsedFormula {
     pub has_intercept: bool,
 }
 
+/// Find the position of the closing parenthesis that matches the opening one at `start`.
+fn find_matching_paren(s: &str, start: usize) -> Option<usize> {
+    let bytes = s.as_bytes();
+    if start >= bytes.len() || bytes[start] != b'(' {
+        return None;
+    }
+    let mut depth = 0;
+    for (i, &b) in bytes[start..].iter().enumerate() {
+        match b {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(start + i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Split a string by a delimiter, respecting parentheses.
+/// E.g., "TE(Area):bs(DrivAge, df=4)" splits into ["TE(Area)", "bs(DrivAge, df=4)"]
+fn split_respecting_parens(s: &str, delim: char) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0;
+    
+    for c in s.chars() {
+        match c {
+            '(' => {
+                depth += 1;
+                current.push(c);
+            }
+            ')' => {
+                depth -= 1;
+                current.push(c);
+            }
+            c if c == delim && depth == 0 => {
+                if !current.is_empty() {
+                    parts.push(current.trim().to_string());
+                    current = String::new();
+                }
+            }
+            _ => current.push(c),
+        }
+    }
+    
+    if !current.is_empty() {
+        parts.push(current.trim().to_string());
+    }
+    
+    parts
+}
+
 /// Parse a target encoding term like "TE(brand)" or "TE(brand, prior_weight=2.0)"
 fn parse_target_encoding_term(term: &str) -> Option<TargetEncodingTermSpec> {
     let term = term.trim();
@@ -58,9 +114,9 @@ fn parse_target_encoding_term(term: &str) -> Option<TargetEncodingTermSpec> {
         return None;
     }
     
-    // Find matching parenthesis
+    // Find matching parenthesis (not rfind - need to match balanced parens)
     let start = term.find('(')?;
-    let end = term.rfind(')')?;
+    let end = find_matching_paren(term, start)?;
     if end <= start {
         return None;
     }
@@ -119,7 +175,7 @@ fn parse_identity_term(term: &str) -> Option<IdentityTermSpec> {
     
     // Find matching parenthesis
     let start = term.find('(')?;
-    let end = term.rfind(')')?;
+    let end = find_matching_paren(term, start)?;
     if end <= start {
         return None;
     }
@@ -147,7 +203,7 @@ fn parse_spline_term(term: &str) -> Option<SplineTerm> {
     
     // Find matching parenthesis
     let start = term.find('(')?;
-    let end = term.rfind(')')?;
+    let end = find_matching_paren(term, start)?;
     if end <= start {
         return None;
     }
@@ -374,42 +430,60 @@ pub fn parse_formula(formula: &str) -> Result<ParsedFormula, String> {
             continue;
         }
         
-        if term.contains('*') && !term.starts_with("bs(") && !term.starts_with("ns(") && !term.starts_with("TE(") {
+        if term.contains('*') {
             // Full interaction: a*b = a + b + a:b
-            let factor_strs: Vec<&str> = term.split('*').collect();
+            // Use split_respecting_parens for cases like TE(Area)*bs(Age, df=4)
+            let factor_strs = split_respecting_parens(&term, '*');
             
-            // Add main effects
-            for f in &factor_strs {
-                let clean = clean_var_name(f);
-                if !main_effects.contains(&clean) {
+            if factor_strs.len() > 1 {
+                // Add main effects
+                for f in &factor_strs {
+                    let clean = clean_var_name(f);
+                    if !main_effects.contains(&clean) {
+                        main_effects.push(clean);
+                    }
+                }
+                
+                // Add interaction
+                let factors: Vec<String> = factor_strs.iter().map(|f| clean_var_name(f)).collect();
+                let categorical_flags: Vec<bool> = factor_strs
+                    .iter()
+                    .map(|f| is_categorical(f, &categorical_vars))
+                    .collect();
+                
+                interactions.push(InteractionTerm {
+                    factors,
+                    categorical_flags,
+                });
+            } else {
+                // Single factor - treat as main effect
+                let clean = clean_var_name(&term);
+                if !clean.is_empty() && !main_effects.contains(&clean) {
                     main_effects.push(clean);
                 }
             }
-            
-            // Add interaction
-            let factors: Vec<String> = factor_strs.iter().map(|f| clean_var_name(f)).collect();
-            let categorical_flags: Vec<bool> = factor_strs
-                .iter()
-                .map(|f| is_categorical(f, &categorical_vars))
-                .collect();
-            
-            interactions.push(InteractionTerm {
-                factors,
-                categorical_flags,
-            });
-        } else if term.contains(':') && !term.starts_with("bs(") && !term.starts_with("ns(") && !term.starts_with("TE(") {
+        } else if term.contains(':') {
             // Pure interaction: a:b (no main effects)
-            let factor_strs: Vec<&str> = term.split(':').collect();
-            let factors: Vec<String> = factor_strs.iter().map(|f| clean_var_name(f)).collect();
-            let categorical_flags: Vec<bool> = factor_strs
-                .iter()
-                .map(|f| is_categorical(f, &categorical_vars))
-                .collect();
-            
-            interactions.push(InteractionTerm {
-                factors,
-                categorical_flags,
-            });
+            // Use split_respecting_parens to handle TE(Area):bs(DrivAge, df=4) correctly
+            let factor_strs = split_respecting_parens(&term, ':');
+            if factor_strs.len() > 1 {
+                let factors: Vec<String> = factor_strs.iter().map(|f| clean_var_name(f)).collect();
+                let categorical_flags: Vec<bool> = factor_strs
+                    .iter()
+                    .map(|f| is_categorical(f, &categorical_vars))
+                    .collect();
+                
+                interactions.push(InteractionTerm {
+                    factors,
+                    categorical_flags,
+                });
+            } else {
+                // Single factor after split - treat as main effect
+                let clean = clean_var_name(&term);
+                if !clean.is_empty() && !main_effects.contains(&clean) {
+                    main_effects.push(clean);
+                }
+            }
         } else {
             // Main effect
             let clean = clean_var_name(&term);

@@ -188,6 +188,35 @@ pub fn fit_glm_warm_start(
 
 This dramatically speeds up Negative Binomial fitting where theta estimation requires multiple GLM fits with slightly different variance functions.
 
+### Negative Binomial Fitting
+
+Negative Binomial models are fitted using a Python-side profile likelihood approach that provides automatic numerical stability:
+
+```python
+# In formula.py: _fit_negbinomial_profile()
+
+# 1. Initial Poisson fit for starting values
+poisson_result = fit_glm(y, X, "poisson", ...)
+
+# 2. Moment-based theta estimation
+excess_var = mean(residuals**2) - mean(mu)
+theta = mean(mu)**2 / excess_var  # Bounded to [0.01, 1000]
+
+# 3. Iterative refinement with minimum ridge regularization
+effective_alpha = max(alpha, 1e-6)  # Always apply small ridge
+for _ in range(max_theta_iter):
+    result = fit_glm(y, X, "negbinomial", theta=theta, alpha=effective_alpha)
+    # Update theta from new fitted values
+    # Check convergence
+```
+
+**Key Features**:
+
+- **Minimum ridge penalty**: α ≥ 1e-6 prevents NaN coefficients from ill-conditioned matrices
+- **Adaptive regularization**: If NaN detected, automatically increases α (up to 1.0)
+- **Fallback mechanism**: Uses last successful coefficients if final extraction fails
+- **Bounded theta**: Prevents numerical overflow from extreme values
+
 ### Numerical Stability
 
 ```rust

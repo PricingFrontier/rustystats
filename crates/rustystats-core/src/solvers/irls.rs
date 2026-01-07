@@ -324,9 +324,10 @@ pub fn fit_glm_full(
     let mut converged = false;
     let mut iteration = 0;
 
-    // We'll store the final covariance matrix
+    // We'll store the final covariance matrix and coefficients from iteration
     let mut cov_unscaled = Array2::zeros((p, p));
     let mut final_weights = Array1::zeros(n);
+    let mut iter_coefficients = Array1::zeros(p);  // Store coefficients from iteration
 
     while iteration < config.max_iterations {
         iteration += 1;
@@ -395,6 +396,17 @@ pub fn fit_glm_full(
         let (new_coefficients, xtwinv) =
             solve_weighted_least_squares(x, &working_response, &combined_weights)?;
 
+        // Check for NaN in coefficients - indicates numerical instability
+        if new_coefficients.iter().any(|&c| c.is_nan() || c.is_infinite()) {
+            return Err(RustyStatsError::NumericalError(
+                "IRLS produced NaN or infinite coefficients. This usually indicates: \
+                 (1) severe multicollinearity in predictors, \
+                 (2) extreme scale differences between variables, or \
+                 (3) separation in binary response data. \
+                 Try standardizing continuous predictors or removing correlated terms.".to_string()
+            ));
+        }
+
         // ---------------------------------------------------------------------
         // Step 4d: Update η and μ with step-halving for stability
         // ---------------------------------------------------------------------
@@ -454,6 +466,9 @@ pub fn fit_glm_full(
             );
         }
 
+        // Store coefficients from this iteration
+        iter_coefficients = new_coefficients;
+
         if rel_change < config.tolerance {
             converged = true;
             cov_unscaled = xtwinv;
@@ -483,8 +498,23 @@ pub fn fit_glm_full(
         .map(|(&pw, &iw)| pw * iw)
         .collect();
 
-    let (final_coefficients, _) =
-        solve_weighted_least_squares(x, &compute_working_response(y, &mu, &eta_no_offset, link), &combined_final_weights)?;
+    // Try final coefficient extraction, but fall back to iteration coefficients if it produces NaN
+    let final_coefficients = match solve_weighted_least_squares(x, &compute_working_response(y, &mu, &eta_no_offset, link), &combined_final_weights) {
+        Ok((coef, _)) if !coef.iter().any(|&c| c.is_nan() || c.is_infinite()) => coef,
+        _ => {
+            // Final extraction failed or produced NaN - use coefficients from last iteration
+            if iter_coefficients.iter().any(|&c| c.is_nan() || c.is_infinite()) {
+                return Err(RustyStatsError::NumericalError(
+                    "IRLS produced NaN or infinite coefficients. This usually indicates: \
+                     (1) severe multicollinearity in predictors, \
+                     (2) extreme scale differences between variables, or \
+                     (3) separation in binary response data. \
+                     Try standardizing continuous predictors or removing correlated terms.".to_string()
+                ));
+            }
+            iter_coefficients
+        }
+    };
 
     Ok(IRLSResult {
         coefficients: final_coefficients,
@@ -573,6 +603,7 @@ pub fn fit_glm_warm_start(
     let mut iteration = 0;
     let mut cov_unscaled = Array2::zeros((p, p));
     let mut final_weights = Array1::zeros(n);
+    let mut iter_coefficients = init_coefficients.clone();  // Store coefficients from iteration
 
     while iteration < config.max_iterations {
         iteration += 1;
@@ -604,8 +635,21 @@ pub fn fit_glm_warm_start(
         }
 
         let (beta, covariance) = solve_weighted_least_squares(x, &working_response, &combined_weights)?;
+        
+        // Check for NaN in coefficients - indicates numerical instability
+        if beta.iter().any(|&c| c.is_nan() || c.is_infinite()) {
+            return Err(RustyStatsError::NumericalError(
+                "IRLS produced NaN or infinite coefficients. This usually indicates: \
+                 (1) severe multicollinearity in predictors, \
+                 (2) extreme scale differences between variables, or \
+                 (3) separation in binary response data. \
+                 Try standardizing continuous predictors or removing correlated terms.".to_string()
+            ));
+        }
+        
         cov_unscaled = covariance;
         final_weights = irls_weights;
+        iter_coefficients = beta.clone();  // Store coefficients from this iteration
 
         eta = x.dot(&beta) + &offset_vec;
         mu = link.inverse(&eta);
@@ -636,8 +680,23 @@ pub fn fit_glm_warm_start(
         .zip(final_weights.iter())
         .map(|(&pw, &iw)| pw * iw).collect();
 
-    let (final_coefficients, _) =
-        solve_weighted_least_squares(x, &compute_working_response(y, &mu, &eta_no_offset, link), &combined_final_weights)?;
+    // Try final coefficient extraction, but fall back to iteration coefficients if it produces NaN
+    let final_coefficients = match solve_weighted_least_squares(x, &compute_working_response(y, &mu, &eta_no_offset, link), &combined_final_weights) {
+        Ok((coef, _)) if !coef.iter().any(|&c| c.is_nan() || c.is_infinite()) => coef,
+        _ => {
+            // Final extraction failed or produced NaN - use coefficients from last iteration
+            if iter_coefficients.iter().any(|&c| c.is_nan() || c.is_infinite()) {
+                return Err(RustyStatsError::NumericalError(
+                    "IRLS produced NaN or infinite coefficients. This usually indicates: \
+                     (1) severe multicollinearity in predictors, \
+                     (2) extreme scale differences between variables, or \
+                     (3) separation in binary response data. \
+                     Try standardizing continuous predictors or removing correlated terms.".to_string()
+                ));
+            }
+            iter_coefficients
+        }
+    };
 
     Ok(IRLSResult {
         coefficients: final_coefficients,
@@ -837,6 +896,17 @@ pub fn fit_glm_regularized(
         let (new_coefficients, xtwinv) =
             solve_weighted_least_squares_penalized(x, &working_response, &combined_weights, l2_penalty, penalize_intercept)?;
 
+        // Check for NaN in coefficients - indicates numerical instability
+        if new_coefficients.iter().any(|&c| c.is_nan() || c.is_infinite()) {
+            return Err(RustyStatsError::NumericalError(
+                "IRLS produced NaN or infinite coefficients. This usually indicates: \
+                 (1) severe multicollinearity in predictors, \
+                 (2) extreme scale differences between variables, or \
+                 (3) separation in binary response data. \
+                 Try standardizing continuous predictors or removing correlated terms.".to_string()
+            ));
+        }
+
         // Update η and μ
         let eta_base = x.dot(&new_coefficients);
         eta = &eta_base + &offset_vec;
@@ -894,6 +964,17 @@ pub fn fit_glm_regularized(
             l2_penalty,
             penalize_intercept,
         )?;
+
+    // Check for NaN in final coefficients
+    if final_coefficients.iter().any(|&c| c.is_nan() || c.is_infinite()) {
+        return Err(RustyStatsError::NumericalError(
+            "IRLS produced NaN or infinite coefficients in final extraction. This usually indicates: \
+             (1) severe multicollinearity in predictors, \
+             (2) extreme scale differences between variables, or \
+             (3) separation in binary response data. \
+             Try standardizing continuous predictors or removing correlated terms.".to_string()
+        ));
+    }
 
     Ok(IRLSResult {
         coefficients: final_coefficients,

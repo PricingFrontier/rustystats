@@ -140,6 +140,30 @@ def _build_design_matrix(self):
 
 After design matrix construction, the formula API calls the Rust core library via PyO3 bindings to run the IRLS solver.
 
+### Negative Binomial Special Case
+
+Negative Binomial models follow a different flow that stays in Python longer for numerical stability:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ Python: _fit_negbinomial_profile()                              │
+│   1. Fit initial Poisson GLM (Rust)                            │
+│   2. Estimate θ from residuals (Python)                        │
+│   3. Loop: Fit NegBin with current θ (Rust)                    │
+│      - Check for NaN → increase ridge penalty if needed        │
+│      - Update θ from fitted values (Python)                    │
+│      - Check convergence                                        │
+│   4. Final fit with converged θ (Rust)                         │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+Key differences from standard GLM flow:
+
+- **Multiple Rust calls**: Each θ iteration calls `fit_glm_py`
+- **Python-side θ estimation**: Uses moment-based formula, not Rust
+- **Automatic ridge**: Minimum α = 1e-6 applied for numerical stability
+- **Adaptive regularization**: If NaN detected, α increases (up to 1.0)
+
 ## Data Type Conversions
 
 ### Python → Rust

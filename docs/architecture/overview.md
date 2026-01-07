@@ -121,6 +121,7 @@ crates/rustystats-core/
     │   ├── mod.rs
     │   ├── residuals.rs
     │   ├── calibration.rs
+    │   ├── negbinomial.rs  # NegBin theta estimation, log-likelihood
     │   └── ...
     ├── splines/            # Spline basis functions
     │   └── mod.rs

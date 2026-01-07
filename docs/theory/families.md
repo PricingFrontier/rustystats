@@ -930,12 +930,62 @@ This is **quadratic** in $\mu$, unlike QuasiPoisson's linear variance.
 
 ### 8.5 Estimating $\theta$
 
-RustyStats estimates $\theta$ by profiling:
-1. For fixed $\theta$, fit GLM to get $\hat{\boldsymbol{\beta}}(\theta)$
-2. Compute profile log-likelihood $\ell_p(\theta)$
-3. Maximize over $\theta$
+RustyStats estimates $\theta$ using an iterative moment-based approach:
 
-Or use an iterative algorithm alternating between $\boldsymbol{\beta}$ and $\theta$.
+1. **Initial fit**: Fit a Poisson GLM to get starting $\hat{\mu}$
+2. **Moment estimation**: Estimate $\theta$ from residuals:
+   $$\hat{\theta} = \frac{\bar{\mu}^2}{\text{Var}(Y - \mu) - \bar{\mu}}$$
+3. **Iterate**: Fit NegBin GLM with current $\theta$, re-estimate $\theta$, repeat until convergence
+
+**Bounds**: $\theta$ is constrained to $[0.01, 1000]$ to prevent numerical issues.
+
+### 8.6 Numerical Stability
+
+Negative Binomial fitting is numerically challenging due to:
+
+1. **Larger variance function**: $V(\mu) = \mu + \mu^2/\theta$ produces smaller IRLS weights than Poisson
+2. **Ill-conditioned design matrices**: Common with splines + target encoding
+3. **Large $\theta$ instability**: When $\theta \to \infty$, the log-likelihood involves $\log\Gamma(y + \theta) - \log\Gamma(\theta)$ which loses precision
+
+**RustyStats Solution**:
+
+RustyStats applies **minimum ridge regularization** (α ≥ 1e-6) automatically for NegBin models:
+
+```python
+# The formula API automatically applies minimum regularization
+result = rs.glm("claims ~ ns(age, df=5) + TE(region)", 
+                data, family="negbinomial").fit()
+
+# You'll see "Method: IRLS + Ridge" in the summary
+```
+
+!!! warning "Coefficient Interpretation"
+    The ridge penalty introduces negligible bias (~1e-6 × coefficient magnitude) but makes inference approximate. For actuarial applications, this bias is typically irrelevant.
+
+### 8.7 Log-Likelihood for Large $\theta$
+
+When $\theta > 100$, the NegBin distribution is essentially Poisson. RustyStats uses the Poisson log-likelihood in this case to avoid numerical overflow:
+
+$$
+\ell(\mu; y) = \sum_i \left[ y_i \log\mu_i - \mu_i - \log\Gamma(y_i + 1) \right]
+$$
+
+### 8.8 Diagnostics Warnings
+
+The diagnostics system generates warnings for NegBin models:
+
+| Warning | Condition | Recommendation |
+|---------|-----------|----------------|
+| `negbinomial_regularization` | Always | Informational: ridge penalty applied |
+| `negbinomial_large_theta` | $\theta \geq 100$ | Consider Poisson instead |
+| `negbinomial_small_theta` | $\theta \leq 0.1$ | Check for missing covariates |
+
+```python
+# Access warnings via diagnostics
+diag = result.diagnostics(data, ...)
+for w in diag.warnings:
+    print(f"[{w['type']}]: {w['message']}")
+```
 
 ---
 

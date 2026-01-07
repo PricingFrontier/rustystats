@@ -324,6 +324,112 @@ class FormulaGLM:
             max_interaction_factors=max_interaction_factors,
         )
     
+    def _fit_negbinomial_profile(
+        self,
+        X: np.ndarray,
+        alpha: float,
+        l1_ratio: float,
+        max_iter: int,
+        tol: float,
+        theta_tol: float = 1e-5,
+        max_theta_iter: int = 10,
+    ) -> tuple:
+        """
+        Fit negative binomial GLM with moment-based theta estimation.
+        
+        Applies minimum ridge regularization (alpha >= 1e-6) for numerical
+        stability when fitting negative binomial models.
+        
+        Parameters
+        ----------
+        X : np.ndarray
+            Design matrix
+        alpha : float
+            User-specified regularization (will be at least 1e-6)
+        l1_ratio : float
+            Elastic net mixing parameter
+        max_iter : int
+            Maximum IRLS iterations per fit
+        tol : float
+            IRLS convergence tolerance
+        theta_tol : float
+            Convergence tolerance for theta estimation
+        max_theta_iter : int
+            Maximum iterations for theta estimation
+            
+        Returns
+        -------
+        tuple
+            (GLMResults, family_string) where family_string includes theta
+        """
+        from rustystats._rustystats import fit_glm_py as _fit_glm_rust
+        
+        # Initial Poisson fit to get starting mu values
+        poisson_result = _fit_glm_rust(
+            self.y, X, "poisson", self.link, 1.5, 1.0,
+            self.offset, self.weights, alpha, l1_ratio, max_iter, tol
+        )
+        mu = poisson_result.fittedvalues
+        
+        # Estimate initial theta from method of moments
+        # Var(Y) = mu + mu^2/theta => theta = mu^2 / (Var(Y) - mu)
+        y_arr = np.asarray(self.y)
+        residuals = y_arr - mu
+        var_estimate = np.mean(residuals**2)
+        mean_mu = np.mean(mu)
+        theta = max(0.01, min(1000.0, mean_mu**2 / max(var_estimate - mean_mu, 0.01)))
+        
+        # Profile likelihood iteration with minimum ridge for stability
+        effective_alpha = max(alpha, 1e-6)
+        
+        coefficients = poisson_result.params
+        result = poisson_result  # Fallback if all iterations fail
+        
+        for _ in range(max_theta_iter):
+            result = _fit_glm_rust(
+                self.y, X, "negbinomial", self.link, 1.5, theta,
+                self.offset, self.weights, effective_alpha, l1_ratio, max_iter, tol
+            )
+            
+            # If NaN, increase regularization and retry
+            if np.any(np.isnan(result.params)):
+                effective_alpha *= 10
+                if effective_alpha > 1.0:
+                    raise ValueError(
+                        "Negative binomial fitting failed due to numerical instability. "
+                        "Try simplifying the model or using Poisson instead."
+                    )
+                continue
+            
+            coefficients = result.params
+            mu = result.fittedvalues
+            
+            # Moment-based theta update
+            residuals = y_arr - mu
+            excess_var = np.mean(residuals**2) - np.mean(mu)
+            if excess_var > 0:
+                new_theta = np.mean(mu)**2 / excess_var
+                new_theta = max(0.01, min(1000.0, new_theta))
+            else:
+                new_theta = 1000.0  # No overdispersion
+            
+            if abs(new_theta - theta) < theta_tol:
+                theta = new_theta
+                break
+            theta = new_theta
+        
+        # Final fit with converged theta
+        final_result = _fit_glm_rust(
+            self.y, X, "negbinomial", self.link, 1.5, theta,
+            self.offset, self.weights, max(alpha, 1e-6), l1_ratio, max_iter, tol
+        )
+        
+        # Fall back to iteration result if final has NaN
+        if np.any(np.isnan(final_result.params)) and not np.any(np.isnan(coefficients)):
+            final_result = result
+        
+        return final_result, f"NegativeBinomial(theta={theta:.4f})"
+    
     def fit(
         self,
         alpha: float = 0.0,
@@ -374,22 +480,13 @@ class FormulaGLM:
         is_negbinomial = self.family in ("negbinomial", "negativebinomial", "negative_binomial", "neg-binomial", "nb")
         auto_theta = is_negbinomial and self.theta is None
         
+        # For negbinomial with auto theta, use Python-side profile likelihood
+        # This allows regularization to be applied for numerical stability
         try:
             if auto_theta:
-                # Use profile likelihood to auto-estimate theta
-                result = _fit_negbinomial_rust(
-                    self.y,
-                    self.X,
-                    self.link,
-                    None,  # init_theta (use method-of-moments)
-                    1e-5,  # theta_tol
-                    10,    # max_theta_iter
-                    self.offset,
-                    self.weights,
-                    max_iter,
-                    tol,
+                result, result_family = self._fit_negbinomial_profile(
+                    self.X, alpha, l1_ratio, max_iter, tol
                 )
-                result_family = result.family  # Contains estimated theta
             else:
                 # Use fixed theta (default 1.0 for negbinomial if not auto)
                 theta = self.theta if self.theta is not None else 1.0
@@ -409,7 +506,7 @@ class FormulaGLM:
                 )
                 result_family = self.family
         except ValueError as e:
-            if "singular" in str(e).lower() or "multicollinearity" in str(e).lower():
+            if "singular" in str(e).lower() or "multicollinearity" in str(e).lower() or "nan" in str(e).lower():
                 # Run validation to provide helpful diagnostics
                 print("\n" + "=" * 60)
                 print("MODEL FITTING FAILED - Running diagnostics...")

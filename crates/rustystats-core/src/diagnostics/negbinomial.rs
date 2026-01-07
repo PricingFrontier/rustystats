@@ -32,47 +32,46 @@
 // =============================================================================
 
 use ndarray::Array1;
+use std::f64::consts::PI;
+
+/// Lanczos approximation for log-gamma function.
+#[inline]
+fn lgamma(x: f64) -> f64 {
+    if x <= 0.0 {
+        return f64::INFINITY;
+    }
+    
+    const G: f64 = 7.0;
+    const C: [f64; 9] = [
+        0.99999999999980993,
+        676.5203681218851,
+        -1259.1392167224028,
+        771.32342877765313,
+        -176.61502916214059,
+        12.507343278686905,
+        -0.13857109526572012,
+        9.9843695780195716e-6,
+        1.5056327351493116e-7,
+    ];
+    
+    if x < 0.5 {
+        PI.ln() - (PI * x).sin().ln() - lgamma(1.0 - x)
+    } else {
+        let x = x - 1.0;
+        let mut sum = C[0];
+        for i in 1..9 {
+            sum += C[i] / (x + i as f64);
+        }
+        let t = x + G + 0.5;
+        0.5 * (2.0 * PI).ln() + (t.ln() * (x + 0.5)) - t + sum.ln()
+    }
+}
 
 /// Negative Binomial log-likelihood for a single observation.
 ///
 /// l_i = lgamma(y+θ) - lgamma(θ) - lgamma(y+1) + θ*log(θ/(μ+θ)) + y*log(μ/(μ+θ))
 #[inline]
 fn nb_loglik_single(y: f64, mu: f64, theta: f64) -> f64 {
-    use std::f64::consts::PI;
-    
-    // Use lgamma for log-gamma function
-    fn lgamma(x: f64) -> f64 {
-        // Lanczos approximation for lgamma
-        if x <= 0.0 {
-            return f64::INFINITY;
-        }
-        
-        const G: f64 = 7.0;
-        const C: [f64; 9] = [
-            0.99999999999980993,
-            676.5203681218851,
-            -1259.1392167224028,
-            771.32342877765313,
-            -176.61502916214059,
-            12.507343278686905,
-            -0.13857109526572012,
-            9.9843695780195716e-6,
-            1.5056327351493116e-7,
-        ];
-        
-        if x < 0.5 {
-            PI.ln() - (PI * x).sin().ln() - lgamma(1.0 - x)
-        } else {
-            let x = x - 1.0;
-            let mut sum = C[0];
-            for i in 1..9 {
-                sum += C[i] / (x + i as f64);
-            }
-            let t = x + G + 0.5;
-            0.5 * (2.0 * PI).ln() + (t.ln() * (x + 0.5)) - t + sum.ln()
-        }
-    }
-    
     let mu_safe = mu.max(1e-10);
     let theta_safe = theta.max(1e-10);
     
@@ -99,6 +98,12 @@ pub fn nb_loglikelihood(
     theta: f64,
     weights: Option<&Array1<f64>>,
 ) -> f64 {
+    // For very large theta, NegBin converges to Poisson
+    // Use Poisson log-likelihood to avoid numerical instability from lgamma of large values
+    if theta > 100.0 {
+        return poisson_loglikelihood(y, mu, weights);
+    }
+    
     match weights {
         Some(w) => {
             y.iter()
@@ -111,6 +116,38 @@ pub fn nb_loglikelihood(
             y.iter()
                 .zip(mu.iter())
                 .map(|(&yi, &mui)| nb_loglik_single(yi, mui, theta))
+                .sum()
+        }
+    }
+}
+
+/// Poisson log-likelihood (used when NegBin theta is very large).
+/// 
+/// When theta → ∞, NegBin → Poisson. Using Poisson LL avoids numerical
+/// instability from lgamma of very large arguments.
+fn poisson_loglikelihood(
+    y: &Array1<f64>,
+    mu: &Array1<f64>,
+    weights: Option<&Array1<f64>>,
+) -> f64 {
+    // Poisson LL: y*log(mu) - mu - lgamma(y+1)
+    match weights {
+        Some(w) => {
+            y.iter().zip(mu.iter()).zip(w.iter())
+                .map(|((&yi, &mui), &wi)| {
+                    let mui_safe = mui.max(1e-10);
+                    let y_term = if yi > 0.0 { yi * mui_safe.ln() } else { 0.0 };
+                    wi * (y_term - mui_safe - lgamma(yi + 1.0))
+                })
+                .sum()
+        }
+        None => {
+            y.iter().zip(mu.iter())
+                .map(|(&yi, &mui)| {
+                    let mui_safe = mui.max(1e-10);
+                    let y_term = if yi > 0.0 { yi * mui_safe.ln() } else { 0.0 };
+                    y_term - mui_safe - lgamma(yi + 1.0)
+                })
                 .sum()
         }
     }
