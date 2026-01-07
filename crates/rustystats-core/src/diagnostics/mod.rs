@@ -87,6 +87,7 @@ pub use factor_diagnostics::{
     CategoricalDistribution, LevelStats, compute_categorical_distribution,
     ActualExpectedBin, compute_ae_continuous, compute_ae_categorical,
     ResidualPattern, compute_residual_pattern_continuous, compute_residual_pattern_categorical,
+    DevianceByLevel, FactorDevianceResult, compute_factor_deviance,
 };
 
 pub use interactions::{

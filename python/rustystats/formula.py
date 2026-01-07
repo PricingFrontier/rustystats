@@ -529,6 +529,7 @@ class FormulaGLM:
             family=result_family,
             link=self.link,
             builder=self._builder,
+            design_matrix=self.X,  # Pass design matrix for VIF calculation
             offset_spec=self._offset_spec,
             offset_is_exposure=(self.family in ("poisson", "quasipoisson", "negbinomial", "gamma") and self.link in (None, "log")),
         )
@@ -559,6 +560,7 @@ class FormulaGLMResults:
         family: str,
         link: Optional[str],
         builder: Optional["InteractionBuilder"] = None,
+        design_matrix: Optional[np.ndarray] = None,
         offset_spec: Optional[Union[str, np.ndarray]] = None,
         offset_is_exposure: bool = False,
     ):
@@ -568,6 +570,7 @@ class FormulaGLMResults:
         self.family = family
         self.link = link or self._default_link(family)
         self._builder = builder
+        self._design_matrix = design_matrix  # Store for VIF calculation
         self._offset_spec = offset_spec
         self._offset_is_exposure = offset_is_exposure
     
@@ -878,7 +881,7 @@ class FormulaGLMResults:
     
     def diagnostics(
         self,
-        data: "pl.DataFrame",
+        train_data: "pl.DataFrame",
         categorical_factors: Optional[List[str]] = None,
         continuous_factors: Optional[List[str]] = None,
         n_calibration_bins: int = 10,
@@ -887,14 +890,24 @@ class FormulaGLMResults:
         max_categorical_levels: int = 20,
         detect_interactions: bool = True,
         max_interaction_factors: int = 10,
+        # Test data for overfitting detection (response/exposure auto-inferred)
+        test_data: Optional["pl.DataFrame"] = None,
+        # Control enhanced diagnostics
+        compute_vif: bool = True,
+        compute_coefficients: bool = True,
+        compute_deviance_by_level: bool = True,
+        compute_lift: bool = True,
+        compute_partial_dep: bool = True,
+        # Legacy parameter (deprecated)
+        data: Optional["pl.DataFrame"] = None,
     ):
         """
         Compute comprehensive model diagnostics.
         
         Parameters
         ----------
-        data : pl.DataFrame
-            Original data used for fitting.
+        train_data : pl.DataFrame
+            Training data used for fitting.
         categorical_factors : list of str, optional
             Names of categorical factors to analyze (both fitted and unfitted).
         continuous_factors : list of str, optional
@@ -911,27 +924,75 @@ class FormulaGLMResults:
             Whether to detect potential interactions.
         max_interaction_factors : int, default=10
             Maximum factors to consider for interaction detection.
+        test_data : pl.DataFrame, optional
+            Test/holdout data for overfitting detection. Response and exposure
+            columns are automatically inferred from the model's formula.
+        compute_vif : bool, default=True
+            Compute VIF/multicollinearity scores for design matrix (train-only).
+        compute_coefficients : bool, default=True
+            Compute coefficient summary with interpretations (train-only).
+        compute_deviance_by_level : bool, default=True
+            Compute deviance breakdown by categorical factor levels.
+        compute_lift : bool, default=True
+            Compute full lift chart with all deciles.
+        compute_partial_dep : bool, default=True
+            Compute partial dependence plots for each variable.
         
         Returns
         -------
         ModelDiagnostics
             Complete diagnostics object with to_json() method.
+            
+            Fields for agentic workflows:
+            - vif: VIF scores detecting multicollinearity (train-only)
+            - coefficient_summary: Coefficient magnitudes and recommendations (train-only)
+            - factor_deviance: Deviance by categorical level
+            - lift_chart: Full lift chart showing discrimination by decile
+            - partial_dependence: Marginal effect shapes for linear vs spline decisions
+            - train_test: Comprehensive train vs test comparison with flags:
+                - overfitting_risk: True if gini_gap > 0.03
+                - calibration_drift: True if test A/E outside [0.95, 1.05]
+                - unstable_factors: Factors where train/test A/E differ by > 0.1
         
         Examples
         --------
-        >>> result = rs.glm("ClaimNb ~ Age + C(Region)", data, family="poisson").fit()
+        >>> result = rs.glm("ClaimNb ~ Age + C(Region)", data, family="poisson", offset="Exposure").fit()
+        >>> 
+        >>> # Basic diagnostics
         >>> diagnostics = result.diagnostics(
-        ...     data=data,
+        ...     train_data=train_data,
         ...     categorical_factors=["Region", "VehBrand"],
         ...     continuous_factors=["Age", "VehPower"]
         ... )
+        >>> 
+        >>> # With test data for overfitting detection
+        >>> diagnostics = result.diagnostics(
+        ...     train_data=train_data,
+        ...     test_data=test_data,
+        ...     categorical_factors=["Region"],
+        ...     continuous_factors=["Age"],
+        ... )
+        >>> 
+        >>> # Check overfitting flags
+        >>> if diagnostics.train_test and diagnostics.train_test.overfitting_risk:
+        ...     print("Warning: Overfitting detected!")
+        >>> 
         >>> print(diagnostics.to_json())
         """
         from rustystats.diagnostics import compute_diagnostics
         
+        # Support legacy 'data' parameter
+        if train_data is None and data is not None:
+            train_data = data
+        
+        # Get design matrix for VIF calculation
+        design_matrix = None
+        if compute_vif and self._design_matrix is not None:
+            design_matrix = self._design_matrix
+        
         return compute_diagnostics(
             result=self,
-            data=data,
+            train_data=train_data,
             categorical_factors=categorical_factors,
             continuous_factors=continuous_factors,
             n_calibration_bins=n_calibration_bins,
@@ -940,11 +1001,18 @@ class FormulaGLMResults:
             max_categorical_levels=max_categorical_levels,
             detect_interactions=detect_interactions,
             max_interaction_factors=max_interaction_factors,
+            test_data=test_data,
+            design_matrix=design_matrix,
+            compute_vif=compute_vif,
+            compute_coefficients=compute_coefficients,
+            compute_deviance_by_level=compute_deviance_by_level,
+            compute_lift=compute_lift,
+            compute_partial_dep=compute_partial_dep,
         )
     
     def diagnostics_json(
         self,
-        data: "pl.DataFrame",
+        train_data: "pl.DataFrame",
         categorical_factors: Optional[List[str]] = None,
         continuous_factors: Optional[List[str]] = None,
         n_calibration_bins: int = 10,
@@ -953,7 +1021,10 @@ class FormulaGLMResults:
         max_categorical_levels: int = 20,
         detect_interactions: bool = True,
         max_interaction_factors: int = 10,
+        test_data: Optional["pl.DataFrame"] = None,
         indent: Optional[int] = None,
+        # Legacy parameter
+        data: Optional["pl.DataFrame"] = None,
     ) -> str:
         """
         Compute diagnostics and return as JSON string.
@@ -963,12 +1034,14 @@ class FormulaGLMResults:
         
         Parameters
         ----------
-        data : pl.DataFrame
-            Original data used for fitting.
+        train_data : pl.DataFrame
+            Training data used for fitting.
         categorical_factors : list of str, optional
             Names of categorical factors to analyze.
         continuous_factors : list of str, optional
             Names of continuous factors to analyze.
+        test_data : pl.DataFrame, optional
+            Test data for overfitting detection.
         indent : int, optional
             JSON indentation. None for compact output.
         
@@ -977,8 +1050,12 @@ class FormulaGLMResults:
         str
             JSON string containing all diagnostics.
         """
+        # Support legacy 'data' parameter
+        if train_data is None and data is not None:
+            train_data = data
+        
         diag = self.diagnostics(
-            data=data,
+            train_data=train_data,
             categorical_factors=categorical_factors,
             continuous_factors=continuous_factors,
             n_calibration_bins=n_calibration_bins,
@@ -987,6 +1064,7 @@ class FormulaGLMResults:
             max_categorical_levels=max_categorical_levels,
             detect_interactions=detect_interactions,
             max_interaction_factors=max_interaction_factors,
+            test_data=test_data,
         )
         return diag.to_json(indent=indent)
     

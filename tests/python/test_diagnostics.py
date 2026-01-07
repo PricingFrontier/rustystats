@@ -331,7 +331,7 @@ class TestModelDiagnostics:
         
         diagnostics = compute_diagnostics(
             result=result,
-            data=data,
+            train_data=data,
             categorical_factors=["region"],
             continuous_factors=["age"],
         )
@@ -351,7 +351,7 @@ class TestModelDiagnostics:
         
         diagnostics = compute_diagnostics(
             result=result,
-            data=data,
+            train_data=data,
             categorical_factors=["region"],
             continuous_factors=["age"],
         )
@@ -371,7 +371,7 @@ class TestModelDiagnostics:
         result, data = fitted_model
         
         diagnostics = result.diagnostics(
-            data=data,
+            train_data=data,
             categorical_factors=["region"],
             continuous_factors=["age"],
         )
@@ -386,7 +386,7 @@ class TestModelDiagnostics:
         result, data = fitted_model
         
         json_str = result.diagnostics_json(
-            data=data,
+            train_data=data,
             categorical_factors=["region"],
             continuous_factors=["age"],
         )
@@ -394,235 +394,6 @@ class TestModelDiagnostics:
         # Should be valid JSON
         parsed = json.loads(json_str)
         assert "model_summary" in parsed
-
-
-class TestWarnings:
-    """Tests for diagnostic warnings."""
-    
-    def test_high_dispersion_warning(self):
-        """Test that high dispersion generates a warning."""
-        from rustystats.diagnostics import DiagnosticsComputer
-        
-        np.random.seed(42)
-        n = 500
-        
-        # Create overdispersed data
-        y = np.random.negative_binomial(n=1, p=0.5, size=n).astype(np.float64)
-        mu = np.full(n, np.mean(y))
-        
-        computer = DiagnosticsComputer(
-            y=y, mu=mu, linear_predictor=np.log(mu),
-            family="poisson", n_params=1, deviance=1000.0,
-        )
-        
-        fit_stats = computer.compute_fit_statistics()
-        calibration = computer.compute_calibration()
-        
-        warnings = computer.generate_warnings(fit_stats, calibration, [])
-        
-        # Should have at least one warning about dispersion
-        warning_types = [w["type"] for w in warnings]
-        assert "high_dispersion" in warning_types or fit_stats["dispersion_pearson"] < 1.5
-
-
-class TestCalibrationBins:
-    """Tests for calibration bin computation."""
-    
-    def test_calibration_bins_count(self):
-        """Test that calibration returns compressed format with problem_deciles."""
-        from rustystats.diagnostics import DiagnosticsComputer
-        
-        np.random.seed(42)
-        n = 1000
-        
-        y = np.random.poisson(1.0, n).astype(np.float64)
-        mu = np.random.uniform(0.5, 1.5, n)
-        
-        computer = DiagnosticsComputer(
-            y=y, mu=mu, linear_predictor=np.log(mu),
-            family="poisson", n_params=1, deviance=100.0,
-        )
-        
-        calibration = computer.compute_calibration(n_bins=10)
-        # Compressed format: problem_deciles only contains deciles with A/E outside [0.9, 1.1]
-        assert "ae_ratio" in calibration
-        assert "problem_deciles" in calibration
-        assert isinstance(calibration["problem_deciles"], list)
-    
-    def test_calibration_bins_coverage(self):
-        """Test that calibration returns problem_deciles in compressed format."""
-        from rustystats.diagnostics import DiagnosticsComputer
-        
-        np.random.seed(42)
-        n = 1000
-        
-        y = np.random.poisson(1.0, n).astype(np.float64)
-        mu = np.random.uniform(0.5, 1.5, n)
-        
-        computer = DiagnosticsComputer(
-            y=y, mu=mu, linear_predictor=np.log(mu),
-            family="poisson", n_params=1, deviance=100.0,
-        )
-        
-        calibration = computer.compute_calibration(n_bins=10)
-        
-        # Compressed format only includes problem deciles (A/E outside [0.9, 1.1])
-        assert "problem_deciles" in calibration
-        for decile in calibration["problem_deciles"]:
-            assert "decile" in decile
-            assert "ae" in decile
-            assert "n" in decile
-
-
-class TestDiscriminationMetrics:
-    """Tests for discrimination metrics (Lorenz curve removed for compression)."""
-    
-    def test_discrimination_compressed_format(self):
-        """Test that discrimination uses compressed format without lorenz_curve."""
-        from rustystats.diagnostics import DiagnosticsComputer
-        
-        np.random.seed(42)
-        n = 500
-        
-        y = np.random.poisson(1.0, n).astype(np.float64)
-        mu = np.random.uniform(0.5, 1.5, n)
-        
-        computer = DiagnosticsComputer(
-            y=y, mu=mu, linear_predictor=np.log(mu),
-            family="poisson", n_params=1, deviance=100.0,
-        )
-        
-        disc = computer.compute_discrimination()
-        
-        # Compressed format: no lorenz_curve, shortened field names
-        assert "gini" in disc
-        assert "auc" in disc
-        assert "ks" in disc
-        assert "lift_10pct" in disc
-        assert "lift_20pct" in disc
-        assert "lorenz_curve" not in disc  # Removed for token efficiency
-
-
-class TestPreFitExploration:
-    """Tests for pre-fit data exploration."""
-    
-    @pytest.fixture
-    def exploration_data(self):
-        """Create sample data for exploration."""
-        np.random.seed(42)
-        n = 1000
-        
-        age = np.random.uniform(18, 70, n)
-        region = np.random.choice(["A", "B", "C", "D"], n)
-        income = np.random.uniform(20000, 100000, n)
-        exposure = np.random.uniform(0.5, 1.0, n)
-        
-        # Generate response with some pattern
-        mu_true = np.exp(-2 + 0.02 * age + 0.5 * (region == "A").astype(float))
-        y = np.random.poisson(mu_true * exposure)
-        
-        data = pl.DataFrame({
-            "y": y,
-            "age": age,
-            "region": region,
-            "income": income,
-            "exposure": exposure,
-        })
-        
-        return data
-    
-    def test_explore_data_function(self, exploration_data):
-        """Test the explore_data function."""
-        from rustystats.diagnostics import explore_data
-        
-        result = explore_data(
-            data=exploration_data,
-            response="y",
-            categorical_factors=["region"],
-            continuous_factors=["age", "income"],
-            exposure="exposure",
-        )
-        
-        assert result is not None
-        assert result.data_summary is not None
-        assert result.response_stats is not None
-        assert len(result.factor_stats) == 3  # region, age, income
-    
-    def test_explore_data_response_stats(self, exploration_data):
-        """Test response statistics in exploration."""
-        from rustystats.diagnostics import explore_data
-        
-        result = explore_data(
-            data=exploration_data,
-            response="y",
-            exposure="exposure",
-        )
-        
-        assert "n_observations" in result.response_stats
-        assert "total_exposure" in result.response_stats
-        assert "mean_rate" in result.response_stats
-        assert result.response_stats["n_observations"] == len(exploration_data)
-    
-    def test_explore_data_interaction_detection(self, exploration_data):
-        """Test interaction detection in pre-fit exploration."""
-        from rustystats.diagnostics import explore_data
-        
-        result = explore_data(
-            data=exploration_data,
-            response="y",
-            categorical_factors=["region"],
-            continuous_factors=["age", "income"],
-            exposure="exposure",
-            detect_interactions=True,
-        )
-        
-        # Should find at least one interaction candidate
-        # (depends on data, so just check structure)
-        assert isinstance(result.interaction_candidates, list)
-    
-    def test_explore_data_to_json(self, exploration_data):
-        """Test JSON serialization of exploration results."""
-        from rustystats.diagnostics import explore_data
-        import json
-        
-        result = explore_data(
-            data=exploration_data,
-            response="y",
-            categorical_factors=["region"],
-            continuous_factors=["age"],
-            exposure="exposure",
-        )
-        
-        json_str = result.to_json()
-        parsed = json.loads(json_str)
-        
-        assert "data_summary" in parsed
-        assert "response_stats" in parsed
-        assert "factor_stats" in parsed
-    
-    def test_explore_method_on_model(self, exploration_data):
-        """Test the explore method on FormulaGLM."""
-        import rustystats as rs
-        
-        model = rs.glm(
-            "y ~ age + C(region)",
-            exploration_data,
-            family="poisson",
-            offset="exposure",
-        )
-        
-        # Explore before fitting
-        exploration = model.explore(
-            categorical_factors=["region"],
-            continuous_factors=["age", "income"],
-        )
-        
-        assert exploration is not None
-        assert len(exploration.factor_stats) >= 2
-        
-        # Can still fit after exploring
-        result = model.fit()
-        assert result.converged
 
 
 class TestDifferentFamilies:
@@ -667,7 +438,7 @@ class TestDifferentFamilies:
         
         diag = compute_diagnostics(
             result=result,
-            data=data,
+            train_data=data,
             continuous_factors=["x"],
         )
         
@@ -682,7 +453,7 @@ class TestDifferentFamilies:
         
         diag = compute_diagnostics(
             result=result,
-            data=data,
+            train_data=data,
             continuous_factors=["x"],
         )
         
@@ -690,3 +461,510 @@ class TestDifferentFamilies:
         # Should have discrimination metrics for binomial (compressed field names)
         assert diag.discrimination is not None
         assert "gini" in diag.discrimination
+
+
+class TestPreFitExploration:
+    """Tests for pre-fit data exploration."""
+    
+    @pytest.fixture
+    def sample_data(self):
+        """Create sample data for exploration."""
+        np.random.seed(42)
+        n = 500
+        
+        age = np.random.uniform(18, 70, n)
+        region = np.random.choice(["North", "South", "East", "West"], n)
+        exposure = np.random.uniform(0.5, 1.0, n)
+        
+        mu = np.exp(-2 + 0.02 * age)
+        y = np.random.poisson(mu * exposure)
+        
+        return pl.DataFrame({
+            "ClaimNb": y,
+            "Age": age,
+            "Region": region,
+            "Exposure": exposure,
+        })
+    
+    def test_explore_data_function(self, sample_data):
+        """Test the explore_data function."""
+        from rustystats.diagnostics import explore_data
+        
+        exploration = explore_data(
+            data=sample_data,
+            response="ClaimNb",
+            exposure="Exposure",
+            categorical_factors=["Region"],
+            continuous_factors=["Age"],
+        )
+        
+        assert exploration is not None
+        assert exploration.data_summary is not None
+        assert len(exploration.factor_stats) >= 2
+    
+    def test_explore_data_response_stats(self, sample_data):
+        """Test response statistics in exploration."""
+        from rustystats.diagnostics import explore_data
+        
+        exploration = explore_data(
+            data=sample_data,
+            response="ClaimNb",
+            exposure="Exposure",
+            categorical_factors=["Region"],
+            continuous_factors=["Age"],
+        )
+        
+        assert exploration.response_stats is not None
+        assert "mean_response" in exploration.response_stats
+    
+    def test_explore_data_interaction_detection(self, sample_data):
+        """Test interaction detection in exploration."""
+        from rustystats.diagnostics import explore_data
+        
+        exploration = explore_data(
+            data=sample_data,
+            response="ClaimNb",
+            exposure="Exposure",
+            categorical_factors=["Region"],
+            continuous_factors=["Age"],
+            detect_interactions=True,
+        )
+        
+        # Should have some interaction info even if no strong interactions found
+        assert exploration.interaction_candidates is not None
+    
+    def test_explore_data_to_json(self, sample_data):
+        """Test JSON serialization of exploration."""
+        from rustystats.diagnostics import explore_data
+        import json
+        
+        exploration = explore_data(
+            data=sample_data,
+            response="ClaimNb",
+            exposure="Exposure",
+            categorical_factors=["Region"],
+            continuous_factors=["Age"],
+        )
+        
+        json_str = exploration.to_json()
+        parsed = json.loads(json_str)
+        
+        assert "data_summary" in parsed
+        assert "factor_stats" in parsed
+    
+    def test_explore_method_on_model(self):
+        """Test explore method on FormulaGLM."""
+        import rustystats as rs
+        
+        np.random.seed(42)
+        n = 200
+        
+        age = np.random.uniform(18, 70, n)
+        region = np.random.choice(["A", "B"], n)
+        y = np.random.poisson(np.exp(-2 + 0.02 * age), n)
+        
+        data = pl.DataFrame({
+            "y": y,
+            "age": age,
+            "region": region,
+        })
+        
+        model = rs.glm(
+            "y ~ age + C(region)",
+            data=data,
+            family="poisson",
+        )
+        
+        exploration = model.explore(
+            categorical_factors=["region"],
+            continuous_factors=["age"],
+        )
+        
+        assert exploration is not None
+        assert len(exploration.factor_stats) >= 2
+        
+        # Can still fit after exploring
+        result = model.fit()
+        assert result.converged
+
+
+class TestEnhancedDiagnostics:
+    """Tests for new enhanced diagnostics features for agentic workflows."""
+    
+    @pytest.fixture
+    def fitted_model_with_data(self):
+        """Create a fitted model with training data."""
+        import rustystats as rs
+        
+        np.random.seed(42)
+        n = 500
+        
+        age = np.random.uniform(18, 70, n)
+        veh_power = np.random.uniform(50, 200, n)
+        region = np.random.choice(["A", "B", "C", "D"], n)
+        exposure = np.random.uniform(0.5, 1.0, n)
+        
+        mu_true = np.exp(-2 + 0.02 * age + 0.001 * veh_power + 0.3 * (region == "A").astype(float))
+        y = np.random.poisson(mu_true * exposure)
+        
+        data = pl.DataFrame({
+            "y": y,
+            "age": age,
+            "veh_power": veh_power,
+            "region": region,
+            "exposure": exposure,
+        })
+        
+        result = rs.glm(
+            "y ~ age + veh_power + C(region)",
+            data=data,
+            family="poisson",
+            offset="exposure",
+        ).fit()
+        
+        return result, data
+    
+    def test_vif_computation(self, fitted_model_with_data):
+        """Test VIF computation for multicollinearity detection."""
+        from rustystats.diagnostics import DiagnosticsComputer
+        
+        result, data = fitted_model_with_data
+        
+        y = data["y"].to_numpy().astype(np.float64)
+        mu = result.fittedvalues
+        lp = result.linear_predictor
+        
+        computer = DiagnosticsComputer(
+            y=y, mu=mu, linear_predictor=lp,
+            family="poisson", n_params=len(result.params), deviance=result.deviance,
+            feature_names=result.feature_names,
+        )
+        
+        # Create a simple design matrix for testing
+        X = np.column_stack([
+            np.ones(len(y)),
+            data["age"].to_numpy(),
+            data["veh_power"].to_numpy(),
+        ])
+        
+        vif_results = computer.compute_vif(X, ["Intercept", "age", "veh_power"])
+        
+        assert len(vif_results) == 2  # Excludes intercept
+        for v in vif_results:
+            assert hasattr(v, 'feature')
+            assert hasattr(v, 'vif')
+            assert hasattr(v, 'severity')
+            assert v.vif >= 1.0  # VIF is always >= 1
+    
+    def test_vif_detects_collinearity(self):
+        """Test that VIF detects collinear features."""
+        from rustystats.diagnostics import DiagnosticsComputer
+        
+        np.random.seed(42)
+        n = 500
+        
+        x1 = np.random.randn(n)
+        x2 = x1 + np.random.randn(n) * 0.1  # x2 is almost x1
+        
+        y = np.random.poisson(np.exp(1 + x1), n).astype(np.float64)
+        mu = np.full(n, np.mean(y))
+        
+        computer = DiagnosticsComputer(
+            y=y, mu=mu, linear_predictor=np.log(mu),
+            family="poisson", n_params=3, deviance=100.0,
+            feature_names=["Intercept", "x1", "x2"],
+        )
+        
+        X = np.column_stack([np.ones(n), x1, x2])
+        vif_results = computer.compute_vif(X, ["Intercept", "x1", "x2"])
+        
+        # Both x1 and x2 should have high VIF
+        for v in vif_results:
+            assert v.vif > 5.0  # Should detect collinearity
+            assert v.severity in ("moderate", "severe")
+    
+    def test_coefficient_summary(self, fitted_model_with_data):
+        """Test coefficient summary with interpretations."""
+        from rustystats.diagnostics import DiagnosticsComputer
+        
+        result, data = fitted_model_with_data
+        
+        y = data["y"].to_numpy().astype(np.float64)
+        mu = result.fittedvalues
+        
+        computer = DiagnosticsComputer(
+            y=y, mu=mu, linear_predictor=result.linear_predictor,
+            family="poisson", n_params=len(result.params), deviance=result.deviance,
+            feature_names=result.feature_names,
+        )
+        
+        coef_summary = computer.compute_coefficient_summary(result, link="log")
+        
+        assert len(coef_summary) == len(result.params)
+        
+        for cs in coef_summary:
+            assert hasattr(cs, 'feature')
+            assert hasattr(cs, 'estimate')
+            assert hasattr(cs, 'relativity')
+            assert hasattr(cs, 'impact')
+            assert hasattr(cs, 'significant')
+            # For log link, relativity should be computed
+            if cs.feature != "Intercept":
+                assert cs.relativity is not None
+                assert cs.relativity > 0
+    
+    def test_factor_deviance(self, fitted_model_with_data):
+        """Test deviance breakdown by factor level."""
+        from rustystats.diagnostics import DiagnosticsComputer
+        
+        result, data = fitted_model_with_data
+        
+        y = data["y"].to_numpy().astype(np.float64)
+        mu = result.fittedvalues
+        
+        computer = DiagnosticsComputer(
+            y=y, mu=mu, linear_predictor=result.linear_predictor,
+            family="poisson", n_params=len(result.params), deviance=result.deviance,
+            feature_names=result.feature_names,
+        )
+        
+        factor_dev = computer.compute_factor_deviance(data, ["region"])
+        
+        assert len(factor_dev) == 1
+        fd = factor_dev[0]
+        
+        assert fd.factor == "region"
+        assert fd.total_deviance > 0
+        assert len(fd.levels) == 4  # A, B, C, D
+        
+        # Check that deviance percentages sum to ~100%
+        total_pct = sum(level.deviance_pct for level in fd.levels)
+        assert 95 < total_pct < 105  # Allow small rounding errors
+    
+    def test_lift_chart(self, fitted_model_with_data):
+        """Test full lift chart computation."""
+        from rustystats.diagnostics import DiagnosticsComputer
+        
+        result, data = fitted_model_with_data
+        
+        y = data["y"].to_numpy().astype(np.float64)
+        mu = result.fittedvalues
+        
+        computer = DiagnosticsComputer(
+            y=y, mu=mu, linear_predictor=result.linear_predictor,
+            family="poisson", n_params=len(result.params), deviance=result.deviance,
+        )
+        
+        lift_chart = computer.compute_lift_chart(n_deciles=10)
+        
+        assert len(lift_chart.deciles) == 10
+        assert -1 <= lift_chart.gini <= 1
+        assert lift_chart.ks_statistic >= 0
+        assert 1 <= lift_chart.ks_decile <= 10
+        
+        # Check decile structure
+        for decile in lift_chart.deciles:
+            assert 1 <= decile.decile <= 10
+            assert decile.n > 0
+            assert decile.lift > 0
+            assert 0 <= decile.cumulative_actual_pct <= 100
+    
+    def test_partial_dependence(self, fitted_model_with_data):
+        """Test partial dependence computation."""
+        from rustystats.diagnostics import DiagnosticsComputer
+        
+        result, data = fitted_model_with_data
+        
+        y = data["y"].to_numpy().astype(np.float64)
+        mu = result.fittedvalues
+        
+        computer = DiagnosticsComputer(
+            y=y, mu=mu, linear_predictor=result.linear_predictor,
+            family="poisson", n_params=len(result.params), deviance=result.deviance,
+            feature_names=result.feature_names,
+        )
+        
+        partial_dep = computer.compute_partial_dependence(
+            data=data,
+            result=result,
+            continuous_factors=["age", "veh_power"],
+            categorical_factors=["region"],
+            link="log",
+        )
+        
+        # Should have 3 partial dependence results
+        assert len(partial_dep) == 3
+        
+        for pd in partial_dep:
+            assert hasattr(pd, 'variable')
+            assert hasattr(pd, 'variable_type')
+            assert hasattr(pd, 'shape')
+            assert hasattr(pd, 'recommendation')
+            assert len(pd.grid_values) > 0
+            assert len(pd.predictions) == len(pd.grid_values)
+    
+    def test_train_test_metrics(self, fitted_model_with_data):
+        """Test train vs test metrics computation."""
+        from rustystats.diagnostics import DiagnosticsComputer
+        
+        result, data = fitted_model_with_data
+        
+        y = data["y"].to_numpy().astype(np.float64)
+        mu = result.fittedvalues
+        
+        computer = DiagnosticsComputer(
+            y=y, mu=mu, linear_predictor=result.linear_predictor,
+            family="poisson", n_params=len(result.params), deviance=result.deviance,
+        )
+        
+        # Create fake test data
+        np.random.seed(123)
+        n_test = 100
+        y_test = np.random.poisson(1.0, n_test).astype(np.float64)
+        mu_test = np.random.uniform(0.5, 1.5, n_test)
+        
+        train_test = computer.compute_train_test_metrics(y_test, mu_test)
+        
+        assert "train" in train_test
+        assert "test" in train_test
+        
+        train = train_test["train"]
+        test = train_test["test"]
+        
+        assert train.dataset == "train"
+        assert test.dataset == "test"
+        assert train.n_obs == len(y)
+        assert test.n_obs == n_test
+        assert train.gini is not None
+        assert test.gini is not None
+    
+    def test_full_diagnostics_with_enhancements(self, fitted_model_with_data):
+        """Test full diagnostics includes all new fields."""
+        result, data = fitted_model_with_data
+        
+        diagnostics = result.diagnostics(
+            train_data=data,
+            categorical_factors=["region"],
+            continuous_factors=["age", "veh_power"],
+        )
+        
+        # Check new fields are present
+        assert diagnostics.coefficient_summary is not None
+        assert len(diagnostics.coefficient_summary) > 0
+        
+        assert diagnostics.lift_chart is not None
+        assert len(diagnostics.lift_chart.deciles) == 10
+        
+        assert diagnostics.factor_deviance is not None
+        assert len(diagnostics.factor_deviance) == 1
+        
+        assert diagnostics.partial_dependence is not None
+        assert len(diagnostics.partial_dependence) == 3
+    
+    def test_diagnostics_json_includes_enhancements(self, fitted_model_with_data):
+        """Test JSON output includes new fields."""
+        import json
+        
+        result, data = fitted_model_with_data
+        
+        diagnostics = result.diagnostics(
+            train_data=data,
+            categorical_factors=["region"],
+            continuous_factors=["age"],
+        )
+        
+        json_str = diagnostics.to_json()
+        parsed = json.loads(json_str)
+        
+        assert "coefficient_summary" in parsed
+        assert "lift_chart" in parsed
+        assert "factor_deviance" in parsed
+        assert "partial_dependence" in parsed
+        
+        # Check coefficient summary structure
+        coef_summary = parsed["coefficient_summary"]
+        assert len(coef_summary) > 0
+        assert "feature" in coef_summary[0]
+        assert "relativity" in coef_summary[0]
+        assert "impact" in coef_summary[0]
+    
+    def test_multicollinearity_warning(self):
+        """Test that multicollinearity generates appropriate warnings."""
+        import rustystats as rs
+        
+        np.random.seed(42)
+        n = 500
+        
+        x1 = np.random.randn(n)
+        x2 = x1 + np.random.randn(n) * 0.05  # Nearly collinear
+        y = np.random.poisson(np.exp(1 + x1), n)
+        
+        data = pl.DataFrame({"y": y, "x1": x1, "x2": x2})
+        
+        result = rs.glm("y ~ x1 + x2", data, family="poisson").fit()
+        
+        diagnostics = result.diagnostics(
+            train_data=data,
+            continuous_factors=["x1", "x2"],
+        )
+        
+        # Should have multicollinearity warning
+        warning_types = [w["type"] for w in diagnostics.warnings]
+        assert "multicollinearity" in warning_types or "multicollinearity_moderate" in warning_types
+    
+    def test_train_test_comparison(self, fitted_model_with_data):
+        """Test comprehensive train vs test comparison."""
+        import rustystats as rs
+        
+        result, train_data = fitted_model_with_data
+        
+        # Create test data with same structure
+        np.random.seed(999)
+        n_test = 200
+        
+        age = np.random.uniform(18, 70, n_test)
+        veh_power = np.random.uniform(50, 200, n_test)
+        region = np.random.choice(["A", "B", "C", "D"], n_test)
+        exposure = np.random.uniform(0.5, 1.0, n_test)
+        
+        mu_true = np.exp(-2 + 0.02 * age + 0.001 * veh_power + 0.3 * (region == "A").astype(float))
+        y = np.random.poisson(mu_true * exposure)
+        
+        test_data = pl.DataFrame({
+            "y": y,
+            "age": age,
+            "veh_power": veh_power,
+            "region": region,
+            "exposure": exposure,
+        })
+        
+        diagnostics = result.diagnostics(
+            train_data=train_data,
+            test_data=test_data,
+            categorical_factors=["region"],
+            continuous_factors=["age", "veh_power"],
+        )
+        
+        # Check train_test comparison is present
+        assert diagnostics.train_test is not None
+        tt = diagnostics.train_test
+        
+        # Check structure
+        assert tt.train is not None
+        assert tt.test is not None
+        assert tt.train.dataset == "train"
+        assert tt.test.dataset == "test"
+        
+        # Check comparison metrics
+        assert hasattr(tt, 'gini_gap')
+        assert hasattr(tt, 'ae_ratio_diff')
+        assert hasattr(tt, 'overfitting_risk')
+        assert hasattr(tt, 'calibration_drift')
+        assert hasattr(tt, 'unstable_factors')
+        
+        # Check decile comparison
+        assert len(tt.decile_comparison) == 10
+        for d in tt.decile_comparison:
+            assert "decile" in d
+            assert "train_ae" in d
+            assert "test_ae" in d

@@ -729,6 +729,172 @@ fn incomplete_beta_approx(x: f64, a: f64, b: f64) -> f64 {
 }
 
 // =============================================================================
+// Factor Deviance Computation
+// =============================================================================
+
+/// Result for deviance by factor level
+#[derive(Debug, Clone)]
+pub struct DevianceByLevel {
+    pub level: String,
+    pub count: usize,
+    pub deviance: f64,
+    pub deviance_pct: f64,
+    pub mean_deviance: f64,
+    pub actual_sum: f64,
+    pub predicted_sum: f64,
+    pub ae_ratio: f64,
+    pub is_problem: bool,
+}
+
+/// Result for factor deviance computation
+#[derive(Debug, Clone)]
+pub struct FactorDevianceResult {
+    pub factor_name: String,
+    pub total_deviance: f64,
+    pub levels: Vec<DevianceByLevel>,
+    pub problem_levels: Vec<String>,
+}
+
+/// Compute deviance breakdown by categorical factor level
+/// 
+/// This is much faster than Python loops for large datasets
+pub fn compute_factor_deviance(
+    factor_name: &str,
+    factor_values: &[String],
+    y: &Array1<f64>,
+    mu: &Array1<f64>,
+    family: &str,
+    var_power: f64,
+    theta: f64,
+) -> FactorDevianceResult {
+    let n = factor_values.len();
+    if n == 0 || n != y.len() || n != mu.len() {
+        return FactorDevianceResult {
+            factor_name: factor_name.to_string(),
+            total_deviance: 0.0,
+            levels: Vec::new(),
+            problem_levels: Vec::new(),
+        };
+    }
+    
+    // Compute unit deviances using family-specific formula
+    let unit_deviances: Vec<f64> = y.iter().zip(mu.iter())
+        .map(|(&yi, &mui)| unit_deviance_for_family(yi, mui, family, var_power, theta))
+        .collect();
+    
+    let total_deviance: f64 = unit_deviances.iter().sum();
+    let mean_unit_deviance = total_deviance / n as f64;
+    
+    // Group by level using HashMap for O(n) complexity
+    let mut level_data: HashMap<&str, (usize, f64, f64, f64)> = HashMap::new();
+    
+    for (i, level) in factor_values.iter().enumerate() {
+        let entry = level_data.entry(level.as_str()).or_insert((0, 0.0, 0.0, 0.0));
+        entry.0 += 1;                    // count
+        entry.1 += unit_deviances[i];    // deviance sum
+        entry.2 += y[i];                 // actual sum
+        entry.3 += mu[i];                // predicted sum
+    }
+    
+    // Build results
+    let mut levels: Vec<DevianceByLevel> = Vec::with_capacity(level_data.len());
+    let mut problem_levels: Vec<String> = Vec::new();
+    
+    for (level, (count, deviance, actual, predicted)) in level_data {
+        let deviance_pct = if total_deviance > 0.0 { 100.0 * deviance / total_deviance } else { 0.0 };
+        let mean_deviance = if count > 0 { deviance / count as f64 } else { 0.0 };
+        let ae_ratio = if predicted > 0.0 { actual / predicted } else { f64::NAN };
+        
+        // Problem detection
+        let expected_pct = 100.0 * count as f64 / n as f64;
+        let is_problem = mean_deviance > mean_unit_deviance * 1.5 
+            || (ae_ratio - 1.0).abs() > 0.15
+            || deviance_pct > expected_pct * 2.0;
+        
+        if is_problem {
+            problem_levels.push(level.to_string());
+        }
+        
+        levels.push(DevianceByLevel {
+            level: level.to_string(),
+            count,
+            deviance,
+            deviance_pct,
+            mean_deviance,
+            actual_sum: actual,
+            predicted_sum: predicted,
+            ae_ratio,
+            is_problem,
+        });
+    }
+    
+    // Sort by deviance (highest first)
+    levels.sort_by(|a, b| b.deviance.partial_cmp(&a.deviance).unwrap_or(Ordering::Equal));
+    
+    FactorDevianceResult {
+        factor_name: factor_name.to_string(),
+        total_deviance,
+        levels,
+        problem_levels,
+    }
+}
+
+/// Compute unit deviance for a single observation
+fn unit_deviance_for_family(y: f64, mu: f64, family: &str, var_power: f64, theta: f64) -> f64 {
+    let lower = family.to_lowercase();
+    let mu_safe = mu.max(1e-10);
+    let y_safe = y.max(0.0);
+    
+    match lower.as_str() {
+        "gaussian" | "normal" => (y - mu).powi(2),
+        "poisson" => {
+            if y_safe > 0.0 {
+                2.0 * (y_safe * (y_safe / mu_safe).ln() - (y_safe - mu_safe))
+            } else {
+                2.0 * mu_safe
+            }
+        }
+        "binomial" => {
+            let y_clamp = y.max(1e-10).min(1.0 - 1e-10);
+            let mu_clamp = mu.max(1e-10).min(1.0 - 1e-10);
+            2.0 * (y_clamp * (y_clamp / mu_clamp).ln() + (1.0 - y_clamp) * ((1.0 - y_clamp) / (1.0 - mu_clamp)).ln())
+        }
+        "gamma" => {
+            2.0 * ((y_safe - mu_safe) / mu_safe - (y_safe / mu_safe).ln())
+        }
+        "tweedie" => {
+            // Tweedie deviance depends on var_power
+            if (var_power - 1.0).abs() < 1e-6 {
+                // Quasi-Poisson
+                2.0 * (y_safe * (y_safe / mu_safe).ln() - (y_safe - mu_safe))
+            } else if (var_power - 2.0).abs() < 1e-6 {
+                // Gamma
+                2.0 * ((y_safe - mu_safe) / mu_safe - (y_safe / mu_safe).ln())
+            } else {
+                // General Tweedie
+                let p = var_power;
+                if y_safe > 0.0 {
+                    2.0 * (y_safe.powf(2.0 - p) / ((1.0 - p) * (2.0 - p)) 
+                           - y_safe * mu_safe.powf(1.0 - p) / (1.0 - p)
+                           + mu_safe.powf(2.0 - p) / (2.0 - p))
+                } else {
+                    2.0 * mu_safe.powf(2.0 - p) / (2.0 - p)
+                }
+            }
+        }
+        _ if lower.starts_with("negbin") || lower.starts_with("negativebinomial") => {
+            // Negative binomial deviance
+            if y_safe > 0.0 {
+                2.0 * (y_safe * (y_safe / mu_safe).ln() - (y_safe + theta) * ((y_safe + theta) / (mu_safe + theta)).ln())
+            } else {
+                2.0 * theta * ((theta) / (mu_safe + theta)).ln()
+            }
+        }
+        _ => (y - mu).powi(2), // Default to Gaussian
+    }
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 

@@ -2308,6 +2308,58 @@ fn compute_ae_categorical_py<'py>(
     Ok(result)
 }
 
+/// Compute factor deviance breakdown from Rust (fast groupby)
+#[pyfunction]
+#[pyo3(signature = (factor_name, factor_values, y, mu, family="poisson", var_power=1.5, theta=1.0))]
+fn compute_factor_deviance_py<'py>(
+    py: Python<'py>,
+    factor_name: &str,
+    factor_values: Vec<String>,
+    y: PyReadonlyArray1<f64>,
+    mu: PyReadonlyArray1<f64>,
+    family: &str,
+    var_power: f64,
+    theta: f64,
+) -> PyResult<PyObject> {
+    use rustystats_core::diagnostics::compute_factor_deviance;
+    
+    let y_arr = y.as_array().to_owned();
+    let mu_arr = mu.as_array().to_owned();
+    
+    let result = compute_factor_deviance(
+        factor_name,
+        &factor_values,
+        &y_arr,
+        &mu_arr,
+        family,
+        var_power,
+        theta,
+    );
+    
+    // Convert levels to list of dicts
+    let levels_list: Vec<PyObject> = result.levels.into_iter().map(|level| {
+        let dict = pyo3::types::PyDict::new_bound(py);
+        dict.set_item("level", &level.level).unwrap();
+        dict.set_item("count", level.count).unwrap();
+        dict.set_item("deviance", level.deviance).unwrap();
+        dict.set_item("deviance_pct", level.deviance_pct).unwrap();
+        dict.set_item("mean_deviance", level.mean_deviance).unwrap();
+        dict.set_item("actual_sum", level.actual_sum).unwrap();
+        dict.set_item("predicted_sum", level.predicted_sum).unwrap();
+        dict.set_item("ae_ratio", level.ae_ratio).unwrap();
+        dict.set_item("is_problem", level.is_problem).unwrap();
+        dict.into_py(py)
+    }).collect();
+    
+    let dict = pyo3::types::PyDict::new_bound(py);
+    dict.set_item("factor_name", result.factor_name)?;
+    dict.set_item("total_deviance", result.total_deviance)?;
+    dict.set_item("levels", levels_list)?;
+    dict.set_item("problem_levels", result.problem_levels)?;
+    
+    Ok(dict.into_py(py))
+}
+
 /// Compute loss metrics from Rust
 #[pyfunction]
 fn compute_loss_metrics_py<'py>(
@@ -2715,6 +2767,7 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compute_discrimination_stats_py, m)?)?;
     m.add_function(wrap_pyfunction!(compute_ae_continuous_py, m)?)?;
     m.add_function(wrap_pyfunction!(compute_ae_categorical_py, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_factor_deviance_py, m)?)?;
     m.add_function(wrap_pyfunction!(compute_loss_metrics_py, m)?)?;
     m.add_function(wrap_pyfunction!(detect_interactions_py, m)?)?;
     m.add_function(wrap_pyfunction!(compute_lorenz_curve_py, m)?)?;
