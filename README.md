@@ -342,12 +342,11 @@ test_encoded = encoder.transform(test_categories)
 ## Model Diagnostics
 
 ```python
-# Compute comprehensive diagnostics with train/test comparison
+# Compute all diagnostics at once
 diagnostics = result.diagnostics(
-    train_data=train_data,
-    test_data=test_data,  # Optional - enables overfitting detection
-    categorical_factors=["Region", "VehBrand", "Area"],
-    continuous_factors=["Age", "Income", "VehPower"],
+    data=data,
+    categorical_factors=["Region", "VehBrand", "Area"],  # Including non-fitted
+    continuous_factors=["Age", "Income", "VehPower"],    # Including non-fitted
 )
 
 # Export as compact JSON (optimized for LLM consumption)
@@ -367,50 +366,10 @@ exploration = rs.explore_data(
 
 **Diagnostic Features:**
 - **Calibration**: Overall A/E ratio, calibration by decile with CIs, Hosmer-Lemeshow test
-- **Discrimination**: Gini coefficient, AUC, KS statistic, lift charts
+- **Discrimination**: Gini coefficient, AUC, KS statistic, lift metrics
 - **Factor Diagnostics**: A/E by level/bin for ALL factors (fitted and non-fitted)
-- **Train/Test Comparison**: Overfitting detection, calibration drift, unstable factors
-- **VIF/Multicollinearity**: Variance Inflation Factors with severity classification
-- **Partial Dependence**: Marginal effect shapes with transformation recommendations
-- **Factor Deviance**: Deviance breakdown by level to identify poor-fit segments
-- **Coefficient Summary**: Interpretable relativities with magnitude assessment
 - **Interaction Detection**: Greedy residual-based detection of potential interactions
-- **Warnings**: Auto-generated alerts for overfitting, multicollinearity, calibration drift
-
-### Train/Test Diagnostics
-
-```python
-# Enable overfitting detection by providing test data
-diagnostics = result.diagnostics(
-    train_data=train_data,
-    test_data=test_data,
-    categorical_factors=["Region", "Area"],
-    continuous_factors=["Age", "VehPower"],
-)
-
-# Check overfitting flags
-if diagnostics.train_test:
-    if diagnostics.train_test.overfitting_risk:
-        print(f"⚠️ Overfitting: Gini gap = {diagnostics.train_test.gini_gap:.3f}")
-    if diagnostics.train_test.calibration_drift:
-        print(f"⚠️ Calibration drift: Test A/E = {diagnostics.train_test.test.ae_ratio:.3f}")
-    if diagnostics.train_test.unstable_factors:
-        print(f"⚠️ Unstable factors: {diagnostics.train_test.unstable_factors}")
-```
-
-### Performance
-
-Diagnostics computation is optimized with Rust backends:
-
-| Dataset Size | Time | Speedup vs Pure Python |
-|--------------|------|------------------------|
-| 100K rows | 1.2s | **6x faster** |
-| 500K rows | 4.5s | **6x faster** |
-
-Key optimizations:
-- VIF via correlation matrix inverse (O(k³) vs O(k×n×k²))
-- Factor deviance using Rust HashMap groupby
-- Vectorized pandas groupby for residual patterns
+- **Warnings**: Auto-generated alerts for high dispersion, poor calibration, missing factors
 
 ---
 

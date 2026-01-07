@@ -4,21 +4,16 @@ This page documents the model diagnostics functionality.
 
 ## result.diagnostics()
 
-Compute comprehensive model diagnostics with optional train/test comparison.
+Compute comprehensive model diagnostics.
 
 ```python
 diagnostics = result.diagnostics(
-    train_data,
-    test_data=None,
+    data,
     categorical_factors=None,
     continuous_factors=None,
-    n_calibration_bins=10,
+    exposure=None,
+    n_bins=10,
     detect_interactions=True,
-    compute_vif=True,
-    compute_coefficients=True,
-    compute_deviance_by_level=True,
-    compute_lift=True,
-    compute_partial_dep=True,
 )
 ```
 
@@ -26,17 +21,12 @@ diagnostics = result.diagnostics(
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `train_data` | DataFrame | required | Training data used for fitting |
-| `test_data` | DataFrame | `None` | Test data for overfitting detection |
+| `data` | DataFrame | required | Original data used for fitting |
 | `categorical_factors` | list | `None` | Categorical columns to analyze |
 | `continuous_factors` | list | `None` | Continuous columns to analyze |
-| `n_calibration_bins` | int | `10` | Number of bins for calibration |
+| `exposure` | str | `None` | Exposure column name |
+| `n_bins` | int | `10` | Number of bins for calibration |
 | `detect_interactions` | bool | `True` | Whether to detect interactions |
-| `compute_vif` | bool | `True` | Compute VIF/multicollinearity |
-| `compute_coefficients` | bool | `True` | Compute coefficient summary |
-| `compute_deviance_by_level` | bool | `True` | Compute deviance breakdown |
-| `compute_lift` | bool | `True` | Compute lift chart |
-| `compute_partial_dep` | bool | `True` | Compute partial dependence |
 
 ### Returns
 
@@ -143,89 +133,6 @@ Auto-generated warnings.
 ```python
 for warning in diagnostics.warnings:
     print(f"[{warning['type']}] {warning['message']}")
-```
-
-#### vif
-
-VIF/multicollinearity scores (list of `VIFResult`).
-
-```python
-for v in diagnostics.vif:
-    print(f"{v.feature}: VIF={v.vif:.1f} ({v.severity})")
-    if v.collinear_with:
-        print(f"  Collinear with: {v.collinear_with}")
-
-# Example output:
-# bs(VehPower, df=4)[0]: VIF=12.3 (severe)
-#   Collinear with: ['VehPower', 'bs(VehPower, df=4)[1]']
-```
-
-#### coefficient_summary
-
-Coefficient interpretations (list of `CoefficientSummary`).
-
-```python
-for c in diagnostics.coefficient_summary:
-    print(f"{c.feature}: relativity={c.relativity:.3f}")
-    print(f"  Magnitude: {c.magnitude}, Direction: {c.direction}")
-    print(f"  Recommendation: {c.recommendation}")
-```
-
-#### factor_deviance
-
-Deviance breakdown by factor level (list of `FactorDeviance`).
-
-```python
-for fd in diagnostics.factor_deviance:
-    print(f"{fd.factor}: total_deviance={fd.total_deviance:.0f}")
-    if fd.problem_levels:
-        print(f"  Problem levels: {fd.problem_levels}")
-    for level in fd.levels[:5]:  # Top 5 by deviance
-        print(f"    {level.level}: {level.deviance_pct:.1f}% (A/E={level.ae_ratio})")
-```
-
-#### lift_chart
-
-Full lift chart with decile analysis.
-
-```python
-lc = diagnostics.lift_chart
-print(f"Top decile lift: {lc.top_decile_lift:.2f}x")
-print(f"Weak deciles: {lc.weak_deciles}")  # Deciles with lift < 1.1
-for d in lc.deciles:
-    print(f"  Decile {d.decile}: lift={d.lift:.2f}, A/E={d.ae_ratio:.3f}")
-```
-
-#### partial_dependence
-
-Partial dependence plots (list of `PartialDependence`).
-
-```python
-for pd in diagnostics.partial_dependence:
-    print(f"{pd.variable} ({pd.variable_type}):")
-    print(f"  Shape: {pd.shape}")
-    print(f"  Recommendation: {pd.recommendation}")
-    if pd.relativities:
-        print(f"  Relativities: {pd.relativities[:5]}...")
-```
-
-#### train_test
-
-Train/test comparison with overfitting flags.
-
-```python
-if diagnostics.train_test:
-    tt = diagnostics.train_test
-    print(f"Train Gini: {tt.train.gini:.3f}, Test Gini: {tt.test.gini:.3f}")
-    print(f"Gini gap: {tt.gini_gap:.3f}")
-    
-    # Overfitting flags
-    if tt.overfitting_risk:
-        print("⚠️ Overfitting detected (Gini gap > 0.03)")
-    if tt.calibration_drift:
-        print(f"⚠️ Calibration drift (Test A/E={tt.test.ae_ratio:.3f})")
-    if tt.unstable_factors:
-        print(f"⚠️ Unstable factors: {tt.unstable_factors}")
 ```
 
 ### Methods
@@ -393,7 +300,7 @@ For continuous factors:
 
 ## JSON Structure
 
-The JSON export is optimized for LLM consumption (~70KB for typical models):
+The JSON export is optimized for LLM consumption:
 
 ```json
 {
@@ -416,37 +323,21 @@ The JSON export is optimized for LLM consumption (~70KB for typical models):
     "gini_coefficient": 0.42,
     "auc": 0.71
   },
-  "factors": [...],
-  "interaction_candidates": [...],
-  "warnings": [...],
-  
-  "vif": [
-    {"feature": "VehPower", "vif": 2.3, "severity": "none", "collinear_with": null},
-    {"feature": "bs(Age)[0]", "vif": 15.2, "severity": "severe", "collinear_with": ["Age"]}
+  "factors": [
+    {
+      "name": "Region",
+      "factor_type": "categorical",
+      "in_model": true,
+      "actual_vs_expected": [...],
+      "residual_pattern": {"correlation": 0.01}
+    }
   ],
-  "coefficient_summary": [
-    {"feature": "C(Region)[A]", "coefficient": 0.15, "relativity": 1.16, 
-     "magnitude": "moderate", "direction": "positive", "recommendation": "Keep"}
+  "interaction_candidates": [
+    {"factor1": "Age", "factor2": "Region", "strength": 0.03}
   ],
-  "factor_deviance": [
-    {"factor": "Region", "total_deviance": 12345.0, 
-     "levels": [...], "problem_levels": ["Region_X"]}
-  ],
-  "lift_chart": {
-    "deciles": [...], "top_decile_lift": 2.5, "weak_deciles": [5, 6]
-  },
-  "partial_dependence": [
-    {"variable": "Age", "variable_type": "continuous", "shape": "increasing",
-     "grid_values": [...], "predictions": [...], "recommendation": "Linear OK"}
-  ],
-  "train_test": {
-    "train": {"dataset": "train", "gini": 0.42, "ae_ratio": 1.00, ...},
-    "test": {"dataset": "test", "gini": 0.38, "ae_ratio": 1.03, ...},
-    "gini_gap": 0.04,
-    "overfitting_risk": true,
-    "calibration_drift": false,
-    "unstable_factors": ["Region_X"]
-  }
+  "warnings": [
+    {"type": "overdispersion", "message": "Dispersion ratio is 1.5..."}
+  ]
 }
 ```
 

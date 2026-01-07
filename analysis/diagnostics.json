@@ -17,8 +17,8 @@
   },
   "fit_statistics": {
     "deviance": 393.97,
-    "null_deviance": 317.24,
-    "deviance_explained": -0.24187,
+    "null_deviance": 421.63,
+    "deviance_explained": 0.065592,
     "log_likelihood": -335.31,
     "aic": 682.62,
     "bic": 707.91,
@@ -84,11 +84,11 @@
     ]
   },
   "discrimination": {
-    "gini": 0.208,
-    "auc": 0.604,
+    "gini": -0.208,
+    "auc": 0.396,
     "ks": 0.178,
-    "lift_10pct": 0.257,
-    "lift_20pct": 0.424
+    "lift_10pct": 1.622,
+    "lift_20pct": 1.532
   },
   "residual_summary": {
     "pearson": {
@@ -111,7 +111,7 @@
       "univariate_stats": {
         "n_levels": 4,
         "n_rare_levels": 0,
-        "rare_level_total_pct": 0.0
+        "rare_level_total_pct": 0
       },
       "actual_vs_expected": [
         {
@@ -462,11 +462,11 @@
   ],
   "interaction_candidates": [],
   "model_comparison": {
-    "likelihood_ratio_chi2": -76.731,
+    "likelihood_ratio_chi2": 27.6552,
     "likelihood_ratio_df": 5,
-    "likelihood_ratio_pvalue": 1.0,
-    "deviance_reduction_pct": -24.187,
-    "aic_improvement": -86.731
+    "likelihood_ratio_pvalue": 4.3e-05,
+    "deviance_reduction_pct": 6.5592,
+    "aic_improvement": 17.6552
   },
   "warnings": [
     {
@@ -474,12 +474,8 @@
       "message": "Model has weak discrimination in deciles: [1, 4, 5, 6, 7, 8]. Consider adding features or interactions to improve separation."
     },
     {
-      "type": "calibration_drift",
-      "message": "Calibration drift: Test A/E=0.739 (outside [0.95, 1.05]). Model may not generalize well."
-    },
-    {
       "type": "unstable_factors",
-      "message": "Unstable factor levels (train/test A/E differ by >0.1): region[A], region[D], region[C]"
+      "message": "Unstable factor levels (train/test A/E differ by >0.1): region[D], region[B], region[A]"
     }
   ],
   "vif": [
@@ -774,7 +770,7 @@
         "cumulative_lift": 1.0
       }
     ],
-    "gini": 0.208,
+    "gini": -0.208,
     "ks_statistic": 5.37,
     "ks_decile": 6,
     "weak_deciles": [
@@ -938,21 +934,21 @@
       "variable_type": "categorical",
       "grid_values": [
         "A",
+        "B",
         "C",
-        "D",
-        "B"
+        "D"
       ],
       "predictions": [
         0.442748,
+        0.210084,
         0.263566,
-        0.297521,
-        0.210084
+        0.297521
       ],
       "relativities": [
         1.0,
+        0.4745,
         0.5953,
-        0.672,
-        0.4745
+        0.672
       ],
       "std_errors": null,
       "shape": "high_variation",
@@ -966,8 +962,8 @@
       "total_exposure": 373.18,
       "total_actual": 153.0,
       "total_predicted": 153.0,
-      "gini": 0.2084,
-      "auc": 0.6042,
+      "gini": -0.2084,
+      "auc": 0.3958,
       "ae_ratio": 1.0,
       "ae_by_decile": [
         {
@@ -1343,90 +1339,90 @@
       "n_obs": 200,
       "total_exposure": 147.84,
       "total_actual": 63.0,
-      "total_predicted": 85.31,
-      "gini": 0.2272,
-      "auc": 0.6136,
-      "ae_ratio": 0.7385,
+      "total_predicted": 63.41,
+      "gini": -0.2232,
+      "auc": 0.3884,
+      "ae_ratio": 0.9935,
       "ae_by_decile": [
         {
           "decile": 1,
           "n": 20,
-          "exposure": 14.25,
+          "exposure": 12.07,
           "actual": 3.0,
-          "predicted": 3.85,
-          "ae_ratio": 0.7784
+          "predicted": 2.45,
+          "ae_ratio": 1.2237
         },
         {
           "decile": 2,
           "n": 20,
-          "exposure": 14.0,
-          "actual": 3.0,
-          "predicted": 4.67,
-          "ae_ratio": 0.6418
+          "exposure": 13.35,
+          "actual": 1.0,
+          "predicted": 3.22,
+          "ae_ratio": 0.3107
         },
         {
           "decile": 3,
           "n": 20,
-          "exposure": 14.76,
-          "actual": 7.0,
-          "predicted": 5.66,
-          "ae_ratio": 1.2363
+          "exposure": 14.1,
+          "actual": 5.0,
+          "predicted": 4.01,
+          "ae_ratio": 1.2466
         },
         {
           "decile": 4,
           "n": 20,
-          "exposure": 14.68,
-          "actual": 3.0,
-          "predicted": 6.71,
-          "ae_ratio": 0.4468
+          "exposure": 14.17,
+          "actual": 5.0,
+          "predicted": 4.73,
+          "ae_ratio": 1.0574
         },
         {
           "decile": 5,
           "n": 20,
-          "exposure": 14.28,
-          "actual": 4.0,
-          "predicted": 7.67,
-          "ae_ratio": 0.5215
+          "exposure": 14.15,
+          "actual": 5.0,
+          "predicted": 5.47,
+          "ae_ratio": 0.9143
         },
         {
           "decile": 6,
           "n": 20,
-          "exposure": 15.09,
-          "actual": 6.0,
-          "predicted": 8.44,
-          "ae_ratio": 0.7107
+          "exposure": 14.43,
+          "actual": 5.0,
+          "predicted": 6.06,
+          "ae_ratio": 0.8255
         },
         {
           "decile": 7,
           "n": 20,
-          "exposure": 15.44,
-          "actual": 6.0,
-          "predicted": 9.66,
-          "ae_ratio": 0.6211
+          "exposure": 15.97,
+          "actual": 8.0,
+          "predicted": 7.02,
+          "ae_ratio": 1.1396
         },
         {
           "decile": 8,
           "n": 20,
-          "exposure": 15.19,
+          "exposure": 15.77,
           "actual": 11.0,
-          "predicted": 10.7,
-          "ae_ratio": 1.0283
+          "predicted": 8.51,
+          "ae_ratio": 1.2927
         },
         {
           "decile": 9,
           "n": 20,
-          "exposure": 15.51,
-          "actual": 8.0,
-          "predicted": 12.07,
-          "ae_ratio": 0.6631
+          "exposure": 16.71,
+          "actual": 7.0,
+          "predicted": 9.71,
+          "ae_ratio": 0.7207
         },
         {
           "decile": 10,
           "n": 20,
-          "exposure": 14.64,
-          "actual": 12.0,
-          "predicted": 15.87,
-          "ae_ratio": 0.756
+          "exposure": 17.13,
+          "actual": 13.0,
+          "predicted": 12.24,
+          "ae_ratio": 1.0625
         }
       ],
       "factor_diagnostics": {
@@ -1436,36 +1432,36 @@
             "n": 50,
             "exposure": 37.34,
             "actual": 14.0,
-            "predicted": 14.29,
-            "ae_ratio": 0.9797,
-            "residual_mean": -0.005816
+            "predicted": 10.64,
+            "ae_ratio": 1.3158,
+            "residual_mean": 0.067205
           },
           {
             "level": "A",
             "n": 50,
             "exposure": 37.3,
             "actual": 26.0,
-            "predicted": 30.54,
-            "ae_ratio": 0.8515,
-            "residual_mean": -0.09072
+            "predicted": 22.63,
+            "ae_ratio": 1.149,
+            "residual_mean": 0.067449
           },
           {
             "level": "D",
             "n": 50,
             "exposure": 37.0,
             "actual": 10.0,
-            "predicted": 22.98,
-            "ae_ratio": 0.4351,
-            "residual_mean": -0.259662
+            "predicted": 17.2,
+            "ae_ratio": 0.5813,
+            "residual_mean": -0.144071
           },
           {
             "level": "C",
             "n": 50,
             "exposure": 36.22,
             "actual": 13.0,
-            "predicted": 17.5,
-            "ae_ratio": 0.7427,
-            "residual_mean": -0.090075
+            "predicted": 12.94,
+            "ae_ratio": 1.0045,
+            "residual_mean": 0.001156
           }
         ]
       },
@@ -1479,9 +1475,9 @@
             "n": 20,
             "exposure": 14.12,
             "actual": 2.0,
-            "predicted": 4.91,
-            "ae_ratio": 0.4076,
-            "partial_dep": 0.245318
+            "predicted": 3.47,
+            "ae_ratio": 0.5767,
+            "partial_dep": 0.173413
           },
           {
             "band": 2,
@@ -1491,9 +1487,9 @@
             "n": 20,
             "exposure": 13.54,
             "actual": 4.0,
-            "predicted": 5.21,
-            "ae_ratio": 0.7678,
-            "partial_dep": 0.260486
+            "predicted": 3.58,
+            "ae_ratio": 1.1175,
+            "partial_dep": 0.178968
           },
           {
             "band": 3,
@@ -1503,9 +1499,9 @@
             "n": 20,
             "exposure": 14.86,
             "actual": 5.0,
-            "predicted": 5.72,
-            "ae_ratio": 0.8734,
-            "partial_dep": 0.28623
+            "predicted": 4.24,
+            "ae_ratio": 1.1805,
+            "partial_dep": 0.211769
           },
           {
             "band": 4,
@@ -1515,9 +1511,9 @@
             "n": 20,
             "exposure": 15.0,
             "actual": 6.0,
-            "predicted": 8.05,
-            "ae_ratio": 0.7453,
-            "partial_dep": 0.4025
+            "predicted": 6.13,
+            "ae_ratio": 0.9792,
+            "partial_dep": 0.306375
           },
           {
             "band": 5,
@@ -1527,9 +1523,9 @@
             "n": 20,
             "exposure": 16.17,
             "actual": 9.0,
-            "predicted": 8.51,
-            "ae_ratio": 1.0577,
-            "partial_dep": 0.42544
+            "predicted": 6.89,
+            "ae_ratio": 1.3056,
+            "partial_dep": 0.344658
           },
           {
             "band": 6,
@@ -1539,9 +1535,9 @@
             "n": 20,
             "exposure": 14.69,
             "actual": 5.0,
-            "predicted": 8.93,
-            "ae_ratio": 0.56,
-            "partial_dep": 0.446399
+            "predicted": 6.47,
+            "ae_ratio": 0.7727,
+            "partial_dep": 0.323535
           },
           {
             "band": 7,
@@ -1551,9 +1547,9 @@
             "n": 20,
             "exposure": 14.29,
             "actual": 5.0,
-            "predicted": 8.57,
-            "ae_ratio": 0.5835,
-            "partial_dep": 0.428424
+            "predicted": 6.11,
+            "ae_ratio": 0.8182,
+            "partial_dep": 0.305566
           },
           {
             "band": 8,
@@ -1563,9 +1559,9 @@
             "n": 20,
             "exposure": 14.68,
             "actual": 13.0,
-            "predicted": 11.46,
-            "ae_ratio": 1.1344,
-            "partial_dep": 0.572992
+            "predicted": 8.33,
+            "ae_ratio": 1.56,
+            "partial_dep": 0.416666
           },
           {
             "band": 9,
@@ -1575,9 +1571,9 @@
             "n": 20,
             "exposure": 15.21,
             "actual": 4.0,
-            "predicted": 10.99,
-            "ae_ratio": 0.3639,
-            "partial_dep": 0.54959
+            "predicted": 8.48,
+            "ae_ratio": 0.4719,
+            "partial_dep": 0.423797
           },
           {
             "band": 10,
@@ -1587,9 +1583,9 @@
             "n": 20,
             "exposure": 15.29,
             "actual": 10.0,
-            "predicted": 12.97,
-            "ae_ratio": 0.7712,
-            "partial_dep": 0.648304
+            "predicted": 9.72,
+            "ae_ratio": 1.029,
+            "partial_dep": 0.485906
           }
         ],
         "veh_power": [
@@ -1601,9 +1597,9 @@
             "n": 20,
             "exposure": 15.69,
             "actual": 6.0,
-            "predicted": 8.57,
-            "ae_ratio": 0.7003,
-            "partial_dep": 0.428391
+            "predicted": 6.69,
+            "ae_ratio": 0.8967,
+            "partial_dep": 0.33456
           },
           {
             "band": 2,
@@ -1613,9 +1609,9 @@
             "n": 20,
             "exposure": 14.35,
             "actual": 2.0,
-            "predicted": 7.96,
-            "ae_ratio": 0.2511,
-            "partial_dep": 0.398178
+            "predicted": 5.85,
+            "ae_ratio": 0.342,
+            "partial_dep": 0.292378
           },
           {
             "band": 3,
@@ -1625,9 +1621,9 @@
             "n": 20,
             "exposure": 14.12,
             "actual": 6.0,
-            "predicted": 8.18,
-            "ae_ratio": 0.7334,
-            "partial_dep": 0.409027
+            "predicted": 5.87,
+            "ae_ratio": 1.0226,
+            "partial_dep": 0.293369
           },
           {
             "band": 4,
@@ -1637,9 +1633,9 @@
             "n": 20,
             "exposure": 13.99,
             "actual": 12.0,
-            "predicted": 9.31,
-            "ae_ratio": 1.2887,
-            "partial_dep": 0.465574
+            "predicted": 6.67,
+            "ae_ratio": 1.8003,
+            "partial_dep": 0.33328
           },
           {
             "band": 5,
@@ -1649,9 +1645,9 @@
             "n": 20,
             "exposure": 15.74,
             "actual": 4.0,
-            "predicted": 8.28,
-            "ae_ratio": 0.4828,
-            "partial_dep": 0.414245
+            "predicted": 6.51,
+            "ae_ratio": 0.6142,
+            "partial_dep": 0.325653
           },
           {
             "band": 6,
@@ -1661,9 +1657,9 @@
             "n": 20,
             "exposure": 15.18,
             "actual": 5.0,
-            "predicted": 7.85,
-            "ae_ratio": 0.6372,
-            "partial_dep": 0.392318
+            "predicted": 6.08,
+            "ae_ratio": 0.8225,
+            "partial_dep": 0.303952
           },
           {
             "band": 7,
@@ -1673,9 +1669,9 @@
             "n": 20,
             "exposure": 15.01,
             "actual": 5.0,
-            "predicted": 8.6,
-            "ae_ratio": 0.5813,
-            "partial_dep": 0.430078
+            "predicted": 6.51,
+            "ae_ratio": 0.7685,
+            "partial_dep": 0.32533
           },
           {
             "band": 8,
@@ -1685,9 +1681,9 @@
             "n": 20,
             "exposure": 14.26,
             "actual": 10.0,
-            "predicted": 9.08,
-            "ae_ratio": 1.1013,
-            "partial_dep": 0.454013
+            "predicted": 6.39,
+            "ae_ratio": 1.5657,
+            "partial_dep": 0.319344
           },
           {
             "band": 9,
@@ -1697,9 +1693,9 @@
             "n": 20,
             "exposure": 15.43,
             "actual": 6.0,
-            "predicted": 8.86,
-            "ae_ratio": 0.6771,
-            "partial_dep": 0.443083
+            "predicted": 6.87,
+            "ae_ratio": 0.8734,
+            "partial_dep": 0.343481
           },
           {
             "band": 10,
@@ -1709,105 +1705,105 @@
             "n": 20,
             "exposure": 14.08,
             "actual": 7.0,
-            "predicted": 8.62,
-            "ae_ratio": 0.8125,
-            "partial_dep": 0.430777
+            "predicted": 5.99,
+            "ae_ratio": 1.1694,
+            "partial_dep": 0.299305
           }
         ]
       }
     },
-    "gini_gap": -0.0188,
-    "ae_ratio_diff": 0.2615,
+    "gini_gap": 0.0148,
+    "ae_ratio_diff": 0.0065,
     "decile_comparison": [
       {
         "decile": 1,
         "train_ae": 0.3199,
-        "test_ae": 0.7784,
-        "ae_diff": 0.4585
+        "test_ae": 1.2237,
+        "ae_diff": 0.9038
       },
       {
         "decile": 2,
         "train_ae": 1.0834,
-        "test_ae": 0.6418,
-        "ae_diff": 0.4416
+        "test_ae": 0.3107,
+        "ae_diff": 0.7727
       },
       {
         "decile": 3,
         "train_ae": 1.1214,
-        "test_ae": 1.2363,
-        "ae_diff": 0.1149
+        "test_ae": 1.2466,
+        "ae_diff": 0.1252
       },
       {
         "decile": 4,
         "train_ae": 1.2244,
-        "test_ae": 0.4468,
-        "ae_diff": 0.7776
+        "test_ae": 1.0574,
+        "ae_diff": 0.167
       },
       {
         "decile": 5,
         "train_ae": 0.7608,
-        "test_ae": 0.5215,
-        "ae_diff": 0.2393
+        "test_ae": 0.9143,
+        "ae_diff": 0.1535
       },
       {
         "decile": 6,
         "train_ae": 1.7514,
-        "test_ae": 0.7107,
-        "ae_diff": 1.0407
+        "test_ae": 0.8255,
+        "ae_diff": 0.9259
       },
       {
         "decile": 7,
         "train_ae": 0.7664,
-        "test_ae": 0.6211,
-        "ae_diff": 0.1453
+        "test_ae": 1.1396,
+        "ae_diff": 0.3732
       },
       {
         "decile": 8,
         "train_ae": 0.9347,
-        "test_ae": 1.0283,
-        "ae_diff": 0.0936
+        "test_ae": 1.2927,
+        "ae_diff": 0.358
       },
       {
         "decile": 9,
         "train_ae": 0.9323,
-        "test_ae": 0.6631,
-        "ae_diff": 0.2692
+        "test_ae": 0.7207,
+        "ae_diff": 0.2116
       },
       {
         "decile": 10,
         "train_ae": 0.9519,
-        "test_ae": 0.756,
-        "ae_diff": 0.1959
+        "test_ae": 1.0625,
+        "ae_diff": 0.1106
       }
     ],
     "factor_divergence": {
       "region": [
         {
-          "level": "A",
-          "train_ae": 1.0,
-          "test_ae": 0.8515,
-          "ae_diff": 0.1485
-        },
-        {
           "level": "D",
           "train_ae": 1.0,
-          "test_ae": 0.4351,
-          "ae_diff": 0.5649
+          "test_ae": 0.5813,
+          "ae_diff": 0.4187
         },
         {
-          "level": "C",
+          "level": "B",
           "train_ae": 1.0,
-          "test_ae": 0.7427,
-          "ae_diff": 0.2573
+          "test_ae": 1.3158,
+          "ae_diff": 0.3158
+        },
+        {
+          "level": "A",
+          "train_ae": 1.0,
+          "test_ae": 1.149,
+          "ae_diff": 0.149
         }
       ]
     },
     "overfitting_risk": false,
-    "calibration_drift": true,
+    "calibration_drift": false,
     "unstable_factors": [
-      "region[A]",
       "region[D]",
-      "region[C]"
+      "region[B]",
+      "region[A]"
     ]
   }
 }

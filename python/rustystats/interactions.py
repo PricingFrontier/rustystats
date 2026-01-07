@@ -1140,19 +1140,21 @@ class InteractionBuilder:
             return result
         
         else:
-            # Mixed: categorical × continuous
+            # Mixed: categorical × continuous (may include splines)
             cat_factors = []
             cont_factors = []
+            spline_factors = []
+            
             for factor, is_cat in zip(interaction.factors, interaction.categorical_flags):
                 if is_cat:
                     cat_factors.append(factor)
                 else:
-                    cont_factors.append(factor)
-            
-            # Build continuous product
-            cont_product = new_data[cont_factors[0]].to_numpy().astype(self.dtype)
-            for factor in cont_factors[1:]:
-                cont_product = cont_product * new_data[factor].to_numpy().astype(self.dtype)
+                    # Check if this is a spline term
+                    spline = self._parse_spline_factor(factor)
+                    if spline is not None:
+                        spline_factors.append((factor, spline))
+                    else:
+                        cont_factors.append(factor)
             
             # Build categorical encoding
             if len(cat_factors) == 1:
@@ -1168,6 +1170,40 @@ class InteractionBuilder:
                         for j in range(n_cols2):
                             new_enc[:, i * n_cols2 + j] = cat_enc[:, i] * enc[:, j]
                     cat_enc = new_enc
+            
+            # Handle spline × categorical interactions
+            if spline_factors:
+                all_columns = []
+                
+                for spline_str, spline in spline_factors:
+                    x = new_data[spline.var_name].to_numpy().astype(self.dtype)
+                    # Use the fitted spline which has the same knots as training
+                    fitted_spline = self._fitted_splines.get(spline.var_name, spline)
+                    spline_basis, _ = fitted_spline.transform(x)
+                    
+                    # Multiply each spline column by each categorical column
+                    for j in range(spline_basis.shape[1]):
+                        for i in range(cat_enc.shape[1]):
+                            col = cat_enc[:, i] * spline_basis[:, j]
+                            all_columns.append(col)
+                
+                # Also include any regular continuous factors
+                if cont_factors:
+                    cont_product = new_data[cont_factors[0]].to_numpy().astype(self.dtype)
+                    for factor in cont_factors[1:]:
+                        cont_product = cont_product * new_data[factor].to_numpy().astype(self.dtype)
+                    
+                    # Multiply by continuous
+                    all_columns = [col * cont_product for col in all_columns]
+                
+                if all_columns:
+                    return np.column_stack(all_columns)
+                return np.zeros((n, 0), dtype=self.dtype)
+            
+            # Standard continuous × categorical (no splines)
+            cont_product = new_data[cont_factors[0]].to_numpy().astype(self.dtype)
+            for factor in cont_factors[1:]:
+                cont_product = cont_product * new_data[factor].to_numpy().astype(self.dtype)
             
             # Multiply categorical dummies by continuous
             result = cat_enc * cont_product.reshape(-1, 1)

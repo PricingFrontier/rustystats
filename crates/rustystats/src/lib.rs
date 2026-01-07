@@ -2360,78 +2360,6 @@ fn compute_factor_deviance_py<'py>(
     Ok(dict.into_py(py))
 }
 
-/// Compute categorical partial dependence from Rust (fast groupby)
-#[pyfunction]
-fn compute_categorical_pd_py<'py>(
-    py: Python<'py>,
-    factor_values: Vec<String>,
-    predictions: PyReadonlyArray1<f64>,
-) -> PyResult<PyObject> {
-    use rustystats_core::diagnostics::compute_categorical_pd;
-    
-    let preds = predictions.as_slice()?;
-    let result = compute_categorical_pd(&factor_values, preds);
-    
-    let dict = pyo3::types::PyDict::new_bound(py);
-    dict.set_item("levels", result.levels)?;
-    dict.set_item("mean_predictions", result.mean_predictions)?;
-    dict.set_item("counts", result.counts)?;
-    dict.set_item("relativities", result.relativities)?;
-    
-    Ok(dict.into_py(py))
-}
-
-/// Compute categorical residual pattern from Rust (fast groupby)
-#[pyfunction]
-fn compute_categorical_residual_py<'py>(
-    py: Python<'py>,
-    factor_values: Vec<String>,
-    residuals: PyReadonlyArray1<f64>,
-) -> PyResult<PyObject> {
-    use rustystats_core::diagnostics::compute_categorical_residual_pattern;
-    
-    let resids = residuals.as_slice()?;
-    let result = compute_categorical_residual_pattern(&factor_values, resids);
-    
-    let dict = pyo3::types::PyDict::new_bound(py);
-    dict.set_item("mean_abs_residual", result.mean_abs_residual)?;
-    dict.set_item("eta_squared", result.eta_squared)?;
-    
-    Ok(dict.into_py(py))
-}
-
-/// Batch compute A/E summaries for multiple factors (memory efficient)
-#[pyfunction]
-fn batch_compute_ae_py<'py>(
-    py: Python<'py>,
-    factor_names: Vec<String>,
-    factor_values: Vec<Vec<String>>,
-    y: PyReadonlyArray1<f64>,
-    mu: PyReadonlyArray1<f64>,
-) -> PyResult<Vec<PyObject>> {
-    use rustystats_core::diagnostics::batch_compute_ae_categorical;
-    
-    let y_arr = y.as_array().to_owned();
-    let mu_arr = mu.as_array().to_owned();
-    
-    let results = batch_compute_ae_categorical(&factor_names, &factor_values, &y_arr, &mu_arr);
-    
-    let py_results: Vec<PyObject> = results.into_iter().map(|r| {
-        let dict = pyo3::types::PyDict::new_bound(py);
-        dict.set_item("factor_name", r.factor_name).unwrap();
-        dict.set_item("is_categorical", r.is_categorical).unwrap();
-        dict.set_item("n_levels", r.n_levels).unwrap();
-        dict.set_item("ae_min", r.ae_range.0).unwrap();
-        dict.set_item("ae_max", r.ae_range.1).unwrap();
-        dict.set_item("worst_ae", r.worst_ae).unwrap();
-        dict.set_item("worst_level", r.worst_level).unwrap();
-        dict.set_item("has_problem", r.has_problem).unwrap();
-        dict.into_py(py)
-    }).collect();
-    
-    Ok(py_results)
-}
-
 /// Compute loss metrics from Rust
 #[pyfunction]
 fn compute_loss_metrics_py<'py>(
@@ -2840,9 +2768,6 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compute_ae_continuous_py, m)?)?;
     m.add_function(wrap_pyfunction!(compute_ae_categorical_py, m)?)?;
     m.add_function(wrap_pyfunction!(compute_factor_deviance_py, m)?)?;
-    m.add_function(wrap_pyfunction!(compute_categorical_pd_py, m)?)?;
-    m.add_function(wrap_pyfunction!(compute_categorical_residual_py, m)?)?;
-    m.add_function(wrap_pyfunction!(batch_compute_ae_py, m)?)?;
     m.add_function(wrap_pyfunction!(compute_loss_metrics_py, m)?)?;
     m.add_function(wrap_pyfunction!(detect_interactions_py, m)?)?;
     m.add_function(wrap_pyfunction!(compute_lorenz_curve_py, m)?)?;

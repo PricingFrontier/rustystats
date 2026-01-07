@@ -673,6 +673,7 @@ class DiagnosticsComputer:
         feature_names: Optional[List[str]] = None,
         var_power: float = 1.5,
         theta: float = 1.0,
+        null_deviance: Optional[float] = None,
     ):
         self.y = np.asarray(y, dtype=np.float64)
         self.mu = np.asarray(mu, dtype=np.float64)
@@ -680,6 +681,7 @@ class DiagnosticsComputer:
         self.family = family.lower()
         self.n_params = n_params
         self.deviance = deviance
+        self._null_deviance_override = null_deviance  # From model result
         self.exposure = np.asarray(exposure, dtype=np.float64) if exposure is not None else np.ones_like(y)
         self.feature_names = feature_names or []
         self.var_power = var_power
@@ -703,6 +705,9 @@ class DiagnosticsComputer:
     
     @property
     def null_deviance(self) -> float:
+        # Use override from model if provided, otherwise compute
+        if self._null_deviance_override is not None:
+            return self._null_deviance_override
         return self._residuals.null_deviance
     
     def _compute_unit_deviance(self, y: np.ndarray, mu: np.ndarray) -> np.ndarray:
@@ -763,49 +768,38 @@ class DiagnosticsComputer:
         rare_threshold_pct: float = 1.0,
         max_categorical_levels: int = 20,
     ) -> List[FactorDiagnostics]:
-        """Compute diagnostics for each specified factor (optimized)."""
-        import pandas as pd
+        """Compute diagnostics for each specified factor."""
         factors = []
         
-        # Pre-compute which factors are in model (avoid repeated string matching)
-        feature_names_set = set(self.feature_names)
-        def is_in_model(name):
-            if name in feature_names_set:
-                return True
-            return any(name in fn for fn in self.feature_names)
-        
-        # Process categorical factors with batched operations
+        # Process categorical factors
         for name in categorical_factors:
             if name not in data.columns:
                 continue
             
-            # Single data extraction - use Polars native string handling
-            col_data = data[name]
-            # Direct to list is faster than to_numpy().astype(str).tolist()
-            levels = [str(v) for v in col_data.to_list()]  # Single conversion
-            total = len(levels)
-            in_model = is_in_model(name)
+            values = data[name].to_numpy().astype(str)
+            in_model = any(name in fn for fn in self.feature_names)
             
-            # Fast unique count using pandas Series (efficient for strings)
-            series = pd.Series(levels)
-            value_counts = series.value_counts()
-            n_levels = len(value_counts)
-            percentages = (value_counts / total * 100).values
+            # Univariate stats (compressed: no levels array, info is in actual_vs_expected)
+            unique, counts = np.unique(values, return_counts=True)
+            total = len(values)
+            percentages = [100.0 * c / total for c in counts]
             
-            n_rare = int(np.sum(percentages < rare_threshold_pct))
-            rare_pct = float(np.sum(percentages[percentages < rare_threshold_pct]))
+            n_rare = sum(1 for pct in percentages if pct < rare_threshold_pct)
+            rare_pct = sum(pct for pct in percentages if pct < rare_threshold_pct)
             
             univariate = CategoricalFactorStats(
-                n_levels=n_levels,
+                n_levels=len(unique),
                 n_rare_levels=n_rare,
                 rare_level_total_pct=round(rare_pct, 2),
             )
             
-            # A/E by level - reuse the string list
-            ae_bins = self._compute_ae_categorical_fast(levels, rare_threshold_pct, max_categorical_levels)
+            # A/E by level
+            ae_bins = self._compute_ae_categorical(
+                values, rare_threshold_pct, max_categorical_levels
+            )
             
-            # Residual pattern - reuse the string list
-            resid_pattern = self._compute_residual_pattern_categorical_fast(levels)
+            # Residual pattern
+            resid_pattern = self._compute_residual_pattern_categorical(values)
             
             # Factor significance (only for factors in model)
             significance = self.compute_factor_significance(name, result) if in_model and result else None
@@ -966,15 +960,6 @@ class DiagnosticsComputer:
     ) -> List[ActualExpectedBin]:
         """Compute A/E for categorical factor using Rust backend (compressed format)."""
         levels = [str(v) for v in values]
-        return self._compute_ae_categorical_fast(levels, rare_threshold_pct, max_levels)
-    
-    def _compute_ae_categorical_fast(
-        self,
-        levels: List[str],
-        rare_threshold_pct: float,
-        max_levels: int,
-    ) -> List[ActualExpectedBin]:
-        """Compute A/E for categorical factor - takes pre-converted string list."""
         rust_bins = _rust_ae_categorical(levels, self.y, self.mu, self.exposure, 
                                           rare_threshold_pct, max_levels, self.family)
         return [
@@ -1010,35 +995,18 @@ class DiagnosticsComputer:
         )
     
     def _compute_residual_pattern_categorical(self, values: np.ndarray) -> ResidualPattern:
-        """Compute residual pattern for categorical factor (pandas groupby - faster than Rust due to string conversion overhead)."""
+        """Compute residual pattern for categorical factor (compressed)."""
+        # Use pandas groupby for vectorized computation (faster than Python loop)
         import pandas as pd
         
         df = pd.DataFrame({'level': values, 'resid': self.pearson_residuals})
-        group_stats = df.groupby('level', sort=False)['resid'].agg(['mean', 'count'])
+        
+        # Compute group means in one vectorized operation
+        group_stats = df.groupby('level')['resid'].agg(['mean', 'count'])
         level_means = group_stats['mean'].values
         level_counts = group_stats['count'].values
         
-        overall_mean = np.mean(self.pearson_residuals)
-        ss_total = np.sum((self.pearson_residuals - overall_mean) ** 2)
-        ss_between = np.sum(level_counts * (level_means - overall_mean) ** 2)
-        
-        eta_squared = ss_between / ss_total if ss_total > 0 else 0.0
-        mean_abs_resid = np.mean(np.abs(level_means))
-        
-        return ResidualPattern(
-            resid_corr=round(float(mean_abs_resid), 4),
-            var_explained=round(float(eta_squared), 6),
-        )
-    
-    def _compute_residual_pattern_categorical_fast(self, levels: List[str]) -> ResidualPattern:
-        """Compute residual pattern - takes pre-converted string list (pandas groupby)."""
-        import pandas as pd
-        
-        df = pd.DataFrame({'level': levels, 'resid': self.pearson_residuals})
-        group_stats = df.groupby('level', sort=False)['resid'].agg(['mean', 'count'])
-        level_means = group_stats['mean'].values
-        level_counts = group_stats['count'].values
-        
+        # Compute eta-squared (variance explained)
         overall_mean = np.mean(self.pearson_residuals)
         ss_total = np.sum((self.pearson_residuals - overall_mean) ** 2)
         ss_between = np.sum(level_counts * (level_means - overall_mean) ** 2)
@@ -1877,20 +1845,23 @@ class DiagnosticsComputer:
                 recommendation=recommendation,
             ))
         
-        # Categorical variables - use Rust for fast groupby
-        from rustystats._rustystats import compute_categorical_pd_py as _rust_cat_pd
-        
+        # Categorical variables
         for var in categorical_factors:
             if var not in data.columns:
                 continue
             
-            values = [str(v) for v in data[var].to_list()]
+            values = data[var].to_numpy().astype(str)
+            unique_levels = np.unique(values)
             
-            # Use Rust for fast categorical aggregation
-            rust_result = _rust_cat_pd(values, self.mu)
+            grid_values = list(unique_levels)
+            predictions = []
             
-            grid_values = rust_result["levels"]
-            predictions = rust_result["mean_predictions"]
+            for level in unique_levels:
+                mask = values == level
+                if np.any(mask):
+                    predictions.append(float(np.mean(self.mu[mask])))
+                else:
+                    predictions.append(float(np.mean(self.mu)))
             
             # Analyze categorical effect
             if len(predictions) > 1:
@@ -1911,7 +1882,10 @@ class DiagnosticsComputer:
                 shape = "single_level"
                 recommendation = "Cannot assess with single level"
             
-            relativities = rust_result["relativities"] if link == "log" else None
+            relativities = None
+            if link == "log" and predictions:
+                base = predictions[0]  # First level as base
+                relativities = [p/base if base > 0 else 1.0 for p in predictions]
             
             results.append(PartialDependence(
                 variable=var,
@@ -2189,50 +2163,36 @@ class DiagnosticsComputer:
         exposure: np.ndarray,
         factor_values: np.ndarray,
     ) -> List[FactorLevelMetrics]:
-        """Compute metrics for each level of a categorical factor using vectorized pandas groupby."""
-        import pandas as pd
+        """Compute metrics for each level of a categorical factor."""
+        unique_levels = np.unique(factor_values)
+        residuals = y - mu
         
-        # Use pandas for fast vectorized groupby (avoids Python loop)
-        df = pd.DataFrame({
-            'level': factor_values,
-            'y': y,
-            'mu': mu,
-            'exposure': exposure,
-            'residual': y - mu,
-        })
+        metrics = []
+        for level in unique_levels:
+            mask = factor_values == level
+            n = int(np.sum(mask))
+            
+            if n == 0:
+                continue
+            
+            actual = float(np.sum(y[mask]))
+            predicted = float(np.sum(mu[mask]))
+            exp_sum = float(np.sum(exposure[mask]))
+            ae = actual / predicted if predicted > 0 else float('nan')
+            resid_mean = float(np.mean(residuals[mask]))
+            
+            metrics.append(FactorLevelMetrics(
+                level=str(level),
+                n=n,
+                exposure=round(exp_sum, 2),
+                actual=round(actual, 2),
+                predicted=round(predicted, 2),
+                ae_ratio=round(ae, 4) if not np.isnan(ae) else None,
+                residual_mean=round(resid_mean, 6),
+            ))
         
-        # Single groupby aggregation
-        agg = df.groupby('level', sort=False).agg({
-            'y': ['sum', 'count'],
-            'mu': 'sum',
-            'exposure': 'sum',
-            'residual': 'mean',
-        })
-        
-        # Flatten column names
-        agg.columns = ['actual', 'n', 'predicted', 'exp_sum', 'resid_mean']
-        agg = agg.reset_index()
-        
-        # Compute A/E
-        agg['ae'] = agg['actual'] / agg['predicted']
-        
-        # Sort by exposure descending
-        agg = agg.sort_values('exp_sum', ascending=False)
-        
-        # Convert to list of dataclasses
-        metrics = [
-            FactorLevelMetrics(
-                level=str(row['level']),
-                n=int(row['n']),
-                exposure=round(float(row['exp_sum']), 2),
-                actual=round(float(row['actual']), 2),
-                predicted=round(float(row['predicted']), 2),
-                ae_ratio=round(float(row['ae']), 4) if not np.isnan(row['ae']) else None,
-                residual_mean=round(float(row['resid_mean']), 6),
-            )
-            for _, row in agg.iterrows()
-        ]
-        
+        # Sort by exposure (largest first)
+        metrics.sort(key=lambda x: -x.exposure)
         return metrics
     
     def _compute_continuous_band_metrics(
@@ -3698,6 +3658,11 @@ def compute_diagnostics(
         if match:
             theta = float(match.group(1))
     
+    # Get null deviance from model result (more accurate than recomputing)
+    null_deviance = None
+    if hasattr(result, 'null_deviance'):
+        null_deviance = result.null_deviance() if callable(result.null_deviance) else result.null_deviance
+    
     # Create computer
     computer = DiagnosticsComputer(
         y=y,
@@ -3710,6 +3675,7 @@ def compute_diagnostics(
         feature_names=feature_names,
         var_power=var_power,
         theta=theta,
+        null_deviance=null_deviance,
     )
     
     # Compute all diagnostics

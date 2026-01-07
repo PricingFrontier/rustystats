@@ -279,10 +279,10 @@ pub fn compute_discrimination_stats(
         };
     }
     
-    // Sort by predictions (ascending)
+    // Sort by predictions (descending - high risk first for positive Gini)
     let mut indices: Vec<usize> = (0..n).collect();
     indices.sort_by(|&a, &b| {
-        mu[a].partial_cmp(&mu[b]).unwrap_or(Ordering::Equal)
+        mu[b].partial_cmp(&mu[a]).unwrap_or(Ordering::Equal)
     });
     
     let total_exposure: f64 = exposure.map_or(n as f64, |e| e.sum());

@@ -1116,15 +1116,20 @@ class FormulaGLMResults:
         # Handle offset
         # If offset is provided as a string, extract column and apply log() for log-link models
         # If offset is provided as array, use directly (user handles transformation)
-        # If offset is None, no offset is applied
-        if offset is not None:
-            if isinstance(offset, str):
-                offset_values = new_data[offset].to_numpy().astype(np.float64)
+        # If offset is None but model was fit with offset, use the stored offset column
+        offset_to_use = offset
+        if offset_to_use is None and hasattr(self, '_offset_spec') and self._offset_spec is not None:
+            # Auto-use the offset column from fitting
+            offset_to_use = self._offset_spec
+        
+        if offset_to_use is not None:
+            if isinstance(offset_to_use, str):
+                offset_values = new_data[offset_to_use].to_numpy().astype(np.float64)
                 # Apply log() for log-link models (same as fitting)
                 if self.link == "log":
                     offset_values = np.log(offset_values)
             else:
-                offset_values = np.asarray(offset, dtype=np.float64)
+                offset_values = np.asarray(offset_to_use, dtype=np.float64)
             linear_pred = linear_pred + offset_values
         
         # Apply inverse link function to get predictions on response scale
