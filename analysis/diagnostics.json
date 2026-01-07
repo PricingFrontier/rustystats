@@ -111,7 +111,7 @@
       "univariate_stats": {
         "n_levels": 4,
         "n_rare_levels": 0,
-        "rare_level_total_pct": 0
+        "rare_level_total_pct": 0.0
       },
       "actual_vs_expected": [
         {
@@ -479,7 +479,7 @@
     },
     {
       "type": "unstable_factors",
-      "message": "Unstable factor levels (train/test A/E differ by >0.1): region[C], region[A], region[D]"
+      "message": "Unstable factor levels (train/test A/E differ by >0.1): region[A], region[D], region[C]"
     }
   ],
   "vif": [
@@ -938,21 +938,21 @@
       "variable_type": "categorical",
       "grid_values": [
         "A",
-        "B",
         "C",
-        "D"
+        "D",
+        "B"
       ],
       "predictions": [
         0.442748,
-        0.210084,
         0.263566,
-        0.297521
+        0.297521,
+        0.210084
       ],
       "relativities": [
         1.0,
-        0.4745,
         0.5953,
-        0.672
+        0.672,
+        0.4745
       ],
       "std_errors": null,
       "shape": "high_variation",
@@ -1783,12 +1783,6 @@
     "factor_divergence": {
       "region": [
         {
-          "level": "C",
-          "train_ae": 1.0,
-          "test_ae": 0.7427,
-          "ae_diff": 0.2573
-        },
-        {
           "level": "A",
           "train_ae": 1.0,
           "test_ae": 0.8515,
@@ -1799,15 +1793,21 @@
           "train_ae": 1.0,
           "test_ae": 0.4351,
           "ae_diff": 0.5649
+        },
+        {
+          "level": "C",
+          "train_ae": 1.0,
+          "test_ae": 0.7427,
+          "ae_diff": 0.2573
         }
       ]
     },
     "overfitting_risk": false,
     "calibration_drift": true,
     "unstable_factors": [
-      "region[C]",
       "region[A]",
-      "region[D]"
+      "region[D]",
+      "region[C]"
     ]
   }
 }
