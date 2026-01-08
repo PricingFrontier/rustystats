@@ -43,7 +43,7 @@ use rustystats_core::diagnostics::{
     resid_response, resid_pearson, resid_deviance, resid_working,
     estimate_dispersion_pearson, pearson_chi2,
     log_likelihood_gaussian, log_likelihood_poisson, log_likelihood_binomial, log_likelihood_gamma,
-    aic, bic, null_deviance,
+    aic, bic, null_deviance, null_deviance_with_offset,
     estimate_theta_profile, estimate_theta_moments, nb_loglikelihood,
     // Calibration and discrimination
     compute_calibration_curve, compute_discrimination_stats, compute_lorenz_curve,
@@ -55,6 +55,8 @@ use rustystats_core::diagnostics::{
     detect_interactions, InteractionConfig, FactorData,
     // Loss
     mse, rmse, mae, compute_family_loss,
+    // Statistical distributions (for p-values)
+    chi2_cdf, t_cdf, f_cdf,
 };
 
 // =============================================================================
@@ -442,6 +444,8 @@ pub struct PyGLMResults {
     design_matrix: Array2<f64>,
     /// IRLS weights (for robust standard errors)
     irls_weights: Array1<f64>,
+    /// Offset values (e.g., log(exposure) for count models)
+    offset: Option<Array1<f64>>,
 }
 
 // =============================================================================
@@ -1052,8 +1056,9 @@ impl PyGLMResults {
     ///
     /// Measures total variation in y before accounting for predictors.
     /// Compare to residual deviance to assess explanatory power.
+    /// Accounts for offset if present (e.g., exposure in count models).
     fn null_deviance(&self) -> f64 {
-        null_deviance(&self.y, &self.family_name, self.maybe_weights())
+        null_deviance_with_offset(&self.y, &self.family_name, self.maybe_weights(), self.offset.as_ref())
     }
 
     /// Get the family name.
@@ -1371,6 +1376,14 @@ fn fit_glm_py(
         ))),
     }.map_err(|e| PyValueError::new_err(format!("GLM fitting failed: {}", e)))?;
 
+    // For NegativeBinomial, include theta in family name so null_deviance can parse it
+    let family_name = if result.family_name.to_lowercase().contains("negativebinomial") 
+        || result.family_name.to_lowercase().contains("negbinomial") {
+        format!("NegativeBinomial(theta={:.4})", theta)
+    } else {
+        result.family_name
+    };
+    
     Ok(PyGLMResults {
         coefficients: result.coefficients,
         fitted_values: result.fitted_values,
@@ -1382,11 +1395,12 @@ fn fit_glm_py(
         n_obs,
         n_params,
         y: result.y,
-        family_name: result.family_name,
+        family_name,
         prior_weights: result.prior_weights,
         penalty: result.penalty,
         design_matrix: x_array,  // Use the X we already have (no extra copy)
         irls_weights: result.irls_weights,
+        offset: offset_array,
     })
 }
 
@@ -1585,6 +1599,7 @@ fn fit_negbinomial_py(
         penalty: result.penalty,
         design_matrix: x_array,
         irls_weights: result.irls_weights,
+        offset: offset_array,
     })
 }
 
@@ -2706,6 +2721,28 @@ fn compute_unit_deviance_py<'py>(
 }
 
 // =============================================================================
+// Statistical Distribution CDFs (for p-value calculations)
+// =============================================================================
+
+/// Chi-squared distribution CDF: P(X <= x) where X ~ χ²(df)
+#[pyfunction]
+fn chi2_cdf_py(x: f64, df: f64) -> f64 {
+    chi2_cdf(x, df)
+}
+
+/// Student's t-distribution CDF: P(X <= x) where X ~ t(df)
+#[pyfunction]
+fn t_cdf_py(x: f64, df: f64) -> f64 {
+    t_cdf(x, df)
+}
+
+/// F-distribution CDF: P(X <= x) where X ~ F(df1, df2)
+#[pyfunction]
+fn f_cdf_py(x: f64, df1: f64, df2: f64) -> f64 {
+    f_cdf(x, df1, df2)
+}
+
+// =============================================================================
 // Module Registration
 // =============================================================================
 //
@@ -2779,6 +2816,11 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compute_deviance_residuals_py, m)?)?;
     m.add_function(wrap_pyfunction!(compute_null_deviance_py, m)?)?;
     m.add_function(wrap_pyfunction!(compute_unit_deviance_py, m)?)?;
+    
+    // Statistical distribution CDFs (for p-values without scipy)
+    m.add_function(wrap_pyfunction!(chi2_cdf_py, m)?)?;
+    m.add_function(wrap_pyfunction!(t_cdf_py, m)?)?;
+    m.add_function(wrap_pyfunction!(f_cdf_py, m)?)?;
     
     Ok(())
 }

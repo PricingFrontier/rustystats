@@ -74,11 +74,9 @@ def summary(
         null_dev = result.null_deviance()
         family_name = result.family
         scale = result.scale()
-    except Exception:
-        # Fallback if diagnostics not available
-        llf = aic_val = bic_val = pearson_chi2 = null_dev = float('nan')
-        family_name = "Unknown"
-        scale = 1.0
+    except Exception as e:
+        # Re-raise - summary diagnostics shouldn't fail silently
+        raise RuntimeError(f"Failed to compute model summary diagnostics: {e}") from e
     
     # Build the table
     lines = []
@@ -95,7 +93,8 @@ def summary(
     try:
         is_reg = result.is_regularized
         penalty_type = result.penalty_type if is_reg else "none"
-    except Exception:
+    except AttributeError:
+        # Older result objects may not have these attributes - this is expected
         is_reg = False
         penalty_type = "none"
     

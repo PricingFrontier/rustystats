@@ -707,8 +707,8 @@
       "r_squared": 0.000747,
       "f_statistic": 405.01,
       "pvalue": 0.0,
-      "significant_01": "True",
-      "significant_05": "True"
+      "significant_01": true,
+      "significant_05": true
     },
     {
       "factor": "BonusMalus",
@@ -718,8 +718,8 @@
       "r_squared": 0.003059,
       "f_statistic": 1663.45,
       "pvalue": 0.0,
-      "significant_01": "True",
-      "significant_05": "True"
+      "significant_01": true,
+      "significant_05": true
     },
     {
       "factor": "Region",
@@ -729,8 +729,8 @@
       "eta_squared": 0.000346,
       "f_statistic": 9.3859,
       "pvalue": 0.0,
-      "significant_01": "True",
-      "significant_05": "True"
+      "significant_01": true,
+      "significant_05": true
     },
     {
       "factor": "Area",
@@ -740,8 +740,8 @@
       "eta_squared": 0.000446,
       "f_statistic": 48.3631,
       "pvalue": 0.0,
-      "significant_01": "True",
-      "significant_05": "True"
+      "significant_01": true,
+      "significant_05": true
     },
     {
       "factor": "VehBrand",
@@ -751,8 +751,8 @@
       "eta_squared": 0.000514,
       "f_statistic": 27.8866,
       "pvalue": 0.0,
-      "significant_01": "True",
-      "significant_05": "True"
+      "significant_01": true,
+      "significant_05": true
     },
     {
       "factor": "DrivAge",
@@ -762,8 +762,8 @@
       "r_squared": 9.4e-05,
       "f_statistic": 51.0875,
       "pvalue": 0.0,
-      "significant_01": "True",
-      "significant_05": "True"
+      "significant_01": true,
+      "significant_05": true
     },
     {
       "factor": "VehGas",
@@ -773,8 +773,8 @@
       "eta_squared": 1.9e-05,
       "f_statistic": 10.2366,
       "pvalue": 0.001377,
-      "significant_01": "True",
-      "significant_05": "True"
+      "significant_01": true,
+      "significant_05": true
     },
     {
       "factor": "VehPower",
@@ -784,8 +784,8 @@
       "r_squared": 6e-06,
       "f_statistic": 3.3676,
       "pvalue": 0.066492,
-      "significant_01": "False",
-      "significant_05": "False"
+      "significant_01": false,
+      "significant_05": false
     }
   ],
   "correlations": {

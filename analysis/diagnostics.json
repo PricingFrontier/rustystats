@@ -17,8 +17,8 @@
   },
   "fit_statistics": {
     "deviance": 393.97,
-    "null_deviance": 421.63,
-    "deviance_explained": 0.065592,
+    "null_deviance": 421.43,
+    "deviance_explained": 0.065148,
     "log_likelihood": -335.31,
     "aic": 682.62,
     "bic": 707.91,
@@ -177,7 +177,7 @@
       "univariate_stats": {
         "mean": 43.9252,
         "std": 15.5163,
-        "min": 18.5901,
+        "min": 18.2632,
         "max": 69.6342,
         "missing_count": 0,
         "percentiles": {
@@ -322,7 +322,7 @@
       "univariate_stats": {
         "mean": 122.29,
         "std": 42.7812,
-        "min": 52.7112,
+        "min": 50.6948,
         "max": 199.96,
         "missing_count": 0,
         "percentiles": {
@@ -462,11 +462,11 @@
   ],
   "interaction_candidates": [],
   "model_comparison": {
-    "likelihood_ratio_chi2": 27.6552,
+    "likelihood_ratio_chi2": 27.455,
     "likelihood_ratio_df": 5,
-    "likelihood_ratio_pvalue": 4.3e-05,
-    "deviance_reduction_pct": 6.5592,
-    "aic_improvement": 17.6552
+    "likelihood_ratio_pvalue": 4.7e-05,
+    "deviance_reduction_pct": 6.5148,
+    "aic_improvement": 17.455
   },
   "warnings": [
     {
@@ -475,7 +475,7 @@
     },
     {
       "type": "unstable_factors",
-      "message": "Unstable factor levels (train/test A/E differ by >0.1): region[D], region[B], region[A]"
+      "message": "Unstable factor levels (train/test A/E differ by >0.1): region[B], region[A], region[D]"
     }
   ],
   "vif": [
@@ -1779,12 +1779,6 @@
     "factor_divergence": {
       "region": [
         {
-          "level": "D",
-          "train_ae": 1.0,
-          "test_ae": 0.5813,
-          "ae_diff": 0.4187
-        },
-        {
           "level": "B",
           "train_ae": 1.0,
           "test_ae": 1.3158,
@@ -1795,15 +1789,21 @@
           "train_ae": 1.0,
           "test_ae": 1.149,
           "ae_diff": 0.149
+        },
+        {
+          "level": "D",
+          "train_ae": 1.0,
+          "test_ae": 0.5813,
+          "ae_diff": 0.4187
         }
       ]
     },
     "overfitting_risk": false,
     "calibration_drift": false,
     "unstable_factors": [
-      "region[D]",
       "region[B]",
-      "region[A]"
+      "region[A]",
+      "region[D]"
     ]
   }
 }

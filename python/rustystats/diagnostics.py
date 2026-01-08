@@ -46,6 +46,10 @@ from rustystats._rustystats import (
     compute_deviance_residuals_py as _rust_deviance_residuals,
     compute_null_deviance_py as _rust_null_deviance,
     compute_unit_deviance_py as _rust_unit_deviance,
+    # Statistical distribution CDFs (replaces scipy.stats)
+    chi2_cdf_py as _chi2_cdf,
+    t_cdf_py as _t_cdf,
+    f_cdf_py as _f_cdf,
 )
 from typing import Optional, List, Dict, Any, Union, TYPE_CHECKING
 
@@ -774,7 +778,7 @@ class DiagnosticsComputer:
         # Process categorical factors
         for name in categorical_factors:
             if name not in data.columns:
-                continue
+                raise ValueError(f"Categorical factor '{name}' not found in data columns: {list(data.columns)}")
             
             values = data[name].to_numpy().astype(str)
             in_model = any(name in fn for fn in self.feature_names)
@@ -818,7 +822,7 @@ class DiagnosticsComputer:
         # Process continuous factors
         for name in continuous_factors:
             if name not in data.columns:
-                continue
+                raise ValueError(f"Continuous factor '{name}' not found in data columns: {list(data.columns)}")
             
             values = data[name].to_numpy().astype(np.float64)
             in_model = any(name in fn for fn in self.feature_names)
@@ -838,7 +842,7 @@ class DiagnosticsComputer:
                 univariate = ContinuousFactorStats(
                     mean=float(np.mean(valid)),
                     std=float(np.std(valid)),
-                    min=float(pcts[0]),  # Reuse min from percentiles
+                    min=float(np.min(valid)),
                     max=float(np.max(valid)),
                     missing_count=int(np.sum(~valid_mask)),
                     percentiles=percentiles,
@@ -916,12 +920,8 @@ class DiagnosticsComputer:
             # Degrees of freedom = number of parameters for this term
             df = len(param_indices)
             
-            # P-value from chi-square distribution
-            try:
-                from scipy.stats import chi2
-                wald_pvalue = 1 - chi2.cdf(wald_chi2, df) if df > 0 else 1.0
-            except ImportError:
-                wald_pvalue = float('nan')
+            # P-value from chi-square distribution (using Rust CDF)
+            wald_pvalue = 1 - _chi2_cdf(wald_chi2, float(df)) if df > 0 else 1.0
             
             # Deviance contribution: approximate using sum of z^2 (scaled)
             # This is an approximation; true drop-in-deviance requires refitting
@@ -932,8 +932,9 @@ class DiagnosticsComputer:
                 p=round(float(wald_pvalue), 4),
                 dev_contrib=round(deviance_contribution, 2),
             )
-        except Exception:
-            return None
+        except Exception as e:
+            # Re-raise to surface bugs - factor significance computation shouldn't fail silently
+            raise RuntimeError(f"Failed to compute factor significance for '{factor_name}': {e}") from e
     
     def _compute_ae_continuous(self, values: np.ndarray, n_bins: int) -> List[ActualExpectedBin]:
         """Compute A/E for continuous factor using Rust backend (compressed format)."""
@@ -1049,11 +1050,8 @@ class DiagnosticsComputer:
         
         t_stat = slope / se_slope
         
-        try:
-            from scipy.stats import t
-            pvalue = 2 * (1 - t.cdf(abs(t_stat), df))
-        except ImportError:
-            pvalue = float('nan')
+        # P-value from t-distribution (using Rust CDF)
+        pvalue = 2 * (1 - _t_cdf(abs(t_stat), float(df)))
         
         return slope, pvalue
     
@@ -1072,7 +1070,7 @@ class DiagnosticsComputer:
         
         for name in factor_names:
             if name not in data.columns:
-                continue
+                raise ValueError(f"Factor '{name}' not found in data columns: {list(data.columns)}")
             
             values = data[name].to_numpy()
             
@@ -1255,11 +1253,8 @@ class DiagnosticsComputer:
         if df_model > 0 and df_resid > 0:
             f_stat = (ss_model / df_model) / ((ss_total - ss_model) / df_resid)
             
-            try:
-                from scipy.stats import f
-                pvalue = 1 - f.cdf(f_stat, df_model, df_resid)
-            except ImportError:
-                pvalue = float('nan')
+            # P-value from F-distribution (using Rust CDF)
+            pvalue = 1 - _f_cdf(f_stat, float(df_model), float(df_resid))
         else:
             pvalue = float('nan')
         
@@ -1279,11 +1274,8 @@ class DiagnosticsComputer:
         lr_chi2 = null_dev - self.deviance
         lr_df = self.n_params - 1
         
-        try:
-            from scipy.stats import chi2
-            lr_pvalue = 1 - chi2.cdf(lr_chi2, lr_df) if lr_df > 0 else float('nan')
-        except ImportError:
-            lr_pvalue = float('nan')
+        # P-value from chi-square distribution (using Rust CDF)
+        lr_pvalue = 1 - _chi2_cdf(lr_chi2, float(lr_df)) if lr_df > 0 else float('nan')
         
         deviance_reduction_pct = 100 * (1 - self.deviance / null_dev) if null_dev > 0 else 0
         
@@ -1334,8 +1326,9 @@ class DiagnosticsComputer:
                             "type": "negbinomial_small_theta",
                             "message": f"Estimated theta={theta:.4f} is very small, indicating severe overdispersion. Check for missing covariates or consider zero-inflated models."
                         })
-                except (ValueError, IndexError):
-                    pass
+                except (ValueError, IndexError) as e:
+                    # Theta parsing failed - this is a bug in family string formatting
+                    raise RuntimeError(f"Failed to parse theta from family string '{family}': {e}") from e
         
         # High dispersion warning
         dispersion = fit_stats.get("dispersion_pearson", 1.0)
@@ -2434,7 +2427,7 @@ class DataExplorer:
         # Continuous factors
         for name in continuous_factors:
             if name not in data.columns:
-                continue
+                raise ValueError(f"Continuous factor '{name}' not found in data columns: {list(data.columns)}")
             
             values = data[name].to_numpy().astype(np.float64)
             valid_mask = ~np.isnan(values) & ~np.isinf(values)
@@ -2511,7 +2504,7 @@ class DataExplorer:
         # Categorical factors
         for name in categorical_factors:
             if name not in data.columns:
-                continue
+                raise ValueError(f"Categorical factor '{name}' not found in data columns: {list(data.columns)}")
             
             values = data[name].to_numpy().astype(str)
             unique_levels = np.unique(values)
@@ -2684,13 +2677,13 @@ class DataExplorer:
         
         for name in continuous_factors:
             if name not in data.columns:
-                continue
+                raise ValueError(f"Continuous factor '{name}' not found in data columns: {list(data.columns)}")
             
             values = data[name].to_numpy().astype(np.float64)
             valid_mask = ~np.isnan(values) & ~np.isinf(values)
             
             if np.sum(valid_mask) < 10:
-                continue
+                continue  # Skip factors with insufficient valid data (expected behavior)
             
             x_valid = values[valid_mask]
             y_valid = y_rate[valid_mask]
@@ -2711,11 +2704,8 @@ class DataExplorer:
             r2 = corr ** 2
             f_stat = (r2 / 1) / ((1 - r2) / (n - 2)) if r2 < 1 and n > 2 else 0
             
-            try:
-                from scipy.stats import f
-                pvalue = 1 - f.cdf(f_stat, 1, n - 2) if n > 2 else 1.0
-            except ImportError:
-                pvalue = float('nan')
+            # P-value from F-distribution (using Rust CDF)
+            pvalue = 1 - _f_cdf(f_stat, 1.0, float(n - 2)) if n > 2 else 1.0
             
             results.append({
                 "factor": name,
@@ -2731,7 +2721,7 @@ class DataExplorer:
         
         for name in categorical_factors:
             if name not in data.columns:
-                continue
+                raise ValueError(f"Categorical factor '{name}' not found in data columns: {list(data.columns)}")
             
             values = data[name].to_numpy().astype(str)
             
@@ -2745,11 +2735,8 @@ class DataExplorer:
             if k > 1 and n > k:
                 f_stat = (eta_sq / (k - 1)) / ((1 - eta_sq) / (n - k)) if eta_sq < 1 else 0
                 
-                try:
-                    from scipy.stats import f
-                    pvalue = 1 - f.cdf(f_stat, k - 1, n - k)
-                except ImportError:
-                    pvalue = float('nan')
+                # P-value from F-distribution (using Rust CDF)
+                pvalue = 1 - _f_cdf(f_stat, float(k - 1), float(n - k))
             else:
                 f_stat = 0.0
                 pvalue = 1.0
@@ -2884,8 +2871,9 @@ class DataExplorer:
                 
                 r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0
                 vif = 1 / (1 - r2) if r2 < 1 else float('inf')
-            except:
-                vif = float('nan')
+            except Exception as e:
+                # Re-raise - VIF computation shouldn't fail silently
+                raise RuntimeError(f"Failed to compute VIF for '{name}': {e}") from e
             
             if np.isnan(vif) or np.isinf(vif):
                 severity = "unknown"
@@ -2920,7 +2908,7 @@ class DataExplorer:
         
         for name in all_factors:
             if name not in data.columns:
-                continue
+                raise ValueError(f"Factor '{name}' not found in data columns: {list(data.columns)}")
             
             col = data[name]
             n_missing = col.null_count()
@@ -3124,10 +3112,15 @@ class DataExplorer:
         col_sums = contingency.sum(axis=0, keepdims=True)
         expected = row_sums * col_sums / n
         
-        # Avoid division by zero
-        with np.errstate(divide='ignore', invalid='ignore'):
-            chi2 = np.sum((contingency - expected) ** 2 / expected)
-            chi2 = np.nan_to_num(chi2, nan=0.0, posinf=0.0, neginf=0.0)
+        # Handle zero expected values explicitly (don't suppress warnings)
+        if np.any(expected == 0):
+            # Zero expected values indicate empty cells - raise error for actuarial transparency
+            raise ValueError(
+                f"Cramér's V calculation has zero expected frequencies. "
+                f"This indicates empty cells in the contingency table between factors. "
+                f"Check data quality or reduce number of factor levels."
+            )
+        chi2 = np.sum((contingency - expected) ** 2 / expected)
         
         # Cramér's V
         min_dim = min(r - 1, k - 1)
@@ -3157,7 +3150,7 @@ class DataExplorer:
         
         for name in factor_names:
             if name not in data.columns:
-                continue
+                raise ValueError(f"Factor '{name}' not found in data columns: {list(data.columns)}")
             
             values = data[name].to_numpy()
             
@@ -3302,11 +3295,8 @@ class DataExplorer:
         if df_model > 0 and df_resid > 0:
             f_stat = (ss_model / df_model) / ((ss_total - ss_model) / df_resid)
             
-            try:
-                from scipy.stats import f
-                pvalue = 1 - f.cdf(f_stat, df_model, df_resid)
-            except ImportError:
-                pvalue = float('nan')
+            # P-value from F-distribution (using Rust CDF)
+            pvalue = 1 - _f_cdf(f_stat, float(df_model), float(df_resid))
         else:
             pvalue = float('nan')
         
@@ -3857,10 +3847,13 @@ def compute_diagnostics(
                 })
                 
         except Exception as e:
-            warnings.append({
-                "type": "test_data_error",
-                "message": f"Could not compute test metrics: {str(e)}"
-            })
+            # Re-raise to surface bugs in prediction/diagnostics code
+            raise RuntimeError(
+                f"Failed to compute test metrics: {str(e)}\n"
+                f"This may indicate a bug in the diagnostics code. "
+                f"If you believe this is expected (e.g., missing columns), "
+                f"catch this exception in your calling code."
+            ) from e
     
     # Extract convergence info
     converged = result.converged if hasattr(result, 'converged') else True

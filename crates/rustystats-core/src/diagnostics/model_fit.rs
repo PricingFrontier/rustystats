@@ -263,12 +263,14 @@ pub fn bic(llf: f64, n_params: usize, n_obs: usize) -> f64 {
 /// before accounting for predictors. It's used to compute pseudo R².
 ///
 /// For most families, the intercept-only model predicts the weighted
-/// mean of y for all observations.
+/// mean of y for all observations. When an offset is present (e.g., 
+/// log(exposure) for count models), the null model accounts for it.
 ///
 /// # Arguments
 /// * `y` - Observed response values
 /// * `family_name` - Name of the family ("Gaussian", "Poisson", etc.)
 /// * `weights` - Optional observation weights
+/// * `offset` - Optional offset values (e.g., log(exposure) for Poisson/NegBin)
 ///
 /// # Returns
 /// Null deviance value
@@ -277,20 +279,75 @@ pub fn null_deviance(
     family_name: &str,
     weights: Option<&Array1<f64>>,
 ) -> f64 {
-    // Compute weighted mean
-    let (sum_y, sum_w) = match weights {
-        Some(w) => {
-            let sy: f64 = ndarray::Zip::from(y).and(w).fold(0.0, |acc, &yi, &wi| acc + yi * wi);
-            let sw: f64 = w.sum();
-            (sy, sw)
+    null_deviance_with_offset(y, family_name, weights, None)
+}
+
+/// Compute the null deviance with optional offset support.
+///
+/// When offset is provided, the null model prediction is:
+/// - For log-link models: mu_null = mean_rate * exp(offset), where mean_rate = sum(y) / sum(exp(offset))
+/// - For identity link: mu_null = mean(y - offset) + offset
+pub fn null_deviance_with_offset(
+    y: &Array1<f64>,
+    family_name: &str,
+    weights: Option<&Array1<f64>>,
+    offset: Option<&Array1<f64>>,
+) -> f64 {
+    let n = y.len();
+    
+    // Compute null model predictions accounting for offset
+    let mu_null: Array1<f64> = match offset {
+        Some(off) => {
+            // For log-link families (Poisson, NegBin, Gamma), offset is on log scale
+            // mu_null = mean_rate * exp(offset), where mean_rate = sum(y) / sum(exp(offset))
+            let family_lower = family_name.to_lowercase();
+            let is_log_link = family_lower.starts_with("poisson") 
+                || family_lower.starts_with("negbin") 
+                || family_lower.starts_with("negativebinomial")
+                || family_lower.starts_with("gamma")
+                || family_lower.starts_with("quasipoisson");
+            
+            if is_log_link {
+                // exp(offset) gives the exposure
+                let exp_offset: Array1<f64> = off.mapv(|x| x.exp());
+                let sum_exp_offset: f64 = match weights {
+                    Some(w) => ndarray::Zip::from(&exp_offset).and(w).fold(0.0, |acc, &e, &wi| acc + e * wi),
+                    None => exp_offset.sum(),
+                };
+                let sum_y: f64 = match weights {
+                    Some(w) => ndarray::Zip::from(y).and(w).fold(0.0, |acc, &yi, &wi| acc + yi * wi),
+                    None => y.sum(),
+                };
+                let mean_rate = sum_y / sum_exp_offset;
+                exp_offset.mapv(|e| mean_rate * e)
+            } else {
+                // For identity link, just use weighted mean of y
+                let (sum_y, sum_w) = match weights {
+                    Some(w) => {
+                        let sy: f64 = ndarray::Zip::from(y).and(w).fold(0.0, |acc, &yi, &wi| acc + yi * wi);
+                        let sw: f64 = w.sum();
+                        (sy, sw)
+                    }
+                    None => (y.sum(), n as f64),
+                };
+                let y_mean = sum_y / sum_w;
+                Array1::from_elem(n, y_mean)
+            }
         }
-        None => (y.sum(), y.len() as f64),
+        None => {
+            // No offset: use weighted mean
+            let (sum_y, sum_w) = match weights {
+                Some(w) => {
+                    let sy: f64 = ndarray::Zip::from(y).and(w).fold(0.0, |acc, &yi, &wi| acc + yi * wi);
+                    let sw: f64 = w.sum();
+                    (sy, sw)
+                }
+                None => (y.sum(), n as f64),
+            };
+            let y_mean = sum_y / sum_w;
+            Array1::from_elem(n, y_mean)
+        }
     };
-    
-    let y_mean = sum_y / sum_w;
-    
-    // Create mu array with constant mean
-    let mu_null = Array1::from_elem(y.len(), y_mean);
     
     // Compute unit deviances based on family (case-insensitive matching)
     let unit_dev: Array1<f64> = match family_name.to_lowercase().as_str() {
@@ -317,19 +374,17 @@ pub fn null_deviance(
         }
         "binomial" | "quasibinomial" => {
             // 2 × [y × log(y/μ) + (1-y) × log((1-y)/(1-μ))]
-            // Clamp mean for numerical stability
-            let mu_safe = y_mean.max(MU_MIN_PROBABILITY).min(MU_MAX_PROBABILITY);
-            let mu_null_safe = Array1::from_elem(y.len(), mu_safe);
-            
+            // Clamp mu values for numerical stability
             ndarray::Zip::from(y)
-                .and(&mu_null_safe)
+                .and(&mu_null)
                 .map_collect(|&yi, &mui| {
+                    let mui_safe = mui.max(MU_MIN_PROBABILITY).min(MU_MAX_PROBABILITY);
                     let mut dev = 0.0;
                     if yi > 0.0 {
-                        dev += yi * (yi / mui).ln();
+                        dev += yi * (yi / mui_safe).ln();
                     }
                     if yi < 1.0 {
-                        dev += (1.0 - yi) * ((1.0 - yi) / (1.0 - mui)).ln();
+                        dev += (1.0 - yi) * ((1.0 - yi) / (1.0 - mui_safe)).ln();
                     }
                     2.0 * dev
                 })
@@ -357,17 +412,18 @@ pub fn null_deviance(
             };
             
             // 2 × [y × log(y/μ) - (y + θ) × log((y + θ)/(μ + θ))]
+            // For y=0: 2 × θ × log(θ/(μ + θ))
             ndarray::Zip::from(y)
                 .and(&mu_null)
                 .map_collect(|&yi, &mui| {
-                    let yi_safe = yi.max(MU_MIN_POSITIVE);
                     let mui_safe = mui.max(MU_MIN_POSITIVE);
-                    let mut dev = 0.0;
-                    if yi_safe > 0.0 {
-                        dev += yi_safe * (yi_safe / mui_safe).ln();
+                    if yi == 0.0 {
+                        // Special case for y=0
+                        2.0 * theta * (theta / (mui_safe + theta)).ln()
+                    } else {
+                        // General case
+                        2.0 * (yi * (yi / mui_safe).ln() - (yi + theta) * ((yi + theta) / (mui_safe + theta)).ln())
                     }
-                    dev -= (yi_safe + theta) * ((yi_safe + theta) / (mui_safe + theta)).ln();
-                    2.0 * dev
                 })
         }
         other => {

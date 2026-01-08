@@ -33,6 +33,7 @@ mod residuals;
 mod dispersion;
 mod model_fit;
 mod negbinomial;
+mod distributions;
 pub mod loss;
 pub mod calibration;
 pub mod factor_diagnostics;
@@ -59,6 +60,7 @@ pub use model_fit::{
     aic,
     bic,
     null_deviance,
+    null_deviance_with_offset,
 };
 
 pub use negbinomial::{
@@ -92,4 +94,8 @@ pub use factor_diagnostics::{
 
 pub use interactions::{
     InteractionCandidate, InteractionConfig, FactorData, detect_interactions,
+};
+
+pub use distributions::{
+    chi2_cdf, t_cdf, f_cdf,
 };

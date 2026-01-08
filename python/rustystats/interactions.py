@@ -935,7 +935,7 @@ class InteractionBuilder:
                     f"{n_cols - results['rank']} columns are linearly dependent."
                 )
         except Exception as e:
-            results['suggestions'].append(f"Warning: Could not compute matrix rank: {e}")
+            raise RuntimeError(f"Failed to compute matrix rank: {e}") from e
         
         # Check condition number
         try:
@@ -947,7 +947,7 @@ class InteractionBuilder:
                     "This indicates near-linear dependence between columns."
                 )
         except Exception as e:
-            results['suggestions'].append(f"Warning: Could not compute condition number: {e}")
+            raise RuntimeError(f"Failed to compute condition number: {e}") from e
         
         # Check for highly correlated columns (skip intercept)
         try:
@@ -977,7 +977,7 @@ class InteractionBuilder:
                         "  4. Use linear term instead: just 'VarName' without spline"
                     )
         except Exception as e:
-            results['suggestions'].append(f"Warning: Could not compute column correlations: {e}")
+            raise RuntimeError(f"Failed to compute column correlations: {e}") from e
         
         if verbose:
             print("=" * 60)

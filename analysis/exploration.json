@@ -163,8 +163,8 @@
       "r_squared": 0.056107,
       "f_statistic": 11.7695,
       "pvalue": 0.000733,
-      "significant_01": "True",
-      "significant_05": "True"
+      "significant_01": true,
+      "significant_05": true
     },
     {
       "factor": "region",
@@ -174,8 +174,8 @@
       "eta_squared": 0.02718,
       "f_statistic": 5.5319,
       "pvalue": 0.019654,
-      "significant_01": "False",
-      "significant_05": "True"
+      "significant_01": false,
+      "significant_05": true
     }
   ],
   "correlations": {
