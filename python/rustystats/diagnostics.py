@@ -112,11 +112,15 @@ class LorenzPoint:
 
 @dataclass
 class ActualExpectedBin:
-    """A/E statistics for a single bin."""
+    """A/E statistics for a single bin.
+    
+    For count models, actual and expected are frequencies (per-exposure rates).
+    """
     bin: str  # bin label or range
-    n: int  # count
-    actual: int  # actual_sum (rounded)
-    expected: int  # predicted_sum (rounded) 
+    n: int  # count of observations
+    exposure: float  # total exposure in bin
+    actual: float  # actual frequency = sum(y) / exposure
+    expected: float  # expected frequency = sum(mu) / exposure
     ae_ratio: float  # actual/expected ratio
     ae_ci: List[float]  # [lower, upper] confidence interval
 
@@ -164,12 +168,28 @@ class FactorSignificance:
 
 
 @dataclass
+class FactorCoefficient:
+    """Coefficient for a factor term.
+    
+    For categorical factors, each level (except base) has a coefficient.
+    For continuous factors with splines, each basis function has a coefficient.
+    """
+    term: str  # e.g., "C(region)[T.B]" or "bs(age, 2/4)"
+    estimate: float
+    std_error: float
+    z_value: float
+    p_value: float
+    relativity: Optional[float]  # exp(coef) for log-link
+
+
+@dataclass
 class FactorDiagnostics:
     """Complete diagnostics for a single factor."""
     name: str
     factor_type: str  # "continuous" or "categorical"
     in_model: bool
     transform: Optional[str]  # transformation applied (e.g. "bs(age, df=4)")
+    coefficients: Optional[List[FactorCoefficient]]  # fitted coefficients for this factor
     univariate: Union[ContinuousFactorStats, CategoricalFactorStats]
     actual_vs_expected: List[ActualExpectedBin]
     residual_pattern: ResidualPattern
@@ -236,12 +256,15 @@ class FactorDeviance:
 
 @dataclass
 class LiftDecile:
-    """Lift statistics for a single decile."""
+    """Lift statistics for a single decile.
+    
+    For count models, actual and predicted are frequencies (per-exposure rates).
+    """
     decile: int  # 1-10
     n: int
     exposure: float
-    actual: float
-    predicted: float
+    actual: float  # actual frequency = sum(y) / exposure
+    predicted: float  # predicted frequency = sum(mu) / exposure
     ae_ratio: float
     cumulative_actual_pct: float
     cumulative_predicted_pct: float
@@ -274,38 +297,47 @@ class PartialDependence:
 
 @dataclass
 class DecileMetrics:
-    """Metrics for a single decile in calibration analysis."""
+    """Metrics for a single decile in calibration analysis.
+    
+    For count models, actual and predicted are frequencies (per-exposure rates).
+    """
     decile: int
     n: int
     exposure: float
-    actual: float
-    predicted: float
+    actual: float  # actual frequency = sum(y) / exposure
+    predicted: float  # predicted frequency = sum(mu) / exposure
     ae_ratio: float
 
 
 @dataclass
 class FactorLevelMetrics:
-    """Metrics for a single factor level."""
+    """Metrics for a single factor level.
+    
+    For count models, actual and predicted are frequencies (per-exposure rates).
+    """
     level: str
     n: int
     exposure: float
-    actual: float
-    predicted: float
+    actual: float  # actual frequency = sum(y) / exposure
+    predicted: float  # predicted frequency = sum(mu) / exposure
     ae_ratio: float
     residual_mean: float
 
 
 @dataclass
 class ContinuousBandMetrics:
-    """Metrics for a continuous variable band."""
+    """Metrics for a continuous variable band.
+    
+    For count models, actual and predicted are frequencies (per-exposure rates).
+    """
     band: int
     range_min: float
     range_max: float
     midpoint: float
     n: int
     exposure: float
-    actual: float
-    predicted: float
+    actual: float  # actual frequency = sum(y) / exposure
+    predicted: float  # predicted frequency = sum(mu) / exposure
     ae_ratio: float
     partial_dep: float  # Marginal effect at midpoint
 
@@ -823,11 +855,15 @@ class DiagnosticsComputer:
             # Factor significance (only for factors in model)
             significance = self.compute_factor_significance(name, result) if in_model and result else None
             
+            # Extract coefficients for this factor
+            coefficients = self._get_factor_coefficients(name, result) if in_model and result else None
+            
             factors.append(FactorDiagnostics(
                 name=name,
                 factor_type="categorical",
                 in_model=in_model,
                 transform=self._get_transformation(name),
+                coefficients=coefficients,
                 univariate=univariate,
                 actual_vs_expected=ae_bins,
                 residual_pattern=resid_pattern,
@@ -873,11 +909,15 @@ class DiagnosticsComputer:
             # Factor significance (only for factors in model)
             significance = self.compute_factor_significance(name, result) if in_model and result else None
             
+            # Extract coefficients for this factor
+            coefficients = self._get_factor_coefficients(name, result) if in_model and result else None
+            
             factors.append(FactorDiagnostics(
                 name=name,
                 factor_type="continuous",
                 in_model=in_model,
                 transform=self._get_transformation(name),
+                coefficients=coefficients,
                 univariate=univariate,
                 actual_vs_expected=ae_bins,
                 residual_pattern=resid_pattern,
@@ -896,6 +936,67 @@ class DiagnosticsComputer:
     def _get_factor_terms(self, name: str) -> List[str]:
         """Get all model terms that include this factor."""
         return [fn for fn in self.feature_names if name in fn]
+    
+    def _get_factor_coefficients(self, name: str, result) -> Optional[List[FactorCoefficient]]:
+        """Extract coefficients for all terms involving this factor."""
+        if result is None or not hasattr(result, 'params'):
+            return None
+        
+        try:
+            # Get params as array
+            params = result.params
+            if callable(params):
+                params = params()
+            if hasattr(params, 'tolist'):
+                params = params.tolist() if hasattr(params, 'tolist') else list(params)
+            
+            feature_names = result.feature_names if hasattr(result, 'feature_names') else self.feature_names
+            
+            # Get standard errors if available (may be method or property)
+            bse = None
+            if hasattr(result, 'bse'):
+                bse = result.bse
+                if callable(bse):
+                    bse = bse()
+            elif hasattr(result, 'std_errors'):
+                bse = result.std_errors
+                if callable(bse):
+                    bse = bse()
+            
+            # Get p-values if available
+            pvalues = None
+            if hasattr(result, 'pvalues'):
+                pvalues = result.pvalues
+                if callable(pvalues):
+                    pvalues = pvalues()
+            
+            # Check if log-link for relativity calculation
+            link = result.link if hasattr(result, 'link') else self.link
+            is_log_link = link in ('log', 'Log')
+            
+            coefficients = []
+            for i, fn in enumerate(feature_names):
+                # Check if this term involves the factor (but not interactions)
+                if name in fn and ':' not in fn and fn != 'Intercept':
+                    coef = float(params[i])
+                    se = float(bse[i]) if bse is not None else 0.0
+                    z_val = coef / se if se > 0 else 0.0
+                    p_val = float(pvalues[i]) if pvalues is not None else (2 * (1 - min(0.9999, abs(z_val) / 4)))
+                    
+                    rel = float(np.exp(coef)) if is_log_link else None
+                    
+                    coefficients.append(FactorCoefficient(
+                        term=fn,
+                        estimate=round(coef, 6),
+                        std_error=round(se, 6),
+                        z_value=round(z_val, 3),
+                        p_value=round(p_val, 4),
+                        relativity=round(rel, 4) if rel else None,
+                    ))
+            
+            return coefficients if coefficients else None
+        except Exception:
+            return None
     
     def compute_factor_significance(
         self,
@@ -957,8 +1058,9 @@ class DiagnosticsComputer:
             ActualExpectedBin(
                 bin=b["bin_label"],
                 n=b["count"],
-                actual=int(round(b["actual_sum"])),
-                expected=int(round(b["predicted_sum"])),
+                exposure=round(b["exposure"], 2),
+                actual=round(b["actual_sum"] / b["exposure"], 6) if b["exposure"] > 0 else 0.0,
+                expected=round(b["predicted_sum"] / b["exposure"], 6) if b["exposure"] > 0 else 0.0,
                 ae_ratio=round(b["actual_expected_ratio"], 2),
                 ae_ci=[round(b["ae_ci_lower"], 2), round(b["ae_ci_upper"], 2)],
             )
@@ -979,8 +1081,9 @@ class DiagnosticsComputer:
             ActualExpectedBin(
                 bin=b["bin_label"],
                 n=b["count"],
-                actual=int(round(b["actual_sum"])),
-                expected=int(round(b["predicted_sum"])),
+                exposure=round(b["exposure"], 2),
+                actual=round(b["actual_sum"] / b["exposure"], 6) if b["exposure"] > 0 else 0.0,
+                expected=round(b["predicted_sum"] / b["exposure"], 6) if b["exposure"] > 0 else 0.0,
                 ae_ratio=round(b["actual_expected_ratio"], 2),
                 ae_ci=[round(b["ae_ci_lower"], 2), round(b["ae_ci_upper"], 2)],
             )
@@ -1693,12 +1796,13 @@ class DiagnosticsComputer:
             if abs(ae_ratio - 1.0) > 0.2 or (d < 3 and lift > 0.8) or (d > 6 and lift < 1.2):
                 weak_deciles.append(d + 1)
             
+            predicted_rate = predicted / exposure if exposure > 0 else 0
             deciles.append(LiftDecile(
                 decile=d + 1,
                 n=n_d,
                 exposure=round(exposure, 2),
-                actual=round(actual, 2),
-                predicted=round(predicted, 2),
+                actual=round(decile_rate, 6),
+                predicted=round(predicted_rate, 6),
                 ae_ratio=round(ae_ratio, 3) if not np.isnan(ae_ratio) else None,
                 cumulative_actual_pct=round(cum_actual_pct, 2),
                 cumulative_predicted_pct=round(cum_pred_pct, 2),
@@ -2134,12 +2238,14 @@ class DiagnosticsComputer:
             exp_sum = float(np.sum(exp_d))
             ae = actual / predicted if predicted > 0 else float('nan')
             
+            actual_freq = actual / exp_sum if exp_sum > 0 else 0.0
+            predicted_freq = predicted / exp_sum if exp_sum > 0 else 0.0
             deciles.append(DecileMetrics(
                 decile=d + 1,
                 n=len(y_d),
                 exposure=round(exp_sum, 2),
-                actual=round(actual, 2),
-                predicted=round(predicted, 2),
+                actual=round(actual_freq, 6),
+                predicted=round(predicted_freq, 6),
                 ae_ratio=round(ae, 4) if not np.isnan(ae) else None,
             ))
         
@@ -2170,12 +2276,14 @@ class DiagnosticsComputer:
             ae = actual / predicted if predicted > 0 else float('nan')
             resid_mean = float(np.mean(residuals[mask]))
             
+            actual_freq = actual / exp_sum if exp_sum > 0 else 0.0
+            predicted_freq = predicted / exp_sum if exp_sum > 0 else 0.0
             metrics.append(FactorLevelMetrics(
                 level=str(level),
                 n=n,
                 exposure=round(exp_sum, 2),
-                actual=round(actual, 2),
-                predicted=round(predicted, 2),
+                actual=round(actual_freq, 6),
+                predicted=round(predicted_freq, 6),
                 ae_ratio=round(ae, 4) if not np.isnan(ae) else None,
                 residual_mean=round(resid_mean, 6),
             ))
@@ -2233,6 +2341,8 @@ class DiagnosticsComputer:
             # Partial dependence at midpoint
             partial_dep = float(np.mean(mu[mask]))
             
+            actual_freq = actual / exp_sum if exp_sum > 0 else 0.0
+            predicted_freq = predicted / exp_sum if exp_sum > 0 else 0.0
             metrics.append(ContinuousBandMetrics(
                 band=i + 1,
                 range_min=round(float(lower), 4),
@@ -2240,8 +2350,8 @@ class DiagnosticsComputer:
                 midpoint=round(float(midpoint), 4),
                 n=n,
                 exposure=round(exp_sum, 2),
-                actual=round(actual, 2),
-                predicted=round(predicted, 2),
+                actual=round(actual_freq, 6),
+                predicted=round(predicted_freq, 6),
                 ae_ratio=round(ae, 4) if not np.isnan(ae) else None,
                 partial_dep=round(partial_dep, 6),
             ))
