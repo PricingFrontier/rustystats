@@ -377,8 +377,8 @@ exploration = rs.explore_data(
 
 | Feature | RustyStats | Statsmodels |
 |---------|------------|-------------|
-| **Parallel IRLS Solver** | ✅ Multi-threaded via Rayon | ❌ Single-threaded only |
-| **Native Polars Support** | ✅ Formula API works with Polars DataFrames | ❌ Pandas only |
+| **Parallel IRLS Solver** | ✅ Multi-threaded | ❌ Single-threaded only |
+| **Native Polars Support** | ✅ Polars only | ❌ Pandas only |
 | **Built-in Lasso/Elastic Net for GLMs** | ✅ Fast coordinate descent with all families | ⚠️ Limited |
 | **Relativities Table** | ✅ `result.relativities()` for pricing | ❌ Must compute manually |
 | **Robust Standard Errors** | ✅ HC0, HC1, HC2, HC3 sandwich estimators | ✅ HC0-HC3 |

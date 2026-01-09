@@ -2565,8 +2565,116 @@ fn compute_fit_statistics_py<'py>(
     dict.set_item("aic", aic_val)?;
     dict.set_item("bic", bic_val)?;
     dict.set_item("pearson_chi2", pchi2)?;
-    dict.set_item("dispersion_deviance", dispersion_deviance)?;
-    dict.set_item("dispersion_pearson", dispersion_pearson)?;
+    dict.set_item("dispersion", dispersion_pearson)?;  // primary dispersion metric
+    
+    Ok(dict.into_py(py))
+}
+
+/// Compute dataset metrics (deviance, log-likelihood, AIC) for any dataset
+/// 
+/// This is the same loss function used by GBMs (XGBoost, LightGBM):
+/// - Poisson: 2 * sum(y * log(y/μ) - (y - μ))
+/// - Gamma: 2 * sum((y - μ)/μ - log(y/μ))
+/// - Gaussian: sum((y - μ)²)
+/// - Binomial: -sum(y * log(μ) + (1-y) * log(1-μ))
+/// 
+/// Returns deviance (sum), mean_deviance (per-obs), log_likelihood, and AIC.
+#[pyfunction]
+#[pyo3(signature = (y, mu, family, n_params, var_power=1.5, theta=1.0))]
+fn compute_dataset_metrics_py<'py>(
+    py: Python<'py>,
+    y: PyReadonlyArray1<f64>,
+    mu: PyReadonlyArray1<f64>,
+    family: &str,
+    n_params: usize,
+    var_power: f64,
+    theta: f64,
+) -> PyResult<PyObject> {
+    use rustystats_core::diagnostics::loss::{
+        poisson_deviance_loss, gamma_deviance_loss, mse, log_loss,
+        tweedie_deviance_loss, negbinomial_deviance_loss,
+    };
+    
+    let y_arr = y.as_array().to_owned();
+    let mu_arr = mu.as_array().to_owned();
+    let n_obs = y_arr.len();
+    
+    if n_obs == 0 {
+        return Err(PyValueError::new_err("Empty arrays"));
+    }
+    
+    let family_lower = family.to_lowercase();
+    
+    // Parse theta from family string if present (e.g., "negativebinomial(theta=1.38)")
+    let parsed_theta = if family_lower.starts_with("negativebinomial") || family_lower.starts_with("negbinomial") {
+        if let Some(start) = family_lower.find("theta=") {
+            let rest = &family_lower[start + 6..];
+            let end = rest.find(')').unwrap_or(rest.len());
+            rest[..end].parse::<f64>().unwrap_or(theta)
+        } else {
+            theta
+        }
+    } else {
+        theta
+    };
+    
+    // Parse var_power from family string if present (e.g., "tweedie(p=1.5)")
+    let parsed_var_power = if family_lower.starts_with("tweedie") {
+        if let Some(start) = family_lower.find("p=") {
+            let rest = &family_lower[start + 2..];
+            let end = rest.find(')').unwrap_or(rest.len());
+            rest[..end].parse::<f64>().unwrap_or(var_power)
+        } else {
+            var_power
+        }
+    } else {
+        var_power
+    };
+    
+    // Compute mean deviance loss (this is the GBM loss function)
+    let mean_deviance = if family_lower.starts_with("negativebinomial") || family_lower.starts_with("negbinomial") {
+        negbinomial_deviance_loss(&y_arr, &mu_arr, parsed_theta, None)
+    } else if family_lower.starts_with("tweedie") {
+        tweedie_deviance_loss(&y_arr, &mu_arr, parsed_var_power, None)
+    } else {
+        match family_lower.as_str() {
+            "gaussian" | "normal" => mse(&y_arr, &mu_arr, None),
+            "poisson" | "quasipoisson" => poisson_deviance_loss(&y_arr, &mu_arr, None),
+            "gamma" => gamma_deviance_loss(&y_arr, &mu_arr, None),
+            "binomial" | "quasibinomial" => log_loss(&y_arr, &mu_arr, None),
+            _ => return Err(PyValueError::new_err(format!("Unknown family: {}", family))),
+        }
+    };
+    
+    // Total deviance (sum, not mean)
+    let deviance = mean_deviance * n_obs as f64;
+    
+    // Compute log-likelihood for AIC calculation
+    let scale = 1.0; // For test data, we use scale=1 (conservative)
+    let llf = if family_lower.starts_with("negativebinomial") || family_lower.starts_with("negbinomial") {
+        nb_loglikelihood(&y_arr, &mu_arr, parsed_theta, None)
+    } else if family_lower.starts_with("tweedie") {
+        // Tweedie LL is complex - use deviance-based approximation
+        -deviance / 2.0
+    } else {
+        match family_lower.as_str() {
+            "gaussian" | "normal" => log_likelihood_gaussian(&y_arr, &mu_arr, scale, None),
+            "poisson" | "quasipoisson" => log_likelihood_poisson(&y_arr, &mu_arr, None),
+            "binomial" | "quasibinomial" => log_likelihood_binomial(&y_arr, &mu_arr, None),
+            "gamma" => log_likelihood_gamma(&y_arr, &mu_arr, scale, None),
+            _ => f64::NAN,
+        }
+    };
+    
+    // AIC = -2 * LL + 2 * k
+    let aic_val = aic(llf, n_params);
+    
+    let dict = pyo3::types::PyDict::new_bound(py);
+    dict.set_item("deviance", deviance)?;
+    dict.set_item("mean_deviance", mean_deviance)?;
+    dict.set_item("log_likelihood", llf)?;
+    dict.set_item("aic", aic_val)?;
+    dict.set_item("n_obs", n_obs)?;
     
     Ok(dict.into_py(py))
 }
@@ -2810,6 +2918,7 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compute_lorenz_curve_py, m)?)?;
     m.add_function(wrap_pyfunction!(hosmer_lemeshow_test_py, m)?)?;
     m.add_function(wrap_pyfunction!(compute_fit_statistics_py, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_dataset_metrics_py, m)?)?;
     m.add_function(wrap_pyfunction!(compute_residual_summary_py, m)?)?;
     m.add_function(wrap_pyfunction!(compute_residual_pattern_py, m)?)?;
     m.add_function(wrap_pyfunction!(compute_pearson_residuals_py, m)?)?;

@@ -40,6 +40,7 @@ from rustystats._rustystats import (
     compute_lorenz_curve_py as _rust_lorenz_curve,
     hosmer_lemeshow_test_py as _rust_hosmer_lemeshow,
     compute_fit_statistics_py as _rust_fit_statistics,
+    compute_dataset_metrics_py as _rust_dataset_metrics,
     compute_residual_summary_py as _rust_residual_summary,
     compute_residual_pattern_py as _rust_residual_pattern,
     compute_pearson_residuals_py as _rust_pearson_residuals,
@@ -65,16 +66,15 @@ if TYPE_CHECKING:
 
 @dataclass
 class Percentiles:
-    """Percentile values for a continuous variable."""
-    p1: float
-    p5: float
-    p10: float
-    p25: float
-    p50: float
-    p75: float
-    p90: float
-    p95: float
-    p99: float
+    """Percentile values for a continuous variable (compact array format).
+    
+    Token optimization: stored as [p1, p5, p10, p25, p50, p75, p90, p95, p99]
+    """
+    values: List[float]  # [p1, p5, p10, p25, p50, p75, p90, p95, p99]
+    
+    @classmethod
+    def from_values(cls, p1, p5, p10, p25, p50, p75, p90, p95, p99) -> "Percentiles":
+        return cls(values=[p1, p5, p10, p25, p50, p75, p90, p95, p99])
 
 
 @dataclass
@@ -112,12 +112,12 @@ class LorenzPoint:
 
 @dataclass
 class ActualExpectedBin:
-    """A/E statistics for a single bin (compressed format)."""
+    """A/E statistics for a single bin."""
     bin: str  # bin label or range
     n: int  # count
     actual: int  # actual_sum (rounded)
-    predicted: int  # predicted_sum (rounded)
-    ae: float  # actual/expected ratio
+    expected: int  # predicted_sum (rounded) 
+    ae_ratio: float  # actual/expected ratio
     ae_ci: List[float]  # [lower, upper] confidence interval
 
 
@@ -130,13 +130,13 @@ class ResidualPattern:
 
 @dataclass
 class ContinuousFactorStats:
-    """Univariate statistics for a continuous factor."""
+    """Univariate statistics for a continuous factor (compact format)."""
     mean: float
     std: float
     min: float
     max: float
     missing_count: int
-    percentiles: Percentiles
+    percentiles: List[float]  # [p1, p5, p10, p25, p50, p75, p90, p95, p99]
 
 
 @dataclass
@@ -169,11 +169,11 @@ class FactorDiagnostics:
     name: str
     factor_type: str  # "continuous" or "categorical"
     in_model: bool
-    transformation: Optional[str]
-    univariate_stats: Union[ContinuousFactorStats, CategoricalFactorStats]
+    transform: Optional[str]  # transformation applied (e.g. "bs(age, df=4)")
+    univariate: Union[ContinuousFactorStats, CategoricalFactorStats]
     actual_vs_expected: List[ActualExpectedBin]
     residual_pattern: ResidualPattern
-    significance: Optional[FactorSignificance] = None  # Significance tests (only for in_model factors)
+    significance: Optional[FactorSignificance] = None
 
 
 @dataclass
@@ -199,17 +199,18 @@ class VIFResult:
 
 @dataclass
 class CoefficientSummary:
-    """Summary of a coefficient for agent interpretation."""
+    """Summary of a coefficient for agent interpretation.
+    
+    Token optimization: removed 'recommendation' (usually null) and 'impact' (derivable).
+    """
     feature: str
     estimate: float
     std_error: float
     z_value: float
     p_value: float
     significant: bool
-    relativity: Optional[float]  # exp(coef) for log-link models
-    relativity_ci: Optional[List[float]]  # [lower, upper] for relativity
-    impact: str  # "strong_positive", "weak_positive", "negligible", "weak_negative", "strong_negative"
-    recommendation: Optional[str]  # e.g., "Consider removing - not significant"
+    relativity: Optional[float]  # exp(coef) for log-link
+    relativity_ci: Optional[List[float]]  # [lower, upper]
 
 
 @dataclass
@@ -311,12 +312,22 @@ class ContinuousBandMetrics:
 
 @dataclass
 class DatasetDiagnostics:
-    """Comprehensive diagnostics for a single dataset (train or test)."""
+    """Comprehensive diagnostics for a single dataset (train or test).
+    
+    Includes family deviance loss (same as GBM loss functions like
+    Poisson NLL, Gamma deviance) and AIC for model comparison.
+    """
     dataset: str  # "train" or "test"
     n_obs: int
     total_exposure: float
     total_actual: float
     total_predicted: float
+    
+    # Family deviance (same loss as GBMs: Poisson NLL, Gamma deviance, etc.)
+    deviance: float  # Total deviance (sum of unit deviances)
+    mean_deviance: float  # Per-observation deviance (GBM loss)
+    log_likelihood: float
+    aic: float
     
     # Discrimination
     gini: float
@@ -361,10 +372,17 @@ class TrainTestComparison:
 
 @dataclass
 class TrainTestMetrics:
-    """Legacy metrics comparing train vs test performance."""
+    """Metrics for train or test dataset.
+    
+    Includes family deviance loss (same as GBM loss functions like
+    Poisson NLL, Gamma deviance, etc.) and AIC for model comparison.
+    """
     dataset: str  # "train" or "test"
     n_obs: int
-    deviance: float
+    deviance: float  # Total deviance (sum of unit deviances)
+    mean_deviance: float  # Per-observation deviance (GBM loss)
+    log_likelihood: float
+    aic: float
     ae_ratio: float
     gini: float
     rmse: float
@@ -428,13 +446,10 @@ class DataExploration:
 
 @dataclass
 class ModelDiagnostics:
-    """Complete model diagnostics output."""
+    """Complete model diagnostics output (token-optimized)."""
     
-    # Model summary
+    # Model summary (includes convergence: ok, iters)
     model_summary: Dict[str, Any]
-    
-    # Convergence details (especially important when converged=False)
-    convergence_details: Optional[ConvergenceDetails]
     
     # Fit statistics
     fit_statistics: Dict[str, float]
@@ -812,8 +827,8 @@ class DiagnosticsComputer:
                 name=name,
                 factor_type="categorical",
                 in_model=in_model,
-                transformation=self._get_transformation(name),
-                univariate_stats=univariate,
+                transform=self._get_transformation(name),
+                univariate=univariate,
                 actual_vs_expected=ae_bins,
                 residual_pattern=resid_pattern,
                 significance=significance,
@@ -833,24 +848,21 @@ class DiagnosticsComputer:
             
             if len(valid) > 0:
                 # Single batched percentile call (much faster)
+                # Token optimization: compact array [p1, p5, p10, p25, p50, p75, p90, p95, p99]
                 pcts = np.percentile(valid, [1, 5, 10, 25, 50, 75, 90, 95, 99])
-                percentiles = Percentiles(
-                    p1=float(pcts[0]), p5=float(pcts[1]), p10=float(pcts[2]),
-                    p25=float(pcts[3]), p50=float(pcts[4]), p75=float(pcts[5]),
-                    p90=float(pcts[6]), p95=float(pcts[7]), p99=float(pcts[8]),
-                )
                 univariate = ContinuousFactorStats(
                     mean=float(np.mean(valid)),
                     std=float(np.std(valid)),
                     min=float(np.min(valid)),
                     max=float(np.max(valid)),
                     missing_count=int(np.sum(~valid_mask)),
-                    percentiles=percentiles,
+                    percentiles=[round(float(p), 2) for p in pcts],
                 )
             else:
-                nan = float('nan')
-                percentiles = Percentiles(p1=nan, p5=nan, p10=nan, p25=nan, p50=nan, p75=nan, p90=nan, p95=nan, p99=nan)
-                univariate = ContinuousFactorStats(mean=nan, std=nan, min=nan, max=nan, missing_count=len(values), percentiles=percentiles)
+                univariate = ContinuousFactorStats(
+                    mean=float('nan'), std=float('nan'), min=float('nan'), max=float('nan'),
+                    missing_count=len(values), percentiles=[]
+                )
             
             # A/E by quantile bins
             ae_bins = self._compute_ae_continuous(values, n_bins)
@@ -865,8 +877,8 @@ class DiagnosticsComputer:
                 name=name,
                 factor_type="continuous",
                 in_model=in_model,
-                transformation=self._get_transformation(name),
-                univariate_stats=univariate,
+                transform=self._get_transformation(name),
+                univariate=univariate,
                 actual_vs_expected=ae_bins,
                 residual_pattern=resid_pattern,
                 significance=significance,
@@ -937,18 +949,18 @@ class DiagnosticsComputer:
             raise RuntimeError(f"Failed to compute factor significance for '{factor_name}': {e}") from e
     
     def _compute_ae_continuous(self, values: np.ndarray, n_bins: int) -> List[ActualExpectedBin]:
-        """Compute A/E for continuous factor using Rust backend (compressed format)."""
+        """Compute A/E for continuous factor using Rust backend (compact format)."""
         rust_bins = _rust_ae_continuous(values, self.y, self.mu, self.exposure, n_bins, self.family)
         # Filter out empty bins (count=0)
         non_empty_bins = [b for b in rust_bins if b["count"] > 0]
         return [
             ActualExpectedBin(
-                bin=b["bin_label"],  # includes range for continuous
+                bin=b["bin_label"],
                 n=b["count"],
                 actual=int(round(b["actual_sum"])),
-                predicted=int(round(b["predicted_sum"])),
-                ae=round(b["actual_expected_ratio"], 3),
-                ae_ci=[round(b["ae_ci_lower"], 3), round(b["ae_ci_upper"], 3)],
+                expected=int(round(b["predicted_sum"])),
+                ae_ratio=round(b["actual_expected_ratio"], 2),
+                ae_ci=[round(b["ae_ci_lower"], 2), round(b["ae_ci_upper"], 2)],
             )
             for b in non_empty_bins
         ]
@@ -959,7 +971,7 @@ class DiagnosticsComputer:
         rare_threshold_pct: float,
         max_levels: int,
     ) -> List[ActualExpectedBin]:
-        """Compute A/E for categorical factor using Rust backend (compressed format)."""
+        """Compute A/E for categorical factor using Rust backend (compact format)."""
         levels = [str(v) for v in values]
         rust_bins = _rust_ae_categorical(levels, self.y, self.mu, self.exposure, 
                                           rare_threshold_pct, max_levels, self.family)
@@ -968,9 +980,9 @@ class DiagnosticsComputer:
                 bin=b["bin_label"],
                 n=b["count"],
                 actual=int(round(b["actual_sum"])),
-                predicted=int(round(b["predicted_sum"])),
-                ae=round(b["actual_expected_ratio"], 3),
-                ae_ci=[round(b["ae_ci_lower"], 3), round(b["ae_ci_upper"], 3)],
+                expected=int(round(b["predicted_sum"])),
+                ae_ratio=round(b["actual_expected_ratio"], 2),
+                ae_ci=[round(b["ae_ci_lower"], 2), round(b["ae_ci_upper"], 2)],
             )
             for b in rust_bins
         ]
@@ -1331,7 +1343,7 @@ class DiagnosticsComputer:
                     raise RuntimeError(f"Failed to parse theta from family string '{family}': {e}") from e
         
         # High dispersion warning
-        dispersion = fit_stats.get("dispersion_pearson", 1.0)
+        dispersion = fit_stats.get("dispersion", 1.0)
         if dispersion > 1.5:
             warnings.append({
                 "type": "high_dispersion",
@@ -1339,28 +1351,19 @@ class DiagnosticsComputer:
             })
         
         # Poor overall calibration
-        ae_ratio = calibration.get("actual_expected_ratio", 1.0)
+        ae_ratio = calibration.get("ae_ratio", 1.0)
         if abs(ae_ratio - 1.0) > 0.05:
             direction = "over" if ae_ratio < 1 else "under"
             warnings.append({
-                "type": "poor_overall_calibration",
+                "type": "poor_calibration",
                 "message": f"Model {direction}-predicts overall (A/E = {ae_ratio:.3f})."
             })
         
-        # Extreme calibration bins
-        for bin in calibration.get("by_decile", []):
-            if isinstance(bin, dict):
-                ae = bin.get("actual_expected_ratio", 1.0)
-                if ae is not None and abs(ae - 1.0) > 0.3:
-                    warnings.append({
-                        "type": "poor_bin_calibration",
-                        "message": f"Decile {bin.get('bin_index', '?')} has A/E = {ae:.2f}."
-                    })
+        # Token optimization: skip per-decile warnings (problem_deciles in calibration has this info)
         
         # Factors with high residual correlation (not in model)
         for factor in factors:
             if not factor.in_model:
-                corr = factor.residual_pattern.resid_corr
                 r2 = factor.residual_pattern.var_explained
                 if r2 > 0.02:
                     warnings.append({
@@ -1495,9 +1498,10 @@ class DiagnosticsComputer:
                 collinear_with=collinear_with if collinear_with else None,
             ))
         
-        # Sort by VIF (highest first)
+        # Sort by VIF (highest first) and filter to only problematic ones
         results.sort(key=lambda x: -x.vif if not np.isnan(x.vif) else 0)
-        return results
+        # Token optimization: only return severe/moderate VIF (agent doesn't need "none")
+        return [r for r in results if r.severity in ("severe", "moderate")]
     
     def compute_coefficient_summary(
         self,
@@ -1507,12 +1511,8 @@ class DiagnosticsComputer:
         """
         Compute coefficient summary with interpretations for agent use.
         
-        Provides:
-        - Coefficient magnitude and sign
-        - Significance assessment
-        - Relativities for log-link models
-        - Impact classification
-        - Recommendations for weak predictors
+        Token-optimized compact format with shortened field names.
+        Agent can infer impact from z-value sign and relativity magnitude.
         
         Returns
         -------
@@ -1529,66 +1529,27 @@ class DiagnosticsComputer:
         
         summaries = []
         for i, name in enumerate(feature_names):
-            coef = float(params[i])
-            se = float(bse[i])
-            z = float(tvalues[i])
-            p = float(pvalues[i])
-            
-            # Significance
-            significant = p < 0.05
+            coef_val = float(params[i])
+            se_val = float(bse[i])
+            z_val = float(tvalues[i])
+            p_val = float(pvalues[i])
             
             # Relativity for log-link models
-            relativity = None
-            relativity_ci = None
+            rel = None
+            rel_ci = None
             if link == "log":
-                relativity = float(np.exp(coef))
-                relativity_ci = [float(np.exp(ci[i, 0])), float(np.exp(ci[i, 1]))]
-            
-            # Impact classification
-            if name == "Intercept":
-                impact = "baseline"
-            elif link == "log" and relativity is not None:
-                # For log-link, use relativity to determine impact
-                if relativity > 1.2:
-                    impact = "strong_positive"
-                elif relativity > 1.05:
-                    impact = "weak_positive"
-                elif relativity < 0.83:  # 1/1.2
-                    impact = "strong_negative"
-                elif relativity < 0.95:  # 1/1.05
-                    impact = "weak_negative"
-                else:
-                    impact = "negligible"
-            else:
-                # For other links, use coefficient magnitude
-                if abs(z) > 3:
-                    impact = "strong_positive" if coef > 0 else "strong_negative"
-                elif abs(z) > 2:
-                    impact = "weak_positive" if coef > 0 else "weak_negative"
-                else:
-                    impact = "negligible"
-            
-            # Recommendation
-            recommendation = None
-            if name != "Intercept":
-                if not significant and impact == "negligible":
-                    recommendation = "Consider removing - not significant and negligible impact"
-                elif not significant:
-                    recommendation = "Not significant (p={:.3f}) - consider removing or investigating".format(p)
-                elif impact == "negligible":
-                    recommendation = "Significant but negligible practical impact"
+                rel = round(float(np.exp(coef_val)), 4)
+                rel_ci = [round(float(np.exp(ci[i, 0])), 4), round(float(np.exp(ci[i, 1])), 4)]
             
             summaries.append(CoefficientSummary(
                 feature=name,
-                estimate=round(coef, 6),
-                std_error=round(se, 6),
-                z_value=round(z, 3),
-                p_value=round(p, 4),
-                significant=significant,
-                relativity=round(relativity, 4) if relativity else None,
-                relativity_ci=[round(x, 4) for x in relativity_ci] if relativity_ci else None,
-                impact=impact,
-                recommendation=recommendation,
+                estimate=round(coef_val, 6),
+                std_error=round(se_val, 6),
+                z_value=round(z_val, 3),
+                p_value=round(p_val, 4),
+                significant=p_val < 0.05,
+                relativity=rel,
+                relativity_ci=rel_ci,
             ))
         
         # Sort by absolute z-value (most significant first), but keep Intercept at end
@@ -1959,11 +1920,24 @@ class DiagnosticsComputer:
         y_test: np.ndarray,
         mu_test: np.ndarray,
         exposure_test: Optional[np.ndarray] = None,
+        n_params: Optional[int] = None,
     ) -> Dict[str, TrainTestMetrics]:
         """
         Compute metrics for both train and test sets.
         
-        Helps detect overfitting by comparing train vs test performance.
+        Includes family deviance loss (same as GBM loss functions like
+        Poisson NLL, Gamma deviance) and AIC for model comparison.
+        
+        Parameters
+        ----------
+        y_test : np.ndarray
+            Test response values
+        mu_test : np.ndarray
+            Test predicted values
+        exposure_test : np.ndarray, optional
+            Test exposure weights
+        n_params : int, optional
+            Number of model parameters (for AIC). Defaults to self.n_params.
         
         Returns
         -------
@@ -1971,9 +1945,13 @@ class DiagnosticsComputer:
             {"train": TrainTestMetrics, "test": TrainTestMetrics}
         """
         exp_test = exposure_test if exposure_test is not None else np.ones_like(y_test)
+        n_params = n_params if n_params is not None else self.n_params
         
-        # Train metrics
-        train_deviance = self.deviance
+        # Train metrics using Rust backend
+        train_metrics_rust = _rust_dataset_metrics(
+            self.y, self.mu, self.family, n_params
+        )
+        
         train_actual = np.sum(self.y)
         train_predicted = np.sum(self.mu)
         train_ae = train_actual / train_predicted if train_predicted > 0 else float('nan')
@@ -1987,16 +1965,20 @@ class DiagnosticsComputer:
         train_metrics = TrainTestMetrics(
             dataset="train",
             n_obs=len(self.y),
-            deviance=round(float(train_deviance), 2),
+            deviance=round(float(train_metrics_rust["deviance"]), 2),
+            mean_deviance=round(float(train_metrics_rust["mean_deviance"]), 6),
+            log_likelihood=round(float(train_metrics_rust["log_likelihood"]), 2),
+            aic=round(float(train_metrics_rust["aic"]), 2),
             ae_ratio=round(float(train_ae), 4),
             gini=round(train_gini, 4),
             rmse=round(float(train_rmse), 4),
             mae=round(float(train_mae), 4),
         )
         
-        # Test metrics
-        test_unit_dev = self._residuals.unit_deviance(y_test, mu_test)
-        test_deviance = np.sum(test_unit_dev)
+        # Test metrics using Rust backend
+        test_metrics_rust = _rust_dataset_metrics(
+            y_test, mu_test, self.family, n_params
+        )
         
         test_actual = np.sum(y_test)
         test_predicted = np.sum(mu_test)
@@ -2011,7 +1993,10 @@ class DiagnosticsComputer:
         test_metrics = TrainTestMetrics(
             dataset="test",
             n_obs=len(y_test),
-            deviance=round(float(test_deviance), 2),
+            deviance=round(float(test_metrics_rust["deviance"]), 2),
+            mean_deviance=round(float(test_metrics_rust["mean_deviance"]), 6),
+            log_likelihood=round(float(test_metrics_rust["log_likelihood"]), 2),
+            aic=round(float(test_metrics_rust["aic"]), 2),
             ae_ratio=round(float(test_ae), 4),
             gini=round(test_gini, 4),
             rmse=round(float(test_rmse), 4),
@@ -2065,6 +2050,13 @@ class DiagnosticsComputer:
         total_actual = float(np.sum(y))
         total_predicted = float(np.sum(mu))
         
+        # Family deviance metrics (same as GBM loss) using Rust backend
+        dataset_metrics = _rust_dataset_metrics(y, mu, self.family, self.n_params)
+        deviance = float(dataset_metrics["deviance"])
+        mean_deviance = float(dataset_metrics["mean_deviance"])
+        log_likelihood = float(dataset_metrics["log_likelihood"])
+        aic_val = float(dataset_metrics["aic"])
+        
         # Discrimination metrics
         stats = _rust_discrimination_stats(y, mu, exposure)
         gini = float(stats["gini"])
@@ -2099,6 +2091,10 @@ class DiagnosticsComputer:
             total_exposure=round(total_exposure, 2),
             total_actual=round(total_actual, 2),
             total_predicted=round(total_predicted, 2),
+            deviance=round(deviance, 2),
+            mean_deviance=round(mean_deviance, 6),
+            log_likelihood=round(log_likelihood, 2),
+            aic=round(aic_val, 2),
             gini=round(gini, 4),
             auc=round(auc, 4),
             ae_ratio=round(ae_ratio, 4),
@@ -3703,37 +3699,16 @@ def compute_diagnostics(
     # =========================================================================
     
     # VIF / Multicollinearity
+    # Token optimization: VIF array already contains all info, no separate warnings needed
     vif_results = None
     if compute_vif and design_matrix is not None:
         vif_results = computer.compute_vif(design_matrix, feature_names)
-        # Add warnings for high VIF
-        for v in vif_results:
-            if v.severity == "severe":
-                warnings.append({
-                    "type": "multicollinearity",
-                    "message": f"Feature '{v.feature}' has VIF={v.vif:.1f} (severe multicollinearity). "
-                              f"Collinear with: {', '.join(v.collinear_with or [])}. "
-                              f"Consider removing redundant features."
-                })
-            elif v.severity == "moderate":
-                warnings.append({
-                    "type": "multicollinearity_moderate",
-                    "message": f"Feature '{v.feature}' has VIF={v.vif:.1f} (moderate multicollinearity)."
-                })
     
     # Coefficient summary
     coef_summary = None
     if compute_coefficients:
         coef_summary = computer.compute_coefficient_summary(result, link=link)
-        # Add warnings for negligible coefficients
-        negligible = [c for c in coef_summary if c.recommendation and "negligible" in c.recommendation.lower()]
-        if len(negligible) > 3:
-            warnings.append({
-                "type": "weak_predictors",
-                "message": f"{len(negligible)} coefficients have negligible impact. "
-                          f"Consider simplifying model by removing: "
-                          f"{', '.join(c.feature for c in negligible[:5])}{'...' if len(negligible) > 5 else ''}"
-            })
+        # Token optimization: skip weak_predictors warning (agent can infer from sig=False + rel~1.0)
     
     # Deviance by factor level
     factor_dev = None
@@ -3858,38 +3833,22 @@ def compute_diagnostics(
     # Extract convergence info
     converged = result.converged if hasattr(result, 'converged') else True
     iterations = result.iterations if hasattr(result, 'iterations') else 0
-    max_iter = 25  # Default max iterations
-    
-    # Determine convergence reason
-    if converged:
-        reason = "converged"
-    elif iterations >= max_iter:
-        reason = "max_iterations_reached"
-    else:
-        reason = "unknown"
-    
-    convergence_details = ConvergenceDetails(
-        max_iterations_allowed=max_iter,
-        iterations_used=iterations,
-        converged=converged,
-        reason=reason,
-    )
     
     # Model summary
     model_summary = {
         "formula": result.formula if hasattr(result, 'formula') else None,
         "family": family,
         "link": link,
-        "n_observations": computer.n_obs,
-        "n_parameters": n_params,
-        "degrees_of_freedom_residual": computer.df_resid,
+        "n_obs": computer.n_obs,
+        "n_params": n_params,
+        "df_resid": computer.df_resid,
         "converged": converged,
         "iterations": iterations,
     }
     
+    # Token optimization: convergence_details merged into model_summary (ok, iters)
     diagnostics = ModelDiagnostics(
         model_summary=model_summary,
-        convergence_details=convergence_details,
         fit_statistics=fit_stats,
         loss_metrics=loss_metrics,
         calibration=calibration,

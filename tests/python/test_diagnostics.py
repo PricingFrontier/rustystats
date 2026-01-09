@@ -649,12 +649,13 @@ class TestEnhancedDiagnostics:
         
         vif_results = computer.compute_vif(X, ["Intercept", "age", "veh_power"])
         
-        assert len(vif_results) == 2  # Excludes intercept
+        # Token optimization: VIF now only returns severe/moderate (filters out 'none')
+        # For independent variables, VIF should be low so may return empty list
         for v in vif_results:
             assert hasattr(v, 'feature')
             assert hasattr(v, 'vif')
             assert hasattr(v, 'severity')
-            assert v.vif >= 1.0  # VIF is always >= 1
+            assert v.severity in ('severe', 'moderate')  # Only problematic ones returned
     
     def test_vif_detects_collinearity(self):
         """Test that VIF detects collinear features."""
@@ -706,7 +707,6 @@ class TestEnhancedDiagnostics:
             assert hasattr(cs, 'feature')
             assert hasattr(cs, 'estimate')
             assert hasattr(cs, 'relativity')
-            assert hasattr(cs, 'impact')
             assert hasattr(cs, 'significant')
             # For log link, relativity should be computed
             if cs.feature != "Intercept":
@@ -886,7 +886,7 @@ class TestEnhancedDiagnostics:
         assert len(coef_summary) > 0
         assert "feature" in coef_summary[0]
         assert "relativity" in coef_summary[0]
-        assert "impact" in coef_summary[0]
+        # impact/recommendation removed for token optimization (derivable from z_value and relativity)
     
     def test_multicollinearity_warning(self):
         """Test that multicollinearity generates appropriate warnings."""
@@ -908,9 +908,12 @@ class TestEnhancedDiagnostics:
             continuous_factors=["x1", "x2"],
         )
         
-        # Should have multicollinearity warning
-        warning_types = [w["type"] for w in diagnostics.warnings]
-        assert "multicollinearity" in warning_types or "multicollinearity_moderate" in warning_types
+        # Token optimization: multicollinearity warnings removed (info in VIF array)
+        # Check VIF results instead
+        assert diagnostics.vif is not None
+        assert len(diagnostics.vif) > 0  # Should detect collinearity
+        for v in diagnostics.vif:
+            assert v.severity in ('severe', 'moderate')
     
     def test_train_test_comparison(self, fitted_model_with_data):
         """Test comprehensive train vs test comparison."""
