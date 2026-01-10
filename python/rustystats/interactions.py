@@ -97,6 +97,18 @@ class IdentityTermSpec:
     expression: str  # The raw expression inside I(), e.g., "x ** 2" or "x + y"
 
 
+@dataclass
+class CategoricalTermSpec:
+    """Parsed categorical term specification with optional level selection.
+    
+    C(var) - all levels (standard treatment coding) -> levels=None
+    C(var, level='Paris') - single level indicator -> levels=['Paris']
+    C(var, levels=['Paris', 'Lyon']) - multiple specific levels
+    """
+    var_name: str
+    levels: Optional[List[str]] = None  # None = all levels, list = specific levels only
+
+
 @dataclass 
 class ParsedFormula:
     """Parsed formula with identified terms."""
@@ -108,6 +120,7 @@ class ParsedFormula:
     spline_terms: List[SplineTerm] = field(default_factory=list)  # Spline terms
     target_encoding_terms: List[TargetEncodingTermSpec] = field(default_factory=list)  # TE() terms
     identity_terms: List[IdentityTermSpec] = field(default_factory=list)  # I() terms
+    categorical_terms: List[CategoricalTermSpec] = field(default_factory=list)  # C(var, level='...') terms
     has_intercept: bool = True
 
 
@@ -170,6 +183,15 @@ def parse_formula_interactions(formula: str) -> ParsedFormula:
         for i in parsed.get('identity_terms', [])
     ]
     
+    # Parse categorical terms with level selection (C(var, level='...'))
+    categorical_terms = [
+        CategoricalTermSpec(
+            var_name=c['var_name'],
+            levels=c['levels']
+        )
+        for c in parsed.get('categorical_terms', [])
+    ]
+    
     # Filter out "1" from main effects (it's just an explicit intercept indicator)
     main_effects = [m for m in parsed['main_effects'] if m != '1']
     
@@ -181,6 +203,7 @@ def parse_formula_interactions(formula: str) -> ParsedFormula:
         spline_terms=spline_terms,
         target_encoding_terms=target_encoding_terms,
         identity_terms=identity_terms,
+        categorical_terms=categorical_terms,
         has_intercept=parsed['has_intercept'],
     )
 
@@ -752,6 +775,49 @@ class InteractionBuilder:
             f"Supported formats: 'x ** 2', 'x + y', 'x * y', 'x / y', 'x - y'"
         )
     
+    def _build_categorical_level_indicators(
+        self,
+        cat_term: CategoricalTermSpec,
+    ) -> Tuple[np.ndarray, List[str]]:
+        """
+        Build indicator columns for specific categorical levels.
+        
+        C(var, level='Paris') creates a 0/1 indicator for that level.
+        C(var, levels=['Paris', 'Lyon']) creates indicators for multiple levels.
+        
+        Parameters
+        ----------
+        cat_term : CategoricalTermSpec
+            Categorical term with level selection
+            
+        Returns
+        -------
+        columns : np.ndarray
+            (n, k) indicator columns where k is number of specified levels
+        names : list[str]
+            Column names like "Region[Paris]" or "Region[Lyon]"
+        """
+        col = self.data[cat_term.var_name].to_numpy()
+        levels = cat_term.levels or []
+        
+        if not levels:
+            # No levels specified - shouldn't happen, but return empty
+            return np.zeros((self._n, 0), dtype=self.dtype), []
+        
+        # Build indicator columns for each specified level
+        columns = []
+        names = []
+        
+        for level in levels:
+            # Create 0/1 indicator for this level
+            indicator = (col.astype(str) == level).astype(self.dtype)
+            columns.append(indicator.reshape(-1, 1))
+            names.append(f"{cat_term.var_name}[{level}]")
+        
+        if columns:
+            return np.hstack(columns), names
+        return np.zeros((self._n, 0), dtype=self.dtype), []
+    
     def build_design_matrix(
         self,
         formula: str,
@@ -837,6 +903,12 @@ class InteractionBuilder:
             id_col, id_name = self._build_identity_columns(identity, self.data)
             columns.append(id_col.reshape(-1, 1))
             names.append(id_name)
+        
+        # Add categorical terms with level selection (C(var, level='value'))
+        for cat_term in parsed.categorical_terms:
+            cat_cols, cat_names = self._build_categorical_level_indicators(cat_term)
+            columns.append(cat_cols)
+            names.extend(cat_names)
         
         # Stack all columns
         if columns:
@@ -1071,6 +1143,11 @@ class InteractionBuilder:
             id_col, _ = self._build_identity_columns(identity, new_data)
             columns.append(id_col.reshape(-1, 1))
         
+        # Add categorical terms with level selection (C(var, level='value'))
+        for cat_term in parsed.categorical_terms:
+            cat_cols, _ = self._build_categorical_level_indicators_new(cat_term, new_data)
+            columns.append(cat_cols)
+        
         # Stack all columns
         if columns:
             X = np.hstack([c if c.ndim == 2 else c.reshape(-1, 1) for c in columns])
@@ -1240,6 +1317,31 @@ class InteractionBuilder:
                 encoded[i] = prior
         
         return encoded
+    
+    def _build_categorical_level_indicators_new(
+        self,
+        cat_term: CategoricalTermSpec,
+        new_data: "pl.DataFrame",
+    ) -> Tuple[np.ndarray, List[str]]:
+        """Build indicator columns for specific categorical levels on new data."""
+        col = new_data[cat_term.var_name].to_numpy()
+        levels = cat_term.levels or []
+        n = len(col)
+        
+        if not levels:
+            return np.zeros((n, 0), dtype=self.dtype), []
+        
+        columns = []
+        names = []
+        
+        for level in levels:
+            indicator = (col.astype(str) == level).astype(self.dtype)
+            columns.append(indicator.reshape(-1, 1))
+            names.append(f"{cat_term.var_name}[{level}]")
+        
+        if columns:
+            return np.hstack(columns), names
+        return np.zeros((n, 0), dtype=self.dtype), []
 
 
 def build_design_matrix(

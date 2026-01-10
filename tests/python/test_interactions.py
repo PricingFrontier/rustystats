@@ -371,5 +371,94 @@ class TestInteractionEdgeCases:
         assert len(result.params) == 1
 
 
+# =============================================================================
+# Categorical Level Selection Tests
+# =============================================================================
+
+class TestCategoricalLevelSelection:
+    """Test C(var, level='value') syntax for single-level indicators."""
+    
+    def test_parse_single_level(self):
+        """Parse C(var, level='value') syntax."""
+        parsed = parse_formula_interactions("y ~ C(Region, level='Paris') + age")
+        assert len(parsed.categorical_terms) == 1
+        assert parsed.categorical_terms[0].var_name == "Region"
+        assert parsed.categorical_terms[0].levels == ["Paris"]
+        assert parsed.main_effects == ["age"]
+        # Should NOT be in categorical_vars (that's for full C())
+        assert "Region" not in parsed.categorical_vars
+    
+    def test_parse_multiple_levels(self):
+        """Parse C(var, levels=['a', 'b']) syntax."""
+        parsed = parse_formula_interactions("y ~ C(Region, levels=['Paris', 'Lyon'])")
+        assert len(parsed.categorical_terms) == 1
+        assert parsed.categorical_terms[0].var_name == "Region"
+        assert parsed.categorical_terms[0].levels == ["Paris", "Lyon"]
+    
+    def test_regular_c_still_works(self):
+        """Regular C(var) should still work as before."""
+        parsed = parse_formula_interactions("y ~ C(Region) + age")
+        assert len(parsed.categorical_terms) == 0
+        assert "Region" in parsed.main_effects
+        assert "Region" in parsed.categorical_vars
+    
+    def test_build_single_level_indicator(self):
+        """Build 0/1 indicator for single level."""
+        data = pl.DataFrame({
+            'y': [1.0, 2.0, 3.0, 4.0, 5.0],
+            'Region': ['Paris', 'Lyon', 'Paris', 'Marseille', 'Lyon'],
+            'age': [25.0, 30.0, 35.0, 40.0, 45.0]
+        })
+        
+        builder = InteractionBuilder(data)
+        y, X, names = builder.build_design_matrix("y ~ C(Region, level='Paris') + age")
+        
+        assert "Region[Paris]" in names
+        paris_idx = names.index("Region[Paris]")
+        expected = np.array([1.0, 0.0, 1.0, 0.0, 0.0])
+        np.testing.assert_array_equal(X[:, paris_idx], expected)
+    
+    def test_build_multiple_level_indicators(self):
+        """Build indicators for multiple specific levels."""
+        data = pl.DataFrame({
+            'y': [1.0, 2.0, 3.0, 4.0, 5.0],
+            'Region': ['Paris', 'Lyon', 'Paris', 'Marseille', 'Lyon'],
+            'age': [25.0, 30.0, 35.0, 40.0, 45.0]
+        })
+        
+        builder = InteractionBuilder(data)
+        y, X, names = builder.build_design_matrix("y ~ C(Region, levels=['Paris', 'Lyon']) + age")
+        
+        assert "Region[Paris]" in names
+        assert "Region[Lyon]" in names
+        
+        paris_idx = names.index("Region[Paris]")
+        lyon_idx = names.index("Region[Lyon]")
+        
+        np.testing.assert_array_equal(X[:, paris_idx], [1.0, 0.0, 1.0, 0.0, 0.0])
+        np.testing.assert_array_equal(X[:, lyon_idx], [0.0, 1.0, 0.0, 0.0, 1.0])
+    
+    def test_fit_model_with_single_level(self):
+        """Fit a GLM with single-level categorical indicator."""
+        np.random.seed(42)
+        data = pl.DataFrame({
+            'claims': np.random.poisson(0.1, 100),
+            'Region': np.random.choice(['Paris', 'Lyon', 'Marseille'], 100),
+            'age': np.random.uniform(20, 60, 100),
+            'exposure': np.random.uniform(0.5, 1.5, 100)
+        })
+        
+        result = rs.glm(
+            "claims ~ C(Region, level='Paris') + age",
+            data=data,
+            family='poisson',
+            offset='exposure'
+        ).fit()
+        
+        assert result.converged
+        assert "Region[Paris]" in result.feature_names
+        assert len(result.params) == 3  # Intercept + Paris + age
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

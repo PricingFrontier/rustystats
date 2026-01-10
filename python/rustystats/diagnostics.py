@@ -995,8 +995,8 @@ class DiagnosticsComputer:
                     ))
             
             return coefficients if coefficients else None
-        except Exception:
-            return None
+        except Exception as e:
+            raise RuntimeError(f"Failed to extract coefficient table: {e}") from e
     
     def compute_factor_significance(
         self,
@@ -1557,14 +1557,12 @@ class DiagnosticsComputer:
             # Also compute correlation matrix for finding collinear pairs
             corr_matrix = R - np.eye(k) * 1e-10  # Remove regularization for reporting
             
-        except np.linalg.LinAlgError:
-            # Fallback: return high VIF for all
-            for name in names_no_int:
-                results.append(VIFResult(
-                    feature=name, vif=999.0, severity="severe",
-                    collinear_with=["Matrix singular - severe multicollinearity"]
-                ))
-            return results
+        except np.linalg.LinAlgError as e:
+            raise RuntimeError(
+                f"VIF computation failed: design matrix is singular. "
+                f"This indicates severe multicollinearity - some columns are exact linear "
+                f"combinations of others. Check for duplicate or constant columns."
+            ) from e
         
         # Build results
         for i in range(k):
@@ -3711,11 +3709,20 @@ def compute_diagnostics(
     y = mu + response_resid
     
     lp = np.asarray(result.linear_predictor, dtype=np.float64)
-    family = result.family if hasattr(result, 'family') else "unknown"
-    link = result.link if hasattr(result, 'link') else "log"
+    
+    # Require essential attributes - fail loudly if missing
+    if not hasattr(result, 'family'):
+        raise ValueError("Result object missing 'family' attribute")
+    if not hasattr(result, 'link'):
+        raise ValueError("Result object missing 'link' attribute")
+    if not hasattr(result, 'feature_names'):
+        raise ValueError("Result object missing 'feature_names' attribute")
+    
+    family = result.family
+    link = result.link
     n_params = len(result.params)
     deviance = result.deviance
-    feature_names = result.feature_names if hasattr(result, 'feature_names') else []
+    feature_names = result.feature_names
     
     # Auto-infer response and exposure column names from formula
     response_col = None
@@ -3872,17 +3879,10 @@ def compute_diagnostics(
                 raise ValueError(f"Response column '{response_col}' not found in test_data")
             y_test = test_data[response_col].to_numpy().astype(np.float64)
             
-            # Get test predictions using the model
-            if hasattr(result, 'predict'):
-                mu_test = result.predict(test_data)
-            elif hasattr(result, '_builder') and result._builder is not None:
-                # Rebuild design matrix for test data
-                from rustystats.interactions import InteractionBuilder
-                test_builder = InteractionBuilder(test_data)
-                _, X_test, _ = test_builder.build_design_matrix(result.formula)
-                mu_test = np.exp(X_test @ result.params) if link == "log" else X_test @ result.params
-            else:
+            # Get test predictions using the model's predict method
+            if not hasattr(result, 'predict'):
                 raise ValueError("Model does not support prediction on new data")
+            mu_test = result.predict(test_data)
             
             # Get test exposure
             exposure_test = np.ones(len(y_test))
@@ -3940,13 +3940,20 @@ def compute_diagnostics(
                 f"catch this exception in your calling code."
             ) from e
     
-    # Extract convergence info
-    converged = result.converged if hasattr(result, 'converged') else True
-    iterations = result.iterations if hasattr(result, 'iterations') else 0
+    # Extract convergence info - require these attributes
+    if not hasattr(result, 'converged'):
+        raise ValueError("Result object missing 'converged' attribute")
+    if not hasattr(result, 'iterations'):
+        raise ValueError("Result object missing 'iterations' attribute")
+    if not hasattr(result, 'formula'):
+        raise ValueError("Result object missing 'formula' attribute")
+    
+    converged = result.converged
+    iterations = result.iterations
     
     # Model summary
     model_summary = {
-        "formula": result.formula if hasattr(result, 'formula') else None,
+        "formula": result.formula,
         "family": family,
         "link": link,
         "n_obs": computer.n_obs,

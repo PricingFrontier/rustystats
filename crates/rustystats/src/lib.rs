@@ -2150,6 +2150,18 @@ fn parse_formula_py(formula_str: &str) -> PyResult<std::collections::HashMap<Str
             .collect();
         result.insert("identity_terms".to_string(), identity_terms.into_py(py));
         
+        // Convert categorical terms with level selection (C(var, level='...'))
+        let categorical_terms: Vec<_> = parsed.categorical_terms
+            .into_iter()
+            .map(|c| {
+                let dict = PyDict::new_bound(py);
+                dict.set_item("var_name", c.var_name).unwrap();
+                dict.set_item("levels", c.levels).unwrap();
+                dict.into_py(py)
+            })
+            .collect();
+        result.insert("categorical_terms".to_string(), categorical_terms.into_py(py));
+        
         Ok(result)
     })
 }

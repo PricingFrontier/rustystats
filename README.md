@@ -63,8 +63,11 @@ RustyStats uses significantly less RAM by reusing buffers and avoiding Python ob
 - **Memory Efficient** - 4x less RAM than statsmodels at scale
 - **Stable** - Step-halving IRLS, warm starts for robust convergence
 - **Splines** - B-splines `bs()` and natural splines `ns()` in formulas
+- **Polynomials** - Identity terms `I(x ** 2)` for polynomial and arithmetic expressions
+- **Target Encoding** - CatBoost-style `TE()` for high-cardinality categoricals (exposure-aware)
 - **Regularisation** - Ridge, Lasso, and Elastic Net via coordinate descent
-- **Complete** - 7 families, robust SEs, full diagnostics
+- **Validation** - Design matrix checks with fix suggestions before fitting
+- **Complete** - 8 families, robust SEs, full diagnostics, VIF, partial dependence
 - **Minimal** - Only `numpy` and `polars` required
 
 ## Installation
@@ -117,6 +120,10 @@ print(result.summary())
 # Main effects
 "y ~ x1 + x2 + C(category)"
 
+# Single-level categorical indicators
+"y ~ C(Region, level='Paris')"              # 0/1 indicator for Paris only
+"y ~ C(Region, levels=['Paris', 'Lyon'])"   # Indicators for specific levels
+
 # Interactions
 "y ~ x1*x2"              # x1 + x2 + x1:x2
 "y ~ C(area):age"        # Area-specific age effects
@@ -126,11 +133,16 @@ print(result.summary())
 "y ~ bs(age, df=5)"      # B-spline basis
 "y ~ ns(income, df=4)"   # Natural spline (better extrapolation)
 
+# Identity terms (polynomial/arithmetic expressions)
+"y ~ I(age ** 2)"        # Polynomial terms
+"y ~ I(x1 * x2)"         # Explicit products
+"y ~ I(income / 1000)"   # Scaled variables
+
 # Target encoding (high-cardinality categoricals)
 "y ~ TE(brand) + TE(model)"
 
 # Combined
-"y ~ bs(age, df=5) + C(region)*income + ns(vehicle_age, df=3) + TE(brand)"
+"y ~ bs(age, df=5) + C(region)*income + ns(vehicle_age, df=3) + TE(brand) + I(age ** 2)"
 ```
 
 ---
@@ -336,6 +348,51 @@ test_encoded = encoder.transform(test_categories)
 - **No target leakage**: Ordered target statistics
 - **Regularization**: Prior weight controls shrinkage toward global mean
 - **High-cardinality**: Single column instead of thousands of dummies
+- **Exposure-aware**: For frequency models with `offset="Exposure"`, TE() automatically uses claim rate (ClaimCount/Exposure) instead of raw counts, preventing near-constant encoded values
+
+---
+
+## Identity Terms for Polynomials
+
+```python
+# Polynomial terms
+result = rs.glm(
+    "y ~ age + I(age ** 2) + I(age ** 3)",
+    data=data,
+    family="gaussian"
+).fit()
+
+# Arithmetic expressions
+result = rs.glm(
+    "y ~ I(income / 1000) + I(weight * height)",
+    data=data,
+    family="gaussian"
+).fit()
+```
+
+**Supported operations:** `+`, `-`, `*`, `/`, `**` (power)
+
+---
+
+## Design Matrix Validation
+
+```python
+# Check for issues before fitting
+model = rs.glm("y ~ ns(x, df=4) + C(cat)", data, family="poisson")
+results = model.validate()  # Prints diagnostics
+
+if not results['valid']:
+    print("Issues:", results['suggestions'])
+
+# Validation runs automatically on fit failure with helpful suggestions
+```
+
+**Checks performed:**
+- Rank deficiency (linearly dependent columns)
+- High multicollinearity (condition number)
+- Zero variance columns
+- NaN/Inf values
+- Highly correlated column pairs (>0.999)
 
 ---
 
@@ -368,6 +425,9 @@ exploration = rs.explore_data(
 - **Calibration**: Overall A/E ratio, calibration by decile with CIs, Hosmer-Lemeshow test
 - **Discrimination**: Gini coefficient, AUC, KS statistic, lift metrics
 - **Factor Diagnostics**: A/E by level/bin for ALL factors (fitted and non-fitted)
+- **VIF/Multicollinearity**: Variance inflation factors for design matrix columns
+- **Partial Dependence**: Effect plots with shape detection and recommendations
+- **Overfitting Detection**: Compare train vs test metrics when test data provided
 - **Interaction Detection**: Greedy residual-based detection of potential interactions
 - **Warnings**: Auto-generated alerts for high dispersion, poor calibration, missing factors
 
@@ -412,8 +472,9 @@ rustystats/
 ├── python/rustystats/            # Python package
 │   ├── __init__.py               # Main exports
 │   ├── formula.py                # Formula API with DataFrame support
+│   ├── interactions.py           # Interaction terms, I() expressions, design matrix
 │   ├── splines.py                # bs() and ns() spline basis functions
-│   ├── target_encoding.py        # Target encoding
+│   ├── target_encoding.py        # Target encoding (exposure-aware)
 │   ├── diagnostics.py            # Model diagnostics with JSON export
 │   └── families.py               # Family wrappers
 │

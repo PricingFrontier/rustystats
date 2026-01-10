@@ -29,6 +29,16 @@ pub struct IdentityTermSpec {
     pub expression: String,  // The raw expression inside I(), e.g., "x**2" or "x + y"
 }
 
+/// Parsed categorical term specification for C() with optional level selection
+/// C(var) - all levels (standard treatment coding)
+/// C(var, level='Paris') - single level indicator (0/1 for that level)
+/// C(var, levels=['Paris', 'Lyon']) - multiple specific levels
+#[derive(Debug, Clone, PartialEq)]
+pub struct CategoricalTermSpec {
+    pub var_name: String,
+    pub levels: Option<Vec<String>>,  // None = all levels, Some = specific levels only
+}
+
 /// Parsed interaction term
 #[derive(Debug, Clone, PartialEq)]
 pub struct InteractionTerm {
@@ -43,6 +53,7 @@ pub struct ParsedFormula {
     pub main_effects: Vec<String>,
     pub interactions: Vec<InteractionTerm>,
     pub categorical_vars: HashSet<String>,
+    pub categorical_terms: Vec<CategoricalTermSpec>,  // C() terms with optional level selection
     pub spline_terms: Vec<SplineTerm>,
     pub target_encoding_terms: Vec<TargetEncodingTermSpec>,
     pub identity_terms: Vec<IdentityTermSpec>,
@@ -186,6 +197,79 @@ fn parse_identity_term(term: &str) -> Option<IdentityTermSpec> {
     }
     
     Some(IdentityTermSpec { expression })
+}
+
+/// Parse a categorical term like "C(region)" or "C(region, level='Paris')"
+/// Returns None if not a C() term, Some with the parsed spec if it is
+fn parse_categorical_term(term: &str) -> Option<CategoricalTermSpec> {
+    let term = term.trim();
+    
+    // Check if starts with C(
+    if !term.starts_with("C(") {
+        return None;
+    }
+    
+    // Find matching parenthesis
+    let start = term.find('(')?;
+    let end = find_matching_paren(term, start)?;
+    if end <= start {
+        return None;
+    }
+    
+    let inner = &term[start + 1..end];
+    
+    // Check if there are any commas (indicating options)
+    if !inner.contains(',') {
+        // Simple case: C(var)
+        return Some(CategoricalTermSpec {
+            var_name: inner.trim().to_string(),
+            levels: None,
+        });
+    }
+    
+    // Parse with options: C(var, level='value') or C(var, levels=['a', 'b'])
+    let parts: Vec<&str> = inner.splitn(2, ',').collect();
+    if parts.is_empty() {
+        return None;
+    }
+    
+    let var_name = parts[0].trim().to_string();
+    let mut levels: Option<Vec<String>> = None;
+    
+    if parts.len() > 1 {
+        let options = parts[1].trim();
+        
+        // Parse level='value' (single level)
+        if options.starts_with("level=") || options.starts_with("level =") {
+            let value_start = options.find('=')? + 1;
+            let value = options[value_start..].trim();
+            // Remove quotes
+            let level = value.trim_matches(|c| c == '\'' || c == '"').to_string();
+            levels = Some(vec![level]);
+        }
+        // Parse levels=['a', 'b'] (multiple levels)
+        else if options.starts_with("levels=") || options.starts_with("levels =") {
+            let value_start = options.find('=')? + 1;
+            let value = options[value_start..].trim();
+            // Parse list format: ['a', 'b'] or ["a", "b"]
+            if value.starts_with('[') && value.ends_with(']') {
+                let list_inner = &value[1..value.len()-1];
+                let level_strs: Vec<String> = list_inner
+                    .split(',')
+                    .map(|s| s.trim().trim_matches(|c| c == '\'' || c == '"').to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if !level_strs.is_empty() {
+                    levels = Some(level_strs);
+                }
+            }
+        }
+    }
+    
+    Some(CategoricalTermSpec {
+        var_name,
+        levels,
+    })
 }
 
 /// Parse a spline term like "bs(age, df=5)" or "ns(income, df=4)"
@@ -399,6 +483,7 @@ pub fn parse_formula(formula: &str) -> Result<ParsedFormula, String> {
     let mut spline_terms = Vec::new();
     let mut target_encoding_terms = Vec::new();
     let mut identity_terms = Vec::new();
+    let mut categorical_terms = Vec::new();
     
     for term in terms {
         // Check for unsupported function-like terms FIRST before any other processing
@@ -428,6 +513,16 @@ pub fn parse_formula(formula: &str) -> Result<ParsedFormula, String> {
         if let Some(spline) = parse_spline_term(&term) {
             spline_terms.push(spline);
             continue;
+        }
+        
+        // Check for categorical term with level selection: C(var, level='value')
+        if let Some(cat_term) = parse_categorical_term(&term) {
+            if cat_term.levels.is_some() {
+                // Level-specific categorical - add to categorical_terms, not main_effects
+                categorical_terms.push(cat_term);
+                continue;
+            }
+            // Otherwise fall through to normal C(var) handling below
         }
         
         if term.contains('*') {
@@ -498,6 +593,7 @@ pub fn parse_formula(formula: &str) -> Result<ParsedFormula, String> {
         main_effects,
         interactions,
         categorical_vars,
+        categorical_terms,
         spline_terms,
         target_encoding_terms,
         identity_terms,
@@ -632,5 +728,32 @@ mod tests {
         assert_eq!(parsed.identity_terms[0].expression, "DrivAge ** 2");
         assert_eq!(parsed.spline_terms.len(), 1);
         assert!(parsed.categorical_vars.contains("Region"));
+    }
+
+    #[test]
+    fn test_parse_categorical_with_level() {
+        // Single level indicator: C(Region, level='Paris')
+        let parsed = parse_formula("y ~ C(Region, level='Paris') + age").unwrap();
+        assert_eq!(parsed.categorical_terms.len(), 1);
+        assert_eq!(parsed.categorical_terms[0].var_name, "Region");
+        assert_eq!(parsed.categorical_terms[0].levels, Some(vec!["Paris".to_string()]));
+        assert_eq!(parsed.main_effects, vec!["age"]);
+        // Should NOT be in main_effects
+        assert!(!parsed.main_effects.contains(&"Region".to_string()));
+        
+        // Multiple levels: C(Region, levels=['Paris', 'Lyon'])
+        let parsed = parse_formula("y ~ C(Region, levels=['Paris', 'Lyon'])").unwrap();
+        assert_eq!(parsed.categorical_terms.len(), 1);
+        assert_eq!(parsed.categorical_terms[0].var_name, "Region");
+        assert_eq!(parsed.categorical_terms[0].levels, Some(vec!["Paris".to_string(), "Lyon".to_string()]));
+        
+        // Regular C() should still work and go to main_effects
+        let parsed = parse_formula("y ~ C(Region) + age").unwrap();
+        assert!(parsed.categorical_terms.is_empty());
+        assert!(parsed.main_effects.contains(&"Region".to_string()));
+        
+        // Double quotes should also work
+        let parsed = parse_formula("y ~ C(Region, level=\"Paris\")").unwrap();
+        assert_eq!(parsed.categorical_terms[0].levels, Some(vec!["Paris".to_string()]));
     }
 }
