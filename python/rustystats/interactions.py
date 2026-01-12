@@ -269,6 +269,27 @@ class InteractionBuilder:
             return SplineTerm(var_name=var_name, spline_type=spline_type, df=df, degree=degree)
         return None
     
+    def _parse_te_factor(self, factor: str) -> Optional[TargetEncodingTermSpec]:
+        """Parse a TE term from a factor name like 'TE(Region)' or 'TE(Brand, pw=2)'."""
+        factor_stripped = factor.strip()
+        if factor_stripped.upper().startswith('TE(') and factor_stripped.endswith(')'):
+            content = factor_stripped[3:-1]
+            parts = [p.strip() for p in content.split(',')]
+            var_name = parts[0]
+            prior_weight = 1.0
+            n_permutations = 4
+            for part in parts[1:]:
+                if '=' in part:
+                    key, val = part.split('=', 1)
+                    key = key.strip().lower()
+                    val = val.strip()
+                    if key in ('pw', 'prior_weight'):
+                        prior_weight = float(val)
+                    elif key in ('n', 'n_permutations'):
+                        n_permutations = int(val)
+            return TargetEncodingTermSpec(var_name=var_name, prior_weight=prior_weight, n_permutations=n_permutations)
+        return None
+    
     def _get_column(self, name: str) -> np.ndarray:
         """Extract column as numpy array."""
         return self.data[name].to_numpy().astype(self.dtype)
@@ -332,6 +353,7 @@ class InteractionBuilder:
     def build_interaction_columns(
         self,
         interaction: InteractionTerm,
+        te_encodings: Optional[Dict[str, np.ndarray]] = None,
     ) -> Tuple[np.ndarray, List[str]]:
         """
         Build columns for a single interaction term.
@@ -341,6 +363,11 @@ class InteractionBuilder:
         - Mixed: Broadcast multiply continuous with each dummy column
         - Pure categorical: Sparse index-based construction
         
+        Parameters
+        ----------
+        te_encodings : dict, optional
+            Pre-computed TE encodings for use in interactions like X:TE(Y)
+        
         Returns
         -------
         columns : np.ndarray
@@ -349,7 +376,7 @@ class InteractionBuilder:
             Column names
         """
         if interaction.is_pure_continuous:
-            return self._build_continuous_interaction(interaction)
+            return self._build_continuous_interaction(interaction, te_encodings)
         elif interaction.is_pure_categorical:
             return self._build_categorical_interaction(interaction)
         else:
@@ -357,11 +384,124 @@ class InteractionBuilder:
     
     def _build_continuous_interaction(
         self, 
-        interaction: InteractionTerm
+        interaction: InteractionTerm,
+        te_encodings: Optional[Dict[str, np.ndarray]] = None,
     ) -> Tuple[np.ndarray, List[str]]:
-        """Build continuous × continuous interaction using Rust for computation."""
+        """Build continuous × continuous interaction, including spline and TE terms."""
         factors = interaction.factors
+        te_encodings = te_encodings or {}
         
+        # Separate spline, TE, and regular continuous factors
+        spline_factors = []
+        te_factors = []
+        cont_factors = []
+        for factor in factors:
+            spline = self._parse_spline_factor(factor)
+            te = self._parse_te_factor(factor)
+            if spline is not None:
+                spline_factors.append((factor, spline))
+            elif te is not None:
+                te_factors.append((factor, te))
+            else:
+                cont_factors.append(factor)
+        
+        # Handle continuous × spline interactions
+        if spline_factors:
+            all_columns = []
+            all_names = []
+            
+            # Build spline basis for each spline factor
+            spline_bases = []
+            spline_name_lists = []
+            for spline_str, spline in spline_factors:
+                x = self._get_column(spline.var_name)
+                basis, names = spline.transform(x)
+                self._fitted_splines[spline.var_name] = spline
+                spline_bases.append(basis)
+                spline_name_lists.append(names)
+            
+            # Build continuous product if any
+            if cont_factors:
+                cont_product = self._get_column(cont_factors[0])
+                for factor in cont_factors[1:]:
+                    cont_product = cont_product * self._get_column(factor)
+                cont_name = ':'.join(cont_factors)
+            else:
+                cont_product = None
+                cont_name = None
+            
+            # Combine: multiply each spline column by continuous factors
+            # For multiple splines, create cross-product of all spline columns
+            if len(spline_bases) == 1:
+                for j, spl_name in enumerate(spline_name_lists[0]):
+                    col = spline_bases[0][:, j]
+                    if cont_product is not None:
+                        col = col * cont_product
+                        all_names.append(f"{cont_name}:{spl_name}")
+                    else:
+                        all_names.append(spl_name)
+                    all_columns.append(col)
+            else:
+                # Multiple splines: cross-product (rare case)
+                from itertools import product as cartesian_product
+                indices = [range(b.shape[1]) for b in spline_bases]
+                for idx_combo in cartesian_product(*indices):
+                    col = np.ones(self._n, dtype=self.dtype)
+                    name_parts = []
+                    for i, j in enumerate(idx_combo):
+                        col = col * spline_bases[i][:, j]
+                        name_parts.append(spline_name_lists[i][j])
+                    if cont_product is not None:
+                        col = col * cont_product
+                        name_parts.insert(0, cont_name)
+                    all_names.append(':'.join(name_parts))
+                    all_columns.append(col)
+            
+            if all_columns:
+                return np.column_stack(all_columns), all_names
+            return np.zeros((self._n, 0), dtype=self.dtype), []
+        
+        # Handle continuous × TE interactions
+        if te_factors:
+            all_columns = []
+            all_names = []
+            
+            # Get TE encoded values from pre-computed encodings
+            te_values = []
+            te_names_list = []
+            for te_str, te_spec in te_factors:
+                te_name = f"TE({te_spec.var_name})"
+                if te_name in te_encodings:
+                    te_values.append(te_encodings[te_name])
+                    te_names_list.append(te_name)
+                else:
+                    raise ValueError(f"TE encoding for '{te_spec.var_name}' not found. "
+                                   f"Ensure TE({te_spec.var_name}) is included as a main effect.")
+            
+            # Build continuous product if any
+            if cont_factors:
+                cont_product = self._get_column(cont_factors[0])
+                for factor in cont_factors[1:]:
+                    cont_product = cont_product * self._get_column(factor)
+                cont_name = ':'.join(cont_factors)
+            else:
+                cont_product = np.ones(self._n, dtype=self.dtype)
+                cont_name = None
+            
+            # Multiply continuous by each TE encoding
+            for te_val, te_name in zip(te_values, te_names_list):
+                col = cont_product * te_val
+                if cont_name:
+                    all_names.append(f"{cont_name}:{te_name}")
+                else:
+                    all_names.append(te_name)
+                all_columns.append(col)
+            
+            if all_columns:
+                return np.column_stack(all_columns), all_names
+            return np.zeros((self._n, 0), dtype=self.dtype), []
+        
+        # Standard continuous × continuous (no splines or TE)
         if len(factors) == 2:
             # Optimized 2-way: direct Rust call
             x1 = self._get_column(factors[0])
@@ -872,24 +1012,17 @@ class InteractionBuilder:
             # Store fitted spline for prediction
             self._fitted_splines[spline.var_name] = spline
         
-        # Add interactions
-        for interaction in parsed.interactions:
-            int_cols, int_names = self.build_interaction_columns(interaction)
-            if int_cols.ndim == 1:
-                int_cols = int_cols.reshape(-1, 1)
-            columns.append(int_cols)
-            names.extend(int_names)
-        
         # Store parsed formula for prediction
         self._parsed_formula = parsed
         
         # Get response (needed for target encoding)
         y = self._get_column(parsed.response)
         
-        # Add target encoding terms (CatBoost-style)
+        # Add target encoding terms BEFORE interactions (so TE values are available for X:TE(Y))
         # Store stats for prediction on new data
         # When exposure is provided, use rate (y/exposure) for encoding
         self._te_stats: Dict[str, dict] = {}
+        te_encodings: Dict[str, np.ndarray] = {}  # For use in interactions
         for te_term in parsed.target_encoding_terms:
             te_col, te_name, te_stats = self._build_target_encoding_columns(
                 te_term, y, exposure=exposure
@@ -897,6 +1030,15 @@ class InteractionBuilder:
             columns.append(te_col.reshape(-1, 1))
             names.append(te_name)
             self._te_stats[te_term.var_name] = te_stats
+            te_encodings[te_name] = te_col  # Store for interactions
+        
+        # Add interactions (now with TE encodings available)
+        for interaction in parsed.interactions:
+            int_cols, int_names = self.build_interaction_columns(interaction, te_encodings)
+            if int_cols.ndim == 1:
+                int_cols = int_cols.reshape(-1, 1)
+            columns.append(int_cols)
+            names.extend(int_names)
         
         # Add identity terms (I() expressions like I(x ** 2))
         for identity in parsed.identity_terms:

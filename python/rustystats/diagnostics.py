@@ -3588,23 +3588,18 @@ def compute_diagnostics(
     continuous_factors = [f for f in continuous_factors if f not in categorical_factors]
     
     # Extract what we need from result
-    # Check if train_data size matches model's fitted values
-    n_train = len(train_data)
-    n_fitted = len(result.fittedvalues)
+    # ALWAYS re-predict on train_data using result.predict() to get consistent encoding
+    # This is critical for TE() which uses LOO encoding during fit but full encoding for predict
+    # Using fittedvalues would give artificially high train loss due to LOO handicap
+    formula_parts = result.formula.split('~') if hasattr(result, 'formula') else []
+    response_col_temp = formula_parts[0].strip() if formula_parts else None
     
-    if n_train != n_fitted:
-        # Model was fit on different data - re-predict on train_data
+    if response_col_temp and response_col_temp in train_data.columns:
+        y = train_data[response_col_temp].to_numpy().astype(np.float64)
         mu = np.asarray(result.predict(train_data), dtype=np.float64)
-        # Get response column from formula
-        formula_parts = result.formula.split('~') if hasattr(result, 'formula') else []
-        response_col = formula_parts[0].strip() if formula_parts else None
-        if response_col and response_col in train_data.columns:
-            y = train_data[response_col].to_numpy().astype(np.float64)
-        else:
-            raise ValueError(f"Cannot determine response column for diagnostics. Model fitted on {n_fitted} rows but train_data has {n_train} rows.")
-        lp = np.log(mu) if np.all(mu > 0) else mu  # Approximate linear predictor
+        lp = np.log(mu) if np.all(mu > 0) else mu
     else:
-        # Use fitted values directly
+        # Fallback to fitted values if we can't determine response column
         mu = np.asarray(result.fittedvalues, dtype=np.float64)
         response_resid = np.asarray(result.resid_response(), dtype=np.float64)
         y = mu + response_resid

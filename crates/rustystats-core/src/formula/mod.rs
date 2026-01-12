@@ -392,6 +392,25 @@ fn clean_var_name(term: &str) -> String {
 fn check_unsupported_function(term: &str) -> Option<String> {
     let term = term.trim();
     
+    // Handle interaction terms like "X:ns(Y, df=4)" - split on : outside parens
+    // and check each part separately
+    if term.contains(':') {
+        let parts = split_respecting_parens(term, ':');
+        for part in parts {
+            if let Some(func) = check_single_term_function(&part) {
+                return Some(func);
+            }
+        }
+        return None;
+    }
+    
+    check_single_term_function(term)
+}
+
+/// Check a single term (not an interaction) for unsupported functions
+fn check_single_term_function(term: &str) -> Option<String> {
+    let term = term.trim();
+    
     // Check if it looks like a function call: name(...)
     if let Some(paren_pos) = term.find('(') {
         if term.ends_with(')') {
