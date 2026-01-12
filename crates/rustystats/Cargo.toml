@@ -39,3 +39,6 @@ numpy = { workspace = true }
 
 # For array operations
 ndarray = { workspace = true }
+
+# Parallel processing for CV folds
+rayon = "1.10"

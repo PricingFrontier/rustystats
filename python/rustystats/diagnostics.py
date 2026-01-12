@@ -355,9 +355,11 @@ class DatasetDiagnostics:
     total_actual: float
     total_predicted: float
     
-    # Family deviance (same loss as GBMs: Poisson NLL, Gamma deviance, etc.)
+    # PRIMARY LOSS METRIC - USE THIS for model comparison
+    loss: float  # Family-appropriate per-obs loss (Poisson deviance, NB deviance, etc.)
+    
+    # Fit statistics
     deviance: float  # Total deviance (sum of unit deviances)
-    mean_deviance: float  # Per-observation deviance (GBM loss)
     log_likelihood: float
     aic: float
     
@@ -380,45 +382,27 @@ class DatasetDiagnostics:
 
 @dataclass
 class TrainTestComparison:
-    """Comparison between train and test diagnostics with flags."""
+    """Train metrics and optional test comparison."""
     
-    # Per-set diagnostics
+    # Train diagnostics (always present)
     train: DatasetDiagnostics
-    test: DatasetDiagnostics
     
-    # Comparison metrics
-    gini_gap: float  # train_gini - test_gini
-    ae_ratio_diff: float  # abs(train_ae - test_ae)
+    # Test diagnostics (None if no test data provided)
+    test: Optional[DatasetDiagnostics] = None
     
-    # A/E by decile comparison
-    decile_comparison: List[Dict[str, Any]]  # Side-by-side train vs test
+    # Comparison metrics (None if no test data)
+    gini_gap: Optional[float] = None
+    ae_ratio_diff: Optional[float] = None
+    decile_comparison: Optional[List[Dict[str, Any]]] = None
+    factor_divergence: Optional[Dict[str, List[Dict[str, Any]]]] = None
     
-    # Factor-level divergence
-    factor_divergence: Dict[str, List[Dict[str, Any]]]  # Levels where train/test differ
-    
-    # Flags for agent
-    overfitting_risk: bool  # True if gini_gap > 0.03
-    calibration_drift: bool  # True if test A/E outside [0.95, 1.05]
-    unstable_factors: List[str]  # Factor levels where train/test A/E differ by > 0.1
+    # Flags (False if no test data)
+    overfitting_risk: bool = False
+    calibration_drift: bool = False
+    unstable_factors: List[str] = field(default_factory=list)
 
 
-@dataclass
-class TrainTestMetrics:
-    """Metrics for train or test dataset.
-    
-    Includes family deviance loss (same as GBM loss functions like
-    Poisson NLL, Gamma deviance, etc.) and AIC for model comparison.
-    """
-    dataset: str  # "train" or "test"
-    n_obs: int
-    deviance: float  # Total deviance (sum of unit deviances)
-    mean_deviance: float  # Per-observation deviance (GBM loss)
-    log_likelihood: float
-    aic: float
-    ae_ratio: float
-    gini: float
-    rmse: float
-    mae: float
+# TrainTestMetrics removed - use DatasetDiagnostics instead
 
 
 @dataclass
@@ -478,22 +462,16 @@ class DataExploration:
 
 @dataclass
 class ModelDiagnostics:
-    """Complete model diagnostics output (token-optimized)."""
+    """Complete model diagnostics output."""
     
-    # Model summary (includes convergence: ok, iters)
+    # Model metadata
     model_summary: Dict[str, Any]
     
-    # Fit statistics
-    fit_statistics: Dict[str, float]
+    # Train/test metrics - SINGLE SOURCE OF TRUTH for loss, aic, gini, etc.
+    train_test: TrainTestComparison
     
-    # Loss metrics
-    loss_metrics: Dict[str, float]
-    
-    # Calibration
+    # Calibration (A/E ratio, problem deciles)
     calibration: Dict[str, Any]
-    
-    # Discrimination (only for applicable models)
-    discrimination: Optional[Dict[str, Any]]
     
     # Residual summary
     residual_summary: Dict[str, ResidualSummary]
@@ -510,23 +488,20 @@ class ModelDiagnostics:
     # Warnings
     warnings: List[Dict[str, str]]
     
-    # NEW: VIF / Multicollinearity scores for design matrix
+    # VIF / Multicollinearity scores
     vif: Optional[List[VIFResult]] = None
     
-    # NEW: Coefficient summary with interpretations
+    # Coefficient summary with interpretations
     coefficient_summary: Optional[List[CoefficientSummary]] = None
     
-    # NEW: Deviance breakdown by factor level
+    # Deviance breakdown by factor level
     factor_deviance: Optional[List[FactorDeviance]] = None
     
-    # NEW: Full lift chart with all deciles
+    # Full lift chart
     lift_chart: Optional[LiftChart] = None
     
-    # NEW: Partial dependence for key variables
+    # Partial dependence plots
     partial_dependence: Optional[List[PartialDependence]] = None
-    
-    # NEW: Comprehensive train vs test comparison (if test data provided)
-    train_test: Optional[TrainTestComparison] = None
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary, handling nested dataclasses."""
@@ -780,7 +755,7 @@ class DiagnosticsComputer:
         """Compute various loss metrics using Rust backend."""
         rust_loss = _rust_loss_metrics(self.y, self.mu, self.family)
         return {
-            "family_deviance_loss": rust_loss["family_loss"],
+            "loss": rust_loss["family_loss"],  # Primary metric for model comparison
             "mse": rust_loss["mse"],
             "mae": rust_loss["mae"],
             "rmse": rust_loss["rmse"],
@@ -2017,96 +1992,6 @@ class DiagnosticsComputer:
         
         return "complex", "Use spline (df=5+) to capture non-linearity"
     
-    def compute_train_test_metrics(
-        self,
-        y_test: np.ndarray,
-        mu_test: np.ndarray,
-        exposure_test: Optional[np.ndarray] = None,
-        n_params: Optional[int] = None,
-    ) -> Dict[str, TrainTestMetrics]:
-        """
-        Compute metrics for both train and test sets.
-        
-        Includes family deviance loss (same as GBM loss functions like
-        Poisson NLL, Gamma deviance) and AIC for model comparison.
-        
-        Parameters
-        ----------
-        y_test : np.ndarray
-            Test response values
-        mu_test : np.ndarray
-            Test predicted values
-        exposure_test : np.ndarray, optional
-            Test exposure weights
-        n_params : int, optional
-            Number of model parameters (for AIC). Defaults to self.n_params.
-        
-        Returns
-        -------
-        dict
-            {"train": TrainTestMetrics, "test": TrainTestMetrics}
-        """
-        exp_test = exposure_test if exposure_test is not None else np.ones_like(y_test)
-        n_params = n_params if n_params is not None else self.n_params
-        
-        # Train metrics using Rust backend
-        train_metrics_rust = _rust_dataset_metrics(
-            self.y, self.mu, self.family, n_params
-        )
-        
-        train_actual = np.sum(self.y)
-        train_predicted = np.sum(self.mu)
-        train_ae = train_actual / train_predicted if train_predicted > 0 else float('nan')
-        
-        train_stats = _rust_discrimination_stats(self.y, self.mu, self.exposure)
-        train_gini = float(train_stats["gini"])
-        
-        train_rmse = np.sqrt(np.mean((self.y - self.mu) ** 2))
-        train_mae = np.mean(np.abs(self.y - self.mu))
-        
-        train_metrics = TrainTestMetrics(
-            dataset="train",
-            n_obs=len(self.y),
-            deviance=round(float(train_metrics_rust["deviance"]), 2),
-            mean_deviance=round(float(train_metrics_rust["mean_deviance"]), 6),
-            log_likelihood=round(float(train_metrics_rust["log_likelihood"]), 2),
-            aic=round(float(train_metrics_rust["aic"]), 2),
-            ae_ratio=round(float(train_ae), 4),
-            gini=round(train_gini, 4),
-            rmse=round(float(train_rmse), 4),
-            mae=round(float(train_mae), 4),
-        )
-        
-        # Test metrics using Rust backend
-        test_metrics_rust = _rust_dataset_metrics(
-            y_test, mu_test, self.family, n_params
-        )
-        
-        test_actual = np.sum(y_test)
-        test_predicted = np.sum(mu_test)
-        test_ae = test_actual / test_predicted if test_predicted > 0 else float('nan')
-        
-        test_stats = _rust_discrimination_stats(y_test, mu_test, exp_test)
-        test_gini = float(test_stats["gini"])
-        
-        test_rmse = np.sqrt(np.mean((y_test - mu_test) ** 2))
-        test_mae = np.mean(np.abs(y_test - mu_test))
-        
-        test_metrics = TrainTestMetrics(
-            dataset="test",
-            n_obs=len(y_test),
-            deviance=round(float(test_metrics_rust["deviance"]), 2),
-            mean_deviance=round(float(test_metrics_rust["mean_deviance"]), 6),
-            log_likelihood=round(float(test_metrics_rust["log_likelihood"]), 2),
-            aic=round(float(test_metrics_rust["aic"]), 2),
-            ae_ratio=round(float(test_ae), 4),
-            gini=round(test_gini, 4),
-            rmse=round(float(test_rmse), 4),
-            mae=round(float(test_mae), 4),
-        )
-        
-        return {"train": train_metrics, "test": test_metrics}
-    
     def compute_dataset_diagnostics(
         self,
         y: np.ndarray,
@@ -2193,8 +2078,8 @@ class DiagnosticsComputer:
             total_exposure=round(total_exposure, 2),
             total_actual=round(total_actual, 2),
             total_predicted=round(total_predicted, 2),
+            loss=round(mean_deviance, 6),
             deviance=round(deviance, 2),
-            mean_deviance=round(mean_deviance, 6),
             log_likelihood=round(log_likelihood, 2),
             aic=round(aic_val, 2),
             gini=round(gini, 4),
@@ -3703,12 +3588,27 @@ def compute_diagnostics(
     continuous_factors = [f for f in continuous_factors if f not in categorical_factors]
     
     # Extract what we need from result
-    # Get y from the residuals (y = mu + response_residuals)
-    mu = np.asarray(result.fittedvalues, dtype=np.float64)
-    response_resid = np.asarray(result.resid_response(), dtype=np.float64)
-    y = mu + response_resid
+    # Check if train_data size matches model's fitted values
+    n_train = len(train_data)
+    n_fitted = len(result.fittedvalues)
     
-    lp = np.asarray(result.linear_predictor, dtype=np.float64)
+    if n_train != n_fitted:
+        # Model was fit on different data - re-predict on train_data
+        mu = np.asarray(result.predict(train_data), dtype=np.float64)
+        # Get response column from formula
+        formula_parts = result.formula.split('~') if hasattr(result, 'formula') else []
+        response_col = formula_parts[0].strip() if formula_parts else None
+        if response_col and response_col in train_data.columns:
+            y = train_data[response_col].to_numpy().astype(np.float64)
+        else:
+            raise ValueError(f"Cannot determine response column for diagnostics. Model fitted on {n_fitted} rows but train_data has {n_train} rows.")
+        lp = np.log(mu) if np.all(mu > 0) else mu  # Approximate linear predictor
+    else:
+        # Use fitted values directly
+        mu = np.asarray(result.fittedvalues, dtype=np.float64)
+        response_resid = np.asarray(result.resid_response(), dtype=np.float64)
+        y = mu + response_resid
+        lp = np.asarray(result.linear_predictor, dtype=np.float64)
     
     # Require essential attributes - fail loudly if missing
     if not hasattr(result, 'family'):
@@ -3781,11 +3681,8 @@ def compute_diagnostics(
         null_deviance=null_deviance,
     )
     
-    # Compute all diagnostics
-    fit_stats = computer.compute_fit_statistics()
-    loss_metrics = computer.compute_loss_metrics()
+    # Compute diagnostics
     calibration = computer.compute_calibration(n_calibration_bins)
-    discrimination = computer.compute_discrimination()
     residual_summary = computer.compute_residual_summary()
     
     factors = computer.compute_factor_diagnostics(
@@ -3809,7 +3706,21 @@ def compute_diagnostics(
         )
     
     model_comparison = computer.compute_model_comparison()
-    warnings = computer.generate_warnings(fit_stats, calibration, factors, family=family)
+    
+    # Always compute train_test - this is the single source of truth for metrics
+    exposure_train = computer.exposure
+    train_diag = computer.compute_dataset_diagnostics(
+        y, mu, exposure_train, train_data,
+        categorical_factors, continuous_factors, "train", result
+    )
+    
+    # Generate warnings (use train_diag for fit stats)
+    fit_stats_for_warnings = {
+        "deviance": train_diag.deviance,
+        "aic": train_diag.aic,
+        "log_likelihood": train_diag.log_likelihood,
+    }
+    warnings = computer.generate_warnings(fit_stats_for_warnings, calibration, factors, family=family)
     
     # =========================================================================
     # NEW: Enhanced diagnostics for agentic workflows
@@ -3870,75 +3781,103 @@ def compute_diagnostics(
                     "message": f"Variable '{pd.variable}' shows {pd.shape} pattern. {pd.recommendation}"
                 })
     
-    # Comprehensive train vs test comparison
-    train_test = None
+    # Build train_test (train is always present, test is optional)
+    train_test = TrainTestComparison(train=train_diag)
+    
     if test_data is not None and response_col is not None:
-        try:
-            # Get test response
-            if response_col not in test_data.columns:
-                raise ValueError(f"Response column '{response_col}' not found in test_data")
-            y_test = test_data[response_col].to_numpy().astype(np.float64)
-            
-            # Get test predictions using the model's predict method
-            if not hasattr(result, 'predict'):
-                raise ValueError("Model does not support prediction on new data")
-            mu_test = result.predict(test_data)
-            
-            # Get test exposure
-            exposure_test = np.ones(len(y_test))
-            if exposure_col and exposure_col in test_data.columns:
-                exposure_test = test_data[exposure_col].to_numpy().astype(np.float64)
-            
-            # Get train exposure
-            exposure_train = computer.exposure
-            
-            # Compute comprehensive train/test comparison
-            train_test = computer.compute_train_test_comparison(
-                train_data=train_data,
-                test_data=test_data,
-                y_train=y,
-                mu_train=mu,
-                exposure_train=exposure_train,
-                y_test=y_test,
-                mu_test=mu_test,
-                exposure_test=exposure_test,
-                categorical_factors=categorical_factors,
-                continuous_factors=continuous_factors,
-                result=result,
-            )
-            
-            # Add warnings based on flags
-            if train_test.overfitting_risk:
-                warnings.append({
-                    "type": "overfitting",
-                    "message": f"Overfitting detected: Train Gini={train_test.train.gini:.3f}, "
-                              f"Test Gini={train_test.test.gini:.3f} (gap={train_test.gini_gap:.3f}). "
-                              f"Consider reducing model complexity or using regularization."
-                })
-            
-            if train_test.calibration_drift:
-                warnings.append({
-                    "type": "calibration_drift",
-                    "message": f"Calibration drift: Test A/E={train_test.test.ae_ratio:.3f} "
-                              f"(outside [0.95, 1.05]). Model may not generalize well."
-                })
-            
-            if train_test.unstable_factors:
-                warnings.append({
-                    "type": "unstable_factors",
-                    "message": f"Unstable factor levels (train/test A/E differ by >0.1): "
-                              f"{', '.join(train_test.unstable_factors[:10])}"
-                              f"{'...' if len(train_test.unstable_factors) > 10 else ''}"
-                })
-                
-        except Exception as e:
-            # Re-raise to surface bugs in prediction/diagnostics code
-            raise RuntimeError(
-                f"Failed to compute test metrics: {str(e)}\n"
-                f"This may indicate a bug in the diagnostics code. "
-                f"If you believe this is expected (e.g., missing columns), "
-                f"catch this exception in your calling code."
-            ) from e
+        # Get test response
+        if response_col not in test_data.columns:
+            raise ValueError(f"Response column '{response_col}' not found in test_data")
+        y_test = test_data[response_col].to_numpy().astype(np.float64)
+        
+        # Get test predictions
+        if not hasattr(result, 'predict'):
+            raise ValueError("Model does not support prediction on new data")
+        mu_test = result.predict(test_data)
+        
+        # Get test exposure
+        exposure_test = np.ones(len(y_test))
+        if exposure_col and exposure_col in test_data.columns:
+            exposure_test = test_data[exposure_col].to_numpy().astype(np.float64)
+        
+        # Compute test diagnostics
+        test_diag = computer.compute_dataset_diagnostics(
+            y_test, mu_test, exposure_test, test_data,
+            categorical_factors, continuous_factors, "test", result
+        )
+        
+        # Compute comparison metrics
+        gini_gap = train_diag.gini - test_diag.gini
+        ae_ratio_diff = abs(train_diag.ae_ratio - test_diag.ae_ratio)
+        
+        # Decile comparison
+        decile_comparison = []
+        for i in range(min(len(train_diag.ae_by_decile), len(test_diag.ae_by_decile))):
+            train_d = train_diag.ae_by_decile[i]
+            test_d = test_diag.ae_by_decile[i]
+            decile_comparison.append({
+                "decile": i + 1,
+                "train_ae": train_d.ae_ratio,
+                "test_ae": test_d.ae_ratio,
+                "ae_diff": round(abs((train_d.ae_ratio or 0) - (test_d.ae_ratio or 0)), 4),
+            })
+        
+        # Factor divergence
+        factor_divergence = {}
+        unstable_factors_list = []
+        for factor in categorical_factors:
+            if factor in train_diag.factor_diagnostics and factor in test_diag.factor_diagnostics:
+                train_levels = {m.level: m for m in train_diag.factor_diagnostics[factor]}
+                test_levels = {m.level: m for m in test_diag.factor_diagnostics[factor]}
+                divergent = []
+                for level in set(train_levels.keys()) | set(test_levels.keys()):
+                    tr_ae = train_levels.get(level, FactorLevelMetrics(level, 0, 0, 0, 0, None, 0)).ae_ratio
+                    te_ae = test_levels.get(level, FactorLevelMetrics(level, 0, 0, 0, 0, None, 0)).ae_ratio
+                    if tr_ae is not None and te_ae is not None:
+                        diff = abs(tr_ae - te_ae)
+                        if diff > 0.1:
+                            divergent.append({"level": level, "train_ae": tr_ae, "test_ae": te_ae, "ae_diff": round(diff, 4)})
+                            unstable_factors_list.append(f"{factor}[{level}]")
+                if divergent:
+                    factor_divergence[factor] = divergent
+        
+        # Flags
+        overfitting_risk = gini_gap > 0.03
+        calibration_drift = test_diag.ae_ratio < 0.95 or test_diag.ae_ratio > 1.05
+        
+        train_test = TrainTestComparison(
+            train=train_diag,
+            test=test_diag,
+            gini_gap=round(gini_gap, 4),
+            ae_ratio_diff=round(ae_ratio_diff, 4),
+            decile_comparison=decile_comparison,
+            factor_divergence=factor_divergence,
+            overfitting_risk=overfitting_risk,
+            calibration_drift=calibration_drift,
+            unstable_factors=unstable_factors_list,
+        )
+        
+        # Add warnings based on flags
+        if overfitting_risk:
+            warnings.append({
+                "type": "overfitting",
+                "message": f"Overfitting detected: Train Gini={train_diag.gini:.3f}, "
+                          f"Test Gini={test_diag.gini:.3f} (gap={gini_gap:.3f}). "
+                          f"Consider reducing model complexity or using regularization."
+            })
+        if calibration_drift:
+            warnings.append({
+                "type": "calibration_drift",
+                "message": f"Calibration drift: Test A/E={test_diag.ae_ratio:.3f} "
+                          f"(outside [0.95, 1.05]). Model may not generalize well."
+            })
+        if unstable_factors_list:
+            warnings.append({
+                "type": "unstable_factors",
+                "message": f"Unstable factor levels (train/test A/E differ by >0.1): "
+                          f"{', '.join(unstable_factors_list[:10])}"
+                          f"{'...' if len(unstable_factors_list) > 10 else ''}"
+            })
     
     # Extract convergence info - require these attributes
     if not hasattr(result, 'converged'):
@@ -3963,25 +3902,37 @@ def compute_diagnostics(
         "iterations": iterations,
     }
     
-    # Token optimization: convergence_details merged into model_summary (ok, iters)
+    # Add regularization info if present (concise for LLM parsing)
+    if hasattr(result, 'alpha') and result.alpha > 0:
+        reg_type = getattr(result, 'regularization_type', None)
+        if reg_type is None:
+            l1 = getattr(result, 'l1_ratio', 0)
+            reg_type = "lasso" if l1 >= 1 else "ridge" if l1 <= 0 else "elastic_net"
+        model_summary["regularization"] = {
+            "type": reg_type,
+            "alpha": round(result.alpha, 6),
+            "l1_ratio": round(getattr(result, 'l1_ratio', 0), 2),
+        }
+        # Add CV info if available
+        if hasattr(result, 'cv_deviance') and result.cv_deviance is not None:
+            model_summary["regularization"]["cv_deviance"] = round(result.cv_deviance, 6)
+            model_summary["regularization"]["cv_folds"] = getattr(result, 'n_cv_folds', None)
+            model_summary["regularization"]["selection"] = getattr(result, 'cv_selection_method', None)
+    
     diagnostics = ModelDiagnostics(
         model_summary=model_summary,
-        fit_statistics=fit_stats,
-        loss_metrics=loss_metrics,
+        train_test=train_test,
         calibration=calibration,
-        discrimination=discrimination,
         residual_summary=residual_summary,
         factors=factors,
         interaction_candidates=interaction_candidates,
         model_comparison=model_comparison,
         warnings=warnings,
-        # NEW: Enhanced diagnostics
         vif=vif_results,
         coefficient_summary=coef_summary,
         factor_deviance=factor_dev,
         lift_chart=lift_chart,
         partial_dependence=partial_dep,
-        train_test=train_test,
     )
     
     # Auto-save JSON to analysis folder

@@ -258,7 +258,6 @@ pub fn fit_glm_coordinate_descent(
             .collect();
         
         // Precompute X'WX (Gram matrix) - PARALLEL with flat Vec for cache locality
-        // Use fold-reduce pattern for thread-safe accumulation
         let xwx: Vec<f64> = (0..n)
             .into_par_iter()
             .fold(
@@ -266,7 +265,6 @@ pub fn fit_glm_coordinate_descent(
                 |mut acc, i| {
                     let w_i = combined_weights[i];
                     let x_i = x.row(i);
-                    // Only compute upper triangle (symmetric matrix)
                     for j in 0..p {
                         let xij_w = x_i[j] * w_i;
                         for k in j..p {
@@ -279,9 +277,7 @@ pub fn fit_glm_coordinate_descent(
             .reduce(
                 || vec![0.0; p * p],
                 |mut a, b| {
-                    for i in 0..a.len() {
-                        a[i] += b[i];
-                    }
+                    for i in 0..a.len() { a[i] += b[i]; }
                     a
                 },
             );
@@ -295,12 +291,25 @@ pub fn fit_glm_coordinate_descent(
         }
         let xwx = xwx_full;
 
+        // Active set: track which coefficients are non-zero for faster iterations
+        let mut active_set: Vec<usize> = (0..p).collect();
+        let mut use_active_set = false;
+        
         while cd_iteration < reg_config.max_cd_iterations {
             cd_iteration += 1;
             let mut max_change = 0.0_f64;
 
+            // Decide which coefficients to update
+            let indices_to_update: &[usize] = if use_active_set && cd_iteration % 5 != 0 {
+                // Use active set (non-zero coefficients + intercept)
+                &active_set
+            } else {
+                // Full pass every 5 iterations or initially
+                &(0..p).collect::<Vec<_>>()
+            };
+
             // Update each coefficient using covariance updates
-            for j in 0..p {
+            for &j in indices_to_update {
                 let old_coef = coefficients[j];
                 
                 // Compute gradient: grad_j = X_j'Wz - Σ_k (X'WX)_{jk}β_k
@@ -330,6 +339,20 @@ pub fn fit_glm_coordinate_descent(
                     coefficients[j] = new_coef;
                 }
                 max_change = max_change.max(delta);
+            }
+
+            // Update active set after first full pass
+            if cd_iteration == 1 || cd_iteration % 5 == 0 {
+                active_set.clear();
+                for j in 0..pen_start {
+                    active_set.push(j); // Always include intercept
+                }
+                for j in pen_start..p {
+                    if coefficients[j].abs() > ZERO_TOL {
+                        active_set.push(j);
+                    }
+                }
+                use_active_set = active_set.len() < p;
             }
 
             // Check convergence

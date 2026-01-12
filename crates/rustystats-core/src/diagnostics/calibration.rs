@@ -279,10 +279,21 @@ pub fn compute_discrimination_stats(
         };
     }
     
-    // Sort by predictions (descending - high risk first for positive Gini)
+    // Sort by predicted RATE (descending - high risk first for positive Gini)
+    // When exposure is provided, rate = mu/exposure; otherwise rate = mu
     let mut indices: Vec<usize> = (0..n).collect();
     indices.sort_by(|&a, &b| {
-        mu[b].partial_cmp(&mu[a]).unwrap_or(Ordering::Equal)
+        let rate_a = if let Some(exp) = exposure {
+            if exp[a] > 0.0 { mu[a] / exp[a] } else { mu[a] }
+        } else {
+            mu[a]
+        };
+        let rate_b = if let Some(exp) = exposure {
+            if exp[b] > 0.0 { mu[b] / exp[b] } else { mu[b] }
+        } else {
+            mu[b]
+        };
+        rate_b.partial_cmp(&rate_a).unwrap_or(Ordering::Equal)
     });
     
     let total_exposure: f64 = exposure.map_or(n as f64, |e| e.sum());
@@ -352,13 +363,14 @@ pub fn compute_discrimination_stats(
         prev_cum_actual_pct = cum_actual_pct;
     }
     
-    // Gini = 1 - 2 * area under Lorenz curve (for sorted ascending by risk)
-    // Since we sorted ascending, low predictions first, Lorenz curve is below diagonal
-    let gini_coefficient = 1.0 - 2.0 * gini_area;
+    // Gini = 2 * area - 1 (for sorted descending by risk)
+    // Since we sorted descending (high predictions first), Lorenz curve is above diagonal
+    // Area under curve > 0.5 for a good model, so Gini = 2 * area - 1
+    let gini_coefficient = 2.0 * gini_area - 1.0;
     let auc = (gini_coefficient + 1.0) / 2.0;
     
-    // Lift = (actual rate in bottom X%) / (overall actual rate)
-    // Since sorted ascending, bottom 10% is lowest predicted risk
+    // Lift = (actual rate in top X%) / (overall actual rate)
+    // Since sorted descending, top 10% is highest predicted risk
     let overall_rate = total_actual / total_exposure;
     let lift_at_10pct = if lift_10_exposure > 0.0 && overall_rate > 0.0 {
         (lift_10_actual / lift_10_exposure) / overall_rate

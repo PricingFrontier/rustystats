@@ -64,11 +64,11 @@ This documentation is organized for maintainers who may be new to Rust and/or GL
 - **Negative Binomial** - Alternative for overdispersed counts
 
 ### Advanced Features
-- **Regularization** - Ridge, Lasso, Elastic Net with cross-validation
-- **Splines** - B-splines and natural splines for non-linear effects
-- **Target Encoding** - Encoding for high-cardinality categoricals
+- **[Regularization](components/regularization.md)** - Ridge, Lasso, Elastic Net with automatic CV-based alpha selection
+- **[Splines](components/splines.md)** - B-splines and natural splines for non-linear effects
+- **[Target Encoding](components/target-encoding.md)** - Encoding for high-cardinality categoricals
 - **Robust Standard Errors** - HC0, HC1, HC2, HC3 sandwich estimators
-- **Model Diagnostics** - Calibration, discrimination, residual analysis
+- **[Model Diagnostics](components/diagnostics.md)** - Calibration, discrimination, residual analysis
 
 ## Installation
 

@@ -28,6 +28,7 @@ import numpy as np
 # Lazy imports for optional dependencies
 if TYPE_CHECKING:
     import polars as pl
+    from rustystats.regularization_path import RegularizationPathInfo
 
 
 def _get_column(data: "pl.DataFrame", column: str) -> np.ndarray:
@@ -436,6 +437,15 @@ class FormulaGLM:
         l1_ratio: float = 0.0,
         max_iter: int = 25,
         tol: float = 1e-8,
+        # Cross-validation based regularization path parameters
+        cv: Optional[int] = None,
+        selection: str = "min",
+        regularization: Optional[str] = None,
+        n_alphas: int = 20,
+        alpha_min_ratio: float = 0.0001,
+        cv_seed: Optional[int] = None,
+        include_unregularized: bool = True,
+        verbose: bool = False,
     ):
         """
         Fit the GLM model, optionally with regularization.
@@ -446,39 +456,139 @@ class FormulaGLM:
             Regularization strength. Higher values = more shrinkage.
             - alpha=0: No regularization (standard GLM)
             - alpha>0: Regularized GLM
+            Ignored if cv is specified.
             
         l1_ratio : float, default=0.0
             Elastic Net mixing parameter:
             - l1_ratio=0.0: Ridge (L2) penalty
             - l1_ratio=1.0: Lasso (L1) penalty - performs variable selection
             - 0 < l1_ratio < 1: Elastic Net
+            Ignored if cv is specified with regularization type.
             
         max_iter : int, default=25
             Maximum IRLS iterations.
         tol : float, default=1e-8
             Convergence tolerance.
             
+        cv : int, optional
+            Number of cross-validation folds for regularization path.
+            If specified, fits a path of alpha values and selects optimal via CV.
+            Requires `regularization` to be set.
+            
+        selection : str, default="min"
+            Selection method for CV-based regularization:
+            - "min": Select alpha with minimum CV deviance
+            - "1se": Select largest alpha within 1 SE of minimum (more conservative)
+            
+        regularization : str, optional
+            Type of regularization for CV path: "ridge", "lasso", or "elastic_net".
+            Required when cv is specified.
+            
+        n_alphas : int, default=20
+            Number of alpha values to try in regularization path.
+            
+        alpha_min_ratio : float, default=0.001
+            Smallest alpha as ratio of alpha_max.
+            
+        cv_seed : int, optional
+            Random seed for CV fold creation.
+            
+        include_unregularized : bool, default=True
+            Include unregularized model (alpha=0) in CV comparison.
+            
+        verbose : bool, default=False
+            Print progress during CV fitting.
+            
         Returns
         -------
         FormulaGLMResults
             Fitted model results with feature names attached.
+            When cv is used, includes additional attributes:
+            - cv_deviance: CV deviance at selected alpha
+            - cv_deviance_se: Standard error of CV deviance
+            - regularization_path: Full path results
             
         Examples
         --------
         >>> # Standard GLM
         >>> result = model.fit()
         
-        >>> # Ridge regularization
+        >>> # Ridge regularization with explicit alpha
         >>> result = model.fit(alpha=0.1, l1_ratio=0.0)
         
         >>> # Lasso for variable selection
         >>> result = model.fit(alpha=0.1, l1_ratio=1.0)
+        
+        >>> # CV-based regularization selection (recommended)
+        >>> result = model.fit(cv=5, regularization="ridge", selection="1se")
+        >>> print(f"Selected alpha: {result.alpha}")
+        >>> print(f"CV deviance: {result.cv_deviance}")
         """
         from rustystats._rustystats import fit_glm_py as _fit_glm_rust, fit_negbinomial_py as _fit_negbinomial_rust
         
         # Check if we need auto theta estimation for negbinomial
         is_negbinomial = self.family in ("negbinomial", "negativebinomial", "negative_binomial", "neg-binomial", "nb")
         auto_theta = is_negbinomial and self.theta is None
+        
+        # Handle CV-based regularization path
+        # If regularization is specified without cv, default to cv=5
+        if regularization is not None and cv is None:
+            cv = 5
+        
+        if cv is not None:
+            if regularization is None:
+                raise ValueError(
+                    "When cv is specified, 'regularization' must be set to 'ridge', 'lasso', or 'elastic_net'"
+                )
+            
+            from rustystats.regularization_path import fit_cv_regularization_path
+            
+            # For negbinomial with auto theta, first estimate theta then do CV
+            if auto_theta:
+                # Quick fit to estimate theta
+                _, result_family = self._fit_negbinomial_profile(
+                    self.X, 0.0, 0.0, max_iter, tol
+                )
+                # Extract theta from family string
+                theta_start = result_family.find("theta=") + 6
+                theta_end = result_family.find(")", theta_start)
+                estimated_theta = float(result_family[theta_start:theta_end])
+                self.theta = estimated_theta  # Store for CV fits
+            
+            # Determine l1_ratio from regularization type
+            if regularization == "ridge":
+                cv_l1_ratio = 0.0
+            elif regularization == "lasso":
+                cv_l1_ratio = 1.0
+            elif regularization == "elastic_net":
+                cv_l1_ratio = l1_ratio if l1_ratio > 0 else 0.5
+            else:
+                raise ValueError(f"Unknown regularization type: {regularization}")
+            
+            # Fit regularization path with CV
+            path_info = fit_cv_regularization_path(
+                glm_instance=self,
+                cv=cv,
+                selection=selection,
+                regularization=regularization,
+                n_alphas=n_alphas,
+                alpha_min_ratio=alpha_min_ratio,
+                l1_ratio=cv_l1_ratio,
+                max_iter=max_iter,
+                tol=tol,
+                seed=cv_seed,
+                include_unregularized=include_unregularized,
+                verbose=verbose,
+            )
+            
+            # Use selected alpha for final fit
+            alpha = path_info.selected_alpha
+            l1_ratio = path_info.selected_l1_ratio
+            
+            if verbose:
+                print(f"\nRefitting on full data with alpha={alpha:.6f}")
+        else:
+            path_info = None
         
         # For negbinomial with auto theta, use Python-side profile likelihood
         # This allows regularization to be applied for numerical stability
@@ -504,7 +614,11 @@ class FormulaGLM:
                     max_iter,
                     tol,
                 )
-                result_family = self.family
+                # Include theta in family string for negbinomial so deviance calculations use correct theta
+                if is_negbinomial:
+                    result_family = f"NegativeBinomial(theta={theta:.4f})"
+                else:
+                    result_family = self.family
         except ValueError as e:
             if "singular" in str(e).lower() or "multicollinearity" in str(e).lower() or "nan" in str(e).lower():
                 # Run validation to provide helpful diagnostics
@@ -532,6 +646,7 @@ class FormulaGLM:
             design_matrix=self.X,  # Pass design matrix for VIF calculation
             offset_spec=self._offset_spec,
             offset_is_exposure=(self.family in ("poisson", "quasipoisson", "negbinomial", "gamma") and self.link in (None, "log")),
+            regularization_path_info=path_info,
         )
 
 
@@ -563,11 +678,13 @@ class FormulaGLMResults:
         design_matrix: Optional[np.ndarray] = None,
         offset_spec: Optional[Union[str, np.ndarray]] = None,
         offset_is_exposure: bool = False,
+        regularization_path_info: Optional["RegularizationPathInfo"] = None,
     ):
         self._result = result
         self.feature_names = feature_names
         self.formula = formula
         self.family = family
+        self._regularization_path_info = regularization_path_info
         self.link = link or self._default_link(family)
         self._builder = builder
         self._design_matrix = design_matrix  # Store for VIF calculation
@@ -806,6 +923,65 @@ class FormulaGLMResults:
         """
         indices = self._result.selected_features()
         return [self.feature_names[i] for i in indices]
+    
+    # CV-based regularization path properties
+    @property
+    def cv_deviance(self) -> Optional[float]:
+        """CV deviance at selected alpha (only available when fit with cv=)."""
+        if self._regularization_path_info is None:
+            return None
+        return self._regularization_path_info.cv_deviance
+    
+    @property
+    def cv_deviance_se(self) -> Optional[float]:
+        """Standard error of CV deviance (only available when fit with cv=)."""
+        if self._regularization_path_info is None:
+            return None
+        return self._regularization_path_info.cv_deviance_se
+    
+    @property
+    def regularization_type(self) -> Optional[str]:
+        """Type of regularization: 'ridge', 'lasso', 'elastic_net', or 'none'."""
+        if self._regularization_path_info is None:
+            # Fall back to penalty_type from underlying result
+            return self.penalty_type
+        return self._regularization_path_info.regularization_type
+    
+    @property
+    def regularization_path(self) -> Optional[List[dict]]:
+        """
+        Full regularization path results (only available when fit with cv=).
+        
+        Returns list of dicts with keys: alpha, l1_ratio, cv_deviance_mean, 
+        cv_deviance_se, n_nonzero, max_coef.
+        """
+        if self._regularization_path_info is None:
+            return None
+        return [
+            {
+                "alpha": r.alpha,
+                "l1_ratio": r.l1_ratio,
+                "cv_deviance_mean": r.cv_deviance_mean,
+                "cv_deviance_se": r.cv_deviance_se,
+                "n_nonzero": r.n_nonzero,
+                "max_coef": r.max_coef,
+            }
+            for r in self._regularization_path_info.path
+        ]
+    
+    @property
+    def cv_selection_method(self) -> Optional[str]:
+        """Selection method used: 'min' or '1se' (only available when fit with cv=)."""
+        if self._regularization_path_info is None:
+            return None
+        return self._regularization_path_info.selection_method
+    
+    @property
+    def n_cv_folds(self) -> Optional[int]:
+        """Number of CV folds used (only available when fit with cv=)."""
+        if self._regularization_path_info is None:
+            return None
+        return self._regularization_path_info.n_folds
     
     @property
     def nobs(self) -> int:

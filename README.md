@@ -185,23 +185,30 @@ result.family              # Family name
 
 ## Regularization
 
+### CV-Based Regularization (Recommended)
+
 ```python
-# Ridge (L2) - shrinks coefficients, keeps all variables
-result = rs.glm("y ~ x1 + x2 + C(cat)", data, family="gaussian").fit(
-    alpha=0.1, l1_ratio=0.0
-)
-
-# Lasso (L1) - variable selection, zeros out weak predictors
+# Just specify regularization type - cv=5 is automatic
 result = rs.glm("y ~ x1 + x2 + C(cat)", data, family="poisson").fit(
-    alpha=0.1, l1_ratio=1.0
+    regularization="ridge"  # "ridge", "lasso", or "elastic_net"
 )
-print(f"Selected {result.n_nonzero()} variables")
-print(f"Features: {result.selected_features()}")
 
-# Elastic Net - mix of L1 and L2
-result = rs.glm("y ~ x1 + x2 + C(cat)", data, family="gaussian").fit(
-    alpha=0.1, l1_ratio=0.5
-)
+print(f"Selected alpha: {result.alpha}")
+print(f"CV deviance: {result.cv_deviance}")
+```
+
+**Options:**
+- `regularization`: `"ridge"` (L2), `"lasso"` (L1), or `"elastic_net"` (mix)
+- `selection`: `"min"` (best fit) or `"1se"` (more conservative, default: `"min"`)
+- `cv`: Number of folds (default: 5)
+
+### Explicit Alpha
+
+```python
+# Skip CV, use specific alpha
+result = rs.glm("y ~ x1 + x2", data).fit(alpha=0.1, l1_ratio=0.0)  # Ridge
+result = rs.glm("y ~ x1 + x2", data).fit(alpha=0.1, l1_ratio=1.0)  # Lasso
+result = rs.glm("y ~ x1 + x2", data).fit(alpha=0.1, l1_ratio=0.5)  # Elastic Net
 ```
 
 ---

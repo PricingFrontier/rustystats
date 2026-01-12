@@ -99,9 +99,10 @@ class TestDiagnosticsComputer:
         assert "mse" in metrics
         assert "mae" in metrics
         assert "rmse" in metrics
-        assert "family_deviance_loss" in metrics
+        assert "loss" in metrics
         assert metrics["mse"] >= 0
         assert metrics["mae"] >= 0
+        assert metrics["loss"] >= 0
     
     def test_calibration(self, sample_data):
         """Test calibration computation."""
@@ -337,8 +338,8 @@ class TestModelDiagnostics:
         )
         
         assert diagnostics.model_summary is not None
-        assert diagnostics.fit_statistics is not None
-        assert diagnostics.loss_metrics is not None
+        assert diagnostics.train_test is not None
+        assert diagnostics.train_test.train.loss > 0
         assert diagnostics.calibration is not None
         assert len(diagnostics.factors) == 2
     
@@ -362,7 +363,7 @@ class TestModelDiagnostics:
         parsed = json.loads(json_str)
         
         assert "model_summary" in parsed
-        assert "fit_statistics" in parsed
+        assert "train_test" in parsed
         assert "factors" in parsed
         assert len(parsed["factors"]) == 2
     
@@ -442,7 +443,7 @@ class TestDifferentFamilies:
             continuous_factors=["x"],
         )
         
-        assert diag.fit_statistics["deviance"] > 0
+        assert diag.train_test.train.deviance > 0
         assert len(diag.factors) == 1
     
     def test_binomial_diagnostics(self, binomial_model):
@@ -457,10 +458,9 @@ class TestDifferentFamilies:
             continuous_factors=["x"],
         )
         
-        assert diag.fit_statistics["deviance"] > 0
-        # Should have discrimination metrics for binomial (compressed field names)
-        assert diag.discrimination is not None
-        assert "gini" in diag.discrimination
+        assert diag.train_test.train.deviance > 0
+        # Should have discrimination metrics in train_test
+        assert diag.train_test.train.gini is not None
 
 
 class TestPreFitExploration:
@@ -802,41 +802,6 @@ class TestEnhancedDiagnostics:
             assert hasattr(pd, 'recommendation')
             assert len(pd.grid_values) > 0
             assert len(pd.predictions) == len(pd.grid_values)
-    
-    def test_train_test_metrics(self, fitted_model_with_data):
-        """Test train vs test metrics computation."""
-        from rustystats.diagnostics import DiagnosticsComputer
-        
-        result, data = fitted_model_with_data
-        
-        y = data["y"].to_numpy().astype(np.float64)
-        mu = result.fittedvalues
-        
-        computer = DiagnosticsComputer(
-            y=y, mu=mu, linear_predictor=result.linear_predictor,
-            family="poisson", n_params=len(result.params), deviance=result.deviance,
-        )
-        
-        # Create fake test data
-        np.random.seed(123)
-        n_test = 100
-        y_test = np.random.poisson(1.0, n_test).astype(np.float64)
-        mu_test = np.random.uniform(0.5, 1.5, n_test)
-        
-        train_test = computer.compute_train_test_metrics(y_test, mu_test)
-        
-        assert "train" in train_test
-        assert "test" in train_test
-        
-        train = train_test["train"]
-        test = train_test["test"]
-        
-        assert train.dataset == "train"
-        assert test.dataset == "test"
-        assert train.n_obs == len(y)
-        assert test.n_obs == n_test
-        assert train.gini is not None
-        assert test.gini is not None
     
     def test_full_diagnostics_with_enhancements(self, fitted_model_with_data):
         """Test full diagnostics includes all new fields."""
