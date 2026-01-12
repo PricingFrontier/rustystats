@@ -15,7 +15,6 @@
 
 use ndarray::Array1;
 use std::collections::HashMap;
-use std::cmp::Ordering;
 
 use super::loss::compute_family_loss;
 
@@ -90,7 +89,7 @@ pub fn compute_continuous_stats(values: &[f64]) -> ContinuousStats {
         };
     }
     
-    valid_values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+    valid_values.sort_by(|a, b| a.total_cmp(b));
     
     let n = valid_values.len();
     let mean: f64 = valid_values.iter().sum::<f64>() / n as f64;
@@ -235,7 +234,7 @@ pub fn compute_ae_continuous(
         .filter(|(_, &v)| !v.is_nan() && !v.is_infinite())
         .map(|(i, &v)| (i, v))
         .collect();
-    sorted_vals.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
+    sorted_vals.sort_by(|a, b| a.1.total_cmp(&b.1));
     
     if sorted_vals.is_empty() {
         return Vec::new();
@@ -320,7 +319,7 @@ pub fn compute_ae_categorical(
             (level, exp)
         })
         .collect();
-    level_exposures.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal));
+    level_exposures.sort_by(|a, b| b.1.total_cmp(&a.1));
     
     // Compute bins, grouping rare levels into "Other"
     let mut bins = Vec::new();
@@ -509,7 +508,7 @@ pub fn compute_residual_pattern_continuous(
     
     // Compute mean residual by bin
     let mut sorted_pairs = valid_pairs.clone();
-    sorted_pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal));
+    sorted_pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
     
     let bin_size = (sorted_pairs.len() + n_bins - 1) / n_bins;
     let mean_residual_by_bin: Vec<f64> = sorted_pairs
@@ -829,7 +828,7 @@ pub fn compute_factor_deviance(
     }
     
     // Sort by deviance (highest first)
-    levels.sort_by(|a, b| b.deviance.partial_cmp(&a.deviance).unwrap_or(Ordering::Equal));
+    levels.sort_by(|a, b| b.deviance.total_cmp(&a.deviance));
     
     FactorDevianceResult {
         factor_name: factor_name.to_string(),

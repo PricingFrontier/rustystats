@@ -31,7 +31,7 @@
 use pyo3::prelude::*;
 use pyo3::exceptions::PyValueError;
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
-use ndarray::{Array1, Array2, s};
+use ndarray::{Array1, Array2};
 use rayon::prelude::*;
 use rayon::iter::IntoParallelIterator;
 
@@ -2568,7 +2568,7 @@ fn compute_fit_statistics_py<'py>(
     let bic_val = bic(llf, n_params, n_obs);
     
     let deviance_explained = if null_dev > 0.0 { 1.0 - deviance / null_dev } else { 0.0 };
-    let dispersion_deviance = if df_resid > 0 { deviance / df_resid as f64 } else { 1.0 };
+    let _dispersion_deviance = if df_resid > 0 { deviance / df_resid as f64 } else { 1.0 };
     let dispersion_pearson = if df_resid > 0 { pchi2 / df_resid as f64 } else { 1.0 };
     
     let dict = pyo3::types::PyDict::new_bound(py);
@@ -2721,9 +2721,9 @@ fn compute_residual_summary_py<'py>(
         resid.iter().map(|x| ((x - mean) / std).powi(4)).sum::<f64>() / n - 3.0
     } else { 0.0 };
     
-    // Percentiles
+    // Percentiles - use total_cmp to handle NaN values properly
     let mut sorted: Vec<f64> = resid.iter().cloned().collect();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    sorted.sort_by(|a, b| a.total_cmp(b));
     
     let percentile = |p: f64| -> f64 {
         let idx = (p / 100.0 * (sorted.len() - 1) as f64).round() as usize;
@@ -2848,11 +2848,12 @@ fn compute_unit_deviance_py<'py>(
 
 /// Result from a single point on the regularization path
 #[derive(Clone)]
+#[allow(dead_code)]
 struct CVPathPoint {
     alpha: f64,
     cv_deviance_mean: f64,
     cv_deviance_se: f64,
-    n_nonzero: usize,
+    n_nonzero: usize,  // Reserved for future use (sparse coefficient tracking)
 }
 
 /// Fit regularization path with parallel cross-validation in Rust.
@@ -2863,14 +2864,15 @@ struct CVPathPoint {
 /// 3. Warm starting is handled efficiently
 #[pyfunction]
 #[pyo3(signature = (y, x, family, link=None, var_power=1.5, theta=1.0, offset=None, weights=None, alphas=None, l1_ratio=0.0, n_folds=5, max_iter=25, tol=1e-8, seed=None))]
+#[allow(unused_variables)]
 fn fit_cv_path_py<'py>(
     py: Python<'py>,
     y: PyReadonlyArray1<f64>,
     x: PyReadonlyArray2<f64>,
     family: &str,
     link: Option<&str>,
-    var_power: f64,
-    theta: f64,
+    var_power: f64,  // Reserved for Tweedie
+    theta: f64,      // Reserved for NegBinomial
     offset: Option<PyReadonlyArray1<f64>>,
     weights: Option<PyReadonlyArray1<f64>>,
     alphas: Option<Vec<f64>>,
@@ -2918,14 +2920,14 @@ fn fit_cv_path_py<'py>(
     };
     
     // Get family for deviance calculation
-    let fam = family_from_name(family)?;
+    let _fam = family_from_name(family)?;  // Validated but deviance computed per-fold
     let default_link = match family.to_lowercase().as_str() {
         "gaussian" | "normal" => "identity",
         "poisson" | "gamma" | "tweedie" | "quasipoisson" => "log",
         "binomial" | "quasibinomial" => "logit",
         _ => "log",
     };
-    let link_fn = link_from_name(link.unwrap_or(default_link))?;
+    let _link_fn = link_from_name(link.unwrap_or(default_link))?;  // Validated
     
     // Results for each alpha
     let mut path_results: Vec<CVPathPoint> = Vec::with_capacity(alpha_vec.len());
@@ -3067,7 +3069,7 @@ fn fit_cv_path_py<'py>(
     // Find best alpha (minimum CV deviance)
     let best_idx = path_results.iter()
         .enumerate()
-        .min_by(|(_, a), (_, b)| a.cv_deviance_mean.partial_cmp(&b.cv_deviance_mean).unwrap())
+        .min_by(|(_, a), (_, b)| a.cv_deviance_mean.total_cmp(&b.cv_deviance_mean))
         .map(|(i, _)| i)
         .unwrap_or(0);
     

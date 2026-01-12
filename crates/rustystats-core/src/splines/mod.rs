@@ -72,7 +72,7 @@ pub fn compute_knots(
     let mut interior_knots = Vec::with_capacity(n_interior);
     if n_interior > 0 {
         let mut sorted_x: Vec<f64> = x.iter().cloned().collect();
-        sorted_x.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        sorted_x.sort_by(|a, b| a.total_cmp(b));
         
         for i in 1..=n_interior {
             let p = (i as f64) / ((n_interior + 1) as f64);
@@ -125,7 +125,7 @@ pub fn compute_knots_natural(
     let mut interior_knots = Vec::with_capacity(n_interior);
     if n_interior > 0 {
         let mut sorted_x: Vec<f64> = x.iter().cloned().collect();
-        sorted_x.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        sorted_x.sort_by(|a, b| a.total_cmp(b));
         
         for i in 1..=n_interior {
             let p = (i as f64) / ((n_interior + 1) as f64);

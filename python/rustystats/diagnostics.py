@@ -503,6 +503,9 @@ class ModelDiagnostics:
     # Partial dependence plots
     partial_dependence: Optional[List[PartialDependence]] = None
     
+    # Overdispersion diagnostics (for count/binomial data)
+    overdispersion: Optional[Dict[str, Any]] = None
+    
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary, handling nested dataclasses."""
         return _to_dict_recursive(self)
@@ -3914,6 +3917,54 @@ def compute_diagnostics(
             model_summary["regularization"]["cv_folds"] = getattr(result, 'n_cv_folds', None)
             model_summary["regularization"]["selection"] = getattr(result, 'cv_selection_method', None)
     
+    # Compute overdispersion (for Poisson/Binomial families)
+    overdispersion_result = None
+    family_lower = family.lower()
+    if any(f in family_lower for f in ["poisson", "binomial", "negativebinomial"]):
+        # Model-based dispersion: Pearson chi-squared / df_resid
+        pearson_chi2 = result.pearson_chi2() if hasattr(result, 'pearson_chi2') else None
+        df_resid = computer.df_resid
+        
+        if pearson_chi2 is not None and df_resid > 0:
+            pearson_dispersion = pearson_chi2 / df_resid
+            
+            # Also compute raw dispersion from data (Var/Mean for counts)
+            mean_count = float(np.mean(y))
+            var_count = float(np.var(y, ddof=1)) if len(y) > 1 else 0.0
+            raw_dispersion = var_count / mean_count if mean_count > 0 else 1.0
+            
+            # Severity based on Pearson dispersion (more reliable)
+            if pearson_dispersion > 5:
+                severity = "severe"
+                recommendation = "Use Negative Binomial or QuasiPoisson"
+            elif pearson_dispersion > 2:
+                severity = "moderate"
+                recommendation = "Consider Negative Binomial or QuasiPoisson"
+            elif pearson_dispersion > 1.5:
+                severity = "mild"
+                recommendation = "Monitor; Poisson may underestimate standard errors"
+            else:
+                severity = "none"
+                recommendation = "Poisson assumption appears reasonable"
+            
+            overdispersion_result = {
+                "pearson_dispersion": round(pearson_dispersion, 4),
+                "pearson_chi2": round(pearson_chi2, 2),
+                "df_resid": df_resid,
+                "raw_dispersion": round(raw_dispersion, 4),
+                "mean_count": round(mean_count, 4),
+                "var_count": round(var_count, 4),
+                "severity": severity,
+                "recommendation": recommendation,
+            }
+            
+            # Add warning if overdispersed
+            if pearson_dispersion > 1.5:
+                warnings.append({
+                    "type": "overdispersion",
+                    "message": f"Overdispersion detected (φ={pearson_dispersion:.2f}). {recommendation}"
+                })
+    
     diagnostics = ModelDiagnostics(
         model_summary=model_summary,
         train_test=train_test,
@@ -3928,6 +3979,7 @@ def compute_diagnostics(
         factor_deviance=factor_dev,
         lift_chart=lift_chart,
         partial_dependence=partial_dep,
+        overdispersion=overdispersion_result,
     )
     
     # Auto-save JSON to analysis folder

@@ -998,6 +998,58 @@ class FormulaGLMResults:
         """Model degrees of freedom."""
         return self._result.df_model
     
+    def compute_loss(
+        self, 
+        data: "pl.DataFrame",
+        response: Optional[str] = None,
+        exposure: Optional[str] = None,
+    ) -> float:
+        """
+        Compute family-appropriate loss (mean deviance) on given data.
+        
+        This method re-predicts on the data to ensure consistent encoding,
+        which is critical for TE() terms that use leave-one-out during fit
+        but full encoding for prediction.
+        
+        Parameters
+        ----------
+        data : pl.DataFrame
+            Data to compute loss on (can be train, test, or holdout).
+        response : str, optional
+            Response column name. Auto-detected from formula if not provided.
+        exposure : str, optional
+            Exposure column name for rate models.
+            
+        Returns
+        -------
+        float
+            Mean deviance (family-appropriate loss metric).
+            
+        Examples
+        --------
+        >>> train_loss = result.compute_loss(train_data)
+        >>> test_loss = result.compute_loss(test_data)
+        >>> assert train_loss < test_loss  # Expected for non-overfitting models
+        """
+        from rustystats._rustystats import compute_loss_metrics_py as _rust_loss_metrics
+        
+        # Get response column from formula
+        if response is None:
+            formula_parts = self.formula.split('~')
+            response = formula_parts[0].strip() if formula_parts else None
+        
+        if response is None or response not in data.columns:
+            raise ValueError(f"Response column '{response}' not found in data")
+        
+        y = data[response].to_numpy().astype(np.float64)
+        
+        # Re-predict to get consistent encoding (critical for TE terms)
+        mu = np.asarray(self.predict(data), dtype=np.float64)
+        
+        # Compute family-appropriate loss
+        loss_metrics = _rust_loss_metrics(y, mu, self.family)
+        return loss_metrics["family_loss"]
+    
     def coef_table(self) -> "pl.DataFrame":
         """
         Return coefficients as a DataFrame with names.

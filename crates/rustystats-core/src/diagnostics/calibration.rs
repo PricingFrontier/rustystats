@@ -17,7 +17,6 @@
 // =============================================================================
 
 use ndarray::Array1;
-use std::cmp::Ordering;
 
 // =============================================================================
 // Calibration Metrics
@@ -90,7 +89,7 @@ pub fn compute_calibration_curve(
     // Sort indices by predicted values
     let mut indices: Vec<usize> = (0..n).collect();
     indices.sort_by(|&a, &b| {
-        mu[a].partial_cmp(&mu[b]).unwrap_or(Ordering::Equal)
+        mu[a].total_cmp(&mu[b])
     });
     
     // Compute quantile boundaries based on exposure (if provided) or count
@@ -293,7 +292,7 @@ pub fn compute_discrimination_stats(
         } else {
             mu[b]
         };
-        rate_b.partial_cmp(&rate_a).unwrap_or(Ordering::Equal)
+        rate_b.total_cmp(&rate_a)
     });
     
     let total_exposure: f64 = exposure.map_or(n as f64, |e| e.sum());
@@ -415,7 +414,7 @@ pub fn compute_lorenz_curve(
     // Sort by predictions (ascending - low risk first)
     let mut indices: Vec<usize> = (0..n).collect();
     indices.sort_by(|&a, &b| {
-        mu[a].partial_cmp(&mu[b]).unwrap_or(Ordering::Equal)
+        mu[a].total_cmp(&mu[b])
     });
     
     let total_exposure: f64 = exposure.map_or(n as f64, |e| e.sum());

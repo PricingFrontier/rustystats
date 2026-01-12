@@ -1268,17 +1268,17 @@ class InteractionBuilder:
             spline_cols, _ = fitted_spline.transform(x)
             columns.append(spline_cols)
         
-        # Add interactions
+        # Add target encoding terms BEFORE interactions (must match build_design_matrix order)
+        for te_term in parsed.target_encoding_terms:
+            te_col = self._encode_target_new(new_data, te_term)
+            columns.append(te_col.reshape(-1, 1))
+        
+        # Add interactions (after TE terms to match build_design_matrix order)
         for interaction in parsed.interactions:
             int_cols = self._build_interaction_new(new_data, interaction, n_new)
             if int_cols.ndim == 1:
                 int_cols = int_cols.reshape(-1, 1)
             columns.append(int_cols)
-        
-        # Add target encoding terms using stored statistics
-        for te_term in parsed.target_encoding_terms:
-            te_col = self._encode_target_new(new_data, te_term)
-            columns.append(te_col.reshape(-1, 1))
         
         # Add identity terms (I() expressions) - same evaluation on new data
         for identity in parsed.identity_terms:

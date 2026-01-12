@@ -19,7 +19,6 @@
 use ndarray::Array1;
 use rayon::prelude::*;
 use std::collections::HashMap;
-use std::cmp::Ordering;
 
 /// Result of interaction detection
 #[derive(Debug, Clone)]
@@ -96,7 +95,7 @@ pub fn detect_interactions(
     
     // Sort by score descending
     factor_scores.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal)
+        b.1.total_cmp(&a.1)
     });
     
     // Step 2: Take top factors above threshold
@@ -133,7 +132,7 @@ pub fn detect_interactions(
     
     // Sort by interaction strength descending
     candidates.sort_by(|a, b| {
-        b.interaction_strength.partial_cmp(&a.interaction_strength).unwrap_or(Ordering::Equal)
+        b.interaction_strength.total_cmp(&a.interaction_strength)
     });
     
     // Return top candidates
@@ -340,7 +339,7 @@ fn discretize_factor(factor: &FactorData, n_bins: usize) -> Vec<usize> {
                 return vec![0; values.len()];
             }
             
-            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+            sorted.sort_by(|a, b| a.total_cmp(b));
             
             let boundaries: Vec<f64> = (1..n_bins)
                 .map(|i| {
