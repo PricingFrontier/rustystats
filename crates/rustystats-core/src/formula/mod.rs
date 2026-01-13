@@ -9,9 +9,10 @@ use std::collections::HashSet;
 #[derive(Debug, Clone, PartialEq)]
 pub struct SplineTerm {
     pub var_name: String,
-    pub spline_type: String,  // "bs" or "ns"
+    pub spline_type: String,  // "bs", "ns", or "ms"
     pub df: usize,
     pub degree: usize,
+    pub increasing: bool,  // For monotonic splines (ms): true = increasing, false = decreasing
 }
 
 /// Parsed target encoding term specification
@@ -27,6 +28,15 @@ pub struct TargetEncodingTermSpec {
 #[derive(Debug, Clone, PartialEq)]
 pub struct IdentityTermSpec {
     pub expression: String,  // The raw expression inside I(), e.g., "x**2" or "x + y"
+}
+
+/// Parsed coefficient constraint term specification
+/// pos(var) - coefficient must be >= 0
+/// neg(var) - coefficient must be <= 0
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConstraintTermSpec {
+    pub var_name: String,     // Variable name or expression inside pos()/neg()
+    pub constraint: String,   // "pos" or "neg"
 }
 
 /// Parsed categorical term specification for C() with optional level selection
@@ -57,6 +67,7 @@ pub struct ParsedFormula {
     pub spline_terms: Vec<SplineTerm>,
     pub target_encoding_terms: Vec<TargetEncodingTermSpec>,
     pub identity_terms: Vec<IdentityTermSpec>,
+    pub constraint_terms: Vec<ConstraintTermSpec>,  // pos()/neg() terms for coefficient constraints
     pub has_intercept: bool,
 }
 
@@ -199,6 +210,39 @@ fn parse_identity_term(term: &str) -> Option<IdentityTermSpec> {
     Some(IdentityTermSpec { expression })
 }
 
+/// Parse a constraint term like "pos(age)" or "neg(risk_score)"
+/// pos() constrains coefficient to be >= 0
+/// neg() constrains coefficient to be <= 0
+fn parse_constraint_term(term: &str) -> Option<ConstraintTermSpec> {
+    let term = term.trim();
+    
+    // Check if starts with pos( or neg(
+    let constraint = if term.starts_with("pos(") {
+        "pos"
+    } else if term.starts_with("neg(") {
+        "neg"
+    } else {
+        return None;
+    };
+    
+    // Find matching parenthesis
+    let start = term.find('(')?;
+    let end = find_matching_paren(term, start)?;
+    if end <= start {
+        return None;
+    }
+    
+    let var_name = term[start + 1..end].trim().to_string();
+    if var_name.is_empty() {
+        return None;
+    }
+    
+    Some(ConstraintTermSpec {
+        var_name,
+        constraint: constraint.to_string(),
+    })
+}
+
 /// Parse a categorical term like "C(region)" or "C(region, level='Paris')"
 /// Returns None if not a C() term, Some with the parsed spec if it is
 fn parse_categorical_term(term: &str) -> Option<CategoricalTermSpec> {
@@ -272,15 +316,17 @@ fn parse_categorical_term(term: &str) -> Option<CategoricalTermSpec> {
     })
 }
 
-/// Parse a spline term like "bs(age, df=5)" or "ns(income, df=4)"
+/// Parse a spline term like "bs(age, df=5)", "ns(income, df=4)", or "ms(age, df=5, increasing=true)"
 fn parse_spline_term(term: &str) -> Option<SplineTerm> {
     let term = term.trim();
     
-    // Check if starts with bs( or ns(
+    // Check if starts with bs(, ns(, or ms(
     let spline_type = if term.starts_with("bs(") {
         "bs"
     } else if term.starts_with("ns(") {
         "ns"
+    } else if term.starts_with("ms(") {
+        "ms"
     } else {
         return None;
     };
@@ -302,6 +348,7 @@ fn parse_spline_term(term: &str) -> Option<SplineTerm> {
     let var_name = parts[0].trim().to_string();
     let mut df = 5usize;
     let mut degree = 3usize;
+    let mut increasing = true;  // Default for monotonic splines
     
     // Parse remaining arguments
     for part in parts.iter().skip(1) {
@@ -320,8 +367,16 @@ fn parse_spline_term(term: &str) -> Option<SplineTerm> {
                         panic!("Invalid degree value '{}' in {}() - expected an integer", value, spline_type)
                     });
                 }
+                "increasing" => {
+                    increasing = match value.to_lowercase().as_str() {
+                        "true" | "1" | "yes" => true,
+                        "false" | "0" | "no" => false,
+                        _ => panic!("Invalid increasing value '{}' in ms() - expected true/false", value)
+                    };
+                }
                 other => {
-                    panic!("Unknown argument '{}' in {}(). Supported: df, degree", other, spline_type)
+                    let supported = if spline_type == "ms" { "df, degree, increasing" } else { "df, degree" };
+                    panic!("Unknown argument '{}' in {}(). Supported: {}", other, spline_type, supported)
                 }
             }
         } else if let Ok(v) = part.parse::<usize>() {
@@ -337,6 +392,7 @@ fn parse_spline_term(term: &str) -> Option<SplineTerm> {
         spline_type: spline_type.to_string(),
         df,
         degree,
+        increasing,
     })
 }
 
@@ -417,7 +473,7 @@ fn check_single_term_function(term: &str) -> Option<String> {
             let func_name = term[..paren_pos].trim();
             
             // Skip supported functions
-            let supported = ["C", "bs", "ns", "TE", "I"];
+            let supported = ["C", "bs", "ns", "ms", "TE", "I", "pos", "neg"];
             if !supported.contains(&func_name) && !func_name.is_empty() {
                 // This looks like an unsupported function call
                 return Some(func_name.to_string());
@@ -503,6 +559,7 @@ pub fn parse_formula(formula: &str) -> Result<ParsedFormula, String> {
     let mut target_encoding_terms = Vec::new();
     let mut identity_terms = Vec::new();
     let mut categorical_terms = Vec::new();
+    let mut constraint_terms = Vec::new();
     
     for term in terms {
         // Check for unsupported function-like terms FIRST before any other processing
@@ -511,9 +568,16 @@ pub fn parse_formula(formula: &str) -> Result<ParsedFormula, String> {
             return Err(format!(
                 "Unsupported function '{}()' in formula term '{}'. \
                 Supported functions are: C() for categorical, bs() for B-splines, \
-                ns() for natural splines, TE() for target encoding.",
+                ns() for natural splines, ms() for monotonic splines, TE() for target encoding, \
+                pos() for non-negative coefficients, neg() for non-positive coefficients.",
                 func_name, term
             ));
+        }
+        
+        // Check for constraint term (pos() or neg())
+        if let Some(constraint) = parse_constraint_term(&term) {
+            constraint_terms.push(constraint);
+            continue;
         }
         
         // Check for identity term (I() for polynomial/transformation expressions)
@@ -616,6 +680,7 @@ pub fn parse_formula(formula: &str) -> Result<ParsedFormula, String> {
         spline_terms,
         target_encoding_terms,
         identity_terms,
+        constraint_terms,
         has_intercept,
     })
 }
@@ -774,5 +839,29 @@ mod tests {
         // Double quotes should also work
         let parsed = parse_formula("y ~ C(Region, level=\"Paris\")").unwrap();
         assert_eq!(parsed.categorical_terms[0].levels, Some(vec!["Paris".to_string()]));
+    }
+
+    #[test]
+    fn test_parse_monotonic_spline() {
+        // Basic ms() term
+        let parsed = parse_formula("y ~ ms(age, df=5)").unwrap();
+        assert_eq!(parsed.spline_terms.len(), 1);
+        assert_eq!(parsed.spline_terms[0].var_name, "age");
+        assert_eq!(parsed.spline_terms[0].spline_type, "ms");
+        assert_eq!(parsed.spline_terms[0].df, 5);
+        assert!(parsed.spline_terms[0].increasing);  // Default is increasing
+        
+        // ms() with increasing=false (decreasing)
+        let parsed = parse_formula("y ~ ms(age, df=5, increasing=false)").unwrap();
+        assert_eq!(parsed.spline_terms.len(), 1);
+        assert_eq!(parsed.spline_terms[0].spline_type, "ms");
+        assert!(!parsed.spline_terms[0].increasing);
+        
+        // Combine ms() with other term types
+        let parsed = parse_formula("y ~ ms(age, df=5) + bs(income, df=4) + C(region)").unwrap();
+        assert_eq!(parsed.spline_terms.len(), 2);
+        assert_eq!(parsed.spline_terms[0].spline_type, "ms");
+        assert_eq!(parsed.spline_terms[1].spline_type, "bs");
+        assert!(parsed.categorical_vars.contains("region"));
     }
 }

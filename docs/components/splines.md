@@ -354,6 +354,125 @@ mod tests {
 }
 ```
 
+## Monotonic Splines (I-Splines)
+
+Monotonic splines constrain the fitted curve to be monotonically increasing or decreasing. This is essential for actuarial applications where business logic dictates monotonic relationships.
+
+### Mathematical Background
+
+I-splines are integrated M-splines (normalized B-splines):
+- Each I-spline basis function \(I_j(x)\) increases from 0 to 1
+- With non-negative coefficients \(\beta_j \geq 0\), any linear combination is monotonically increasing
+- For decreasing functions, use \(1 - I_j(x)\) or set `increasing=False`
+
+Reference: Ramsay, J.O. (1988). *Monotone Regression Splines in Action*. Statistical Science.
+
+### Implementation
+
+```rust
+/// Compute I-spline (monotonic spline) basis matrix
+pub fn is_basis(
+    x: &Array1<f64>,
+    df: usize,
+    degree: usize,
+    boundary_knots: Option<(f64, f64)>,
+    increasing: bool,
+) -> Array2<f64> {
+    // Compute B-spline basis
+    let knots = compute_knots(x, df, degree, boundary_knots);
+    
+    // I-splines are cumulative sums of B-splines
+    // I_j(x) = sum_{i >= j} B_i(x)
+    let bs_values = bspline_all_basis_at_point(x, degree, &knots, n_basis);
+    
+    // Cumulative sum from right to left
+    let mut cumsum = 0.0;
+    for j in (0..n_basis).rev() {
+        cumsum += bs_values[j];
+        result[j] = cumsum.clamp(0.0, 1.0);
+    }
+    
+    // For decreasing: flip values
+    if !increasing {
+        result[j] = 1.0 - result[j];
+    }
+}
+```
+
+### Properties
+
+| Property | I-Spline |
+|----------|----------|
+| Range | [0, 1] |
+| At x_min | 0 (increasing) or 1 (decreasing) |
+| At x_max | 1 (increasing) or 0 (decreasing) |
+| Shape constraint | Monotonic with β ≥ 0 |
+| Use case | Age effects, risk scores |
+
+### Python API
+
+```python
+def ms(x, df=5, degree=3, boundary_knots=None, increasing=True):
+    """
+    Monotonic spline (I-spline) basis matrix.
+    
+    Parameters
+    ----------
+    x : array-like
+        Values at which to evaluate the spline basis
+    df : int, default 5
+        Degrees of freedom (number of basis functions)
+    degree : int, default 3
+        Polynomial degree (3 = cubic)
+    boundary_knots : tuple, optional
+        (min, max) boundary knots
+    increasing : bool, default True
+        If True, basis for increasing function; if False, decreasing
+    
+    Returns
+    -------
+    ndarray
+        Basis matrix of shape (len(x), df). All values in [0, 1].
+    """
+```
+
+### Formula Integration
+
+```python
+# Monotonically increasing effect (e.g., age → risk)
+result = rs.glm(
+    "ClaimNb ~ ms(Age, df=5) + C(Region)",
+    data=data,
+    family="poisson",
+    offset="Exposure"
+).fit()
+
+# Monotonically decreasing effect (e.g., vehicle value with age)
+result = rs.glm(
+    "ClaimAmt ~ ms(VehAge, df=4, increasing=false)",
+    data=data,
+    family="gamma"
+).fit()
+
+# Combine with other spline types
+result = rs.glm(
+    "y ~ ms(age, df=5) + bs(income, df=4) + ns(experience, df=3)",
+    data=data,
+    family="gaussian"
+).fit()
+```
+
+### When to Use Monotonic Splines
+
+| Use Case | Recommendation |
+|----------|---------------|
+| Age → claim frequency | `ms(age, increasing=True)` |
+| Vehicle age → value | `ms(veh_age, increasing=False)` |
+| Credit score → risk | `ms(score, increasing=False)` |
+| Income → spending | Domain-dependent |
+
+**Key advantage**: Monotonic splines prevent implausible "wiggles" in the fitted curve that can occur with unconstrained splines.
+
 ## Performance
 
 | Dataset Size | df | Time (release) |

@@ -44,7 +44,7 @@ Formula Syntax
 --------------
 - Main effects: ``x1``, ``x2``, ``C(cat)`` (categorical)
 - Interactions: ``x1*x2`` (main + interaction), ``x1:x2`` (interaction only)
-- Splines: ``bs(x, df=5)``, ``ns(x, df=4)``
+- Splines: ``bs(x, df=5)``, ``ns(x, df=4)``, ``ms(x, df=5)`` (monotonic)
 - Target encoding: ``TE(brand)`` for high-cardinality categoricals
 
 For Actuaries
@@ -87,7 +87,7 @@ from rustystats.glm import summary, summary_relativities
 from rustystats.formula import glm, FormulaGLM, FormulaGLMResults
 
 # Spline basis functions (for non-linear continuous effects)
-from rustystats.splines import bs, ns, bs_names, ns_names, SplineTerm
+from rustystats.splines import bs, ns, ms, bs_names, ns_names, ms_names, SplineTerm
 
 # Target encoding (CatBoost-style ordered target statistics)
 from rustystats.target_encoding import (
@@ -121,8 +121,10 @@ __all__ = [
     # Spline functions
     "bs",
     "ns",
+    "ms",
     "bs_names",
     "ns_names",
+    "ms_names",
     "SplineTerm",
     # Target encoding (CatBoost-style)
     "target_encode",

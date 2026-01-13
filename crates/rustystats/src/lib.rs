@@ -1196,7 +1196,7 @@ impl PyGLMResults {
 /// >>> # With regularization
 /// >>> result = rs.glm("y ~ x1 + x2", data, family="gaussian").fit(alpha=0.1, l1_ratio=0.5)
 #[pyfunction]
-#[pyo3(signature = (y, x, family, link=None, var_power=1.5, theta=1.0, offset=None, weights=None, alpha=0.0, l1_ratio=0.0, max_iter=25, tol=1e-8))]
+#[pyo3(signature = (y, x, family, link=None, var_power=1.5, theta=1.0, offset=None, weights=None, alpha=0.0, l1_ratio=0.0, max_iter=25, tol=1e-8, nonneg_indices=None, nonpos_indices=None))]
 fn fit_glm_py(
     y: PyReadonlyArray1<f64>,
     x: PyReadonlyArray2<f64>,
@@ -1210,6 +1210,8 @@ fn fit_glm_py(
     l1_ratio: f64,
     max_iter: usize,
     tol: f64,
+    nonneg_indices: Option<Vec<usize>>,
+    nonpos_indices: Option<Vec<usize>>,
 ) -> PyResult<PyGLMResults> {
     // Convert numpy arrays to ndarray
     let y_array: Array1<f64> = y.as_array().to_owned();
@@ -1222,12 +1224,14 @@ fn fit_glm_py(
     let offset_array: Option<Array1<f64>> = offset.map(|o| o.as_array().to_owned());
     let weights_array: Option<Array1<f64>> = weights.map(|w| w.as_array().to_owned());
 
-    // Create IRLS config
+    // Create IRLS config with optional coefficient sign constraints
     let irls_config = IRLSConfig {
         max_iterations: max_iter,
         tolerance: tol,
         min_weight: 1e-10,
         verbose: false,
+        nonneg_indices: nonneg_indices.unwrap_or_default(),
+        nonpos_indices: nonpos_indices.unwrap_or_default(),
     };
 
     // Determine regularization type
@@ -1253,7 +1257,7 @@ fn fit_glm_py(
             if use_coordinate_descent {
                 fit_glm_coordinate_descent(
                     &y_array, &x_array, $fam, $link, &irls_config, &reg_config,
-                    offset_array.as_ref(), weights_array.as_ref()
+                    offset_array.as_ref(), weights_array.as_ref(), None
                 )
             } else if use_regularization {
                 fit_glm_regularized(
@@ -1478,6 +1482,8 @@ fn fit_negbinomial_py(
         tolerance: 1e-4,  // Looser tolerance during theta iteration
         min_weight: 1e-10,
         verbose: false,
+        nonneg_indices: Vec::new(),
+        nonpos_indices: Vec::new(),
     };
     
     // For NegBin, use at least 1e-6 tolerance (statsmodels uses similar)
@@ -1487,6 +1493,8 @@ fn fit_negbinomial_py(
         tolerance: final_tol,
         min_weight: 1e-10,
         verbose: false,
+        nonneg_indices: Vec::new(),
+        nonpos_indices: Vec::new(),
     };
 
     // Get link (default to log for NegativeBinomial)
@@ -1757,6 +1765,81 @@ fn bs_names_py(var_name: &str, df: usize, include_intercept: bool) -> Vec<String
 #[pyo3(signature = (var_name, df, include_intercept=false))]
 fn ns_names_py(var_name: &str, df: usize, include_intercept: bool) -> Vec<String> {
     splines::ns_names(var_name, df, include_intercept)
+}
+
+/// Compute I-spline (monotonic spline) basis matrix.
+///
+/// I-splines are integrated M-splines that provide a basis for monotonic
+/// regression. Each basis function is monotonically increasing from 0 to 1.
+/// With non-negative coefficients, any linear combination produces a
+/// monotonically increasing function.
+///
+/// This is the standard approach for fitting monotonic curves in GLMs,
+/// commonly used in actuarial applications where effects should be
+/// constrained to increase or decrease with the predictor.
+///
+/// Parameters
+/// ----------
+/// x : numpy.ndarray
+///     Data points (1D array of length n)
+/// df : int
+///     Degrees of freedom (number of basis functions)
+/// degree : int, optional
+///     Spline degree. Default 3 (cubic).
+/// boundary_knots : tuple, optional
+///     (min, max) boundary knots. If None, uses data range.
+/// increasing : bool, optional
+///     If True (default), basis for monotonically increasing function.
+///     If False, basis for monotonically decreasing function.
+///
+/// Returns
+/// -------
+/// numpy.ndarray
+///     Basis matrix of shape (n, df). All values are in [0, 1].
+///     Each column is monotonically increasing (or decreasing) in x.
+///
+/// Notes
+/// -----
+/// To fit a monotonic curve:
+/// 1. Compute the I-spline basis: basis = ms(x, df=5)
+/// 2. Fit model with non-negative coefficient constraint
+/// 3. The fitted curve will be monotonic
+///
+/// For actuarial applications, this is useful for:
+/// - Age effects that should increase with age
+/// - Vehicle age effects that should decrease claim frequency
+/// - Any relationship where business logic dictates monotonicity
+///
+/// Examples
+/// --------
+/// >>> import rustystats as rs
+/// >>> import numpy as np
+/// >>> x = np.linspace(0, 10, 100)
+/// >>> basis = rs.ms(x, df=5)  # Monotonically increasing
+/// >>> print(basis.shape)
+/// (100, 5)
+/// >>> print(f"All values in [0, 1]: {basis.min() >= 0 and basis.max() <= 1}")
+/// True
+#[pyfunction]
+#[pyo3(signature = (x, df, degree=3, boundary_knots=None, increasing=true))]
+fn ms_py<'py>(
+    py: Python<'py>,
+    x: PyReadonlyArray1<f64>,
+    df: usize,
+    degree: usize,
+    boundary_knots: Option<(f64, f64)>,
+    increasing: bool,
+) -> PyResult<Bound<'py, PyArray2<f64>>> {
+    let x_array = x.as_array().to_owned();
+    let result = splines::is_basis(&x_array, df, degree, boundary_knots, increasing);
+    Ok(result.into_pyarray_bound(py))
+}
+
+/// Get column names for I-spline (monotonic spline) basis.
+#[pyfunction]
+#[pyo3(signature = (var_name, df, increasing=true))]
+fn ms_names_py(var_name: &str, df: usize, increasing: bool) -> Vec<String> {
+    splines::is_names(var_name, df, increasing)
 }
 
 // =============================================================================
@@ -2082,7 +2165,7 @@ use rustystats_core::formula;
 ///     - main_effects: list[str]
 ///     - interactions: list[dict] with 'factors' and 'categorical_flags'
 ///     - categorical_vars: list[str]
-///     - spline_terms: list[dict] with 'var_name', 'spline_type', 'df', 'degree'
+///     - spline_terms: list[dict] with 'var_name', 'spline_type', 'df', 'degree', 'increasing'
 ///     - target_encoding_terms: list[dict] with 'var_name', 'prior_weight', 'n_permutations'
 ///     - identity_terms: list[dict] with 'expression'
 ///     - has_intercept: bool
@@ -2123,6 +2206,7 @@ fn parse_formula_py(formula_str: &str) -> PyResult<std::collections::HashMap<Str
                 dict.set_item("spline_type", s.spline_type).unwrap();
                 dict.set_item("df", s.df).unwrap();
                 dict.set_item("degree", s.degree).unwrap();
+                dict.set_item("increasing", s.increasing).unwrap();  // For monotonic splines
                 dict.into_py(py)
             })
             .collect();
@@ -2163,6 +2247,18 @@ fn parse_formula_py(formula_str: &str) -> PyResult<std::collections::HashMap<Str
             })
             .collect();
         result.insert("categorical_terms".to_string(), categorical_terms.into_py(py));
+        
+        // Convert constraint terms (pos() / neg())
+        let constraint_terms: Vec<_> = parsed.constraint_terms
+            .into_iter()
+            .map(|c| {
+                let dict = PyDict::new_bound(py);
+                dict.set_item("var_name", c.var_name).unwrap();
+                dict.set_item("constraint", c.constraint).unwrap();
+                dict.into_py(py)
+            })
+            .collect();
+        result.insert("constraint_terms".to_string(), constraint_terms.into_py(py));
         
         Ok(result)
     })
@@ -2917,6 +3013,8 @@ fn fit_cv_path_py<'py>(
         tolerance: tol,
         min_weight: 1e-10,
         verbose: false,
+        nonneg_indices: Vec::new(),
+        nonpos_indices: Vec::new(),
     };
     
     // Get family for deviance calculation
@@ -2929,84 +3027,97 @@ fn fit_cv_path_py<'py>(
     };
     let _link_fn = link_from_name(link.unwrap_or(default_link))?;  // Validated
     
-    // Results for each alpha
-    let mut path_results: Vec<CVPathPoint> = Vec::with_capacity(alpha_vec.len());
+    // =========================================================================
+    // WARM-STARTED CV: Parallelize across folds, sequential alphas with warm start
+    // =========================================================================
+    // For each fold, we process all alphas sequentially using warm starts.
+    // This dramatically reduces computation since coefficients from alpha[i]
+    // initialize alpha[i+1], requiring far fewer iterations to converge.
+    // =========================================================================
     
-    for &alpha in &alpha_vec {
-        let reg_config = if alpha > 0.0 {
-            if l1_ratio >= 1.0 {
-                RegularizationConfig::lasso(alpha)
-            } else if l1_ratio <= 0.0 {
-                RegularizationConfig::ridge(alpha)
-            } else {
-                RegularizationConfig::elastic_net(alpha, l1_ratio)
-            }
-        } else {
-            RegularizationConfig::none()
-        };
+    // Each fold returns a Vec of (alpha, deviance) for all alphas
+    let fold_all_results: Vec<Vec<f64>> = (0..n_folds).into_par_iter().map(|fold| {
+        // Create train/val split for this fold
+        let train_mask: Vec<bool> = fold_assignments.iter().map(|&f| f != fold).collect();
+        let val_mask: Vec<bool> = fold_assignments.iter().map(|&f| f == fold).collect();
         
-        // Fit each fold in parallel using Rayon
-        let fold_results: Vec<f64> = (0..n_folds).into_par_iter().map(|fold| {
-            // Create train/val split for this fold
-            let train_mask: Vec<bool> = fold_assignments.iter().map(|&f| f != fold).collect();
-            let val_mask: Vec<bool> = fold_assignments.iter().map(|&f| f == fold).collect();
-            
-            let n_train = train_mask.iter().filter(|&&b| b).count();
-            let n_val = val_mask.iter().filter(|&&b| b).count();
-            
-            // Extract train data
-            let mut y_train = Array1::zeros(n_train);
-            let mut x_train = Array2::zeros((n_train, p));
-            let mut offset_train: Option<Array1<f64>> = offset_array.as_ref().map(|_| Array1::zeros(n_train));
-            let mut weights_train: Option<Array1<f64>> = weights_array.as_ref().map(|_| Array1::zeros(n_train));
-            
-            let mut y_val = Array1::zeros(n_val);
-            let mut x_val = Array2::zeros((n_val, p));
-            let mut offset_val: Option<Array1<f64>> = offset_array.as_ref().map(|_| Array1::zeros(n_val));
-            
-            let mut train_idx = 0;
-            let mut val_idx = 0;
-            for i in 0..n {
-                if train_mask[i] {
-                    y_train[train_idx] = y_array[i];
-                    x_train.row_mut(train_idx).assign(&x_array.row(i));
-                    if let Some(ref o) = offset_array {
-                        offset_train.as_mut().unwrap()[train_idx] = o[i];
-                    }
-                    if let Some(ref w) = weights_array {
-                        weights_train.as_mut().unwrap()[train_idx] = w[i];
-                    }
-                    train_idx += 1;
-                } else {
-                    y_val[val_idx] = y_array[i];
-                    x_val.row_mut(val_idx).assign(&x_array.row(i));
-                    if let Some(ref o) = offset_array {
-                        offset_val.as_mut().unwrap()[val_idx] = o[i];
-                    }
-                    val_idx += 1;
+        let n_train = train_mask.iter().filter(|&&b| b).count();
+        let n_val = val_mask.iter().filter(|&&b| b).count();
+        
+        // Extract train data (done once per fold)
+        let mut y_train = Array1::zeros(n_train);
+        let mut x_train = Array2::zeros((n_train, p));
+        let mut offset_train: Option<Array1<f64>> = offset_array.as_ref().map(|_| Array1::zeros(n_train));
+        let mut weights_train: Option<Array1<f64>> = weights_array.as_ref().map(|_| Array1::zeros(n_train));
+        
+        let mut y_val = Array1::zeros(n_val);
+        let mut x_val = Array2::zeros((n_val, p));
+        let mut offset_val: Option<Array1<f64>> = offset_array.as_ref().map(|_| Array1::zeros(n_val));
+        
+        let mut train_idx = 0;
+        let mut val_idx = 0;
+        for i in 0..n {
+            if train_mask[i] {
+                y_train[train_idx] = y_array[i];
+                x_train.row_mut(train_idx).assign(&x_array.row(i));
+                if let Some(ref o) = offset_array {
+                    offset_train.as_mut().unwrap()[train_idx] = o[i];
                 }
+                if let Some(ref w) = weights_array {
+                    weights_train.as_mut().unwrap()[train_idx] = w[i];
+                }
+                train_idx += 1;
+            } else {
+                y_val[val_idx] = y_array[i];
+                x_val.row_mut(val_idx).assign(&x_array.row(i));
+                if let Some(ref o) = offset_array {
+                    offset_val.as_mut().unwrap()[val_idx] = o[i];
+                }
+                val_idx += 1;
             }
+        }
+        
+        // Clone family and link for this thread
+        let thread_fam = family_from_name(family).unwrap();
+        let link_name = link.unwrap_or(match family.to_lowercase().as_str() {
+            "gaussian" | "normal" => "identity",
+            "poisson" | "gamma" | "tweedie" | "quasipoisson" => "log",
+            "binomial" | "quasibinomial" => "logit",
+            _ => "log",
+        });
+        let thread_link = link_from_name(link_name).unwrap();
+        
+        // Process all alphas sequentially with warm starting
+        let mut warm_coefficients: Option<Array1<f64>> = None;
+        let mut fold_deviances: Vec<f64> = Vec::with_capacity(alpha_vec.len());
+        
+        for &alpha in &alpha_vec {
+            let reg_config = if alpha > 0.0 {
+                if l1_ratio >= 1.0 {
+                    RegularizationConfig::lasso(alpha)
+                } else if l1_ratio <= 0.0 {
+                    RegularizationConfig::ridge(alpha)
+                } else {
+                    RegularizationConfig::elastic_net(alpha, l1_ratio)
+                }
+            } else {
+                RegularizationConfig::none()
+            };
             
-            // Clone family and link for this thread
-            let thread_fam = family_from_name(family).unwrap();
-            let link_name = link.unwrap_or(match family.to_lowercase().as_str() {
-                "gaussian" | "normal" => "identity",
-                "poisson" | "gamma" | "tweedie" | "quasipoisson" => "log",
-                "binomial" | "quasibinomial" => "logit",
-                _ => "log",
-            });
-            let thread_link = link_from_name(link_name).unwrap();
-            
-            // Fit model on training fold - use coordinate descent for L1 penalty
+            // Fit model with warm start from previous alpha
             let result = if l1_ratio > 0.0 {
                 match fit_glm_coordinate_descent(
                     &y_train, &x_train,
                     thread_fam.as_ref(), thread_link.as_ref(),
                     &irls_config, &reg_config,
-                    offset_train.as_ref(), weights_train.as_ref()
+                    offset_train.as_ref(), weights_train.as_ref(),
+                    warm_coefficients.as_ref()  // Warm start!
                 ) {
                     Ok(r) => r,
-                    Err(_) => return f64::INFINITY,
+                    Err(_) => {
+                        fold_deviances.push(f64::INFINITY);
+                        continue;
+                    }
                 }
             } else {
                 match fit_glm_regularized(
@@ -3016,9 +3127,15 @@ fn fit_cv_path_py<'py>(
                     offset_train.as_ref(), weights_train.as_ref()
                 ) {
                     Ok(r) => r,
-                    Err(_) => return f64::INFINITY,
+                    Err(_) => {
+                        fold_deviances.push(f64::INFINITY);
+                        continue;
+                    }
                 }
             };
+            
+            // Store coefficients for warm start on next alpha
+            warm_coefficients = Some(result.coefficients.clone());
             
             // Compute validation deviance
             let linear_pred: Array1<f64> = x_val.dot(&result.coefficients);
@@ -3031,19 +3148,28 @@ fn fit_cv_path_py<'py>(
             
             // Mean deviance
             let unit_dev = thread_fam.unit_deviance(&y_val, &mu_val);
-            unit_dev.mean().unwrap_or(f64::INFINITY)
-        }).collect();
+            fold_deviances.push(unit_dev.mean().unwrap_or(f64::INFINITY));
+        }
         
-        // Aggregate fold results
-        let valid_results: Vec<f64> = fold_results.iter().filter(|&&x| x.is_finite()).copied().collect();
-        let cv_mean = if valid_results.is_empty() {
+        fold_deviances
+    }).collect();
+    
+    // Aggregate results across folds for each alpha
+    let mut path_results: Vec<CVPathPoint> = Vec::with_capacity(alpha_vec.len());
+    for (alpha_idx, &alpha) in alpha_vec.iter().enumerate() {
+        let fold_devs: Vec<f64> = fold_all_results.iter()
+            .map(|fold_res| fold_res.get(alpha_idx).copied().unwrap_or(f64::INFINITY))
+            .filter(|&x| x.is_finite())
+            .collect();
+        
+        let cv_mean = if fold_devs.is_empty() {
             f64::INFINITY
         } else {
-            valid_results.iter().sum::<f64>() / valid_results.len() as f64
+            fold_devs.iter().sum::<f64>() / fold_devs.len() as f64
         };
-        let cv_se = if valid_results.len() > 1 {
-            let variance = valid_results.iter().map(|&x| (x - cv_mean).powi(2)).sum::<f64>() / (valid_results.len() - 1) as f64;
-            (variance / valid_results.len() as f64).sqrt()
+        let cv_se = if fold_devs.len() > 1 {
+            let variance = fold_devs.iter().map(|&x| (x - cv_mean).powi(2)).sum::<f64>() / (fold_devs.len() - 1) as f64;
+            (variance / fold_devs.len() as f64).sqrt()
         } else {
             0.0
         };
@@ -3142,6 +3268,8 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(bs_knots_py, m)?)?;
     m.add_function(wrap_pyfunction!(bs_names_py, m)?)?;
     m.add_function(wrap_pyfunction!(ns_names_py, m)?)?;
+    m.add_function(wrap_pyfunction!(ms_py, m)?)?;
+    m.add_function(wrap_pyfunction!(ms_names_py, m)?)?;
     
     // Add design matrix functions
     m.add_function(wrap_pyfunction!(encode_categorical_py, m)?)?;

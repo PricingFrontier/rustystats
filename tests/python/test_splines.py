@@ -398,3 +398,234 @@ class TestSplinePerformance:
         basis = rs.bs(x, df=20)
         
         assert basis.shape == (1000, 19)
+
+
+class TestMonotonicSplines:
+    """Tests for monotonic spline (I-spline) basis functions."""
+    
+    def test_ms_basic_shape(self):
+        """Test that monotonic spline basis has correct shape."""
+        import rustystats as rs
+        
+        x = np.linspace(0, 10, 100)
+        basis = rs.ms(x, df=5)
+        
+        # ms with df=5 gives 5 columns (no intercept dropped)
+        assert basis.shape == (100, 5), f"Expected (100, 5), got {basis.shape}"
+    
+    def test_ms_with_different_df(self):
+        """Test monotonic splines with different degrees of freedom."""
+        import rustystats as rs
+        
+        x = np.linspace(0, 10, 50)
+        
+        for df in [3, 5, 7, 10]:
+            basis = rs.ms(x, df=df)
+            assert basis.shape == (50, df), \
+                f"df={df}: expected (50, {df}), got {basis.shape}"
+    
+    def test_ms_range_zero_to_one(self):
+        """Monotonic spline values should be in [0, 1]."""
+        import rustystats as rs
+        
+        x = np.linspace(0, 10, 100)
+        basis = rs.ms(x, df=5)
+        
+        assert np.all(basis >= -1e-10), "I-spline values should be >= 0"
+        assert np.all(basis <= 1.0 + 1e-10), "I-spline values should be <= 1"
+    
+    def test_ms_monotonically_increasing(self):
+        """Each column of increasing I-splines should be monotonically increasing."""
+        import rustystats as rs
+        
+        x = np.linspace(0, 10, 100)
+        basis = rs.ms(x, df=5, increasing=True)
+        
+        for j in range(basis.shape[1]):
+            diffs = np.diff(basis[:, j])
+            assert np.all(diffs >= -1e-10), \
+                f"Column {j} should be monotonically increasing"
+    
+    def test_ms_monotonically_decreasing(self):
+        """Each column of decreasing I-splines should be monotonically decreasing."""
+        import rustystats as rs
+        
+        x = np.linspace(0, 10, 100)
+        basis = rs.ms(x, df=5, increasing=False)
+        
+        for j in range(basis.shape[1]):
+            diffs = np.diff(basis[:, j])
+            assert np.all(diffs <= 1e-10), \
+                f"Column {j} should be monotonically decreasing"
+    
+    def test_ms_boundary_values(self):
+        """At boundaries, I-splines should be 0 at x_min and 1 at x_max."""
+        import rustystats as rs
+        
+        x = np.array([0.0, 5.0, 10.0])
+        basis = rs.ms(x, df=5, boundary_knots=(0.0, 10.0), increasing=True)
+        
+        # At x_min, all values should be 0
+        np.testing.assert_allclose(basis[0, :], 0.0, atol=1e-6,
+            err_msg="At x_min, I-spline values should be 0")
+        
+        # At x_max, all values should be 1
+        np.testing.assert_allclose(basis[2, :], 1.0, atol=1e-6,
+            err_msg="At x_max, I-spline values should be 1")
+    
+    def test_ms_names(self):
+        """Test monotonic spline name generation."""
+        import rustystats as rs
+        
+        names_inc = rs.ms_names("age", df=5, increasing=True)
+        assert len(names_inc) == 5
+        assert all("ms(age" in name for name in names_inc)
+        assert all("+" in name for name in names_inc)  # Increasing indicator
+        
+        names_dec = rs.ms_names("age", df=5, increasing=False)
+        assert len(names_dec) == 5
+        assert all("-" in name for name in names_dec)  # Decreasing indicator
+    
+    def test_ms_spline_term(self):
+        """Test SplineTerm with monotonic splines."""
+        import rustystats as rs
+        
+        term = rs.SplineTerm("age", spline_type="ms", df=5, increasing=True)
+        
+        x = np.linspace(20, 70, 50)
+        basis, names = term.transform(x)
+        
+        assert basis.shape[0] == 50
+        assert basis.shape[1] == 5
+        assert len(names) == basis.shape[1]
+        
+        # Verify monotonicity
+        for j in range(basis.shape[1]):
+            diffs = np.diff(basis[:, j])
+            assert np.all(diffs >= -1e-10)
+    
+    def test_ms_spline_term_decreasing(self):
+        """Test SplineTerm with decreasing monotonic splines."""
+        import rustystats as rs
+        
+        term = rs.SplineTerm("vehicle_age", spline_type="ms", df=4, increasing=False)
+        
+        x = np.linspace(0, 20, 50)
+        basis, names = term.transform(x)
+        
+        # Verify decreasing monotonicity
+        for j in range(basis.shape[1]):
+            diffs = np.diff(basis[:, j])
+            assert np.all(diffs <= 1e-10)
+    
+    def test_ms_spline_term_repr(self):
+        """Test SplineTerm repr for monotonic splines."""
+        import rustystats as rs
+        
+        term_inc = rs.SplineTerm("age", spline_type="ms", df=5, increasing=True)
+        term_dec = rs.SplineTerm("age", spline_type="ms", df=5, increasing=False)
+        
+        assert "ms(age" in repr(term_inc)
+        assert "increasing" in repr(term_inc)
+        assert "decreasing" in repr(term_dec)
+
+
+class TestMonotonicSplineFormula:
+    """Tests for monotonic splines in formula API."""
+    
+    def test_formula_with_ms_basic(self):
+        """Test monotonic splines in formula."""
+        import rustystats as rs
+        import polars as pl
+        
+        np.random.seed(42)
+        n = 100
+        data = pl.DataFrame({
+            "y": np.random.poisson(3, n),
+            "age": np.random.uniform(20, 70, n),
+        })
+        
+        model = rs.glm(
+            "y ~ ms(age, df=5)",
+            data=data,
+            family="poisson",
+        )
+        # Constrained optimization may need more iterations
+        result = model.fit(max_iter=100)
+        
+        # Intercept + 5 monotonic spline terms
+        assert len(result.params) >= 2
+        # Check all ms() coefficients are non-negative (constraint enforced)
+        ms_coefs = [c for n, c in zip(result.feature_names, result.params) if n.startswith("ms(")]
+        assert all(c >= -1e-10 for c in ms_coefs), "Monotonic spline coefficients should be non-negative"
+    
+    def test_formula_with_ms_decreasing(self):
+        """Test decreasing monotonic splines in formula."""
+        import rustystats as rs
+        import polars as pl
+        
+        np.random.seed(42)
+        n = 100
+        data = pl.DataFrame({
+            "y": np.random.poisson(3, n),
+            "vehicle_age": np.random.uniform(0, 20, n),
+        })
+        
+        model = rs.glm(
+            "y ~ ms(vehicle_age, df=4, increasing=false)",
+            data=data,
+            family="poisson",
+        )
+        # Constrained optimization may need more iterations
+        result = model.fit(max_iter=100)
+        
+        # Check all ms() coefficients are non-negative (constraint enforced)
+        ms_coefs = [c for n, c in zip(result.feature_names, result.params) if n.startswith("ms(")]
+        assert all(c >= -1e-10 for c in ms_coefs), "Monotonic spline coefficients should be non-negative"
+    
+    def test_formula_ms_with_other_terms(self):
+        """Test monotonic splines combined with other term types."""
+        import rustystats as rs
+        import polars as pl
+        
+        np.random.seed(42)
+        n = 200
+        data = pl.DataFrame({
+            "y": np.random.poisson(2, n),
+            "age": np.random.uniform(20, 70, n),
+            "income": np.random.uniform(30000, 150000, n),
+            "region": np.random.choice(["A", "B", "C"], n),
+        })
+        
+        model = rs.glm(
+            "y ~ ms(age, df=4) + bs(income, df=3) + C(region)",
+            data=data,
+            family="poisson",
+        )
+        # Constrained optimization may need more iterations
+        result = model.fit(max_iter=100)
+        
+        # Intercept + 4 ms terms + 2 bs terms + 2 region dummies
+        assert len(result.params) >= 5
+        # Check all ms() coefficients are non-negative (constraint enforced)
+        ms_coefs = [c for n, c in zip(result.feature_names, result.params) if n.startswith("ms(")]
+        assert all(c >= -1e-10 for c in ms_coefs), "Monotonic spline coefficients should be non-negative"
+
+
+class TestMonotonicSplinePerformance:
+    """Performance tests for monotonic splines."""
+    
+    def test_ms_large_array(self):
+        """Test monotonic splines with large array."""
+        import rustystats as rs
+        import time
+        
+        x = np.random.uniform(0, 10, 100000)
+        
+        start = time.time()
+        basis = rs.ms(x, df=10)
+        elapsed = time.time() - start
+        
+        assert basis.shape == (100000, 10)
+        # Should complete in reasonable time (< 1 second)
+        assert elapsed < 1.0, f"Monotonic spline computation took {elapsed:.2f}s, expected < 1s"

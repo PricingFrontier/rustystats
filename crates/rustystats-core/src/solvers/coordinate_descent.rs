@@ -66,6 +66,7 @@ use super::irls::{IRLSConfig, IRLSResult};
 /// * `reg_config` - Regularization configuration (must have L1 component)
 /// * `offset` - Optional offset term
 /// * `weights` - Optional prior weights
+/// * `init_coefficients` - Optional initial coefficients for warm starting
 ///
 /// # Returns
 /// * `Ok(IRLSResult)` - Fitted model results
@@ -79,6 +80,7 @@ pub fn fit_glm_coordinate_descent(
     reg_config: &RegularizationConfig,
     offset: Option<&Array1<f64>>,
     weights: Option<&Array1<f64>>,
+    init_coefficients: Option<&Array1<f64>>,
 ) -> Result<IRLSResult> {
     // -------------------------------------------------------------------------
     // Step 0: Validate inputs
@@ -152,12 +154,21 @@ pub fn fit_glm_coordinate_descent(
     // -------------------------------------------------------------------------
     
     // -------------------------------------------------------------------------
-    // Step 2: Initialize coefficients and μ
+    // Step 2: Initialize coefficients and μ (with warm start support)
     // -------------------------------------------------------------------------
-    let mut coefficients = Array1::zeros(p);
+    let mut coefficients = if let Some(init) = init_coefficients {
+        if init.len() == p {
+            init.clone()
+        } else {
+            // Dimension mismatch - fall back to cold start
+            Array1::zeros(p)
+        }
+    } else {
+        Array1::zeros(p)
+    };
     
-    // Initialize intercept to link(mean(y))
-    if has_intercept {
+    // Initialize intercept to link(mean(y)) only if not warm starting
+    if init_coefficients.is_none() && has_intercept {
         let y_mean = y.mean().unwrap_or(1.0);
         let y_mean_clamped = match family.name() {
             "Poisson" | "Gamma" => y_mean.max(0.01),
@@ -167,11 +178,19 @@ pub fn fit_glm_coordinate_descent(
         coefficients[0] = link.link(&Array1::from_elem(1, y_mean_clamped))[0];
     }
 
-    // Initialize μ
-    let mut mu = family.initialize_mu(y);
-    if !family.is_valid_mu(&mu) {
-        mu = initialize_mu_safe(y, family);
-    }
+    // Initialize μ from coefficients if warm starting, otherwise from y
+    let mut mu = if init_coefficients.is_some() {
+        let eta = x.dot(&coefficients) + &offset_vec;
+        let mu_init = link.inverse(&eta);
+        clamp_mu(&mu_init, family)
+    } else {
+        let mu_init = family.initialize_mu(y);
+        if !family.is_valid_mu(&mu_init) {
+            initialize_mu_safe(y, family)
+        } else {
+            mu_init
+        }
+    };
 
     // -------------------------------------------------------------------------
     // Step 3: Initialize linear predictor
@@ -556,7 +575,7 @@ mod tests {
         
         // Strong Lasso penalty
         let reg_config = RegularizationConfig::lasso(5.0);
-        let result = fit_glm_coordinate_descent(&y, &x, &family, &link, &irls_config, &reg_config, None, None).unwrap();
+        let result = fit_glm_coordinate_descent(&y, &x, &family, &link, &irls_config, &reg_config, None, None, None).unwrap();
 
         assert!(result.converged);
         
@@ -593,7 +612,7 @@ mod tests {
         
         // Very small Lasso penalty
         let reg_config = RegularizationConfig::lasso(0.001);
-        let result = fit_glm_coordinate_descent(&y, &x, &family, &link, &irls_config, &reg_config, None, None).unwrap();
+        let result = fit_glm_coordinate_descent(&y, &x, &family, &link, &irls_config, &reg_config, None, None, None).unwrap();
 
         // With Gaussian + identity link, should converge quickly or reach good solution
         // Coefficients should be close to OLS (intercept ~2, slope ~3)
@@ -625,7 +644,7 @@ mod tests {
         
         // Elastic Net: 50% L1, 50% L2
         let reg_config = RegularizationConfig::elastic_net(1.0, 0.5);
-        let result = fit_glm_coordinate_descent(&y, &x, &family, &link, &irls_config, &reg_config, None, None).unwrap();
+        let result = fit_glm_coordinate_descent(&y, &x, &family, &link, &irls_config, &reg_config, None, None, None).unwrap();
 
         // Should produce reasonable fitted values even if not converged
         assert!(result.fitted_values.iter().all(|&x| x.is_finite()));
@@ -656,7 +675,7 @@ mod tests {
         let irls_config = IRLSConfig::default();
         
         let reg_config = RegularizationConfig::lasso(0.1);
-        let result = fit_glm_coordinate_descent(&y, &x, &family, &link, &irls_config, &reg_config, None, None).unwrap();
+        let result = fit_glm_coordinate_descent(&y, &x, &family, &link, &irls_config, &reg_config, None, None, None).unwrap();
 
         assert!(result.converged);
         assert!(result.fitted_values.iter().all(|&x| x > 0.0));
@@ -684,7 +703,7 @@ mod tests {
         
         // Very strong Lasso penalty
         let reg_config = RegularizationConfig::lasso(100.0);
-        let result = fit_glm_coordinate_descent(&y, &x, &family, &link, &irls_config, &reg_config, None, None).unwrap();
+        let result = fit_glm_coordinate_descent(&y, &x, &family, &link, &irls_config, &reg_config, None, None, None).unwrap();
 
         assert!(result.converged);
         

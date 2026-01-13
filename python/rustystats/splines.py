@@ -1,14 +1,15 @@
 """
 Spline basis functions for non-linear continuous effects in GLMs.
 
-This module provides B-splines and natural splines, which are essential
-for modeling non-linear relationships between continuous predictors
-and the response variable.
+This module provides B-splines, natural splines, and monotonic splines (I-splines),
+which are essential for modeling non-linear relationships between continuous 
+predictors and the response variable.
 
 Key Functions
 -------------
 - `bs()` - B-spline basis (flexible piecewise polynomials)
 - `ns()` - Natural spline basis (linear extrapolation at boundaries)
+- `ms()` - Monotonic spline basis (I-splines, constrained to be monotonic)
 
 Example
 -------
@@ -63,6 +64,8 @@ from rustystats._rustystats import (
     bs_knots_py as _bs_knots_rust,
     bs_names_py as _bs_names_rust,
     ns_names_py as _ns_names_rust,
+    ms_py as _ms_rust,
+    ms_names_py as _ms_names_rust,
 )
 
 
@@ -290,6 +293,133 @@ def ns_names(
     return _ns_names_rust(var_name, df, include_intercept)
 
 
+def ms(
+    x: np.ndarray,
+    df: int = 5,
+    degree: int = 3,
+    boundary_knots: Optional[Tuple[float, float]] = None,
+    increasing: bool = True,
+) -> np.ndarray:
+    """
+    Compute monotonic spline (I-spline) basis matrix.
+    
+    I-splines are integrated M-splines that provide a basis for monotonic
+    regression. Each basis function is monotonically increasing from 0 to 1.
+    With non-negative coefficients, any linear combination produces a
+    monotonically increasing function.
+    
+    This is the standard approach for fitting monotonic curves in GLMs,
+    commonly used in actuarial applications where effects should be
+    constrained to increase or decrease with the predictor.
+    
+    Parameters
+    ----------
+    x : array-like
+        Data points to evaluate the basis at. Will be converted to 1D numpy array.
+    df : int, default=5
+        Degrees of freedom, i.e., number of basis functions to generate.
+        Higher df = more flexible fit within the monotonicity constraint.
+    degree : int, default=3
+        Polynomial degree of the underlying splines (3 = cubic).
+    boundary_knots : tuple, optional
+        (min, max) defining the boundary of the spline basis.
+        If not provided, uses the range of x.
+    increasing : bool, default=True
+        If True, basis for monotonically increasing function.
+        If False, basis for monotonically decreasing function.
+    
+    Returns
+    -------
+    numpy.ndarray
+        Basis matrix of shape (n, df). All values are in [0, 1].
+        Each column is monotonically increasing (or decreasing) in x.
+    
+    Notes
+    -----
+    **How monotonic splines work:**
+    
+    I-splines have the property that:
+    - Each basis function I_j(x) increases from 0 to 1 as x increases
+    - If all coefficients β_j >= 0, then f(x) = Σ β_j I_j(x) is monotonically increasing
+    - The constraint β_j >= 0 is enforced during model fitting
+    
+    **When to use monotonic splines:**
+    
+    - When business logic dictates a monotonic relationship
+    - Age effects in insurance (older → higher risk)
+    - Vehicle age effects (older → different risk profile)
+    - Any domain where non-monotonic fits would be implausible
+    
+    **Comparison with other splines:**
+    
+    - B-splines (bs): Flexible, no shape constraints
+    - Natural splines (ns): Linear extrapolation, no shape constraints  
+    - Monotonic splines (ms): Constrained to be monotonic
+    
+    Examples
+    --------
+    >>> import rustystats as rs
+    >>> import numpy as np
+    >>> 
+    >>> # Create monotonically increasing basis
+    >>> x = np.linspace(0, 10, 100)
+    >>> basis = rs.ms(x, df=5)
+    >>> print(basis.shape)
+    (100, 5)
+    >>> 
+    >>> # All values should be in [0, 1]
+    >>> print(f"Range: [{basis.min():.3f}, {basis.max():.3f}]")
+    Range: [0.000, 1.000]
+    >>> 
+    >>> # Each column is monotonically increasing
+    >>> for j in range(basis.shape[1]):
+    ...     assert np.all(np.diff(basis[:, j]) >= -1e-10)
+    >>> 
+    >>> # For decreasing relationship (e.g., vehicle value with age)
+    >>> basis_dec = rs.ms(x, df=5, increasing=False)
+    
+    See Also
+    --------
+    bs : B-spline basis (unconstrained)
+    ns : Natural spline basis (linear at boundaries)
+    """
+    # Convert to numpy array
+    x = np.asarray(x, dtype=np.float64).ravel()
+    
+    return _ms_rust(x, df, degree, boundary_knots, increasing)
+
+
+def ms_names(
+    var_name: str,
+    df: int,
+    increasing: bool = True,
+) -> List[str]:
+    """
+    Generate column names for monotonic spline basis functions.
+    
+    Parameters
+    ----------
+    var_name : str
+        Name of the original variable (e.g., "age")
+    df : int
+        Degrees of freedom used
+    increasing : bool, default=True
+        Whether the spline is increasing or decreasing
+    
+    Returns
+    -------
+    list of str
+        Names like ['ms(age, 1/5, +)', 'ms(age, 2/5, +)', ...]
+        The '+' or '-' indicates direction.
+    
+    Example
+    -------
+    >>> rs.ms_names("age", df=5)
+    ['ms(age, 1/5, +)', 'ms(age, 2/5, +)', 'ms(age, 3/5, +)', 'ms(age, 4/5, +)', 'ms(age, 5/5, +)']
+    """
+    return _ms_names_rust(var_name, df, increasing)
+
+
 class SplineTerm:
     """
     Represents a spline term for use in formula parsing.
@@ -302,13 +432,15 @@ class SplineTerm:
     var_name : str
         Name of the variable to transform
     spline_type : str
-        Either 'bs' or 'ns'
+        'bs' (B-spline), 'ns' (natural), or 'ms' (monotonic)
     df : int
         Degrees of freedom
     degree : int
-        Polynomial degree (for B-splines)
+        Polynomial degree (for B-splines and monotonic splines)
     boundary_knots : tuple or None
         Boundary knot positions
+    increasing : bool
+        For monotonic splines, whether increasing (True) or decreasing (False)
     """
     
     def __init__(
@@ -318,15 +450,20 @@ class SplineTerm:
         df: int = 5,
         degree: int = 3,
         boundary_knots: Optional[Tuple[float, float]] = None,
+        increasing: bool = True,
     ):
         self.var_name = var_name
         self.spline_type = spline_type.lower()
         self.df = df
         self.degree = degree
         self.boundary_knots = boundary_knots
+        self.increasing = increasing
+        # Computed during transform - stores knot information
+        self._computed_boundary_knots: Optional[Tuple[float, float]] = None
+        self._computed_internal_knots: Optional[List[float]] = None
         
-        if self.spline_type not in ("bs", "ns"):
-            raise ValueError(f"spline_type must be 'bs' or 'ns', got '{spline_type}'")
+        if self.spline_type not in ("bs", "ns", "ms"):
+            raise ValueError(f"spline_type must be 'bs', 'ns', or 'ms', got '{spline_type}'")
     
     def transform(self, x: np.ndarray) -> Tuple[np.ndarray, List[str]]:
         """
@@ -344,14 +481,38 @@ class SplineTerm:
         names : list of str
             Column names for the basis
         """
+        # Compute boundary knots if not provided
+        x_arr = np.asarray(x).ravel()
+        if self.boundary_knots is not None:
+            self._computed_boundary_knots = self.boundary_knots
+        else:
+            self._computed_boundary_knots = (float(np.min(x_arr)), float(np.max(x_arr)))
+        
+        # Compute internal knots based on quantiles
+        # Number of internal knots = df - degree - 1 (for bs) or df - 1 (for ns/ms)
+        if self.spline_type == "bs":
+            n_internal = max(0, self.df - self.degree - 1)
+        else:  # ns, ms
+            n_internal = max(0, self.df - 1)
+        
+        if n_internal > 0:
+            quantiles = np.linspace(0, 1, n_internal + 2)[1:-1]
+            self._computed_internal_knots = [float(np.quantile(x_arr, q)) for q in quantiles]
+        else:
+            self._computed_internal_knots = []
+        
         if self.spline_type == "bs":
             basis = bs(x, df=self.df, degree=self.degree, 
                       boundary_knots=self.boundary_knots, include_intercept=False)
             names = bs_names(self.var_name, self.df, include_intercept=False)
-        else:
+        elif self.spline_type == "ns":
             basis = ns(x, df=self.df, boundary_knots=self.boundary_knots,
                       include_intercept=False)
             names = ns_names(self.var_name, self.df, include_intercept=False)
+        else:  # ms (monotonic spline)
+            basis = ms(x, df=self.df, degree=self.degree,
+                      boundary_knots=self.boundary_knots, increasing=self.increasing)
+            names = ms_names(self.var_name, self.df, increasing=self.increasing)
         
         # Ensure names match columns
         if len(names) != basis.shape[1]:
@@ -360,8 +521,34 @@ class SplineTerm:
         
         return basis, names
     
+    def get_knot_info(self) -> dict:
+        """
+        Get knot information after transform has been called.
+        
+        Returns
+        -------
+        dict
+            Dictionary with spline type, df, internal knots, and boundary knots
+        """
+        info = {
+            "type": self.spline_type,
+            "df": self.df,
+        }
+        if self.spline_type in ("bs", "ms"):
+            info["degree"] = self.degree
+        if self.spline_type == "ms":
+            info["increasing"] = self.increasing
+        if self._computed_internal_knots is not None:
+            info["knots"] = self._computed_internal_knots
+        if self._computed_boundary_knots is not None:
+            info["boundary_knots"] = list(self._computed_boundary_knots)
+        return info
+    
     def __repr__(self) -> str:
         if self.spline_type == "bs":
             return f"bs({self.var_name}, df={self.df}, degree={self.degree})"
-        else:
+        elif self.spline_type == "ns":
             return f"ns({self.var_name}, df={self.df})"
+        else:  # ms
+            direction = "increasing" if self.increasing else "decreasing"
+            return f"ms({self.var_name}, df={self.df}, {direction})"

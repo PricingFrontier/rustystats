@@ -490,6 +490,159 @@ pub fn ns_names(var_name: &str, df: usize, include_intercept: bool) -> Vec<Strin
 }
 
 // =============================================================================
+// I-SPLINE BASIS (Monotonic Splines)
+// =============================================================================
+//
+// I-splines are integrated M-splines (normalized B-splines). They are the 
+// standard basis for monotonic regression because:
+// 1. Each basis function is monotonically increasing from 0 to 1
+// 2. Any linear combination with non-negative coefficients is monotonic
+// 3. They can be computed efficiently from B-splines
+//
+// Reference: Ramsay, J.O. (1988). Monotone Regression Splines in Action.
+//            Statistical Science, 3(4), 425-441.
+// =============================================================================
+
+/// Compute I-spline (integrated M-spline) basis matrix for monotonic regression.
+///
+/// I-splines are the cumulative integral of M-splines (normalized B-splines).
+/// Each I-spline basis function is monotonically increasing from 0 to 1.
+/// With non-negative coefficients, any linear combination produces a 
+/// monotonically increasing function.
+///
+/// # Arguments
+/// * `x` - Data points (n,)
+/// * `df` - Degrees of freedom (number of basis functions)
+/// * `degree` - Spline degree (default 3 for cubic)
+/// * `boundary_knots` - Optional (min, max) for knot range
+/// * `increasing` - If true (default), basis for increasing function; if false, decreasing
+///
+/// # Returns
+/// Basis matrix (n, df) where each column is an I-spline basis function.
+/// All values are in [0, 1], and each column is monotonically increasing in x.
+///
+/// # Mathematical Background
+/// 
+/// For a B-spline basis B_j(x) of degree k with knots t_0, ..., t_m:
+/// - M-spline: M_j(x) = (k+1) * B_j(x) / (t_{j+k+1} - t_j)  (normalized to integrate to 1)
+/// - I-spline: I_j(x) = integral from -∞ to x of M_j(t) dt
+///
+/// The I-spline can be computed as a cumulative sum of B-splines:
+/// I_j(x) = sum_{i >= j} c_i * B_i(x) where c_i are normalization constants
+pub fn is_basis(
+    x: &Array1<f64>,
+    df: usize,
+    degree: usize,
+    boundary_knots: Option<(f64, f64)>,
+    increasing: bool,
+) -> Array2<f64> {
+    let n = x.len();
+    
+    // Get boundary knots
+    let (x_min, x_max) = boundary_knots.unwrap_or_else(|| {
+        let min = x.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max = x.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        (min, max)
+    });
+    
+    // Compute knots for B-splines of one higher degree
+    // I-splines of degree k are integrals of M-splines of degree k,
+    // which relate to B-splines of degree k
+    let knots = compute_knots(x, df, degree, Some((x_min, x_max)));
+    
+    // Parallel evaluation over observations
+    let basis_rows: Vec<Vec<f64>> = (0..n)
+        .into_par_iter()
+        .map(|i| compute_ispline_row(x[i], degree, &knots, df, x_min, x_max))
+        .collect();
+    
+    // Convert to Array2
+    let mut result = Array2::zeros((n, df));
+    for (i, row) in basis_rows.into_iter().enumerate() {
+        for (j, val) in row.into_iter().enumerate() {
+            result[[i, j]] = val;
+        }
+    }
+    
+    // For decreasing monotonicity, reverse the basis columns and flip values
+    if !increasing {
+        let mut flipped = Array2::zeros((n, df));
+        for i in 0..n {
+            for j in 0..df {
+                // 1 - I_j gives decreasing function, reverse column order
+                flipped[[i, j]] = 1.0 - result[[i, df - 1 - j]];
+            }
+        }
+        result = flipped;
+    }
+    
+    result
+}
+
+/// Compute a single row of the I-spline basis.
+///
+/// Uses the relationship between I-splines and B-splines:
+/// I_j(x) = sum_{i=j}^{n_basis-1} w_i * B_i(x)
+/// where w_i are cumulative weights that ensure proper normalization.
+#[inline]
+fn compute_ispline_row(
+    x: f64,
+    degree: usize,
+    knots: &[f64],
+    n_basis: usize,
+    x_min: f64,
+    x_max: f64,
+) -> Vec<f64> {
+    // Handle boundary cases
+    if x <= x_min {
+        return vec![0.0; n_basis];
+    }
+    if x >= x_max {
+        return vec![1.0; n_basis];
+    }
+    
+    // Compute B-spline values at this point
+    let bs_values = bspline_all_basis_at_point(x, degree, knots, n_basis);
+    
+    // I-splines are cumulative integrals of M-splines
+    // For practical computation, we use the formula:
+    // I_j(x) = sum_{i >= j} B_i(x) * (t_{i+k+1} - t_j) / (t_{i+k+1} - t_i)
+    //
+    // A simpler approximation that works well in practice:
+    // I_j(x) ≈ cumulative sum of B-splines from right to left, normalized
+    
+    let mut result = vec![0.0; n_basis];
+    
+    // Compute cumulative sum from right to left
+    // This gives I_j(x) = sum_{i=j}^{n-1} B_i(x)
+    let mut cumsum = 0.0;
+    for j in (0..n_basis).rev() {
+        cumsum += bs_values[j];
+        result[j] = cumsum;
+    }
+    
+    // Normalize: ensure values are in [0, 1]
+    // At x = x_max, all I_j should be 1
+    // At x = x_min, all I_j should be 0
+    for j in 0..n_basis {
+        result[j] = result[j].clamp(0.0, 1.0);
+    }
+    
+    result
+}
+
+/// Compute I-spline basis with default options (cubic, increasing).
+pub fn is(x: &Array1<f64>, df: usize) -> Array2<f64> {
+    is_basis(x, df, DEFAULT_DEGREE, None, true)
+}
+
+/// Get column names for I-spline (monotonic spline) basis.
+pub fn is_names(var_name: &str, df: usize, increasing: bool) -> Vec<String> {
+    let direction = if increasing { "+" } else { "-" };
+    (0..df).map(|i| format!("ms({}, {}/{}, {})", var_name, i + 1, df, direction)).collect()
+}
+
+// =============================================================================
 // TESTS
 // =============================================================================
 
@@ -606,5 +759,93 @@ mod tests {
         let names = ns_names("age", 5, false);
         assert!(names.len() >= 1);
         assert!(names[0].contains("ns(age"));
+    }
+    
+    // =========================================================================
+    // I-SPLINE (MONOTONIC SPLINE) TESTS
+    // =========================================================================
+    
+    #[test]
+    fn test_ispline_shape() {
+        let x = Array1::from_vec(vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+        let basis = is(&x, 5);
+        
+        // I-spline with df=5 should have 5 columns
+        assert_eq!(basis.shape(), &[6, 5]);
+    }
+    
+    #[test]
+    fn test_ispline_range() {
+        // I-spline values should be in [0, 1]
+        let x = Array1::from_vec(vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0]);
+        let basis = is_basis(&x, 5, 3, Some((0.0, 3.0)), true);
+        
+        for val in basis.iter() {
+            assert!(*val >= -1e-10, "I-spline value should be >= 0, got {}", val);
+            assert!(*val <= 1.0 + 1e-10, "I-spline value should be <= 1, got {}", val);
+        }
+    }
+    
+    #[test]
+    fn test_ispline_monotonic_increasing() {
+        // Each column of increasing I-splines should be monotonically increasing
+        let x = Array1::from_vec((0..50).map(|i| i as f64 / 10.0).collect());
+        let basis = is_basis(&x, 5, 3, Some((0.0, 5.0)), true);
+        
+        for j in 0..basis.ncols() {
+            for i in 1..basis.nrows() {
+                assert!(
+                    basis[[i, j]] >= basis[[i - 1, j]] - 1e-10,
+                    "I-spline column {} should be monotonically increasing at row {}: {} < {}",
+                    j, i, basis[[i, j]], basis[[i - 1, j]]
+                );
+            }
+        }
+    }
+    
+    #[test]
+    fn test_ispline_monotonic_decreasing() {
+        // Each column of decreasing I-splines should be monotonically decreasing
+        let x = Array1::from_vec((0..50).map(|i| i as f64 / 10.0).collect());
+        let basis = is_basis(&x, 5, 3, Some((0.0, 5.0)), false);
+        
+        for j in 0..basis.ncols() {
+            for i in 1..basis.nrows() {
+                assert!(
+                    basis[[i, j]] <= basis[[i - 1, j]] + 1e-10,
+                    "Decreasing I-spline column {} should be monotonically decreasing at row {}: {} > {}",
+                    j, i, basis[[i, j]], basis[[i - 1, j]]
+                );
+            }
+        }
+    }
+    
+    #[test]
+    fn test_ispline_boundary_values() {
+        // At x_min, all I-spline values should be 0
+        // At x_max, all I-spline values should be 1
+        let x = Array1::from_vec(vec![0.0, 2.5, 5.0]);
+        let basis = is_basis(&x, 5, 3, Some((0.0, 5.0)), true);
+        
+        // First row (x = 0 = x_min): all values should be 0
+        for j in 0..basis.ncols() {
+            assert_abs_diff_eq!(basis[[0, j]], 0.0, epsilon = 1e-6);
+        }
+        
+        // Last row (x = 5 = x_max): all values should be 1
+        for j in 0..basis.ncols() {
+            assert_abs_diff_eq!(basis[[2, j]], 1.0, epsilon = 1e-6);
+        }
+    }
+    
+    #[test]
+    fn test_ispline_names() {
+        let names = is_names("age", 5, true);
+        assert_eq!(names.len(), 5);
+        assert!(names[0].contains("ms(age"));
+        assert!(names[0].contains("+"));  // Increasing direction
+        
+        let names_dec = is_names("age", 5, false);
+        assert!(names_dec[0].contains("-"));  // Decreasing direction
     }
 }

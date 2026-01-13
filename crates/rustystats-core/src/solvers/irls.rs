@@ -87,6 +87,18 @@ pub struct IRLSConfig {
     /// Whether to print iteration progress.
     /// Default: false
     pub verbose: bool,
+    
+    /// Coefficient indices that must be non-negative (β ≥ 0).
+    /// After each WLS step, these coefficients are projected to max(0, β).
+    /// Used for: monotonic splines (ms), pos() terms.
+    /// Default: empty (no constraints)
+    pub nonneg_indices: Vec<usize>,
+    
+    /// Coefficient indices that must be non-positive (β ≤ 0).
+    /// After each WLS step, these coefficients are projected to min(0, β).
+    /// Used for: neg() terms.
+    /// Default: empty (no constraints)
+    pub nonpos_indices: Vec<usize>,
 }
 
 impl Default for IRLSConfig {
@@ -96,6 +108,8 @@ impl Default for IRLSConfig {
             tolerance: CONVERGENCE_TOL,
             min_weight: MIN_IRLS_WEIGHT,
             verbose: false,
+            nonneg_indices: Vec::new(),
+            nonpos_indices: Vec::new(),
         }
     }
 }
@@ -393,7 +407,7 @@ pub fn fit_glm_full(
         // This is the core linear algebra step.
         // We're finding β that minimizes: Σ w_i (z_i - x_i'β)²
         // ---------------------------------------------------------------------
-        let (new_coefficients, xtwinv) =
+        let (mut new_coefficients, xtwinv) =
             solve_weighted_least_squares(x, &working_response, &combined_weights)?;
 
         // Check for NaN in coefficients - indicates numerical instability
@@ -405,6 +419,22 @@ pub fn fit_glm_full(
                  (3) separation in binary response data. \
                  Try standardizing continuous predictors or removing correlated terms.".to_string()
             ));
+        }
+        
+        // ---------------------------------------------------------------------
+        // Step 4c.1: Apply coefficient sign constraints
+        // ---------------------------------------------------------------------
+        // Project non-negative constrained coefficients to be >= 0 (for ms(), pos())
+        for &idx in &config.nonneg_indices {
+            if idx < new_coefficients.len() && new_coefficients[idx] < 0.0 {
+                new_coefficients[idx] = 0.0;
+            }
+        }
+        // Project non-positive constrained coefficients to be <= 0 (for neg())
+        for &idx in &config.nonpos_indices {
+            if idx < new_coefficients.len() && new_coefficients[idx] > 0.0 {
+                new_coefficients[idx] = 0.0;
+            }
         }
 
         // ---------------------------------------------------------------------
@@ -515,6 +545,19 @@ pub fn fit_glm_full(
             iter_coefficients
         }
     };
+    
+    // Apply coefficient sign constraints to final coefficients
+    let mut final_coefficients = final_coefficients;
+    for &idx in &config.nonneg_indices {
+        if idx < final_coefficients.len() && final_coefficients[idx] < 0.0 {
+            final_coefficients[idx] = 0.0;
+        }
+    }
+    for &idx in &config.nonpos_indices {
+        if idx < final_coefficients.len() && final_coefficients[idx] > 0.0 {
+            final_coefficients[idx] = 0.0;
+        }
+    }
 
     Ok(IRLSResult {
         coefficients: final_coefficients,
@@ -893,7 +936,7 @@ pub fn fit_glm_regularized(
         let working_response = Array1::from_vec(working_response_vec);
 
         // Solve PENALIZED weighted least squares: (X'WX + λI)β = X'Wz
-        let (new_coefficients, xtwinv) =
+        let (mut new_coefficients, xtwinv) =
             solve_weighted_least_squares_penalized(x, &working_response, &combined_weights, l2_penalty, penalize_intercept)?;
 
         // Check for NaN in coefficients - indicates numerical instability
@@ -905,6 +948,18 @@ pub fn fit_glm_regularized(
                  (3) separation in binary response data. \
                  Try standardizing continuous predictors or removing correlated terms.".to_string()
             ));
+        }
+
+        // Apply coefficient sign constraints
+        for &idx in &irls_config.nonneg_indices {
+            if idx < new_coefficients.len() && new_coefficients[idx] < 0.0 {
+                new_coefficients[idx] = 0.0;
+            }
+        }
+        for &idx in &irls_config.nonpos_indices {
+            if idx < new_coefficients.len() && new_coefficients[idx] > 0.0 {
+                new_coefficients[idx] = 0.0;
+            }
         }
 
         // Update η and μ

@@ -506,6 +506,9 @@ class ModelDiagnostics:
     # Overdispersion diagnostics (for count/binomial data)
     overdispersion: Optional[Dict[str, Any]] = None
     
+    # Spline knot information
+    spline_info: Optional[Dict[str, Dict[str, Any]]] = None
+    
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary, handling nested dataclasses."""
         return _to_dict_recursive(self)
@@ -3965,6 +3968,13 @@ def compute_diagnostics(
                     "message": f"Overdispersion detected (φ={pearson_dispersion:.2f}). {recommendation}"
                 })
     
+    # Get spline knot information if available
+    spline_info = None
+    if hasattr(result, '_builder') and hasattr(result._builder, 'get_spline_info'):
+        spline_info = result._builder.get_spline_info()
+        if not spline_info:  # Empty dict -> None
+            spline_info = None
+    
     diagnostics = ModelDiagnostics(
         model_summary=model_summary,
         train_test=train_test,
@@ -3980,6 +3990,7 @@ def compute_diagnostics(
         lift_chart=lift_chart,
         partial_dependence=partial_dep,
         overdispersion=overdispersion_result,
+        spline_info=spline_info,
     )
     
     # Auto-save JSON to analysis folder

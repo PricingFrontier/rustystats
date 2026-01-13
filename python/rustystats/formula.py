@@ -600,6 +600,19 @@ class FormulaGLM:
             else:
                 # Use fixed theta (default 1.0 for negbinomial if not auto)
                 theta = self.theta if self.theta is not None else 1.0
+                
+                # Compute coefficient constraint indices
+                # ms() terms and pos() terms require non-negative coefficients (β ≥ 0)
+                # neg() terms require non-positive coefficients (β ≤ 0)
+                nonneg_indices = [
+                    i for i, name in enumerate(self.feature_names)
+                    if name.startswith("ms(") or name.startswith("pos(")
+                ]
+                nonpos_indices = [
+                    i for i, name in enumerate(self.feature_names)
+                    if name.startswith("neg(")
+                ]
+                
                 result = _fit_glm_rust(
                     self.y,
                     self.X,
@@ -613,6 +626,8 @@ class FormulaGLM:
                     l1_ratio,
                     max_iter,
                     tol,
+                    nonneg_indices if nonneg_indices else None,
+                    nonpos_indices if nonpos_indices else None,
                 )
                 # Include theta in family string for negbinomial so deviance calculations use correct theta
                 if is_negbinomial:

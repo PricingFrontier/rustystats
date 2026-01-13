@@ -109,6 +109,17 @@ class CategoricalTermSpec:
     levels: Optional[List[str]] = None  # None = all levels, list = specific levels only
 
 
+@dataclass
+class ConstraintTermSpec:
+    """Parsed coefficient constraint term specification.
+    
+    pos(var) - coefficient must be >= 0
+    neg(var) - coefficient must be <= 0
+    """
+    var_name: str
+    constraint: str  # "pos" or "neg"
+
+
 @dataclass 
 class ParsedFormula:
     """Parsed formula with identified terms."""
@@ -121,6 +132,7 @@ class ParsedFormula:
     target_encoding_terms: List[TargetEncodingTermSpec] = field(default_factory=list)  # TE() terms
     identity_terms: List[IdentityTermSpec] = field(default_factory=list)  # I() terms
     categorical_terms: List[CategoricalTermSpec] = field(default_factory=list)  # C(var, level='...') terms
+    constraint_terms: List[ConstraintTermSpec] = field(default_factory=list)  # pos()/neg() terms
     has_intercept: bool = True
 
 
@@ -162,7 +174,8 @@ def parse_formula_interactions(formula: str) -> ParsedFormula:
             var_name=s['var_name'],
             spline_type=s['spline_type'],
             df=s['df'],
-            degree=s['degree']
+            degree=s['degree'],
+            increasing=s.get('increasing', True)  # Default to increasing for monotonic splines
         )
         for s in parsed['spline_terms']
     ]
@@ -192,6 +205,15 @@ def parse_formula_interactions(formula: str) -> ParsedFormula:
         for c in parsed.get('categorical_terms', [])
     ]
     
+    # Parse constraint terms (pos() / neg())
+    constraint_terms = [
+        ConstraintTermSpec(
+            var_name=c['var_name'],
+            constraint=c['constraint']
+        )
+        for c in parsed.get('constraint_terms', [])
+    ]
+    
     # Filter out "1" from main effects (it's just an explicit intercept indicator)
     main_effects = [m for m in parsed['main_effects'] if m != '1']
     
@@ -204,6 +226,7 @@ def parse_formula_interactions(formula: str) -> ParsedFormula:
         target_encoding_terms=target_encoding_terms,
         identity_terms=identity_terms,
         categorical_terms=categorical_terms,
+        constraint_terms=constraint_terms,
         has_intercept=parsed['has_intercept'],
     )
 
@@ -246,17 +269,46 @@ class InteractionBuilder:
         # Store parsed formula for prediction
         self._parsed_formula: Optional[ParsedFormula] = None
     
+    def get_spline_info(self) -> Dict[str, dict]:
+        """
+        Get knot information for all fitted spline terms.
+        
+        Returns
+        -------
+        dict
+            Dictionary mapping variable names to their spline info:
+            {
+                "VehAge": {
+                    "type": "ms",
+                    "df": 4,
+                    "knots": [2.0, 5.0, 8.0],
+                    "boundary_knots": [0.0, 20.0]
+                },
+                ...
+            }
+        """
+        return {
+            var_name: spline.get_knot_info()
+            for var_name, spline in self._fitted_splines.items()
+        }
+    
     def _parse_spline_factor(self, factor: str) -> Optional[SplineTerm]:
-        """Parse a spline term from a factor name like 'bs(VehAge, df=4)' or 'ns(age, df=3)'."""
+        """Parse a spline term from a factor name like 'bs(VehAge, df=4)', 'ns(age, df=3)', or 'ms(age, df=5)'."""
         factor_lower = factor.strip().lower()
-        if factor_lower.startswith('bs(') or factor_lower.startswith('ns('):
-            spline_type = 'bs' if factor_lower.startswith('bs(') else 'ns'
+        if factor_lower.startswith('bs(') or factor_lower.startswith('ns(') or factor_lower.startswith('ms('):
+            if factor_lower.startswith('bs('):
+                spline_type = 'bs'
+            elif factor_lower.startswith('ns('):
+                spline_type = 'ns'
+            else:
+                spline_type = 'ms'
             # Extract content inside parentheses
             content = factor[3:-1] if factor.endswith(')') else factor[3:]
             parts = [p.strip() for p in content.split(',')]
             var_name = parts[0]
             df = 4  # default
-            degree = 3  # default for B-splines
+            degree = 3  # default for B-splines and monotonic splines
+            increasing = True  # default for monotonic splines
             for part in parts[1:]:
                 if '=' in part:
                     key, val = part.split('=', 1)
@@ -266,7 +318,9 @@ class InteractionBuilder:
                         df = int(val)
                     elif key == 'degree':
                         degree = int(val)
-            return SplineTerm(var_name=var_name, spline_type=spline_type, df=df, degree=degree)
+                    elif key == 'increasing':
+                        increasing = val.lower() in ('true', '1', 'yes')
+            return SplineTerm(var_name=var_name, spline_type=spline_type, df=df, degree=degree, increasing=increasing)
         return None
     
     def _parse_te_factor(self, factor: str) -> Optional[TargetEncodingTermSpec]:
@@ -811,6 +865,49 @@ class InteractionBuilder:
             'used_rate_encoding': exposure is not None,
         }
     
+    def _build_constraint_columns(
+        self,
+        constraint: ConstraintTermSpec,
+        data: "pl.DataFrame",
+    ) -> Tuple[np.ndarray, str]:
+        """
+        Build column for a constraint term (pos() or neg()).
+        
+        The column is just the variable values - the constraint is enforced during fitting.
+        Supports nested expressions like pos(I(x ** 2)) or neg(I(age ** 2)).
+        
+        Parameters
+        ----------
+        constraint : ConstraintTermSpec
+            Constraint term specification with var_name and constraint type
+        data : pl.DataFrame
+            DataFrame containing the column
+            
+        Returns
+        -------
+        values : np.ndarray
+            Variable values (n,)
+        name : str
+            Column name like "pos(age)" or "neg(I(age ** 2))"
+        """
+        var_name = constraint.var_name
+        name = f"{constraint.constraint}({var_name})"
+        
+        # Check if var_name is an I() expression (identity/polynomial term)
+        if var_name.startswith("I(") and var_name.endswith(")"):
+            # Extract expression from I(...)
+            expression = var_name[2:-1]
+            identity = IdentityTermSpec(expression=expression)
+            values, _ = self._build_identity_columns(identity, data)
+            return values, name
+        
+        # Simple variable name
+        if var_name not in data.columns:
+            raise ValueError(f"Variable '{var_name}' not found in data for {name}")
+        
+        values = data[var_name].to_numpy().astype(self.dtype)
+        return values, name
+    
     def _build_identity_columns(
         self,
         identity: IdentityTermSpec,
@@ -1045,6 +1142,12 @@ class InteractionBuilder:
             id_col, id_name = self._build_identity_columns(identity, self.data)
             columns.append(id_col.reshape(-1, 1))
             names.append(id_name)
+        
+        # Add constraint terms (pos() / neg() for coefficient sign constraints)
+        for constraint in parsed.constraint_terms:
+            con_col, con_name = self._build_constraint_columns(constraint, self.data)
+            columns.append(con_col.reshape(-1, 1))
+            names.append(con_name)
         
         # Add categorical terms with level selection (C(var, level='value'))
         for cat_term in parsed.categorical_terms:
@@ -1284,6 +1387,11 @@ class InteractionBuilder:
         for identity in parsed.identity_terms:
             id_col, _ = self._build_identity_columns(identity, new_data)
             columns.append(id_col.reshape(-1, 1))
+        
+        # Add constraint terms (pos() / neg()) - same variable values on new data
+        for constraint in parsed.constraint_terms:
+            con_col, _ = self._build_constraint_columns(constraint, new_data)
+            columns.append(con_col.reshape(-1, 1))
         
         # Add categorical terms with level selection (C(var, level='value'))
         for cat_term in parsed.categorical_terms:

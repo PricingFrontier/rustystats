@@ -62,7 +62,7 @@ RustyStats uses significantly less RAM by reusing buffers and avoiding Python ob
 - **Fast** - Parallel Rust backend, 4-30x faster than statsmodels
 - **Memory Efficient** - 4x less RAM than statsmodels at scale
 - **Stable** - Step-halving IRLS, warm starts for robust convergence
-- **Splines** - B-splines `bs()` and natural splines `ns()` in formulas
+- **Splines** - B-splines `bs()`, natural splines `ns()`, and monotonic splines `ms()` in formulas
 - **Polynomials** - Identity terms `I(x ** 2)` for polynomial and arithmetic expressions
 - **Target Encoding** - CatBoost-style `TE()` for high-cardinality categoricals (exposure-aware)
 - **Regularisation** - Ridge, Lasso, and Elastic Net via coordinate descent
@@ -132,11 +132,18 @@ print(result.summary())
 # Splines (non-linear effects)
 "y ~ bs(age, df=5)"      # B-spline basis
 "y ~ ns(income, df=4)"   # Natural spline (better extrapolation)
+"y ~ ms(age, df=5)"      # Monotonic spline (increasing)
+"y ~ ms(veh_age, df=4, increasing=false)"  # Monotonic decreasing
 
 # Identity terms (polynomial/arithmetic expressions)
 "y ~ I(age ** 2)"        # Polynomial terms
 "y ~ I(x1 * x2)"         # Explicit products
 "y ~ I(income / 1000)"   # Scaled variables
+
+# Coefficient constraints
+"y ~ pos(age)"           # Coefficient ≥ 0
+"y ~ neg(risk)"          # Coefficient ≤ 0
+"y ~ neg(I(age ** 2))"   # Force downward curvature
 
 # Target encoding (high-cardinality categoricals)
 "y ~ TE(brand) + TE(model)"
@@ -271,6 +278,92 @@ basis_ns = rs.ns(x, df=5)  # Natural splines - linear extrapolation at boundarie
 **When to use each spline type:**
 - **B-splines (`bs`)**: Standard choice, more flexible at boundaries
 - **Natural splines (`ns`)**: Better extrapolation, linear beyond boundaries (recommended for actuarial work)
+- **Monotonic splines (`ms`)**: Constrained to be monotonically increasing or decreasing
+
+---
+
+## Monotonic Splines
+
+Monotonic splines (I-splines) constrain the fitted curve to be monotonically increasing or decreasing. Essential when business logic dictates a monotonic relationship.
+
+```python
+# Monotonically increasing effect (e.g., age → risk)
+result = rs.glm(
+    "ClaimNb ~ ms(Age, df=5) + C(Region)",
+    data=data,
+    family="poisson",
+    offset="Exposure"
+).fit()
+
+# Monotonically decreasing effect (e.g., vehicle value with age)
+result = rs.glm(
+    "ClaimAmt ~ ms(VehAge, df=4, increasing=false)",
+    data=data,
+    family="gamma"
+).fit()
+
+# Combine with other spline types
+result = rs.glm(
+    "y ~ ms(age, df=5) + bs(income, df=4) + ns(experience, df=3)",
+    data=data,
+    family="gaussian"
+).fit()
+
+# Direct basis computation
+basis = rs.ms(x, df=5)  # Monotonically increasing basis
+basis_dec = rs.ms(x, df=5, increasing=False)  # Decreasing
+```
+
+**Key properties:**
+- All basis values in [0, 1]
+- Each column monotonically increasing from 0 → 1 (or decreasing)
+- With non-negative coefficients, fitted curve is guaranteed monotonic
+- Prevents implausible "wiggles" that can occur with unconstrained splines
+
+**When to use:**
+| Use Case | Formula |
+|----------|---------|
+| Age → claim frequency | `ms(age, df=5)` |
+| Vehicle age → value | `ms(veh_age, df=4, increasing=false)` |
+| Credit score → risk | `ms(score, df=5, increasing=false)` |
+
+---
+
+## Coefficient Constraints
+
+Constrain coefficient signs using `pos()` (β ≥ 0) and `neg()` (β ≤ 0). Useful for enforcing business logic on linear and polynomial terms.
+
+```python
+# Constrain age coefficient to be positive
+result = rs.glm(
+    "y ~ pos(age) + income",
+    data=data,
+    family="poisson"
+).fit()
+
+# Force quadratic to bend downward (diminishing returns)
+result = rs.glm(
+    "y ~ age + neg(I(age ** 2))",
+    data=data,
+    family="gaussian"
+).fit()
+
+# Combine with monotonic splines
+result = rs.glm(
+    "ClaimNb ~ ms(VehAge, df=4) + pos(BonusMalus) + neg(I(DrivAge ** 2))",
+    data=data,
+    family="poisson",
+    offset="Exposure"
+).fit()
+```
+
+**Supported patterns:**
+| Constraint | Effect | Example |
+|------------|--------|---------|
+| `pos(x)` | β ≥ 0 | `pos(age)` - positive effect |
+| `neg(x)` | β ≤ 0 | `neg(risk)` - negative effect |
+| `pos(I(x ** 2))` | β ≥ 0 | Upward curvature |
+| `neg(I(x ** 2))` | β ≤ 0 | Downward curvature |
 
 ---
 
