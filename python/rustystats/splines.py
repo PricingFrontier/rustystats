@@ -481,37 +481,43 @@ class SplineTerm:
         names : list of str
             Column names for the basis
         """
-        # Compute boundary knots if not provided
+        # Compute boundary knots if not already computed (first call = training)
+        # On subsequent calls (prediction), reuse the stored boundary knots
         x_arr = np.asarray(x).ravel()
-        if self.boundary_knots is not None:
-            self._computed_boundary_knots = self.boundary_knots
-        else:
-            self._computed_boundary_knots = (float(np.min(x_arr)), float(np.max(x_arr)))
+        if self._computed_boundary_knots is None:
+            # First call - compute and store boundary knots
+            if self.boundary_knots is not None:
+                self._computed_boundary_knots = self.boundary_knots
+            else:
+                self._computed_boundary_knots = (float(np.min(x_arr)), float(np.max(x_arr)))
+            
+            # Compute internal knots based on quantiles (only on first call)
+            # Number of internal knots = df - degree - 1 (for bs) or df - 1 (for ns/ms)
+            if self.spline_type == "bs":
+                n_internal = max(0, self.df - self.degree - 1)
+            else:  # ns, ms
+                n_internal = max(0, self.df - 1)
+            
+            if n_internal > 0:
+                quantiles = np.linspace(0, 1, n_internal + 2)[1:-1]
+                self._computed_internal_knots = [float(np.quantile(x_arr, q)) for q in quantiles]
+            else:
+                self._computed_internal_knots = []
         
-        # Compute internal knots based on quantiles
-        # Number of internal knots = df - degree - 1 (for bs) or df - 1 (for ns/ms)
-        if self.spline_type == "bs":
-            n_internal = max(0, self.df - self.degree - 1)
-        else:  # ns, ms
-            n_internal = max(0, self.df - 1)
-        
-        if n_internal > 0:
-            quantiles = np.linspace(0, 1, n_internal + 2)[1:-1]
-            self._computed_internal_knots = [float(np.quantile(x_arr, q)) for q in quantiles]
-        else:
-            self._computed_internal_knots = []
+        # Use stored boundary knots for basis computation
+        boundary_knots_to_use = self._computed_boundary_knots
         
         if self.spline_type == "bs":
             basis = bs(x, df=self.df, degree=self.degree, 
-                      boundary_knots=self.boundary_knots, include_intercept=False)
+                      boundary_knots=boundary_knots_to_use, include_intercept=False)
             names = bs_names(self.var_name, self.df, include_intercept=False)
         elif self.spline_type == "ns":
-            basis = ns(x, df=self.df, boundary_knots=self.boundary_knots,
+            basis = ns(x, df=self.df, boundary_knots=boundary_knots_to_use,
                       include_intercept=False)
             names = ns_names(self.var_name, self.df, include_intercept=False)
         else:  # ms (monotonic spline)
             basis = ms(x, df=self.df, degree=self.degree,
-                      boundary_knots=self.boundary_knots, increasing=self.increasing)
+                      boundary_knots=boundary_knots_to_use, increasing=self.increasing)
             names = ms_names(self.var_name, self.df, increasing=self.increasing)
         
         # Ensure names match columns
