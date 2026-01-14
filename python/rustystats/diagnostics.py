@@ -340,6 +340,7 @@ class ContinuousBandMetrics:
     predicted: float  # predicted frequency = sum(mu) / exposure
     ae_ratio: float
     partial_dep: float  # Marginal effect at midpoint
+    residual_mean: float  # Mean deviance residual for this band
 
 
 @dataclass
@@ -2149,7 +2150,8 @@ class DiagnosticsComputer:
     ) -> List[FactorLevelMetrics]:
         """Compute metrics for each level of a categorical factor."""
         unique_levels = np.unique(factor_values)
-        residuals = y - mu
+        # Use deviance residuals for consistency with continuous band metrics
+        residuals = np.asarray(_rust_deviance_residuals(y, mu, self.family))
         
         metrics = []
         for level in unique_levels:
@@ -2207,7 +2209,8 @@ class DiagnosticsComputer:
             return []
         
         metrics = []
-        residuals = y - mu
+        # Compute deviance residuals for consistency with categorical diagnostics
+        deviance_resids = np.asarray(_rust_deviance_residuals(y, mu, self.family))
         
         for i in range(len(edges) - 1):
             lower, upper = edges[i], edges[i + 1]
@@ -2230,6 +2233,9 @@ class DiagnosticsComputer:
             # Partial dependence at midpoint
             partial_dep = float(np.mean(mu[mask]))
             
+            # Mean deviance residual for this band
+            resid_mean = float(np.mean(deviance_resids[mask]))
+            
             actual_freq = actual / exp_sum if exp_sum > 0 else 0.0
             predicted_freq = predicted / exp_sum if exp_sum > 0 else 0.0
             metrics.append(ContinuousBandMetrics(
@@ -2243,6 +2249,7 @@ class DiagnosticsComputer:
                 predicted=round(predicted_freq, 6),
                 ae_ratio=round(ae, 4) if not np.isnan(ae) else None,
                 partial_dep=round(partial_dep, 6),
+                residual_mean=round(resid_mean, 6),
             ))
         
         return metrics

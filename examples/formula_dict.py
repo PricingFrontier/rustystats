@@ -17,8 +17,9 @@ rs.glm_dict(
         
         # === Monotonic spline ===
         "BonusMalus": {"type": "bs", "df": 4, "monotonicity": "increasing"},                    # increasing (default)
-        "Risk": {"type": "bs", "df": 4, "monotonicity": "decreasing"},     # decreasing
-        "Risk": {"type": "bs", "df": 4, "degree": 2, "monotonicity": "increasing"},             # quadratic monotonic
+        "Risk": {"type": "bs", "df": 4, "monotonicity": "decreasing"},     # decreasing 
+        "Risk": {"type": "ms", "df": 4, "monotonicity": "decreasing"},     # decreasing
+        "Risk": {"type": "ms", "df": 4, "monotonicity": "increasing"},    # increasing
         
         # === Target encoding ===
         "Brand": {"type": "target_encoding"},

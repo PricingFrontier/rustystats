@@ -1,1179 +1,1404 @@
 {
   "model_summary": {
-    "formula": "y ~ bs(age, df=5) + ms(veh_age, df=4)",
+    "formula": "ClaimCount ~ bs(VehAge, df=4) + C(Area)",
     "family": "poisson",
     "link": "log",
-    "n_obs": 500,
+    "n_obs": 406439,
     "n_params": 9,
-    "df_resid": 491,
+    "df_resid": 406430,
     "converged": true,
-    "iterations": 13
+    "iterations": 7
   },
   "train_test": {
     "train": {
       "dataset": "train",
-      "n_obs": 500,
-      "total_exposure": 500.0,
-      "total_actual": 123.0,
-      "total_predicted": 190.59,
-      "loss": 0.816365,
-      "deviance": 408.18,
-      "log_likelihood": -314.38,
-      "aic": 646.76,
-      "gini": 0.1648,
-      "auc": 0.5824,
-      "ae_ratio": 0.6454,
+      "n_obs": 406439,
+      "total_exposure": 214930.9,
+      "total_actual": 21408.0,
+      "total_predicted": 21408.0,
+      "loss": 0.322195,
+      "deviance": 130952.62,
+      "log_likelihood": -86250.14,
+      "aic": 172518.27,
+      "gini": 0.1378,
+      "auc": 0.5689,
+      "ae_ratio": 1.0,
       "ae_by_decile": [
         {
           "decile": 1,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.2,
-          "predicted": 0.262786,
-          "ae_ratio": 0.7611
+          "n": 40643,
+          "exposure": 1697.97,
+          "actual": 0.584228,
+          "predicted": 0.092558,
+          "ae_ratio": 6.312
         },
         {
           "decile": 2,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.18,
-          "predicted": 0.275629,
-          "ae_ratio": 0.6531
+          "n": 40643,
+          "exposure": 3648.26,
+          "actual": 0.304803,
+          "predicted": 0.103112,
+          "ae_ratio": 2.956
         },
         {
           "decile": 3,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.2,
-          "predicted": 0.282993,
-          "ae_ratio": 0.7067
+          "n": 40643,
+          "exposure": 7434.3,
+          "actual": 0.204189,
+          "predicted": 0.095317,
+          "ae_ratio": 2.1422
         },
         {
           "decile": 4,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.22,
-          "predicted": 0.292103,
-          "ae_ratio": 0.7532
+          "n": 40643,
+          "exposure": 12252.47,
+          "actual": 0.138666,
+          "predicted": 0.095804,
+          "ae_ratio": 1.4474
         },
         {
           "decile": 5,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.2,
-          "predicted": 0.300588,
-          "ae_ratio": 0.6654
+          "n": 40643,
+          "exposure": 18237.09,
+          "actual": 0.116521,
+          "predicted": 0.094641,
+          "ae_ratio": 1.2312
         },
         {
           "decile": 6,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.18,
-          "predicted": 0.307985,
-          "ae_ratio": 0.5844
+          "n": 40643,
+          "exposure": 25900.25,
+          "actual": 0.089767,
+          "predicted": 0.090206,
+          "ae_ratio": 0.9951
         },
         {
           "decile": 7,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.14,
-          "predicted": 0.351266,
-          "ae_ratio": 0.3986
+          "n": 40643,
+          "exposure": 33533.96,
+          "actual": 0.070675,
+          "predicted": 0.084919,
+          "ae_ratio": 0.8323
         },
         {
           "decile": 8,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.26,
-          "predicted": 0.455115,
-          "ae_ratio": 0.5713
+          "n": 40643,
+          "exposure": 35940.23,
+          "actual": 0.076126,
+          "predicted": 0.092107,
+          "ae_ratio": 0.8265
         },
         {
           "decile": 9,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.46,
-          "predicted": 0.588295,
-          "ae_ratio": 0.7819
+          "n": 40643,
+          "exposure": 37476.25,
+          "actual": 0.080211,
+          "predicted": 0.103166,
+          "ae_ratio": 0.7775
         },
         {
           "decile": 10,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.42,
-          "predicted": 0.694976,
-          "ae_ratio": 0.6043
+          "n": 40652,
+          "exposure": 38810.12,
+          "actual": 0.090827,
+          "predicted": 0.126401,
+          "ae_ratio": 0.7186
         }
       ],
-      "factor_diagnostics": {},
-      "continuous_diagnostics": {
-        "age": [
+      "factor_diagnostics": {
+        "Area": [
           {
-            "band": 1,
-            "range_min": 20.2531,
-            "range_max": 24.2023,
-            "midpoint": 22.2277,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.2,
-            "predicted": 0.277982,
-            "ae_ratio": 0.7195,
-            "partial_dep": 0.277982
+            "level": "C",
+            "n": 115158,
+            "exposure": 62693.52,
+            "actual": 0.094699,
+            "predicted": 0.094699,
+            "ae_ratio": 1.0,
+            "residual_mean": -0.176826
           },
           {
-            "band": 2,
-            "range_min": 24.2023,
-            "range_max": 28.7076,
-            "midpoint": 26.455,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.1,
-            "predicted": 0.302966,
-            "ae_ratio": 0.3301,
-            "partial_dep": 0.302966
+            "level": "D",
+            "n": 90936,
+            "exposure": 46259.62,
+            "actual": 0.107675,
+            "predicted": 0.107675,
+            "ae_ratio": 1.0,
+            "residual_mean": -0.178622
           },
           {
-            "band": 3,
-            "range_min": 28.7076,
-            "range_max": 34.5935,
-            "midpoint": 31.6506,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.28,
-            "predicted": 0.30014,
-            "ae_ratio": 0.9329,
-            "partial_dep": 0.30014
+            "level": "E",
+            "n": 82103,
+            "exposure": 38213.29,
+            "actual": 0.121738,
+            "predicted": 0.121738,
+            "ae_ratio": 1.0,
+            "residual_mean": -0.178631
           },
           {
-            "band": 4,
-            "range_min": 34.5935,
-            "range_max": 39.285,
-            "midpoint": 36.9393,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.2,
-            "predicted": 0.281607,
-            "ae_ratio": 0.7102,
-            "partial_dep": 0.281607
+            "level": "A",
+            "n": 62417,
+            "exposure": 37146.86,
+            "actual": 0.078526,
+            "predicted": 0.078526,
+            "ae_ratio": 1.0,
+            "residual_mean": -0.174083
           },
           {
-            "band": 5,
-            "range_min": 39.285,
-            "range_max": 45.6582,
-            "midpoint": 42.4716,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.14,
-            "predicted": 0.272058,
-            "ae_ratio": 0.5146,
-            "partial_dep": 0.272058
+            "level": "B",
+            "n": 45118,
+            "exposure": 25768.6,
+            "actual": 0.087471,
+            "predicted": 0.087471,
+            "ae_ratio": 1.0,
+            "residual_mean": -0.17606
           },
           {
-            "band": 6,
-            "range_min": 45.6582,
-            "range_max": 50.7672,
-            "midpoint": 48.2127,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.24,
-            "predicted": 0.29504,
-            "ae_ratio": 0.8134,
-            "partial_dep": 0.29504
-          },
-          {
-            "band": 7,
-            "range_min": 50.7672,
-            "range_max": 55.1605,
-            "midpoint": 52.9639,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.16,
-            "predicted": 0.354229,
-            "ae_ratio": 0.4517,
-            "partial_dep": 0.354229
-          },
-          {
-            "band": 8,
-            "range_min": 55.1605,
-            "range_max": 60.4088,
-            "midpoint": 57.7847,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.24,
-            "predicted": 0.449682,
-            "ae_ratio": 0.5337,
-            "partial_dep": 0.449682
-          },
-          {
-            "band": 9,
-            "range_min": 60.4088,
-            "range_max": 65.274,
-            "midpoint": 62.8414,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.48,
-            "predicted": 0.590834,
-            "ae_ratio": 0.8124,
-            "partial_dep": 0.590834
-          },
-          {
-            "band": 10,
-            "range_min": 65.274,
-            "range_max": 69.6482,
-            "midpoint": 67.4611,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.42,
-            "predicted": 0.6872,
-            "ae_ratio": 0.6112,
-            "partial_dep": 0.6872
+            "level": "F",
+            "n": 10707,
+            "exposure": 4849.01,
+            "actual": 0.137554,
+            "predicted": 0.137554,
+            "ae_ratio": 1.0,
+            "residual_mean": -0.182664
           }
-        ],
-        "veh_age": [
+        ]
+      },
+      "continuous_diagnostics": {
+        "VehAge": [
           {
             "band": 1,
-            "range_min": 0.0926,
-            "range_max": 2.2705,
-            "midpoint": 1.1816,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.36,
-            "predicted": 0.37107,
-            "ae_ratio": 0.9702,
-            "partial_dep": 0.37107
+            "range_min": 0.0,
+            "range_max": 1.0,
+            "midpoint": 0.5,
+            "n": 34724,
+            "exposure": 10049.44,
+            "actual": 0.29932,
+            "predicted": 0.144799,
+            "ae_ratio": 2.0671,
+            "partial_dep": 0.041906,
+            "residual_mean": -0.039709
           },
           {
             "band": 2,
-            "range_min": 2.2705,
-            "range_max": 3.5689,
-            "midpoint": 2.9197,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.26,
-            "predicted": 0.384117,
-            "ae_ratio": 0.6769,
-            "partial_dep": 0.384117
+            "range_min": 1.0,
+            "range_max": 2.0,
+            "midpoint": 1.5,
+            "n": 42680,
+            "exposure": 19679.24,
+            "actual": 0.08791,
+            "predicted": 0.134125,
+            "ae_ratio": 0.6554,
+            "partial_dep": 0.061844,
+            "residual_mean": -0.233332
           },
           {
             "band": 3,
-            "range_min": 3.5689,
-            "range_max": 5.4059,
-            "midpoint": 4.4874,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.36,
-            "predicted": 0.380451,
-            "ae_ratio": 0.9462,
-            "partial_dep": 0.380451
+            "range_min": 2.0,
+            "range_max": 3.0,
+            "midpoint": 2.5,
+            "n": 35401,
+            "exposure": 17807.23,
+            "actual": 0.091873,
+            "predicted": 0.124619,
+            "ae_ratio": 0.7372,
+            "partial_dep": 0.062685,
+            "residual_mean": -0.225333
           },
           {
             "band": 4,
-            "range_min": 5.4059,
-            "range_max": 7.543,
-            "midpoint": 6.4744,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.38,
-            "predicted": 0.361263,
-            "ae_ratio": 1.0519,
-            "partial_dep": 0.361263
+            "range_min": 3.0,
+            "range_max": 4.0,
+            "midpoint": 3.5,
+            "n": 30085,
+            "exposure": 15579.53,
+            "actual": 0.090439,
+            "predicted": 0.116578,
+            "ae_ratio": 0.7758,
+            "partial_dep": 0.06037,
+            "residual_mean": -0.216655
           },
           {
             "band": 5,
-            "range_min": 7.543,
-            "range_max": 9.4364,
-            "midpoint": 8.4897,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.14,
-            "predicted": 0.404095,
-            "ae_ratio": 0.3465,
-            "partial_dep": 0.404095
+            "range_min": 4.0,
+            "range_max": 6.0,
+            "midpoint": 5.0,
+            "n": 49076,
+            "exposure": 27364.27,
+            "actual": 0.094612,
+            "predicted": 0.106691,
+            "ae_ratio": 0.8868,
+            "partial_dep": 0.05949,
+            "residual_mean": -0.201733
           },
           {
             "band": 6,
-            "range_min": 9.4364,
-            "range_max": 11.4551,
-            "midpoint": 10.4458,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.24,
-            "predicted": 0.433079,
-            "ae_ratio": 0.5542,
-            "partial_dep": 0.433079
+            "range_min": 6.0,
+            "range_max": 8.0,
+            "midpoint": 7.0,
+            "n": 41009,
+            "exposure": 23930.87,
+            "actual": 0.103715,
+            "predicted": 0.096254,
+            "ae_ratio": 1.0775,
+            "partial_dep": 0.056169,
+            "residual_mean": -0.175427
           },
           {
             "band": 7,
-            "range_min": 11.4551,
-            "range_max": 13.3017,
-            "midpoint": 12.3784,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.22,
-            "predicted": 0.356145,
-            "ae_ratio": 0.6177,
-            "partial_dep": 0.356145
+            "range_min": 8.0,
+            "range_max": 10.0,
+            "midpoint": 9.0,
+            "n": 38964,
+            "exposure": 22975.65,
+            "actual": 0.096972,
+            "predicted": 0.088606,
+            "ae_ratio": 1.0944,
+            "partial_dep": 0.052248,
+            "residual_mean": -0.169176
           },
           {
             "band": 8,
-            "range_min": 13.3017,
-            "range_max": 15.8028,
-            "midpoint": 14.5523,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.16,
-            "predicted": 0.378755,
-            "ae_ratio": 0.4224,
-            "partial_dep": 0.378755
+            "range_min": 10.0,
+            "range_max": 12.0,
+            "midpoint": 11.0,
+            "n": 40550,
+            "exposure": 23007.97,
+            "actual": 0.096445,
+            "predicted": 0.083035,
+            "ae_ratio": 1.1615,
+            "partial_dep": 0.047114,
+            "residual_mean": -0.156952
           },
           {
             "band": 9,
-            "range_min": 15.8028,
-            "range_max": 17.9064,
-            "midpoint": 16.8546,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.16,
-            "predicted": 0.34782,
-            "ae_ratio": 0.46,
-            "partial_dep": 0.34782
+            "range_min": 12.0,
+            "range_max": 15.0,
+            "midpoint": 13.5,
+            "n": 48526,
+            "exposure": 28503.08,
+            "actual": 0.083815,
+            "predicted": 0.077604,
+            "ae_ratio": 1.08,
+            "partial_dep": 0.045583,
+            "residual_mean": -0.166598
           },
           {
             "band": 10,
-            "range_min": 17.9064,
-            "range_max": 19.9944,
-            "midpoint": 18.9504,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.18,
-            "predicted": 0.394943,
-            "ae_ratio": 0.4558,
-            "partial_dep": 0.394943
+            "range_min": 15.0,
+            "range_max": 100.0,
+            "midpoint": 57.5,
+            "n": 45424,
+            "exposure": 26033.61,
+            "actual": 0.065992,
+            "predicted": 0.072861,
+            "ae_ratio": 0.9057,
+            "partial_dep": 0.041759,
+            "residual_mean": -0.177655
           }
         ]
       }
     },
-    "test": null,
-    "gini_gap": null,
-    "ae_ratio_diff": null,
-    "decile_comparison": null,
-    "factor_divergence": null,
+    "test": {
+      "dataset": "test",
+      "n_obs": 406439,
+      "total_exposure": 214930.9,
+      "total_actual": 21408.0,
+      "total_predicted": 21408.0,
+      "loss": 0.322195,
+      "deviance": 130952.62,
+      "log_likelihood": -86250.14,
+      "aic": 172518.27,
+      "gini": 0.1378,
+      "auc": 0.5689,
+      "ae_ratio": 1.0,
+      "ae_by_decile": [
+        {
+          "decile": 1,
+          "n": 40643,
+          "exposure": 1697.97,
+          "actual": 0.584228,
+          "predicted": 0.092558,
+          "ae_ratio": 6.312
+        },
+        {
+          "decile": 2,
+          "n": 40643,
+          "exposure": 3648.26,
+          "actual": 0.304803,
+          "predicted": 0.103112,
+          "ae_ratio": 2.956
+        },
+        {
+          "decile": 3,
+          "n": 40643,
+          "exposure": 7434.3,
+          "actual": 0.204189,
+          "predicted": 0.095317,
+          "ae_ratio": 2.1422
+        },
+        {
+          "decile": 4,
+          "n": 40643,
+          "exposure": 12252.47,
+          "actual": 0.138666,
+          "predicted": 0.095804,
+          "ae_ratio": 1.4474
+        },
+        {
+          "decile": 5,
+          "n": 40643,
+          "exposure": 18237.09,
+          "actual": 0.116521,
+          "predicted": 0.094641,
+          "ae_ratio": 1.2312
+        },
+        {
+          "decile": 6,
+          "n": 40643,
+          "exposure": 25900.25,
+          "actual": 0.089767,
+          "predicted": 0.090206,
+          "ae_ratio": 0.9951
+        },
+        {
+          "decile": 7,
+          "n": 40643,
+          "exposure": 33533.96,
+          "actual": 0.070675,
+          "predicted": 0.084919,
+          "ae_ratio": 0.8323
+        },
+        {
+          "decile": 8,
+          "n": 40643,
+          "exposure": 35940.23,
+          "actual": 0.076126,
+          "predicted": 0.092107,
+          "ae_ratio": 0.8265
+        },
+        {
+          "decile": 9,
+          "n": 40643,
+          "exposure": 37476.25,
+          "actual": 0.080211,
+          "predicted": 0.103166,
+          "ae_ratio": 0.7775
+        },
+        {
+          "decile": 10,
+          "n": 40652,
+          "exposure": 38810.12,
+          "actual": 0.090827,
+          "predicted": 0.126401,
+          "ae_ratio": 0.7186
+        }
+      ],
+      "factor_diagnostics": {
+        "Area": [
+          {
+            "level": "C",
+            "n": 115158,
+            "exposure": 62693.52,
+            "actual": 0.094699,
+            "predicted": 0.094699,
+            "ae_ratio": 1.0,
+            "residual_mean": -0.176826
+          },
+          {
+            "level": "D",
+            "n": 90936,
+            "exposure": 46259.62,
+            "actual": 0.107675,
+            "predicted": 0.107675,
+            "ae_ratio": 1.0,
+            "residual_mean": -0.178622
+          },
+          {
+            "level": "E",
+            "n": 82103,
+            "exposure": 38213.29,
+            "actual": 0.121738,
+            "predicted": 0.121738,
+            "ae_ratio": 1.0,
+            "residual_mean": -0.178631
+          },
+          {
+            "level": "A",
+            "n": 62417,
+            "exposure": 37146.86,
+            "actual": 0.078526,
+            "predicted": 0.078526,
+            "ae_ratio": 1.0,
+            "residual_mean": -0.174083
+          },
+          {
+            "level": "B",
+            "n": 45118,
+            "exposure": 25768.6,
+            "actual": 0.087471,
+            "predicted": 0.087471,
+            "ae_ratio": 1.0,
+            "residual_mean": -0.17606
+          },
+          {
+            "level": "F",
+            "n": 10707,
+            "exposure": 4849.01,
+            "actual": 0.137554,
+            "predicted": 0.137554,
+            "ae_ratio": 1.0,
+            "residual_mean": -0.182664
+          }
+        ]
+      },
+      "continuous_diagnostics": {
+        "VehAge": [
+          {
+            "band": 1,
+            "range_min": 0.0,
+            "range_max": 1.0,
+            "midpoint": 0.5,
+            "n": 34724,
+            "exposure": 10049.44,
+            "actual": 0.29932,
+            "predicted": 0.144799,
+            "ae_ratio": 2.0671,
+            "partial_dep": 0.041906,
+            "residual_mean": -0.039709
+          },
+          {
+            "band": 2,
+            "range_min": 1.0,
+            "range_max": 2.0,
+            "midpoint": 1.5,
+            "n": 42680,
+            "exposure": 19679.24,
+            "actual": 0.08791,
+            "predicted": 0.134125,
+            "ae_ratio": 0.6554,
+            "partial_dep": 0.061844,
+            "residual_mean": -0.233332
+          },
+          {
+            "band": 3,
+            "range_min": 2.0,
+            "range_max": 3.0,
+            "midpoint": 2.5,
+            "n": 35401,
+            "exposure": 17807.23,
+            "actual": 0.091873,
+            "predicted": 0.124619,
+            "ae_ratio": 0.7372,
+            "partial_dep": 0.062685,
+            "residual_mean": -0.225333
+          },
+          {
+            "band": 4,
+            "range_min": 3.0,
+            "range_max": 4.0,
+            "midpoint": 3.5,
+            "n": 30085,
+            "exposure": 15579.53,
+            "actual": 0.090439,
+            "predicted": 0.116578,
+            "ae_ratio": 0.7758,
+            "partial_dep": 0.06037,
+            "residual_mean": -0.216655
+          },
+          {
+            "band": 5,
+            "range_min": 4.0,
+            "range_max": 6.0,
+            "midpoint": 5.0,
+            "n": 49076,
+            "exposure": 27364.27,
+            "actual": 0.094612,
+            "predicted": 0.106691,
+            "ae_ratio": 0.8868,
+            "partial_dep": 0.05949,
+            "residual_mean": -0.201733
+          },
+          {
+            "band": 6,
+            "range_min": 6.0,
+            "range_max": 8.0,
+            "midpoint": 7.0,
+            "n": 41009,
+            "exposure": 23930.87,
+            "actual": 0.103715,
+            "predicted": 0.096254,
+            "ae_ratio": 1.0775,
+            "partial_dep": 0.056169,
+            "residual_mean": -0.175427
+          },
+          {
+            "band": 7,
+            "range_min": 8.0,
+            "range_max": 10.0,
+            "midpoint": 9.0,
+            "n": 38964,
+            "exposure": 22975.65,
+            "actual": 0.096972,
+            "predicted": 0.088606,
+            "ae_ratio": 1.0944,
+            "partial_dep": 0.052248,
+            "residual_mean": -0.169176
+          },
+          {
+            "band": 8,
+            "range_min": 10.0,
+            "range_max": 12.0,
+            "midpoint": 11.0,
+            "n": 40550,
+            "exposure": 23007.97,
+            "actual": 0.096445,
+            "predicted": 0.083035,
+            "ae_ratio": 1.1615,
+            "partial_dep": 0.047114,
+            "residual_mean": -0.156952
+          },
+          {
+            "band": 9,
+            "range_min": 12.0,
+            "range_max": 15.0,
+            "midpoint": 13.5,
+            "n": 48526,
+            "exposure": 28503.08,
+            "actual": 0.083815,
+            "predicted": 0.077604,
+            "ae_ratio": 1.08,
+            "partial_dep": 0.045583,
+            "residual_mean": -0.166598
+          },
+          {
+            "band": 10,
+            "range_min": 15.0,
+            "range_max": 100.0,
+            "midpoint": 57.5,
+            "n": 45424,
+            "exposure": 26033.61,
+            "actual": 0.065992,
+            "predicted": 0.072861,
+            "ae_ratio": 0.9057,
+            "partial_dep": 0.041759,
+            "residual_mean": -0.177655
+          }
+        ]
+      }
+    },
+    "gini_gap": 0.0,
+    "ae_ratio_diff": 0.0,
+    "decile_comparison": [
+      {
+        "decile": 1,
+        "train_ae": 6.312,
+        "test_ae": 6.312,
+        "ae_diff": 0.0
+      },
+      {
+        "decile": 2,
+        "train_ae": 2.956,
+        "test_ae": 2.956,
+        "ae_diff": 0.0
+      },
+      {
+        "decile": 3,
+        "train_ae": 2.1422,
+        "test_ae": 2.1422,
+        "ae_diff": 0.0
+      },
+      {
+        "decile": 4,
+        "train_ae": 1.4474,
+        "test_ae": 1.4474,
+        "ae_diff": 0.0
+      },
+      {
+        "decile": 5,
+        "train_ae": 1.2312,
+        "test_ae": 1.2312,
+        "ae_diff": 0.0
+      },
+      {
+        "decile": 6,
+        "train_ae": 0.9951,
+        "test_ae": 0.9951,
+        "ae_diff": 0.0
+      },
+      {
+        "decile": 7,
+        "train_ae": 0.8323,
+        "test_ae": 0.8323,
+        "ae_diff": 0.0
+      },
+      {
+        "decile": 8,
+        "train_ae": 0.8265,
+        "test_ae": 0.8265,
+        "ae_diff": 0.0
+      },
+      {
+        "decile": 9,
+        "train_ae": 0.7775,
+        "test_ae": 0.7775,
+        "ae_diff": 0.0
+      },
+      {
+        "decile": 10,
+        "train_ae": 0.7186,
+        "test_ae": 0.7186,
+        "ae_diff": 0.0
+      }
+    ],
+    "factor_divergence": {},
     "overfitting_risk": false,
     "calibration_drift": false,
     "unstable_factors": []
   },
   "calibration": {
-    "ae_ratio": 0.645,
-    "hl_pvalue": 0.001,
+    "ae_ratio": 1.0,
+    "hl_pvalue": 0.0,
     "problem_deciles": [
       {
         "decile": 0,
-        "ae": 0.76,
-        "n": 50,
+        "ae": 2.36,
+        "n": 152027,
         "ae_ci": [
-          0.29,
-          1.23
+          2.29,
+          2.42
         ]
       },
       {
         "decile": 1,
-        "ae": 0.65,
-        "n": 50,
+        "ae": 1.25,
+        "n": 49758,
         "ae_ci": [
-          0.23,
-          1.08
-        ]
-      },
-      {
-        "decile": 2,
-        "ae": 0.71,
-        "n": 50,
-        "ae_ci": [
-          0.27,
-          1.14
+          1.2,
+          1.3
         ]
       },
       {
         "decile": 3,
-        "ae": 0.75,
-        "n": 50,
+        "ae": 0.87,
+        "n": 27142,
         "ae_ci": [
-          0.31,
-          1.2
+          0.83,
+          0.92
         ]
       },
       {
         "decile": 4,
-        "ae": 0.67,
-        "n": 50,
+        "ae": 0.82,
+        "n": 24925,
         "ae_ci": [
-          0.25,
-          1.08
+          0.77,
+          0.86
         ]
       },
       {
         "decile": 5,
-        "ae": 0.58,
-        "n": 50,
+        "ae": 0.81,
+        "n": 24223,
         "ae_ci": [
-          0.2,
-          0.97
+          0.77,
+          0.85
         ]
       },
       {
         "decile": 6,
-        "ae": 0.4,
-        "n": 50,
+        "ae": 0.82,
+        "n": 23434,
         "ae_ci": [
-          0.1,
-          0.69
+          0.78,
+          0.86
         ]
       },
       {
         "decile": 7,
-        "ae": 0.57,
-        "n": 50,
+        "ae": 0.79,
+        "n": 23113,
         "ae_ci": [
-          0.26,
-          0.88
+          0.75,
+          0.82
         ]
       },
       {
         "decile": 8,
-        "ae": 0.78,
-        "n": 50,
+        "ae": 0.76,
+        "n": 22672,
         "ae_ci": [
-          0.46,
-          1.1
+          0.73,
+          0.8
         ]
       },
       {
         "decile": 9,
-        "ae": 0.6,
-        "n": 50,
+        "ae": 0.68,
+        "n": 24339,
         "ae_ci": [
-          0.35,
-          0.86
+          0.65,
+          0.71
         ]
       }
     ]
   },
   "residual_summary": {
     "pearson": {
-      "mean": -0.22,
-      "std": 0.81,
-      "skewness": 2.1
+      "mean": 0.06,
+      "std": 1.59,
+      "skewness": 15.6
     },
     "deviance": {
-      "mean": -0.47,
-      "std": 0.77,
-      "skewness": 1.6
+      "mean": -0.18,
+      "std": 0.54,
+      "skewness": 4.1
     }
   },
   "factors": [
     {
-      "name": "age",
-      "factor_type": "continuous",
+      "name": "Area",
+      "factor_type": "categorical",
       "in_model": true,
-      "transform": "bs(age, 2/5)",
+      "transform": "Area[T.B]",
       "coefficients": [
         {
-          "term": "bs(age, 2/5)",
-          "estimate": 0.428309,
-          "std_error": 0.762316,
-          "z_value": 0.562,
-          "p_value": 0.5742,
-          "relativity": 1.5347
+          "term": "Area[T.B]",
+          "estimate": 0.085665,
+          "std_error": 0.028057,
+          "z_value": 3.053,
+          "p_value": 0.0023,
+          "relativity": 1.0894
         },
         {
-          "term": "bs(age, 3/5)",
-          "estimate": -0.540083,
-          "std_error": 0.595877,
-          "z_value": -0.906,
-          "p_value": 0.3647,
-          "relativity": 0.5827
+          "term": "Area[T.C]",
+          "estimate": 0.15144,
+          "std_error": 0.022648,
+          "z_value": 6.687,
+          "p_value": 0.0,
+          "relativity": 1.1635
         },
         {
-          "term": "bs(age, 4/5)",
-          "estimate": 0.911835,
-          "std_error": 0.600666,
-          "z_value": 1.518,
-          "p_value": 0.129,
-          "relativity": 2.4889
+          "term": "Area[T.D]",
+          "estimate": 0.272797,
+          "std_error": 0.023366,
+          "z_value": 11.675,
+          "p_value": 0.0,
+          "relativity": 1.3136
         },
         {
-          "term": "bs(age, 5/5)",
-          "estimate": 1.0414,
-          "std_error": 0.405566,
-          "z_value": 2.568,
-          "p_value": 0.0102,
-          "relativity": 2.8333
+          "term": "Area[T.E]",
+          "estimate": 0.375475,
+          "std_error": 0.02372,
+          "z_value": 15.83,
+          "p_value": 0.0,
+          "relativity": 1.4557
         },
         {
-          "term": "ms(veh_age, 1/4, +)",
-          "estimate": 15.4053,
-          "std_error": 1275.75,
-          "z_value": 0.012,
-          "p_value": 0.9904,
-          "relativity": 4902827.05
-        },
-        {
-          "term": "ms(veh_age, 2/4, +)",
-          "estimate": 0.0,
-          "std_error": 0.87979,
-          "z_value": 0.0,
-          "p_value": 1.0,
-          "relativity": 1.0
-        },
-        {
-          "term": "ms(veh_age, 3/4, +)",
-          "estimate": 0.0,
-          "std_error": 1.2278,
-          "z_value": 0.0,
-          "p_value": 1.0,
-          "relativity": 1.0
-        },
-        {
-          "term": "ms(veh_age, 4/4, +)",
-          "estimate": 0.0,
-          "std_error": 0.904359,
-          "z_value": 0.0,
-          "p_value": 1.0,
-          "relativity": 1.0
+          "term": "Area[T.F]",
+          "estimate": 0.431534,
+          "std_error": 0.043141,
+          "z_value": 10.003,
+          "p_value": 0.0,
+          "relativity": 1.5396
         }
       ],
       "univariate": {
-        "mean": 44.9281,
-        "std": 14.9195,
-        "min": 20.2531,
-        "max": 69.6482,
-        "missing_count": 0,
-        "percentiles": [
-          20.57,
-          22.15,
-          24.2,
-          32.06,
-          45.66,
-          57.81,
-          65.27,
-          67.7,
-          69.31
-        ]
+        "n_levels": 6,
+        "n_rare_levels": 0,
+        "rare_level_total_pct": 0
       },
       "actual_vs_expected": [
         {
-          "bin": "20.25-24.21",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.2,
-          "expected": 0.277982,
-          "ae_ratio": 0.72,
+          "bin": "C",
+          "n": 115158,
+          "exposure": 62693.52,
+          "actual": 0.094699,
+          "expected": 0.094699,
+          "ae_ratio": 1.0,
           "ae_ci": [
-            0.27,
-            1.17
+            0.97,
+            1.03
           ]
         },
         {
-          "bin": "24.21-28.72",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.1,
-          "expected": 0.302966,
-          "ae_ratio": 0.33,
+          "bin": "D",
+          "n": 90936,
+          "exposure": 46259.62,
+          "actual": 0.107675,
+          "expected": 0.107675,
+          "ae_ratio": 1.0,
           "ae_ci": [
-            0.04,
-            0.62
+            0.97,
+            1.03
           ]
         },
         {
-          "bin": "28.72-34.61",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.28,
-          "expected": 0.30014,
-          "ae_ratio": 0.93,
+          "bin": "E",
+          "n": 82103,
+          "exposure": 38213.29,
+          "actual": 0.121738,
+          "expected": 0.121738,
+          "ae_ratio": 1.0,
           "ae_ci": [
-            0.44,
-            1.42
+            0.97,
+            1.03
           ]
         },
         {
-          "bin": "34.61-39.31",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.2,
-          "expected": 0.281607,
-          "ae_ratio": 0.71,
+          "bin": "A",
+          "n": 62417,
+          "exposure": 37146.86,
+          "actual": 0.078526,
+          "expected": 0.078526,
+          "ae_ratio": 1.0,
           "ae_ci": [
-            0.27,
-            1.15
-          ]
-        },
-        {
-          "bin": "39.31-45.71",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.14,
-          "expected": 0.272058,
-          "ae_ratio": 0.51,
-          "ae_ci": [
-            0.13,
-            0.9
-          ]
-        },
-        {
-          "bin": "45.71-50.75",
-          "n": 49,
-          "exposure": 49.0,
-          "actual": 0.244898,
-          "expected": 0.29448,
-          "ae_ratio": 0.83,
-          "ae_ci": [
-            0.36,
-            1.3
-          ]
-        },
-        {
-          "bin": "50.75-55.15",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.14,
-          "expected": 0.352763,
-          "ae_ratio": 0.4,
-          "ae_ci": [
-            0.1,
-            0.69
-          ]
-        },
-        {
-          "bin": "55.15-60.41",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.26,
-          "expected": 0.44721,
-          "ae_ratio": 0.58,
-          "ae_ci": [
-            0.27,
-            0.9
-          ]
-        },
-        {
-          "bin": "60.41-65.27",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.46,
-          "expected": 0.588295,
-          "ae_ratio": 0.78,
-          "ae_ci": [
-            0.46,
-            1.1
-          ]
-        },
-        {
-          "bin": "65.27-69.65",
-          "n": 51,
-          "exposure": 51.0,
-          "actual": 0.431373,
-          "expected": 0.686398,
-          "ae_ratio": 0.63,
-          "ae_ci": [
-            0.37,
-            0.89
-          ]
-        }
-      ],
-      "residual_pattern": {
-        "resid_corr": -0.0294,
-        "var_explained": 0.000865
-      },
-      "significance": {
-        "chi2": 10.04,
-        "p": 0.2625,
-        "dev_contrib": 10.04
-      }
-    },
-    {
-      "name": "veh_age",
-      "factor_type": "continuous",
-      "in_model": true,
-      "transform": "ms(veh_age, 1/4, +)",
-      "coefficients": [
-        {
-          "term": "ms(veh_age, 1/4, +)",
-          "estimate": 15.4053,
-          "std_error": 1275.75,
-          "z_value": 0.012,
-          "p_value": 0.9904,
-          "relativity": 4902827.05
-        },
-        {
-          "term": "ms(veh_age, 2/4, +)",
-          "estimate": 0.0,
-          "std_error": 0.87979,
-          "z_value": 0.0,
-          "p_value": 1.0,
-          "relativity": 1.0
-        },
-        {
-          "term": "ms(veh_age, 3/4, +)",
-          "estimate": 0.0,
-          "std_error": 1.2278,
-          "z_value": 0.0,
-          "p_value": 1.0,
-          "relativity": 1.0
-        },
-        {
-          "term": "ms(veh_age, 4/4, +)",
-          "estimate": 0.0,
-          "std_error": 0.904359,
-          "z_value": 0.0,
-          "p_value": 1.0,
-          "relativity": 1.0
-        }
-      ],
-      "univariate": {
-        "mean": 9.639,
-        "std": 5.7042,
-        "min": 0.09264,
-        "max": 19.9944,
-        "missing_count": 0,
-        "percentiles": [
-          0.36,
-          1.09,
-          2.27,
-          4.58,
-          9.44,
-          14.53,
-          17.91,
-          18.69,
-          19.73
-        ]
-      },
-      "actual_vs_expected": [
-        {
-          "bin": "0.09-2.27",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.36,
-          "expected": 0.37107,
-          "ae_ratio": 0.97,
-          "ae_ci": [
-            0.52,
-            1.42
-          ]
-        },
-        {
-          "bin": "2.27-3.57",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.26,
-          "expected": 0.384117,
-          "ae_ratio": 0.68,
-          "ae_ci": [
-            0.31,
+            0.96,
             1.04
           ]
         },
         {
-          "bin": "3.57-5.41",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.36,
-          "expected": 0.380451,
-          "ae_ratio": 0.95,
+          "bin": "B",
+          "n": 45118,
+          "exposure": 25768.6,
+          "actual": 0.087471,
+          "expected": 0.087471,
+          "ae_ratio": 1.0,
           "ae_ci": [
-            0.51,
-            1.38
+            0.96,
+            1.04
           ]
         },
         {
-          "bin": "5.41-7.55",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.38,
-          "expected": 0.361263,
-          "ae_ratio": 1.05,
+          "bin": "F",
+          "n": 10707,
+          "exposure": 4849.01,
+          "actual": 0.137554,
+          "expected": 0.137554,
+          "ae_ratio": 1.0,
           "ae_ci": [
-            0.58,
-            1.52
-          ]
-        },
-        {
-          "bin": "7.55-9.44",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.14,
-          "expected": 0.404095,
-          "ae_ratio": 0.35,
-          "ae_ci": [
-            0.09,
-            0.6
-          ]
-        },
-        {
-          "bin": "9.44-11.43",
-          "n": 49,
-          "exposure": 49.0,
-          "actual": 0.244898,
-          "expected": 0.431074,
-          "ae_ratio": 0.57,
-          "ae_ci": [
-            0.25,
-            0.89
-          ]
-        },
-        {
-          "bin": "11.43-13.30",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.22,
-          "expected": 0.360933,
-          "ae_ratio": 0.61,
-          "ae_ci": [
-            0.25,
-            0.97
-          ]
-        },
-        {
-          "bin": "13.30-15.78",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.16,
-          "expected": 0.378926,
-          "ae_ratio": 0.42,
-          "ae_ci": [
-            0.13,
-            0.71
-          ]
-        },
-        {
-          "bin": "15.78-17.90",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.14,
-          "expected": 0.347419,
-          "ae_ratio": 0.4,
-          "ae_ci": [
-            0.1,
-            0.7
-          ]
-        },
-        {
-          "bin": "17.90-19.99",
-          "n": 51,
-          "exposure": 51.0,
-          "actual": 0.196078,
-          "expected": 0.393148,
-          "ae_ratio": 0.5,
-          "ae_ci": [
-            0.19,
-            0.81
+            0.92,
+            1.08
           ]
         }
       ],
       "residual_pattern": {
-        "resid_corr": -0.1176,
-        "var_explained": 0.013839
+        "resid_corr": 0.0652,
+        "var_explained": 6e-06
       },
       "significance": {
-        "chi2": 0.0,
-        "p": 1.0,
-        "dev_contrib": 0.0
+        "chi2": 540.97,
+        "p": 0.0,
+        "dev_contrib": 540.97
+      }
+    },
+    {
+      "name": "VehAge",
+      "factor_type": "continuous",
+      "in_model": true,
+      "transform": "bs(VehAge, 2/4)",
+      "coefficients": [
+        {
+          "term": "bs(VehAge, 2/4)",
+          "estimate": -2.4025,
+          "std_error": 0.149345,
+          "z_value": -16.087,
+          "p_value": 0.0,
+          "relativity": 0.0905
+        },
+        {
+          "term": "bs(VehAge, 3/4)",
+          "estimate": 3.0704,
+          "std_error": 0.8225,
+          "z_value": 3.733,
+          "p_value": 0.0002,
+          "relativity": 21.5506
+        },
+        {
+          "term": "bs(VehAge, 4/4)",
+          "estimate": -4.3145,
+          "std_error": 3.1182,
+          "z_value": -1.384,
+          "p_value": 0.1665,
+          "relativity": 0.0134
+        }
+      ],
+      "univariate": {
+        "mean": 7.0523,
+        "std": 5.68,
+        "min": 0.0,
+        "max": 100.0,
+        "missing_count": 0,
+        "percentiles": [
+          0.0,
+          0.0,
+          1.0,
+          2.0,
+          6.0,
+          11.0,
+          15.0,
+          17.0,
+          21.0
+        ]
+      },
+      "actual_vs_expected": [
+        {
+          "bin": "0.00-1.00",
+          "n": 34724,
+          "exposure": 10049.44,
+          "actual": 0.29932,
+          "expected": 0.144799,
+          "ae_ratio": 2.07,
+          "ae_ci": [
+            1.99,
+            2.14
+          ]
+        },
+        {
+          "bin": "1.00-2.00",
+          "n": 42680,
+          "exposure": 19679.24,
+          "actual": 0.08791,
+          "expected": 0.134125,
+          "ae_ratio": 0.66,
+          "ae_ci": [
+            0.62,
+            0.69
+          ]
+        },
+        {
+          "bin": "2.00-3.00",
+          "n": 35401,
+          "exposure": 17807.23,
+          "actual": 0.091873,
+          "expected": 0.124619,
+          "ae_ratio": 0.74,
+          "ae_ci": [
+            0.7,
+            0.77
+          ]
+        },
+        {
+          "bin": "3.00-4.00",
+          "n": 30085,
+          "exposure": 15579.53,
+          "actual": 0.090439,
+          "expected": 0.116578,
+          "ae_ratio": 0.78,
+          "ae_ci": [
+            0.74,
+            0.82
+          ]
+        },
+        {
+          "bin": "4.00-6.00",
+          "n": 49076,
+          "exposure": 27364.27,
+          "actual": 0.094612,
+          "expected": 0.106691,
+          "ae_ratio": 0.89,
+          "ae_ci": [
+            0.85,
+            0.92
+          ]
+        },
+        {
+          "bin": "6.00-8.00",
+          "n": 41009,
+          "exposure": 23930.87,
+          "actual": 0.103715,
+          "expected": 0.096254,
+          "ae_ratio": 1.08,
+          "ae_ci": [
+            1.04,
+            1.12
+          ]
+        },
+        {
+          "bin": "8.00-10.00",
+          "n": 38964,
+          "exposure": 22975.65,
+          "actual": 0.096972,
+          "expected": 0.088606,
+          "ae_ratio": 1.09,
+          "ae_ci": [
+            1.05,
+            1.14
+          ]
+        },
+        {
+          "bin": "10.00-12.00",
+          "n": 40550,
+          "exposure": 23007.97,
+          "actual": 0.096445,
+          "expected": 0.083035,
+          "ae_ratio": 1.16,
+          "ae_ci": [
+            1.11,
+            1.21
+          ]
+        },
+        {
+          "bin": "12.00-15.00",
+          "n": 48526,
+          "exposure": 28503.08,
+          "actual": 0.083815,
+          "expected": 0.077604,
+          "ae_ratio": 1.08,
+          "ae_ci": [
+            1.04,
+            1.12
+          ]
+        },
+        {
+          "bin": "15.00-100.00",
+          "n": 45424,
+          "exposure": 26033.61,
+          "actual": 0.065992,
+          "expected": 0.072861,
+          "ae_ratio": 0.91,
+          "ae_ci": [
+            0.86,
+            0.95
+          ]
+        }
+      ],
+      "residual_pattern": {
+        "resid_corr": -0.012,
+        "var_explained": 0.000145
+      },
+      "significance": {
+        "chi2": 274.65,
+        "p": 0.0,
+        "dev_contrib": 274.65
       }
     }
   ],
   "interaction_candidates": [],
   "model_comparison": {
-    "likelihood_ratio_chi2": -11.1867,
+    "likelihood_ratio_chi2": 1375.69,
     "likelihood_ratio_df": 8,
-    "likelihood_ratio_pvalue": 1.0,
-    "deviance_reduction_pct": -2.8178,
-    "aic_improvement": -27.1867
+    "likelihood_ratio_pvalue": 0.0,
+    "deviance_reduction_pct": 1.0396,
+    "aic_improvement": 1359.69
   },
   "warnings": [
     {
-      "type": "poor_calibration",
-      "message": "Model over-predicts overall (A/E = 0.645)."
-    },
-    {
       "type": "weak_discrimination",
-      "message": "Model has weak discrimination in deciles: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]. Consider adding features or interactions to improve separation."
-    }
-  ],
-  "vif": [
-    {
-      "feature": "ms(veh_age, 3/4, +)",
-      "vif": 33.48,
-      "severity": "severe",
-      "collinear_with": [
-        "ms(veh_age, 2/4, +)",
-        "ms(veh_age, 4/4, +)"
-      ]
+      "message": "Model has weak discrimination in deciles: [1, 2, 3, 4, 5, 8, 9, 10]. Consider adding features or interactions to improve separation."
     },
     {
-      "feature": "ms(veh_age, 2/4, +)",
-      "vif": 11.67,
-      "severity": "severe",
-      "collinear_with": [
-        "ms(veh_age, 3/4, +)",
-        "ms(veh_age, 4/4, +)"
-      ]
-    },
-    {
-      "feature": "ms(veh_age, 4/4, +)",
-      "vif": 11.46,
-      "severity": "severe",
-      "collinear_with": [
-        "ms(veh_age, 3/4, +)",
-        "ms(veh_age, 2/4, +)"
-      ]
+      "type": "overdispersion",
+      "message": "Overdispersion detected (\u03c6=2.53). Consider Negative Binomial or QuasiPoisson"
     }
   ],
+  "vif": [],
   "coefficient_summary": [
     {
-      "feature": "bs(age, 5/5)",
-      "estimate": 1.0414,
-      "std_error": 0.405566,
-      "z_value": 2.568,
-      "p_value": 0.0102,
+      "feature": "bs(VehAge, 2/4)",
+      "estimate": -2.4025,
+      "std_error": 0.149345,
+      "z_value": -16.087,
+      "p_value": 0.0,
       "significant": true,
-      "relativity": 2.8333,
+      "relativity": 0.0905,
       "relativity_ci": [
-        1.2796,
-        6.2734
+        0.0675,
+        0.1213
       ]
     },
     {
-      "feature": "bs(age, 4/5)",
-      "estimate": 0.911835,
-      "std_error": 0.600666,
-      "z_value": 1.518,
-      "p_value": 0.129,
-      "significant": false,
-      "relativity": 2.4889,
+      "feature": "Area[T.E]",
+      "estimate": 0.375475,
+      "std_error": 0.02372,
+      "z_value": 15.83,
+      "p_value": 0.0,
+      "significant": true,
+      "relativity": 1.4557,
       "relativity_ci": [
-        0.7669,
-        8.0778
+        1.3896,
+        1.525
       ]
     },
     {
-      "feature": "bs(age, 3/5)",
-      "estimate": -0.540083,
-      "std_error": 0.595877,
-      "z_value": -0.906,
-      "p_value": 0.3647,
-      "significant": false,
-      "relativity": 0.5827,
+      "feature": "Area[T.D]",
+      "estimate": 0.272797,
+      "std_error": 0.023366,
+      "z_value": 11.675,
+      "p_value": 0.0,
+      "significant": true,
+      "relativity": 1.3136,
       "relativity_ci": [
-        0.1812,
-        1.8735
+        1.2548,
+        1.3752
       ]
     },
     {
-      "feature": "bs(age, 2/5)",
-      "estimate": 0.428309,
-      "std_error": 0.762316,
-      "z_value": 0.562,
-      "p_value": 0.5742,
-      "significant": false,
-      "relativity": 1.5347,
+      "feature": "Area[T.F]",
+      "estimate": 0.431534,
+      "std_error": 0.043141,
+      "z_value": 10.003,
+      "p_value": 0.0,
+      "significant": true,
+      "relativity": 1.5396,
       "relativity_ci": [
-        0.3445,
-        6.8375
+        1.4148,
+        1.6755
       ]
     },
     {
-      "feature": "ms(veh_age, 1/4, +)",
-      "estimate": 15.4053,
-      "std_error": 1275.75,
-      "z_value": 0.012,
-      "p_value": 0.9904,
+      "feature": "Area[T.C]",
+      "estimate": 0.15144,
+      "std_error": 0.022648,
+      "z_value": 6.687,
+      "p_value": 0.0,
+      "significant": true,
+      "relativity": 1.1635,
+      "relativity_ci": [
+        1.113,
+        1.2163
+      ]
+    },
+    {
+      "feature": "bs(VehAge, 3/4)",
+      "estimate": 3.0704,
+      "std_error": 0.8225,
+      "z_value": 3.733,
+      "p_value": 0.0002,
+      "significant": true,
+      "relativity": 21.5506,
+      "relativity_ci": [
+        4.2988,
+        108.04
+      ]
+    },
+    {
+      "feature": "Area[T.B]",
+      "estimate": 0.085665,
+      "std_error": 0.028057,
+      "z_value": 3.053,
+      "p_value": 0.0023,
+      "significant": true,
+      "relativity": 1.0894,
+      "relativity_ci": [
+        1.0311,
+        1.151
+      ]
+    },
+    {
+      "feature": "bs(VehAge, 4/4)",
+      "estimate": -4.3145,
+      "std_error": 3.1182,
+      "z_value": -1.384,
+      "p_value": 0.1665,
       "significant": false,
-      "relativity": 4902827.05,
+      "relativity": 0.0134,
       "relativity_ci": [
         0.0,
-        null
-      ]
-    },
-    {
-      "feature": "ms(veh_age, 2/4, +)",
-      "estimate": 0.0,
-      "std_error": 0.87979,
-      "z_value": 0.0,
-      "p_value": 1.0,
-      "significant": false,
-      "relativity": 1.0,
-      "relativity_ci": [
-        0.1783,
-        5.6089
-      ]
-    },
-    {
-      "feature": "ms(veh_age, 3/4, +)",
-      "estimate": 0.0,
-      "std_error": 1.2278,
-      "z_value": 0.0,
-      "p_value": 1.0,
-      "significant": false,
-      "relativity": 1.0,
-      "relativity_ci": [
-        0.0901,
-        11.0948
-      ]
-    },
-    {
-      "feature": "ms(veh_age, 4/4, +)",
-      "estimate": 0.0,
-      "std_error": 0.904359,
-      "z_value": 0.0,
-      "p_value": 1.0,
-      "significant": false,
-      "relativity": 1.0,
-      "relativity_ci": [
-        0.1699,
-        5.8856
+        6.0317
       ]
     },
     {
       "feature": "Intercept",
-      "estimate": -16.7619,
-      "std_error": 1275.75,
-      "z_value": -0.013,
-      "p_value": 0.9895,
-      "significant": false,
-      "relativity": 0.0,
+      "estimate": -2.1614,
+      "std_error": 0.023134,
+      "z_value": -93.427,
+      "p_value": 0.0,
+      "significant": true,
+      "relativity": 0.1152,
       "relativity_ci": [
-        0.0,
-        null
+        0.1101,
+        0.1205
       ]
     }
   ],
-  "factor_deviance": null,
+  "factor_deviance": [
+    {
+      "factor": "Area",
+      "total_deviance": 130952.62,
+      "levels": [
+        {
+          "level": "C",
+          "n": 115158,
+          "deviance": 36388.42,
+          "deviance_pct": 27.79,
+          "mean_deviance": 0.316,
+          "ae_ratio": 1.0,
+          "problem": false
+        },
+        {
+          "level": "D",
+          "n": 90936,
+          "deviance": 30416.16,
+          "deviance_pct": 23.23,
+          "mean_deviance": 0.3345,
+          "ae_ratio": 1.0,
+          "problem": false
+        },
+        {
+          "level": "E",
+          "n": 82103,
+          "deviance": 27577.37,
+          "deviance_pct": 21.06,
+          "mean_deviance": 0.3359,
+          "ae_ratio": 1.0,
+          "problem": false
+        },
+        {
+          "level": "A",
+          "n": 62417,
+          "deviance": 18576.52,
+          "deviance_pct": 14.19,
+          "mean_deviance": 0.2976,
+          "ae_ratio": 1.0,
+          "problem": false
+        },
+        {
+          "level": "B",
+          "n": 45118,
+          "deviance": 13997.96,
+          "deviance_pct": 10.69,
+          "mean_deviance": 0.3103,
+          "ae_ratio": 1.0,
+          "problem": false
+        },
+        {
+          "level": "F",
+          "n": 10707,
+          "deviance": 3996.19,
+          "deviance_pct": 3.05,
+          "mean_deviance": 0.3732,
+          "ae_ratio": 1.0,
+          "problem": false
+        }
+      ],
+      "problem_levels": []
+    }
+  ],
   "lift_chart": {
     "deciles": [
       {
         "decile": 1,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 0.2,
-        "predicted": 0.262786,
-        "ae_ratio": 0.761,
-        "cumulative_actual_pct": 8.13,
-        "cumulative_predicted_pct": 6.89,
-        "lift": 0.813,
-        "cumulative_lift": 0.813
+        "n": 40643,
+        "exposure": 1697.97,
+        "actual": 0.584228,
+        "predicted": 0.092558,
+        "ae_ratio": 6.312,
+        "cumulative_actual_pct": 4.63,
+        "cumulative_predicted_pct": 0.73,
+        "lift": 5.865,
+        "cumulative_lift": 5.865
       },
       {
         "decile": 2,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 0.18,
-        "predicted": 0.275629,
-        "ae_ratio": 0.653,
-        "cumulative_actual_pct": 15.45,
-        "cumulative_predicted_pct": 14.13,
-        "lift": 0.732,
-        "cumulative_lift": 0.772
+        "n": 40643,
+        "exposure": 3648.26,
+        "actual": 0.304803,
+        "predicted": 0.103112,
+        "ae_ratio": 2.956,
+        "cumulative_actual_pct": 9.83,
+        "cumulative_predicted_pct": 2.49,
+        "lift": 3.06,
+        "cumulative_lift": 3.951
       },
       {
         "decile": 3,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 0.2,
-        "predicted": 0.282993,
-        "ae_ratio": 0.707,
-        "cumulative_actual_pct": 23.58,
-        "cumulative_predicted_pct": 21.55,
-        "lift": 0.813,
-        "cumulative_lift": 0.786
+        "n": 40643,
+        "exposure": 7434.3,
+        "actual": 0.204189,
+        "predicted": 0.095317,
+        "ae_ratio": 2.142,
+        "cumulative_actual_pct": 16.92,
+        "cumulative_predicted_pct": 5.8,
+        "lift": 2.05,
+        "cumulative_lift": 2.845
       },
       {
         "decile": 4,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 0.22,
-        "predicted": 0.292103,
-        "ae_ratio": 0.753,
-        "cumulative_actual_pct": 32.52,
-        "cumulative_predicted_pct": 29.21,
-        "lift": 0.894,
-        "cumulative_lift": 0.813
+        "n": 40643,
+        "exposure": 12252.47,
+        "actual": 0.138666,
+        "predicted": 0.095804,
+        "ae_ratio": 1.447,
+        "cumulative_actual_pct": 24.86,
+        "cumulative_predicted_pct": 11.28,
+        "lift": 1.392,
+        "cumulative_lift": 2.134
       },
       {
         "decile": 5,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 0.2,
-        "predicted": 0.300588,
-        "ae_ratio": 0.665,
-        "cumulative_actual_pct": 40.65,
-        "cumulative_predicted_pct": 37.1,
-        "lift": 0.813,
-        "cumulative_lift": 0.813
+        "n": 40643,
+        "exposure": 18237.09,
+        "actual": 0.116521,
+        "predicted": 0.094641,
+        "ae_ratio": 1.231,
+        "cumulative_actual_pct": 34.78,
+        "cumulative_predicted_pct": 19.35,
+        "lift": 1.17,
+        "cumulative_lift": 1.728
       },
       {
         "decile": 6,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 0.18,
-        "predicted": 0.307985,
-        "ae_ratio": 0.584,
-        "cumulative_actual_pct": 47.97,
-        "cumulative_predicted_pct": 45.18,
-        "lift": 0.732,
-        "cumulative_lift": 0.799
+        "n": 40643,
+        "exposure": 25900.25,
+        "actual": 0.089767,
+        "predicted": 0.090206,
+        "ae_ratio": 0.995,
+        "cumulative_actual_pct": 45.64,
+        "cumulative_predicted_pct": 30.26,
+        "lift": 0.901,
+        "cumulative_lift": 1.418
       },
       {
         "decile": 7,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 0.14,
-        "predicted": 0.351266,
-        "ae_ratio": 0.399,
-        "cumulative_actual_pct": 53.66,
-        "cumulative_predicted_pct": 54.39,
-        "lift": 0.569,
-        "cumulative_lift": 0.767
+        "n": 40643,
+        "exposure": 33533.96,
+        "actual": 0.070675,
+        "predicted": 0.084919,
+        "ae_ratio": 0.832,
+        "cumulative_actual_pct": 56.71,
+        "cumulative_predicted_pct": 43.56,
+        "lift": 0.71,
+        "cumulative_lift": 1.187
       },
       {
         "decile": 8,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 0.26,
-        "predicted": 0.455115,
-        "ae_ratio": 0.571,
-        "cumulative_actual_pct": 64.23,
-        "cumulative_predicted_pct": 66.33,
-        "lift": 1.057,
-        "cumulative_lift": 0.803
+        "n": 40643,
+        "exposure": 35940.23,
+        "actual": 0.076126,
+        "predicted": 0.092107,
+        "ae_ratio": 0.827,
+        "cumulative_actual_pct": 69.49,
+        "cumulative_predicted_pct": 59.03,
+        "lift": 0.764,
+        "cumulative_lift": 1.077
       },
       {
         "decile": 9,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 0.46,
-        "predicted": 0.588295,
-        "ae_ratio": 0.782,
-        "cumulative_actual_pct": 82.93,
-        "cumulative_predicted_pct": 81.77,
-        "lift": 1.87,
-        "cumulative_lift": 0.921
+        "n": 40643,
+        "exposure": 37476.25,
+        "actual": 0.080211,
+        "predicted": 0.103166,
+        "ae_ratio": 0.777,
+        "cumulative_actual_pct": 83.53,
+        "cumulative_predicted_pct": 77.09,
+        "lift": 0.805,
+        "cumulative_lift": 1.019
       },
       {
         "decile": 10,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 0.42,
-        "predicted": 0.694976,
-        "ae_ratio": 0.604,
+        "n": 40652,
+        "exposure": 38810.12,
+        "actual": 0.090827,
+        "predicted": 0.126401,
+        "ae_ratio": 0.719,
         "cumulative_actual_pct": 100.0,
         "cumulative_predicted_pct": 100.0,
-        "lift": 1.707,
+        "lift": 0.912,
         "cumulative_lift": 1.0
       }
     ],
-    "gini": 0.165,
-    "ks_statistic": 3.55,
+    "gini": 0.138,
+    "ks_statistic": 15.43,
     "ks_decile": 5,
     "weak_deciles": [
       1,
@@ -1181,8 +1406,6 @@
       3,
       4,
       5,
-      6,
-      7,
       8,
       9,
       10
@@ -1190,188 +1413,129 @@
   },
   "partial_dependence": [
     {
-      "variable": "age",
+      "variable": "VehAge",
       "variable_type": "continuous",
       "grid_values": [
-        20.5674,
-        23.1329,
-        25.6983,
-        28.2637,
-        30.8292,
-        33.3946,
-        35.9601,
-        38.5255,
-        41.0909,
-        43.6564,
-        46.2218,
-        48.7872,
-        51.3527,
-        53.9181,
-        56.4836,
-        59.049,
-        61.6144,
-        64.1799,
-        66.7453,
-        69.3108
+        0.0,
+        1.1053,
+        2.2105,
+        3.3158,
+        4.4211,
+        5.5263,
+        6.6316,
+        7.7368,
+        8.8421,
+        9.9474,
+        11.0526,
+        12.1579,
+        13.2632,
+        14.3684,
+        15.4737,
+        16.5789,
+        17.6842,
+        18.7895,
+        19.8947,
+        21.0
       ],
       "predictions": [
-        1.1e-05,
-        3.4e-05,
-        0.000101,
-        0.000303,
-        0.000909,
-        0.002727,
-        0.008184,
-        0.024556,
-        0.073683,
-        0.22109,
-        0.663393,
-        1.9906,
-        5.9728,
-        17.9217,
-        53.7752,
-        161.36,
-        484.16,
-        1452.75,
-        4359.06,
-        13079.62
+        1202124.78,
+        84471.57,
+        5935.7,
+        417.09,
+        29.3085,
+        2.0595,
+        0.144716,
+        0.010169,
+        0.000715,
+        5e-05,
+        4e-06,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
       ],
       "relativities": [
-        0.0,
-        0.0001,
-        0.0002,
-        0.0005,
-        0.0014,
-        0.0041,
-        0.0123,
-        0.037,
-        0.1111,
-        0.3333,
+        340713775599.58,
+        23941465113.99,
+        1682332188.64,
+        118215054.07,
+        8306801.18,
+        583706.93,
+        41016.24,
+        2882.15,
+        202.52,
+        14.2311,
         1.0,
-        3.0006,
-        9.0034,
-        27.0152,
-        81.0608,
-        243.23,
-        729.82,
-        2189.87,
-        6570.85,
-        19716.25
+        0.0703,
+        0.0049,
+        0.0003,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
       ],
       "std_errors": null,
-      "shape": "linear_increasing",
+      "shape": "linear_decreasing",
       "recommendation": "Linear effect adequate"
     },
     {
-      "variable": "veh_age",
-      "variable_type": "continuous",
+      "variable": "Area",
+      "variable_type": "categorical",
       "grid_values": [
-        0.3615,
-        1.3809,
-        2.4003,
-        3.4197,
-        4.4392,
-        5.4586,
-        6.478,
-        7.4974,
-        8.5168,
-        9.5363,
-        10.5557,
-        11.5751,
-        12.5945,
-        13.6139,
-        14.6334,
-        15.6528,
-        16.6722,
-        17.6916,
-        18.711,
-        19.7305
+        "A",
+        "B",
+        "C",
+        "D",
+        "E",
+        "F"
       ],
       "predictions": [
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.078269,
-        517557.27,
-        3422383990417.14,
-        2.263075565590916e+19,
-        1.4964746883794986e+26,
-        9.895544483844003e+32,
-        6.543498623272603e+39,
-        4.3269346424218495e+46,
-        2.8612160676862715e+53,
-        1.8919993164961164e+60,
-        1.251097899962769e+67
+        0.046734,
+        0.049958,
+        0.051555,
+        0.054775,
+        0.056661,
+        0.062296
       ],
       "relativities": [
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
         1.0,
-        6612570.57,
-        43726089549557.12,
-        2.891418529174994e+20,
-        1.9119709072958304e+27,
-        1.264304255319516e+34,
-        8.36030111085647e+40,
-        5.528308108598837e+47,
-        3.655632750345582e+54,
-        2.417312954141264e+61
+        1.069,
+        1.1032,
+        1.1721,
+        1.2124,
+        1.333
       ],
       "std_errors": null,
-      "shape": "linear_increasing",
-      "recommendation": "Linear effect adequate"
+      "shape": "moderate_variation",
+      "recommendation": "Categorical appropriate, consider grouping similar levels"
     }
   ],
   "overdispersion": {
-    "pearson_dispersion": 0.7224,
-    "pearson_chi2": 354.69,
-    "df_resid": 491,
-    "raw_dispersion": 1.0814,
-    "mean_count": 0.246,
-    "var_count": 0.266,
-    "severity": "none",
-    "recommendation": "Poisson assumption appears reasonable"
+    "pearson_dispersion": 2.5334,
+    "pearson_chi2": 1029653.93,
+    "df_resid": 406430,
+    "raw_dispersion": 1.0471,
+    "mean_count": 0.0527,
+    "var_count": 0.0552,
+    "severity": "moderate",
+    "recommendation": "Consider Negative Binomial or QuasiPoisson"
   },
   "spline_info": {
-    "age": {
+    "VehAge": {
       "type": "bs",
-      "df": 5,
-      "degree": 3,
-      "knots": [
-        45.6582
-      ],
-      "boundary_knots": [
-        20.2531,
-        69.6482
-      ]
-    },
-    "veh_age": {
-      "type": "ms",
       "df": 4,
       "degree": 3,
-      "increasing": true,
-      "knots": [
-        4.582,
-        9.4364,
-        14.5267
-      ],
+      "knots": [],
       "boundary_knots": [
-        0.09264,
-        19.9944
+        0.0,
+        100.0
       ]
     }
   }
