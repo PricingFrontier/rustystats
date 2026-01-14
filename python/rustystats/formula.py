@@ -115,6 +115,7 @@ class FormulaGLM:
         theta: Optional[float] = None,
         offset: Optional[Union[str, np.ndarray]] = None,
         weights: Optional[Union[str, np.ndarray]] = None,
+        seed: Optional[int] = None,
     ):
         self.formula = formula
         self.data = data
@@ -124,6 +125,7 @@ class FormulaGLM:
         self.theta = theta  # None means auto-estimate for negbinomial
         self._offset_spec = offset
         self._weights_spec = weights
+        self._seed = seed
         
         # Extract raw exposure for target encoding BEFORE building design matrix
         # For frequency models with log link, offset is typically log(exposure)
@@ -132,9 +134,10 @@ class FormulaGLM:
         
         # Build design matrix (uses optimized backend for interactions)
         # Pass raw exposure so target encoding can use rate (y/exposure) instead of raw y
+        # Pass seed for deterministic target encoding
         self._builder = InteractionBuilder(data)
         self.y, self.X, self.feature_names = self._builder.build_design_matrix(
-            formula, exposure=raw_exposure
+            formula, exposure=raw_exposure, seed=seed
         )
         self.n_obs = len(self.y)
         self.n_params = self.X.shape[1]
@@ -1410,6 +1413,7 @@ def glm(
     theta: Optional[float] = None,
     offset: Optional[Union[str, np.ndarray]] = None,
     weights: Optional[Union[str, np.ndarray]] = None,
+    seed: Optional[int] = None,
 ) -> FormulaGLM:
     """
     Create a GLM model from a formula and DataFrame.
@@ -1453,6 +1457,11 @@ def glm(
     weights : str or array-like, optional
         Prior weights. If string, treated as column name.
         
+    seed : int, optional
+        Random seed for deterministic target encoding (TE). If None,
+        TE uses random permutations which may produce different results
+        on each run. Set to a fixed value for reproducibility.
+        
     Returns
     -------
     FormulaGLM
@@ -1494,4 +1503,5 @@ def glm(
         theta=theta,
         offset=offset,
         weights=weights,
+        seed=seed,
     )

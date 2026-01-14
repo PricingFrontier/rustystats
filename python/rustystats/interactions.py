@@ -1059,6 +1059,7 @@ class InteractionBuilder:
         self,
         formula: str,
         exposure: Optional[np.ndarray] = None,
+        seed: Optional[int] = None,
     ) -> Tuple[np.ndarray, np.ndarray, List[str]]:
         """
         Build complete design matrix from formula.
@@ -1071,6 +1072,9 @@ class InteractionBuilder:
             Exposure values. If provided, target encoding (TE) will use
             rate (y/exposure) instead of raw y values. This is important
             for frequency models to prevent TE values collapsing to near-constant.
+        seed : int, optional
+            Random seed for deterministic target encoding. If None, TE uses
+            random permutations (non-deterministic).
             
         Returns
         -------
@@ -1122,7 +1126,7 @@ class InteractionBuilder:
         te_encodings: Dict[str, np.ndarray] = {}  # For use in interactions
         for te_term in parsed.target_encoding_terms:
             te_col, te_name, te_stats = self._build_target_encoding_columns(
-                te_term, y, exposure=exposure
+                te_term, y, seed=seed, exposure=exposure
             )
             columns.append(te_col.reshape(-1, 1))
             names.append(te_name)
