@@ -154,6 +154,72 @@ print(result.summary())
 
 ---
 
+## Dict-Based API
+
+Alternative to formula strings for programmatic model building. Useful for automated workflows and agentic systems.
+
+```python
+result = rs.glm_dict(
+    response="ClaimCount",
+    terms={
+        "VehAge": {"type": "linear"},
+        "DrivAge": {"type": "bs", "df": 5},
+        "BonusMalus": {"type": "bs", "df": 4, "monotonicity": "increasing"},
+        "Region": {"type": "categorical"},
+        "Brand": {"type": "target_encoding"},
+        "Age2": {"type": "expression", "expr": "DrivAge**2"},
+    },
+    interactions=[
+        {
+            "VehAge": {"type": "linear"}, 
+            "Region": {"type": "categorical"}, 
+            "include_main": True
+        },
+    ],
+    data=data,
+    family="poisson",
+    offset="Exposure",
+    seed=42,
+).fit()
+```
+
+### Term Types
+
+| Type | Parameters | Description |
+|------|------------|-------------|
+| `linear` | - | Raw continuous variable |
+| `categorical` | `levels` (optional) | Dummy encoding |
+| `bs` | `df`, `degree=3` | B-spline basis |
+| `ns` | `df` | Natural spline |
+| `bs` + `monotonicity` | `df`, `monotonicity="increasing"/"decreasing"` | Monotonic spline |
+| `target_encoding` | `prior_weight=1` | Regularized target encoding |
+| `expression` | `expr` | Arbitrary expression (like `I()`) |
+
+Add `"monotonicity": "increasing"` or `"decreasing"` to any term type to constrain the coefficient sign.
+
+### Interactions
+
+Each interaction is a dict with variable specs and `include_main`:
+
+```python
+interactions=[
+    # Main effects + interaction (like x*y)
+    {
+        "DrivAge": {"type": "bs", "df": 5}, 
+        "Brand": {"type": "target_encoding"},
+        "include_main": True
+    },
+    # Interaction only (like x:y)
+    {
+        "VehAge": {"type": "linear"}, 
+        "Region": {"type": "categorical"}, 
+        "include_main": False
+    },
+]
+```
+
+---
+
 ## Results Methods
 
 ```python

@@ -1505,3 +1505,530 @@ def glm(
         weights=weights,
         seed=seed,
     )
+
+
+# =============================================================================
+# Dict-based API
+# =============================================================================
+
+from typing import Dict, Any, Set
+from rustystats.interactions import (
+    ParsedFormula, InteractionTerm, TargetEncodingTermSpec, 
+    IdentityTermSpec, CategoricalTermSpec, ConstraintTermSpec
+)
+from rustystats.splines import SplineTerm
+
+
+def _parse_term_spec(
+    var_name: str,
+    spec: Dict[str, Any],
+    categorical_vars: Set[str],
+    main_effects: List[str],
+    spline_terms: List[SplineTerm],
+    target_encoding_terms: List[TargetEncodingTermSpec],
+    identity_terms: List[IdentityTermSpec],
+    categorical_terms: List[CategoricalTermSpec],
+    constraint_terms: List[ConstraintTermSpec],
+) -> None:
+    """Parse a single term specification and add to appropriate lists."""
+    term_type = spec.get("type", "linear")
+    monotonicity = spec.get("monotonicity")  # "increasing" or "decreasing"
+    
+    if term_type == "linear":
+        if monotonicity:
+            # Constrained linear term
+            constraint = "pos" if monotonicity == "increasing" else "neg"
+            constraint_terms.append(ConstraintTermSpec(
+                var_name=var_name,
+                constraint=constraint,
+            ))
+        else:
+            main_effects.append(var_name)
+    
+    elif term_type == "categorical":
+        categorical_vars.add(var_name)
+        levels = spec.get("levels")
+        if levels:
+            # Specific levels only
+            categorical_terms.append(CategoricalTermSpec(
+                var_name=var_name,
+                levels=levels,
+            ))
+        else:
+            main_effects.append(var_name)
+    
+    elif term_type == "bs":
+        df = spec.get("df", 5)
+        degree = spec.get("degree", 3)
+        if monotonicity:
+            # Monotonic B-spline (I-spline)
+            increasing = monotonicity == "increasing"
+            spline_terms.append(SplineTerm(
+                var_name=var_name,
+                spline_type="ms",
+                df=df,
+                degree=degree,
+                increasing=increasing,
+            ))
+        else:
+            spline_terms.append(SplineTerm(
+                var_name=var_name,
+                spline_type="bs",
+                df=df,
+                degree=degree,
+            ))
+    
+    elif term_type == "ns":
+        df = spec.get("df", 4)
+        spline_terms.append(SplineTerm(
+            var_name=var_name,
+            spline_type="ns",
+            df=df,
+        ))
+    
+    elif term_type == "target_encoding":
+        prior_weight = spec.get("prior_weight", 1.0)
+        n_permutations = spec.get("n_permutations", 4)
+        target_encoding_terms.append(TargetEncodingTermSpec(
+            var_name=var_name,
+            prior_weight=prior_weight,
+            n_permutations=n_permutations,
+        ))
+    
+    elif term_type == "expression":
+        expr = spec.get("expr", var_name)
+        if monotonicity:
+            constraint = "pos" if monotonicity == "increasing" else "neg"
+            constraint_terms.append(ConstraintTermSpec(
+                var_name=f"I({expr})",
+                constraint=constraint,
+            ))
+        else:
+            identity_terms.append(IdentityTermSpec(expression=expr))
+    
+    else:
+        raise ValueError(f"Unknown term type: {term_type}")
+
+
+def _parse_interaction_spec(
+    interaction: Dict[str, Any],
+    interactions: List[InteractionTerm],
+    categorical_vars: Set[str],
+    main_effects: List[str],
+    spline_terms: List[SplineTerm],
+    target_encoding_terms: List[TargetEncodingTermSpec],
+    identity_terms: List[IdentityTermSpec],
+    categorical_terms: List[CategoricalTermSpec],
+    constraint_terms: List[ConstraintTermSpec],
+) -> None:
+    """Parse an interaction specification."""
+    include_main = interaction.get("include_main", False)
+    
+    # Extract variable specs (everything except include_main)
+    var_specs = {k: v for k, v in interaction.items() if k != "include_main"}
+    
+    if len(var_specs) < 2:
+        raise ValueError("Interaction must have at least 2 variables")
+    
+    factors = list(var_specs.keys())
+    
+    # Determine which factors are categorical or splines
+    cat_factors = set()
+    spline_factors = []
+    
+    for var_name, spec in var_specs.items():
+        term_type = spec.get("type", "linear")
+        
+        if term_type == "categorical":
+            cat_factors.add(var_name)
+            categorical_vars.add(var_name)
+        elif term_type in ("bs", "ns"):
+            df = spec.get("df", 5 if term_type == "bs" else 4)
+            degree = spec.get("degree", 3)
+            monotonicity = spec.get("monotonicity")
+            if monotonicity:
+                spline = SplineTerm(
+                    var_name=var_name,
+                    spline_type="ms",
+                    df=df,
+                    degree=degree,
+                    increasing=monotonicity == "increasing",
+                )
+            else:
+                spline = SplineTerm(
+                    var_name=var_name,
+                    spline_type=term_type,
+                    df=df,
+                    degree=degree,
+                )
+            spline_factors.append((var_name, spline))
+        elif term_type == "target_encoding":
+            prior_weight = spec.get("prior_weight", 1.0)
+            # TE in interaction - add to TE terms if include_main
+            if include_main:
+                target_encoding_terms.append(TargetEncodingTermSpec(
+                    var_name=var_name,
+                    prior_weight=prior_weight,
+                ))
+    
+    # Build interaction term
+    is_pure_cat = all(var_specs[f].get("type") == "categorical" for f in factors)
+    is_pure_cont = all(var_specs[f].get("type") in ("linear", None) for f in factors)
+    
+    interaction_term = InteractionTerm(
+        factors=factors,
+        categorical_factors=list(cat_factors),
+        is_pure_categorical=is_pure_cat,
+        is_pure_continuous=is_pure_cont,
+        spline_factors=spline_factors if spline_factors else None,
+    )
+    interactions.append(interaction_term)
+    
+    # Add main effects if requested
+    if include_main:
+        for var_name, spec in var_specs.items():
+            _parse_term_spec(
+                var_name, spec, categorical_vars, main_effects,
+                spline_terms, target_encoding_terms, identity_terms,
+                categorical_terms, constraint_terms,
+            )
+
+
+def dict_to_parsed_formula(
+    response: str,
+    terms: Dict[str, Dict[str, Any]],
+    interactions: Optional[List[Dict[str, Any]]] = None,
+    intercept: bool = True,
+) -> ParsedFormula:
+    """
+    Convert dict specification to ParsedFormula.
+    
+    Parameters
+    ----------
+    response : str
+        Name of the response variable
+    terms : dict
+        Dictionary mapping variable names to term specifications
+    interactions : list of dict, optional
+        List of interaction specifications
+    intercept : bool, default=True
+        Whether to include an intercept
+        
+    Returns
+    -------
+    ParsedFormula
+        Parsed formula object compatible with build_design_matrix
+    """
+    categorical_vars: Set[str] = set()
+    main_effects: List[str] = []
+    spline_terms_list: List[SplineTerm] = []
+    target_encoding_terms_list: List[TargetEncodingTermSpec] = []
+    identity_terms_list: List[IdentityTermSpec] = []
+    categorical_terms_list: List[CategoricalTermSpec] = []
+    constraint_terms_list: List[ConstraintTermSpec] = []
+    interaction_terms_list: List[InteractionTerm] = []
+    
+    # Parse main terms
+    for var_name, spec in terms.items():
+        _parse_term_spec(
+            var_name, spec, categorical_vars, main_effects,
+            spline_terms_list, target_encoding_terms_list, identity_terms_list,
+            categorical_terms_list, constraint_terms_list,
+        )
+    
+    # Parse interactions
+    if interactions:
+        for interaction in interactions:
+            _parse_interaction_spec(
+                interaction, interaction_terms_list, categorical_vars,
+                main_effects, spline_terms_list, target_encoding_terms_list,
+                identity_terms_list, categorical_terms_list, constraint_terms_list,
+            )
+    
+    return ParsedFormula(
+        response=response,
+        main_effects=main_effects,
+        interactions=interaction_terms_list,
+        categorical_vars=categorical_vars,
+        spline_terms=spline_terms_list,
+        target_encoding_terms=target_encoding_terms_list,
+        identity_terms=identity_terms_list,
+        categorical_terms=categorical_terms_list,
+        constraint_terms=constraint_terms_list,
+        has_intercept=intercept,
+    )
+
+
+class FormulaGLMDict:
+    """
+    GLM model with dict-based specification.
+    
+    Alternative to formula strings for programmatic model building.
+    """
+    
+    def __init__(
+        self,
+        response: str,
+        terms: Dict[str, Dict[str, Any]],
+        data: "pl.DataFrame",
+        interactions: Optional[List[Dict[str, Any]]] = None,
+        intercept: bool = True,
+        family: str = "gaussian",
+        link: Optional[str] = None,
+        var_power: float = 1.5,
+        theta: Optional[float] = None,
+        offset: Optional[Union[str, np.ndarray]] = None,
+        weights: Optional[Union[str, np.ndarray]] = None,
+        seed: Optional[int] = None,
+    ):
+        self.response = response
+        self.terms = terms
+        self.interactions_spec = interactions
+        self.intercept = intercept
+        self.data = data
+        self.family = family.lower()
+        self.link = link
+        self.var_power = var_power
+        self.theta = theta
+        self._offset_spec = offset
+        self._weights_spec = weights
+        self._seed = seed
+        
+        # Build formula string for compatibility (used in results/diagnostics)
+        self.formula = self._build_formula_string()
+        
+        # Convert dict to ParsedFormula
+        parsed = dict_to_parsed_formula(
+            response=response,
+            terms=terms,
+            interactions=interactions,
+            intercept=intercept,
+        )
+        
+        # Extract raw exposure for target encoding
+        raw_exposure = self._get_raw_exposure(offset)
+        
+        # Build design matrix using existing pipeline
+        self._builder = InteractionBuilder(data)
+        self.y, self.X, self.feature_names = self._builder.build_design_matrix_from_parsed(
+            parsed, exposure=raw_exposure, seed=seed
+        )
+        self.n_obs = len(self.y)
+        self.n_params = self.X.shape[1]
+        
+        # Process offset and weights
+        self.offset = self._process_offset(offset)
+        self.weights = self._process_weights(weights)
+    
+    def _build_formula_string(self) -> str:
+        """Build a formula string representation for display purposes."""
+        parts = [self.response, "~"]
+        term_strs = []
+        
+        for var_name, spec in self.terms.items():
+            term_type = spec.get("type", "linear")
+            if term_type == "linear":
+                term_strs.append(var_name)
+            elif term_type == "categorical":
+                term_strs.append(f"C({var_name})")
+            elif term_type == "bs":
+                df = spec.get("df", 5)
+                term_strs.append(f"bs({var_name}, df={df})")
+            elif term_type == "ns":
+                df = spec.get("df", 4)
+                term_strs.append(f"ns({var_name}, df={df})")
+            elif term_type == "target_encoding":
+                term_strs.append(f"TE({var_name})")
+            elif term_type == "expression":
+                expr = spec.get("expr", var_name)
+                term_strs.append(f"I({expr})")
+        
+        if not self.intercept:
+            term_strs.insert(0, "0")
+        
+        parts.append(" + ".join(term_strs) if term_strs else "1")
+        return " ".join(parts)
+    
+    def _get_raw_exposure(self, offset) -> Optional[np.ndarray]:
+        """Extract raw exposure values for target encoding."""
+        if offset is None:
+            return None
+        if isinstance(offset, str):
+            return self.data[offset].to_numpy().astype(np.float64)
+        return np.asarray(offset, dtype=np.float64)
+    
+    def _process_offset(self, offset) -> Optional[np.ndarray]:
+        """Process offset, applying log for log-link families."""
+        if offset is None:
+            return None
+        
+        if isinstance(offset, str):
+            offset_values = self.data[offset].to_numpy().astype(np.float64)
+        else:
+            offset_values = np.asarray(offset, dtype=np.float64)
+        
+        # Apply log for Poisson/Gamma families
+        if self.family in ("poisson", "gamma", "quasipoisson", "tweedie", "negbinomial"):
+            return np.log(offset_values)
+        return offset_values
+    
+    def _process_weights(self, weights) -> Optional[np.ndarray]:
+        """Process weights."""
+        if weights is None:
+            return None
+        if isinstance(weights, str):
+            return self.data[weights].to_numpy().astype(np.float64)
+        return np.asarray(weights, dtype=np.float64)
+    
+    def fit(
+        self,
+        max_iter: int = 25,
+        tol: float = 1e-8,
+        alpha: float = 0.0,
+        l1_ratio: float = 0.0,
+    ) -> FormulaGLMResults:
+        """Fit the GLM model."""
+        from rustystats._rustystats import fit_glm_py as _fit_glm_rust
+        
+        is_negbinomial = self.family in ("negbinomial", "negativebinomial", "negative_binomial", "neg-binomial", "nb")
+        theta = self.theta if self.theta is not None else 1.0
+        
+        # Compute coefficient constraint indices
+        nonneg_indices = [
+            i for i, name in enumerate(self.feature_names)
+            if name.startswith("ms(") or name.startswith("pos(")
+        ]
+        nonpos_indices = [
+            i for i, name in enumerate(self.feature_names)
+            if name.startswith("neg(")
+        ]
+        
+        result = _fit_glm_rust(
+            self.y,
+            self.X,
+            self.family,
+            self.link,
+            self.var_power,
+            theta,
+            self.offset,
+            self.weights,
+            alpha,
+            l1_ratio,
+            max_iter,
+            tol,
+            nonneg_indices if nonneg_indices else None,
+            nonpos_indices if nonpos_indices else None,
+        )
+        
+        result_family = f"NegativeBinomial(theta={theta:.4f})" if is_negbinomial else self.family
+        
+        return FormulaGLMResults(
+            result=result,
+            feature_names=self.feature_names,
+            formula=self.formula,
+            family=result_family,
+            link=self.link,
+            builder=self._builder,
+            design_matrix=self.X,
+            offset_spec=self._offset_spec,
+            offset_is_exposure=(self.family in ("poisson", "quasipoisson", "negbinomial", "gamma") and self.link in (None, "log")),
+        )
+
+
+def glm_dict(
+    response: str,
+    terms: Dict[str, Dict[str, Any]],
+    data: "pl.DataFrame",
+    interactions: Optional[List[Dict[str, Any]]] = None,
+    intercept: bool = True,
+    family: str = "gaussian",
+    link: Optional[str] = None,
+    var_power: float = 1.5,
+    theta: Optional[float] = None,
+    offset: Optional[Union[str, np.ndarray]] = None,
+    weights: Optional[Union[str, np.ndarray]] = None,
+    seed: Optional[int] = None,
+) -> FormulaGLMDict:
+    """
+    Create a GLM model from a dict specification.
+    
+    This is an alternative to the formula-based API for programmatic model building.
+    
+    Parameters
+    ----------
+    response : str
+        Name of the response variable column.
+    terms : dict
+        Dictionary mapping variable names to term specifications.
+        Each specification is a dict with 'type' and optional parameters:
+        
+        - ``{"type": "linear"}`` - continuous variable
+        - ``{"type": "categorical"}`` - dummy encoding
+        - ``{"type": "categorical", "levels": ["A", "B"]}`` - specific levels
+        - ``{"type": "bs", "df": 5}`` - B-spline
+        - ``{"type": "bs", "df": 5, "degree": 2}`` - quadratic B-spline
+        - ``{"type": "ns", "df": 4}`` - natural spline
+        - ``{"type": "bs", "df": 4, "monotonicity": "increasing"}`` - monotonic
+        - ``{"type": "target_encoding"}`` - target encoding
+        - ``{"type": "expression", "expr": "x**2"}`` - expression
+        - ``{"type": "linear", "monotonicity": "increasing"}`` - constrained
+        
+    data : pl.DataFrame
+        Polars DataFrame containing the data.
+    interactions : list of dict, optional
+        List of interaction specifications. Each is a dict with variable
+        names as keys and their specs as values, plus 'include_main'.
+    intercept : bool, default=True
+        Whether to include an intercept.
+    family : str, default="gaussian"
+        Distribution family.
+    link : str, optional
+        Link function. If None, uses canonical link.
+    var_power : float, default=1.5
+        Variance power for Tweedie family.
+    theta : float, optional
+        Dispersion for Negative Binomial.
+    offset : str or array-like, optional
+        Offset term.
+    weights : str or array-like, optional
+        Prior weights.
+    seed : int, optional
+        Random seed for deterministic target encoding.
+        
+    Returns
+    -------
+    FormulaGLMDict
+        Model object. Call .fit() to fit the model.
+        
+    Examples
+    --------
+    >>> result = rs.glm_dict(
+    ...     response="ClaimCount",
+    ...     terms={
+    ...         "VehAge": {"type": "linear"},
+    ...         "DrivAge": {"type": "bs", "df": 5},
+    ...         "Region": {"type": "categorical"},
+    ...         "Brand": {"type": "target_encoding"},
+    ...     },
+    ...     interactions=[
+    ...         {"VehAge": {"type": "linear"}, "Region": {"type": "categorical"}, "include_main": True},
+    ...     ],
+    ...     data=data,
+    ...     family="poisson",
+    ...     offset="Exposure",
+    ... ).fit()
+    """
+    return FormulaGLMDict(
+        response=response,
+        terms=terms,
+        data=data,
+        interactions=interactions,
+        intercept=intercept,
+        family=family,
+        link=link,
+        var_power=var_power,
+        theta=theta,
+        offset=offset,
+        weights=weights,
+        seed=seed,
+    )

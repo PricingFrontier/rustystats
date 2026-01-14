@@ -86,6 +86,9 @@ from rustystats.glm import summary, summary_relativities
 # Formula-based API (the primary API)
 from rustystats.formula import glm, FormulaGLM, FormulaGLMResults
 
+# Dict-based API (alternative to formula strings)
+from rustystats.formula import glm_dict, FormulaGLMDict
+
 # Spline basis functions (for non-linear continuous effects)
 from rustystats.splines import bs, ns, ms, bs_names, ns_names, ms_names, SplineTerm
 
@@ -116,6 +119,9 @@ __all__ = [
     "FormulaGLM",
     "FormulaGLMResults",
     "GLMResults",
+    # Dict-based API
+    "glm_dict",
+    "FormulaGLMDict",
     "summary",
     "summary_relativities",
     # Spline functions

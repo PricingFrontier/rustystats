@@ -342,6 +342,13 @@ pub fn fit_glm_full(
     let mut cov_unscaled = Array2::zeros((p, p));
     let mut final_weights = Array1::zeros(n);
     let mut iter_coefficients = Array1::zeros(p);  // Store coefficients from iteration
+    
+    // For constrained problems, track best solution seen (deviance can increase due to projection)
+    let has_constraints = !config.nonneg_indices.is_empty() || !config.nonpos_indices.is_empty();
+    let mut best_deviance = f64::INFINITY;  // Will be set after first iteration
+    let mut best_coefficients = iter_coefficients.clone();
+    let mut best_mu = mu.clone();
+    let mut best_eta = eta.clone();
 
     while iteration < config.max_iterations {
         iteration += 1;
@@ -440,9 +447,14 @@ pub fn fit_glm_full(
         // ---------------------------------------------------------------------
         // Step 4d: Update η and μ with step-halving for stability
         // ---------------------------------------------------------------------
-        // If deviance increases, reduce step size to prevent oscillation
+        // If deviance increases, reduce step size to prevent oscillation.
+        // For constrained problems, we blend coefficients (not eta) and re-apply
+        // projection to ensure constraints are satisfied at each step.
         // ---------------------------------------------------------------------
         deviance_old = deviance;
+        
+        // Check if we have coefficient constraints
+        let has_constraints = !config.nonneg_indices.is_empty() || !config.nonpos_indices.is_empty();
         
         // Try full step first
         let eta_base = x.dot(&new_coefficients);
@@ -453,28 +465,64 @@ pub fn fit_glm_full(
         
         // Step-halving: if deviance increased, try smaller steps
         if deviance_new > deviance_old * 1.0001 && iteration > 1 {
-            // Get old eta without offset for blending
-            let eta_old_base: Array1<f64> = eta.iter()
-                .zip(offset_vec.iter())
-                .map(|(&e, &o)| e - o)
-                .collect();
-            
             let mut step_size = 0.5;
-            for _half_step in 0..4 {
-                // Blend: eta_new = (1-step)*eta_old + step*eta_full
-                let eta_blend: Array1<f64> = eta_old_base.iter()
-                    .zip(eta_base.iter())
-                    .map(|(&old, &new)| (1.0 - step_size) * old + step_size * new)
-                    .collect();
-                eta_new = &eta_blend + &offset_vec;
-                mu_new = link.inverse(&eta_new);
-                mu_new = clamp_mu(&mu_new, family);
-                deviance_new = family.deviance(y, &mu_new, Some(&prior_weights_vec));
-                
-                if deviance_new <= deviance_old * 1.0001 {
-                    break;
+            
+            if has_constraints {
+                // For constrained problems: blend coefficients and re-apply projection
+                for _half_step in 0..8 {
+                    // Blend coefficients: β_blend = (1-step)*β_old + step*β_new
+                    let mut blended_coefficients: Array1<f64> = iter_coefficients.iter()
+                        .zip(new_coefficients.iter())
+                        .map(|(&old, &new)| (1.0 - step_size) * old + step_size * new)
+                        .collect();
+                    
+                    // Re-apply coefficient constraints after blending
+                    for &idx in &config.nonneg_indices {
+                        if idx < blended_coefficients.len() && blended_coefficients[idx] < 0.0 {
+                            blended_coefficients[idx] = 0.0;
+                        }
+                    }
+                    for &idx in &config.nonpos_indices {
+                        if idx < blended_coefficients.len() && blended_coefficients[idx] > 0.0 {
+                            blended_coefficients[idx] = 0.0;
+                        }
+                    }
+                    
+                    let eta_blend = x.dot(&blended_coefficients);
+                    eta_new = &eta_blend + &offset_vec;
+                    mu_new = link.inverse(&eta_new);
+                    mu_new = clamp_mu(&mu_new, family);
+                    deviance_new = family.deviance(y, &mu_new, Some(&prior_weights_vec));
+                    
+                    if deviance_new <= deviance_old * 1.0001 {
+                        // Accept this blended step - update new_coefficients
+                        new_coefficients = blended_coefficients;
+                        break;
+                    }
+                    step_size *= 0.5;
                 }
-                step_size *= 0.5;
+            } else {
+                // For unconstrained problems: blend eta directly (faster)
+                let eta_old_base: Array1<f64> = eta.iter()
+                    .zip(offset_vec.iter())
+                    .map(|(&e, &o)| e - o)
+                    .collect();
+                
+                for _half_step in 0..4 {
+                    let eta_blend: Array1<f64> = eta_old_base.iter()
+                        .zip(eta_base.iter())
+                        .map(|(&old, &new)| (1.0 - step_size) * old + step_size * new)
+                        .collect();
+                    eta_new = &eta_blend + &offset_vec;
+                    mu_new = link.inverse(&eta_new);
+                    mu_new = clamp_mu(&mu_new, family);
+                    deviance_new = family.deviance(y, &mu_new, Some(&prior_weights_vec));
+                    
+                    if deviance_new <= deviance_old * 1.0001 {
+                        break;
+                    }
+                    step_size *= 0.5;
+                }
             }
         }
         
@@ -498,6 +546,14 @@ pub fn fit_glm_full(
 
         // Store coefficients from this iteration
         iter_coefficients = new_coefficients;
+        
+        // For constrained problems, track the best solution seen
+        if has_constraints && deviance < best_deviance {
+            best_deviance = deviance;
+            best_coefficients = iter_coefficients.clone();
+            best_mu = mu.clone();
+            best_eta = eta.clone();
+        }
 
         if rel_change < config.tolerance {
             converged = true;
@@ -512,10 +568,19 @@ pub fn fit_glm_full(
     }
 
     // -------------------------------------------------------------------------
-    // Step 5: Extract final coefficients from last iteration
+    // Step 5: Extract final coefficients
     // -------------------------------------------------------------------------
+    // For constrained problems, use the best solution found during iteration
+    // (deviance can increase due to projection, so last iteration may not be best)
+    let (final_mu, final_eta, final_deviance, use_coefficients) = if has_constraints && best_deviance < deviance {
+        // Best solution was found earlier - use it
+        (best_mu, best_eta, best_deviance, best_coefficients)
+    } else {
+        (mu, eta, deviance, iter_coefficients)
+    };
+    
     // Compute working response accounting for offset
-    let eta_no_offset: Array1<f64> = eta
+    let eta_no_offset: Array1<f64> = final_eta
         .iter()
         .zip(offset_vec.iter())
         .map(|(&e, &o)| e - o)
@@ -529,11 +594,38 @@ pub fn fit_glm_full(
         .collect();
 
     // Try final coefficient extraction, but fall back to iteration coefficients if it produces NaN
-    let final_coefficients = match solve_weighted_least_squares(x, &compute_working_response(y, &mu, &eta_no_offset, link), &combined_final_weights) {
-        Ok((coef, _)) if !coef.iter().any(|&c| c.is_nan() || c.is_infinite()) => coef,
+    let final_coefficients = match solve_weighted_least_squares(x, &compute_working_response(y, &final_mu, &eta_no_offset, link), &combined_final_weights) {
+        Ok((coef, _)) if !coef.iter().any(|&c| c.is_nan() || c.is_infinite()) => {
+            // For constrained problems, apply projection and check if it's better than stored best
+            if has_constraints {
+                let mut proj_coef = coef;
+                for &idx in &config.nonneg_indices {
+                    if idx < proj_coef.len() && proj_coef[idx] < 0.0 {
+                        proj_coef[idx] = 0.0;
+                    }
+                }
+                for &idx in &config.nonpos_indices {
+                    if idx < proj_coef.len() && proj_coef[idx] > 0.0 {
+                        proj_coef[idx] = 0.0;
+                    }
+                }
+                // Check if this extraction is better
+                let eta_check = x.dot(&proj_coef);
+                let eta_full: Array1<f64> = eta_check.iter().zip(offset_vec.iter()).map(|(&e, &o)| e + o).collect();
+                let mu_check = link.inverse(&eta_full);
+                let dev_check = family.deviance(y, &mu_check, Some(&prior_weights_vec));
+                if dev_check <= final_deviance {
+                    proj_coef
+                } else {
+                    use_coefficients
+                }
+            } else {
+                coef
+            }
+        },
         _ => {
-            // Final extraction failed or produced NaN - use coefficients from last iteration
-            if iter_coefficients.iter().any(|&c| c.is_nan() || c.is_infinite()) {
+            // Final extraction failed or produced NaN - use stored coefficients
+            if use_coefficients.iter().any(|&c| c.is_nan() || c.is_infinite()) {
                 return Err(RustyStatsError::NumericalError(
                     "IRLS produced NaN or infinite coefficients. This usually indicates: \
                      (1) severe multicollinearity in predictors, \
@@ -542,28 +634,36 @@ pub fn fit_glm_full(
                      Try standardizing continuous predictors or removing correlated terms.".to_string()
                 ));
             }
-            iter_coefficients
+            use_coefficients
         }
     };
     
-    // Apply coefficient sign constraints to final coefficients
+    // Apply coefficient sign constraints to final coefficients (for unconstrained path)
     let mut final_coefficients = final_coefficients;
-    for &idx in &config.nonneg_indices {
-        if idx < final_coefficients.len() && final_coefficients[idx] < 0.0 {
-            final_coefficients[idx] = 0.0;
+    if !has_constraints {
+        for &idx in &config.nonneg_indices {
+            if idx < final_coefficients.len() && final_coefficients[idx] < 0.0 {
+                final_coefficients[idx] = 0.0;
+            }
+        }
+        for &idx in &config.nonpos_indices {
+            if idx < final_coefficients.len() && final_coefficients[idx] > 0.0 {
+                final_coefficients[idx] = 0.0;
+            }
         }
     }
-    for &idx in &config.nonpos_indices {
-        if idx < final_coefficients.len() && final_coefficients[idx] > 0.0 {
-            final_coefficients[idx] = 0.0;
-        }
-    }
+    
+    // Recompute final fitted values and deviance with the chosen coefficients
+    let final_eta_base = x.dot(&final_coefficients);
+    let final_eta: Array1<f64> = final_eta_base.iter().zip(offset_vec.iter()).map(|(&e, &o)| e + o).collect();
+    let final_mu = link.inverse(&final_eta);
+    let final_deviance = family.deviance(y, &final_mu, Some(&prior_weights_vec));
 
     Ok(IRLSResult {
         coefficients: final_coefficients,
-        fitted_values: mu,
-        linear_predictor: eta,
-        deviance,
+        fitted_values: final_mu,
+        linear_predictor: final_eta,
+        deviance: final_deviance,
         iterations: iteration,
         converged,
         covariance_unscaled: cov_unscaled,
