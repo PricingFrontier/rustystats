@@ -40,6 +40,34 @@ def _get_column(data: "pl.DataFrame", column: str) -> np.ndarray:
 from rustystats.interactions import build_design_matrix, InteractionBuilder
 
 
+def _get_constraint_indices(feature_names: List[str]) -> tuple:
+    """
+    Compute coefficient constraint indices from feature names.
+    
+    Returns
+    -------
+    nonneg_indices : list[int]
+        Indices of coefficients that must be non-negative (β ≥ 0)
+    nonpos_indices : list[int]
+        Indices of coefficients that must be non-positive (β ≤ 0)
+    """
+    # ms()/ns() with + and pos() terms require non-negative coefficients
+    nonneg_indices = [
+        i for i, name in enumerate(feature_names)
+        if name.startswith("pos(") or 
+        (name.startswith("ms(") and ", +)" in name) or
+        (name.startswith("ns(") and ", +)" in name)
+    ]
+    # ms()/ns() with - and neg() terms require non-positive coefficients
+    nonpos_indices = [
+        i for i, name in enumerate(feature_names)
+        if name.startswith("neg(") or
+        (name.startswith("ms(") and ", -)" in name) or
+        (name.startswith("ns(") and ", -)" in name)
+    ]
+    return nonneg_indices, nonpos_indices
+
+
 class FormulaGLM:
     """
     GLM model with formula-based specification.
@@ -605,16 +633,7 @@ class FormulaGLM:
                 theta = self.theta if self.theta is not None else 1.0
                 
                 # Compute coefficient constraint indices
-                # ms() terms and pos() terms require non-negative coefficients (β ≥ 0)
-                # neg() terms require non-positive coefficients (β ≤ 0)
-                nonneg_indices = [
-                    i for i, name in enumerate(self.feature_names)
-                    if name.startswith("ms(") or name.startswith("pos(")
-                ]
-                nonpos_indices = [
-                    i for i, name in enumerate(self.feature_names)
-                    if name.startswith("neg(")
-                ]
+                nonneg_indices, nonpos_indices = _get_constraint_indices(self.feature_names)
                 
                 result = _fit_glm_rust(
                     self.y,
@@ -1563,13 +1582,15 @@ def _parse_term_spec(
         if monotonicity:
             # Monotonic B-spline (I-spline)
             increasing = monotonicity == "increasing"
-            spline_terms.append(SplineTerm(
+            term = SplineTerm(
                 var_name=var_name,
                 spline_type="ms",
                 df=df,
                 degree=degree,
                 increasing=increasing,
-            ))
+            )
+            term._monotonic = True
+            spline_terms.append(term)
         else:
             spline_terms.append(SplineTerm(
                 var_name=var_name,
@@ -1580,11 +1601,35 @@ def _parse_term_spec(
     
     elif term_type == "ns":
         df = spec.get("df", 4)
+        if monotonicity:
+            raise ValueError(
+                f"Monotonicity constraints are not supported for natural splines (ns). "
+                f"Use type='ms' instead for monotonic effects."
+            )
         spline_terms.append(SplineTerm(
             var_name=var_name,
             spline_type="ns",
             df=df,
         ))
+    
+    elif term_type == "ms":
+        # Monotonic spline (I-spline)
+        df = spec.get("df", 4)
+        degree = spec.get("degree", 3)
+        # Support both 'monotonicity' (consistent with other terms) and 'increasing' (legacy)
+        if monotonicity:
+            increasing = monotonicity == "increasing"
+        else:
+            increasing = spec.get("increasing", True)
+        term = SplineTerm(
+            var_name=var_name,
+            spline_type="ms",
+            df=df,
+            degree=degree,
+            increasing=increasing,
+        )
+        term._monotonic = True
+        spline_terms.append(term)
     
     elif term_type == "target_encoding":
         prior_weight = spec.get("prior_weight", 1.0)
@@ -1894,14 +1939,7 @@ class FormulaGLMDict:
         theta = self.theta if self.theta is not None else 1.0
         
         # Compute coefficient constraint indices
-        nonneg_indices = [
-            i for i, name in enumerate(self.feature_names)
-            if name.startswith("ms(") or name.startswith("pos(")
-        ]
-        nonpos_indices = [
-            i for i, name in enumerate(self.feature_names)
-            if name.startswith("neg(")
-        ]
+        nonneg_indices, nonpos_indices = _get_constraint_indices(self.feature_names)
         
         result = _fit_glm_rust(
             self.y,

@@ -2206,7 +2206,8 @@ fn parse_formula_py(formula_str: &str) -> PyResult<std::collections::HashMap<Str
                 dict.set_item("spline_type", s.spline_type).unwrap();
                 dict.set_item("df", s.df).unwrap();
                 dict.set_item("degree", s.degree).unwrap();
-                dict.set_item("increasing", s.increasing).unwrap();  // For monotonic splines
+                dict.set_item("increasing", s.increasing).unwrap();
+                dict.set_item("monotonic", s.monotonic).unwrap();  // True if coefficient constraints apply
                 dict.into_py(py)
             })
             .collect();

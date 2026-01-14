@@ -12,7 +12,8 @@ pub struct SplineTerm {
     pub spline_type: String,  // "bs", "ns", or "ms"
     pub df: usize,
     pub degree: usize,
-    pub increasing: bool,  // For monotonic splines (ms): true = increasing, false = decreasing
+    pub increasing: bool,  // For monotonic splines: true = increasing, false = decreasing
+    pub monotonic: bool,   // True if monotonicity constraint should be applied (ms always, ns/bs if explicitly set)
 }
 
 /// Parsed target encoding term specification
@@ -349,6 +350,7 @@ fn parse_spline_term(term: &str) -> Option<SplineTerm> {
     let mut df = 5usize;
     let mut degree = 3usize;
     let mut increasing = true;  // Default for monotonic splines
+    let mut has_increasing = false;  // Track if increasing was explicitly specified
     
     // Parse remaining arguments
     for part in parts.iter().skip(1) {
@@ -368,14 +370,15 @@ fn parse_spline_term(term: &str) -> Option<SplineTerm> {
                     });
                 }
                 "increasing" => {
+                    has_increasing = true;
                     increasing = match value.to_lowercase().as_str() {
                         "true" | "1" | "yes" => true,
                         "false" | "0" | "no" => false,
-                        _ => panic!("Invalid increasing value '{}' in ms() - expected true/false", value)
+                        _ => panic!("Invalid increasing value '{}' - expected true/false", value)
                     };
                 }
                 other => {
-                    let supported = if spline_type == "ms" { "df, degree, increasing" } else { "df, degree" };
+                    let supported = if spline_type == "ms" { "df, degree, increasing" } else { "df, degree, increasing" };
                     panic!("Unknown argument '{}' in {}(). Supported: {}", other, spline_type, supported)
                 }
             }
@@ -387,12 +390,16 @@ fn parse_spline_term(term: &str) -> Option<SplineTerm> {
         }
     }
     
+    // Monotonicity is always applied for ms(), or for bs()/ns() if increasing was explicitly specified
+    let monotonic = spline_type == "ms" || has_increasing;
+    
     Some(SplineTerm {
         var_name,
         spline_type: spline_type.to_string(),
         df,
         degree,
         increasing,
+        monotonic,
     })
 }
 

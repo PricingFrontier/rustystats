@@ -20,8 +20,8 @@
       "deviance": 192683.0,
       "log_likelihood": -117115.32,
       "aic": 234240.65,
-      "gini": -0.1228,
-      "auc": 0.4386,
+      "gini": -0.1235,
+      "auc": 0.4382,
       "ae_ratio": 0.2782,
       "ae_by_decile": [
         {
@@ -868,8 +868,8 @@
       "deviance": 192683.0,
       "log_likelihood": -117115.32,
       "aic": 234240.65,
-      "gini": -0.1228,
-      "auc": 0.4386,
+      "gini": -0.1235,
+      "auc": 0.4382,
       "ae_ratio": 0.2782,
       "ae_by_decile": [
         {
@@ -2947,19 +2947,19 @@
     },
     {
       "type": "problem_factor_levels",
-      "message": "Factor 'Region' has problem levels with poor fit: Nord-Pas-de-Calais, Picardie, Ile-de-France, Basse-Normandie, Rhone-Alpes..."
+      "message": "Factor 'Region' has problem levels with poor fit: Haute-Normandie, Ile-de-France, Pays-de-la-Loire, Poitou-Charentes, Centre..."
     },
     {
       "type": "problem_factor_levels",
-      "message": "Factor 'Area' has problem levels with poor fit: A, F, E, B, D..."
+      "message": "Factor 'Area' has problem levels with poor fit: B, F, C, A, E..."
     },
     {
       "type": "problem_factor_levels",
-      "message": "Factor 'VehBrand' has problem levels with poor fit: B11, B1, B4, B2, B14..."
+      "message": "Factor 'VehBrand' has problem levels with poor fit: B12, B2, B3, B1, B4..."
     },
     {
       "type": "problem_factor_levels",
-      "message": "Factor 'VehGas' has problem levels with poor fit: Regular, Diesel"
+      "message": "Factor 'VehGas' has problem levels with poor fit: Diesel, Regular"
     },
     {
       "type": "weak_discrimination",
@@ -3252,27 +3252,27 @@
         }
       ],
       "problem_levels": [
-        "Nord-Pas-de-Calais",
-        "Picardie",
-        "Ile-de-France",
-        "Basse-Normandie",
-        "Rhone-Alpes",
-        "Centre",
-        "Provence-Alpes-Cotes-D'Azur",
         "Haute-Normandie",
-        "Alsace",
+        "Ile-de-France",
         "Pays-de-la-Loire",
-        "Languedoc-Roussillon",
-        "Franche-Comte",
-        "Aquitaine",
-        "Auvergne",
-        "Bretagne",
         "Poitou-Charentes",
-        "Corse",
-        "Bourgogne",
+        "Centre",
+        "Rhone-Alpes",
+        "Bretagne",
+        "Aquitaine",
+        "Picardie",
+        "Alsace",
         "Champagne-Ardenne",
-        "Midi-Pyrenees",
-        "Limousin"
+        "Auvergne",
+        "Bourgogne",
+        "Nord-Pas-de-Calais",
+        "Limousin",
+        "Basse-Normandie",
+        "Provence-Alpes-Cotes-D'Azur",
+        "Franche-Comte",
+        "Corse",
+        "Languedoc-Roussillon",
+        "Midi-Pyrenees"
       ]
     },
     {
@@ -3335,12 +3335,12 @@
         }
       ],
       "problem_levels": [
-        "A",
-        "F",
-        "E",
         "B",
-        "D",
-        "C"
+        "F",
+        "C",
+        "A",
+        "E",
+        "D"
       ]
     },
     {
@@ -3448,17 +3448,17 @@
         }
       ],
       "problem_levels": [
-        "B11",
+        "B12",
+        "B2",
+        "B3",
         "B1",
         "B4",
-        "B2",
-        "B14",
-        "B12",
-        "B6",
-        "B10",
-        "B3",
         "B5",
-        "B13"
+        "B11",
+        "B13",
+        "B6",
+        "B14",
+        "B10"
       ]
     },
     {
@@ -3485,8 +3485,8 @@
         }
       ],
       "problem_levels": [
-        "Regular",
-        "Diesel"
+        "Diesel",
+        "Regular"
       ]
     }
   ],
@@ -3613,7 +3613,7 @@
         "cumulative_lift": 1.0
       }
     ],
-    "gini": -0.123,
+    "gini": -0.124,
     "ks_statistic": 19.94,
     "ks_decile": 7,
     "weak_deciles": [

@@ -461,6 +461,8 @@ class SplineTerm:
         # Computed during transform - stores knot information
         self._computed_boundary_knots: Optional[Tuple[float, float]] = None
         self._computed_internal_knots: Optional[List[float]] = None
+        # Track if monotonicity constraint is explicitly set (for ns with constraints)
+        self._monotonic = False
         
         if self.spline_type not in ("bs", "ns", "ms"):
             raise ValueError(f"spline_type must be 'bs', 'ns', or 'ms', got '{spline_type}'")
@@ -512,6 +514,13 @@ class SplineTerm:
                       boundary_knots=boundary_knots_to_use, include_intercept=False)
             names = bs_names(self.var_name, self.df, include_intercept=False)
         elif self.spline_type == "ns":
+            # Check if monotonicity was requested on natural splines
+            if self._monotonic:
+                raise ValueError(
+                    f"Monotonicity constraints are not supported for natural splines (ns). "
+                    f"Use ms({self.var_name}, df={self.df}, increasing={'true' if self.increasing else 'false'}) "
+                    f"instead, which uses I-splines designed for monotonic effects."
+                )
             basis = ns(x, df=self.df, boundary_knots=boundary_knots_to_use,
                       include_intercept=False)
             names = ns_names(self.var_name, self.df, include_intercept=False)

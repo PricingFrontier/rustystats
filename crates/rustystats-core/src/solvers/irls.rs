@@ -453,9 +453,6 @@ pub fn fit_glm_full(
         // ---------------------------------------------------------------------
         deviance_old = deviance;
         
-        // Check if we have coefficient constraints
-        let has_constraints = !config.nonneg_indices.is_empty() || !config.nonpos_indices.is_empty();
-        
         // Try full step first
         let eta_base = x.dot(&new_coefficients);
         let mut eta_new = &eta_base + &offset_vec;

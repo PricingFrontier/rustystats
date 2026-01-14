@@ -162,9 +162,9 @@ Alternative to formula strings for programmatic model building. Useful for autom
 result = rs.glm_dict(
     response="ClaimCount",
     terms={
-        "VehAge": {"type": "linear"},
+        "VehAge": {"type": "ms", "df": 4, "monotonicity": "increasing"},  # Monotonic spline
         "DrivAge": {"type": "bs", "df": 5},
-        "BonusMalus": {"type": "bs", "df": 4, "monotonicity": "increasing"},
+        "BonusMalus": {"type": "linear", "monotonicity": "increasing"},  # Constrained coefficient
         "Region": {"type": "categorical"},
         "Brand": {"type": "target_encoding"},
         "Age2": {"type": "expression", "expr": "DrivAge**2"},
@@ -190,12 +190,12 @@ result = rs.glm_dict(
 | `linear` | - | Raw continuous variable |
 | `categorical` | `levels` (optional) | Dummy encoding |
 | `bs` | `df`, `degree=3` | B-spline basis |
-| `ns` | `df` | Natural spline |
-| `bs` + `monotonicity` | `df`, `monotonicity="increasing"/"decreasing"` | Monotonic spline |
+| `ns` | `df` | Natural spline (better extrapolation) |
+| `ms` | `df`, `monotonicity` | Monotonic spline (I-spline) |
 | `target_encoding` | `prior_weight=1` | Regularized target encoding |
 | `expression` | `expr` | Arbitrary expression (like `I()`) |
 
-Add `"monotonicity": "increasing"` or `"decreasing"` to any term type to constrain the coefficient sign.
+Add `"monotonicity": "increasing"` or `"decreasing"` to `linear` or `expression` terms to constrain coefficient sign.
 
 ### Interactions
 

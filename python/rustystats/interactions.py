@@ -169,16 +169,18 @@ def parse_formula_interactions(formula: str) -> ParsedFormula:
         for i in parsed['interactions']
     ]
     
-    spline_terms = [
-        SplineTerm(
+    spline_terms = []
+    for s in parsed['spline_terms']:
+        term = SplineTerm(
             var_name=s['var_name'],
             spline_type=s['spline_type'],
             df=s['df'],
             degree=s['degree'],
-            increasing=s.get('increasing', True)  # Default to increasing for monotonic splines
+            increasing=s.get('increasing', True)
         )
-        for s in parsed['spline_terms']
-    ]
+        # Set monotonicity flag from Rust parser (true for ms always, or ns/bs with explicit increasing)
+        term._monotonic = s.get('monotonic', False)
+        spline_terms.append(term)
     
     # Parse target encoding terms
     target_encoding_terms = [
@@ -309,6 +311,7 @@ class InteractionBuilder:
             df = 4  # default
             degree = 3  # default for B-splines and monotonic splines
             increasing = True  # default for monotonic splines
+            has_monotonicity = False
             for part in parts[1:]:
                 if '=' in part:
                     key, val = part.split('=', 1)
@@ -320,7 +323,15 @@ class InteractionBuilder:
                         degree = int(val)
                     elif key == 'increasing':
                         increasing = val.lower() in ('true', '1', 'yes')
-            return SplineTerm(var_name=var_name, spline_type=spline_type, df=df, degree=degree, increasing=increasing)
+                        has_monotonicity = True
+            term = SplineTerm(var_name=var_name, spline_type=spline_type, df=df, degree=degree, increasing=increasing)
+            # For ns with explicit monotonicity, set the flag
+            if spline_type == 'ns' and has_monotonicity:
+                term._monotonic = True
+            # ms is always monotonic
+            if spline_type == 'ms':
+                term._monotonic = True
+            return term
         return None
     
     def _parse_te_factor(self, factor: str) -> Optional[TargetEncodingTermSpec]:
