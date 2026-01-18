@@ -51,6 +51,9 @@ from rustystats._rustystats import (
     chi2_cdf_py as _chi2_cdf,
     t_cdf_py as _t_cdf,
     f_cdf_py as _f_cdf,
+    # Rao's score test for unfitted factors
+    score_test_continuous_py as _rust_score_test_continuous,
+    score_test_categorical_py as _rust_score_test_categorical,
 )
 from typing import Optional, List, Dict, Any, Union, TYPE_CHECKING
 
@@ -168,6 +171,19 @@ class FactorSignificance:
 
 
 @dataclass
+class ScoreTestResult:
+    """Rao's score test result for an unfitted factor.
+    
+    Tests whether adding this factor would significantly improve the model,
+    without actually refitting. Useful for identifying missing factors.
+    """
+    statistic: float  # Score test statistic (chi-squared distributed)
+    df: int  # Degrees of freedom
+    pvalue: float  # P-value from chi-squared distribution
+    significant: bool  # Whether significant at 0.05 level
+
+
+@dataclass
 class FactorCoefficient:
     """Coefficient for a factor term.
     
@@ -194,6 +210,7 @@ class FactorDiagnostics:
     actual_vs_expected: List[ActualExpectedBin]
     residual_pattern: ResidualPattern
     significance: Optional[FactorSignificance] = None
+    score_test: Optional[ScoreTestResult] = None  # Rao's score test for unfitted factors
 
 
 @dataclass
@@ -800,9 +817,23 @@ class DiagnosticsComputer:
         n_bins: int = 10,
         rare_threshold_pct: float = 1.0,
         max_categorical_levels: int = 20,
+        design_matrix: Optional[np.ndarray] = None,  # For score tests
+        bread_matrix: Optional[np.ndarray] = None,  # (X'WX)^-1 for score tests
+        irls_weights: Optional[np.ndarray] = None,  # Working weights for score tests
     ) -> List[FactorDiagnostics]:
-        """Compute diagnostics for each specified factor."""
+        """Compute diagnostics for each specified factor.
+        
+        For unfitted factors, computes Rao's score test if design_matrix, 
+        bread_matrix, and irls_weights are provided.
+        """
         factors = []
+        
+        # Check if we can compute score tests for unfitted factors
+        can_compute_score_test = (
+            design_matrix is not None and 
+            bread_matrix is not None and 
+            irls_weights is not None
+        )
         
         # Process categorical factors
         for name in categorical_factors:
@@ -840,6 +871,13 @@ class DiagnosticsComputer:
             # Extract coefficients for this factor
             coefficients = self._get_factor_coefficients(name, result) if in_model and result else None
             
+            # Score test for unfitted factors
+            score_test = None
+            if not in_model and can_compute_score_test:
+                score_test = self._compute_score_test_categorical(
+                    values, design_matrix, bread_matrix, irls_weights
+                )
+            
             factors.append(FactorDiagnostics(
                 name=name,
                 factor_type="categorical",
@@ -850,6 +888,7 @@ class DiagnosticsComputer:
                 actual_vs_expected=ae_bins,
                 residual_pattern=resid_pattern,
                 significance=significance,
+                score_test=score_test,
             ))
         
         # Process continuous factors
@@ -894,6 +933,13 @@ class DiagnosticsComputer:
             # Extract coefficients for this factor
             coefficients = self._get_factor_coefficients(name, result) if in_model and result else None
             
+            # Score test for unfitted factors
+            score_test = None
+            if not in_model and can_compute_score_test:
+                score_test = self._compute_score_test_continuous(
+                    values, design_matrix, bread_matrix, irls_weights
+                )
+            
             factors.append(FactorDiagnostics(
                 name=name,
                 factor_type="continuous",
@@ -904,6 +950,7 @@ class DiagnosticsComputer:
                 actual_vs_expected=ae_bins,
                 residual_pattern=resid_pattern,
                 significance=significance,
+                score_test=score_test,
             ))
         
         return factors
@@ -1116,6 +1163,91 @@ class DiagnosticsComputer:
             resid_corr=round(float(mean_abs_resid), 4),
             var_explained=round(float(eta_squared), 6),
         )
+    
+    def _compute_score_test_continuous(
+        self,
+        values: np.ndarray,
+        design_matrix: np.ndarray,
+        bread_matrix: np.ndarray,
+        irls_weights: np.ndarray,
+    ) -> Optional[ScoreTestResult]:
+        """Compute Rao's score test for a continuous unfitted factor."""
+        try:
+            # Handle NaN/Inf values - replace with mean
+            valid_mask = ~np.isnan(values) & ~np.isinf(values)
+            z = values.copy()
+            if not np.all(valid_mask):
+                z[~valid_mask] = np.mean(values[valid_mask]) if np.any(valid_mask) else 0.0
+            
+            result = _rust_score_test_continuous(
+                z, design_matrix, self.y, self.mu, irls_weights, bread_matrix, self.family
+            )
+            
+            return ScoreTestResult(
+                statistic=round(result["statistic"], 2),
+                df=result["df"],
+                pvalue=round(result["pvalue"], 4),
+                significant=result["significant"],
+            )
+        except Exception:
+            return None
+    
+    def _compute_score_test_categorical(
+        self,
+        values: np.ndarray,
+        design_matrix: np.ndarray,
+        bread_matrix: np.ndarray,
+        irls_weights: np.ndarray,
+    ) -> Optional[ScoreTestResult]:
+        """Compute Rao's score test for a categorical unfitted factor.
+        
+        Uses target encoding (CatBoost-style): computes the mean target value
+        for each level and tests this as a single continuous variable (df=1).
+        This matches how the factor would likely be added to the model.
+        """
+        try:
+            unique_levels = np.unique(values)
+            if len(unique_levels) < 2:
+                return None  # No variation
+            
+            # Compute target encoding: mean of y for each level
+            # For rate models with exposure, use y/exposure
+            if self.exposure is not None:
+                rates = self.y / np.maximum(self.exposure, 1e-10)
+            else:
+                rates = self.y
+            
+            # Build level -> mean_rate mapping
+            level_means = {}
+            for level in unique_levels:
+                mask = values == level
+                if np.sum(mask) > 0:
+                    level_means[level] = np.mean(rates[mask])
+                else:
+                    level_means[level] = np.mean(rates)  # fallback to global mean
+            
+            # Create target-encoded variable (single continuous variable)
+            z = np.array([level_means[v] for v in values], dtype=np.float64)
+            
+            # Handle NaN/Inf
+            valid_mask = np.isfinite(z)
+            if not np.all(valid_mask):
+                z = z.copy()
+                z[~valid_mask] = np.mean(z[valid_mask]) if np.any(valid_mask) else 0.0
+            
+            # Use continuous score test (df=1) since target encoding is a single variable
+            result = _rust_score_test_continuous(
+                z, design_matrix, self.y, self.mu, irls_weights, bread_matrix, self.family
+            )
+            
+            return ScoreTestResult(
+                statistic=round(result["statistic"], 2),
+                df=result["df"],
+                pvalue=round(result["pvalue"], 4),
+                significant=result["significant"],
+            )
+        except Exception:
+            return None
     
     def _linear_trend_test(self, x: np.ndarray, y: np.ndarray) -> tuple:
         """Simple linear regression trend test."""
@@ -3693,6 +3825,20 @@ def compute_diagnostics(
     calibration = computer.compute_calibration(n_calibration_bins)
     residual_summary = computer.compute_residual_summary()
     
+    # Get matrices for score test (for unfitted factors)
+    score_test_design_matrix = None
+    score_test_bread_matrix = None
+    score_test_irls_weights = None
+    try:
+        if hasattr(result, 'get_design_matrix'):
+            score_test_design_matrix = result.get_design_matrix()
+        if hasattr(result, 'get_bread_matrix'):
+            score_test_bread_matrix = result.get_bread_matrix()
+        if hasattr(result, 'get_irls_weights'):
+            score_test_irls_weights = result.get_irls_weights()
+    except Exception:
+        pass  # Score tests will be skipped if matrices unavailable
+    
     factors = computer.compute_factor_diagnostics(
         data=train_data,
         categorical_factors=categorical_factors,
@@ -3701,6 +3847,9 @@ def compute_diagnostics(
         n_bins=n_factor_bins,
         rare_threshold_pct=rare_threshold_pct,
         max_categorical_levels=max_categorical_levels,
+        design_matrix=score_test_design_matrix,
+        bread_matrix=score_test_bread_matrix,
+        irls_weights=score_test_irls_weights,
     )
     
     # Interaction detection

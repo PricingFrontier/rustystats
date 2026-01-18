@@ -927,6 +927,18 @@ class FormulaGLMResults:
         """Estimated dispersion parameter (Pearson-based)."""
         return self._result.scale_pearson()
     
+    def get_design_matrix(self) -> np.ndarray:
+        """Get the design matrix X used in fitting."""
+        return np.asarray(self._result.design_matrix)
+    
+    def get_irls_weights(self) -> np.ndarray:
+        """Get the IRLS working weights from final iteration."""
+        return np.asarray(self._result.irls_weights)
+    
+    def get_bread_matrix(self) -> np.ndarray:
+        """Get the (X'WX)^-1 matrix (unscaled covariance)."""
+        return np.asarray(self._result.cov_params_unscaled)
+    
     # Regularization properties
     @property
     def alpha(self) -> float:

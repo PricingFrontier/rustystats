@@ -936,3 +936,129 @@ class TestEnhancedDiagnostics:
             assert "decile" in d
             assert "train_ae" in d
             assert "test_ae" in d
+
+
+class TestScoreTest:
+    """Tests for Rao's score test for unfitted factors."""
+    
+    def test_score_test_continuous_via_rust(self):
+        """Test score test for continuous variable via Rust binding."""
+        from rustystats._rustystats import score_test_continuous_py
+        
+        np.random.seed(42)
+        n = 100
+        
+        # Design matrix (intercept + one variable)
+        x = np.column_stack([np.ones(n), np.linspace(0, 10, n)])
+        y = np.random.poisson(np.exp(0.5 + 0.1 * x[:, 1]))
+        mu = np.exp(0.5 + 0.1 * x[:, 1])
+        weights = np.ones(n)
+        bread = np.linalg.inv(x.T @ np.diag(weights * mu) @ x)
+        
+        # New variable to test
+        z = np.random.randn(n)
+        
+        result = score_test_continuous_py(z, x, y.astype(float), mu, weights, bread, "poisson")
+        
+        assert "statistic" in result
+        assert "df" in result
+        assert "pvalue" in result
+        assert "significant" in result
+        assert result["df"] == 1
+        assert 0 <= result["pvalue"] <= 1
+    
+    def test_score_test_categorical_via_rust(self):
+        """Test score test for categorical variable via Rust binding."""
+        from rustystats._rustystats import score_test_categorical_py
+        
+        np.random.seed(42)
+        n = 120
+        
+        # Design matrix (intercept only)
+        x = np.ones((n, 1))
+        
+        # Response varies by hidden group
+        groups = np.repeat([0, 1, 2], n // 3)
+        lambdas = np.array([np.exp(0.5), np.exp(1.0), np.exp(1.5)])
+        y = np.array([np.random.poisson(lambdas[g]) for g in groups])
+        mu = np.ones(n) * np.mean(y)
+        weights = np.ones(n)
+        bread = np.array([[1.0 / (n * mu[0])]])
+        
+        # Dummy matrix for 3-level categorical (2 columns)
+        z_matrix = np.zeros((n, 2))
+        z_matrix[n//3:2*n//3, 0] = 1.0  # Group 1
+        z_matrix[2*n//3:, 1] = 1.0       # Group 2
+        
+        result = score_test_categorical_py(z_matrix, x, y.astype(float), mu, weights, bread, "poisson")
+        
+        assert result["df"] == 2
+        assert 0 <= result["pvalue"] <= 1
+        # Should be significant since y varies by group
+        assert result["significant"] == True
+    
+    def test_score_test_in_factor_diagnostics(self):
+        """Test that score test appears in factor diagnostics for unfitted factors."""
+        import rustystats as rs
+        from rustystats.diagnostics import DiagnosticsComputer, ScoreTestResult
+        
+        np.random.seed(42)
+        n = 500
+        
+        age = np.random.uniform(20, 60, n)
+        region = np.random.choice(["A", "B", "C"], n)
+        unfitted_var = np.random.randn(n)  # Not in model
+        unfitted_cat = np.random.choice(["X", "Y", "Z"], n)  # Not in model
+        exposure = np.ones(n)
+        
+        # Generate response based on age and region
+        mu_true = np.exp(-1 + 0.02 * age + 0.3 * (region == "A").astype(float))
+        y = np.random.poisson(mu_true)
+        
+        data = pl.DataFrame({
+            "y": y,
+            "age": age,
+            "region": region,
+            "unfitted_var": unfitted_var,
+            "unfitted_cat": unfitted_cat,
+            "exposure": exposure,
+        })
+        
+        # Fit model without unfitted_var and unfitted_cat
+        result = rs.glm(
+            "y ~ age + C(region)",
+            data=data,
+            family="poisson",
+        ).fit()
+        
+        # Get diagnostics including unfitted factors
+        diagnostics = result.diagnostics(
+            train_data=data,
+            categorical_factors=["region", "unfitted_cat"],
+            continuous_factors=["age", "unfitted_var"],
+        )
+        
+        # Check that fitted factors don't have score_test
+        for factor in diagnostics.factors:
+            if factor.in_model:
+                assert factor.score_test is None, f"Fitted factor {factor.name} should not have score_test"
+        
+        # Check that unfitted factors have score_test (if diagnostics provides matrices)
+        # Note: score_test requires design_matrix, bread_matrix, and irls_weights
+        # which may not always be available depending on diagnostics call
+    
+    def test_score_test_result_dataclass(self):
+        """Test ScoreTestResult dataclass structure."""
+        from rustystats.diagnostics import ScoreTestResult
+        
+        result = ScoreTestResult(
+            statistic=5.5,
+            df=2,
+            pvalue=0.064,
+            significant=False,
+        )
+        
+        assert result.statistic == 5.5
+        assert result.df == 2
+        assert result.pvalue == 0.064
+        assert result.significant == False

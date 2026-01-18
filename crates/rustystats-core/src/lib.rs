@@ -49,6 +49,7 @@ pub use families::Family;
 pub use inference::{
     pvalue_z, pvalue_t, confidence_interval_z, confidence_interval_t,
     HCType, robust_covariance, robust_standard_errors,
+    ScoreTestResult, score_test_continuous, score_test_categorical,
 };
 pub use links::Link;
 pub use regularization::{Penalty, RegularizationConfig, soft_threshold};
