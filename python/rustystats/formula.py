@@ -1939,15 +1939,119 @@ class FormulaGLMDict:
     
     def fit(
         self,
-        max_iter: int = 25,
-        tol: float = 1e-8,
         alpha: float = 0.0,
         l1_ratio: float = 0.0,
+        max_iter: int = 25,
+        tol: float = 1e-8,
+        # Cross-validation based regularization path parameters
+        cv: Optional[int] = None,
+        selection: str = "min",
+        regularization: Optional[str] = None,
+        n_alphas: int = 20,
+        alpha_min_ratio: float = 0.0001,
+        cv_seed: Optional[int] = None,
+        include_unregularized: bool = True,
+        verbose: bool = False,
     ) -> FormulaGLMResults:
-        """Fit the GLM model."""
+        """
+        Fit the GLM model, optionally with regularization.
+        
+        Parameters
+        ----------
+        alpha : float, default=0.0
+            Regularization strength. Higher values = more shrinkage.
+            Ignored if regularization is specified (uses CV to find optimal).
+            
+        l1_ratio : float, default=0.0
+            Elastic Net mixing parameter (0=Ridge, 1=Lasso).
+            Ignored if regularization is specified with type.
+            
+        max_iter : int, default=25
+            Maximum IRLS iterations.
+        tol : float, default=1e-8
+            Convergence tolerance.
+            
+        cv : int, optional
+            Number of cross-validation folds. Defaults to 5 if regularization is set.
+            
+        selection : str, default="min"
+            CV selection method: "min" or "1se".
+            
+        regularization : str, optional
+            Type: "ridge", "lasso", or "elastic_net". Triggers CV-based alpha selection.
+            
+        n_alphas : int, default=20
+            Number of alpha values in CV path.
+            
+        alpha_min_ratio : float, default=0.0001
+            Smallest alpha as ratio of alpha_max.
+            
+        cv_seed : int, optional
+            Random seed for CV folds.
+            
+        include_unregularized : bool, default=True
+            Include alpha=0 in CV comparison.
+            
+        verbose : bool, default=False
+            Print progress.
+            
+        Returns
+        -------
+        FormulaGLMResults
+            Fitted model results.
+        """
         from rustystats._rustystats import fit_glm_py as _fit_glm_rust
         
         is_negbinomial = self.family in ("negbinomial", "negativebinomial", "negative_binomial", "neg-binomial", "nb")
+        
+        # Handle CV-based regularization path
+        # If regularization is specified without cv, default to cv=5
+        if regularization is not None and cv is None:
+            cv = 5
+        
+        if cv is not None:
+            if regularization is None:
+                raise ValueError(
+                    "When cv is specified, 'regularization' must be set to 'ridge', 'lasso', or 'elastic_net'"
+                )
+            
+            from rustystats.regularization_path import fit_cv_regularization_path
+            
+            # Determine l1_ratio from regularization type
+            if regularization == "ridge":
+                cv_l1_ratio = 0.0
+            elif regularization == "lasso":
+                cv_l1_ratio = 1.0
+            elif regularization == "elastic_net":
+                cv_l1_ratio = l1_ratio if l1_ratio > 0 else 0.5
+            else:
+                raise ValueError(f"Unknown regularization type: {regularization}")
+            
+            # Fit regularization path with CV
+            path_info = fit_cv_regularization_path(
+                glm_instance=self,
+                cv=cv,
+                selection=selection,
+                regularization=regularization,
+                n_alphas=n_alphas,
+                alpha_min_ratio=alpha_min_ratio,
+                l1_ratio=cv_l1_ratio,
+                max_iter=max_iter,
+                tol=tol,
+                seed=cv_seed if cv_seed is not None else self._seed,
+                include_unregularized=include_unregularized,
+                verbose=verbose,
+            )
+            
+            # Use selected alpha for final fit
+            alpha = path_info.selected_alpha
+            l1_ratio = path_info.selected_l1_ratio
+            
+            if verbose:
+                print(f"\nRefitting on full data with alpha={alpha:.6f}")
+        else:
+            path_info = None
+        
         theta = self.theta if self.theta is not None else 1.0
         
         # Compute coefficient constraint indices
@@ -1982,6 +2086,7 @@ class FormulaGLMDict:
             design_matrix=self.X,
             offset_spec=self._offset_spec,
             offset_is_exposure=(self.family in ("poisson", "quasipoisson", "negbinomial", "gamma") and self.link in (None, "log")),
+            regularization_path_info=path_info,
         )
 
 
