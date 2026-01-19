@@ -230,8 +230,65 @@ class VIFResult:
     """Variance Inflation Factor for a design matrix column."""
     feature: str
     vif: float
-    severity: str  # "none", "moderate", "severe"
+    severity: str  # "none", "moderate", "severe", "expected"
     collinear_with: Optional[List[str]] = None  # Features it's most correlated with
+
+
+def _extract_base_variable(feature_name: str) -> str:
+    """Extract base variable name from a feature name.
+    
+    Examples:
+        'BonusMalus' -> 'BonusMalus'
+        'I(BonusMalus ** 2)' -> 'BonusMalus'
+        'bs(age, 1/4)' -> 'age'
+        'ns(income, 2/4)' -> 'income'
+        's(age, 3/10)' -> 'age'
+        'ms(VehAge, 2/4, +)' -> 'VehAge'
+        'pos(DrivAge)' -> 'DrivAge'
+        'pos(I(DrivAge ** 2))' -> 'DrivAge'
+        'C(Region)[T.A]' -> 'Region'
+        'np.log(Exposure)' -> 'Exposure'
+        'log(Exposure)' -> 'Exposure'
+    """
+    import re
+    name = feature_name.strip()
+    
+    # Pattern: pos(...) - extract inner and recurse
+    match = re.match(r'pos\((.+)\)$', name)
+    if match:
+        return _extract_base_variable(match.group(1))
+    
+    # Pattern: C(VarName)[...] -> VarName
+    match = re.match(r'C\(([^)]+)\)\[', name)
+    if match:
+        return match.group(1).strip()
+    
+    # Pattern: ms(var, ...) - monotonic spline
+    match = re.match(r'ms\(([^,)]+)', name)
+    if match:
+        return match.group(1).strip()
+    
+    # Pattern: bs(var, ...) or ns(var, ...) or s(var, ...) -> var
+    match = re.match(r'(?:bs|ns|s)\(([^,)]+)', name)
+    if match:
+        return match.group(1).strip()
+    
+    # Pattern: I(var ** N) or I(var**N) -> var
+    match = re.match(r'I\(([a-zA-Z_][a-zA-Z0-9_]*)\s*\*\*', name)
+    if match:
+        return match.group(1).strip()
+    
+    # Pattern: np.log(var) or log(var) or sqrt(var) etc -> var
+    match = re.match(r'(?:np\.)?(?:log|sqrt|exp|abs)\(([^)]+)\)', name)
+    if match:
+        return match.group(1).strip()
+    
+    # Pattern: var:other (interaction) -> var (first part)
+    if ':' in name:
+        return name.split(':')[0].strip()
+    
+    # Default: return as-is
+    return name
 
 
 @dataclass
@@ -1683,7 +1740,17 @@ class DiagnosticsComputer:
             feature_name = names_no_int[i] if i < len(names_no_int) else f"X{i}"
             vif = vif_values[i]
             
-            # Determine severity
+            # Find most correlated features first (needed for severity assessment)
+            correlations = []
+            for j in range(k):
+                if j != i:
+                    corr = corr_matrix[i, j]
+                    if not np.isnan(corr) and abs(corr) > 0.5:
+                        correlations.append((names_no_int[j], abs(corr)))
+            correlations.sort(key=lambda x: -x[1])
+            collinear_with = [c[0] for c in correlations[:3]]  # Top 3
+            
+            # Determine initial severity based on VIF value
             if np.isnan(vif) or np.isinf(vif) or vif > 100:
                 severity = "severe"
                 vif = 999.0 if np.isnan(vif) or np.isinf(vif) else vif
@@ -1694,17 +1761,14 @@ class DiagnosticsComputer:
             else:
                 severity = "none"
             
-            # Find most correlated features (only for problematic ones)
-            collinear_with = None
-            if severity != "none":
-                correlations = []
-                for j in range(k):
-                    if j != i:
-                        corr = corr_matrix[i, j]
-                        if not np.isnan(corr) and abs(corr) > 0.5:
-                            correlations.append((names_no_int[j], abs(corr)))
-                correlations.sort(key=lambda x: -x[1])
-                collinear_with = [c[0] for c in correlations[:3]]  # Top 3
+            # Downgrade to "expected" if high VIF is only due to same-variable terms
+            # (e.g., BonusMalus correlated with I(BonusMalus ** 2) is expected)
+            if severity in ("moderate", "severe") and collinear_with:
+                base_var = _extract_base_variable(feature_name)
+                collinear_bases = [_extract_base_variable(c) for c in collinear_with]
+                # If ALL correlated features share the same base variable, it's expected
+                if all(cb == base_var for cb in collinear_bases):
+                    severity = "expected"
             
             results.append(VIFResult(
                 feature=feature_name,
@@ -1713,10 +1777,9 @@ class DiagnosticsComputer:
                 collinear_with=collinear_with if collinear_with else None,
             ))
         
-        # Sort by VIF (highest first) and filter to only problematic ones
+        # Sort by VIF (highest first)
         results.sort(key=lambda x: -x.vif if not np.isnan(x.vif) else 0)
-        # Token optimization: only return severe/moderate VIF (agent doesn't need "none")
-        return [r for r in results if r.severity in ("severe", "moderate")]
+        return results
     
     def compute_coefficient_summary(
         self,

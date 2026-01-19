@@ -180,7 +180,7 @@ result = rs.glm_dict(
     family="poisson",
     offset="Exposure",
     seed=42,
-).fit()
+).fit(regularization="elastic_net")
 ```
 
 ### Term Types
