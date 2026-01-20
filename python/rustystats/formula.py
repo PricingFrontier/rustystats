@@ -1646,11 +1646,14 @@ def _parse_term_spec(
     elif term_type == "target_encoding":
         prior_weight = spec.get("prior_weight", 1.0)
         n_permutations = spec.get("n_permutations", 4)
-        target_encoding_terms.append(TargetEncodingTermSpec(
-            var_name=var_name,
-            prior_weight=prior_weight,
-            n_permutations=n_permutations,
-        ))
+        # Only add if not already present (avoid duplicates from interactions)
+        existing_te_vars = {te.var_name for te in target_encoding_terms}
+        if var_name not in existing_te_vars:
+            target_encoding_terms.append(TargetEncodingTermSpec(
+                var_name=var_name,
+                prior_weight=prior_weight,
+                n_permutations=n_permutations,
+            ))
     
     elif term_type == "expression":
         expr = spec.get("expr", var_name)
@@ -1687,11 +1690,10 @@ def _parse_interaction_spec(
     if len(var_specs) < 2:
         raise ValueError("Interaction must have at least 2 variables")
     
-    factors = list(var_specs.keys())
-    
-    # Determine which factors are categorical or splines
+    # Determine which factors are categorical, splines, or TE
     cat_factors = set()
     spline_factors = []
+    te_factor_names = {}  # Maps original name -> TE(name) format
     
     for var_name, spec in var_specs.items():
         term_type = spec.get("type", "linear")
@@ -1721,23 +1723,24 @@ def _parse_interaction_spec(
             spline_factors.append((var_name, spline))
         elif term_type == "target_encoding":
             prior_weight = spec.get("prior_weight", 1.0)
-            # TE in interaction - add to TE terms if include_main
-            if include_main:
+            te_factor_names[var_name] = f"TE({var_name})"
+            # TE in interaction - add to TE terms so encoding is available (if not already present)
+            existing_te_vars = {te.var_name for te in target_encoding_terms}
+            if var_name not in existing_te_vars:
                 target_encoding_terms.append(TargetEncodingTermSpec(
                     var_name=var_name,
                     prior_weight=prior_weight,
                 ))
     
-    # Build interaction term
-    is_pure_cat = all(var_specs[f].get("type") == "categorical" for f in factors)
-    is_pure_cont = all(var_specs[f].get("type") in ("linear", None) for f in factors)
+    # Build factors list, renaming TE factors to TE(name) format
+    factors = [te_factor_names.get(k, k) for k in var_specs.keys()]
+    
+    # Build interaction term - categorical_flags is a bool for each factor
+    categorical_flags = [f in cat_factors for f in factors]
     
     interaction_term = InteractionTerm(
         factors=factors,
-        categorical_factors=list(cat_factors),
-        is_pure_categorical=is_pure_cat,
-        is_pure_continuous=is_pure_cont,
-        spline_factors=spline_factors if spline_factors else None,
+        categorical_flags=categorical_flags,
     )
     interactions.append(interaction_term)
     
