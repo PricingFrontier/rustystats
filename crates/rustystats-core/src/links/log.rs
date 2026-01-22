@@ -63,8 +63,14 @@ impl Link for LogLink {
     /// 
     /// Exponentiates each value. This always produces positive results,
     /// which is exactly what we want for count/positive data.
+    /// 
+    /// Clamps input to [-700, 700] to prevent overflow (exp(709) ≈ 8.2e307 → inf).
     fn inverse(&self, eta: &Array1<f64>) -> Array1<f64> {
-        eta.mapv(|x| x.exp())
+        // IEEE-754 f64: exp(709.78) overflows to inf, exp(-745.13) underflows to 0
+        // Use conservative bounds to ensure finite results
+        const EXP_MAX: f64 = 700.0;
+        const EXP_MIN: f64 = -700.0;
+        eta.mapv(|x| x.clamp(EXP_MIN, EXP_MAX).exp())
     }
     
     /// Derivative: dη/dμ = 1/μ

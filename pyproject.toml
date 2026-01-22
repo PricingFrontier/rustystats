@@ -23,7 +23,7 @@ name = "rustystats"
 version = "0.2.4"
 description = "Fast Generalized Linear Models with a Rust backend - statsmodels compatible"
 readme = "README.md"
-license = { text = "MIT" }
+license = { text = "Elastic-2.0" }
 requires-python = ">=3.9"
 classifiers = [
     "Programming Language :: Rust",
@@ -88,7 +88,6 @@ addopts = "-v --tb=short"
 
 [dependency-groups]
 dev = [
-    "glum>=3.1.2",
     "maturin>=1.10.2",
     "mkdocs>=1.6.1",
     "mkdocs-material>=9.7.1",

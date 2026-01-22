@@ -315,7 +315,12 @@ pub fn fit_glm_full(
 
     // Ensure μ is valid (e.g., positive for Poisson, in (0,1) for Binomial)
     if !family.is_valid_mu(&mu) {
-        // Try a safer initialization
+        // Try a safer initialization - warn user this is happening
+        eprintln!(
+            "Warning: Family '{}' initial μ values were invalid. Using safe fallback initialization. \
+            This may indicate unusual response values (e.g., all zeros, extreme values).",
+            family.name()
+        );
         mu = initialize_mu_safe(y, family);
     }
 
@@ -636,6 +641,10 @@ pub fn fit_glm_full(
         },
         _ => {
             // Final extraction failed or produced NaN - use stored coefficients
+            eprintln!(
+                "Warning: Final coefficient extraction produced NaN/Inf. \
+                Using coefficients from best iteration instead. This may indicate numerical instability."
+            );
             if use_coefficients.iter().any(|&c| c.is_nan() || c.is_infinite()) {
                 return Err(RustyStatsError::NumericalError(
                     "IRLS produced NaN or infinite coefficients. This usually indicates: \
@@ -839,6 +848,10 @@ pub fn fit_glm_warm_start(
         Ok((coef, _)) if !coef.iter().any(|&c| c.is_nan() || c.is_infinite()) => coef,
         _ => {
             // Final extraction failed or produced NaN - use coefficients from last iteration
+            eprintln!(
+                "Warning: Final coefficient extraction produced NaN/Inf. \
+                Using coefficients from last iteration instead. This may indicate numerical instability."
+            );
             if iter_coefficients.iter().any(|&c| c.is_nan() || c.is_infinite()) {
                 return Err(RustyStatsError::NumericalError(
                     "IRLS produced NaN or infinite coefficients. This usually indicates: \
@@ -1012,7 +1025,12 @@ pub fn fit_glm_regularized_warm(
             let mu_init = link.inverse(&eta_init);
             clamp_mu(&mu_init, family)
         } else {
-            // Dimension mismatch - fall back to cold start
+            // Dimension mismatch - fall back to cold start with warning
+            eprintln!(
+                "Warning: Warm-start coefficient dimension mismatch (got {}, expected {}). \
+                Falling back to cold start. This may indicate a bug in the caller.",
+                init.len(), p
+            );
             let mu_init = family.initialize_mu(y);
             if !family.is_valid_mu(&mu_init) {
                 initialize_mu_safe(y, family)

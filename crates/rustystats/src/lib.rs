@@ -82,7 +82,13 @@ fn family_from_name(name: &str) -> PyResult<Box<dyn Family>> {
         let theta = if let Some(start) = lower.find("theta=") {
             let rest = &lower[start + 6..];
             let end = rest.find(')').unwrap_or(rest.len());
-            rest[..end].parse::<f64>().unwrap_or(1.0)
+            let theta_str = &rest[..end];
+            theta_str.parse::<f64>().map_err(|_| {
+                PyValueError::new_err(format!(
+                    "Failed to parse theta value '{}' in family '{}'. Expected a numeric value like 'negativebinomial(theta=1.5)'",
+                    theta_str, name
+                ))
+            })?
         } else {
             1.0
         };
@@ -1026,7 +1032,10 @@ impl PyGLMResults {
             // Parse theta from family name like "NegativeBinomial(theta=1.3802)"
             let theta = if let Some(start) = self.family_name.find("theta=") {
                 let rest = &self.family_name[start + 6..];
-                rest.trim_end_matches(')').parse::<f64>().unwrap_or(1.0)
+                let theta_str = rest.trim_end_matches(')');
+                theta_str.parse::<f64>().unwrap_or_else(|_| {
+                    panic!("BUG: Failed to parse theta from family_name '{}'. This indicates a bug in family name formatting.", self.family_name)
+                })
             } else {
                 1.0
             };
@@ -2546,8 +2555,18 @@ fn detect_interactions_py<'py>(
         if is_cat {
             factors.insert(name.clone(), FactorData::Categorical(values));
         } else {
-            // Parse as f64
-            let floats: Vec<f64> = values.iter().map(|s| s.parse().unwrap_or(f64::NAN)).collect();
+            // Parse as f64 - fail loudly if values can't be parsed
+            let floats: Result<Vec<f64>, _> = values.iter()
+                .enumerate()
+                .map(|(j, s)| s.parse::<f64>().map_err(|_| (j, s.clone())))
+                .collect();
+            let floats = match floats {
+                Ok(f) => f,
+                Err((idx, val)) => return Err(PyValueError::new_err(format!(
+                    "Failed to parse value '{}' at index {} for continuous factor '{}' as a number",
+                    val, idx, name
+                ))),
+            };
             factors.insert(name.clone(), FactorData::Continuous(floats));
         }
     }
@@ -2656,7 +2675,13 @@ fn compute_fit_statistics_py<'py>(
         let theta = if let Some(start) = family_lower.find("theta=") {
             let rest = &family_lower[start + 6..];
             let end = rest.find(')').unwrap_or(rest.len());
-            rest[..end].parse::<f64>().unwrap_or(1.0)
+            let theta_str = &rest[..end];
+            theta_str.parse::<f64>().map_err(|_| {
+                PyValueError::new_err(format!(
+                    "Failed to parse theta value '{}' in family '{}'. Expected a numeric value.",
+                    theta_str, family
+                ))
+            })?
         } else {
             1.0
         };
@@ -2739,7 +2764,13 @@ fn compute_dataset_metrics_py<'py>(
         if let Some(start) = family_lower.find("theta=") {
             let rest = &family_lower[start + 6..];
             let end = rest.find(')').unwrap_or(rest.len());
-            rest[..end].parse::<f64>().unwrap_or(theta)
+            let theta_str = &rest[..end];
+            theta_str.parse::<f64>().map_err(|_| {
+                PyValueError::new_err(format!(
+                    "Failed to parse theta value '{}' in family '{}'. Expected a numeric value.",
+                    theta_str, family
+                ))
+            })?
         } else {
             theta
         }
@@ -2752,7 +2783,13 @@ fn compute_dataset_metrics_py<'py>(
         if let Some(start) = family_lower.find("p=") {
             let rest = &family_lower[start + 2..];
             let end = rest.find(')').unwrap_or(rest.len());
-            rest[..end].parse::<f64>().unwrap_or(var_power)
+            let p_str = &rest[..end];
+            p_str.parse::<f64>().map_err(|_| {
+                PyValueError::new_err(format!(
+                    "Failed to parse var_power value '{}' in family '{}'. Expected a numeric value.",
+                    p_str, family
+                ))
+            })?
         } else {
             var_power
         }
@@ -3165,7 +3202,8 @@ fn fit_cv_path_py<'py>(
             } else {
                 linear_pred
             };
-            let mu_val = linear_pred_with_offset.mapv(|x| x.exp());
+            // Clamp to prevent exp overflow (exp(709) → inf)
+            let mu_val = linear_pred_with_offset.mapv(|x| x.clamp(-700.0, 700.0).exp());
             
             // Mean deviance
             let unit_dev = thread_fam.unit_deviance(&y_val, &mu_val);

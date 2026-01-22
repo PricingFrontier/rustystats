@@ -1246,7 +1246,13 @@ class DiagnosticsComputer:
                 pvalue=round(result["pvalue"], 4),
                 significant=result["significant"],
             )
-        except Exception:
+        except Exception as e:
+            import warnings
+            warnings.warn(
+                f"Score test computation failed for continuous factor: {e}. "
+                "This may indicate numerical issues with the design matrix or IRLS weights.",
+                RuntimeWarning
+            )
             return None
     
     def _compute_score_test_categorical(
@@ -1303,7 +1309,13 @@ class DiagnosticsComputer:
                 pvalue=round(result["pvalue"], 4),
                 significant=result["significant"],
             )
-        except Exception:
+        except Exception as e:
+            import warnings
+            warnings.warn(
+                f"Score test computation failed for categorical factor: {e}. "
+                "This may indicate numerical issues with the target encoding or design matrix.",
+                RuntimeWarning
+            )
             return None
     
     def _linear_trend_test(self, x: np.ndarray, y: np.ndarray) -> tuple:
@@ -3899,8 +3911,13 @@ def compute_diagnostics(
             score_test_bread_matrix = result.get_bread_matrix()
         if hasattr(result, 'get_irls_weights'):
             score_test_irls_weights = result.get_irls_weights()
-    except Exception:
-        pass  # Score tests will be skipped if matrices unavailable
+    except Exception as e:
+        import warnings
+        warnings.warn(
+            f"Could not retrieve matrices for score tests: {e}. "
+            "Score tests for unfitted factors will be skipped.",
+            RuntimeWarning
+        )
     
     factors = computer.compute_factor_diagnostics(
         data=train_data,

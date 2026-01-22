@@ -160,7 +160,12 @@ pub fn fit_glm_coordinate_descent(
         if init.len() == p {
             init.clone()
         } else {
-            // Dimension mismatch - fall back to cold start
+            // Dimension mismatch - fall back to cold start with warning
+            eprintln!(
+                "Warning: Warm-start coefficient dimension mismatch (got {}, expected {}). \
+                Falling back to cold start. This may indicate a bug in the caller.",
+                init.len(), p
+            );
             Array1::zeros(p)
         }
     } else {
@@ -440,9 +445,18 @@ pub fn fit_glm_coordinate_descent(
     // -------------------------------------------------------------------------
     // Step 6: Compute covariance estimate
     // -------------------------------------------------------------------------
-    // For penalized models, the sandwich covariance is complex.
-    // We return a simple approximation based on non-zero coefficients.
-    // TODO: Implement proper sandwich estimator for inference
+    // IMPORTANT LIMITATION FOR ACTUARIAL USERS:
+    // For penalized models (Lasso/Elastic Net), standard errors are approximate.
+    // The covariance is computed using only non-zero coefficients, which does not
+    // account for the selection bias introduced by penalization.
+    // 
+    // For rigorous inference on regularized models, consider:
+    // 1. Bootstrap confidence intervals
+    // 2. De-biased Lasso methods
+    // 3. Post-selection inference techniques
+    //
+    // The standard errors returned here should be used with caution for
+    // hypothesis testing or confidence interval construction.
     let cov_unscaled = compute_penalized_covariance(x, &irls_weights, &prior_weights_vec, &coefficients, pen_start);
 
     Ok(IRLSResult {

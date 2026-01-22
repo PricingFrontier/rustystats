@@ -90,4 +90,104 @@ result = model.fit(regularization="ridge", cv_seed=42)
 ## Performance
 
 - **Parallel CV**: Folds fitted in parallel via Rust/Rayon
-- **~8s for 500k rows, 5 folds, 20 alphas**
+- **Warm-start**: Coefficients from α[i] initialize α[i+1] for faster convergence
+- **~2s for 30k rows × 50 predictors, 5 folds, 20 alphas** (Ridge)
+- **~5s for 30k rows × 50 predictors, 5 folds, 20 alphas** (Lasso/Elastic Net)
+
+
+## Complete Example
+
+```python
+import rustystats as rs
+import polars as pl
+
+# Load data
+df = pl.read_csv("insurance.csv")
+
+# Ridge with automatic CV
+ridge_result = rs.glm(
+    "ClaimAmount ~ Age + VehAge + BonusMalus + Density",
+    data=df,
+    family="gamma"
+).fit(
+    cv=5,
+    regularization="ridge",
+    n_alphas=50,
+    selection="1se",
+    cv_seed=42
+)
+
+print(f"Selected alpha: {ridge_result.alpha:.4f}")
+print(f"CV deviance: {ridge_result.cv_deviance:.4f}")
+print(ridge_result.summary())
+
+# Lasso for variable selection
+lasso_result = rs.glm(
+    "ClaimCount ~ " + " + ".join([f"x{i}" for i in range(100)]),
+    data=df,
+    family="poisson"
+).fit(
+    cv=5,
+    regularization="lasso",
+    n_alphas=30
+)
+
+# See which coefficients are non-zero
+nonzero = [(name, coef) for name, coef in 
+           zip(lasso_result.feature_names, lasso_result.params) 
+           if abs(coef) > 1e-6]
+print(f"Selected {len(nonzero)} features")
+
+# Elastic Net for correlated groups
+enet_result = rs.glm("y ~ x1 + x2 + x3 + x4 + x5", data=df).fit(
+    cv=5,
+    regularization="elastic_net",
+    l1_ratio=0.5,  # 50% L1, 50% L2
+    n_alphas=20
+)
+```
+
+## Supported Families
+
+CV regularization works with all GLM families:
+
+| Family | Ridge | Lasso | Elastic Net |
+|--------|-------|-------|-------------|
+| Gaussian | ✓ | ✓ | ✓ |
+| Poisson | ✓ | ✓ | ✓ |
+| Binomial | ✓ | ✓ | ✓ |
+| Gamma | ✓ | ✓ | ✓ |
+| Tweedie | ✓ | ✓ | ✓ |
+| NegBinomial | ✓ | ✓ | ✓ |
+
+## Important: Standard Errors for Penalized Models
+
+**For actuarial and statistical inference applications:**
+
+Standard errors returned by Lasso and Elastic Net models are **approximate**. The covariance
+matrix is computed using only non-zero coefficients, which does not account for the selection
+bias introduced by penalization.
+
+For rigorous inference on regularized models, consider:
+
+1. **Bootstrap confidence intervals** — Resample and refit to get empirical distributions
+2. **De-biased Lasso methods** — Available in specialized packages
+3. **Post-selection inference** — Techniques that account for variable selection
+
+Ridge regression standard errors are more reliable since no variable selection occurs.
+
+```python
+# For rigorous inference, use bootstrap
+from sklearn.utils import resample
+
+bootstrap_coefs = []
+for _ in range(1000):
+    idx = resample(range(len(df)))
+    boot_df = df[idx]
+    result = rs.glm(formula, boot_df, family="poisson").fit(
+        regularization="lasso", cv=5
+    )
+    bootstrap_coefs.append(result.params)
+
+# Compute percentile confidence intervals from bootstrap_coefs
+```
