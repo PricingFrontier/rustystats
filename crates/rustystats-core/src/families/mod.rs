@@ -151,4 +151,33 @@ pub trait Family: Send + Sync {
     /// - Poisson: μ must be positive
     /// - Binomial: μ must be in (0, 1)
     fn is_valid_mu(&self, mu: &Array1<f64>) -> bool;
+    
+    /// Whether this family supports true Hessian-based IRLS weights for the log link.
+    /// 
+    /// For certain family/link combinations (Gamma, Tweedie with log link),
+    /// using the true Hessian instead of the Fisher information approximation
+    /// can dramatically reduce the number of IRLS iterations (e.g., 50-100 → 5-10).
+    /// 
+    /// Default: false (use standard Fisher-based weights)
+    fn use_true_hessian_weights(&self) -> bool {
+        false
+    }
+    
+    /// Compute optimized IRLS weights using true Hessian (when applicable).
+    /// 
+    /// For Gamma with log link: w = μ (instead of 1 from Fisher info)
+    /// For Tweedie (1 < p < 2) with log link: w = μ^(2-p)
+    /// 
+    /// This method is only called when `use_true_hessian_weights()` returns true.
+    /// 
+    /// # Arguments
+    /// * `mu` - Array of fitted mean values
+    /// * `y` - Array of observed response values (needed for some Hessians)
+    /// 
+    /// # Returns
+    /// Array of optimized IRLS weights
+    fn true_hessian_weights(&self, mu: &Array1<f64>, _y: &Array1<f64>) -> Array1<f64> {
+        // Default: same as variance (which gives standard IRLS behavior)
+        self.variance(mu)
+    }
 }

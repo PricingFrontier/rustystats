@@ -171,6 +171,26 @@ impl Family for TweedieFamily {
     fn is_valid_mu(&self, mu: &Array1<f64>) -> bool {
         mu.iter().all(|&m| m > 0.0)
     }
+    
+    /// Tweedie (1 < p < 2) with log link benefits from true Hessian weights.
+    /// 
+    /// Using the observed Hessian can significantly reduce IRLS iterations.
+    fn use_true_hessian_weights(&self) -> bool {
+        // Only enable for 1 < p < 2 (compound Poisson-Gamma) where Hessian is PD
+        self.var_power > 1.0 && self.var_power < 2.0
+    }
+    
+    /// For Tweedie with log link, the true Hessian weight is μ^(2-p).
+    /// 
+    /// Derivation: For Tweedie with variance V(μ) = μ^p and log link:
+    ///   - The Hessian of the log-likelihood w.r.t. η involves μ^(2-p)
+    ///   - This provides better curvature information than Fisher info
+    /// 
+    /// For p in (1, 2), this gives weights between μ (p=1, Poisson) and 1 (p=2, Gamma).
+    fn true_hessian_weights(&self, mu: &Array1<f64>, _y: &Array1<f64>) -> Array1<f64> {
+        let exp = 2.0 - self.var_power;
+        mu.mapv(|m| m.powf(exp).max(1e-10))
+    }
 }
 
 // =============================================================================

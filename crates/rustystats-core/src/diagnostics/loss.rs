@@ -400,6 +400,43 @@ mod tests {
         // (1*1 + 3*0) / 4 = 0.25
         assert_abs_diff_eq!(result, 0.25, epsilon = 1e-10);
     }
+    
+    #[test]
+    fn test_mse_empty() {
+        let y: Array1<f64> = array![];
+        let mu: Array1<f64> = array![];
+        assert_abs_diff_eq!(mse(&y, &mu, None), 0.0, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_mse_zero_weights() {
+        let y = array![1.0, 2.0];
+        let mu = array![2.0, 3.0];
+        let w = array![0.0, 0.0];
+        assert_abs_diff_eq!(mse(&y, &mu, Some(&w)), 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_rmse() {
+        let y = array![1.0, 2.0, 3.0, 4.0];
+        let mu = array![2.0, 3.0, 4.0, 5.0];  // All errors = 1
+        
+        let result = rmse(&y, &mu, None);
+        // MSE = 1.0, RMSE = 1.0
+        assert_abs_diff_eq!(result, 1.0, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_rmse_weighted() {
+        let y = array![0.0, 0.0];
+        let mu = array![1.0, 2.0];  // errors: 1, 4
+        let w = array![3.0, 1.0];
+        
+        // MSE = (3*1 + 1*4) / 4 = 7/4 = 1.75
+        // RMSE = sqrt(1.75)
+        let result = rmse(&y, &mu, Some(&w));
+        assert_abs_diff_eq!(result, 1.75_f64.sqrt(), epsilon = 1e-10);
+    }
 
     #[test]
     fn test_mae() {
@@ -409,6 +446,24 @@ mod tests {
         let result = mae(&y, &mu, None);
         // (0.5 + 0 + 0.5) / 3 = 0.333...
         assert_abs_diff_eq!(result, 1.0 / 3.0, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_mae_weighted() {
+        let y = array![0.0, 0.0];
+        let mu = array![1.0, 2.0];  // abs errors: 1, 2
+        let w = array![2.0, 1.0];
+        
+        // (2*1 + 1*2) / 3 = 4/3
+        let result = mae(&y, &mu, Some(&w));
+        assert_abs_diff_eq!(result, 4.0 / 3.0, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_mae_empty() {
+        let y: Array1<f64> = array![];
+        let mu: Array1<f64> = array![];
+        assert_abs_diff_eq!(mae(&y, &mu, None), 0.0, epsilon = 1e-10);
     }
 
     #[test]
@@ -420,6 +475,32 @@ mod tests {
         // Should be positive and reasonable
         assert!(result > 0.0);
         assert!(result < 1.0);
+    }
+    
+    #[test]
+    fn test_poisson_deviance_loss_perfect() {
+        let y = array![1.0, 2.0, 3.0];
+        let mu = array![1.0, 2.0, 3.0];
+        
+        let result = poisson_deviance_loss(&y, &mu, None);
+        assert_abs_diff_eq!(result, 0.0, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_poisson_deviance_loss_weighted() {
+        let y = array![0.0, 1.0];
+        let mu = array![1.0, 1.0];
+        let w = array![1.0, 2.0];
+        
+        let result = poisson_deviance_loss(&y, &mu, Some(&w));
+        assert!(result > 0.0);
+    }
+    
+    #[test]
+    fn test_poisson_deviance_loss_empty() {
+        let y: Array1<f64> = array![];
+        let mu: Array1<f64> = array![];
+        assert_abs_diff_eq!(poisson_deviance_loss(&y, &mu, None), 0.0, epsilon = 1e-10);
     }
 
     #[test]
@@ -441,6 +522,24 @@ mod tests {
         // Random predictions should have loss ~= log(2) ≈ 0.693
         assert_abs_diff_eq!(result, 0.693, epsilon = 0.01);
     }
+    
+    #[test]
+    fn test_log_loss_weighted() {
+        let y = array![1.0, 0.0];
+        let mu = array![0.9, 0.1];
+        let w = array![1.0, 1.0];
+        
+        let result = log_loss(&y, &mu, Some(&w));
+        assert!(result > 0.0);
+        assert!(result < 0.5);
+    }
+    
+    #[test]
+    fn test_log_loss_empty() {
+        let y: Array1<f64> = array![];
+        let mu: Array1<f64> = array![];
+        assert_abs_diff_eq!(log_loss(&y, &mu, None), 0.0, epsilon = 1e-10);
+    }
 
     #[test]
     fn test_gamma_deviance_loss() {
@@ -450,5 +549,237 @@ mod tests {
         let result = gamma_deviance_loss(&y, &mu, None);
         // Perfect fit should have zero loss
         assert_abs_diff_eq!(result, 0.0, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_gamma_deviance_loss_imperfect() {
+        let y = array![1.0, 2.0, 3.0];
+        let mu = array![1.5, 2.5, 3.5];
+        
+        let result = gamma_deviance_loss(&y, &mu, None);
+        assert!(result > 0.0);
+    }
+    
+    #[test]
+    fn test_gamma_deviance_loss_weighted() {
+        let y = array![1.0, 2.0];
+        let mu = array![1.0, 2.0];
+        let w = array![2.0, 1.0];
+        
+        let result = gamma_deviance_loss(&y, &mu, Some(&w));
+        assert_abs_diff_eq!(result, 0.0, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_gamma_deviance_loss_empty() {
+        let y: Array1<f64> = array![];
+        let mu: Array1<f64> = array![];
+        assert_abs_diff_eq!(gamma_deviance_loss(&y, &mu, None), 0.0, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_tweedie_deviance_loss_gaussian() {
+        let y = array![1.0, 2.0, 3.0];
+        let mu = array![1.5, 2.5, 3.5];
+        
+        // var_power = 0 → Gaussian
+        let result = tweedie_deviance_loss(&y, &mu, 0.0, None);
+        // Should match MSE * 2 (unit deviance is (y-mu)^2 for Gaussian)
+        let expected_mse = mse(&y, &mu, None);
+        assert_abs_diff_eq!(result, expected_mse, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_tweedie_deviance_loss_poisson() {
+        let y = array![1.0, 2.0, 3.0];
+        let mu = array![1.0, 2.0, 3.0];
+        
+        // var_power = 1 → Poisson
+        let result = tweedie_deviance_loss(&y, &mu, 1.0, None);
+        assert_abs_diff_eq!(result, 0.0, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_tweedie_deviance_loss_gamma() {
+        let y = array![1.0, 2.0, 3.0];
+        let mu = array![1.0, 2.0, 3.0];
+        
+        // var_power = 2 → Gamma
+        let result = tweedie_deviance_loss(&y, &mu, 2.0, None);
+        assert_abs_diff_eq!(result, 0.0, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_tweedie_deviance_loss_compound_poisson() {
+        let y = array![0.0, 1.0, 2.0, 5.0];
+        let mu = array![0.5, 1.0, 2.0, 5.0];
+        
+        // var_power = 1.5 → Compound Poisson-Gamma
+        let result = tweedie_deviance_loss(&y, &mu, 1.5, None);
+        assert!(result >= 0.0);
+    }
+    
+    #[test]
+    fn test_tweedie_deviance_loss_weighted() {
+        let y = array![1.0, 2.0];
+        let mu = array![1.0, 2.0];
+        let w = array![1.0, 2.0];
+        
+        let result = tweedie_deviance_loss(&y, &mu, 1.5, Some(&w));
+        assert_abs_diff_eq!(result, 0.0, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_tweedie_deviance_loss_empty() {
+        let y: Array1<f64> = array![];
+        let mu: Array1<f64> = array![];
+        assert_abs_diff_eq!(tweedie_deviance_loss(&y, &mu, 1.5, None), 0.0, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_negbinomial_deviance_loss() {
+        let y = array![1.0, 2.0, 3.0];
+        let mu = array![1.0, 2.0, 3.0];
+        let theta = 1.0;
+        
+        let result = negbinomial_deviance_loss(&y, &mu, theta, None);
+        // Perfect fit: deviance contributions should be ~0
+        assert!(result.abs() < 0.1);
+    }
+    
+    #[test]
+    fn test_negbinomial_deviance_loss_imperfect() {
+        let y = array![0.0, 1.0, 5.0];
+        let mu = array![1.0, 2.0, 3.0];
+        let theta = 2.0;
+        
+        let result = negbinomial_deviance_loss(&y, &mu, theta, None);
+        assert!(result > 0.0);
+    }
+    
+    #[test]
+    fn test_negbinomial_deviance_loss_weighted() {
+        let y = array![1.0, 2.0];
+        let mu = array![1.0, 2.0];
+        let w = array![1.0, 2.0];
+        let theta = 1.5;
+        
+        let result = negbinomial_deviance_loss(&y, &mu, theta, Some(&w));
+        assert!(result.abs() < 0.1);
+    }
+    
+    #[test]
+    fn test_negbinomial_deviance_loss_empty() {
+        let y: Array1<f64> = array![];
+        let mu: Array1<f64> = array![];
+        assert_abs_diff_eq!(negbinomial_deviance_loss(&y, &mu, 1.0, None), 0.0, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_default_loss_name() {
+        assert_eq!(default_loss_name("gaussian"), "mse");
+        assert_eq!(default_loss_name("Gaussian"), "mse");
+        assert_eq!(default_loss_name("normal"), "mse");
+        assert_eq!(default_loss_name("poisson"), "poisson_deviance");
+        assert_eq!(default_loss_name("Poisson"), "poisson_deviance");
+        assert_eq!(default_loss_name("quasipoisson"), "poisson_deviance");
+        assert_eq!(default_loss_name("gamma"), "gamma_deviance");
+        assert_eq!(default_loss_name("Gamma"), "gamma_deviance");
+        assert_eq!(default_loss_name("binomial"), "log_loss");
+        assert_eq!(default_loss_name("quasibinomial"), "log_loss");
+        assert_eq!(default_loss_name("tweedie"), "tweedie_deviance");
+        assert_eq!(default_loss_name("negativebinomial"), "negbinomial_deviance");
+        assert_eq!(default_loss_name("negbinomial"), "negbinomial_deviance");
+        assert_eq!(default_loss_name("nb"), "negbinomial_deviance");
+    }
+    
+    #[test]
+    fn test_compute_family_loss_gaussian() {
+        let y = array![1.0, 2.0, 3.0];
+        let mu = array![1.5, 2.5, 3.5];
+        
+        let result = compute_family_loss("gaussian", &y, &mu, None, None, None);
+        let expected = mse(&y, &mu, None);
+        assert_abs_diff_eq!(result, expected, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_compute_family_loss_poisson() {
+        let y = array![1.0, 2.0, 3.0];
+        let mu = array![1.0, 2.0, 3.0];
+        
+        let result = compute_family_loss("poisson", &y, &mu, None, None, None);
+        let expected = poisson_deviance_loss(&y, &mu, None);
+        assert_abs_diff_eq!(result, expected, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_compute_family_loss_gamma() {
+        let y = array![1.0, 2.0, 3.0];
+        let mu = array![1.0, 2.0, 3.0];
+        
+        let result = compute_family_loss("gamma", &y, &mu, None, None, None);
+        let expected = gamma_deviance_loss(&y, &mu, None);
+        assert_abs_diff_eq!(result, expected, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_compute_family_loss_binomial() {
+        let y = array![0.0, 1.0, 0.0, 1.0];
+        let mu = array![0.2, 0.8, 0.3, 0.7];
+        
+        let result = compute_family_loss("binomial", &y, &mu, None, None, None);
+        let expected = log_loss(&y, &mu, None);
+        assert_abs_diff_eq!(result, expected, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_compute_family_loss_tweedie() {
+        let y = array![0.0, 1.0, 2.0];
+        let mu = array![0.5, 1.0, 2.0];
+        
+        let result = compute_family_loss("tweedie", &y, &mu, None, Some(1.5), None);
+        let expected = tweedie_deviance_loss(&y, &mu, 1.5, None);
+        assert_abs_diff_eq!(result, expected, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_compute_family_loss_negbinomial() {
+        let y = array![1.0, 2.0, 3.0];
+        let mu = array![1.0, 2.0, 3.0];
+        
+        let result = compute_family_loss("negativebinomial", &y, &mu, None, None, Some(1.0));
+        let expected = negbinomial_deviance_loss(&y, &mu, 1.0, None);
+        assert_abs_diff_eq!(result, expected, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_compute_family_loss_negbinomial_with_theta_in_name() {
+        let y = array![1.0, 2.0, 3.0];
+        let mu = array![1.0, 2.0, 3.0];
+        
+        let result = compute_family_loss("negativebinomial(theta=2.5)", &y, &mu, None, None, None);
+        let expected = negbinomial_deviance_loss(&y, &mu, 2.5, None);
+        assert_abs_diff_eq!(result, expected, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_compute_family_loss_quasipoisson() {
+        let y = array![1.0, 2.0, 3.0];
+        let mu = array![1.0, 2.0, 3.0];
+        
+        let result = compute_family_loss("quasipoisson", &y, &mu, None, None, None);
+        let expected = poisson_deviance_loss(&y, &mu, None);
+        assert_abs_diff_eq!(result, expected, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_compute_family_loss_quasibinomial() {
+        let y = array![0.0, 1.0];
+        let mu = array![0.3, 0.7];
+        
+        let result = compute_family_loss("quasibinomial", &y, &mu, None, None, None);
+        let expected = log_loss(&y, &mu, None);
+        assert_abs_diff_eq!(result, expected, epsilon = 1e-10);
     }
 }

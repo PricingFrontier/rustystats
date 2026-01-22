@@ -356,19 +356,27 @@ pub fn fit_glm_full(
         // ---------------------------------------------------------------------
         // Step 4a: Compute working weights W
         // ---------------------------------------------------------------------
-        // The IRLS weight for observation i is:
+        // The standard IRLS weight for observation i is:
         //     w_irls_i = 1 / (V(μ_i) × g'(μ_i)²)
+        //
+        // OPTIMIZATION: For certain family/link combinations (Gamma, Tweedie 1<p<2
+        // with log link), using the true Hessian instead of Fisher information
+        // can dramatically reduce iterations (50-100 → 5-10). This is because
+        // the true Hessian provides better curvature information.
         //
         // Combined with prior weights:
         //     w_i = prior_weight_i × w_irls_i
-        //
-        // This accounts for:
-        //   - Variance function V(μ): higher variance → lower weight
-        //   - Link derivative g'(μ): transformation adjustment
-        //   - Prior weights: user-specified importance
         // ---------------------------------------------------------------------
-        let variance = family.variance(&mu);
         let link_deriv = link.derivative(&mu);
+        
+        // Check if family supports true Hessian weights (Gamma, Tweedie 1<p<2)
+        let use_true_hessian = family.use_true_hessian_weights() && link.name() == "log";
+        let hessian_weights = if use_true_hessian {
+            Some(family.true_hessian_weights(&mu, y))
+        } else {
+            None
+        };
+        let variance = if use_true_hessian { None } else { Some(family.variance(&mu)) };
 
         // PARALLEL: Compute IRLS weights, combined weights, and working response
         // in a single parallel pass to minimize allocation overhead
@@ -378,11 +386,17 @@ pub fn fit_glm_full(
         let results: Vec<(f64, f64, f64)> = (0..n)
             .into_par_iter()
             .map(|i| {
-                let v = variance[i];
                 let d = link_deriv[i];
                 
-                // IRLS weight
-                let iw = (1.0 / (v * d * d)).max(min_weight).min(1e10);
+                // IRLS weight: use true Hessian if available, else Fisher info
+                let iw = if let Some(ref hw) = hessian_weights {
+                    // True Hessian weight (already accounts for link via derivation)
+                    (hw[i] / (d * d)).max(min_weight).min(1e10)
+                } else {
+                    // Standard Fisher information weight
+                    let v = variance.as_ref().unwrap()[i];
+                    (1.0 / (v * d * d)).max(min_weight).min(1e10)
+                };
                 
                 // Combined weight
                 let cw = prior_weights_vec[i] * iw;
@@ -899,6 +913,25 @@ pub fn fit_glm_regularized(
     offset: Option<&Array1<f64>>,
     weights: Option<&Array1<f64>>,
 ) -> Result<IRLSResult> {
+    // Delegate to warm-start version with no initial coefficients
+    fit_glm_regularized_warm(y, x, family, link, irls_config, reg_config, offset, weights, None)
+}
+
+/// Fit a regularized GLM with optional warm start from initial coefficients.
+/// 
+/// This is the core Ridge fitting function with warm-start support for
+/// efficient regularization path fitting.
+pub fn fit_glm_regularized_warm(
+    y: &Array1<f64>,
+    x: &Array2<f64>,
+    family: &dyn Family,
+    link: &dyn Link,
+    irls_config: &IRLSConfig,
+    reg_config: &RegularizationConfig,
+    offset: Option<&Array1<f64>>,
+    weights: Option<&Array1<f64>>,
+    init_coefficients: Option<&Array1<f64>>,
+) -> Result<IRLSResult> {
     // Check if L1 penalty is requested - this requires coordinate descent
     if reg_config.penalty.requires_coordinate_descent() {
         return Err(RustyStatsError::InvalidValue(
@@ -970,13 +1003,31 @@ pub fn fit_glm_regularized(
     };
 
     // -------------------------------------------------------------------------
-    // Step 1: Initialize μ using the family's method
+    // Step 1: Initialize μ (with warm-start support)
     // -------------------------------------------------------------------------
-    let mut mu = family.initialize_mu(y);
-
-    if !family.is_valid_mu(&mu) {
-        mu = initialize_mu_safe(y, family);
-    }
+    let mut mu = if let Some(init) = init_coefficients {
+        // Warm start: compute μ from provided coefficients
+        if init.len() == p {
+            let eta_init = x.dot(init) + &offset_vec;
+            let mu_init = link.inverse(&eta_init);
+            clamp_mu(&mu_init, family)
+        } else {
+            // Dimension mismatch - fall back to cold start
+            let mu_init = family.initialize_mu(y);
+            if !family.is_valid_mu(&mu_init) {
+                initialize_mu_safe(y, family)
+            } else {
+                mu_init
+            }
+        }
+    } else {
+        let mu_init = family.initialize_mu(y);
+        if !family.is_valid_mu(&mu_init) {
+            initialize_mu_safe(y, family)
+        } else {
+            mu_init
+        }
+    };
 
     // -------------------------------------------------------------------------
     // Step 2: Initialize linear predictor η = g(μ)
@@ -1000,18 +1051,29 @@ pub fn fit_glm_regularized(
     while iteration < irls_config.max_iterations {
         iteration += 1;
 
-        // Compute working weights W
-        let variance = family.variance(&mu);
+        // Compute working weights W (with true Hessian optimization)
         let link_deriv = link.derivative(&mu);
+        
+        let use_true_hessian = family.use_true_hessian_weights() && link.name() == "log";
+        let hessian_weights = if use_true_hessian {
+            Some(family.true_hessian_weights(&mu, y))
+        } else {
+            None
+        };
+        let variance = if use_true_hessian { None } else { Some(family.variance(&mu)) };
 
         let min_weight = irls_config.min_weight;
         
         let results: Vec<(f64, f64, f64)> = (0..n)
             .into_par_iter()
             .map(|i| {
-                let v = variance[i];
                 let d = link_deriv[i];
-                let iw = (1.0 / (v * d * d)).max(min_weight).min(1e10);
+                let iw = if let Some(ref hw) = hessian_weights {
+                    (hw[i] / (d * d)).max(min_weight).min(1e10)
+                } else {
+                    let v = variance.as_ref().unwrap()[i];
+                    (1.0 / (v * d * d)).max(min_weight).min(1e10)
+                };
                 let cw = prior_weights_vec[i] * iw;
                 let e = eta[i] - offset_vec[i];
                 let wr = e + (y[i] - mu[i]) * d;

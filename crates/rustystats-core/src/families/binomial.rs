@@ -76,25 +76,47 @@ impl Family for BinomialFamily {
     /// 
     /// This handles the edge cases where y = 0 or y = 1.
     /// For binary data (y ∈ {0, 1}), this simplifies nicely.
+    /// 
+    /// OPTIMIZATION: Uses numerically stable formulations to avoid overflow/underflow
+    /// for extreme probability values (μ very close to 0 or 1).
     fn unit_deviance(&self, y: &Array1<f64>, mu: &Array1<f64>) -> Array1<f64> {
         ndarray::Zip::from(y)
             .and(mu)
             .map_collect(|&yi, &mui| {
+                // Clamp μ to avoid log(0) and division by zero
+                let mui_safe = mui.max(1e-15).min(1.0 - 1e-15);
+                
                 let mut dev = 0.0;
                 
                 // First term: y × log(y/μ)
                 // Only contributes when y > 0
+                // Use log(y) - log(μ) for better numerical stability
                 if yi > 0.0 {
-                    dev += yi * (yi / mui).ln();
+                    // For y=1 (common case), this is -log(μ)
+                    if yi >= 1.0 - 1e-15 {
+                        dev += -mui_safe.ln();
+                    } else {
+                        dev += yi * (yi.ln() - mui_safe.ln());
+                    }
                 }
                 
                 // Second term: (1-y) × log((1-y)/(1-μ))
                 // Only contributes when y < 1
-                if yi < 1.0 {
-                    dev += (1.0 - yi) * ((1.0 - yi) / (1.0 - mui)).ln();
+                // Use log1p for better precision when μ or y is close to 1
+                if yi < 1.0 - 1e-15 {
+                    let one_minus_y = 1.0 - yi;
+                    let one_minus_mu = 1.0 - mui_safe;
+                    
+                    // For y=0 (common case), this is -log(1-μ)
+                    if yi <= 1e-15 {
+                        // Use log1p(-μ) for better precision when μ is small
+                        dev += -(-mui_safe).ln_1p().max(-1e10);
+                    } else {
+                        dev += one_minus_y * (one_minus_y.ln() - one_minus_mu.ln());
+                    }
                 }
                 
-                2.0 * dev
+                2.0 * dev.max(0.0)  // Ensure non-negative
             })
     }
     

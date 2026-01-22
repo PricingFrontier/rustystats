@@ -38,7 +38,7 @@ use rayon::iter::IntoParallelIterator;
 // Import our core library
 use rustystats_core::families::{Family, GaussianFamily, PoissonFamily, BinomialFamily, GammaFamily, TweedieFamily, QuasiPoissonFamily, QuasiBinomialFamily, NegativeBinomialFamily};
 use rustystats_core::links::{Link, IdentityLink, LogLink, LogitLink};
-use rustystats_core::solvers::{fit_glm_full, fit_glm_warm_start, fit_glm_regularized, fit_glm_coordinate_descent, IRLSConfig, IRLSResult};
+use rustystats_core::solvers::{fit_glm_full, fit_glm_warm_start, fit_glm_regularized, fit_glm_regularized_warm, fit_glm_coordinate_descent, IRLSConfig, IRLSResult};
 use rustystats_core::regularization::{Penalty, RegularizationConfig};
 use rustystats_core::inference::{pvalue_z, confidence_interval_z, HCType, robust_covariance, robust_standard_errors, score_test_continuous, score_test_categorical};
 use rustystats_core::diagnostics::{
@@ -3139,11 +3139,13 @@ fn fit_cv_path_py<'py>(
                     }
                 }
             } else {
-                match fit_glm_regularized(
+                // Ridge: also use warm start for efficiency
+                match fit_glm_regularized_warm(
                     &y_train, &x_train,
                     thread_fam.as_ref(), thread_link.as_ref(),
                     &irls_config, &reg_config,
-                    offset_train.as_ref(), weights_train.as_ref()
+                    offset_train.as_ref(), weights_train.as_ref(),
+                    warm_coefficients.as_ref()  // Warm start!
                 ) {
                     Ok(r) => r,
                     Err(_) => {

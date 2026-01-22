@@ -88,6 +88,7 @@ addopts = "-v --tb=short"
 
 [dependency-groups]
 dev = [
+    "glum>=3.1.2",
     "maturin>=1.10.2",
     "mkdocs>=1.6.1",
     "mkdocs-material>=9.7.1",

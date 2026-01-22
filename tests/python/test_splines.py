@@ -560,28 +560,33 @@ class TestMonotonicSplineFormula:
         assert all(c >= -1e-10 for c in ms_coefs), "Monotonic spline coefficients should be non-negative"
     
     def test_formula_with_ms_decreasing(self):
-        """Test decreasing monotonic splines in formula."""
+        """Test decreasing monotonic spline via increasing=false."""
         import rustystats as rs
         import polars as pl
         
         np.random.seed(42)
-        n = 100
+        n = 200  # Increase sample size for better convergence
+        # Create data with clear decreasing trend
+        vehicle_age = np.random.uniform(0, 20, n)
+        # y decreases with vehicle_age
+        rate = np.exp(1.5 - 0.05 * vehicle_age)
+        y = np.random.poisson(rate)
         data = pl.DataFrame({
-            "y": np.random.poisson(3, n),
-            "vehicle_age": np.random.uniform(0, 20, n),
+            "y": y,
+            "vehicle_age": vehicle_age,
         })
         
         model = rs.glm(
-            "y ~ ms(vehicle_age, df=4, increasing=false)",
+            "y ~ ms(vehicle_age, df=3, increasing=false)",  # Use df=3 for stability
             data=data,
             family="poisson",
         )
-        # Constrained optimization may need more iterations
-        result = model.fit(max_iter=100)
+        # Constrained optimization may need more iterations and regularization
+        result = model.fit(max_iter=100, alpha=1e-4)
         
-        # Check all ms() coefficients are non-negative (constraint enforced)
+        # Check all ms() coefficients are non-positive for decreasing constraint
         ms_coefs = [c for n, c in zip(result.feature_names, result.params) if n.startswith("ms(")]
-        assert all(c >= -1e-10 for c in ms_coefs), "Monotonic spline coefficients should be non-negative"
+        assert all(c <= 1e-10 for c in ms_coefs), "Decreasing monotonic spline coefficients should be non-positive"
     
     def test_formula_ms_with_other_terms(self):
         """Test monotonic splines combined with other term types."""

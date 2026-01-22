@@ -462,6 +462,36 @@ mod tests {
         let expected = -0.5 * 3.0 * (2.0 * PI).ln();
         assert_abs_diff_eq!(llf, expected, epsilon = 1e-10);
     }
+    
+    #[test]
+    fn test_log_likelihood_gaussian_imperfect() {
+        let y = array![1.0, 2.0, 3.0];
+        let mu = array![1.5, 2.5, 3.5];  // Errors of 0.5
+        let scale = 1.0;
+        
+        let llf = log_likelihood_gaussian(&y, &mu, scale, None);
+        
+        // SS = 3 × 0.25 = 0.75
+        // ℓ = -0.5 × (0.75/1 + 3 × log(2π))
+        let expected = -0.5 * (0.75 + 3.0 * (2.0 * PI).ln());
+        assert_abs_diff_eq!(llf, expected, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_log_likelihood_gaussian_weighted() {
+        let y = array![1.0, 2.0];
+        let mu = array![1.0, 3.0];  // Errors: 0, 1
+        let w = array![1.0, 2.0];
+        let scale = 1.0;
+        
+        let llf = log_likelihood_gaussian(&y, &mu, scale, Some(&w));
+        
+        // Weighted SS = 1×0 + 2×1 = 2
+        // sum_wt = 3
+        // ℓ = -0.5 × (2/1 + 3 × log(2π))
+        let expected = -0.5 * (2.0 + 3.0 * (2.0 * PI).ln());
+        assert_abs_diff_eq!(llf, expected, epsilon = 1e-10);
+    }
 
     #[test]
     fn test_log_likelihood_poisson() {
@@ -473,6 +503,30 @@ mod tests {
         
         // For y=μ=1: 1×log(1) - 1 - log(1!) = 0 - 1 - 0 = -1 per obs
         // Total: -3
+        assert_abs_diff_eq!(llf, -3.0, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_log_likelihood_poisson_weighted() {
+        let y = array![1.0, 2.0];
+        let mu = array![1.0, 2.0];
+        let w = array![1.0, 2.0];
+        
+        let llf = log_likelihood_poisson(&y, &mu, Some(&w));
+        
+        // Weighted sum should be computed
+        assert!(llf < 0.0);
+    }
+    
+    #[test]
+    fn test_log_likelihood_poisson_zero_y() {
+        let y = array![0.0, 0.0];
+        let mu = array![1.0, 2.0];
+        
+        let llf = log_likelihood_poisson(&y, &mu, None);
+        
+        // For y=0: 0×log(μ) - μ - log(0!) = -μ - 0 = -μ
+        // Total: -1 - 2 = -3
         assert_abs_diff_eq!(llf, -3.0, epsilon = 1e-10);
     }
 
@@ -488,6 +542,68 @@ mod tests {
         let expected = 0.8_f64.ln() + 0.8_f64.ln();
         assert_abs_diff_eq!(llf, expected, epsilon = 1e-10);
     }
+    
+    #[test]
+    fn test_log_likelihood_binomial_weighted() {
+        let y = array![1.0, 0.0];
+        let mu = array![0.9, 0.1];
+        let w = array![2.0, 1.0];
+        
+        let llf = log_likelihood_binomial(&y, &mu, Some(&w));
+        
+        // Weighted: 2×log(0.9) + 1×log(0.9)
+        let expected = 2.0 * 0.9_f64.ln() + 1.0 * 0.9_f64.ln();
+        assert_abs_diff_eq!(llf, expected, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_log_likelihood_binomial_proportions() {
+        // Test with proportions (not just 0/1)
+        let y = array![0.5, 0.5];
+        let mu = array![0.5, 0.5];
+        
+        let llf = log_likelihood_binomial(&y, &mu, None);
+        
+        // 0.5×log(0.5) + 0.5×log(0.5) per obs
+        let per_obs = 0.5 * 0.5_f64.ln() + 0.5 * 0.5_f64.ln();
+        assert_abs_diff_eq!(llf, 2.0 * per_obs, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_log_likelihood_gamma() {
+        let y = array![1.0, 2.0, 3.0];
+        let mu = array![1.0, 2.0, 3.0];  // Perfect fit
+        let scale = 1.0;  // α = 1
+        
+        let llf = log_likelihood_gamma(&y, &mu, scale, None);
+        
+        // With perfect fit and α=1, should get finite negative value
+        assert!(llf.is_finite());
+        assert!(llf < 0.0);
+    }
+    
+    #[test]
+    fn test_log_likelihood_gamma_weighted() {
+        let y = array![1.0, 2.0];
+        let mu = array![1.0, 2.0];
+        let w = array![1.0, 2.0];
+        let scale = 0.5;  // α = 2
+        
+        let llf = log_likelihood_gamma(&y, &mu, scale, Some(&w));
+        
+        assert!(llf.is_finite());
+    }
+    
+    #[test]
+    fn test_log_likelihood_gamma_small_scale() {
+        let y = array![1.0, 2.0, 3.0];
+        let mu = array![1.0, 2.0, 3.0];
+        let scale = 0.1;  // α = 10 (high shape)
+        
+        let llf = log_likelihood_gamma(&y, &mu, scale, None);
+        
+        assert!(llf.is_finite());
+    }
 
     #[test]
     fn test_aic() {
@@ -498,6 +614,17 @@ mod tests {
         
         // AIC = -2×(-100) + 2×5 = 200 + 10 = 210
         assert_abs_diff_eq!(aic_val, 210.0, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_aic_zero_params() {
+        let llf = -50.0;
+        let n_params = 0;
+        
+        let aic_val = aic(llf, n_params);
+        
+        // AIC = -2×(-50) + 0 = 100
+        assert_abs_diff_eq!(aic_val, 100.0, epsilon = 1e-10);
     }
 
     #[test]
@@ -512,6 +639,19 @@ mod tests {
         let expected = 200.0 + 5.0 * 100.0_f64.ln();
         assert_abs_diff_eq!(bic_val, expected, epsilon = 1e-10);
     }
+    
+    #[test]
+    fn test_bic_small_sample() {
+        let llf = -50.0;
+        let n_params = 3;
+        let n_obs = 10;
+        
+        let bic_val = bic(llf, n_params, n_obs);
+        
+        // BIC = -2×(-50) + 3×log(10) = 100 + 3×2.303
+        let expected = 100.0 + 3.0 * 10.0_f64.ln();
+        assert_abs_diff_eq!(bic_val, expected, epsilon = 1e-10);
+    }
 
     #[test]
     fn test_null_deviance_gaussian() {
@@ -522,6 +662,18 @@ mod tests {
         // Mean = 3.0
         // Null deviance = Σ(y - 3)² = 4 + 1 + 0 + 1 + 4 = 10
         assert_abs_diff_eq!(null_dev, 10.0, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_null_deviance_normal() {
+        // Test case-insensitive "normal" alias
+        let y = array![1.0, 3.0];
+        
+        let null_dev = null_deviance(&y, "normal", None);
+        
+        // Mean = 2.0
+        // Null deviance = (1-2)² + (3-2)² = 1 + 1 = 2
+        assert_abs_diff_eq!(null_dev, 2.0, epsilon = 1e-10);
     }
 
     #[test]
@@ -534,6 +686,15 @@ mod tests {
         // This is more complex to compute manually, but should be positive
         assert!(null_dev > 0.0);
     }
+    
+    #[test]
+    fn test_null_deviance_quasipoisson() {
+        let y = array![1.0, 2.0, 3.0];
+        
+        let null_dev = null_deviance(&y, "quasipoisson", None);
+        
+        assert!(null_dev >= 0.0);
+    }
 
     #[test]
     fn test_null_deviance_weighted() {
@@ -545,5 +706,110 @@ mod tests {
         // Weighted mean = (3×1 + 1×5) / 4 = 8/4 = 2.0
         // Null deviance = 3×(1-2)² + 1×(5-2)² = 3×1 + 1×9 = 12
         assert_abs_diff_eq!(null_dev, 12.0, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_null_deviance_binomial() {
+        let y = array![0.0, 1.0, 0.0, 1.0];
+        
+        let null_dev = null_deviance(&y, "binomial", None);
+        
+        // Mean = 0.5
+        // Should be positive
+        assert!(null_dev > 0.0);
+    }
+    
+    #[test]
+    fn test_null_deviance_quasibinomial() {
+        let y = array![0.0, 0.0, 1.0, 1.0];
+        
+        let null_dev = null_deviance(&y, "quasibinomial", None);
+        
+        assert!(null_dev >= 0.0);
+    }
+    
+    #[test]
+    fn test_null_deviance_gamma() {
+        let y = array![1.0, 2.0, 3.0, 4.0];
+        
+        let null_dev = null_deviance(&y, "gamma", None);
+        
+        // Mean = 2.5
+        // Should be positive
+        assert!(null_dev >= 0.0);
+    }
+    
+    #[test]
+    fn test_null_deviance_negativebinomial() {
+        let y = array![1.0, 2.0, 3.0, 4.0];  // All positive values
+        
+        let null_dev = null_deviance(&y, "negativebinomial", None);
+        
+        // Negative binomial deviance can be negative for some edge cases
+        assert!(null_dev.is_finite());
+    }
+    
+    #[test]
+    fn test_null_deviance_negativebinomial_with_theta() {
+        let y = array![1.0, 2.0, 3.0, 4.0];  // All positive values
+        
+        let null_dev = null_deviance(&y, "negativebinomial(theta=2.5)", None);
+        
+        // Negative binomial deviance should be finite
+        assert!(null_dev.is_finite());
+    }
+    
+    #[test]
+    fn test_null_deviance_with_offset_poisson() {
+        let y = array![1.0, 2.0, 4.0];
+        let offset = array![0.0, 0.693, 1.386];  // log(1), log(2), log(4)
+        
+        let null_dev = null_deviance_with_offset(&y, "poisson", None, Some(&offset));
+        
+        // With offset, null model accounts for exposure
+        assert!(null_dev >= 0.0);
+    }
+    
+    #[test]
+    fn test_null_deviance_with_offset_gaussian() {
+        let y = array![1.0, 2.0, 3.0];
+        let offset = array![0.0, 0.0, 0.0];
+        
+        let null_dev = null_deviance_with_offset(&y, "gaussian", None, Some(&offset));
+        
+        // With zero offset, should match regular null deviance
+        let null_dev_no_offset = null_deviance(&y, "gaussian", None);
+        assert_abs_diff_eq!(null_dev, null_dev_no_offset, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_null_deviance_with_offset_gamma() {
+        let y = array![1.0, 2.0, 3.0];
+        let offset = array![0.0, 0.5, 1.0];
+        
+        let null_dev = null_deviance_with_offset(&y, "gamma", None, Some(&offset));
+        
+        assert!(null_dev >= 0.0);
+    }
+    
+    #[test]
+    fn test_null_deviance_with_offset_negbinomial() {
+        let y = array![1.0, 2.0, 3.0];
+        let offset = array![0.0, 0.5, 1.0];
+        
+        let null_dev = null_deviance_with_offset(&y, "negbinomial(theta=1.5)", None, Some(&offset));
+        
+        assert!(null_dev >= 0.0);
+    }
+    
+    #[test]
+    fn test_null_deviance_with_offset_weighted() {
+        let y = array![1.0, 2.0];
+        let offset = array![0.0, 0.5];
+        let weights = array![1.0, 2.0];
+        
+        let null_dev = null_deviance_with_offset(&y, "poisson", Some(&weights), Some(&offset));
+        
+        assert!(null_dev >= 0.0);
     }
 }

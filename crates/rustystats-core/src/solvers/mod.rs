@@ -33,5 +33,5 @@
 mod irls;
 mod coordinate_descent;
 
-pub use irls::{IRLSConfig, IRLSResult, fit_glm, fit_glm_full, fit_glm_warm_start, fit_glm_regularized};
+pub use irls::{IRLSConfig, IRLSResult, fit_glm, fit_glm_full, fit_glm_warm_start, fit_glm_regularized, fit_glm_regularized_warm};
 pub use coordinate_descent::fit_glm_coordinate_descent;

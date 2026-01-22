@@ -649,13 +649,13 @@ class TestEnhancedDiagnostics:
         
         vif_results = computer.compute_vif(X, ["Intercept", "age", "veh_power"])
         
-        # Token optimization: VIF now only returns severe/moderate (filters out 'none')
-        # For independent variables, VIF should be low so may return empty list
+        # VIF returns all features with their VIF values and severity levels
         for v in vif_results:
             assert hasattr(v, 'feature')
             assert hasattr(v, 'vif')
             assert hasattr(v, 'severity')
-            assert v.severity in ('severe', 'moderate')  # Only problematic ones returned
+            assert v.severity in ('none', 'moderate', 'severe')
+            assert v.vif >= 1.0  # VIF is always >= 1
     
     def test_vif_detects_collinearity(self):
         """Test that VIF detects collinear features."""

@@ -572,6 +572,89 @@ mod tests {
     }
     
     #[test]
+    fn test_encode_categorical_single_level() {
+        let values: Vec<String> = vec!["A", "A", "A"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        
+        let enc = encode_categorical(&values, "cat", true);
+        
+        // Single level with drop_first → 0 columns
+        assert_eq!(enc.matrix.ncols(), 0);
+        assert_eq!(enc.names.len(), 0);
+        assert_eq!(enc.levels.len(), 1);
+    }
+    
+    #[test]
+    fn test_encode_categorical_preserves_indices() {
+        let values: Vec<String> = vec!["B", "A", "C", "B"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        
+        let enc = encode_categorical(&values, "cat", true);
+        
+        // Levels are sorted: A=0, B=1, C=2
+        assert_eq!(enc.indices, vec![1, 0, 2, 1]);
+        assert_eq!(enc.levels, vec!["A", "B", "C"]);
+    }
+    
+    #[test]
+    fn test_encode_categorical_from_indices() {
+        let indices = vec![0, 1, 2, 1, 0];
+        let level_names = vec!["A".to_string(), "B".to_string(), "C".to_string()];
+        
+        let enc = encode_categorical_from_indices(&indices, 3, &level_names, "cat", true);
+        
+        // 3 levels - 1 = 2 columns
+        assert_eq!(enc.matrix.ncols(), 2);
+        assert_eq!(enc.matrix.nrows(), 5);
+        
+        // Row 0: A (idx 0) → reference, [0, 0]
+        assert_eq!(enc.matrix[[0, 0]], 0.0);
+        assert_eq!(enc.matrix[[0, 1]], 0.0);
+        
+        // Row 1: B (idx 1) → [1, 0]
+        assert_eq!(enc.matrix[[1, 0]], 1.0);
+        assert_eq!(enc.matrix[[1, 1]], 0.0);
+        
+        // Row 2: C (idx 2) → [0, 1]
+        assert_eq!(enc.matrix[[2, 0]], 0.0);
+        assert_eq!(enc.matrix[[2, 1]], 1.0);
+    }
+    
+    #[test]
+    fn test_encode_categorical_from_indices_no_drop() {
+        let indices = vec![0, 1, 0];
+        let level_names = vec!["X".to_string(), "Y".to_string()];
+        
+        let enc = encode_categorical_from_indices(&indices, 2, &level_names, "cat", false);
+        
+        // 2 columns without dropping
+        assert_eq!(enc.matrix.ncols(), 2);
+        
+        // Row 0: X → [1, 0]
+        assert_eq!(enc.matrix[[0, 0]], 1.0);
+        assert_eq!(enc.matrix[[0, 1]], 0.0);
+        
+        // Row 1: Y → [0, 1]
+        assert_eq!(enc.matrix[[1, 0]], 0.0);
+        assert_eq!(enc.matrix[[1, 1]], 1.0);
+    }
+    
+    #[test]
+    fn test_encode_categorical_from_indices_single_level() {
+        let indices = vec![0, 0, 0];
+        let level_names = vec!["A".to_string()];
+        
+        let enc = encode_categorical_from_indices(&indices, 1, &level_names, "cat", true);
+        
+        // Single level with drop → 0 columns
+        assert_eq!(enc.matrix.ncols(), 0);
+    }
+    
+    #[test]
     fn test_categorical_categorical_interaction() {
         // Cat1: A(ref), B, C -> indices 0, 1, 2
         // Cat2: X(ref), Y -> indices 0, 1
@@ -603,6 +686,36 @@ mod tests {
     }
     
     #[test]
+    fn test_categorical_categorical_interaction_empty() {
+        let idx1: Vec<i32> = vec![];
+        let idx2: Vec<i32> = vec![];
+        let names1 = vec!["a".to_string()];
+        let names2 = vec!["b".to_string()];
+        
+        let (matrix, names) = build_categorical_categorical_interaction(
+            &idx1, 1, &idx2, 1, &names1, &names2
+        );
+        
+        assert_eq!(matrix.shape(), &[0, 1]);
+        assert_eq!(names.len(), 1);
+    }
+    
+    #[test]
+    fn test_categorical_categorical_interaction_zero_levels() {
+        let idx1 = vec![0i32, 1];
+        let idx2 = vec![0i32, 1];
+        let names1: Vec<String> = vec![];
+        let names2: Vec<String> = vec![];
+        
+        let (matrix, names) = build_categorical_categorical_interaction(
+            &idx1, 0, &idx2, 0, &names1, &names2
+        );
+        
+        assert_eq!(matrix.ncols(), 0);
+        assert_eq!(names.len(), 0);
+    }
+    
+    #[test]
     fn test_categorical_continuous_interaction() {
         let cat_idx = vec![0i32, 1, 2, 1];  // Ref, Level1, Level2, Level1
         let cont = Array1::from_vec(vec![1.0, 2.0, 3.0, 4.0]);
@@ -628,6 +741,20 @@ mod tests {
     }
     
     #[test]
+    fn test_categorical_continuous_interaction_zero_levels() {
+        let cat_idx = vec![0i32, 0];
+        let cont = Array1::from_vec(vec![1.0, 2.0]);
+        let cat_names: Vec<String> = vec![];
+        
+        let (matrix, names) = build_categorical_continuous_interaction(
+            &cat_idx, 0, &cont, &cat_names, "x"
+        );
+        
+        assert_eq!(matrix.ncols(), 0);
+        assert_eq!(names.len(), 0);
+    }
+    
+    #[test]
     fn test_continuous_continuous_interaction() {
         let x1 = Array1::from_vec(vec![1.0, 2.0, 3.0]);
         let x2 = Array1::from_vec(vec![4.0, 5.0, 6.0]);
@@ -638,6 +765,34 @@ mod tests {
         assert_eq!(result[0], 4.0);
         assert_eq!(result[1], 10.0);
         assert_eq!(result[2], 18.0);
+    }
+    
+    #[test]
+    fn test_multiply_matrix_by_continuous() {
+        let matrix = Array2::from_shape_vec((3, 2), vec![
+            1.0, 0.0,
+            0.0, 1.0,
+            1.0, 1.0,
+        ]).unwrap();
+        let continuous = Array1::from_vec(vec![2.0, 3.0, 4.0]);
+        let names = vec!["a".to_string(), "b".to_string()];
+        
+        let (result, result_names) = multiply_matrix_by_continuous(&matrix, &continuous, &names, "x");
+        
+        assert_eq!(result.shape(), &[3, 2]);
+        assert_eq!(result_names, vec!["a:x", "b:x"]);
+        
+        // Row 0: [1, 0] * 2 = [2, 0]
+        assert_eq!(result[[0, 0]], 2.0);
+        assert_eq!(result[[0, 1]], 0.0);
+        
+        // Row 1: [0, 1] * 3 = [0, 3]
+        assert_eq!(result[[1, 0]], 0.0);
+        assert_eq!(result[[1, 1]], 3.0);
+        
+        // Row 2: [1, 1] * 4 = [4, 4]
+        assert_eq!(result[[2, 0]], 4.0);
+        assert_eq!(result[[2, 1]], 4.0);
     }
     
     #[test]
@@ -661,5 +816,94 @@ mod tests {
         assert_eq!(matrix[[0, 0]], 1.0);  // Intercept
         assert_eq!(matrix[[0, 1]], 1.0);  // x[0]
         assert_eq!(matrix[[2, 1]], 3.0);  // x[2]
+    }
+    
+    #[test]
+    fn test_build_design_matrix_with_categorical() {
+        let n = 4;
+        
+        let values: Vec<String> = vec!["A", "B", "A", "B"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let enc = encode_categorical(&values, "cat", true);
+        
+        let columns = vec![
+            DesignColumn::Intercept,
+            DesignColumn::Categorical { encoding: enc },
+        ];
+        
+        let (matrix, names) = build_design_matrix(columns, n);
+        
+        assert_eq!(matrix.shape(), &[4, 2]); // Intercept + 1 dummy
+        assert_eq!(names.len(), 2);
+        
+        // All intercepts = 1
+        for i in 0..4 {
+            assert_eq!(matrix[[i, 0]], 1.0);
+        }
+        
+        // Dummies: A=0, B=1
+        assert_eq!(matrix[[0, 1]], 0.0); // A
+        assert_eq!(matrix[[1, 1]], 1.0); // B
+        assert_eq!(matrix[[2, 1]], 0.0); // A
+        assert_eq!(matrix[[3, 1]], 1.0); // B
+    }
+    
+    #[test]
+    fn test_build_design_matrix_with_interaction() {
+        let n = 2;
+        
+        let int_matrix = Array2::from_shape_vec((2, 2), vec![
+            1.0, 0.0,
+            0.0, 1.0,
+        ]).unwrap();
+        
+        let columns = vec![
+            DesignColumn::Intercept,
+            DesignColumn::Interaction {
+                matrix: int_matrix,
+                names: vec!["a:b".to_string(), "a:c".to_string()],
+            },
+        ];
+        
+        let (matrix, names) = build_design_matrix(columns, n);
+        
+        assert_eq!(matrix.shape(), &[2, 3]);
+        assert_eq!(names, vec!["Intercept", "a:b", "a:c"]);
+    }
+    
+    #[test]
+    fn test_build_design_matrix_with_spline() {
+        let n = 3;
+        
+        let spline_matrix = Array2::from_shape_vec((3, 2), vec![
+            0.5, 0.5,
+            0.3, 0.7,
+            0.1, 0.9,
+        ]).unwrap();
+        
+        let columns = vec![
+            DesignColumn::Spline {
+                matrix: spline_matrix,
+                names: vec!["bs(x, 1)".to_string(), "bs(x, 2)".to_string()],
+            },
+        ];
+        
+        let (matrix, names) = build_design_matrix(columns, n);
+        
+        assert_eq!(matrix.shape(), &[3, 2]);
+        assert_eq!(names, vec!["bs(x, 1)", "bs(x, 2)"]);
+        assert_eq!(matrix[[0, 0]], 0.5);
+        assert_eq!(matrix[[2, 1]], 0.9);
+    }
+    
+    #[test]
+    fn test_build_design_matrix_empty() {
+        let columns: Vec<DesignColumn> = vec![];
+        let (matrix, names) = build_design_matrix(columns, 5);
+        
+        assert_eq!(matrix.shape(), &[5, 0]);
+        assert_eq!(names.len(), 0);
     }
 }

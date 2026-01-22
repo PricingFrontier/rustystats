@@ -913,6 +913,51 @@ mod tests {
         assert_abs_diff_eq!(stats.max, 10.0, epsilon = 1e-10);
         assert_eq!(stats.missing_count, 0);
     }
+    
+    #[test]
+    fn test_continuous_stats_with_nan() {
+        let values = vec![1.0, f64::NAN, 3.0, f64::INFINITY, 5.0];
+        let stats = compute_continuous_stats(&values);
+        
+        assert_abs_diff_eq!(stats.mean, 3.0, epsilon = 1e-10);
+        assert_abs_diff_eq!(stats.min, 1.0, epsilon = 1e-10);
+        assert_abs_diff_eq!(stats.max, 5.0, epsilon = 1e-10);
+        assert_eq!(stats.missing_count, 2); // NaN and Infinity
+    }
+    
+    #[test]
+    fn test_continuous_stats_empty() {
+        let values: Vec<f64> = vec![];
+        let stats = compute_continuous_stats(&values);
+        
+        assert!(stats.mean.is_nan());
+        assert!(stats.min.is_nan());
+        assert!(stats.max.is_nan());
+        assert_eq!(stats.missing_count, 0);
+    }
+    
+    #[test]
+    fn test_continuous_stats_all_nan() {
+        let values = vec![f64::NAN, f64::NAN];
+        let stats = compute_continuous_stats(&values);
+        
+        assert!(stats.mean.is_nan());
+        assert_eq!(stats.missing_count, 2);
+    }
+    
+    #[test]
+    fn test_continuous_stats_percentiles() {
+        let values: Vec<f64> = (1..=100).map(|x| x as f64).collect();
+        let stats = compute_continuous_stats(&values);
+        
+        assert_abs_diff_eq!(stats.percentiles.p50, 50.0, epsilon = 1.0);
+        assert!(stats.percentiles.p1 <= stats.percentiles.p5);
+        assert!(stats.percentiles.p5 <= stats.percentiles.p25);
+        assert!(stats.percentiles.p25 <= stats.percentiles.p50);
+        assert!(stats.percentiles.p50 <= stats.percentiles.p75);
+        assert!(stats.percentiles.p75 <= stats.percentiles.p95);
+        assert!(stats.percentiles.p95 <= stats.percentiles.p99);
+    }
 
     #[test]
     fn test_categorical_distribution() {
@@ -927,6 +972,33 @@ mod tests {
         assert_eq!(dist.n_levels, 3);
         assert_eq!(dist.levels[0].level, "A");
         assert_eq!(dist.levels[0].count, 3);
+    }
+    
+    #[test]
+    fn test_categorical_distribution_empty() {
+        let values: Vec<String> = vec![];
+        
+        let dist = compute_categorical_distribution(&values, 10.0);
+        
+        assert_eq!(dist.n_levels, 0);
+        assert_eq!(dist.levels.len(), 0);
+        assert_eq!(dist.n_rare_levels, 0);
+    }
+    
+    #[test]
+    fn test_categorical_distribution_rare_levels() {
+        let values = vec![
+            "A".to_string(), "A".to_string(), "A".to_string(), "A".to_string(), "A".to_string(),
+            "A".to_string(), "A".to_string(), "A".to_string(), "A".to_string(), "A".to_string(),
+            "B".to_string(), // 10% - rare
+            "C".to_string(), // 10% - rare
+        ];
+        
+        // Levels with < 15% are rare
+        let dist = compute_categorical_distribution(&values, 15.0);
+        
+        assert_eq!(dist.n_rare_levels, 2); // B and C
+        assert!(dist.rare_level_total_pct > 15.0);
     }
 
     #[test]
@@ -943,6 +1015,94 @@ mod tests {
             assert!((bin.actual_expected_ratio - 1.0).abs() < 0.01);
         }
     }
+    
+    #[test]
+    fn test_ae_continuous_empty() {
+        let factor: Vec<f64> = vec![];
+        let y = array![];
+        let mu = array![];
+        
+        let bins = compute_ae_continuous(&factor, &y, &mu, None, "gaussian", 5, None, None);
+        
+        assert_eq!(bins.len(), 0);
+    }
+    
+    #[test]
+    fn test_ae_continuous_with_exposure() {
+        let factor = vec![1.0, 2.0, 3.0, 4.0];
+        let y = array![1.0, 2.0, 3.0, 4.0];
+        let mu = array![1.0, 2.0, 3.0, 4.0];
+        let exposure = array![1.0, 2.0, 1.0, 2.0];
+        
+        let bins = compute_ae_continuous(&factor, &y, &mu, Some(&exposure), "poisson", 2, None, None);
+        
+        assert_eq!(bins.len(), 2);
+        for bin in &bins {
+            assert!(bin.exposure > 0.0);
+        }
+    }
+    
+    #[test]
+    fn test_ae_continuous_with_nan() {
+        let factor = vec![1.0, f64::NAN, 3.0, 4.0];
+        let y = array![1.0, 2.0, 3.0, 4.0];
+        let mu = array![1.0, 2.0, 3.0, 4.0];
+        
+        let bins = compute_ae_continuous(&factor, &y, &mu, None, "gaussian", 2, None, None);
+        
+        // Should handle NaN gracefully
+        assert!(bins.len() <= 2);
+    }
+    
+    #[test]
+    fn test_ae_categorical() {
+        let factor = vec![
+            "A".to_string(), "A".to_string(),
+            "B".to_string(), "B".to_string(),
+        ];
+        let y = array![1.0, 2.0, 3.0, 4.0];
+        let mu = array![1.0, 2.0, 3.0, 4.0];
+        
+        let bins = compute_ae_categorical(&factor, &y, &mu, None, "gaussian", None, None, 5.0, 10);
+        
+        assert_eq!(bins.len(), 2); // A and B
+        for bin in &bins {
+            assert!((bin.actual_expected_ratio - 1.0).abs() < 0.01);
+        }
+    }
+    
+    #[test]
+    fn test_ae_categorical_empty() {
+        let factor: Vec<String> = vec![];
+        let y = array![];
+        let mu = array![];
+        
+        let bins = compute_ae_categorical(&factor, &y, &mu, None, "gaussian", None, None, 5.0, 10);
+        
+        assert_eq!(bins.len(), 0);
+    }
+    
+    #[test]
+    fn test_ae_categorical_with_other() {
+        // Create data where some levels are rare
+        let mut factor = Vec::new();
+        for _ in 0..90 { factor.push("A".to_string()); }
+        for _ in 0..5 { factor.push("B".to_string()); }
+        for _ in 0..3 { factor.push("C".to_string()); }
+        for _ in 0..2 { factor.push("D".to_string()); }
+        
+        let n = factor.len();
+        let y = Array1::from_vec(vec![1.0; n]);
+        let mu = Array1::from_vec(vec![1.0; n]);
+        
+        // Rare threshold 5%, max 3 levels
+        let bins = compute_ae_categorical(&factor, &y, &mu, None, "gaussian", None, None, 5.0, 3);
+        
+        // Should have A, B, and "_Other" (C+D grouped)
+        assert!(bins.len() <= 3);
+        let has_other = bins.iter().any(|b| b.bin_label == "_Other");
+        assert!(has_other);
+    }
 
     #[test]
     fn test_residual_correlation() {
@@ -955,5 +1115,248 @@ mod tests {
         let pairs = vec![(1.0, 2.0), (2.0, 1.0), (3.0, 2.0), (4.0, 1.0)];
         let corr = compute_correlation(&pairs);
         assert!(corr.abs() < 0.5);
+    }
+    
+    #[test]
+    fn test_residual_correlation_negative() {
+        // Perfect negative correlation
+        let pairs = vec![(1.0, 4.0), (2.0, 3.0), (3.0, 2.0), (4.0, 1.0)];
+        let corr = compute_correlation(&pairs);
+        assert_abs_diff_eq!(corr, -1.0, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_residual_correlation_insufficient_data() {
+        let pairs = vec![(1.0, 1.0)];
+        let corr = compute_correlation(&pairs);
+        assert!(corr.is_nan());
+        
+        let empty: Vec<(f64, f64)> = vec![];
+        let corr = compute_correlation(&empty);
+        assert!(corr.is_nan());
+    }
+    
+    #[test]
+    fn test_residual_correlation_zero_variance() {
+        let pairs = vec![(1.0, 1.0), (1.0, 2.0), (1.0, 3.0)];
+        let corr = compute_correlation(&pairs);
+        assert_abs_diff_eq!(corr, 0.0, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_residual_pattern_continuous() {
+        let factor = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let residuals = array![0.1, 0.2, 0.3, 0.4, 0.5];
+        
+        let pattern = compute_residual_pattern_continuous(&factor, &residuals, 3);
+        
+        assert!((pattern.correlation_with_residuals - 1.0).abs() < 0.01);
+        assert_eq!(pattern.mean_residual_by_bin.len(), 3);
+        assert!(pattern.trend_slope > 0.0);
+    }
+    
+    #[test]
+    fn test_residual_pattern_continuous_empty() {
+        let factor: Vec<f64> = vec![];
+        let residuals = array![];
+        
+        let pattern = compute_residual_pattern_continuous(&factor, &residuals, 3);
+        
+        assert!(pattern.correlation_with_residuals.is_nan());
+        assert_eq!(pattern.mean_residual_by_bin.len(), 0);
+    }
+    
+    #[test]
+    fn test_residual_pattern_categorical() {
+        let factor = vec!["A".to_string(), "A".to_string(), "B".to_string(), "B".to_string()];
+        let residuals = array![0.1, 0.2, 0.3, 0.4];
+        
+        let pattern = compute_residual_pattern_categorical(&factor, &residuals);
+        
+        assert_eq!(pattern.mean_residual_by_bin.len(), 2);
+        assert!(pattern.residual_variance_explained >= 0.0);
+        assert!(pattern.residual_variance_explained <= 1.0);
+    }
+    
+    #[test]
+    fn test_residual_pattern_categorical_empty() {
+        let factor: Vec<String> = vec![];
+        let residuals = array![];
+        
+        let pattern = compute_residual_pattern_categorical(&factor, &residuals);
+        
+        assert!(pattern.correlation_with_residuals.is_nan());
+    }
+    
+    #[test]
+    fn test_linear_trend() {
+        // Strong but not perfect linear trend
+        let pairs = vec![(1.0, 1.1), (2.0, 1.9), (3.0, 3.1), (4.0, 3.9), (5.0, 5.1), (6.0, 5.9)];
+        let (slope, pvalue) = compute_linear_trend(&pairs);
+        
+        // Slope should be close to 1
+        assert!((slope - 1.0).abs() < 0.1);
+        // P-value should be finite and indicate significance
+        assert!(pvalue.is_finite());
+    }
+    
+    #[test]
+    fn test_linear_trend_insufficient_data() {
+        let pairs = vec![(1.0, 1.0), (2.0, 2.0)];
+        let (slope, pvalue) = compute_linear_trend(&pairs);
+        
+        assert!(slope.is_nan());
+        assert!(pvalue.is_nan());
+    }
+    
+    #[test]
+    fn test_compute_factor_deviance() {
+        let factor = vec!["A".to_string(), "A".to_string(), "B".to_string(), "B".to_string()];
+        let y = array![1.0, 2.0, 3.0, 4.0];
+        let mu = array![1.0, 2.0, 3.0, 4.0];
+        
+        let result = compute_factor_deviance("test", &factor, &y, &mu, "gaussian", 1.5, 1.0);
+        
+        assert_eq!(result.factor_name, "test");
+        assert_eq!(result.levels.len(), 2);
+        assert_abs_diff_eq!(result.total_deviance, 0.0, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_compute_factor_deviance_poisson() {
+        let factor = vec!["A".to_string(), "B".to_string()];
+        let y = array![1.0, 5.0];
+        let mu = array![2.0, 3.0];
+        
+        let result = compute_factor_deviance("count", &factor, &y, &mu, "poisson", 1.5, 1.0);
+        
+        assert!(result.total_deviance > 0.0);
+        assert_eq!(result.levels.len(), 2);
+    }
+    
+    #[test]
+    fn test_compute_factor_deviance_binomial() {
+        let factor = vec!["A".to_string(), "B".to_string()];
+        let y = array![0.0, 1.0];
+        let mu = array![0.3, 0.7];
+        
+        let result = compute_factor_deviance("binary", &factor, &y, &mu, "binomial", 1.5, 1.0);
+        
+        assert!(result.total_deviance > 0.0);
+    }
+    
+    #[test]
+    fn test_compute_factor_deviance_gamma() {
+        let factor = vec!["A".to_string(), "B".to_string()];
+        let y = array![1.0, 2.0];
+        let mu = array![1.5, 2.5];
+        
+        let result = compute_factor_deviance("amount", &factor, &y, &mu, "gamma", 1.5, 1.0);
+        
+        assert!(result.total_deviance > 0.0);
+    }
+    
+    #[test]
+    fn test_compute_factor_deviance_tweedie() {
+        let factor = vec!["A".to_string(), "B".to_string()];
+        let y = array![0.0, 5.0];
+        let mu = array![1.0, 4.0];
+        
+        let result = compute_factor_deviance("claim", &factor, &y, &mu, "tweedie", 1.5, 1.0);
+        
+        assert!(result.total_deviance >= 0.0);
+    }
+    
+    #[test]
+    fn test_compute_factor_deviance_negbinomial() {
+        let factor = vec!["A".to_string(), "B".to_string()];
+        let y = array![0.0, 5.0];
+        let mu = array![1.0, 4.0];
+        
+        let result = compute_factor_deviance("count", &factor, &y, &mu, "negativebinomial", 1.5, 2.0);
+        
+        assert!(result.total_deviance.is_finite());
+    }
+    
+    #[test]
+    fn test_compute_factor_deviance_empty() {
+        let factor: Vec<String> = vec![];
+        let y = array![];
+        let mu = array![];
+        
+        let result = compute_factor_deviance("empty", &factor, &y, &mu, "gaussian", 1.5, 1.0);
+        
+        assert_eq!(result.levels.len(), 0);
+        assert_eq!(result.total_deviance, 0.0);
+    }
+    
+    #[test]
+    fn test_compute_factor_deviance_problem_detection() {
+        // Create data with a problematic level
+        let factor = vec![
+            "Good".to_string(), "Good".to_string(), "Good".to_string(), "Good".to_string(),
+            "Bad".to_string(),
+        ];
+        let y = array![1.0, 1.0, 1.0, 1.0, 10.0];  // Bad level has outlier
+        let mu = array![1.0, 1.0, 1.0, 1.0, 1.0];
+        
+        let result = compute_factor_deviance("problem", &factor, &y, &mu, "gaussian", 1.5, 1.0);
+        
+        // Bad level should be detected as problematic
+        assert!(!result.problem_levels.is_empty() || result.levels.iter().any(|l| l.is_problem));
+    }
+    
+    #[test]
+    fn test_factor_type_enum() {
+        let cont = FactorType::Continuous;
+        let cat = FactorType::Categorical;
+        
+        assert_eq!(cont, FactorType::Continuous);
+        assert_eq!(cat, FactorType::Categorical);
+        assert_ne!(cont, cat);
+    }
+    
+    #[test]
+    fn test_factor_config() {
+        let config = FactorConfig {
+            name: "age".to_string(),
+            factor_type: FactorType::Continuous,
+            in_model: true,
+            transformation: Some("bs(age, df=5)".to_string()),
+        };
+        
+        assert_eq!(config.name, "age");
+        assert_eq!(config.factor_type, FactorType::Continuous);
+        assert!(config.in_model);
+        assert!(config.transformation.is_some());
+    }
+    
+    #[test]
+    fn test_t_cdf_large_df() {
+        // Large df should approximate normal
+        let result = t_cdf(1.96, 100);
+        assert!((result - 0.975).abs() < 0.01);
+    }
+    
+    #[test]
+    fn test_t_cdf_small_df() {
+        let result = t_cdf(2.0, 5);
+        assert!(result > 0.9);
+        assert!(result < 1.0);
+    }
+    
+    #[test]
+    fn test_normal_cdf_approx() {
+        assert!((normal_cdf_approx(0.0) - 0.5).abs() < 0.01);
+        assert!((normal_cdf_approx(1.96) - 0.975).abs() < 0.01);
+        assert!(normal_cdf_approx(-3.0) < 0.01);
+        assert!(normal_cdf_approx(3.0) > 0.99);
+    }
+    
+    #[test]
+    fn test_erf_approx() {
+        assert!((erf_approx(0.0) - 0.0).abs() < 0.001);
+        assert!(erf_approx(1.0) > 0.8);
+        assert!(erf_approx(-1.0) < -0.8);
     }
 }

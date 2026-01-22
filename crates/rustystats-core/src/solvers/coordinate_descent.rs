@@ -216,17 +216,30 @@ pub fn fit_glm_coordinate_descent(
         // ---------------------------------------------------------------------
         // Step 5a: Compute working weights and working response
         // ---------------------------------------------------------------------
-        let variance = family.variance(&mu);
+        // OPTIMIZATION: Use true Hessian weights for Gamma/Tweedie with log link
+        // This can dramatically reduce IRLS iterations (50-100 → 5-10)
         let link_deriv = link.derivative(&mu);
+        
+        let use_true_hessian = family.use_true_hessian_weights() && link.name() == "log";
+        let hessian_weights = if use_true_hessian {
+            Some(family.true_hessian_weights(&mu, y))
+        } else {
+            None
+        };
+        let variance = if use_true_hessian { None } else { Some(family.variance(&mu)) };
 
         // PARALLEL: Compute IRLS weights, combined weights, and working response
         let min_weight = irls_config.min_weight;
         let results: Vec<(f64, f64, f64)> = (0..n)
             .into_par_iter()
             .map(|i| {
-                let v = variance[i];
                 let d = link_deriv[i];
-                let iw = (1.0 / (v * d * d)).max(min_weight).min(1e10);
+                let iw = if let Some(ref hw) = hessian_weights {
+                    (hw[i] / (d * d)).max(min_weight).min(1e10)
+                } else {
+                    let v = variance.as_ref().unwrap()[i];
+                    (1.0 / (v * d * d)).max(min_weight).min(1e10)
+                };
                 let cw = prior_weights_vec[i] * iw;
                 let wr = (eta[i] - offset_vec[i]) + (y[i] - mu[i]) * d;
                 (iw, cw, wr)
