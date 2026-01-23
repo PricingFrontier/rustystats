@@ -92,6 +92,9 @@ from rustystats.formula import glm_dict, FormulaGLMDict
 # Spline basis functions (for non-linear continuous effects)
 from rustystats.splines import bs, ns, ms, bs_names, ns_names, ms_names, SplineTerm
 
+# Penalized smooth terms (for GAMs with automatic smoothness selection)
+from rustystats.smooth import s, penalty_matrix, difference_matrix, gcv_score, compute_edf, smooth_names, SmoothTerm
+
 # Target encoding (CatBoost-style ordered target statistics)
 from rustystats.target_encoding import (
     target_encode,
@@ -132,6 +135,14 @@ __all__ = [
     "ns_names",
     "ms_names",
     "SplineTerm",
+    # Penalized smooth terms (GAMs)
+    "s",
+    "penalty_matrix",
+    "difference_matrix",
+    "gcv_score",
+    "compute_edf",
+    "smooth_names",
+    "SmoothTerm",
     # Target encoding (CatBoost-style)
     "target_encode",
     "apply_target_encoding",

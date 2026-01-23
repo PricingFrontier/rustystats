@@ -463,6 +463,13 @@ class SplineTerm:
         self._computed_internal_knots: Optional[List[float]] = None
         # Track if monotonicity constraint is explicitly set (for ns with constraints)
         self._monotonic = False
+        # Track if this is a smooth term (s()) with automatic lambda selection
+        self._is_smooth = False
+        # Penalty matrix for smooth terms (computed during transform)
+        self._penalty_matrix: Optional[np.ndarray] = None
+        # Lambda and EDF after fitting (set by fitting code)
+        self._lambda: Optional[float] = None
+        self._edf: Optional[float] = None
         
         if self.spline_type not in ("bs", "ns", "ms"):
             raise ValueError(f"spline_type must be 'bs', 'ns', or 'ms', got '{spline_type}'")
@@ -536,6 +543,26 @@ class SplineTerm:
         
         return basis, names
     
+    def compute_penalty_matrix(self, n_cols: int, penalty_order: int = 2) -> np.ndarray:
+        """
+        Compute the penalty matrix for this smooth term.
+        
+        Parameters
+        ----------
+        n_cols : int
+            Number of columns in the basis (after transform)
+        penalty_order : int
+            Order of the difference penalty (default: 2 for smoothness)
+        
+        Returns
+        -------
+        np.ndarray
+            Penalty matrix of shape (n_cols, n_cols)
+        """
+        from rustystats.smooth import penalty_matrix
+        self._penalty_matrix = penalty_matrix(n_cols, order=penalty_order)
+        return self._penalty_matrix
+    
     def get_knot_info(self) -> dict:
         """
         Get knot information after transform has been called.
@@ -557,6 +584,13 @@ class SplineTerm:
             info["knots"] = self._computed_internal_knots
         if self._computed_boundary_knots is not None:
             info["boundary_knots"] = list(self._computed_boundary_knots)
+        # Include smooth term info if this is a penalized smooth
+        if self._is_smooth:
+            info["is_smooth"] = True
+            if self._lambda is not None:
+                info["lambda"] = self._lambda
+            if self._edf is not None:
+                info["edf"] = self._edf
         return info
     
     def __repr__(self) -> str:

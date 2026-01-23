@@ -1487,6 +1487,185 @@ fn solve_weighted_least_squares_penalized(
     Ok((coef_array, cov_array))
 }
 
+/// Solve weighted least squares with a full penalty matrix.
+///
+/// This is used for penalized splines (P-splines, GAMs) where the penalty
+/// is a structured matrix S = D'D rather than a scalar.
+///
+/// Solves: β = (X'WX + S)⁻¹ X'Wz
+///
+/// where S is the combined penalty matrix (already includes lambda scaling).
+///
+/// # Arguments
+/// * `x` - Design matrix (n × p)
+/// * `z` - Working response (n × 1)
+/// * `w` - Observation weights (n × 1)
+/// * `penalty_matrix` - Penalty matrix S (p × p), already scaled by lambdas
+///
+/// # Returns
+/// * Coefficients β (p × 1)
+/// * Inverse of penalized normal equations (X'WX + S)⁻¹ (p × p)
+pub fn solve_weighted_least_squares_with_penalty_matrix(
+    x: &Array2<f64>,
+    z: &Array1<f64>,
+    w: &Array1<f64>,
+    penalty_matrix: &Array2<f64>,
+) -> Result<(Array1<f64>, Array2<f64>)> {
+    let n = x.nrows();
+    let p = x.ncols();
+
+    // Validate penalty matrix dimensions
+    if penalty_matrix.nrows() != p || penalty_matrix.ncols() != p {
+        return Err(RustyStatsError::DimensionMismatch(format!(
+            "Penalty matrix has shape ({}, {}) but expected ({}, {})",
+            penalty_matrix.nrows(), penalty_matrix.ncols(), p, p
+        )));
+    }
+
+    // Parallel computation of X'WX and X'Wz
+    let (xtx_data, xtz_data): (Vec<f64>, Vec<f64>) = (0..n)
+        .into_par_iter()
+        .fold(
+            || (vec![0.0; p * p], vec![0.0; p]),
+            |(mut xtx_local, mut xtz_local), k| {
+                let wk = w[k];
+                let wz = wk * z[k];
+                
+                for i in 0..p {
+                    let xki = x[[k, i]];
+                    let xki_w = xki * wk;
+                    
+                    // X'Wz
+                    xtz_local[i] += xki * wz;
+                    
+                    // X'WX upper triangle
+                    for j in i..p {
+                        xtx_local[i * p + j] += xki_w * x[[k, j]];
+                    }
+                }
+                
+                (xtx_local, xtz_local)
+            },
+        )
+        .reduce(
+            || (vec![0.0; p * p], vec![0.0; p]),
+            |(mut a_xtx, mut a_xtz), (b_xtx, b_xtz)| {
+                for i in 0..a_xtx.len() {
+                    a_xtx[i] += b_xtx[i];
+                }
+                for i in 0..a_xtz.len() {
+                    a_xtz[i] += b_xtz[i];
+                }
+                (a_xtx, a_xtz)
+            },
+        );
+
+    // Convert to nalgebra types and add penalty matrix
+    let mut xtx_pen = DMatrix::zeros(p, p);
+    for i in 0..p {
+        for j in i..p {
+            let val = xtx_data[i * p + j];
+            xtx_pen[(i, j)] = val + penalty_matrix[[i, j]];
+            xtx_pen[(j, i)] = val + penalty_matrix[[j, i]];  // Symmetrize
+        }
+    }
+    
+    let xtz = DVector::from_vec(xtz_data);
+
+    // Solve using Cholesky decomposition
+    let chol = match xtx_pen.clone().cholesky() {
+        Some(c) => c,
+        None => {
+            // Fall back to LU decomposition
+            match xtx_pen.clone().lu().solve(&xtz) {
+                Some(sol) => {
+                    let coef_array: Array1<f64> = sol.iter().copied().collect();
+                    let xtx_inv = xtx_pen.try_inverse().ok_or_else(|| {
+                        RustyStatsError::LinearAlgebraError(
+                            "Failed to compute penalized covariance matrix - singular system.".to_string()
+                        )
+                    })?;
+                    let mut cov_array = Array2::zeros((p, p));
+                    for i in 0..p {
+                        for j in 0..p {
+                            cov_array[[i, j]] = xtx_inv[(i, j)];
+                        }
+                    }
+                    return Ok((coef_array, cov_array));
+                }
+                None => {
+                    return Err(RustyStatsError::LinearAlgebraError(
+                        "Failed to solve penalized weighted least squares - singular matrix.".to_string(),
+                    ));
+                }
+            }
+        }
+    };
+
+    // Solve for coefficients
+    let coefficients = chol.solve(&xtz);
+
+    // Compute inverse using same Cholesky factorization
+    let identity = DMatrix::identity(p, p);
+    let xtx_inv = chol.solve(&identity);
+
+    // Convert back to ndarray
+    let coef_array: Array1<f64> = coefficients.iter().copied().collect();
+    let mut cov_array = Array2::zeros((p, p));
+    for i in 0..p {
+        for j in 0..p {
+            cov_array[[i, j]] = xtx_inv[(i, j)];
+        }
+    }
+
+    Ok((coef_array, cov_array))
+}
+
+/// Compute X'WX matrix for EDF calculation.
+///
+/// This is needed for computing effective degrees of freedom in penalized regression.
+pub fn compute_xtwx(x: &Array2<f64>, w: &Array1<f64>) -> Array2<f64> {
+    let n = x.nrows();
+    let p = x.ncols();
+
+    let xtx_data: Vec<f64> = (0..n)
+        .into_par_iter()
+        .fold(
+            || vec![0.0; p * p],
+            |mut xtx_local, k| {
+                let wk = w[k];
+                for i in 0..p {
+                    let xki_w = x[[k, i]] * wk;
+                    for j in i..p {
+                        xtx_local[i * p + j] += xki_w * x[[k, j]];
+                    }
+                }
+                xtx_local
+            },
+        )
+        .reduce(
+            || vec![0.0; p * p],
+            |mut a, b| {
+                for i in 0..a.len() {
+                    a[i] += b[i];
+                }
+                a
+            },
+        );
+
+    // Convert to Array2, symmetrizing
+    let mut xtwx = Array2::zeros((p, p));
+    for i in 0..p {
+        for j in i..p {
+            let val = xtx_data[i * p + j];
+            xtwx[[i, j]] = val;
+            xtwx[[j, i]] = val;
+        }
+    }
+
+    xtwx
+}
+
 /// Compute working response: z = η + (y - μ) × g'(μ)
 fn compute_working_response(
     y: &Array1<f64>,

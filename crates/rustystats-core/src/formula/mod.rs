@@ -14,6 +14,7 @@ pub struct SplineTerm {
     pub degree: usize,
     pub increasing: bool,  // For monotonic splines: true = increasing, false = decreasing
     pub monotonic: bool,   // True if monotonicity constraint should be applied (ms always, ns/bs if explicitly set)
+    pub is_smooth: bool,   // True if this is an s() smooth term with auto lambda selection
 }
 
 /// Parsed target encoding term specification
@@ -317,17 +318,20 @@ fn parse_categorical_term(term: &str) -> Option<CategoricalTermSpec> {
     })
 }
 
-/// Parse a spline term like "bs(age, df=5)", "ns(income, df=4)", or "ms(age, df=5, increasing=true)"
+/// Parse a spline term like "bs(age, df=5)", "ns(income, df=4)", "ms(age, df=5, increasing=true)", or "s(age, k=10)"
 fn parse_spline_term(term: &str) -> Option<SplineTerm> {
     let term = term.trim();
     
-    // Check if starts with bs(, ns(, or ms(
+    // Check if starts with bs(, ns(, ms(, or s(
+    // Note: must check "bs(", "ns(", "ms(" before "s(" to avoid false matches
     let spline_type = if term.starts_with("bs(") {
         "bs"
     } else if term.starts_with("ns(") {
         "ns"
     } else if term.starts_with("ms(") {
         "ms"
+    } else if term.starts_with("s(") {
+        "s"  // Penalized smooth term - treated as B-spline with penalty
     } else {
         return None;
     };
@@ -364,6 +368,12 @@ fn parse_spline_term(term: &str) -> Option<SplineTerm> {
                         panic!("Invalid df value '{}' in {}() - expected an integer", value, spline_type)
                     });
                 }
+                "k" => {
+                    // k is alias for df in s() smooth terms
+                    df = value.parse().unwrap_or_else(|_| {
+                        panic!("Invalid k value '{}' in {}() - expected an integer", value, spline_type)
+                    });
+                }
                 "degree" => {
                     degree = value.parse().unwrap_or_else(|_| {
                         panic!("Invalid degree value '{}' in {}() - expected an integer", value, spline_type)
@@ -378,7 +388,13 @@ fn parse_spline_term(term: &str) -> Option<SplineTerm> {
                     };
                 }
                 other => {
-                    let supported = if spline_type == "ms" { "df, degree, increasing" } else { "df, degree, increasing" };
+                    let supported = if spline_type == "s" { 
+                        "k, df, degree" 
+                    } else if spline_type == "ms" { 
+                        "df, degree, increasing" 
+                    } else { 
+                        "df, degree, increasing" 
+                    };
                     panic!("Unknown argument '{}' in {}(). Supported: {}", other, spline_type, supported)
                 }
             }
@@ -393,13 +409,21 @@ fn parse_spline_term(term: &str) -> Option<SplineTerm> {
     // Monotonicity is always applied for ms(), or for bs()/ns() if increasing was explicitly specified
     let monotonic = spline_type == "ms" || has_increasing;
     
+    // Track if this is a smooth term (s()) for penalized fitting
+    let is_smooth = spline_type == "s";
+    
+    // For s() smooth terms, use B-spline basis internally
+    // The penalty is applied during fitting, not in the basis generation
+    let output_spline_type = if spline_type == "s" { "bs" } else { spline_type };
+    
     Some(SplineTerm {
         var_name,
-        spline_type: spline_type.to_string(),
+        spline_type: output_spline_type.to_string(),
         df,
         degree,
         increasing,
         monotonic,
+        is_smooth,
     })
 }
 
@@ -480,7 +504,7 @@ fn check_single_term_function(term: &str) -> Option<String> {
             let func_name = term[..paren_pos].trim();
             
             // Skip supported functions
-            let supported = ["C", "bs", "ns", "ms", "TE", "I", "pos", "neg"];
+            let supported = ["C", "bs", "ns", "ms", "s", "TE", "I", "pos", "neg"];
             if !supported.contains(&func_name) && !func_name.is_empty() {
                 // This looks like an unsupported function call
                 return Some(func_name.to_string());

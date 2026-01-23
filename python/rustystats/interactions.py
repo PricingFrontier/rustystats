@@ -180,6 +180,8 @@ def parse_formula_interactions(formula: str) -> ParsedFormula:
         )
         # Set monotonicity flag from Rust parser (true for ms always, or ns/bs with explicit increasing)
         term._monotonic = s.get('monotonic', False)
+        # Set smooth flag for s() terms (penalized splines with auto lambda selection)
+        term._is_smooth = s.get('is_smooth', False)
         spline_terms.append(term)
     
     # Parse target encoding terms
@@ -294,8 +296,24 @@ class InteractionBuilder:
             for var_name, spline in self._fitted_splines.items()
         }
     
+    def get_smooth_terms(self) -> tuple:
+        """
+        Get smooth term information for penalized fitting.
+        
+        Returns
+        -------
+        smooth_terms : list[SplineTerm]
+            List of SplineTerm objects that are marked as smooth (s() terms)
+        smooth_col_indices : list[tuple]
+            List of (start, end) column indices for each smooth term
+        """
+        return (
+            getattr(self, '_smooth_terms', []),
+            getattr(self, '_smooth_col_indices', [])
+        )
+    
     def _parse_spline_factor(self, factor: str) -> Optional[SplineTerm]:
-        """Parse a spline term from a factor name like 'bs(VehAge, df=4)', 'ns(age, df=3)', or 'ms(age, df=5)'."""
+        """Parse a spline term from a factor name like 'bs(VehAge, df=4)', 'ns(age, df=3)', 'ms(age, df=5)', or 's(age, k=10)'."""
         factor_lower = factor.strip().lower()
         if factor_lower.startswith('bs(') or factor_lower.startswith('ns(') or factor_lower.startswith('ms('):
             if factor_lower.startswith('bs('):
@@ -332,6 +350,30 @@ class InteractionBuilder:
             if spline_type == 'ms':
                 term._monotonic = True
             return term
+        
+        # Handle s() smooth terms - penalized splines with auto-tuning
+        if factor_lower.startswith('s('):
+            # s(var, k=10) -> treated as B-spline with k basis functions
+            # Actual penalization happens in the fitting step
+            content = factor[2:-1] if factor.endswith(')') else factor[2:]
+            parts = [p.strip() for p in content.split(',')]
+            var_name = parts[0]
+            k = 10  # default number of basis functions
+            for part in parts[1:]:
+                if '=' in part:
+                    key, val = part.split('=', 1)
+                    key = key.strip().lower()
+                    val = val.strip()
+                    if key == 'k':
+                        k = int(val)
+                    elif key == 'df':  # Allow df as alias for k
+                        k = int(val)
+            # Create as B-spline term; penalty is applied during fitting
+            term = SplineTerm(var_name=var_name, spline_type='bs', df=k, degree=3)
+            # Mark this as a smooth term for special handling
+            term._is_smooth = True
+            return term
+        
         return None
     
     def _parse_te_factor(self, factor: str) -> Optional[TargetEncodingTermSpec]:
@@ -1116,13 +1158,24 @@ class InteractionBuilder:
                 columns.append(self._get_column(var).reshape(-1, 1))
                 names.append(var)
         
-        # Add spline terms
+        # Add spline terms (tracking smooth term column indices for penalized fitting)
+        self._smooth_terms = []  # SplineTerm objects marked as smooth
+        self._smooth_col_indices = []  # (start, end) column indices
+        
         for spline in parsed.spline_terms:
+            col_start = sum(c.shape[1] if c.ndim == 2 else 1 for c in columns)
             spline_cols, spline_names = self._build_spline_columns(spline)
+            col_end = col_start + spline_cols.shape[1]
+            
             columns.append(spline_cols)
             names.extend(spline_names)
             # Store fitted spline for prediction
             self._fitted_splines[spline.var_name] = spline
+            
+            # Track smooth terms (those with _is_smooth flag)
+            if getattr(spline, '_is_smooth', False):
+                self._smooth_terms.append(spline)
+                self._smooth_col_indices.append((col_start, col_end))
         
         # Store parsed formula for prediction
         self._parsed_formula = parsed
@@ -1230,13 +1283,24 @@ class InteractionBuilder:
                 columns.append(self._get_column(var).reshape(-1, 1))
                 names.append(var)
         
-        # Add spline terms
+        # Add spline terms (tracking smooth term column indices for penalized fitting)
+        self._smooth_terms = []  # SplineTerm objects marked as smooth
+        self._smooth_col_indices = []  # (start, end) column indices
+        
         for spline in parsed.spline_terms:
+            col_start = sum(c.shape[1] if c.ndim == 2 else 1 for c in columns)
             spline_cols, spline_names = self._build_spline_columns(spline)
+            col_end = col_start + spline_cols.shape[1]
+            
             columns.append(spline_cols)
             names.extend(spline_names)
             # Store fitted spline for prediction
             self._fitted_splines[spline.var_name] = spline
+            
+            # Track smooth terms (those with _is_smooth flag)
+            if getattr(spline, '_is_smooth', False):
+                self._smooth_terms.append(spline)
+                self._smooth_col_indices.append((col_start, col_end))
         
         # Store parsed formula for prediction
         self._parsed_formula = parsed

@@ -32,6 +32,11 @@
 
 mod irls;
 mod coordinate_descent;
+pub mod smooth_glm;
+pub mod gcv_optimizer;
 
 pub use irls::{IRLSConfig, IRLSResult, fit_glm, fit_glm_full, fit_glm_warm_start, fit_glm_regularized, fit_glm_regularized_warm};
+pub use irls::{solve_weighted_least_squares_with_penalty_matrix, compute_xtwx};
 pub use coordinate_descent::fit_glm_coordinate_descent;
+pub use smooth_glm::{SmoothGLMResult, SmoothGLMConfig, SmoothTermData, fit_smooth_glm, fit_smooth_glm_fast};
+pub use gcv_optimizer::{GCVCache, MultiTermGCVOptimizer, brent_minimize};

@@ -536,6 +536,52 @@ class DataExploration:
 
 
 @dataclass
+class SmoothTermDiagnostics:
+    """Diagnostics for a smooth term (penalized spline) in the model.
+    
+    Smooth terms have automatic smoothness selection via GCV, which
+    determines the effective degrees of freedom (EDF) and smoothing
+    parameter (lambda).
+    """
+    # Variable name
+    variable: str
+    
+    # Number of basis functions (k)
+    k: int
+    
+    # Effective degrees of freedom (data-driven complexity)
+    edf: float
+    
+    # Selected smoothing parameter
+    lambda_: float
+    
+    # GCV score for this term
+    gcv: float
+    
+    # Reference df for significance test (typically k-1)
+    ref_df: float
+    
+    # Chi-squared test statistic for term significance
+    chi2: float
+    
+    # P-value for significance test
+    p_value: float
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            "variable": self.variable,
+            "k": self.k,
+            "edf": round(self.edf, 2),
+            "lambda": round(self.lambda_, 4),
+            "gcv": round(self.gcv, 4),
+            "ref_df": round(self.ref_df, 2),
+            "chi2": round(self.chi2, 2),
+            "p_value": round(self.p_value, 4),
+        }
+
+
+@dataclass
 class ModelDiagnostics:
     """Complete model diagnostics output."""
     
@@ -565,6 +611,9 @@ class ModelDiagnostics:
     
     # VIF / Multicollinearity scores
     vif: Optional[List[VIFResult]] = None
+    
+    # Smooth term diagnostics (for GAMs with s() terms)
+    smooth_terms: Optional[List[SmoothTermDiagnostics]] = None
     
     # Coefficient summary with interpretations
     coefficient_summary: Optional[List[CoefficientSummary]] = None

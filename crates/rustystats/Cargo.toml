@@ -17,10 +17,10 @@
 
 [package]
 name = "rustystats"
-version = "0.1.0"
+version = "0.2.5"
 edition = "2021"
 description = "Python bindings for RustyStats GLM library"
-license = "MIT"
+license = "Elastic-2.0"
 
 [lib]
 # "cdylib" means we're building a C-compatible dynamic library

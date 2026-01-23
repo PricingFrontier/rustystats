@@ -38,10 +38,13 @@
 //
 // =============================================================================
 
+use ndarray::Array2;
+use std::ops::Range;
+
 /// Penalty type for regularized GLMs.
 ///
 /// Controls which type of regularization is applied to the coefficients.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum Penalty {
     /// No regularization (standard GLM)
     None,
@@ -73,6 +76,130 @@ pub enum Penalty {
         /// L1 ratio (α): 1.0 = pure Lasso, 0.0 = pure Ridge
         l1_ratio: f64,
     },
+
+    /// Smooth penalty for penalized splines (P-splines, GAMs).
+    ///
+    /// Uses structured penalty matrices S = D'D where D is a difference matrix.
+    /// This penalizes wiggliness of the smooth function rather than coefficient magnitude.
+    ///
+    /// The penalty is: Σ_j λ_j × β_j' S_j β_j
+    ///
+    /// where each smooth term j has its own penalty matrix S_j and smoothing
+    /// parameter λ_j.
+    ///
+    /// Can be combined with scalar Ridge/Lasso for parametric terms.
+    Smooth(SmoothPenalty),
+}
+
+/// Penalty configuration for smooth terms in GAMs.
+///
+/// Each smooth term (e.g., `s(age)`) has:
+/// - A penalty matrix S encoding the smoothness constraint
+/// - A smoothing parameter λ (selected via GCV or fixed)
+/// - Column indices indicating which coefficients it applies to
+#[derive(Debug, Clone)]
+pub struct SmoothPenalty {
+    /// Penalty matrices, one per smooth term (each is k_j × k_j)
+    pub penalty_matrices: Vec<Array2<f64>>,
+    /// Smoothing parameters, one per smooth term
+    pub lambdas: Vec<f64>,
+    /// Column indices for each smooth term in the design matrix
+    pub term_indices: Vec<Range<usize>>,
+    /// Optional scalar L2 penalty for parametric (non-smooth) terms
+    pub parametric_l2: Option<f64>,
+}
+
+impl SmoothPenalty {
+    /// Create a new smooth penalty with no terms.
+    pub fn new() -> Self {
+        Self {
+            penalty_matrices: Vec::new(),
+            lambdas: Vec::new(),
+            term_indices: Vec::new(),
+            parametric_l2: None,
+        }
+    }
+
+    /// Add a smooth term with its penalty matrix and column indices.
+    pub fn add_term(&mut self, penalty: Array2<f64>, lambda: f64, indices: Range<usize>) {
+        self.penalty_matrices.push(penalty);
+        self.lambdas.push(lambda);
+        self.term_indices.push(indices);
+    }
+
+    /// Set the scalar L2 penalty for parametric terms.
+    pub fn with_parametric_l2(mut self, lambda: f64) -> Self {
+        self.parametric_l2 = Some(lambda);
+        self
+    }
+
+    /// Build the combined penalty matrix for the full design matrix.
+    ///
+    /// Returns a p × p matrix where p is the total number of coefficients.
+    /// The matrix is block-diagonal for smooth terms, with optional
+    /// diagonal entries for parametric L2 regularization.
+    pub fn build_penalty_matrix(&self, total_cols: usize, parametric_cols: usize) -> Array2<f64> {
+        let mut combined: Array2<f64> = Array2::zeros((total_cols, total_cols));
+
+        // Add smooth term penalties (block-diagonal structure)
+        for (idx, penalty) in self.penalty_matrices.iter().enumerate() {
+            let range = &self.term_indices[idx];
+            let lambda = self.lambdas[idx];
+            for i in 0..penalty.nrows() {
+                for j in 0..penalty.ncols() {
+                    combined[[range.start + i, range.start + j]] = lambda * penalty[[i, j]];
+                }
+            }
+        }
+
+        // Add parametric L2 penalty (diagonal, skip intercept at col 0)
+        if let Some(l2) = self.parametric_l2 {
+            for i in 1..parametric_cols {  // Skip intercept
+                combined[[i, i]] += l2;
+            }
+        }
+
+        combined
+    }
+
+    /// Get total number of smooth terms.
+    pub fn n_terms(&self) -> usize {
+        self.penalty_matrices.len()
+    }
+
+    /// Check if there are any smooth terms.
+    pub fn is_empty(&self) -> bool {
+        self.penalty_matrices.is_empty()
+    }
+}
+
+impl Default for SmoothPenalty {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PartialEq for SmoothPenalty {
+    fn eq(&self, other: &Self) -> bool {
+        // Simple comparison - check lengths and lambdas
+        self.lambdas == other.lambdas && 
+        self.term_indices == other.term_indices &&
+        self.parametric_l2 == other.parametric_l2
+    }
+}
+
+impl PartialEq for Penalty {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Penalty::None, Penalty::None) => true,
+            (Penalty::Ridge(a), Penalty::Ridge(b)) => a == b,
+            (Penalty::Lasso(a), Penalty::Lasso(b)) => a == b,
+            (Penalty::ElasticNet { lambda: l1, l1_ratio: r1 }, 
+             Penalty::ElasticNet { lambda: l2, l1_ratio: r2 }) => l1 == l2 && r1 == r2,
+            (Penalty::Smooth(a), Penalty::Smooth(b)) => a == b,
+            _ => false,
+        }
+    }
 }
 
 impl Penalty {
@@ -113,20 +240,49 @@ impl Penalty {
     pub fn can_use_irls(&self) -> bool {
         match self {
             Penalty::None | Penalty::Ridge(_) => true,
+            Penalty::Smooth(_) => true,  // Smooth penalty uses IRLS with penalty matrix
             Penalty::ElasticNet { l1_ratio, .. } => *l1_ratio == 0.0,
             Penalty::Lasso(_) => false,
         }
     }
 
+    /// Returns true if this is a smooth (GAM) penalty.
+    pub fn is_smooth(&self) -> bool {
+        matches!(self, Penalty::Smooth(_))
+    }
+
+    /// Get the smooth penalty configuration, if this is a smooth penalty.
+    pub fn as_smooth(&self) -> Option<&SmoothPenalty> {
+        match self {
+            Penalty::Smooth(sp) => Some(sp),
+            _ => None,
+        }
+    }
+
+    /// Get mutable reference to smooth penalty configuration.
+    pub fn as_smooth_mut(&mut self) -> Option<&mut SmoothPenalty> {
+        match self {
+            Penalty::Smooth(sp) => Some(sp),
+            _ => None,
+        }
+    }
+
+    /// Create a smooth penalty from a SmoothPenalty configuration.
+    pub fn smooth(smooth_penalty: SmoothPenalty) -> Self {
+        Penalty::Smooth(smooth_penalty)
+    }
+
     /// Get the L2 (Ridge) component of the penalty.
     ///
     /// Returns 0.0 for no penalty or pure Lasso.
+    /// For Smooth penalties, returns the parametric L2 component if set.
     pub fn l2_penalty(&self) -> f64 {
         match self {
             Penalty::None => 0.0,
             Penalty::Ridge(lambda) => *lambda,
             Penalty::Lasso(_) => 0.0,
             Penalty::ElasticNet { lambda, l1_ratio } => *lambda * (1.0 - l1_ratio),
+            Penalty::Smooth(sp) => sp.parametric_l2.unwrap_or(0.0),
         }
     }
 
@@ -139,15 +295,18 @@ impl Penalty {
             Penalty::Ridge(_) => 0.0,
             Penalty::Lasso(lambda) => *lambda,
             Penalty::ElasticNet { lambda, l1_ratio } => *lambda * l1_ratio,
+            Penalty::Smooth(_) => 0.0,  // Smooth penalties don't have L1 component
         }
     }
 
     /// Get the overall regularization strength (lambda).
+    /// For smooth penalties, returns 0.0 (use as_smooth() to get per-term lambdas).
     pub fn lambda(&self) -> f64 {
         match self {
             Penalty::None => 0.0,
             Penalty::Ridge(lambda) | Penalty::Lasso(lambda) => *lambda,
             Penalty::ElasticNet { lambda, .. } => *lambda,
+            Penalty::Smooth(_) => 0.0,  // Per-term lambdas accessed via as_smooth()
         }
     }
 }

@@ -22,7 +22,8 @@ Example
 
 from __future__ import annotations
 
-from typing import Optional, Union, List, TYPE_CHECKING
+from typing import Optional, Union, List, Dict, Any, TYPE_CHECKING
+from dataclasses import dataclass
 import numpy as np
 
 # Lazy imports for optional dependencies
@@ -66,6 +67,316 @@ def _get_constraint_indices(feature_names: List[str]) -> tuple:
         (name.startswith("ns(") and ", -)" in name)
     ]
     return nonneg_indices, nonpos_indices
+
+
+@dataclass
+class SmoothTermResult:
+    """Result for a single smooth term after fitting."""
+    variable: str
+    k: int
+    edf: float
+    lambda_: float
+    gcv: float
+    col_start: int
+    col_end: int
+
+
+def _fit_with_smooth_penalties(
+    y: np.ndarray,
+    X: np.ndarray,
+    smooth_terms: List[Any],
+    smooth_col_indices: List[tuple],
+    family: str,
+    link: str,
+    var_power: float,
+    theta: float,
+    offset: Optional[np.ndarray],
+    weights: Optional[np.ndarray],
+    max_iter: int = 100,
+    tol: float = 1e-6,
+    n_lambda: int = 6,
+    lambda_min: float = 1e-1,
+    lambda_max: float = 1e3,
+) -> tuple:
+    """
+    Fit GLM with penalized smooth terms using fast GCV optimization.
+    
+    Uses mgcv-style Brent's method for lambda optimization within IRLS,
+    which is much faster than grid search for large datasets.
+    
+    Parameters
+    ----------
+    y : array
+        Response variable
+    X : array
+        Full design matrix
+    smooth_terms : list
+        List of SplineTerm objects marked as smooth
+    smooth_col_indices : list
+        List of (start, end) column indices for each smooth term
+    family, link, var_power, theta : model parameters
+    offset, weights : optional arrays
+    max_iter, tol : IRLS parameters
+    n_lambda, lambda_min, lambda_max : GCV grid search parameters
+    
+    Returns
+    -------
+    result : GLMResult from Rust
+    smooth_results : list of SmoothTermResult
+    total_edf : float
+    gcv : float
+    """
+    from rustystats._rustystats import fit_glm_py as _fit_glm_rust
+    from rustystats._rustystats import fit_smooth_glm_fast_py as _fit_smooth_fast
+    from rustystats.smooth import penalty_matrix, gcv_score, compute_edf
+    
+    n, p = X.shape
+    n_terms = len(smooth_terms)
+    
+    if n_terms == 0:
+        # No smooth terms - use standard fitting
+        result = _fit_glm_rust(
+            y, X, family, link, var_power, theta,
+            offset, weights, 0.0, 0.0, max_iter, tol, None, None
+        )
+        return result, [], float(p), 0.0
+    
+    # For single smooth term, use fast Rust implementation
+    if n_terms == 1:
+        start, end = smooth_col_indices[0]
+        
+        # Split design matrix into parametric and smooth parts
+        x_parametric = X[:, :start]  # Columns before smooth term (including intercept)
+        smooth_basis = X[:, start:end]  # Smooth term columns
+        
+        # Call fast Rust solver
+        rust_result = _fit_smooth_fast(
+            y, x_parametric, smooth_basis, family, link,
+            offset, weights, max_iter, tol, lambda_min, lambda_max
+        )
+        
+        # Build result object compatible with existing code
+        # Create a mock result object with the needed attributes
+        class FastResult:
+            def __init__(self, d):
+                self.coefficients = d['coefficients']
+                self.fitted_values = d['fitted_values']
+                self.linear_predictor = d['linear_predictor']
+                self.deviance = d['deviance']
+                self.iterations = d['iterations']
+                self.converged = d['converged']
+                self.covariance_unscaled = d['covariance_unscaled']
+        
+        result = FastResult(rust_result)
+        
+        # Build smooth term result
+        smooth_results = [SmoothTermResult(
+            variable=smooth_terms[0].var_name,
+            k=smooth_terms[0].df,
+            edf=rust_result['smooth_edfs'][0],
+            lambda_=rust_result['lambdas'][0],
+            gcv=rust_result['gcv'],
+            col_start=start,
+            col_end=end,
+        )]
+        
+        # Update the smooth term with fitted values
+        smooth_terms[0]._lambda = rust_result['lambdas'][0]
+        smooth_terms[0]._edf = rust_result['smooth_edfs'][0]
+        
+        return result, smooth_results, rust_result['total_edf'], rust_result['gcv']
+    
+    # For multiple smooth terms, fall back to Python implementation for now
+    # Build penalty matrices for each smooth term
+    penalties = []
+    for i, term in enumerate(smooth_terms):
+        start, end = smooth_col_indices[i]
+        n_cols = end - start
+        penalty = penalty_matrix(n_cols, order=2)
+        penalties.append(penalty)
+    
+    def fit_with_lambda(lam, start, end, penalty):
+        """Fit model with given lambda and return (result, gcv, edf)."""
+        penalty_full = np.zeros((p, p))
+        penalty_full[start:end, start:end] = lam * penalty
+        total_penalty = np.sum(np.diag(penalty_full))
+        alpha = total_penalty / max(p - 1, 1)
+        
+        result = _fit_glm_rust(
+            y, X, family, link, var_power, theta,
+            offset, weights, alpha, 0.0, max_iter, tol, None, None
+        )
+        
+        edf_term = compute_edf(np.eye(end - start), penalty, lam)
+        n_parametric = start
+        total_edf = n_parametric + edf_term
+        gcv = gcv_score(result.deviance, n, total_edf)
+        
+        return result, gcv, edf_term, total_edf
+    
+    # For single smooth term, use coarse-to-fine grid search
+    if n_terms == 1:
+        start, end = smooth_col_indices[0]
+        penalty = penalties[0]
+        
+        # Phase 1: Coarse search (8 points)
+        log_lambdas = np.linspace(np.log10(lambda_min), np.log10(lambda_max), n_lambda)
+        lambda_grid = 10 ** log_lambdas
+        
+        best_lambda = 1.0
+        best_gcv = float('inf')
+        best_result = None
+        best_idx = 0
+        
+        for idx, lam in enumerate(lambda_grid):
+            try:
+                result, gcv, edf_term, total_edf = fit_with_lambda(lam, start, end, penalty)
+                if gcv < best_gcv:
+                    best_gcv = gcv
+                    best_lambda = lam
+                    best_result = result
+                    best_idx = idx
+            except Exception:
+                continue
+        
+        # Phase 2: Refine around best (only for small datasets < 100K rows)
+        if n < 100000 and best_result is not None and 0 < best_idx < len(lambda_grid) - 1:
+            log_best = np.log10(best_lambda)
+            log_step = (np.log10(lambda_max) - np.log10(lambda_min)) / (n_lambda - 1)
+            refine_lambdas = 10 ** np.array([
+                log_best - log_step * 0.5,
+                log_best + log_step * 0.5,
+            ])
+            
+            for lam in refine_lambdas:
+                if lambda_min <= lam <= lambda_max:
+                    try:
+                        result, gcv, edf_term, total_edf = fit_with_lambda(lam, start, end, penalty)
+                        if gcv < best_gcv:
+                            best_gcv = gcv
+                            best_lambda = lam
+                            best_result = result
+                    except Exception:
+                        continue
+        
+        if best_result is None:
+            # Fall back to unpenalized fit
+            best_result = _fit_glm_rust(
+                y, X, family, link, var_power, theta,
+                offset, weights, 0.0, 0.0, max_iter, tol, None, None
+            )
+            best_lambda = 0.0
+            best_gcv = 0.0
+        
+        # Compute final EDF
+        edf_term = compute_edf(np.eye(end - start), penalty, best_lambda)
+        n_parametric = start
+        total_edf = n_parametric + edf_term
+        
+        # Create smooth term result
+        smooth_results = [SmoothTermResult(
+            variable=smooth_terms[0].var_name,
+            k=smooth_terms[0].df,
+            edf=edf_term,
+            lambda_=best_lambda,
+            gcv=best_gcv,
+            col_start=start,
+            col_end=end,
+        )]
+        
+        # Update the smooth term with fitted values
+        smooth_terms[0]._lambda = best_lambda
+        smooth_terms[0]._edf = edf_term
+        
+        return best_result, smooth_results, total_edf, best_gcv
+    
+    # For multiple smooth terms, use coordinate-wise optimization with coarse grid
+    log_lambdas = np.linspace(np.log10(lambda_min), np.log10(lambda_max), n_lambda)
+    lambda_grid = 10 ** log_lambdas
+    lambdas = [1.0] * n_terms
+    
+    for _ in range(3):  # Reduced outer iterations (was 10)
+        old_lambdas = lambdas.copy()
+        
+        for term_idx in range(n_terms):
+            best_lambda = lambdas[term_idx]
+            best_gcv = float('inf')
+            
+            for lam in lambda_grid:
+                test_lambdas = lambdas.copy()
+                test_lambdas[term_idx] = lam
+                
+                # Compute total penalty
+                total_penalty = 0.0
+                for i, (start, end) in enumerate(smooth_col_indices):
+                    total_penalty += test_lambdas[i] * np.sum(np.diag(penalties[i]))
+                
+                alpha = total_penalty / max(p - 1, 1)
+                
+                try:
+                    result = _fit_glm_rust(
+                        y, X, family, link, var_power, theta,
+                        offset, weights, alpha, 0.0, max_iter, tol, None, None
+                    )
+                    
+                    # Compute total EDF
+                    total_edf = smooth_col_indices[0][0]  # Parametric terms
+                    for i, (start, end) in enumerate(smooth_col_indices):
+                        total_edf += compute_edf(np.eye(end - start), penalties[i], test_lambdas[i])
+                    
+                    gcv = gcv_score(result.deviance, n, total_edf)
+                    
+                    if gcv < best_gcv:
+                        best_gcv = gcv
+                        best_lambda = lam
+                except Exception:
+                    continue
+            
+            lambdas[term_idx] = best_lambda
+        
+        # Check convergence
+        max_change = max(abs(l1 - l2) / max(l2, 1e-10) for l1, l2 in zip(lambdas, old_lambdas))
+        if max_change < 0.1:  # Relaxed convergence (was 0.01)
+            break
+    
+    # Final fit with selected lambdas
+    total_penalty = sum(
+        lambdas[i] * np.sum(np.diag(penalties[i])) 
+        for i in range(n_terms)
+    )
+    alpha = total_penalty / max(p - 1, 1)
+    
+    final_result = _fit_glm_rust(
+        y, X, family, link, var_power, theta,
+        offset, weights, alpha, 0.0, max_iter, tol, None, None
+    )
+    
+    # Compute EDFs and build results
+    smooth_results = []
+    n_parametric = smooth_col_indices[0][0]
+    total_edf = float(n_parametric)
+    
+    for i, term in enumerate(smooth_terms):
+        start, end = smooth_col_indices[i]
+        edf_term = compute_edf(np.eye(end - start), penalties[i], lambdas[i])
+        total_edf += edf_term
+        
+        smooth_results.append(SmoothTermResult(
+            variable=term.var_name,
+            k=term.df,
+            edf=edf_term,
+            lambda_=lambdas[i],
+            gcv=gcv_score(final_result.deviance, n, total_edf),
+            col_start=start,
+            col_end=end,
+        ))
+        
+        term._lambda = lambdas[i]
+        term._edf = edf_term
+    
+    final_gcv = gcv_score(final_result.deviance, n, total_edf)
+    
+    return final_result, smooth_results, total_edf, final_gcv
 
 
 class FormulaGLM:
@@ -632,25 +943,54 @@ class FormulaGLM:
                 # Use fixed theta (default 1.0 for negbinomial if not auto)
                 theta = self.theta if self.theta is not None else 1.0
                 
-                # Compute coefficient constraint indices
-                nonneg_indices, nonpos_indices = _get_constraint_indices(self.feature_names)
+                # Check for smooth terms (s() terms with automatic lambda selection)
+                smooth_terms, smooth_col_indices = self._builder.get_smooth_terms()
                 
-                result = _fit_glm_rust(
-                    self.y,
-                    self.X,
-                    self.family,
-                    self.link,
-                    self.var_power,
-                    theta,
-                    self.offset,
-                    self.weights,
-                    alpha,
-                    l1_ratio,
-                    max_iter,
-                    tol,
-                    nonneg_indices if nonneg_indices else None,
-                    nonpos_indices if nonpos_indices else None,
-                )
+                if smooth_terms and alpha == 0.0:
+                    # Use penalized fitting with GCV-based lambda selection
+                    result, smooth_results, total_edf, gcv = _fit_with_smooth_penalties(
+                        self.y,
+                        self.X,
+                        smooth_terms,
+                        smooth_col_indices,
+                        self.family,
+                        self.link,
+                        self.var_power,
+                        theta,
+                        self.offset,
+                        self.weights,
+                        max_iter,
+                        tol,
+                    )
+                    # Store smooth results for later access
+                    self._smooth_results = smooth_results
+                    self._total_edf = total_edf
+                    self._gcv = gcv
+                else:
+                    # Standard fitting (no smooth terms or regularization already applied)
+                    # Compute coefficient constraint indices
+                    nonneg_indices, nonpos_indices = _get_constraint_indices(self.feature_names)
+                    
+                    result = _fit_glm_rust(
+                        self.y,
+                        self.X,
+                        self.family,
+                        self.link,
+                        self.var_power,
+                        theta,
+                        self.offset,
+                        self.weights,
+                        alpha,
+                        l1_ratio,
+                        max_iter,
+                        tol,
+                        nonneg_indices if nonneg_indices else None,
+                        nonpos_indices if nonpos_indices else None,
+                    )
+                    self._smooth_results = None
+                    self._total_edf = None
+                    self._gcv = None
+                
                 # Include theta in family string for negbinomial so deviance calculations use correct theta
                 if is_negbinomial:
                     result_family = f"NegativeBinomial(theta={theta:.4f})"
@@ -684,6 +1024,9 @@ class FormulaGLM:
             offset_spec=self._offset_spec,
             offset_is_exposure=(self.family in ("poisson", "quasipoisson", "negbinomial", "gamma") and self.link in (None, "log")),
             regularization_path_info=path_info,
+            smooth_results=getattr(self, '_smooth_results', None),
+            total_edf=getattr(self, '_total_edf', None),
+            gcv=getattr(self, '_gcv', None),
         )
 
 
@@ -716,8 +1059,14 @@ class FormulaGLMResults:
         offset_spec: Optional[Union[str, np.ndarray]] = None,
         offset_is_exposure: bool = False,
         regularization_path_info: Optional["RegularizationPathInfo"] = None,
+        smooth_results: Optional[List[SmoothTermResult]] = None,
+        total_edf: Optional[float] = None,
+        gcv: Optional[float] = None,
     ):
         self._result = result
+        self._smooth_results = smooth_results
+        self._total_edf = total_edf
+        self._gcv = gcv
         self.feature_names = feature_names
         self.formula = formula
         self.family = family
@@ -727,6 +1076,25 @@ class FormulaGLMResults:
         self._design_matrix = design_matrix  # Store for VIF calculation
         self._offset_spec = offset_spec
         self._offset_is_exposure = offset_is_exposure
+    
+    @property
+    def smooth_terms(self) -> Optional[List[SmoothTermResult]]:
+        """Smooth term results with EDF, lambda, and GCV for each s() term."""
+        return self._smooth_results
+    
+    @property
+    def total_edf(self) -> Optional[float]:
+        """Total effective degrees of freedom (parametric + smooth terms)."""
+        return self._total_edf
+    
+    @property
+    def gcv(self) -> Optional[float]:
+        """Generalized Cross-Validation score for smoothness selection."""
+        return self._gcv
+    
+    def has_smooth_terms(self) -> bool:
+        """Check if model contains smooth terms with automatic smoothing."""
+        return self._smooth_results is not None and len(self._smooth_results) > 0
     
     @staticmethod
     def _default_link(family: str) -> str:
@@ -1548,6 +1916,7 @@ from rustystats.interactions import (
     IdentityTermSpec, CategoricalTermSpec, ConstraintTermSpec
 )
 from rustystats.splines import SplineTerm
+from rustystats.smooth import SmoothTerm
 
 
 def _parse_term_spec(
@@ -1643,6 +2012,19 @@ def _parse_term_spec(
         term._monotonic = True
         spline_terms.append(term)
     
+    elif term_type == "s":
+        # Penalized smooth term with automatic lambda selection via GCV
+        k = spec.get("k", 10)  # Number of basis functions
+        term = SplineTerm(
+            var_name=var_name,
+            spline_type="bs",  # Use B-spline basis
+            df=k,  # k basis functions
+            degree=3,
+        )
+        # Mark this as a smooth term for penalized fitting
+        term._is_smooth = True
+        spline_terms.append(term)
+    
     elif term_type == "target_encoding":
         prior_weight = spec.get("prior_weight", 1.0)
         n_permutations = spec.get("n_permutations", 4)
@@ -1701,8 +2083,12 @@ def _parse_interaction_spec(
         if term_type == "categorical":
             cat_factors.add(var_name)
             categorical_vars.add(var_name)
-        elif term_type in ("bs", "ns"):
-            df = spec.get("df", 5 if term_type == "bs" else 4)
+        elif term_type in ("bs", "ns", "s"):
+            # For s() smooth terms, use k parameter; for bs/ns use df
+            if term_type == "s":
+                df = spec.get("k", 10)
+            else:
+                df = spec.get("df", 5 if term_type == "bs" else 4)
             degree = spec.get("degree", 3)
             monotonicity = spec.get("monotonicity")
             if monotonicity:
@@ -1714,12 +2100,17 @@ def _parse_interaction_spec(
                     increasing=monotonicity == "increasing",
                 )
             else:
+                # s() maps to bs internally
+                spline_type_out = "bs" if term_type == "s" else term_type
                 spline = SplineTerm(
                     var_name=var_name,
-                    spline_type=term_type,
+                    spline_type=spline_type_out,
                     df=df,
                     degree=degree,
                 )
+                # Mark s() terms as smooth for penalized fitting
+                if term_type == "s":
+                    spline._is_smooth = True
             spline_factors.append((var_name, spline))
         elif term_type == "target_encoding":
             prior_weight = spec.get("prior_weight", 1.0)
@@ -2057,25 +2448,52 @@ class FormulaGLMDict:
         
         theta = self.theta if self.theta is not None else 1.0
         
-        # Compute coefficient constraint indices
-        nonneg_indices, nonpos_indices = _get_constraint_indices(self.feature_names)
+        # Check for smooth terms (s() terms with automatic lambda selection)
+        smooth_terms, smooth_col_indices = self._builder.get_smooth_terms()
         
-        result = _fit_glm_rust(
-            self.y,
-            self.X,
-            self.family,
-            self.link,
-            self.var_power,
-            theta,
-            self.offset,
-            self.weights,
-            alpha,
-            l1_ratio,
-            max_iter,
-            tol,
-            nonneg_indices if nonneg_indices else None,
-            nonpos_indices if nonpos_indices else None,
-        )
+        if smooth_terms and alpha == 0.0:
+            # Use penalized fitting with GCV-based lambda selection
+            result, smooth_results, total_edf, gcv = _fit_with_smooth_penalties(
+                self.y,
+                self.X,
+                smooth_terms,
+                smooth_col_indices,
+                self.family,
+                self.link,
+                self.var_power,
+                theta,
+                self.offset,
+                self.weights,
+                max_iter,
+                tol,
+            )
+            self._smooth_results = smooth_results
+            self._total_edf = total_edf
+            self._gcv = gcv
+        else:
+            # Standard fitting (no smooth terms or regularization already applied)
+            # Compute coefficient constraint indices
+            nonneg_indices, nonpos_indices = _get_constraint_indices(self.feature_names)
+            
+            result = _fit_glm_rust(
+                self.y,
+                self.X,
+                self.family,
+                self.link,
+                self.var_power,
+                theta,
+                self.offset,
+                self.weights,
+                alpha,
+                l1_ratio,
+                max_iter,
+                tol,
+                nonneg_indices if nonneg_indices else None,
+                nonpos_indices if nonpos_indices else None,
+            )
+            self._smooth_results = None
+            self._total_edf = None
+            self._gcv = None
         
         result_family = f"NegativeBinomial(theta={theta:.4f})" if is_negbinomial else self.family
         
@@ -2090,6 +2508,9 @@ class FormulaGLMDict:
             offset_spec=self._offset_spec,
             offset_is_exposure=(self.family in ("poisson", "quasipoisson", "negbinomial", "gamma") and self.link in (None, "log")),
             regularization_path_info=path_info,
+            smooth_results=getattr(self, '_smooth_results', None),
+            total_edf=getattr(self, '_total_edf', None),
+            gcv=getattr(self, '_gcv', None),
         )
 
 

@@ -9,6 +9,7 @@
 // ----------------
 // 1. B-splines (basis splines) - Flexible piecewise polynomial bases
 // 2. Natural splines - B-splines with linear extrapolation beyond boundaries
+// 3. Penalized splines (P-splines) - Automatic smoothness selection via GCV
 //
 // PERFORMANCE:
 // ------------
@@ -19,10 +20,12 @@
 //
 // USAGE:
 // ------
-// In formulas: bs(x, df=5), ns(x, df=5)
+// In formulas: bs(x, df=5), ns(x, df=5), s(x, k=10)
 // Direct API:  bs_basis(x, knots, degree), ns_basis(x, knots)
 //
 // =============================================================================
+
+pub mod penalized;
 
 use ndarray::{Array1, Array2};
 use rayon::prelude::*;

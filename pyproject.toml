@@ -20,7 +20,7 @@ build-backend = "maturin"
 
 [project]
 name = "rustystats"
-version = "0.2.4"
+version = "0.2.5"
 description = "Fast Generalized Linear Models with a Rust backend - statsmodels compatible"
 readme = "README.md"
 license = { text = "Elastic-2.0" }
@@ -41,6 +41,7 @@ keywords = ["statistics", "glm", "actuarial", "regression", "modeling"]
 
 # Python package dependencies (minimal for users)
 dependencies = [
+    "ipykernel>=6.31.0",
     "numpy>=1.20",
     "polars>=1.0",
 ]
