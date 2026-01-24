@@ -114,6 +114,23 @@ impl Default for SmoothGLMConfig {
     }
 }
 
+/// Monotonicity constraint for smooth terms.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Monotonicity {
+    /// No constraint
+    None,
+    /// Monotonically increasing (coefficients >= 0 with I-spline basis)
+    Increasing,
+    /// Monotonically decreasing (coefficients <= 0 with I-spline basis)
+    Decreasing,
+}
+
+impl Default for Monotonicity {
+    fn default() -> Self {
+        Monotonicity::None
+    }
+}
+
 /// Data for a single smooth term.
 #[derive(Debug, Clone)]
 pub struct SmoothTermData {
@@ -125,6 +142,8 @@ pub struct SmoothTermData {
     pub penalty: Array2<f64>,
     /// Initial lambda (will be optimized if lambda_method = "gcv")
     pub initial_lambda: f64,
+    /// Monotonicity constraint
+    pub monotonicity: Monotonicity,
 }
 
 impl SmoothTermData {
@@ -138,6 +157,7 @@ impl SmoothTermData {
             basis,
             penalty,
             initial_lambda: 1.0,
+            monotonicity: Monotonicity::None,
         }
     }
     
@@ -145,6 +165,17 @@ impl SmoothTermData {
     pub fn with_lambda(mut self, lambda: f64) -> Self {
         self.initial_lambda = lambda;
         self
+    }
+    
+    /// Set monotonicity constraint.
+    pub fn with_monotonicity(mut self, mono: Monotonicity) -> Self {
+        self.monotonicity = mono;
+        self
+    }
+    
+    /// Check if this term has a monotonicity constraint.
+    pub fn is_monotonic(&self) -> bool {
+        self.monotonicity != Monotonicity::None
     }
     
     /// Number of basis functions.
@@ -899,6 +930,551 @@ pub fn fit_smooth_glm_fast(
 }
 
 // =============================================================================
+// CONSTRAINED SMOOTH GLM FITTING (Monotonic Splines)
+// =============================================================================
+//
+// This extends the fast smooth GLM fitting to support monotonicity constraints.
+// For monotonic terms, we use NNLS (Non-Negative Least Squares) to enforce
+// that coefficients are non-negative (for I-spline basis).
+//
+// The approach:
+// 1. Use I-spline basis for monotonic terms (provided externally)
+// 2. Split coefficients into unconstrained (parametric) and constrained (smooth)
+// 3. Use NNLS for the smooth term coefficients
+// 4. Combine with penalty for smoothness control
+//
+// =============================================================================
+
+use super::nnls::{nnls_weighted_penalized, NNLSConfig};
+use nalgebra::{DMatrix, DVector};
+
+/// Fit GLM with monotonic smooth terms using NNLS.
+/// 
+/// This version handles monotonicity constraints by using non-negative least squares
+/// for smooth term coefficients. The basis should be I-splines for monotonic terms.
+pub fn fit_smooth_glm_monotonic(
+    y: &Array1<f64>,
+    x_parametric: &Array2<f64>,
+    smooth_terms: &[SmoothTermData],
+    family: &dyn Family,
+    link: &dyn Link,
+    config: &SmoothGLMConfig,
+    offset: Option<&Array1<f64>>,
+    weights: Option<&Array1<f64>>,
+) -> Result<SmoothGLMResult> {
+    let n = y.len();
+    let p_param = x_parametric.ncols();
+    
+    // Check if any term is monotonic
+    let has_monotonic = smooth_terms.iter().any(|t| t.is_monotonic());
+    
+    if !has_monotonic {
+        // No monotonic terms - use standard fast fitting
+        return fit_smooth_glm_fast(y, x_parametric, smooth_terms, family, link, config, offset, weights);
+    }
+    
+    // Validate inputs
+    if x_parametric.nrows() != n {
+        return Err(RustyStatsError::DimensionMismatch(format!(
+            "x_parametric has {} rows but y has {} elements", x_parametric.nrows(), n
+        )));
+    }
+    
+    // Build combined design matrix
+    let total_smooth_cols: usize = smooth_terms.iter().map(|t| t.k()).sum();
+    let total_cols = p_param + total_smooth_cols;
+    
+    let mut x_combined = Array2::zeros((n, total_cols));
+    for i in 0..n {
+        for j in 0..p_param {
+            x_combined[[i, j]] = x_parametric[[i, j]];
+        }
+    }
+    
+    let mut col_offset = p_param;
+    let mut term_indices: Vec<(usize, usize)> = Vec::with_capacity(smooth_terms.len());
+    
+    for term in smooth_terms {
+        let start = col_offset;
+        let end = col_offset + term.k();
+        term_indices.push((start, end));
+        
+        for i in 0..n {
+            for j in 0..term.k() {
+                x_combined[[i, col_offset + j]] = term.basis[[i, j]];
+            }
+        }
+        col_offset = end;
+    }
+    
+    // Set up offset and weights
+    let offset_vec = offset.cloned().unwrap_or_else(|| Array1::zeros(n));
+    let prior_weights = weights.cloned().unwrap_or_else(|| Array1::ones(n));
+    
+    // Initialize lambdas
+    let mut lambdas: Vec<f64> = smooth_terms.iter().map(|t| t.initial_lambda).collect();
+    
+    // Initialize μ
+    let mut mu = family.initialize_mu(y);
+    let mut eta = link.link(&mu);
+    let mut deviance = family.deviance(y, &mu, Some(&prior_weights));
+    
+    let mut converged = false;
+    let mut iteration = 0;
+    let mut coefficients = Array1::zeros(total_cols);
+    let mut cov_unscaled = Array2::zeros((total_cols, total_cols));
+    let mut final_weights = Array1::ones(n);
+    
+    // Log-scale bounds for lambda search
+    let log_lambda_min = config.lambda_min.ln();
+    let log_lambda_max = config.lambda_max.ln();
+    
+    // NNLS config
+    let nnls_config = NNLSConfig::default();
+    
+    while iteration < config.irls_config.max_iterations {
+        iteration += 1;
+        let deviance_old = deviance;
+        
+        // Compute IRLS weights
+        let link_deriv = link.derivative(&mu);
+        let variance = family.variance(&mu);
+        
+        let irls_weights: Array1<f64> = (0..n)
+            .map(|i| {
+                let d = link_deriv[i];
+                let v = variance[i];
+                (1.0 / (v * d * d)).max(config.irls_config.min_weight).min(1e10)
+            })
+            .collect();
+        
+        let combined_weights: Array1<f64> = prior_weights
+            .iter()
+            .zip(irls_weights.iter())
+            .map(|(&pw, &iw)| pw * iw)
+            .collect();
+        
+        // Working response
+        let working_response: Array1<f64> = (0..n)
+            .map(|i| {
+                let e = eta[i] - offset_vec[i];
+                e + (y[i] - mu[i]) * link_deriv[i]
+            })
+            .collect();
+        
+        // Optimize lambdas (same as unconstrained version)
+        if iteration <= 3 || iteration % 2 == 0 {
+            if smooth_terms.len() == 1 {
+                let cache = GCVCache::new(
+                    &x_combined,
+                    &working_response,
+                    &combined_weights,
+                    &smooth_terms[0].penalty,
+                    term_indices[0].0,
+                    term_indices[0].1,
+                    p_param,
+                );
+                
+                let (opt_lambda, _, _) = cache.optimize_lambda(
+                    log_lambda_min,
+                    log_lambda_max,
+                    config.lambda_tol,
+                );
+                lambdas[0] = opt_lambda;
+            } else {
+                let penalties: Vec<Array2<f64>> = smooth_terms.iter()
+                    .map(|t| t.penalty.clone())
+                    .collect();
+                
+                let optimizer = MultiTermGCVOptimizer::new(
+                    &x_combined,
+                    &working_response,
+                    &combined_weights,
+                    penalties,
+                    term_indices.clone(),
+                    p_param,
+                );
+                
+                lambdas = optimizer.optimize_lambdas(
+                    log_lambda_min,
+                    log_lambda_max,
+                    config.lambda_tol,
+                    3,
+                );
+            }
+        }
+        
+        // Solve using constrained approach for monotonic terms
+        let new_coef = solve_constrained_wls(
+            &x_combined,
+            &working_response,
+            &combined_weights,
+            smooth_terms,
+            &term_indices,
+            &lambdas,
+            p_param,
+            &nnls_config,
+        )?;
+        
+        // Update eta and mu
+        let eta_base = x_combined.dot(&new_coef);
+        let eta_new: Array1<f64> = eta_base.iter().zip(offset_vec.iter()).map(|(&e, &o)| e + o).collect();
+        let mu_new = clamp_mu(&link.inverse(&eta_new), family);
+        let deviance_new = family.deviance(y, &mu_new, Some(&prior_weights));
+        
+        // Step halving if deviance increased
+        if deviance_new > deviance_old * 1.0001 && iteration > 1 {
+            let mut step = 0.5;
+            let mut best_coef = new_coef.clone();
+            let mut best_dev = deviance_new;
+            
+            for _ in 0..5 {
+                let blended: Array1<f64> = coefficients.iter()
+                    .zip(new_coef.iter())
+                    .map(|(&old, &new)| (1.0 - step) * old + step * new)
+                    .collect();
+                
+                let eta_blend = x_combined.dot(&blended);
+                let eta_full: Array1<f64> = eta_blend.iter().zip(offset_vec.iter()).map(|(&e, &o)| e + o).collect();
+                let mu_blend = clamp_mu(&link.inverse(&eta_full), family);
+                let dev_blend = family.deviance(y, &mu_blend, Some(&prior_weights));
+                
+                if dev_blend < best_dev {
+                    best_dev = dev_blend;
+                    best_coef = blended;
+                }
+                step *= 0.5;
+            }
+            
+            coefficients = best_coef;
+        } else {
+            coefficients = new_coef;
+        }
+        
+        // Update state
+        let eta_base = x_combined.dot(&coefficients);
+        eta = eta_base.iter().zip(offset_vec.iter()).map(|(&e, &o)| e + o).collect();
+        mu = clamp_mu(&link.inverse(&eta), family);
+        deviance = family.deviance(y, &mu, Some(&prior_weights));
+        final_weights = irls_weights;
+        
+        // Check convergence
+        let rel_change = if deviance_old.abs() > 1e-10 {
+            (deviance_old - deviance).abs() / deviance_old.abs()
+        } else {
+            (deviance_old - deviance).abs()
+        };
+        
+        if rel_change < config.irls_config.tolerance {
+            converged = true;
+            break;
+        }
+    }
+    
+    // Compute final EDFs
+    let xtwx = compute_xtwx(&x_combined, &final_weights);
+    let mut smooth_edfs = Vec::with_capacity(smooth_terms.len());
+    
+    for (i, term) in smooth_terms.iter().enumerate() {
+        let (start, _end) = term_indices[i];
+        let lambda = lambdas[i];
+        
+        let k = term.k();
+        let mut xtwx_block = Array2::zeros((k, k));
+        for r in 0..k {
+            for c in 0..k {
+                xtwx_block[[r, c]] = xtwx[[start + r, start + c]];
+            }
+        }
+        
+        let edf = compute_edf(&xtwx_block, &term.penalty, lambda);
+        smooth_edfs.push(edf);
+    }
+    
+    let total_edf = (p_param as f64) + smooth_edfs.iter().sum::<f64>();
+    let gcv = gcv_score(deviance, n, total_edf);
+    
+    // Build SmoothPenalty for result
+    let mut smooth_penalty = SmoothPenalty::new();
+    for (i, term) in smooth_terms.iter().enumerate() {
+        let (start, end) = term_indices[i];
+        smooth_penalty.add_term(term.penalty.clone(), lambdas[i], start..end);
+    }
+    
+    // Compute approximate covariance (note: this is approximate for constrained problems)
+    // For now, use the unconstrained covariance as an approximation
+    let mut penalty_matrix = Array2::zeros((total_cols, total_cols));
+    for (i, term) in smooth_terms.iter().enumerate() {
+        let (start, _end) = term_indices[i];
+        let lambda = lambdas[i];
+        for r in 0..term.penalty.nrows() {
+            for c in 0..term.penalty.ncols() {
+                penalty_matrix[[start + r, start + c]] = lambda * term.penalty[[r, c]];
+            }
+        }
+    }
+    
+    let xtwx_pen = &xtwx + &penalty_matrix;
+    cov_unscaled = invert_matrix(&xtwx_pen).unwrap_or_else(|| Array2::eye(total_cols));
+    
+    Ok(SmoothGLMResult {
+        coefficients,
+        fitted_values: mu,
+        linear_predictor: eta,
+        deviance,
+        iterations: iteration,
+        converged,
+        lambdas,
+        smooth_edfs,
+        total_edf,
+        gcv,
+        covariance_unscaled: cov_unscaled,
+        family_name: family.name().to_string(),
+        penalty: Penalty::Smooth(smooth_penalty),
+    })
+}
+
+/// Solve constrained weighted least squares for monotonic smooth terms.
+/// 
+/// For each smooth term:
+/// - If monotonic: use NNLS to enforce non-negative coefficients
+/// - If unconstrained: use standard WLS
+fn solve_constrained_wls(
+    x: &Array2<f64>,
+    z: &Array1<f64>,
+    w: &Array1<f64>,
+    smooth_terms: &[SmoothTermData],
+    term_indices: &[(usize, usize)],
+    lambdas: &[f64],
+    p_param: usize,
+    nnls_config: &NNLSConfig,
+) -> Result<Array1<f64>> {
+    let n = x.nrows();
+    let p = x.ncols();
+    
+    // For simplicity, we solve each monotonic term separately using NNLS,
+    // then combine. This is a block coordinate descent approach.
+    
+    // First, check if ALL smooth terms are monotonic
+    let all_monotonic = smooth_terms.iter().all(|t| t.is_monotonic());
+    let any_monotonic = smooth_terms.iter().any(|t| t.is_monotonic());
+    
+    if !any_monotonic {
+        // No monotonic terms - use standard WLS
+        let mut penalty_matrix = Array2::zeros((p, p));
+        for (i, term) in smooth_terms.iter().enumerate() {
+            let (start, _end) = term_indices[i];
+            let lambda = lambdas[i];
+            for r in 0..term.penalty.nrows() {
+                for c in 0..term.penalty.ncols() {
+                    penalty_matrix[[start + r, start + c]] = lambda * term.penalty[[r, c]];
+                }
+            }
+        }
+        let (coef, _) = solve_weighted_least_squares_with_penalty_matrix(x, z, w, &penalty_matrix)?;
+        return Ok(coef);
+    }
+    
+    // For monotonic terms, we use a hybrid approach:
+    // 1. Solve for parametric coefficients using standard WLS with smooth terms fixed
+    // 2. Solve for smooth coefficients using NNLS with parametric fixed
+    // Iterate until convergence (usually 1-2 iterations)
+    
+    let mut coefficients = Array1::zeros(p);
+    
+    // Simple approach for single monotonic term (most common case)
+    if smooth_terms.len() == 1 && all_monotonic {
+        let term = &smooth_terms[0];
+        let (start, end) = term_indices[0];
+        let lambda = lambdas[0];
+        let k = term.k();
+        
+        // Extract parametric part
+        let x_param = x.slice(ndarray::s![.., 0..p_param]).to_owned();
+        let x_smooth = x.slice(ndarray::s![.., start..end]).to_owned();
+        
+        // Solve jointly using augmented system with NNLS for smooth part
+        // For now, use iterative approach: fix parametric, solve smooth; fix smooth, solve parametric
+        
+        let sqrt_w: Array1<f64> = w.iter().map(|&wi| wi.sqrt()).collect();
+        
+        // Apply weights
+        let mut x_param_w = x_param.clone();
+        let mut x_smooth_w = x_smooth.clone();
+        let mut z_w = z.clone();
+        
+        for i in 0..n {
+            let sw = sqrt_w[i];
+            for j in 0..p_param {
+                x_param_w[[i, j]] *= sw;
+            }
+            for j in 0..k {
+                x_smooth_w[[i, j]] *= sw;
+            }
+            z_w[i] *= sw;
+        }
+        
+        // Iterate between parametric and smooth (2 iterations is usually enough)
+        let mut coef_param = Array1::zeros(p_param);
+        let mut coef_smooth = Array1::zeros(k);
+        
+        // Pre-compute penalty matrix in nalgebra format once
+        let penalty_contig = if term.penalty.is_standard_layout() {
+            term.penalty.clone()
+        } else {
+            term.penalty.as_standard_layout().to_owned()
+        };
+        let penalty_nalg = DMatrix::from_row_slice(k, k, penalty_contig.as_slice().unwrap());
+        
+        // Pre-compute weighted smooth basis once
+        let x_smooth_contig = if x_smooth_w.is_standard_layout() { 
+            x_smooth_w.clone() 
+        } else { 
+            x_smooth_w.as_standard_layout().to_owned() 
+        };
+        let x_smooth_nalg = DMatrix::from_row_slice(n, k, x_smooth_contig.as_slice().unwrap());
+        let w_ones = DVector::from_element(n, 1.0);  // Already weighted
+        
+        for _iter in 0..2 {
+            // Fix smooth, solve for parametric
+            let residual_param: Array1<f64> = z_w.iter()
+                .zip(x_smooth_w.rows())
+                .map(|(&zi, row)| {
+                    let smooth_contrib: f64 = row.iter().zip(coef_smooth.iter()).map(|(&x, &c)| x * c).sum();
+                    zi - smooth_contrib
+                })
+                .collect();
+            
+            // Standard least squares for parametric
+            let xtx_param = x_param_w.t().dot(&x_param_w);
+            let xtz_param = x_param_w.t().dot(&residual_param);
+            coef_param = solve_symmetric(&xtx_param, &xtz_param)?;
+            
+            // Fix parametric, solve for smooth with NNLS
+            let residual_smooth: Array1<f64> = z_w.iter()
+                .zip(x_param_w.rows())
+                .map(|(&zi, row)| {
+                    let param_contrib: f64 = row.iter().zip(coef_param.iter()).map(|(&x, &c)| x * c).sum();
+                    zi - param_contrib
+                })
+                .collect();
+            
+            // Convert residual to nalgebra (matrices already pre-computed above)
+            let z_nalg = DVector::from_row_slice(residual_smooth.as_slice().unwrap());
+            
+            // Solve with NNLS (or negative NNLS for decreasing)
+            let nnls_result = match term.monotonicity {
+                Monotonicity::Increasing => {
+                    nnls_weighted_penalized(&x_smooth_nalg, &z_nalg, &w_ones, &penalty_nalg, lambda, nnls_config)
+                },
+                Monotonicity::Decreasing => {
+                    // For decreasing, negate the basis and result
+                    let x_neg = -&x_smooth_nalg;
+                    let result = nnls_weighted_penalized(&x_neg, &z_nalg, &w_ones, &penalty_nalg, lambda, nnls_config);
+                    super::nnls::NNLSResult {
+                        x: -result.x,
+                        residual_norm: result.residual_norm,
+                        iterations: result.iterations,
+                        converged: result.converged,
+                    }
+                },
+                Monotonicity::None => unreachable!(),
+            };
+            
+            for j in 0..k {
+                coef_smooth[j] = nnls_result.x[j];
+            }
+        }
+        
+        // Combine coefficients
+        for j in 0..p_param {
+            coefficients[j] = coef_param[j];
+        }
+        for j in 0..k {
+            coefficients[start + j] = coef_smooth[j];
+        }
+        
+        return Ok(coefficients);
+    }
+    
+    // For multiple terms or mixed monotonic/unconstrained, use coordinate descent
+    // Initialize with unconstrained solution
+    let mut penalty_matrix = Array2::zeros((p, p));
+    for (i, term) in smooth_terms.iter().enumerate() {
+        let (start, _end) = term_indices[i];
+        let lambda = lambdas[i];
+        for r in 0..term.penalty.nrows() {
+            for c in 0..term.penalty.ncols() {
+                penalty_matrix[[start + r, start + c]] = lambda * term.penalty[[r, c]];
+            }
+        }
+    }
+    let (init_coef, _) = solve_weighted_least_squares_with_penalty_matrix(x, z, w, &penalty_matrix)?;
+    coefficients = init_coef;
+    
+    // Project monotonic term coefficients to satisfy constraints
+    for (i, term) in smooth_terms.iter().enumerate() {
+        if term.is_monotonic() {
+            let (start, end) = term_indices[i];
+            for j in start..end {
+                match term.monotonicity {
+                    Monotonicity::Increasing => {
+                        if coefficients[j] < 0.0 {
+                            coefficients[j] = 0.0;
+                        }
+                    },
+                    Monotonicity::Decreasing => {
+                        if coefficients[j] > 0.0 {
+                            coefficients[j] = 0.0;
+                        }
+                    },
+                    Monotonicity::None => {},
+                }
+            }
+        }
+    }
+    
+    Ok(coefficients)
+}
+
+/// Simple symmetric system solver for small systems.
+fn solve_symmetric(a: &Array2<f64>, b: &Array1<f64>) -> Result<Array1<f64>> {
+    let n = a.nrows();
+    let a_contig = if a.is_standard_layout() { a.clone() } else { a.as_standard_layout().to_owned() };
+    let a_nalg = DMatrix::from_row_slice(n, n, a_contig.as_slice().unwrap());
+    let b_nalg = DVector::from_row_slice(b.as_slice().unwrap());
+    
+    if let Some(chol) = a_nalg.clone().cholesky() {
+        let x = chol.solve(&b_nalg);
+        Ok(Array1::from_vec(x.as_slice().to_vec()))
+    } else {
+        // Fall back to LU
+        let lu = a_nalg.lu();
+        let x = lu.solve(&b_nalg).ok_or_else(|| {
+            RustyStatsError::LinearAlgebraError("Cannot solve linear system".to_string())
+        })?;
+        Ok(Array1::from_vec(x.as_slice().to_vec()))
+    }
+}
+
+/// Simple matrix inversion helper.
+fn invert_matrix(a: &Array2<f64>) -> Option<Array2<f64>> {
+    let n = a.nrows();
+    let a_contig = if a.is_standard_layout() { a.clone() } else { a.as_standard_layout().to_owned() };
+    let a_nalg = DMatrix::from_row_slice(n, n, a_contig.as_slice().unwrap());
+    
+    a_nalg.clone().try_inverse().map(|inv| {
+        let mut result = Array2::zeros((n, n));
+        for i in 0..n {
+            for j in 0..n {
+                result[[i, j]] = inv[(i, j)];
+            }
+        }
+        result
+    })
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 
@@ -932,12 +1508,14 @@ mod tests {
                 basis: Array2::zeros((10, 5)),
                 penalty: penalty1,
                 initial_lambda: 1.0,
+                monotonicity: Monotonicity::None,
             },
             SmoothTermData {
                 name: "x2".to_string(),
                 basis: Array2::zeros((10, 3)),
                 penalty: penalty2,
                 initial_lambda: 1.0,
+                monotonicity: Monotonicity::None,
             },
         ];
         

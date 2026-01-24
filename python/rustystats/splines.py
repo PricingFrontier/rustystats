@@ -465,6 +465,8 @@ class SplineTerm:
         self._monotonic = False
         # Track if this is a smooth term (s()) with automatic lambda selection
         self._is_smooth = False
+        # Monotonicity constraint for smooth terms: None, 'increasing', or 'decreasing'
+        self._smooth_monotonicity: Optional[str] = None
         # Penalty matrix for smooth terms (computed during transform)
         self._penalty_matrix: Optional[np.ndarray] = None
         # Lambda and EDF after fitting (set by fitting code)
@@ -519,7 +521,11 @@ class SplineTerm:
         if self.spline_type == "bs":
             basis = bs(x, df=self.df, degree=self.degree, 
                       boundary_knots=boundary_knots_to_use, include_intercept=False)
-            names = bs_names(self.var_name, self.df, include_intercept=False)
+            # Use s() naming if this is a smooth term (penalized), otherwise bs()
+            if self._is_smooth:
+                names = [f"s({self.var_name}, {i+1}/{self.df})" for i in range(self.df)]
+            else:
+                names = bs_names(self.var_name, self.df, include_intercept=False)
         elif self.spline_type == "ns":
             # Check if monotonicity was requested on natural splines
             if self._monotonic:
@@ -534,7 +540,13 @@ class SplineTerm:
         else:  # ms (monotonic spline)
             basis = ms(x, df=self.df, degree=self.degree,
                       boundary_knots=boundary_knots_to_use, increasing=self.increasing)
-            names = ms_names(self.var_name, self.df, increasing=self.increasing)
+            # Use s() naming if this is a smooth term (penalized), otherwise ms()
+            if self._is_smooth:
+                # Penalized smooth with monotonicity: s(var, k, +/-) 
+                sign = "+" if self.increasing else "-"
+                names = [f"s({self.var_name}, {i+1}/{self.df}, {sign})" for i in range(self.df)]
+            else:
+                names = ms_names(self.var_name, self.df, increasing=self.increasing)
         
         # Ensure names match columns
         if len(names) != basis.shape[1]:

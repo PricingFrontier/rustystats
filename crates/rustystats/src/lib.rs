@@ -38,7 +38,7 @@ use rayon::iter::IntoParallelIterator;
 // Import our core library
 use rustystats_core::families::{Family, GaussianFamily, PoissonFamily, BinomialFamily, GammaFamily, TweedieFamily, QuasiPoissonFamily, QuasiBinomialFamily, NegativeBinomialFamily};
 use rustystats_core::links::{Link, IdentityLink, LogLink, LogitLink};
-use rustystats_core::solvers::{fit_glm_full, fit_glm_warm_start, fit_glm_regularized, fit_glm_regularized_warm, fit_glm_coordinate_descent, IRLSConfig, IRLSResult, fit_smooth_glm_fast, SmoothGLMConfig, SmoothTermData};
+use rustystats_core::solvers::{fit_glm_full, fit_glm_warm_start, fit_glm_regularized, fit_glm_regularized_warm, fit_glm_coordinate_descent, IRLSConfig, IRLSResult, fit_smooth_glm_fast, fit_smooth_glm_monotonic, SmoothGLMConfig, SmoothTermData, Monotonicity};
 use rustystats_core::regularization::{Penalty, RegularizationConfig};
 use rustystats_core::inference::{pvalue_z, confidence_interval_z, HCType, robust_covariance, robust_standard_errors, score_test_continuous, score_test_categorical};
 use rustystats_core::diagnostics::{
@@ -1716,6 +1716,7 @@ fn fit_smooth_glm_fast_py<'py>(
         basis: basis_array,
         penalty,
         initial_lambda: 1.0,
+        monotonicity: Monotonicity::None,
     };
     
     // Config
@@ -1787,6 +1788,164 @@ fn fit_smooth_glm_fast_py<'py>(
         }
         _ => return Err(PyValueError::new_err(format!("Unknown family: {}", family))),
     }.map_err(|e| PyValueError::new_err(format!("Smooth GLM fit failed: {}", e)))?;
+    
+    // Return as dict
+    let dict = pyo3::types::PyDict::new_bound(py);
+    dict.set_item("coefficients", result.coefficients.into_pyarray_bound(py))?;
+    dict.set_item("fitted_values", result.fitted_values.into_pyarray_bound(py))?;
+    dict.set_item("linear_predictor", result.linear_predictor.into_pyarray_bound(py))?;
+    dict.set_item("deviance", result.deviance)?;
+    dict.set_item("iterations", result.iterations)?;
+    dict.set_item("converged", result.converged)?;
+    dict.set_item("lambdas", result.lambdas)?;
+    dict.set_item("smooth_edfs", result.smooth_edfs)?;
+    dict.set_item("total_edf", result.total_edf)?;
+    dict.set_item("gcv", result.gcv)?;
+    dict.set_item("covariance_unscaled", result.covariance_unscaled.into_pyarray_bound(py))?;
+    
+    Ok(dict.into())
+}
+
+/// Fit smooth GLM with monotonicity constraints using NNLS.
+///
+/// This function fits a GLM with smooth terms where the smooth effect
+/// is constrained to be monotonic (increasing or decreasing).
+///
+/// Parameters
+/// ----------
+/// y : array
+///     Response variable
+/// x_parametric : array
+///     Parametric part of design matrix (including intercept)
+/// smooth_basis : array
+///     I-spline basis for the smooth term (from ms() function)
+/// family : str
+///     Distribution family
+/// monotonicity : str
+///     "increasing" or "decreasing"
+/// link : str, optional
+///     Link function
+/// offset, weights : arrays, optional
+/// max_iter, tol : IRLS parameters
+/// lambda_min, lambda_max : GCV search bounds
+///
+/// Returns
+/// -------
+/// dict with coefficients, lambdas, edfs, gcv, deviance, etc.
+#[pyfunction]
+#[pyo3(signature = (y, x_parametric, smooth_basis, family, monotonicity, link=None, offset=None, weights=None, max_iter=25, tol=1e-8, lambda_min=0.001, lambda_max=1000.0))]
+fn fit_smooth_glm_monotonic_py<'py>(
+    py: Python<'py>,
+    y: PyReadonlyArray1<f64>,
+    x_parametric: PyReadonlyArray2<f64>,
+    smooth_basis: PyReadonlyArray2<f64>,
+    family: &str,
+    monotonicity: &str,
+    link: Option<&str>,
+    offset: Option<PyReadonlyArray1<f64>>,
+    weights: Option<PyReadonlyArray1<f64>>,
+    max_iter: usize,
+    tol: f64,
+    lambda_min: f64,
+    lambda_max: f64,
+) -> PyResult<PyObject> {
+    let y_array: Array1<f64> = y.as_array().to_owned();
+    let x_param_array: Array2<f64> = x_parametric.as_array().to_owned();
+    let basis_array: Array2<f64> = smooth_basis.as_array().to_owned();
+    
+    let offset_array = offset.map(|o| o.as_array().to_owned());
+    let weights_array = weights.map(|w| w.as_array().to_owned());
+    
+    // Parse monotonicity
+    let mono = match monotonicity.to_lowercase().as_str() {
+        "increasing" | "inc" => Monotonicity::Increasing,
+        "decreasing" | "dec" => Monotonicity::Decreasing,
+        "none" => Monotonicity::None,
+        _ => return Err(PyValueError::new_err(format!(
+            "Invalid monotonicity: {}. Use 'increasing' or 'decreasing'", monotonicity
+        ))),
+    };
+    
+    // Create smooth term data with monotonicity
+    let k = basis_array.ncols();
+    let penalty = penalty_matrix(k, 2);
+    let smooth_term = SmoothTermData {
+        name: "smooth".to_string(),
+        basis: basis_array,
+        penalty,
+        initial_lambda: 1.0,
+        monotonicity: mono,
+    };
+    
+    // Config
+    let config = SmoothGLMConfig {
+        irls_config: IRLSConfig {
+            max_iterations: max_iter,
+            tolerance: tol,
+            min_weight: 1e-10,
+            verbose: false,
+            nonneg_indices: Vec::new(),
+            nonpos_indices: Vec::new(),
+        },
+        n_lambda: 30,
+        lambda_min,
+        lambda_max,
+        lambda_tol: 1e-4,
+        max_lambda_iter: 10,
+        lambda_method: "gcv".to_string(),
+    };
+    
+    // Match family and link
+    macro_rules! fit_mono {
+        ($fam:expr, $link:expr) => {
+            fit_smooth_glm_monotonic(
+                &y_array,
+                &x_param_array,
+                &[smooth_term.clone()],
+                $fam,
+                $link,
+                &config,
+                offset_array.as_ref(),
+                weights_array.as_ref(),
+            )
+        };
+    }
+    
+    let result = match family.to_lowercase().as_str() {
+        "gaussian" | "normal" => {
+            let fam = GaussianFamily;
+            match link.unwrap_or("identity") {
+                "identity" => fit_mono!(&fam, &IdentityLink),
+                "log" => fit_mono!(&fam, &LogLink),
+                _ => return Err(PyValueError::new_err("Unknown link for Gaussian")),
+            }
+        }
+        "poisson" => {
+            let fam = PoissonFamily;
+            match link.unwrap_or("log") {
+                "log" => fit_mono!(&fam, &LogLink),
+                "identity" => fit_mono!(&fam, &IdentityLink),
+                _ => return Err(PyValueError::new_err("Unknown link for Poisson")),
+            }
+        }
+        "binomial" => {
+            let fam = BinomialFamily;
+            match link.unwrap_or("logit") {
+                "logit" => fit_mono!(&fam, &LogitLink),
+                "log" => fit_mono!(&fam, &LogLink),
+                _ => return Err(PyValueError::new_err("Unknown link for Binomial")),
+            }
+        }
+        "gamma" => {
+            let fam = GammaFamily;
+            match link.unwrap_or("log") {
+                "log" => fit_mono!(&fam, &LogLink),
+                "identity" => fit_mono!(&fam, &IdentityLink),
+                _ => return Err(PyValueError::new_err("Unknown link for Gamma")),
+            }
+        }
+        _ => return Err(PyValueError::new_err(format!("Unknown family: {}", family))),
+    }.map_err(|e| PyValueError::new_err(format!("Monotonic smooth GLM fit failed: {}", e)))?;
     
     // Return as dict
     let dict = pyo3::types::PyDict::new_bound(py);
@@ -3581,6 +3740,7 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fit_glm_py, m)?)?;
     m.add_function(wrap_pyfunction!(fit_negbinomial_py, m)?)?;
     m.add_function(wrap_pyfunction!(fit_smooth_glm_fast_py, m)?)?;
+    m.add_function(wrap_pyfunction!(fit_smooth_glm_monotonic_py, m)?)?;
     
     // Add spline functions
     m.add_function(wrap_pyfunction!(bs_py, m)?)?;

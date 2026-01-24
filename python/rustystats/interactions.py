@@ -354,11 +354,13 @@ class InteractionBuilder:
         # Handle s() smooth terms - penalized splines with auto-tuning
         if factor_lower.startswith('s('):
             # s(var, k=10) -> treated as B-spline with k basis functions
+            # s(var, k=10, increasing=True) -> monotonic smooth with I-spline basis
             # Actual penalization happens in the fitting step
             content = factor[2:-1] if factor.endswith(')') else factor[2:]
             parts = [p.strip() for p in content.split(',')]
             var_name = parts[0]
             k = 10  # default number of basis functions
+            monotonicity = None  # None means no monotonic constraint
             for part in parts[1:]:
                 if '=' in part:
                     key, val = part.split('=', 1)
@@ -368,10 +370,27 @@ class InteractionBuilder:
                         k = int(val)
                     elif key == 'df':  # Allow df as alias for k
                         k = int(val)
-            # Create as B-spline term; penalty is applied during fitting
-            term = SplineTerm(var_name=var_name, spline_type='bs', df=k, degree=3)
+                    elif key == 'increasing':
+                        # increasing=True -> monotonic increasing
+                        # increasing=False -> monotonic decreasing
+                        if val.lower() in ('true', '1', 'yes'):
+                            monotonicity = 'increasing'
+                        elif val.lower() in ('false', '0', 'no'):
+                            monotonicity = 'decreasing'
+                    elif key == 'decreasing':
+                        # decreasing=True -> monotonic decreasing
+                        if val.lower() in ('true', '1', 'yes'):
+                            monotonicity = 'decreasing'
+            # Create as B-spline term (or ms for monotonic); penalty is applied during fitting
+            if monotonicity is not None:
+                # For monotonic, use I-spline (ms) basis
+                term = SplineTerm(var_name=var_name, spline_type='ms', df=k, degree=3, 
+                                  increasing=(monotonicity == 'increasing'))
+            else:
+                term = SplineTerm(var_name=var_name, spline_type='bs', df=k, degree=3)
             # Mark this as a smooth term for special handling
             term._is_smooth = True
+            term._smooth_monotonicity = monotonicity
             return term
         
         return None

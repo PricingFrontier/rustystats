@@ -128,6 +128,7 @@ def _fit_with_smooth_penalties(
     """
     from rustystats._rustystats import fit_glm_py as _fit_glm_rust
     from rustystats._rustystats import fit_smooth_glm_fast_py as _fit_smooth_fast
+    from rustystats._rustystats import fit_smooth_glm_monotonic_py as _fit_smooth_monotonic
     from rustystats.smooth import penalty_matrix, gcv_score, compute_edf
     
     n, p = X.shape
@@ -146,19 +147,62 @@ def _fit_with_smooth_penalties(
         start, end = smooth_col_indices[0]
         
         # Split design matrix into parametric and smooth parts
-        x_parametric = X[:, :start]  # Columns before smooth term (including intercept)
+        # Parametric = columns before smooth term + columns after smooth term
+        x_before = X[:, :start]  # Columns before smooth term (including intercept)
+        x_after = X[:, end:]     # Columns after smooth term (e.g., other predictors)
+        if x_after.shape[1] > 0:
+            x_parametric = np.column_stack([x_before, x_after])
+        else:
+            x_parametric = x_before
         smooth_basis = X[:, start:end]  # Smooth term columns
         
-        # Call fast Rust solver
-        rust_result = _fit_smooth_fast(
-            y, x_parametric, smooth_basis, family, link,
-            offset, weights, max_iter, tol, lambda_min, lambda_max
-        )
+        # Check if this is a monotonic smooth term
+        monotonicity = getattr(smooth_terms[0], '_smooth_monotonicity', None)
+        
+        if monotonicity:
+            # Use monotonic solver with NNLS
+            rust_result = _fit_smooth_monotonic(
+                y, x_parametric, smooth_basis, family, monotonicity, link,
+                offset, weights, max_iter, tol, lambda_min, lambda_max
+            )
+        else:
+            # Call fast Rust solver (unconstrained)
+            rust_result = _fit_smooth_fast(
+                y, x_parametric, smooth_basis, family, link,
+                offset, weights, max_iter, tol, lambda_min, lambda_max
+            )
+        
+        # Reorder coefficients to match original design matrix order:
+        # [parametric_before, smooth, parametric_after]
+        coef = rust_result['coefficients']
+        n_before = x_before.shape[1]
+        n_smooth = smooth_basis.shape[1]
+        n_after = x_after.shape[1]
+        
+        # Rust returns: [parametric (before+after), smooth]
+        # We need: [before, smooth, after]
+        coef_reordered = np.zeros(len(coef))
+        coef_reordered[:n_before] = coef[:n_before]  # Before smooth
+        coef_reordered[n_before:n_before+n_smooth] = coef[n_before+n_after:]  # Smooth
+        if n_after > 0:
+            coef_reordered[n_before+n_smooth:] = coef[n_before:n_before+n_after]  # After smooth
+        rust_result['coefficients'] = coef_reordered
+        
+        # Also reorder covariance matrix
+        cov = rust_result['covariance_unscaled']
+        if cov.shape[0] == len(coef):
+            # Build reordering indices
+            idx_before = list(range(n_before))
+            idx_smooth = list(range(n_before + n_after, n_before + n_after + n_smooth))
+            idx_after = list(range(n_before, n_before + n_after))
+            reorder_idx = idx_before + idx_smooth + idx_after
+            cov_reordered = cov[np.ix_(reorder_idx, reorder_idx)]
+            rust_result['covariance_unscaled'] = cov_reordered
         
         # Build result object compatible with existing code
         # Create a mock result object with the needed attributes
         class FastResult:
-            def __init__(self, d):
+            def __init__(self, d, y, family_name):
                 self.coefficients = d['coefficients']
                 self.fitted_values = d['fitted_values']
                 self.linear_predictor = d['linear_predictor']
@@ -166,8 +210,107 @@ def _fit_with_smooth_penalties(
                 self.iterations = d['iterations']
                 self.converged = d['converged']
                 self.covariance_unscaled = d['covariance_unscaled']
+                # Additional attributes needed for summary()
+                self._y = y
+                self._family_name = family_name
+                self._n = len(y)
+                self._p = len(d['coefficients'])
+            
+            @property
+            def params(self):
+                return self.coefficients
+            
+            @property
+            def nobs(self):
+                return self._n
+            
+            @property
+            def df_resid(self):
+                return self._n - self._p
+            
+            @property
+            def df_model(self):
+                return self._p - 1  # Exclude intercept
+            
+            @property
+            def family(self):
+                return self._family_name
+            
+            @property
+            def is_regularized(self):
+                return False
+            
+            @property
+            def penalty_type(self):
+                return "none"
+            
+            def bse(self):
+                return np.sqrt(np.diag(self.covariance_unscaled))
+            
+            def tvalues(self):
+                return self.params / self.bse()
+            
+            def pvalues(self):
+                # Two-tailed p-values using normal approximation
+                # erfc is the complementary error function: erfc(x) = 1 - erf(x)
+                # For standard normal: P(|Z| > |z|) = erfc(|z| / sqrt(2))
+                from math import erfc, sqrt
+                z = np.abs(self.tvalues())
+                return np.array([erfc(abs(zi) / sqrt(2)) for zi in z])
+            
+            def conf_int(self, alpha=0.05):
+                # Use standard normal quantile for confidence intervals
+                # For 95% CI: z = 1.96
+                z_multipliers = {0.05: 1.959964, 0.01: 2.575829, 0.10: 1.644854}
+                z = z_multipliers.get(alpha, 1.959964)
+                se = self.bse()
+                return np.column_stack([self.params - z * se, self.params + z * se])
+            
+            def significance_codes(self):
+                codes = []
+                for p in self.pvalues():
+                    if p < 0.001:
+                        codes.append("***")
+                    elif p < 0.01:
+                        codes.append("**")
+                    elif p < 0.05:
+                        codes.append("*")
+                    elif p < 0.1:
+                        codes.append(".")
+                    else:
+                        codes.append("")
+                return codes
+            
+            def llf(self):
+                # Approximate log-likelihood from deviance
+                return -0.5 * self.deviance
+            
+            def aic(self):
+                return -2 * self.llf() + 2 * self._p
+            
+            def bic(self):
+                return -2 * self.llf() + np.log(self._n) * self._p
+            
+            def pearson_chi2(self):
+                # Approximate from fitted values
+                residuals = self._y - self.fitted_values
+                return np.sum(residuals**2 / np.maximum(self.fitted_values, 1e-10))
+            
+            def null_deviance(self):
+                # Compute null deviance (intercept-only model)
+                y_mean = np.mean(self._y)
+                if self._family_name.lower() in ('poisson', 'gamma'):
+                    # Poisson/Gamma deviance
+                    y_safe = np.maximum(self._y, 1e-10)
+                    return 2 * np.sum(self._y * np.log(y_safe / y_mean) - (self._y - y_mean))
+                else:
+                    # Gaussian
+                    return np.sum((self._y - y_mean)**2)
+            
+            def scale(self):
+                return 1.0
         
-        result = FastResult(rust_result)
+        result = FastResult(rust_result, y, family)
         
         # Build smooth term result
         smooth_results = [SmoothTermResult(
@@ -1931,7 +2074,42 @@ def _parse_term_spec(
     constraint_terms: List[ConstraintTermSpec],
 ) -> None:
     """Parse a single term specification and add to appropriate lists."""
+    # Valid keys for each term type
+    VALID_KEYS = {
+        "linear": {"type", "monotonicity"},
+        "categorical": {"type", "levels"},
+        "bs": {"type", "df", "degree", "monotonicity"},
+        "ns": {"type", "df"},
+        "ms": {"type", "df", "degree", "monotonicity", "increasing"},
+        "s": {"type", "k", "monotonicity"},
+        "target_encoding": {"type", "prior_weight", "n_permutations"},
+        "expression": {"type", "expr", "monotonicity"},
+    }
+    
     term_type = spec.get("type", "linear")
+    
+    # Validate keys
+    valid_keys = VALID_KEYS.get(term_type, set())
+    unknown_keys = set(spec.keys()) - valid_keys
+    if unknown_keys:
+        # Check for common typos
+        typo_suggestions = {
+            "monoticity": "monotonicity",
+            "montonicity": "monotonicity",
+            "increaing": "increasing",
+            "decreaing": "decreasing",
+        }
+        suggestions = []
+        for key in unknown_keys:
+            if key in typo_suggestions:
+                suggestions.append(f"'{key}' (did you mean '{typo_suggestions[key]}'?)")
+            else:
+                suggestions.append(f"'{key}'")
+        raise ValueError(
+            f"Unknown key(s) in term spec for '{var_name}': {', '.join(suggestions)}. "
+            f"Valid keys for type='{term_type}' are: {sorted(valid_keys)}"
+        )
+    
     monotonicity = spec.get("monotonicity")  # "increasing" or "decreasing"
     
     if term_type == "linear":
@@ -2014,13 +2192,26 @@ def _parse_term_spec(
     
     elif term_type == "s":
         # Penalized smooth term with automatic lambda selection via GCV
+        # Supports monotonicity: {'type': 's', 'k': 10, 'monotonicity': 'increasing'}
         k = spec.get("k", 10)  # Number of basis functions
-        term = SplineTerm(
-            var_name=var_name,
-            spline_type="bs",  # Use B-spline basis
-            df=k,  # k basis functions
-            degree=3,
-        )
+        monotonicity_s = spec.get("monotonicity")
+        if monotonicity_s:
+            # Use I-spline (ms) basis for monotonic smooth terms
+            term = SplineTerm(
+                var_name=var_name,
+                spline_type="ms",
+                df=k,
+                degree=3,
+                increasing=(monotonicity_s == "increasing"),
+            )
+            term._smooth_monotonicity = monotonicity_s
+        else:
+            term = SplineTerm(
+                var_name=var_name,
+                spline_type="bs",  # Use B-spline basis
+                df=k,  # k basis functions
+                degree=3,
+            )
         # Mark this as a smooth term for penalized fitting
         term._is_smooth = True
         spline_terms.append(term)
@@ -2099,6 +2290,10 @@ def _parse_interaction_spec(
                     degree=degree,
                     increasing=monotonicity == "increasing",
                 )
+                # For s() with monotonicity, mark as smooth with monotonic constraint
+                if term_type == "s":
+                    spline._is_smooth = True
+                    spline._smooth_monotonicity = monotonicity
             else:
                 # s() maps to bs internally
                 spline_type_out = "bs" if term_type == "s" else term_type
