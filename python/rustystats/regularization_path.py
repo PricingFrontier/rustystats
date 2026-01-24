@@ -101,6 +101,34 @@ class RegularizationPathInfo:
     n_folds: int
 
 
+def _apply_inverse_link(eta: np.ndarray, link: str) -> np.ndarray:
+    """
+    Apply inverse link function to linear predictor.
+    
+    Parameters
+    ----------
+    eta : np.ndarray
+        Linear predictor values
+    link : str or None
+        Link function name
+        
+    Returns
+    -------
+    np.ndarray
+        Predicted means (mu)
+    """
+    if link in (None, "log"):
+        return np.exp(eta)
+    elif link == "identity":
+        return eta
+    elif link == "logit":
+        return 1.0 / (1.0 + np.exp(-eta))
+    elif link == "inverse":
+        return 1.0 / eta
+    # Default to log link for unknown
+    return np.exp(eta)
+
+
 def compute_alpha_max(
     X: np.ndarray,
     y: np.ndarray,
@@ -369,7 +397,8 @@ def fit_cv_regularization_path(
     family = glm_instance.family
     link = glm_instance.link
     var_power = glm_instance.var_power
-    theta = glm_instance.theta if glm_instance.theta is not None else 1.0
+    from rustystats.formula import DEFAULT_NEGBINOMIAL_THETA
+    theta = glm_instance.theta if glm_instance.theta is not None else DEFAULT_NEGBINOMIAL_THETA
     offset = glm_instance.offset
     weights = glm_instance.weights
     
@@ -432,7 +461,7 @@ def fit_cv_regularization_path(
             linear_pred = X_val @ result.params
             if offset_val is not None:
                 linear_pred = linear_pred + offset_val
-            mu_val = np.exp(linear_pred)
+            mu_val = _apply_inverse_link(linear_pred, link)
             dev = compute_deviance(y_val, mu_val, family)
             fold_deviances.append(dev)
         

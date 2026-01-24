@@ -24,7 +24,57 @@ from __future__ import annotations
 
 from typing import Optional, Union, List, Dict, Any, TYPE_CHECKING
 from dataclasses import dataclass
+import warnings
 import numpy as np
+
+# Default dispersion parameter for Negative Binomial family
+DEFAULT_NEGBINOMIAL_THETA = 1.0
+
+# Canonical aliases for Negative Binomial family
+NEGBINOMIAL_ALIASES = frozenset({
+    "negbinomial", "negativebinomial", "negative_binomial", "neg-binomial", "nb"
+})
+
+
+def is_negbinomial_family(family: str) -> bool:
+    """Check if the family string refers to a Negative Binomial distribution."""
+    return family.lower() in NEGBINOMIAL_ALIASES
+
+
+# Canonical default links for each family
+_DEFAULT_LINKS = {
+    "gaussian": "identity",
+    "poisson": "log",
+    "quasipoisson": "log",
+    "negbinomial": "log",
+    "negativebinomial": "log",
+    "binomial": "logit",
+    "quasibinomial": "logit",
+    "gamma": "log",
+    "inversegaussian": "inverse",
+    "tweedie": "log",
+}
+
+
+def get_default_link(family: str) -> str:
+    """
+    Get the canonical default link function for a GLM family.
+    
+    Parameters
+    ----------
+    family : str
+        Family name (e.g., "gaussian", "poisson", "binomial")
+        
+    Returns
+    -------
+    str
+        Default link function name (e.g., "identity", "log", "logit")
+    """
+    family_lower = family.lower()
+    # Handle NegativeBinomial(theta=...) format from result strings
+    if family_lower.startswith("negativebinomial"):
+        return "log"
+    return _DEFAULT_LINKS.get(family_lower, "identity")
 
 # Lazy imports for optional dependencies
 if TYPE_CHECKING:
@@ -338,101 +388,6 @@ def _fit_with_smooth_penalties(
         penalty = penalty_matrix(n_cols, order=2)
         penalties.append(penalty)
     
-    def fit_with_lambda(lam, start, end, penalty):
-        """Fit model with given lambda and return (result, gcv, edf)."""
-        penalty_full = np.zeros((p, p))
-        penalty_full[start:end, start:end] = lam * penalty
-        total_penalty = np.sum(np.diag(penalty_full))
-        alpha = total_penalty / max(p - 1, 1)
-        
-        result = _fit_glm_rust(
-            y, X, family, link, var_power, theta,
-            offset, weights, alpha, 0.0, max_iter, tol, None, None
-        )
-        
-        edf_term = compute_edf(np.eye(end - start), penalty, lam)
-        n_parametric = start
-        total_edf = n_parametric + edf_term
-        gcv = gcv_score(result.deviance, n, total_edf)
-        
-        return result, gcv, edf_term, total_edf
-    
-    # For single smooth term, use coarse-to-fine grid search
-    if n_terms == 1:
-        start, end = smooth_col_indices[0]
-        penalty = penalties[0]
-        
-        # Phase 1: Coarse search (8 points)
-        log_lambdas = np.linspace(np.log10(lambda_min), np.log10(lambda_max), n_lambda)
-        lambda_grid = 10 ** log_lambdas
-        
-        best_lambda = 1.0
-        best_gcv = float('inf')
-        best_result = None
-        best_idx = 0
-        
-        for idx, lam in enumerate(lambda_grid):
-            try:
-                result, gcv, edf_term, total_edf = fit_with_lambda(lam, start, end, penalty)
-                if gcv < best_gcv:
-                    best_gcv = gcv
-                    best_lambda = lam
-                    best_result = result
-                    best_idx = idx
-            except Exception:
-                continue
-        
-        # Phase 2: Refine around best (only for small datasets < 100K rows)
-        if n < 100000 and best_result is not None and 0 < best_idx < len(lambda_grid) - 1:
-            log_best = np.log10(best_lambda)
-            log_step = (np.log10(lambda_max) - np.log10(lambda_min)) / (n_lambda - 1)
-            refine_lambdas = 10 ** np.array([
-                log_best - log_step * 0.5,
-                log_best + log_step * 0.5,
-            ])
-            
-            for lam in refine_lambdas:
-                if lambda_min <= lam <= lambda_max:
-                    try:
-                        result, gcv, edf_term, total_edf = fit_with_lambda(lam, start, end, penalty)
-                        if gcv < best_gcv:
-                            best_gcv = gcv
-                            best_lambda = lam
-                            best_result = result
-                    except Exception:
-                        continue
-        
-        if best_result is None:
-            # Fall back to unpenalized fit
-            best_result = _fit_glm_rust(
-                y, X, family, link, var_power, theta,
-                offset, weights, 0.0, 0.0, max_iter, tol, None, None
-            )
-            best_lambda = 0.0
-            best_gcv = 0.0
-        
-        # Compute final EDF
-        edf_term = compute_edf(np.eye(end - start), penalty, best_lambda)
-        n_parametric = start
-        total_edf = n_parametric + edf_term
-        
-        # Create smooth term result
-        smooth_results = [SmoothTermResult(
-            variable=smooth_terms[0].var_name,
-            k=smooth_terms[0].df,
-            edf=edf_term,
-            lambda_=best_lambda,
-            gcv=best_gcv,
-            col_start=start,
-            col_end=end,
-        )]
-        
-        # Update the smooth term with fitted values
-        smooth_terms[0]._lambda = best_lambda
-        smooth_terms[0]._edf = edf_term
-        
-        return best_result, smooth_results, total_edf, best_gcv
-    
     # For multiple smooth terms, use coordinate-wise optimization with coarse grid
     log_lambdas = np.linspace(np.log10(lambda_min), np.log10(lambda_max), n_lambda)
     lambda_grid = 10 ** log_lambdas
@@ -472,7 +427,12 @@ def _fit_with_smooth_penalties(
                     if gcv < best_gcv:
                         best_gcv = gcv
                         best_lambda = lam
-                except Exception:
+                except Exception as e:
+                    warnings.warn(
+                        f"Multi-smooth term {term_idx} lambda={lam:.4f} fit failed: {e}.",
+                        RuntimeWarning,
+                        stacklevel=2
+                    )
                     continue
             
             lambdas[term_idx] = best_lambda
@@ -520,6 +480,99 @@ def _fit_with_smooth_penalties(
     final_gcv = gcv_score(final_result.deviance, n, total_edf)
     
     return final_result, smooth_results, total_edf, final_gcv
+
+
+def _fit_glm_core(
+    y: np.ndarray,
+    X: np.ndarray,
+    family: str,
+    link: str,
+    var_power: float,
+    theta: float,
+    offset: Optional[np.ndarray],
+    weights: Optional[np.ndarray],
+    alpha: float,
+    l1_ratio: float,
+    max_iter: int,
+    tol: float,
+    feature_names: List[str],
+    builder: "InteractionBuilder",
+) -> tuple:
+    """
+    Core GLM fitting logic shared by FormulaGLM and FormulaGLMDict.
+    
+    Handles smooth term fitting with GCV-based lambda selection and
+    standard fitting with coefficient constraints.
+    
+    Returns
+    -------
+    result : GLMResult
+        Fitted model result from Rust
+    smooth_results : list or None
+        Smooth term results if applicable
+    total_edf : float or None
+        Total effective degrees of freedom
+    gcv : float or None
+        GCV score for smooth models
+    """
+    from rustystats._rustystats import fit_glm_py as _fit_glm_rust
+    
+    # Check for smooth terms (s() terms with automatic lambda selection)
+    smooth_terms, smooth_col_indices = builder.get_smooth_terms()
+    
+    if smooth_terms and alpha == 0.0:
+        # Use penalized fitting with GCV-based lambda selection
+        result, smooth_results, total_edf, gcv = _fit_with_smooth_penalties(
+            y, X, smooth_terms, smooth_col_indices,
+            family, link, var_power, theta,
+            offset, weights, max_iter, tol,
+        )
+        return result, smooth_results, total_edf, gcv
+    else:
+        # Standard fitting (no smooth terms or regularization already applied)
+        # Compute coefficient constraint indices
+        nonneg_indices, nonpos_indices = _get_constraint_indices(feature_names)
+        
+        result = _fit_glm_rust(
+            y, X, family, link, var_power, theta,
+            offset, weights, alpha, l1_ratio, max_iter, tol,
+            nonneg_indices if nonneg_indices else None,
+            nonpos_indices if nonpos_indices else None,
+        )
+        return result, None, None, None
+
+
+def _build_results(
+    result,
+    feature_names: List[str],
+    formula: str,
+    family: str,
+    link: Optional[str],
+    builder: "InteractionBuilder",
+    X: np.ndarray,
+    offset_spec,
+    is_exposure_offset: bool,
+    path_info,
+    smooth_results,
+    total_edf,
+    gcv,
+) -> "FormulaGLMResults":
+    """Build FormulaGLMResults with all metadata."""
+    return FormulaGLMResults(
+        result=result,
+        feature_names=feature_names,
+        formula=formula,
+        family=family,
+        link=link,
+        builder=builder,
+        design_matrix=X,
+        offset_spec=offset_spec,
+        offset_is_exposure=is_exposure_offset,
+        regularization_path_info=path_info,
+        smooth_results=smooth_results,
+        total_edf=total_edf,
+        gcv=gcv,
+    )
 
 
 class FormulaGLM:
@@ -633,6 +686,20 @@ class FormulaGLM:
         # Process weights
         self.weights = self._process_weights(weights)
     
+    def _uses_log_link(self) -> bool:
+        """
+        Check if model uses log link (explicit or canonical).
+        
+        Returns True if:
+        - link is explicitly "log", OR
+        - link is None (canonical) and family defaults to log link
+        """
+        if self.link == "log":
+            return True
+        if self.link is None and self.family in ("poisson", "quasipoisson", "negbinomial", "gamma"):
+            return True
+        return False
+    
     def _process_offset(
         self, 
         offset: Optional[Union[str, np.ndarray]]
@@ -645,8 +712,8 @@ class FormulaGLM:
             # It's a column name
             offset_values = _get_column(self.data, offset)
             
-            # For Poisson/Gamma/QuasiPoisson/NegBinomial with log link, auto-apply log to exposure
-            if self.family in ("poisson", "quasipoisson", "negbinomial", "gamma") and self.link in (None, "log"):
+            # For log-link models, auto-apply log to exposure
+            if self._uses_log_link():
                 # Check if values look like exposure (positive, not already logged)
                 if np.all(offset_values > 0) and np.mean(offset_values) > 0.01:
                     offset_values = np.log(offset_values)
@@ -1012,7 +1079,7 @@ class FormulaGLM:
         from rustystats._rustystats import fit_glm_py as _fit_glm_rust, fit_negbinomial_py as _fit_negbinomial_rust
         
         # Check if we need auto theta estimation for negbinomial
-        is_negbinomial = self.family in ("negbinomial", "negativebinomial", "negative_binomial", "neg-binomial", "nb")
+        is_negbinomial = is_negbinomial_family(self.family)
         auto_theta = is_negbinomial and self.theta is None
         
         # Handle CV-based regularization path
@@ -1082,57 +1149,22 @@ class FormulaGLM:
                 result, result_family = self._fit_negbinomial_profile(
                     self.X, alpha, l1_ratio, max_iter, tol
                 )
+                self._smooth_results = None
+                self._total_edf = None
+                self._gcv = None
             else:
-                # Use fixed theta (default 1.0 for negbinomial if not auto)
-                theta = self.theta if self.theta is not None else 1.0
+                # Use fixed theta (default for negbinomial if not auto)
+                theta = self.theta if self.theta is not None else DEFAULT_NEGBINOMIAL_THETA
                 
-                # Check for smooth terms (s() terms with automatic lambda selection)
-                smooth_terms, smooth_col_indices = self._builder.get_smooth_terms()
-                
-                if smooth_terms and alpha == 0.0:
-                    # Use penalized fitting with GCV-based lambda selection
-                    result, smooth_results, total_edf, gcv = _fit_with_smooth_penalties(
-                        self.y,
-                        self.X,
-                        smooth_terms,
-                        smooth_col_indices,
-                        self.family,
-                        self.link,
-                        self.var_power,
-                        theta,
-                        self.offset,
-                        self.weights,
-                        max_iter,
-                        tol,
-                    )
-                    # Store smooth results for later access
-                    self._smooth_results = smooth_results
-                    self._total_edf = total_edf
-                    self._gcv = gcv
-                else:
-                    # Standard fitting (no smooth terms or regularization already applied)
-                    # Compute coefficient constraint indices
-                    nonneg_indices, nonpos_indices = _get_constraint_indices(self.feature_names)
-                    
-                    result = _fit_glm_rust(
-                        self.y,
-                        self.X,
-                        self.family,
-                        self.link,
-                        self.var_power,
-                        theta,
-                        self.offset,
-                        self.weights,
-                        alpha,
-                        l1_ratio,
-                        max_iter,
-                        tol,
-                        nonneg_indices if nonneg_indices else None,
-                        nonpos_indices if nonpos_indices else None,
-                    )
-                    self._smooth_results = None
-                    self._total_edf = None
-                    self._gcv = None
+                # Use shared core fitting logic
+                result, smooth_results, total_edf, gcv = _fit_glm_core(
+                    self.y, self.X, self.family, self.link, self.var_power, theta,
+                    self.offset, self.weights, alpha, l1_ratio, max_iter, tol,
+                    self.feature_names, self._builder,
+                )
+                self._smooth_results = smooth_results
+                self._total_edf = total_edf
+                self._gcv = gcv
                 
                 # Include theta in family string for negbinomial so deviance calculations use correct theta
                 if is_negbinomial:
@@ -1156,20 +1188,11 @@ class FormulaGLM:
                 raise
         
         # Wrap result with formula metadata
-        return FormulaGLMResults(
-            result=result,
-            feature_names=self.feature_names,
-            formula=self.formula,
-            family=result_family,
-            link=self.link,
-            builder=self._builder,
-            design_matrix=self.X,  # Pass design matrix for VIF calculation
-            offset_spec=self._offset_spec,
-            offset_is_exposure=(self.family in ("poisson", "quasipoisson", "negbinomial", "gamma") and self.link in (None, "log")),
-            regularization_path_info=path_info,
-            smooth_results=getattr(self, '_smooth_results', None),
-            total_edf=getattr(self, '_total_edf', None),
-            gcv=getattr(self, '_gcv', None),
+        is_exposure_offset = self.family in ("poisson", "quasipoisson", "negbinomial", "gamma") and self.link in (None, "log")
+        return _build_results(
+            result, self.feature_names, self.formula, result_family, self.link,
+            self._builder, self.X, self._offset_spec, is_exposure_offset, path_info,
+            self._smooth_results, self._total_edf, self._gcv,
         )
 
 
@@ -1214,7 +1237,7 @@ class FormulaGLMResults:
         self.formula = formula
         self.family = family
         self._regularization_path_info = regularization_path_info
-        self.link = link or self._default_link(family)
+        self.link = link or get_default_link(family)
         self._builder = builder
         self._design_matrix = design_matrix  # Store for VIF calculation
         self._offset_spec = offset_spec
@@ -1238,24 +1261,6 @@ class FormulaGLMResults:
     def has_smooth_terms(self) -> bool:
         """Check if model contains smooth terms with automatic smoothing."""
         return self._smooth_results is not None and len(self._smooth_results) > 0
-    
-    @staticmethod
-    def _default_link(family: str) -> str:
-        """Get default link for family."""
-        # Handle NegativeBinomial(theta=...) format
-        family_lower = family.lower()
-        if family_lower.startswith("negativebinomial"):
-            return "log"
-        return {
-            "gaussian": "identity",
-            "poisson": "log",
-            "quasipoisson": "log",
-            "negbinomial": "log",
-            "binomial": "logit",
-            "gamma": "log",
-            "inversegaussian": "inverse",
-            "tweedie": "log",
-        }.get(family_lower, "identity")
     
     # Delegate to underlying result
     @property
@@ -1914,7 +1919,7 @@ class FormulaGLMResults:
             if isinstance(offset_to_use, str):
                 offset_values = new_data[offset_to_use].to_numpy().astype(np.float64)
                 # Apply log() for log-link models (same as fitting)
-                if self.link == "log":
+                if self._offset_is_exposure:
                     offset_values = np.log(offset_values)
             else:
                 offset_values = np.asarray(offset_to_use, dtype=np.float64)
@@ -2589,9 +2594,7 @@ class FormulaGLMDict:
         FormulaGLMResults
             Fitted model results.
         """
-        from rustystats._rustystats import fit_glm_py as _fit_glm_rust
-        
-        is_negbinomial = self.family in ("negbinomial", "negativebinomial", "negative_binomial", "neg-binomial", "nb")
+        is_negbinomial = is_negbinomial_family(self.family)
         
         # Handle CV-based regularization path
         # If regularization is specified without cv, default to cv=5
@@ -2641,71 +2644,26 @@ class FormulaGLMDict:
         else:
             path_info = None
         
-        theta = self.theta if self.theta is not None else 1.0
+        theta = self.theta if self.theta is not None else DEFAULT_NEGBINOMIAL_THETA
         
-        # Check for smooth terms (s() terms with automatic lambda selection)
-        smooth_terms, smooth_col_indices = self._builder.get_smooth_terms()
-        
-        if smooth_terms and alpha == 0.0:
-            # Use penalized fitting with GCV-based lambda selection
-            result, smooth_results, total_edf, gcv = _fit_with_smooth_penalties(
-                self.y,
-                self.X,
-                smooth_terms,
-                smooth_col_indices,
-                self.family,
-                self.link,
-                self.var_power,
-                theta,
-                self.offset,
-                self.weights,
-                max_iter,
-                tol,
-            )
-            self._smooth_results = smooth_results
-            self._total_edf = total_edf
-            self._gcv = gcv
-        else:
-            # Standard fitting (no smooth terms or regularization already applied)
-            # Compute coefficient constraint indices
-            nonneg_indices, nonpos_indices = _get_constraint_indices(self.feature_names)
-            
-            result = _fit_glm_rust(
-                self.y,
-                self.X,
-                self.family,
-                self.link,
-                self.var_power,
-                theta,
-                self.offset,
-                self.weights,
-                alpha,
-                l1_ratio,
-                max_iter,
-                tol,
-                nonneg_indices if nonneg_indices else None,
-                nonpos_indices if nonpos_indices else None,
-            )
-            self._smooth_results = None
-            self._total_edf = None
-            self._gcv = None
+        # Use shared core fitting logic
+        result, smooth_results, total_edf, gcv = _fit_glm_core(
+            self.y, self.X, self.family, self.link, self.var_power, theta,
+            self.offset, self.weights, alpha, l1_ratio, max_iter, tol,
+            self.feature_names, self._builder,
+        )
+        self._smooth_results = smooth_results
+        self._total_edf = total_edf
+        self._gcv = gcv
         
         result_family = f"NegativeBinomial(theta={theta:.4f})" if is_negbinomial else self.family
         
-        return FormulaGLMResults(
-            result=result,
-            feature_names=self.feature_names,
-            formula=self.formula,
-            family=result_family,
-            link=self.link,
-            builder=self._builder,
-            design_matrix=self.X,
-            offset_spec=self._offset_spec,
-            offset_is_exposure=(self.family in ("poisson", "quasipoisson", "negbinomial", "gamma") and self.link in (None, "log")),
-            regularization_path_info=path_info,
-            smooth_results=getattr(self, '_smooth_results', None),
-            total_edf=getattr(self, '_total_edf', None),
-            gcv=getattr(self, '_gcv', None),
+        # Wrap result with formula metadata
+        is_exposure_offset = self.family in ("poisson", "quasipoisson", "negbinomial", "gamma") and self.link in (None, "log")
+        return _build_results(
+            result, self.feature_names, self.formula, result_family, self.link,
+            self._builder, self.X, self._offset_spec, is_exposure_offset, path_info,
+            self._smooth_results, self._total_edf, self._gcv,
         )
 
 

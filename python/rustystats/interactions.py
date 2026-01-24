@@ -1127,26 +1127,26 @@ class InteractionBuilder:
             return np.hstack(columns), names
         return np.zeros((self._n, 0), dtype=self.dtype), []
     
-    def build_design_matrix(
+    def _build_design_matrix_core(
         self,
-        formula: str,
+        parsed: ParsedFormula,
         exposure: Optional[np.ndarray] = None,
         seed: Optional[int] = None,
     ) -> Tuple[np.ndarray, np.ndarray, List[str]]:
         """
-        Build complete design matrix from formula.
+        Core implementation for building design matrix from parsed formula.
+        
+        This is the shared implementation used by both build_design_matrix()
+        and build_design_matrix_from_parsed().
         
         Parameters
         ----------
-        formula : str
-            R-style formula like "y ~ x1*x2 + C(cat) + bs(age, df=5)"
+        parsed : ParsedFormula
+            Parsed formula specification
         exposure : np.ndarray, optional
-            Exposure values. If provided, target encoding (TE) will use
-            rate (y/exposure) instead of raw y values. This is important
-            for frequency models to prevent TE values collapsing to near-constant.
+            Exposure values for target encoding
         seed : int, optional
-            Random seed for deterministic target encoding. If None, TE uses
-            random permutations (non-deterministic).
+            Random seed for deterministic target encoding
             
         Returns
         -------
@@ -1157,8 +1157,6 @@ class InteractionBuilder:
         names : list[str]
             Column names
         """
-        parsed = parse_formula_interactions(formula)
-        
         columns = []
         names = []
         
@@ -1255,6 +1253,39 @@ class InteractionBuilder:
         
         return y, X, names
     
+    def build_design_matrix(
+        self,
+        formula: str,
+        exposure: Optional[np.ndarray] = None,
+        seed: Optional[int] = None,
+    ) -> Tuple[np.ndarray, np.ndarray, List[str]]:
+        """
+        Build complete design matrix from formula.
+        
+        Parameters
+        ----------
+        formula : str
+            R-style formula like "y ~ x1*x2 + C(cat) + bs(age, df=5)"
+        exposure : np.ndarray, optional
+            Exposure values. If provided, target encoding (TE) will use
+            rate (y/exposure) instead of raw y values. This is important
+            for frequency models to prevent TE values collapsing to near-constant.
+        seed : int, optional
+            Random seed for deterministic target encoding. If None, TE uses
+            random permutations (non-deterministic).
+            
+        Returns
+        -------
+        y : np.ndarray
+            Response variable
+        X : np.ndarray
+            Design matrix
+        names : list[str]
+            Column names
+        """
+        parsed = parse_formula_interactions(formula)
+        return self._build_design_matrix_core(parsed, exposure=exposure, seed=seed)
+    
     def build_design_matrix_from_parsed(
         self,
         parsed: ParsedFormula,
@@ -1284,99 +1315,7 @@ class InteractionBuilder:
         names : list[str]
             Column names
         """
-        columns = []
-        names = []
-        
-        # Add intercept
-        if parsed.has_intercept:
-            columns.append(np.ones(self._n, dtype=self.dtype))
-            names.append('Intercept')
-        
-        # Add main effects
-        for var in parsed.main_effects:
-            if var in parsed.categorical_vars:
-                enc, enc_names = self._get_categorical_encoding(var)
-                columns.append(enc)
-                names.extend(enc_names)
-            else:
-                columns.append(self._get_column(var).reshape(-1, 1))
-                names.append(var)
-        
-        # Add spline terms (tracking smooth term column indices for penalized fitting)
-        self._smooth_terms = []  # SplineTerm objects marked as smooth
-        self._smooth_col_indices = []  # (start, end) column indices
-        
-        for spline in parsed.spline_terms:
-            col_start = sum(c.shape[1] if c.ndim == 2 else 1 for c in columns)
-            spline_cols, spline_names = self._build_spline_columns(spline)
-            col_end = col_start + spline_cols.shape[1]
-            
-            columns.append(spline_cols)
-            names.extend(spline_names)
-            # Store fitted spline for prediction
-            self._fitted_splines[spline.var_name] = spline
-            
-            # Track smooth terms (those with _is_smooth flag)
-            if getattr(spline, '_is_smooth', False):
-                self._smooth_terms.append(spline)
-                self._smooth_col_indices.append((col_start, col_end))
-        
-        # Store parsed formula for prediction
-        self._parsed_formula = parsed
-        
-        # Get response (needed for target encoding)
-        y = self._get_column(parsed.response)
-        
-        # Add target encoding terms
-        self._te_stats: Dict[str, dict] = {}
-        te_encodings: Dict[str, np.ndarray] = {}
-        for te_term in parsed.target_encoding_terms:
-            te_col, te_name, te_stats = self._build_target_encoding_columns(
-                te_term, y, seed=seed, exposure=exposure
-            )
-            columns.append(te_col.reshape(-1, 1))
-            names.append(te_name)
-            self._te_stats[te_term.var_name] = te_stats
-            te_encodings[te_name] = te_col
-        
-        # Add interactions
-        for interaction in parsed.interactions:
-            int_cols, int_names = self.build_interaction_columns(interaction, te_encodings)
-            if int_cols.ndim == 1:
-                int_cols = int_cols.reshape(-1, 1)
-            columns.append(int_cols)
-            names.extend(int_names)
-        
-        # Add identity terms
-        for identity in parsed.identity_terms:
-            id_col, id_name = self._build_identity_columns(identity, self.data)
-            columns.append(id_col.reshape(-1, 1))
-            names.append(id_name)
-        
-        # Add constraint terms
-        for constraint in parsed.constraint_terms:
-            con_col, con_name = self._build_constraint_columns(constraint, self.data)
-            columns.append(con_col.reshape(-1, 1))
-            names.append(con_name)
-        
-        # Add categorical terms with level selection
-        for cat_term in parsed.categorical_terms:
-            cat_cols, cat_names = self._build_categorical_level_indicators(cat_term)
-            columns.append(cat_cols)
-            names.extend(cat_names)
-        
-        # Stack all columns
-        if columns:
-            X = np.hstack([c if c.ndim == 2 else c.reshape(-1, 1) for c in columns])
-        else:
-            X = np.ones((self._n, 1), dtype=self.dtype)
-            names = ['Intercept']
-        
-        # Store for validation
-        self._last_X = X
-        self._last_names = names
-        
-        return y, X, names
+        return self._build_design_matrix_core(parsed, exposure=exposure, seed=seed)
     
     def validate_design_matrix(
         self,

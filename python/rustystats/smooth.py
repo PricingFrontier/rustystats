@@ -243,7 +243,14 @@ def compute_edf(xtwx: np.ndarray, penalty: np.ndarray, lambda_: float) -> float:
         hat_matrix = xtwx_pen_inv @ xtwx
         return np.trace(hat_matrix)
     except np.linalg.LinAlgError:
-        return float(xtwx.shape[0])
+        import warnings
+        warnings.warn(
+            f"EDF computation failed due to singular matrix (lambda={lambda_:.4f}). "
+            "Returning NaN. Consider using a larger lambda or reducing basis size.",
+            RuntimeWarning,
+            stacklevel=2
+        )
+        return float('nan')
 
 
 def s(
