@@ -1,6 +1,28 @@
 # Splines Component
 
-Spline basis functions allow modeling non-linear relationships while staying within the GLM framework. RustyStats implements B-splines and natural splines.
+Spline basis functions allow modeling non-linear relationships while staying within the GLM framework. RustyStats implements B-splines and natural splines with **automatic smoothness selection by default**.
+
+## Simplified API
+
+The spline API uses sensible defaults:
+
+```python
+# Default: penalized smooth with automatic tuning via GCV
+rs.glm("y ~ bs(age) + ns(income)", data, family="poisson").fit()
+
+# Fixed degrees of freedom (no penalty)
+rs.glm("y ~ bs(age, df=5) + ns(income, df=4)", data, family="poisson").fit()
+
+# Monotonic effects (increasing/decreasing)
+rs.glm("y ~ bs(age, monotonicity='increasing')", data, family="poisson").fit()
+```
+
+| Call | Behavior |
+|------|----------|
+| `bs(x)` | Penalized smooth, k=10, auto-tuned via GCV |
+| `bs(x, df=5)` | Fixed 5 degrees of freedom, no penalty |
+| `bs(x, k=15)` | Penalized smooth with 15 basis functions |
+| `bs(x, monotonicity='increasing')` | Monotonic constraint (I-spline basis) |
 
 ## Code Location
 
@@ -204,8 +226,8 @@ pub fn ns_basis(
 ```python
 # python/rustystats/splines.py
 
-def bs(x, df=None, knots=None, degree=3, boundary_knots=None, 
-       include_intercept=False):
+def bs(x, df=None, k=None, degree=3, boundary_knots=None, 
+       include_intercept=False, monotonicity=None):
     """
     B-spline basis matrix.
     
@@ -214,33 +236,50 @@ def bs(x, df=None, knots=None, degree=3, boundary_knots=None,
     x : array-like
         Values at which to evaluate the spline basis
     df : int, optional
-        Degrees of freedom (number of columns)
+        Degrees of freedom (fixed). Use for fixed-complexity splines.
+    k : int, optional
+        Maximum basis size for penalized smooth terms with automatic
+        smoothness selection via GCV. Default: k=10 if neither df nor k provided.
     degree : int, default 3
         Polynomial degree (3 = cubic)
     boundary_knots : tuple, optional
         (min, max) boundary knots
     include_intercept : bool, default False
         Whether to include constant basis function
+    monotonicity : str, optional
+        'increasing' or 'decreasing' for monotonic constraints (uses I-splines)
     
     Returns
     -------
     ndarray
-        Basis matrix of shape (len(x), df)
+        Basis matrix of shape (len(x), basis_size)
     """
-    x = np.asarray(x, dtype=np.float64)
+```
+
+```python
+def ns(x, df=None, k=None, boundary_knots=None, include_intercept=False):
+    """
+    Natural cubic spline basis matrix.
     
-    if df is None:
-        df = 4  # Default
+    Parameters
+    ----------
+    x : array-like
+        Values at which to evaluate the spline basis
+    df : int, optional
+        Degrees of freedom (fixed). Use for fixed-complexity splines.
+    k : int, optional
+        Maximum basis size for penalized smooth terms with automatic
+        smoothness selection via GCV. Default: k=10 if neither df nor k provided.
+    boundary_knots : tuple, optional
+        (min, max) boundary knots - spline is linear beyond these
+    include_intercept : bool, default False
+        Whether to include constant basis function
     
-    # Call Rust implementation
-    from rustystats._rustystats import bs_basis
-    basis = bs_basis(x, df, degree, boundary_knots)
-    
-    if not include_intercept:
-        # Drop first column (intercept absorbed)
-        basis = basis[:, 1:]
-    
-    return basis
+    Returns
+    -------
+    ndarray
+        Basis matrix of shape (len(x), basis_size)
+    """
 ```
 
 ## Formula Integration
@@ -248,30 +287,41 @@ def bs(x, df=None, knots=None, degree=3, boundary_knots=None,
 Splines can be used directly in formulas:
 
 ```python
+# Default: penalized smooth with automatic tuning
+result = rs.glm(
+    "y ~ bs(age) + ns(income) + C(region)",
+    data=data,
+    family="poisson"
+).fit()
+
+# Fixed df (no penalty)
 result = rs.glm(
     "y ~ bs(age, df=5) + ns(income, df=4) + C(region)",
     data=data,
     family="poisson"
 ).fit()
+
+# Monotonic constraint
+result = rs.glm(
+    "y ~ bs(age, monotonicity='increasing') + C(region)",
+    data=data,
+    family="poisson"
+).fit()
 ```
 
-The formula parser recognizes `bs()` and `ns()` terms:
+The formula parser recognizes `bs()` and `ns()` terms with their parameters:
 
 ```python
-# In formula.py
+# In splines.py
 class SplineTerm:
-    def __init__(self, variable, df, kind='bs', degree=3):
-        self.variable = variable
+    def __init__(self, var_name, spline_type='bs', df=10, degree=3,
+                 boundary_knots=None, monotonicity=None):
+        self.var_name = var_name
+        self.spline_type = spline_type  # 'bs' or 'ns'
         self.df = df
-        self.kind = kind  # 'bs' or 'ns'
         self.degree = degree
-    
-    def build(self, data):
-        x = data[self.variable].to_numpy()
-        if self.kind == 'bs':
-            return bs(x, df=self.df, degree=self.degree)
-        else:
-            return ns(x, df=self.df)
+        self.monotonicity = monotonicity
+        self._is_smooth = False  # Set True for penalized terms
 ```
 
 ## Parallel Computation
@@ -354,109 +404,47 @@ mod tests {
 }
 ```
 
-## Monotonic Splines (I-Splines)
+## Monotonic Splines
 
-Monotonic splines constrain the fitted curve to be monotonically increasing or decreasing. This is essential for actuarial applications where business logic dictates monotonic relationships.
+Monotonic splines constrain the fitted curve to be monotonically increasing or decreasing. Use `bs()` with the `monotonicity` parameter.
 
 ### Mathematical Background
 
-I-splines are integrated M-splines (normalized B-splines):
+Internally uses I-splines (integrated M-splines):
 - Each I-spline basis function \(I_j(x)\) increases from 0 to 1
 - With non-negative coefficients \(\beta_j \geq 0\), any linear combination is monotonically increasing
-- For decreasing functions, use \(1 - I_j(x)\) or set `increasing=False`
+- For decreasing functions, the basis is flipped
 
 Reference: Ramsay, J.O. (1988). *Monotone Regression Splines in Action*. Statistical Science.
 
-### Implementation
-
-```rust
-/// Compute I-spline (monotonic spline) basis matrix
-pub fn is_basis(
-    x: &Array1<f64>,
-    df: usize,
-    degree: usize,
-    boundary_knots: Option<(f64, f64)>,
-    increasing: bool,
-) -> Array2<f64> {
-    // Compute B-spline basis
-    let knots = compute_knots(x, df, degree, boundary_knots);
-    
-    // I-splines are cumulative sums of B-splines
-    // I_j(x) = sum_{i >= j} B_i(x)
-    let bs_values = bspline_all_basis_at_point(x, degree, &knots, n_basis);
-    
-    // Cumulative sum from right to left
-    let mut cumsum = 0.0;
-    for j in (0..n_basis).rev() {
-        cumsum += bs_values[j];
-        result[j] = cumsum.clamp(0.0, 1.0);
-    }
-    
-    // For decreasing: flip values
-    if !increasing {
-        result[j] = 1.0 - result[j];
-    }
-}
-```
-
 ### Properties
 
-| Property | I-Spline |
-|----------|----------|
+| Property | Monotonic Spline |
+|----------|------------------|
 | Range | [0, 1] |
 | At x_min | 0 (increasing) or 1 (decreasing) |
 | At x_max | 1 (increasing) or 0 (decreasing) |
 | Shape constraint | Monotonic with β ≥ 0 |
 | Use case | Age effects, risk scores |
 
-### Python API
+### Usage
 
 ```python
-def ms(x, df=5, degree=3, boundary_knots=None, increasing=True):
-    """
-    Monotonic spline (I-spline) basis matrix.
-    
-    Parameters
-    ----------
-    x : array-like
-        Values at which to evaluate the spline basis
-    df : int, default 5
-        Degrees of freedom (number of basis functions)
-    degree : int, default 3
-        Polynomial degree (3 = cubic)
-    boundary_knots : tuple, optional
-        (min, max) boundary knots
-    increasing : bool, default True
-        If True, basis for increasing function; if False, decreasing
-    
-    Returns
-    -------
-    ndarray
-        Basis matrix of shape (len(x), df). All values in [0, 1].
-    """
-```
+# Via bs() with monotonicity parameter
+basis = rs.bs(x, monotonicity='increasing')   # Monotonically increasing
+basis = rs.bs(x, df=5, monotonicity='decreasing')  # Fixed df, decreasing
 
-### Formula Integration
-
-```python
-# Monotonically increasing effect (e.g., age → risk)
+# In formulas
 result = rs.glm(
-    "ClaimNb ~ ms(Age, df=5) + C(Region)",
+    "ClaimNb ~ bs(Age, monotonicity='increasing') + C(Region)",
     data=data,
     family="poisson",
     offset="Exposure"
 ).fit()
 
-# Monotonically decreasing effect (e.g., vehicle value with age)
-result = rs.glm(
-    "ClaimAmt ~ ms(VehAge, df=4, increasing=false)",
-    data=data,
-    family="gamma"
-).fit()
-
 # Combine with other spline types
 result = rs.glm(
-    "y ~ ms(age, df=5) + bs(income, df=4) + ns(experience, df=3)",
+    "y ~ bs(age, monotonicity='increasing') + bs(income, df=4) + ns(experience)",
     data=data,
     family="gaussian"
 ).fit()
@@ -464,14 +452,26 @@ result = rs.glm(
 
 ### When to Use Monotonic Splines
 
-| Use Case | Recommendation |
-|----------|---------------|
-| Age → claim frequency | `ms(age, increasing=True)` |
-| Vehicle age → value | `ms(veh_age, increasing=False)` |
-| Credit score → risk | `ms(score, increasing=False)` |
+| Use Case | Formula |
+|----------|---------|
+| Age → claim frequency | `bs(age, monotonicity='increasing')` |
+| Vehicle age → value | `bs(veh_age, monotonicity='decreasing')` |
+| Credit score → risk | `bs(score, df=5, monotonicity='decreasing')` |
 | Income → spending | Domain-dependent |
 
 **Key advantage**: Monotonic splines prevent implausible "wiggles" in the fitted curve that can occur with unconstrained splines.
+
+### Deprecated: `ms()` Function
+
+The standalone `ms()` function is deprecated. Use `bs(monotonicity=...)` instead:
+
+```python
+# Old (deprecated)
+basis = rs.ms(x, df=5, increasing=True)
+
+# New
+basis = rs.bs(x, df=5, monotonicity='increasing')
+```
 
 ## Performance
 

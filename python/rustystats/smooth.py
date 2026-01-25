@@ -262,6 +262,12 @@ def s(
     """
     Create a smooth term basis and penalty matrix.
     
+    .. deprecated::
+        Use ``bs(x, k=k)`` or ``ns(x, k=k)`` in formulas instead.
+        In formulas, using the ``k`` parameter instead of ``df`` triggers
+        automatic smoothness selection via GCV.
+        This function will be removed in a future version.
+    
     This is the main function for creating penalized smooth terms. It returns
     both the B-spline basis matrix and the penalty matrix for use in GAM fitting.
     
@@ -310,9 +316,16 @@ def s(
     
     See Also
     --------
-    bs : B-spline basis (fixed df, no penalty)
-    ns : Natural spline basis (fixed df, linear at boundaries)
+    bs : B-spline basis (use k parameter for penalized smooth)
+    ns : Natural spline basis (use k parameter for penalized smooth)
     """
+    import warnings
+    warnings.warn(
+        "s() is deprecated. In formulas, use bs(var, k=k) or ns(var, k=k) instead. "
+        "The k parameter triggers automatic smoothness selection via GCV.",
+        DeprecationWarning,
+        stacklevel=2
+    )
     x = np.asarray(x, dtype=np.float64).ravel()
     
     # Create B-spline basis with k degrees of freedom

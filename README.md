@@ -62,7 +62,7 @@ RustyStats uses significantly less RAM by reusing buffers and avoiding Python ob
 - **Fast** - Parallel Rust backend, 4-30x faster than statsmodels
 - **Memory Efficient** - 4x less RAM than statsmodels at scale
 - **Stable** - Step-halving IRLS, warm starts for robust convergence
-- **Splines** - B-splines `bs()`, natural splines `ns()`, and monotonic splines `ms()` in formulas
+- **Splines** - B-splines `bs()` and natural splines `ns()` with auto-tuned smoothing by default
 - **Polynomials** - Identity terms `I(x ** 2)` for polynomial and arithmetic expressions
 - **Target Encoding** - CatBoost-style `TE()` for high-cardinality categoricals (exposure-aware)
 - **Regularisation** - Ridge, Lasso, and Elastic Net via coordinate descent
@@ -130,10 +130,12 @@ print(result.summary())
 "y ~ C(area)*C(brand)"   # Categorical × categorical
 
 # Splines (non-linear effects)
-"y ~ bs(age, df=5)"      # B-spline basis
-"y ~ ns(income, df=4)"   # Natural spline (better extrapolation)
-"y ~ ms(age, df=5)"      # Monotonic spline (increasing)
-"y ~ ms(veh_age, df=4, increasing=false)"  # Monotonic decreasing
+"y ~ bs(age)"            # Penalized smooth (auto-tuned, default)
+"y ~ bs(age, df=5)"      # Fixed 5 degrees of freedom
+"y ~ ns(income)"         # Natural spline (auto-tuned)
+"y ~ ns(income, df=4)"   # Natural spline (fixed df)
+"y ~ bs(age, monotonicity='increasing')"   # Monotonic increasing
+"y ~ bs(veh_age, df=4, monotonicity='decreasing')"  # Monotonic decreasing
 
 # Identity terms (polynomial/arithmetic expressions)
 "y ~ I(age ** 2)"        # Polynomial terms
@@ -162,8 +164,9 @@ Alternative to formula strings for programmatic model building. Useful for autom
 result = rs.glm_dict(
     response="ClaimCount",
     terms={
-        "VehAge": {"type": "ms", "df": 4, "monotonicity": "increasing"},  # Monotonic spline
-        "DrivAge": {"type": "bs", "df": 5},
+        "VehAge": {"type": "bs", "monotonicity": "increasing"},  # Monotonic (auto-tuned)
+        "DrivAge": {"type": "bs"},                               # Penalized smooth (default)
+        "Income": {"type": "bs", "df": 5},                       # Fixed 5 df
         "BonusMalus": {"type": "linear", "monotonicity": "increasing"},  # Constrained coefficient
         "Region": {"type": "categorical"},
         "Brand": {"type": "target_encoding"},
@@ -189,11 +192,16 @@ result = rs.glm_dict(
 |------|------------|-------------|
 | `linear` | - | Raw continuous variable |
 | `categorical` | `levels` (optional) | Dummy encoding |
-| `bs` | `df`, `degree=3` | B-spline basis |
-| `ns` | `df` | Natural spline (better extrapolation) |
-| `ms` | `df`, `monotonicity` | Monotonic spline (I-spline) |
+| `bs` | `df` or `k`, `degree=3`, `monotonicity` | B-spline (default: penalized smooth, k=10) |
+| `ns` | `df` or `k` | Natural spline (default: penalized smooth, k=10) |
 | `target_encoding` | `prior_weight=1` | Regularized target encoding |
 | `expression` | `expr` | Arbitrary expression (like `I()`) |
+
+**Spline parameters:**
+- No parameters → penalized smooth with automatic tuning (k=10)
+- `df=5` → fixed 5 degrees of freedom
+- `k=15` → penalized smooth with 15 basis functions
+- `monotonicity="increasing"` or `"decreasing"` → constrained effect (bs only)
 
 Add `"monotonicity": "increasing"` or `"decreasing"` to `linear` or `expression` terms to constrain coefficient sign.
 
@@ -319,7 +327,15 @@ result = rs.glm(
 ## Spline Basis Functions
 
 ```python
-# Use splines in formulas - automatic parsing
+# Default: penalized smooth with automatic tuning via GCV
+result = rs.glm(
+    "ClaimNb ~ bs(Age) + ns(VehPower) + C(Region)",
+    data=data,
+    family="poisson",
+    offset="Exposure"
+).fit()
+
+# Fixed degrees of freedom (no penalty)
 result = rs.glm(
     "ClaimNb ~ bs(Age, df=5) + ns(VehPower, df=4) + C(Region)",
     data=data,
@@ -329,33 +345,37 @@ result = rs.glm(
 
 # Combine splines with interactions
 result = rs.glm(
-    "y ~ bs(age, df=4)*C(gender) + ns(income, df=3)",
+    "y ~ bs(age, df=4)*C(gender) + ns(income)",
     data=data,
     family="gaussian"
 ).fit()
 
-# Direct basis computation for custom use
+# Direct basis computation
 import numpy as np
 x = np.linspace(0, 10, 100)
-basis = rs.bs(x, df=5)  # 5 degrees of freedom (4 basis columns)
-basis_ns = rs.ns(x, df=5)  # Natural splines - linear extrapolation at boundaries
+basis = rs.bs(x)        # Penalized smooth (default k=10)
+basis = rs.bs(x, df=5)  # Fixed 5 df (4 basis columns)
+basis = rs.ns(x, df=5)  # Natural spline, fixed 5 df
 ```
 
 **When to use each spline type:**
-- **B-splines (`bs`)**: Standard choice, more flexible at boundaries
+- **B-splines (`bs`)**: Standard choice, more flexible at boundaries, supports monotonicity
 - **Natural splines (`ns`)**: Better extrapolation, linear beyond boundaries (recommended for actuarial work)
-- **Monotonic splines (`ms`)**: Constrained to be monotonically increasing or decreasing
+
+**When to use `df` vs default:**
+- **Default (no params)**: Auto-tuned smoothing via GCV - best for exploratory analysis
+- **Explicit `df`**: Fixed complexity - use when you know the exact flexibility needed
 
 ---
 
 ## Monotonic Splines
 
-Monotonic splines (I-splines) constrain the fitted curve to be monotonically increasing or decreasing. Essential when business logic dictates a monotonic relationship.
+Monotonic splines constrain the fitted curve to be monotonically increasing or decreasing. Essential when business logic dictates a monotonic relationship. Use `bs()` with the `monotonicity` parameter.
 
 ```python
 # Monotonically increasing effect (e.g., age → risk)
 result = rs.glm(
-    "ClaimNb ~ ms(Age, df=5) + C(Region)",
+    "ClaimNb ~ bs(Age, monotonicity='increasing') + C(Region)",
     data=data,
     family="poisson",
     offset="Exposure"
@@ -363,35 +383,35 @@ result = rs.glm(
 
 # Monotonically decreasing effect (e.g., vehicle value with age)
 result = rs.glm(
-    "ClaimAmt ~ ms(VehAge, df=4, increasing=false)",
+    "ClaimAmt ~ bs(VehAge, df=4, monotonicity='decreasing')",
     data=data,
     family="gamma"
 ).fit()
 
 # Combine with other spline types
 result = rs.glm(
-    "y ~ ms(age, df=5) + bs(income, df=4) + ns(experience, df=3)",
+    "y ~ bs(age, monotonicity='increasing') + bs(income, df=4) + ns(experience)",
     data=data,
     family="gaussian"
 ).fit()
 
 # Direct basis computation
-basis = rs.ms(x, df=5)  # Monotonically increasing basis
-basis_dec = rs.ms(x, df=5, increasing=False)  # Decreasing
+basis = rs.bs(x, monotonicity='increasing')   # Monotonically increasing
+basis = rs.bs(x, df=5, monotonicity='decreasing')  # Fixed df, decreasing
 ```
 
 **Key properties:**
+- Uses I-spline (integrated spline) basis internally
 - All basis values in [0, 1]
-- Each column monotonically increasing from 0 → 1 (or decreasing)
 - With non-negative coefficients, fitted curve is guaranteed monotonic
 - Prevents implausible "wiggles" that can occur with unconstrained splines
 
 **When to use:**
 | Use Case | Formula |
 |----------|---------|
-| Age → claim frequency | `ms(age, df=5)` |
-| Vehicle age → value | `ms(veh_age, df=4, increasing=false)` |
-| Credit score → risk | `ms(score, df=5, increasing=false)` |
+| Age → claim frequency | `bs(age, monotonicity='increasing')` |
+| Vehicle age → value | `bs(veh_age, monotonicity='decreasing')` |
+| Credit score → risk | `bs(score, df=5, monotonicity='decreasing')` |
 
 ---
 
@@ -416,7 +436,7 @@ result = rs.glm(
 
 # Combine with monotonic splines
 result = rs.glm(
-    "ClaimNb ~ ms(VehAge, df=4) + pos(BonusMalus) + neg(I(DrivAge ** 2))",
+    "ClaimNb ~ bs(VehAge, monotonicity='increasing') + pos(BonusMalus) + neg(I(DrivAge ** 2))",
     data=data,
     family="poisson",
     offset="Exposure"

@@ -321,15 +321,24 @@ class InteractionBuilder:
             elif factor_lower.startswith('ns('):
                 spline_type = 'ns'
             else:
-                spline_type = 'ms'
+                # ms() in formula string -> convert to bs with monotonicity
+                import warnings
+                warnings.warn(
+                    "ms() in formula is deprecated. Use bs(var, df=df, monotonicity='increasing') instead.",
+                    DeprecationWarning,
+                    stacklevel=3
+                )
+                spline_type = 'bs'
             # Extract content inside parentheses
             content = factor[3:-1] if factor.endswith(')') else factor[3:]
             parts = [p.strip() for p in content.split(',')]
             var_name = parts[0]
             df = 4  # default
-            degree = 3  # default for B-splines and monotonic splines
-            increasing = True  # default for monotonic splines
-            has_monotonicity = False
+            degree = 3  # default for B-splines
+            monotonicity = None
+            # If parsing ms(), default to increasing monotonicity
+            if factor_lower.startswith('ms('):
+                monotonicity = 'increasing'
             for part in parts[1:]:
                 if '=' in part:
                     key, val = part.split('=', 1)
@@ -340,14 +349,12 @@ class InteractionBuilder:
                     elif key == 'degree':
                         degree = int(val)
                     elif key == 'increasing':
-                        increasing = val.lower() in ('true', '1', 'yes')
-                        has_monotonicity = True
-            term = SplineTerm(var_name=var_name, spline_type=spline_type, df=df, degree=degree, increasing=increasing)
-            # For ns with explicit monotonicity, set the flag
-            if spline_type == 'ns' and has_monotonicity:
-                term._monotonic = True
-            # ms is always monotonic
-            if spline_type == 'ms':
+                        monotonicity = 'increasing' if val.lower() in ('true', '1', 'yes') else 'decreasing'
+                    elif key == 'monotonicity':
+                        monotonicity = val.strip("'\"").lower()
+            term = SplineTerm(var_name=var_name, spline_type=spline_type, df=df, degree=degree, 
+                              monotonicity=monotonicity)
+            if monotonicity:
                 term._monotonic = True
             return term
         
@@ -381,13 +388,9 @@ class InteractionBuilder:
                         # decreasing=True -> monotonic decreasing
                         if val.lower() in ('true', '1', 'yes'):
                             monotonicity = 'decreasing'
-            # Create as B-spline term (or ms for monotonic); penalty is applied during fitting
-            if monotonicity is not None:
-                # For monotonic, use I-spline (ms) basis
-                term = SplineTerm(var_name=var_name, spline_type='ms', df=k, degree=3, 
-                                  increasing=(monotonicity == 'increasing'))
-            else:
-                term = SplineTerm(var_name=var_name, spline_type='bs', df=k, degree=3)
+            # Create as B-spline term with optional monotonicity; penalty is applied during fitting
+            term = SplineTerm(var_name=var_name, spline_type='bs', df=k, degree=3,
+                              monotonicity=monotonicity)
             # Mark this as a smooth term for special handling
             term._is_smooth = True
             term._smooth_monotonicity = monotonicity

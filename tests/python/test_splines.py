@@ -521,13 +521,18 @@ class TestMonotonicSplines:
     def test_ms_spline_term_repr(self):
         """Test SplineTerm repr for monotonic splines."""
         import rustystats as rs
+        import warnings
         
-        term_inc = rs.SplineTerm("age", spline_type="ms", df=5, increasing=True)
-        term_dec = rs.SplineTerm("age", spline_type="ms", df=5, increasing=False)
+        # Using deprecated spline_type='ms' should show deprecation warning
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter("always")
+            term_inc = rs.SplineTerm("age", spline_type="ms", df=5, increasing=True)
+            term_dec = rs.SplineTerm("age", spline_type="ms", df=5, increasing=False)
         
-        assert "ms(age" in repr(term_inc)
-        assert "increasing" in repr(term_inc)
-        assert "decreasing" in repr(term_dec)
+        # New repr uses bs with monotonicity parameter
+        assert "bs(age" in repr(term_inc)
+        assert "monotonicity='increasing'" in repr(term_inc)
+        assert "monotonicity='decreasing'" in repr(term_dec)
 
 
 class TestMonotonicSplineFormula:
