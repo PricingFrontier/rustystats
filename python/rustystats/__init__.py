@@ -44,7 +44,7 @@ Formula Syntax
 --------------
 - Main effects: ``x1``, ``x2``, ``C(cat)`` (categorical)
 - Interactions: ``x1*x2`` (main + interaction), ``x1:x2`` (interaction only)
-- Splines: ``bs(x, df=5)``, ``ns(x, df=4)``, ``ms(x, df=5)`` (monotonic)
+- Splines: ``bs(x, df=5)``, ``ns(x, df=4)``, ``bs(x, df=5, monotonicity='increasing')``
 - Target encoding: ``TE(brand)`` for high-cardinality categoricals
 
 For Actuaries
@@ -90,10 +90,10 @@ from rustystats.formula import glm, FormulaGLM, FormulaGLMResults
 from rustystats.formula import glm_dict, FormulaGLMDict
 
 # Spline basis functions (for non-linear continuous effects)
-from rustystats.splines import bs, ns, ms, bs_names, ns_names, ms_names, SplineTerm
+from rustystats.splines import bs, ns, bs_names, ns_names, SplineTerm
 
-# Penalized smooth terms (for GAMs with automatic smoothness selection)
-from rustystats.smooth import s, penalty_matrix, difference_matrix, gcv_score, compute_edf, smooth_names, SmoothTerm
+# Penalized spline utilities (for GAMs with automatic smoothness selection)
+from rustystats.smooth import penalty_matrix, difference_matrix, gcv_score, compute_edf
 
 # Target encoding (CatBoost-style ordered target statistics)
 from rustystats.target_encoding import (
@@ -130,19 +130,14 @@ __all__ = [
     # Spline functions
     "bs",
     "ns",
-    "ms",
     "bs_names",
     "ns_names",
-    "ms_names",
     "SplineTerm",
-    # Penalized smooth terms (GAMs)
-    "s",
+    # Penalized spline utilities (GAMs)
     "penalty_matrix",
     "difference_matrix",
     "gcv_score",
     "compute_edf",
-    "smooth_names",
-    "SmoothTerm",
     # Target encoding (CatBoost-style)
     "target_encode",
     "apply_target_encoding",

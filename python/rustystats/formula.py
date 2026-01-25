@@ -2075,7 +2075,6 @@ from rustystats.interactions import (
     IdentityTermSpec, CategoricalTermSpec, ConstraintTermSpec
 )
 from rustystats.splines import SplineTerm
-from rustystats.smooth import SmoothTerm
 
 
 def _parse_term_spec(
@@ -2096,8 +2095,6 @@ def _parse_term_spec(
         "categorical": {"type", "levels"},
         "bs": {"type", "df", "k", "degree", "monotonicity"},
         "ns": {"type", "df", "k"},
-        "ms": {"type", "df", "degree", "monotonicity", "increasing"},
-        "s": {"type", "k", "monotonicity"},
         "target_encoding": {"type", "prior_weight", "n_permutations"},
         "expression": {"type", "expr", "monotonicity"},
     }
@@ -2201,54 +2198,6 @@ def _parse_term_spec(
         )
         if is_penalized:
             term._is_smooth = True
-        spline_terms.append(term)
-    
-    elif term_type == "ms":
-        # Deprecated: Monotonic spline - now handled via bs with monotonicity
-        import warnings
-        warnings.warn(
-            "type='ms' is deprecated. Use type='bs' with monotonicity='increasing' or 'decreasing' instead.",
-            DeprecationWarning,
-            stacklevel=2
-        )
-        df = spec.get("df", 4)
-        degree = spec.get("degree", 3)
-        # Support both 'monotonicity' (consistent with other terms) and 'increasing' (legacy)
-        if monotonicity:
-            mono = monotonicity
-        else:
-            mono = "increasing" if spec.get("increasing", True) else "decreasing"
-        term = SplineTerm(
-            var_name=var_name,
-            spline_type="bs",
-            df=df,
-            degree=degree,
-            monotonicity=mono,
-        )
-        term._monotonic = True
-        spline_terms.append(term)
-    
-    elif term_type == "s":
-        # Deprecated: Penalized smooth term - now use bs(k=) or ns(k=)
-        import warnings
-        warnings.warn(
-            "type='s' is deprecated. Use type='bs' with k parameter instead of df for penalized smooth terms.",
-            DeprecationWarning,
-            stacklevel=2
-        )
-        k = spec.get("k", 10)  # Number of basis functions
-        monotonicity_s = spec.get("monotonicity")
-        term = SplineTerm(
-            var_name=var_name,
-            spline_type="bs",
-            df=k,
-            degree=3,
-            monotonicity=monotonicity_s,
-        )
-        if monotonicity_s:
-            term._smooth_monotonicity = monotonicity_s
-        # Mark this as a smooth term for penalized fitting
-        term._is_smooth = True
         spline_terms.append(term)
     
     elif term_type == "target_encoding":
