@@ -1239,13 +1239,14 @@ class _DeserializedResult:
     
     This provides the interface needed by FormulaGLMResults for prediction
     without requiring the full Rust GLMResults object.
+    
+    Note: fittedvalues and linear_predictor are not stored as they're
+    large arrays not needed for prediction on new data.
     """
     
     def __init__(
         self,
         params: np.ndarray,
-        fittedvalues: np.ndarray,
-        linear_predictor: np.ndarray,
         deviance: float,
         iterations: int,
         converged: bool,
@@ -1258,8 +1259,6 @@ class _DeserializedResult:
         penalty_type: str,
     ):
         self._params = params
-        self._fittedvalues = fittedvalues
-        self._linear_predictor = linear_predictor
         self._deviance = deviance
         self._iterations = iterations
         self._converged = converged
@@ -1277,11 +1276,17 @@ class _DeserializedResult:
     
     @property
     def fittedvalues(self) -> np.ndarray:
-        return self._fittedvalues
+        raise AttributeError(
+            "fittedvalues not available on deserialized models. "
+            "Only coefficients are stored for prediction."
+        )
     
     @property
     def linear_predictor(self) -> np.ndarray:
-        return self._linear_predictor
+        raise AttributeError(
+            "linear_predictor not available on deserialized models. "
+            "Only coefficients are stored for prediction."
+        )
     
     @property
     def deviance(self) -> float:
@@ -2402,10 +2407,10 @@ class FormulaGLMResults:
         import pickle
         
         # Extract state from the Rust result object
+        # NOTE: We intentionally exclude fittedvalues and linear_predictor
+        # as they are large arrays not needed for prediction (can be ~5MB each)
         result_state = {
             "params": np.asarray(self._result.params),
-            "fittedvalues": np.asarray(self._result.fittedvalues),
-            "linear_predictor": np.asarray(self._result.linear_predictor),
             "deviance": self._result.deviance,
             "iterations": self._result.iterations,
             "converged": self._result.converged,
@@ -2485,8 +2490,6 @@ class FormulaGLMResults:
         # Create a minimal result object that supports prediction
         result = _DeserializedResult(
             params=result_state["params"],
-            fittedvalues=result_state["fittedvalues"],
-            linear_predictor=result_state["linear_predictor"],
             deviance=result_state["deviance"],
             iterations=result_state["iterations"],
             converged=result_state["converged"],
