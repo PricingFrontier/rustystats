@@ -320,9 +320,17 @@ class InteractionBuilder:
         Clear internal caches to free memory.
         
         This is called automatically after design matrix construction.
-        Keeps target encoding stats (_te_stats) which are needed for prediction.
+        Keeps:
+        - Categorical levels (needed for encoding new data)
+        - Target encoding stats (_te_stats)
+        - Fitted splines (knot positions)
         """
-        self._cat_encoding_cache.clear()
+        # Preserve categorical levels but clear the large encoding matrices
+        # We need levels for transform_new_data() to work
+        for key, cached in self._cat_encoding_cache.items():
+            # Keep the levels list but clear the large encoding matrix
+            cached.encoding = None
+            cached.indices = None
         # Clear any continuous value caches
         if hasattr(self, '_cont_cache'):
             self._cont_cache.clear()

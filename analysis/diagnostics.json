@@ -964,26 +964,8 @@
       "message": "Model has weak discrimination in deciles: [8]. Consider adding features or interactions to improve separation."
     }
   ],
-  "vif": [
-    {
-      "feature": "region[T.C]",
-      "vif": 1.34,
-      "severity": "none",
-      "collinear_with": null
-    },
-    {
-      "feature": "region[T.B]",
-      "vif": 1.33,
-      "severity": "none",
-      "collinear_with": null
-    },
-    {
-      "feature": "age",
-      "vif": 1.0,
-      "severity": "none",
-      "collinear_with": null
-    }
-  ],
+  "vif": null,
+  "smooth_terms": null,
   "coefficient_summary": [
     {
       "feature": "age",

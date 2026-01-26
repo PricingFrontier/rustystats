@@ -1233,6 +1233,395 @@ class FormulaGLM:
         )
 
 
+class _DeserializedResult:
+    """
+    Minimal result object for deserialized models.
+    
+    This provides the interface needed by FormulaGLMResults for prediction
+    without requiring the full Rust GLMResults object.
+    """
+    
+    def __init__(
+        self,
+        params: np.ndarray,
+        fittedvalues: np.ndarray,
+        linear_predictor: np.ndarray,
+        deviance: float,
+        iterations: int,
+        converged: bool,
+        nobs: int,
+        df_resid: int,
+        df_model: int,
+        alpha: float,
+        l1_ratio: float,
+        is_regularized: bool,
+        penalty_type: str,
+    ):
+        self._params = params
+        self._fittedvalues = fittedvalues
+        self._linear_predictor = linear_predictor
+        self._deviance = deviance
+        self._iterations = iterations
+        self._converged = converged
+        self._nobs = nobs
+        self._df_resid = df_resid
+        self._df_model = df_model
+        self._alpha = alpha
+        self._l1_ratio = l1_ratio
+        self._is_regularized = is_regularized
+        self._penalty_type = penalty_type
+    
+    @property
+    def params(self) -> np.ndarray:
+        return self._params
+    
+    @property
+    def fittedvalues(self) -> np.ndarray:
+        return self._fittedvalues
+    
+    @property
+    def linear_predictor(self) -> np.ndarray:
+        return self._linear_predictor
+    
+    @property
+    def deviance(self) -> float:
+        return self._deviance
+    
+    @property
+    def iterations(self) -> int:
+        return self._iterations
+    
+    @property
+    def converged(self) -> bool:
+        return self._converged
+    
+    @property
+    def nobs(self) -> int:
+        return self._nobs
+    
+    @property
+    def df_resid(self) -> int:
+        return self._df_resid
+    
+    @property
+    def df_model(self) -> int:
+        return self._df_model
+    
+    @property
+    def alpha(self) -> float:
+        return self._alpha
+    
+    @property
+    def l1_ratio(self) -> float:
+        return self._l1_ratio
+    
+    @property
+    def is_regularized(self) -> bool:
+        return self._is_regularized
+    
+    @property
+    def penalty_type(self) -> str:
+        return self._penalty_type
+
+
+class _DeserializedBuilder:
+    """
+    Minimal builder for deserialized models.
+    
+    This provides the transform_new_data interface needed for prediction
+    using the saved encoding state.
+    """
+    
+    def __init__(self, state: dict):
+        self._parsed_formula = state["parsed_formula"]
+        self._cat_encoding_cache = state["cat_encoding_cache"]
+        self._fitted_splines = state["fitted_splines"]
+        self._te_stats = state["te_stats"]
+        self.dtype = state["dtype"]
+    
+    def _get_categorical_levels(self, name: str) -> List[str]:
+        """Get cached categorical levels for a variable."""
+        cache_key = f"{name}_True"
+        if cache_key not in self._cat_encoding_cache:
+            raise ValueError(f"Categorical variable '{name}' was not seen during training.")
+        return self._cat_encoding_cache[cache_key].levels
+    
+    def _encode_categorical_new(
+        self,
+        new_data: "pl.DataFrame",
+        var_name: str,
+    ) -> np.ndarray:
+        """Encode categorical variable using levels from training."""
+        levels = self._get_categorical_levels(var_name)
+        col = new_data[var_name].to_numpy()
+        n = len(col)
+        
+        level_to_idx = {level: i for i, level in enumerate(levels)}
+        n_dummies = len(levels) - 1
+        encoding = np.zeros((n, n_dummies), dtype=self.dtype)
+        
+        for i, val in enumerate(col):
+            val_str = str(val)
+            if val_str in level_to_idx:
+                idx = level_to_idx[val_str]
+                if idx > 0:
+                    encoding[i, idx - 1] = 1.0
+        
+        return encoding
+    
+    def _encode_target_new(
+        self,
+        new_data: "pl.DataFrame",
+        te_term,
+    ) -> np.ndarray:
+        """Encode using target statistics from training."""
+        if te_term.var_name not in self._te_stats:
+            raise ValueError(
+                f"Target encoding for '{te_term.var_name}' was not fitted during training."
+            )
+        
+        stats = self._te_stats[te_term.var_name]
+        prior = stats['prior']
+        level_stats = stats['stats']
+        prior_weight = stats['prior_weight']
+        
+        col = new_data[te_term.var_name].to_numpy()
+        n = len(col)
+        encoded = np.zeros(n, dtype=self.dtype)
+        
+        for i, val in enumerate(col):
+            val_str = str(val)
+            if val_str in level_stats:
+                level_sum, level_count = level_stats[val_str]
+                encoded[i] = (level_sum + prior * prior_weight) / (level_count + prior_weight)
+            else:
+                encoded[i] = prior
+        
+        return encoded
+    
+    def _parse_spline_factor(self, factor: str):
+        """Parse a spline term from a factor name."""
+        from rustystats.splines import SplineTerm
+        
+        factor_lower = factor.strip().lower()
+        if factor_lower.startswith('bs(') or factor_lower.startswith('ns('):
+            spline_type = 'bs' if factor_lower.startswith('bs(') else 'ns'
+            content = factor[3:-1] if factor.endswith(')') else factor[3:]
+            parts = [p.strip() for p in content.split(',')]
+            var_name = parts[0]
+            df = None
+            k = None
+            degree = 3
+            monotonicity = None
+            for part in parts[1:]:
+                if '=' in part:
+                    key, val = part.split('=', 1)
+                    key = key.strip().lower()
+                    val = val.strip()
+                    if key == 'df':
+                        df = int(val)
+                    elif key == 'k':
+                        k = int(val)
+                    elif key == 'degree':
+                        degree = int(val)
+                    elif key == 'monotonicity':
+                        monotonicity = val.strip("'\"").lower()
+            
+            is_smooth = False
+            if df is None and k is None:
+                effective_df = 10
+                is_smooth = True
+            elif k is not None:
+                effective_df = k
+                is_smooth = True
+            else:
+                effective_df = df
+            
+            term = SplineTerm(var_name=var_name, spline_type=spline_type, df=effective_df, 
+                              degree=degree, monotonicity=monotonicity)
+            if is_smooth:
+                term._is_smooth = True
+            return term
+        
+        return None
+    
+    def _build_identity_columns(self, identity, data: "pl.DataFrame"):
+        """Evaluate an I() expression on data."""
+        expr = identity.expression
+        local_vars = {col: data[col].to_numpy().astype(self.dtype) for col in data.columns}
+        result = eval(expr, {"__builtins__": {}}, local_vars)
+        name = f"I({expr})"
+        return np.asarray(result, dtype=self.dtype), name
+    
+    def _build_constraint_columns(self, constraint, data: "pl.DataFrame"):
+        """Build columns for constraint terms."""
+        col = data[constraint.var_name].to_numpy().astype(self.dtype)
+        name = f"{constraint.constraint}({constraint.var_name})"
+        return col, name
+    
+    def _build_categorical_level_indicators_new(self, cat_term, new_data: "pl.DataFrame"):
+        """Build indicator columns for specific categorical levels."""
+        col = new_data[cat_term.var_name].to_numpy()
+        n = len(col)
+        
+        if cat_term.levels is None:
+            return self._encode_categorical_new(new_data, cat_term.var_name), []
+        
+        n_levels = len(cat_term.levels)
+        encoding = np.zeros((n, n_levels), dtype=self.dtype)
+        names = []
+        
+        for j, level in enumerate(cat_term.levels):
+            names.append(f"{cat_term.var_name}[{level}]")
+            for i, val in enumerate(col):
+                if str(val) == level:
+                    encoding[i, j] = 1.0
+        
+        return encoding, names
+    
+    def _build_interaction_new(
+        self,
+        new_data: "pl.DataFrame",
+        interaction,
+        n: int,
+    ) -> np.ndarray:
+        """Build interaction columns for new data."""
+        if interaction.is_pure_continuous:
+            result = new_data[interaction.factors[0]].to_numpy().astype(self.dtype)
+            for factor in interaction.factors[1:]:
+                result = result * new_data[factor].to_numpy().astype(self.dtype)
+            return result.reshape(-1, 1)
+        
+        elif interaction.is_pure_categorical:
+            encodings = []
+            for factor in interaction.factors:
+                enc = self._encode_categorical_new(new_data, factor)
+                encodings.append(enc)
+            
+            result = encodings[0]
+            for enc in encodings[1:]:
+                n_cols1, n_cols2 = result.shape[1], enc.shape[1]
+                new_result = np.zeros((n, n_cols1 * n_cols2), dtype=self.dtype)
+                for i in range(n_cols1):
+                    for j in range(n_cols2):
+                        new_result[:, i * n_cols2 + j] = result[:, i] * enc[:, j]
+                result = new_result
+            return result
+        
+        else:
+            cat_factors = []
+            cont_factors = []
+            spline_factors = []
+            
+            for factor, is_cat in zip(interaction.factors, interaction.categorical_flags):
+                if is_cat:
+                    cat_factors.append(factor)
+                else:
+                    spline = self._parse_spline_factor(factor)
+                    if spline is not None:
+                        spline_factors.append((factor, spline))
+                    else:
+                        cont_factors.append(factor)
+            
+            if len(cat_factors) == 1:
+                cat_enc = self._encode_categorical_new(new_data, cat_factors[0])
+            else:
+                cat_enc = self._encode_categorical_new(new_data, cat_factors[0])
+                for factor in cat_factors[1:]:
+                    enc = self._encode_categorical_new(new_data, factor)
+                    n_cols1, n_cols2 = cat_enc.shape[1], enc.shape[1]
+                    new_enc = np.zeros((n, n_cols1 * n_cols2), dtype=self.dtype)
+                    for i in range(n_cols1):
+                        for j in range(n_cols2):
+                            new_enc[:, i * n_cols2 + j] = cat_enc[:, i] * enc[:, j]
+                    cat_enc = new_enc
+            
+            if spline_factors:
+                all_columns = []
+                
+                for spline_str, spline in spline_factors:
+                    x = new_data[spline.var_name].to_numpy().astype(self.dtype)
+                    fitted_spline = self._fitted_splines.get(spline.var_name, spline)
+                    spline_basis, _ = fitted_spline.transform(x)
+                    
+                    for j in range(spline_basis.shape[1]):
+                        for i in range(cat_enc.shape[1]):
+                            col = cat_enc[:, i] * spline_basis[:, j]
+                            all_columns.append(col)
+                
+                if cont_factors:
+                    cont_product = new_data[cont_factors[0]].to_numpy().astype(self.dtype)
+                    for factor in cont_factors[1:]:
+                        cont_product = cont_product * new_data[factor].to_numpy().astype(self.dtype)
+                    all_columns = [col * cont_product for col in all_columns]
+                
+                if all_columns:
+                    return np.column_stack(all_columns)
+                return np.zeros((n, 0), dtype=self.dtype)
+            
+            cont_product = new_data[cont_factors[0]].to_numpy().astype(self.dtype)
+            for factor in cont_factors[1:]:
+                cont_product = cont_product * new_data[factor].to_numpy().astype(self.dtype)
+            
+            result = cat_enc * cont_product.reshape(-1, 1)
+            return result
+    
+    def transform_new_data(self, new_data: "pl.DataFrame") -> np.ndarray:
+        """Transform new data using the encoding state from training."""
+        if self._parsed_formula is None:
+            raise ValueError("No formula has been fitted yet.")
+        
+        parsed = self._parsed_formula
+        n_new = len(new_data)
+        columns = []
+        
+        if parsed.has_intercept:
+            columns.append(np.ones(n_new, dtype=self.dtype))
+        
+        for var in parsed.main_effects:
+            if var in parsed.categorical_vars:
+                enc = self._encode_categorical_new(new_data, var)
+                columns.append(enc)
+            else:
+                col = new_data[var].to_numpy().astype(self.dtype)
+                columns.append(col.reshape(-1, 1))
+        
+        for spline in parsed.spline_terms:
+            x = new_data[spline.var_name].to_numpy().astype(self.dtype)
+            fitted_spline = self._fitted_splines.get(spline.var_name, spline)
+            spline_cols, _ = fitted_spline.transform(x)
+            columns.append(spline_cols)
+        
+        for te_term in parsed.target_encoding_terms:
+            te_col = self._encode_target_new(new_data, te_term)
+            columns.append(te_col.reshape(-1, 1))
+        
+        for interaction in parsed.interactions:
+            int_cols = self._build_interaction_new(new_data, interaction, n_new)
+            if int_cols.ndim == 1:
+                int_cols = int_cols.reshape(-1, 1)
+            columns.append(int_cols)
+        
+        for identity in parsed.identity_terms:
+            id_col, _ = self._build_identity_columns(identity, new_data)
+            columns.append(id_col.reshape(-1, 1))
+        
+        for constraint in parsed.constraint_terms:
+            con_col, _ = self._build_constraint_columns(constraint, new_data)
+            columns.append(con_col.reshape(-1, 1))
+        
+        for cat_term in parsed.categorical_terms:
+            cat_cols, _ = self._build_categorical_level_indicators_new(cat_term, new_data)
+            columns.append(cat_cols)
+        
+        if columns:
+            X = np.hstack([c if c.ndim == 2 else c.reshape(-1, 1) for c in columns])
+        else:
+            X = np.ones((n_new, 1), dtype=self.dtype)
+        
+        return X
+
+
 class FormulaGLMResults:
     """
     Results from a formula-based GLM fit.
@@ -1979,6 +2368,157 @@ class FormulaGLMResults:
         else:
             # Default to identity
             return eta
+    
+    def to_bytes(self) -> bytes:
+        """
+        Serialize the fitted model to bytes for storage or transfer.
+        
+        The serialized model can be loaded with `FormulaGLMResults.from_bytes()`.
+        All state needed for prediction is preserved, including:
+        - Coefficients and feature names
+        - Categorical encoding levels
+        - Spline knot positions
+        - Target encoding statistics
+        
+        Returns
+        -------
+        bytes
+            Serialized model as bytes.
+            
+        Examples
+        --------
+        >>> result = rs.glm("y ~ x1 + C(cat)", data, family="poisson").fit()
+        >>> model_bytes = result.to_bytes()
+        >>> 
+        >>> # Save to file
+        >>> with open("model.bin", "wb") as f:
+        ...     f.write(model_bytes)
+        >>> 
+        >>> # Load later
+        >>> with open("model.bin", "rb") as f:
+        ...     loaded = rs.FormulaGLMResults.from_bytes(f.read())
+        >>> predictions = loaded.predict(new_data)
+        """
+        import pickle
+        
+        # Extract state from the Rust result object
+        result_state = {
+            "params": np.asarray(self._result.params),
+            "fittedvalues": np.asarray(self._result.fittedvalues),
+            "linear_predictor": np.asarray(self._result.linear_predictor),
+            "deviance": self._result.deviance,
+            "iterations": self._result.iterations,
+            "converged": self._result.converged,
+            "nobs": self._result.nobs,
+            "df_resid": self._result.df_resid,
+            "df_model": self._result.df_model,
+            "alpha": self._result.alpha,
+            "l1_ratio": self._result.l1_ratio,
+            "is_regularized": self._result.is_regularized,
+            "penalty_type": self._result.penalty_type,
+        }
+        
+        # Extract builder state for prediction
+        builder_state = None
+        if self._builder is not None:
+            builder_state = {
+                "parsed_formula": self._builder._parsed_formula,
+                "cat_encoding_cache": self._builder._cat_encoding_cache,
+                "fitted_splines": self._builder._fitted_splines,
+                "te_stats": getattr(self._builder, "_te_stats", {}),
+                "dtype": self._builder.dtype,
+            }
+        
+        state = {
+            "version": 1,
+            "result_state": result_state,
+            "feature_names": self.feature_names,
+            "formula": self.formula,
+            "family": self.family,
+            "link": self.link,
+            "builder_state": builder_state,
+            "offset_spec": self._offset_spec,
+            "offset_is_exposure": self._offset_is_exposure,
+            "smooth_results": self._smooth_results,
+            "total_edf": self._total_edf,
+            "gcv": self._gcv,
+        }
+        
+        return pickle.dumps(state, protocol=pickle.HIGHEST_PROTOCOL)
+    
+    @classmethod
+    def from_bytes(cls, data: bytes) -> "FormulaGLMResults":
+        """
+        Load a fitted model from bytes.
+        
+        Parameters
+        ----------
+        data : bytes
+            Serialized model bytes from `to_bytes()`.
+            
+        Returns
+        -------
+        FormulaGLMResults
+            Reconstructed fitted model ready for prediction.
+            
+        Examples
+        --------
+        >>> # Load from file
+        >>> with open("model.bin", "rb") as f:
+        ...     result = rs.FormulaGLMResults.from_bytes(f.read())
+        >>> 
+        >>> # Make predictions
+        >>> predictions = result.predict(new_data)
+        """
+        import pickle
+        
+        state = pickle.loads(data)
+        
+        if state.get("version", 0) != 1:
+            raise ValueError(
+                f"Unsupported serialization version: {state.get('version')}. "
+                "Model was saved with a different version of rustystats."
+            )
+        
+        result_state = state["result_state"]
+        
+        # Create a minimal result object that supports prediction
+        result = _DeserializedResult(
+            params=result_state["params"],
+            fittedvalues=result_state["fittedvalues"],
+            linear_predictor=result_state["linear_predictor"],
+            deviance=result_state["deviance"],
+            iterations=result_state["iterations"],
+            converged=result_state["converged"],
+            nobs=result_state["nobs"],
+            df_resid=result_state["df_resid"],
+            df_model=result_state["df_model"],
+            alpha=result_state["alpha"],
+            l1_ratio=result_state["l1_ratio"],
+            is_regularized=result_state["is_regularized"],
+            penalty_type=result_state["penalty_type"],
+        )
+        
+        # Reconstruct builder if it was saved
+        builder = None
+        if state["builder_state"] is not None:
+            builder = _DeserializedBuilder(state["builder_state"])
+        
+        return cls(
+            result=result,
+            feature_names=state["feature_names"],
+            formula=state["formula"],
+            family=state["family"],
+            link=state["link"],
+            builder=builder,
+            design_matrix=None,
+            offset_spec=state["offset_spec"],
+            offset_is_exposure=state["offset_is_exposure"],
+            regularization_path_info=None,
+            smooth_results=state["smooth_results"],
+            total_edf=state["total_edf"],
+            gcv=state["gcv"],
+        )
     
     def __repr__(self) -> str:
         return (
