@@ -59,13 +59,14 @@ RustyStats uses significantly less RAM by reusing buffers and avoiding Python ob
 
 ## Features
 
+- **Dict-First API** - Programmatic model building ideal for automated workflows and agents
 - **Fast** - Parallel Rust backend, 4-30x faster than statsmodels
 - **Memory Efficient** - 4x less RAM than statsmodels at scale
 - **Stable** - Step-halving IRLS, warm starts for robust convergence
-- **Splines** - B-splines `bs()` and natural splines `ns()` with auto-tuned smoothing by default
-- **Polynomials** - Identity terms `I(x ** 2)` for polynomial and arithmetic expressions
-- **Target Encoding** - CatBoost-style `TE()` for high-cardinality categoricals (exposure-aware)
+- **Splines** - B-splines and natural splines with auto-tuned smoothing
+- **Target Encoding** - CatBoost-style encoding for high-cardinality categoricals (exposure-aware)
 - **Regularisation** - Ridge, Lasso, and Elastic Net via coordinate descent
+- **Serialization** - Save/load fitted models with `to_bytes()` / `from_bytes()`
 - **Validation** - Design matrix checks with fix suggestions before fitting
 - **Complete** - 8 families, robust SEs, full diagnostics, VIF, partial dependence
 - **Minimal** - Only `numpy` and `polars` required
@@ -86,11 +87,17 @@ import polars as pl
 data = pl.read_parquet("insurance.parquet")
 
 # Fit a Poisson GLM for claim frequency
-result = rs.glm(
-    "ClaimCount ~ VehAge + VehPower + C(Area) + C(Region)",
+result = rs.glm_dict(
+    response="ClaimCount",
+    terms={
+        "VehAge": {"type": "linear"},
+        "VehPower": {"type": "linear"},
+        "Area": {"type": "categorical"},
+        "Region": {"type": "categorical"},
+    },
     data=data,
     family="poisson",
-    offset="Exposure"
+    offset="Exposure",
 ).fit()
 
 # View results
@@ -114,51 +121,9 @@ print(result.summary())
 
 ---
 
-## Formula Syntax
-
-```python
-# Main effects
-"y ~ x1 + x2 + C(category)"
-
-# Single-level categorical indicators
-"y ~ C(Region, level='Paris')"              # 0/1 indicator for Paris only
-"y ~ C(Region, levels=['Paris', 'Lyon'])"   # Indicators for specific levels
-
-# Interactions
-"y ~ x1*x2"              # x1 + x2 + x1:x2
-"y ~ C(area):age"        # Area-specific age effects
-"y ~ C(area)*C(brand)"   # Categorical × categorical
-
-# Splines (non-linear effects)
-"y ~ bs(age)"            # Penalized smooth (auto-tuned, default)
-"y ~ bs(age, df=5)"      # Fixed 5 degrees of freedom
-"y ~ ns(income)"         # Natural spline (auto-tuned)
-"y ~ ns(income, df=4)"   # Natural spline (fixed df)
-"y ~ bs(age, monotonicity='increasing')"   # Monotonic increasing
-"y ~ bs(veh_age, df=4, monotonicity='decreasing')"  # Monotonic decreasing
-
-# Identity terms (polynomial/arithmetic expressions)
-"y ~ I(age ** 2)"        # Polynomial terms
-"y ~ I(x1 * x2)"         # Explicit products
-"y ~ I(income / 1000)"   # Scaled variables
-
-# Coefficient constraints
-"y ~ pos(age)"           # Coefficient ≥ 0
-"y ~ neg(risk)"          # Coefficient ≤ 0
-"y ~ neg(I(age ** 2))"   # Force downward curvature
-
-# Target encoding (high-cardinality categoricals)
-"y ~ TE(brand) + TE(model)"
-
-# Combined
-"y ~ bs(age, df=5) + C(region)*income + ns(vehicle_age, df=3) + TE(brand) + I(age ** 2)"
-```
-
----
-
 ## Dict-Based API
 
-Alternative to formula strings for programmatic model building. Useful for automated workflows and agentic systems.
+The primary API for programmatic model building. Ideal for automated workflows and agentic systems.
 
 ```python
 result = rs.glm_dict(
@@ -190,12 +155,12 @@ result = rs.glm_dict(
 
 | Type | Parameters | Description |
 |------|------------|-------------|
-| `linear` | - | Raw continuous variable |
+| `linear` | `monotonicity` (optional) | Raw continuous variable |
 | `categorical` | `levels` (optional) | Dummy encoding |
 | `bs` | `df` or `k`, `degree=3`, `monotonicity` | B-spline (default: penalized smooth, k=10) |
 | `ns` | `df` or `k` | Natural spline (default: penalized smooth, k=10) |
 | `target_encoding` | `prior_weight=1` | Regularized target encoding |
-| `expression` | `expr` | Arbitrary expression (like `I()`) |
+| `expression` | `expr`, `monotonicity` (optional) | Arbitrary expression (like `I()`) |
 
 **Spline parameters:**
 - No parameters → penalized smooth with automatic tuning (k=10)
@@ -211,13 +176,13 @@ Each interaction is a dict with variable specs and `include_main`:
 
 ```python
 interactions=[
-    # Main effects + interaction (like x*y)
+    # Main effects + interaction
     {
         "DrivAge": {"type": "bs", "df": 5}, 
         "Brand": {"type": "target_encoding"},
         "include_main": True
     },
-    # Interaction only (like x:y)
+    # Interaction only
     {
         "VehAge": {"type": "linear"}, 
         "Region": {"type": "categorical"}, 
@@ -225,6 +190,49 @@ interactions=[
     },
 ]
 ```
+
+---
+
+## Formula Syntax (Alternative)
+
+For those who prefer R-style formula strings:
+
+```python
+result = rs.glm("ClaimCount ~ VehAge + C(Region) + TE(Brand)", data, family="poisson").fit()
+```
+
+<details>
+<summary>Formula syntax reference</summary>
+
+```python
+# Main effects
+"y ~ x1 + x2 + C(category)"
+
+# Single-level categorical indicators
+"y ~ C(Region, level='Paris')"              # 0/1 indicator for Paris only
+
+# Interactions
+"y ~ x1*x2"              # x1 + x2 + x1:x2
+"y ~ C(area):age"        # Area-specific age effects
+
+# Splines (non-linear effects)
+"y ~ bs(age)"            # Penalized smooth (auto-tuned)
+"y ~ bs(age, df=5)"      # Fixed 5 degrees of freedom
+"y ~ ns(income)"         # Natural spline (auto-tuned)
+"y ~ bs(age, monotonicity='increasing')"   # Monotonic
+
+# Identity terms (polynomial/arithmetic expressions)
+"y ~ I(age ** 2)"        # Polynomial terms
+
+# Coefficient constraints
+"y ~ pos(age)"           # Coefficient ≥ 0
+"y ~ neg(risk)"          # Coefficient ≤ 0
+
+# Target encoding (high-cardinality categoricals)
+"y ~ TE(brand) + TE(model)"
+```
+
+</details>
 
 ---
 
@@ -264,15 +272,59 @@ result.family              # Family name
 
 ---
 
+## Model Serialization
+
+Save and load fitted models for later use:
+
+```python
+# Fit and save
+result = rs.glm_dict(
+    response="ClaimNb",
+    terms={
+        "Age": {"type": "bs"},
+        "Region": {"type": "categorical"},
+        "Brand": {"type": "target_encoding"},
+    },
+    data=data,
+    family="poisson",
+    offset="Exposure",
+).fit()
+model_bytes = result.to_bytes()
+
+with open("model.bin", "wb") as f:
+    f.write(model_bytes)
+
+# Load later
+with open("model.bin", "rb") as f:
+    loaded = rs.FormulaGLMResults.from_bytes(f.read())
+
+# Predict with loaded model
+predictions = loaded.predict(new_data)
+```
+
+**What's preserved:**
+- Coefficients and feature names
+- Categorical encoding levels
+- Spline knot positions
+- Target encoding statistics
+- Formula, family, link function
+
+**Compact storage:** Only prediction-essential state is stored (~KB, not MB).
+
+---
+
 ## Regularization
 
 ### CV-Based Regularization (Recommended)
 
 ```python
 # Just specify regularization type - cv=5 is automatic
-result = rs.glm("y ~ x1 + x2 + C(cat)", data, family="poisson").fit(
-    regularization="ridge"  # "ridge", "lasso", or "elastic_net"
-)
+result = rs.glm_dict(
+    response="y",
+    terms={"x1": {"type": "linear"}, "x2": {"type": "linear"}, "cat": {"type": "categorical"}},
+    data=data,
+    family="poisson",
+).fit(regularization="ridge")  # "ridge", "lasso", or "elastic_net"
 
 print(f"Selected alpha: {result.alpha}")
 print(f"CV deviance: {result.cv_deviance}")
@@ -287,9 +339,9 @@ print(f"CV deviance: {result.cv_deviance}")
 
 ```python
 # Skip CV, use specific alpha
-result = rs.glm("y ~ x1 + x2", data).fit(alpha=0.1, l1_ratio=0.0)  # Ridge
-result = rs.glm("y ~ x1 + x2", data).fit(alpha=0.1, l1_ratio=1.0)  # Lasso
-result = rs.glm("y ~ x1 + x2", data).fit(alpha=0.1, l1_ratio=0.5)  # Elastic Net
+result = rs.glm_dict(response="y", terms={"x1": {"type": "linear"}, "x2": {"type": "linear"}}, data=data).fit(alpha=0.1, l1_ratio=0.0)  # Ridge
+result = rs.glm_dict(response="y", terms={"x1": {"type": "linear"}, "x2": {"type": "linear"}}, data=data).fit(alpha=0.1, l1_ratio=1.0)  # Lasso
+result = rs.glm_dict(response="y", terms={"x1": {"type": "linear"}, "x2": {"type": "linear"}}, data=data).fit(alpha=0.1, l1_ratio=0.5)  # Elastic Net
 ```
 
 ---
@@ -298,27 +350,39 @@ result = rs.glm("y ~ x1 + x2", data).fit(alpha=0.1, l1_ratio=0.5)  # Elastic Net
 
 ```python
 # Continuous × Continuous interaction (main effects + interaction)
-result = rs.glm(
-    "ClaimNb ~ Age*VehPower",  # Equivalent to Age + VehPower + Age:VehPower
-    data, family="poisson", offset="Exposure"
+result = rs.glm_dict(
+    response="ClaimNb",
+    terms={},
+    interactions=[{
+        "Age": {"type": "linear"},
+        "VehPower": {"type": "linear"},
+        "include_main": True,  # Includes Age + VehPower + Age:VehPower
+    }],
+    data=data, family="poisson", offset="Exposure",
 ).fit()
 
 # Categorical × Continuous interaction
-result = rs.glm(
-    "ClaimNb ~ C(Area)*Age",  # Each area level has different age effect
-    data, family="poisson", offset="Exposure"
-).fit()
-
-# Categorical × Categorical interaction
-result = rs.glm(
-    "ClaimNb ~ C(Area)*C(VehBrand)",
-    data, family="poisson", offset="Exposure"
+result = rs.glm_dict(
+    response="ClaimNb",
+    terms={},
+    interactions=[{
+        "Area": {"type": "categorical"},
+        "Age": {"type": "linear"},
+        "include_main": True,  # Each area level has different age effect
+    }],
+    data=data, family="poisson", offset="Exposure",
 ).fit()
 
 # Pure interaction (no main effects added)
-result = rs.glm(
-    "ClaimNb ~ Age + C(Area):VehPower",  # Area-specific VehPower slopes
-    data, family="poisson", offset="Exposure"
+result = rs.glm_dict(
+    response="ClaimNb",
+    terms={"Age": {"type": "linear"}},
+    interactions=[{
+        "Area": {"type": "categorical"},
+        "VehPower": {"type": "linear"},
+        "include_main": False,  # Area-specific VehPower slopes only
+    }],
+    data=data, family="poisson", offset="Exposure",
 ).fit()
 ```
 
@@ -328,26 +392,37 @@ result = rs.glm(
 
 ```python
 # Default: penalized smooth with automatic tuning via GCV
-result = rs.glm(
-    "ClaimNb ~ bs(Age) + ns(VehPower) + C(Region)",
-    data=data,
-    family="poisson",
-    offset="Exposure"
+result = rs.glm_dict(
+    response="ClaimNb",
+    terms={
+        "Age": {"type": "bs"},           # B-spline (auto-tuned)
+        "VehPower": {"type": "ns"},      # Natural spline (auto-tuned)
+        "Region": {"type": "categorical"},
+    },
+    data=data, family="poisson", offset="Exposure",
 ).fit()
 
 # Fixed degrees of freedom (no penalty)
-result = rs.glm(
-    "ClaimNb ~ bs(Age, df=5) + ns(VehPower, df=4) + C(Region)",
-    data=data,
-    family="poisson",
-    offset="Exposure"
+result = rs.glm_dict(
+    response="ClaimNb",
+    terms={
+        "Age": {"type": "bs", "df": 5},       # Fixed 5 df
+        "VehPower": {"type": "ns", "df": 4},  # Fixed 4 df
+        "Region": {"type": "categorical"},
+    },
+    data=data, family="poisson", offset="Exposure",
 ).fit()
 
-# Combine splines with interactions
-result = rs.glm(
-    "y ~ bs(age, df=4)*C(gender) + ns(income)",
-    data=data,
-    family="gaussian"
+# Splines with interactions
+result = rs.glm_dict(
+    response="y",
+    terms={"income": {"type": "ns"}},
+    interactions=[{
+        "age": {"type": "bs", "df": 4},
+        "gender": {"type": "categorical"},
+        "include_main": True,
+    }],
+    data=data, family="gaussian",
 ).fit()
 
 # Direct basis computation
@@ -370,29 +445,35 @@ basis = rs.ns(x, df=5)  # Natural spline, fixed 5 df
 
 ## Monotonic Splines
 
-Monotonic splines constrain the fitted curve to be monotonically increasing or decreasing. Essential when business logic dictates a monotonic relationship. Use `bs()` with the `monotonicity` parameter.
+Monotonic splines constrain the fitted curve to be monotonically increasing or decreasing. Essential when business logic dictates a monotonic relationship.
 
 ```python
 # Monotonically increasing effect (e.g., age → risk)
-result = rs.glm(
-    "ClaimNb ~ bs(Age, monotonicity='increasing') + C(Region)",
-    data=data,
-    family="poisson",
-    offset="Exposure"
+result = rs.glm_dict(
+    response="ClaimNb",
+    terms={
+        "Age": {"type": "bs", "monotonicity": "increasing"},
+        "Region": {"type": "categorical"},
+    },
+    data=data, family="poisson", offset="Exposure",
 ).fit()
 
 # Monotonically decreasing effect (e.g., vehicle value with age)
-result = rs.glm(
-    "ClaimAmt ~ bs(VehAge, df=4, monotonicity='decreasing')",
-    data=data,
-    family="gamma"
+result = rs.glm_dict(
+    response="ClaimAmt",
+    terms={"VehAge": {"type": "bs", "df": 4, "monotonicity": "decreasing"}},
+    data=data, family="gamma",
 ).fit()
 
-# Combine with other spline types
-result = rs.glm(
-    "y ~ bs(age, monotonicity='increasing') + bs(income, df=4) + ns(experience)",
-    data=data,
-    family="gaussian"
+# Combine monotonic and unconstrained splines
+result = rs.glm_dict(
+    response="y",
+    terms={
+        "age": {"type": "bs", "monotonicity": "increasing"},
+        "income": {"type": "bs", "df": 4},
+        "experience": {"type": "ns"},
+    },
+    data=data, family="gaussian",
 ).fit()
 
 # Direct basis computation
@@ -407,49 +488,56 @@ basis = rs.bs(x, df=5, monotonicity='decreasing')  # Fixed df, decreasing
 - Prevents implausible "wiggles" that can occur with unconstrained splines
 
 **When to use:**
-| Use Case | Formula |
-|----------|---------|
-| Age → claim frequency | `bs(age, monotonicity='increasing')` |
-| Vehicle age → value | `bs(veh_age, monotonicity='decreasing')` |
-| Credit score → risk | `bs(score, df=5, monotonicity='decreasing')` |
+| Use Case | Term Spec |
+|----------|-----------|
+| Age → claim frequency | `{"type": "bs", "monotonicity": "increasing"}` |
+| Vehicle age → value | `{"type": "bs", "monotonicity": "decreasing"}` |
+| Credit score → risk | `{"type": "bs", "df": 5, "monotonicity": "decreasing"}` |
 
 ---
 
 ## Coefficient Constraints
 
-Constrain coefficient signs using `pos()` (β ≥ 0) and `neg()` (β ≤ 0). Useful for enforcing business logic on linear and polynomial terms.
+Constrain coefficient signs using `monotonicity` on linear and expression terms. Useful for enforcing business logic.
 
 ```python
 # Constrain age coefficient to be positive
-result = rs.glm(
-    "y ~ pos(age) + income",
-    data=data,
-    family="poisson"
+result = rs.glm_dict(
+    response="y",
+    terms={
+        "age": {"type": "linear", "monotonicity": "increasing"},  # β ≥ 0
+        "income": {"type": "linear"},
+    },
+    data=data, family="poisson",
 ).fit()
 
 # Force quadratic to bend downward (diminishing returns)
-result = rs.glm(
-    "y ~ age + neg(I(age ** 2))",
-    data=data,
-    family="gaussian"
+result = rs.glm_dict(
+    response="y",
+    terms={
+        "age": {"type": "linear"},
+        "age2": {"type": "expression", "expr": "age ** 2", "monotonicity": "decreasing"},  # β ≤ 0
+    },
+    data=data, family="gaussian",
 ).fit()
 
 # Combine with monotonic splines
-result = rs.glm(
-    "ClaimNb ~ bs(VehAge, monotonicity='increasing') + pos(BonusMalus) + neg(I(DrivAge ** 2))",
-    data=data,
-    family="poisson",
-    offset="Exposure"
+result = rs.glm_dict(
+    response="ClaimNb",
+    terms={
+        "VehAge": {"type": "bs", "monotonicity": "increasing"},
+        "BonusMalus": {"type": "linear", "monotonicity": "increasing"},
+        "DrivAge2": {"type": "expression", "expr": "DrivAge ** 2", "monotonicity": "decreasing"},
+    },
+    data=data, family="poisson", offset="Exposure",
 ).fit()
 ```
 
 **Supported patterns:**
-| Constraint | Effect | Example |
-|------------|--------|---------|
-| `pos(x)` | β ≥ 0 | `pos(age)` - positive effect |
-| `neg(x)` | β ≤ 0 | `neg(risk)` - negative effect |
-| `pos(I(x ** 2))` | β ≥ 0 | Upward curvature |
-| `neg(I(x ** 2))` | β ≤ 0 | Downward curvature |
+| Constraint | Term Spec | Effect |
+|------------|-----------|--------|
+| β ≥ 0 | `"monotonicity": "increasing"` | Positive effect |
+| β ≤ 0 | `"monotonicity": "decreasing"` | Negative effect |
 
 ---
 
@@ -457,20 +545,32 @@ result = rs.glm(
 
 ```python
 # Fit a standard Poisson model first
-result_poisson = rs.glm("ClaimNb ~ Age + C(Region)", data, family="poisson", offset="Exposure").fit()
+result_poisson = rs.glm_dict(
+    response="ClaimNb",
+    terms={"Age": {"type": "linear"}, "Region": {"type": "categorical"}},
+    data=data, family="poisson", offset="Exposure",
+).fit()
 
 # Check for overdispersion: Pearson χ² / df >> 1 indicates overdispersion
 dispersion_ratio = result_poisson.pearson_chi2() / result_poisson.df_resid
 print(f"Dispersion ratio: {dispersion_ratio:.2f}")  # If >> 1, use quasi-family
 
 # Fit QuasiPoisson if overdispersed
-result_quasi = rs.glm("ClaimNb ~ Age + C(Region)", data, family="quasipoisson", offset="Exposure").fit()
+result_quasi = rs.glm_dict(
+    response="ClaimNb",
+    terms={"Age": {"type": "linear"}, "Region": {"type": "categorical"}},
+    data=data, family="quasipoisson", offset="Exposure",
+).fit()
 
 # Coefficients are IDENTICAL to Poisson, but standard errors are inflated by √φ
 print(f"Estimated dispersion (φ): {result_quasi.scale():.3f}")
 
 # For binary data with overdispersion
-result_qb = rs.glm("Binary ~ x1 + x2", data, family="quasibinomial").fit()
+result_qb = rs.glm_dict(
+    response="Binary",
+    terms={"x1": {"type": "linear"}, "x2": {"type": "linear"}},
+    data=data, family="quasibinomial",
+).fit()
 ```
 
 **Key properties of quasi-families:**
@@ -484,11 +584,19 @@ result_qb = rs.glm("Binary ~ x1 + x2", data, family="quasibinomial").fit()
 
 ```python
 # Automatic θ estimation (default when theta not supplied)
-result = rs.glm("ClaimNb ~ Age + C(Region)", data, family="negbinomial", offset="Exposure").fit()
+result = rs.glm_dict(
+    response="ClaimNb",
+    terms={"Age": {"type": "linear"}, "Region": {"type": "categorical"}},
+    data=data, family="negbinomial", offset="Exposure",
+).fit()
 print(result.family)  # "NegativeBinomial(theta=2.1234)"
 
 # Fixed θ value
-result = rs.glm("ClaimNb ~ Age + C(Region)", data, family="negbinomial", theta=1.0, offset="Exposure").fit()
+result = rs.glm_dict(
+    response="ClaimNb",
+    terms={"Age": {"type": "linear"}, "Region": {"type": "categorical"}},
+    data=data, family="negbinomial", theta=1.0, offset="Exposure",
+).fit()
 
 # θ controls overdispersion: Var(Y) = μ + μ²/θ
 # - θ=0.5: Strong overdispersion (variance = μ + 2μ²)
@@ -509,19 +617,26 @@ result = rs.glm("ClaimNb ~ Age + C(Region)", data, family="negbinomial", theta=1
 ## Target Encoding for High-Cardinality Categoricals
 
 ```python
-# Formula API - TE() in formulas
-result = rs.glm(
-    "ClaimNb ~ TE(Brand) + TE(Model) + Age + C(Region)",
-    data=data,
-    family="poisson",
-    offset="Exposure"
+# Dict API - target_encoding type
+result = rs.glm_dict(
+    response="ClaimNb",
+    terms={
+        "Brand": {"type": "target_encoding"},
+        "Model": {"type": "target_encoding"},
+        "Age": {"type": "linear"},
+        "Region": {"type": "categorical"},
+    },
+    data=data, family="poisson", offset="Exposure",
 ).fit()
 
 # With options
-result = rs.glm(
-    "y ~ TE(brand, prior_weight=2.0, n_permutations=8) + age",
-    data=data,
-    family="gaussian"
+result = rs.glm_dict(
+    response="y",
+    terms={
+        "brand": {"type": "target_encoding", "prior_weight": 2.0},
+        "age": {"type": "linear"},
+    },
+    data=data, family="gaussian",
 ).fit()
 
 # Sklearn-style API
@@ -534,25 +649,32 @@ test_encoded = encoder.transform(test_categories)
 - **No target leakage**: Ordered target statistics
 - **Regularization**: Prior weight controls shrinkage toward global mean
 - **High-cardinality**: Single column instead of thousands of dummies
-- **Exposure-aware**: For frequency models with `offset="Exposure"`, TE() automatically uses claim rate (ClaimCount/Exposure) instead of raw counts, preventing near-constant encoded values
+- **Exposure-aware**: For frequency models with `offset="Exposure"`, target encoding automatically uses claim rate (ClaimCount/Exposure) instead of raw counts
 
 ---
 
-## Identity Terms for Polynomials
+## Expression Terms for Polynomials
 
 ```python
 # Polynomial terms
-result = rs.glm(
-    "y ~ age + I(age ** 2) + I(age ** 3)",
-    data=data,
-    family="gaussian"
+result = rs.glm_dict(
+    response="y",
+    terms={
+        "age": {"type": "linear"},
+        "age2": {"type": "expression", "expr": "age ** 2"},
+        "age3": {"type": "expression", "expr": "age ** 3"},
+    },
+    data=data, family="gaussian",
 ).fit()
 
 # Arithmetic expressions
-result = rs.glm(
-    "y ~ I(income / 1000) + I(weight * height)",
-    data=data,
-    family="gaussian"
+result = rs.glm_dict(
+    response="y",
+    terms={
+        "income_k": {"type": "expression", "expr": "income / 1000"},
+        "bmi": {"type": "expression", "expr": "weight / (height ** 2)"},
+    },
+    data=data, family="gaussian",
 ).fit()
 ```
 
@@ -564,7 +686,11 @@ result = rs.glm(
 
 ```python
 # Check for issues before fitting
-model = rs.glm("y ~ ns(x, df=4) + C(cat)", data, family="poisson")
+model = rs.glm_dict(
+    response="y",
+    terms={"x": {"type": "ns", "df": 4}, "cat": {"type": "categorical"}},
+    data=data, family="poisson",
+)
 results = model.validate()  # Prints diagnostics
 
 if not results['valid']:
@@ -623,11 +749,13 @@ exploration = rs.explore_data(
 
 | Feature | RustyStats | Statsmodels |
 |---------|------------|-------------|
+| **Dict-Based API** | ✅ Programmatic model building | ❌ Formula strings only |
+| **Model Serialization** | ✅ `to_bytes()` / `from_bytes()` | ❌ Pickle only (fragile) |
 | **Parallel IRLS Solver** | ✅ Multi-threaded | ❌ Single-threaded only |
 | **Native Polars Support** | ✅ Polars only | ❌ Pandas only |
-| **Built-in Lasso/Elastic Net for GLMs** | ✅ Fast coordinate descent with all families | ⚠️ Limited |
-| **Relativities Table** | ✅ `result.relativities()` for pricing | ❌ Must compute manually |
-| **Robust Standard Errors** | ✅ HC0, HC1, HC2, HC3 sandwich estimators | ✅ HC0-HC3 |
+| **Built-in Lasso/Elastic Net** | ✅ Fast coordinate descent | ⚠️ Limited |
+| **Relativities Table** | ✅ `result.relativities()` | ❌ Must compute manually |
+| **Robust Standard Errors** | ✅ HC0, HC1, HC2, HC3 | ✅ HC0-HC3 |
 
 ---
 
