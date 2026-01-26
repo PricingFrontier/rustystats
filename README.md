@@ -10,13 +10,13 @@
 
 | Family | 10K rows | 250K rows | 500K rows |
 |--------|----------|-----------|-----------|
-| Gaussian | **15.6x** | **5.7x** | **4.3x** |
-| Poisson | **16.3x** | **6.2x** | **4.2x** |
-| Binomial | **19.5x** | **6.8x** | **4.4x** |
-| Gamma | **33.7x** | **13.4x** | **8.4x** |
-| NegBinomial | **26.7x** | **6.7x** | **5.0x** |
+| Gaussian | **18.3x** | **6.4x** | **5.1x** |
+| Poisson | **19.6x** | **7.1x** | **5.2x** |
+| Binomial | **23.5x** | **7.1x** | **5.4x** |
+| Gamma | **9.0x** | **13.4x** | **8.9x** |
+| NegBinomial | **22.5x** | **7.2x** | **5.0x** |
 
-**Average speedup: 10.5x** (range: 4.2x – 33.7x)
+**Average speedup: 10.9x** (range: 5.0x – 23.5x)
 
 ### Memory Usage
 
@@ -24,32 +24,32 @@ RustyStats uses significantly less RAM by reusing buffers and avoiding Python ob
 
 | Rows | RustyStats | Statsmodels | Reduction |
 |------|------------|-------------|-----------|
-| 10K | 38 MB | 72 MB | **1.9x** |
-| 250K | 460 MB | 1,796 MB | **3.9x** |
-| 500K | 836 MB | 3,590 MB | **4.3x** |
+| 10K | 4 MB | 72 MB | **18x** |
+| 250K | 253 MB | 1,796 MB | **7.1x** |
+| 500K | 780 MB | 3,590 MB | **4.6x** |
 
-*Memory advantage grows with data size — at 500K rows, RustyStats uses ~4x less RAM.*
+*Memory advantage grows with data size — at 500K rows, RustyStats uses ~4.6x less RAM.*
 
 <details>
 <summary>Full benchmark details</summary>
 
 | Family | Rows | RustyStats | Statsmodels | Speedup |
-|--------|------|------------|-------------|---------|
-| Gaussian | 10,000 | 0.100s | 1.559s | **15.6x** |
-| Gaussian | 250,000 | 1.991s | 11.363s | **5.7x** |
-| Gaussian | 500,000 | 4.023s | 17.386s | **4.3x** |
-| Poisson | 10,000 | 0.165s | 2.692s | **16.3x** |
-| Poisson | 250,000 | 2.429s | 15.072s | **6.2x** |
-| Poisson | 500,000 | 5.668s | 23.693s | **4.2x** |
-| Binomial | 10,000 | 0.112s | 2.189s | **19.5x** |
-| Binomial | 250,000 | 1.946s | 13.155s | **6.8x** |
-| Binomial | 500,000 | 4.708s | 20.862s | **4.4x** |
-| Gamma | 10,000 | 0.129s | 4.353s | **33.7x** |
-| Gamma | 250,000 | 2.385s | 31.885s | **13.4x** |
-| Gamma | 500,000 | 5.499s | 46.167s | **8.4x** |
-| NegBinomial | 10,000 | 0.119s | 3.177s | **26.7x** |
-| NegBinomial | 250,000 | 2.281s | 15.278s | **6.7x** |
-| NegBinomial | 500,000 | 4.821s | 24.331s | **5.0x** |
+|--------|------|------------|-------------|--------|
+| Gaussian | 10,000 | 0.085s | 1.559s | **18.3x** |
+| Gaussian | 250,000 | 1.769s | 11.363s | **6.4x** |
+| Gaussian | 500,000 | 3.399s | 17.386s | **5.1x** |
+| Poisson | 10,000 | 0.137s | 2.692s | **19.6x** |
+| Poisson | 250,000 | 2.128s | 15.072s | **7.1x** |
+| Poisson | 500,000 | 4.581s | 23.693s | **5.2x** |
+| Binomial | 10,000 | 0.093s | 2.189s | **23.5x** |
+| Binomial | 250,000 | 1.851s | 13.155s | **7.1x** |
+| Binomial | 500,000 | 3.842s | 20.862s | **5.4x** |
+| Gamma | 10,000 | 0.486s | 4.353s | **9.0x** |
+| Gamma | 250,000 | 2.377s | 31.885s | **13.4x** |
+| Gamma | 500,000 | 5.202s | 46.167s | **8.9x** |
+| NegBinomial | 10,000 | 0.141s | 3.177s | **22.5x** |
+| NegBinomial | 250,000 | 2.128s | 15.278s | **7.2x** |
+| NegBinomial | 500,000 | 4.900s | 24.331s | **5.0x** |
 
 *Times are median of 3 runs. Benchmark scripts in `benchmarks/`.*
 

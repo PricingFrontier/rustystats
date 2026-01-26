@@ -315,6 +315,21 @@ class InteractionBuilder:
             getattr(self, '_smooth_col_indices', [])
         )
     
+    def clear_caches(self) -> None:
+        """
+        Clear internal caches to free memory.
+        
+        This is called automatically after design matrix construction.
+        Keeps target encoding stats (_te_stats) which are needed for prediction.
+        """
+        self._cat_encoding_cache.clear()
+        # Clear any continuous value caches
+        if hasattr(self, '_cont_cache'):
+            self._cont_cache.clear()
+        # Clear last X/names (can be large)
+        self._last_X = None
+        self._last_names = None
+    
     def _parse_spline_factor(self, factor: str) -> Optional[SplineTerm]:
         """Parse a spline term from a factor name like 'bs(VehAge, df=4)' or 'ns(age, df=3)'."""
         factor_lower = factor.strip().lower()
@@ -1209,9 +1224,25 @@ class InteractionBuilder:
             columns.append(cat_cols)
             names.extend(cat_names)
         
-        # Stack all columns
+        # Stack all columns using pre-allocation (more memory efficient than np.hstack)
         if columns:
-            X = np.hstack([c if c.ndim == 2 else c.reshape(-1, 1) for c in columns])
+            # Calculate total columns and pre-allocate
+            total_cols = 0
+            for c in columns:
+                total_cols += c.shape[1] if c.ndim == 2 else 1
+            
+            X = np.empty((self._n, total_cols), dtype=self.dtype)
+            
+            # Fill in place
+            col_idx = 0
+            for c in columns:
+                if c.ndim == 1:
+                    X[:, col_idx] = c
+                    col_idx += 1
+                else:
+                    width = c.shape[1]
+                    X[:, col_idx:col_idx + width] = c
+                    col_idx += width
         else:
             X = np.ones((self._n, 1), dtype=self.dtype)
             names = ['Intercept']

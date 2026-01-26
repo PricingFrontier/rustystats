@@ -22,6 +22,7 @@ Example
 
 from __future__ import annotations
 
+import weakref
 from typing import Optional, Union, List, Dict, Any, TYPE_CHECKING
 from dataclasses import dataclass
 import warnings
@@ -567,8 +568,13 @@ def _build_results(
     smooth_results,
     total_edf,
     gcv,
+    store_design_matrix: bool = False,
 ) -> "FormulaGLMResults":
     """Build FormulaGLMResults with all metadata."""
+    # Clear builder caches to free memory (keep TE stats for prediction)
+    if builder is not None:
+        builder.clear_caches()
+    
     return FormulaGLMResults(
         result=result,
         feature_names=feature_names,
@@ -576,7 +582,7 @@ def _build_results(
         family=family,
         link=link,
         builder=builder,
-        design_matrix=X,
+        design_matrix=X if store_design_matrix else None,
         offset_spec=offset_spec,
         offset_is_exposure=is_exposure_offset,
         regularization_path_info=path_info,
@@ -664,7 +670,8 @@ class FormulaGLM:
         seed: Optional[int] = None,
     ):
         self.formula = formula
-        self.data = data
+        # Store weak reference to data to allow garbage collection
+        self._data_ref = weakref.ref(data)
         self.family = family.lower()
         self.link = link
         self.var_power = var_power
@@ -696,6 +703,17 @@ class FormulaGLM:
         
         # Process weights
         self.weights = self._process_weights(weights)
+    
+    @property
+    def data(self):
+        """Access the original DataFrame (may raise if garbage collected)."""
+        d = self._data_ref()
+        if d is None:
+            raise RuntimeError(
+                "Original DataFrame has been garbage collected. "
+                "Keep a reference to the DataFrame if you need to access it after fitting."
+            )
+        return d
     
     def _uses_log_link(self) -> bool:
         """
@@ -1009,6 +1027,8 @@ class FormulaGLM:
         cv_seed: Optional[int] = None,
         include_unregularized: bool = True,
         verbose: bool = False,
+        # Memory optimization
+        store_design_matrix: bool = False,
     ):
         """
         Fit the GLM model, optionally with regularization.
@@ -1086,6 +1106,11 @@ class FormulaGLM:
         >>> result = model.fit(cv=5, regularization="ridge", selection="1se")
         >>> print(f"Selected alpha: {result.alpha}")
         >>> print(f"CV deviance: {result.cv_deviance}")
+        
+        store_design_matrix : bool, default=False
+            Whether to store the design matrix in results. Set to True if you
+            need to compute VIF or other diagnostics that require the design
+            matrix. Default is False to reduce memory usage.
         """
         from rustystats._rustystats import fit_glm_py as _fit_glm_rust, fit_negbinomial_py as _fit_negbinomial_rust
         
@@ -1204,6 +1229,7 @@ class FormulaGLM:
             result, self.feature_names, self.formula, result_family, self.link,
             self._builder, self.X, self._offset_spec, is_exposure_offset, path_info,
             self._smooth_results, self._total_edf, self._gcv,
+            store_design_matrix=store_design_matrix,
         )
 
 
@@ -2405,7 +2431,8 @@ class FormulaGLMDict:
         self.terms = terms
         self.interactions_spec = interactions
         self.intercept = intercept
-        self.data = data
+        # Store weak reference to data to allow garbage collection
+        self._data_ref = weakref.ref(data)
         self.family = family.lower()
         self.link = link
         self.var_power = var_power
@@ -2469,6 +2496,17 @@ class FormulaGLMDict:
         parts.append(" + ".join(term_strs) if term_strs else "1")
         return " ".join(parts)
     
+    @property
+    def data(self):
+        """Access the original DataFrame (may raise if garbage collected)."""
+        d = self._data_ref()
+        if d is None:
+            raise RuntimeError(
+                "Original DataFrame has been garbage collected. "
+                "Keep a reference to the DataFrame if you need to access it after fitting."
+            )
+        return d
+    
     def _get_raw_exposure(self, offset) -> Optional[np.ndarray]:
         """Extract raw exposure values for target encoding."""
         if offset is None:
@@ -2515,6 +2553,8 @@ class FormulaGLMDict:
         cv_seed: Optional[int] = None,
         include_unregularized: bool = True,
         verbose: bool = False,
+        # Memory optimization
+        store_design_matrix: bool = False,
     ) -> FormulaGLMResults:
         """
         Fit the GLM model, optionally with regularization.
@@ -2633,6 +2673,7 @@ class FormulaGLMDict:
             result, self.feature_names, self.formula, result_family, self.link,
             self._builder, self.X, self._offset_spec, is_exposure_offset, path_info,
             self._smooth_results, self._total_edf, self._gcv,
+            store_design_matrix=store_design_matrix,
         )
 
 
