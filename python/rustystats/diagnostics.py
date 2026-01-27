@@ -673,8 +673,17 @@ def _to_dict_recursive(obj) -> Any:
         return {k: _to_dict_recursive(v) for k, v in obj.items()}
     elif isinstance(obj, list):
         return [_to_dict_recursive(v) for v in obj]
+    elif isinstance(obj, SmoothTermDiagnostics):
+        # Use custom to_dict() for SmoothTermDiagnostics to rename lambda_ -> lambda
+        return obj.to_dict()
     elif hasattr(obj, '__dataclass_fields__'):
-        return {k: _to_dict_recursive(v) for k, v in asdict(obj).items()}
+        # Iterate manually to allow _to_dict_recursive to handle nested objects
+        # before asdict() converts them (asdict converts nested dataclasses to dicts)
+        result = {}
+        for field_name in obj.__dataclass_fields__:
+            value = getattr(obj, field_name)
+            result[field_name] = _to_dict_recursive(value)
+        return result
     elif isinstance(obj, float):
         if math.isnan(obj) or math.isinf(obj):
             return None
@@ -3744,6 +3753,117 @@ def explore_data(
 
 
 # =============================================================================
+# Smooth Term Diagnostics
+# =============================================================================
+
+def _compute_smooth_term_diagnostics(
+    result,
+    warnings: List[Dict[str, str]],
+) -> List[SmoothTermDiagnostics]:
+    """
+    Compute diagnostics for smooth terms including EDF and significance tests.
+    
+    Uses a Wald-type chi-squared test to assess whether the smooth term as a
+    whole is significant. The test statistic is β' × Cov⁻¹ × β where β are
+    the coefficients for the smooth term and Cov is the corresponding
+    submatrix of the covariance matrix.
+    
+    Parameters
+    ----------
+    result : GLMModel
+        Fitted model with smooth terms
+    warnings : list
+        List to append warnings to
+        
+    Returns
+    -------
+    list of SmoothTermDiagnostics
+        Diagnostics for each smooth term
+    """
+    if not hasattr(result, 'smooth_terms') or result.smooth_terms is None:
+        return []
+    
+    smooth_diagnostics = []
+    params = result.params
+    
+    # Get covariance matrix (unscaled)
+    cov_matrix = None
+    if hasattr(result, '_result') and hasattr(result._result, 'covariance_unscaled'):
+        cov_matrix = result._result.covariance_unscaled
+    elif hasattr(result, 'cov_params'):
+        cov_matrix = result.cov_params()
+    
+    for st in result.smooth_terms:
+        # Extract coefficient indices for this smooth term
+        col_start = st.col_start
+        col_end = st.col_end
+        n_coef = col_end - col_start
+        
+        # Get coefficients for this term
+        beta = params[col_start:col_end]
+        
+        # Compute Wald chi-squared statistic
+        chi2 = 0.0
+        ref_df = st.edf  # Use EDF as reference df
+        p_value = 1.0
+        
+        if cov_matrix is not None and n_coef > 0:
+            try:
+                # Extract covariance submatrix for this term
+                cov_sub = cov_matrix[col_start:col_end, col_start:col_end]
+                
+                # Compute Wald statistic: β' × Cov⁻¹ × β
+                # Use pseudo-inverse for numerical stability
+                cov_inv = np.linalg.pinv(cov_sub)
+                chi2 = float(beta @ cov_inv @ beta)
+                
+                # P-value from chi-squared distribution with EDF degrees of freedom
+                # Use EDF as the reference df (as in mgcv)
+                if chi2 > 0 and ref_df > 0:
+                    p_value = 1.0 - _chi2_cdf(chi2, ref_df)
+            except (np.linalg.LinAlgError, ValueError) as e:
+                # Singular matrix - warn and fall back to simpler test
+                warnings.append({
+                    "type": "smooth_significance_fallback",
+                    "message": f"Covariance matrix singular for s({st.variable}), using simplified test: {e}"
+                })
+                chi2 = float(np.sum(beta ** 2))
+                ref_df = float(n_coef)
+                if chi2 > 0 and ref_df > 0:
+                    p_value = 1.0 - _chi2_cdf(chi2, ref_df)
+        
+        smooth_diag = SmoothTermDiagnostics(
+            variable=st.variable,
+            k=st.k,
+            edf=st.edf,
+            lambda_=st.lambda_,
+            gcv=st.gcv,
+            ref_df=ref_df,
+            chi2=chi2,
+            p_value=p_value,
+        )
+        smooth_diagnostics.append(smooth_diag)
+        
+        # Add warning for non-significant smooth terms
+        if p_value > 0.05:
+            warnings.append({
+                "type": "insignificant_smooth",
+                "message": f"Smooth term s({st.variable}) is not significant "
+                          f"(p={p_value:.3f}, EDF={st.edf:.1f}). "
+                          f"Consider using linear term or removing."
+            })
+        # Add warning for EDF close to k (under-smoothed)
+        elif st.edf > st.k - 1.5:
+            warnings.append({
+                "type": "undersmoothed",
+                "message": f"Smooth term s({st.variable}) has EDF≈k ({st.edf:.1f}/{st.k}). "
+                          f"Consider increasing k for more flexibility."
+            })
+    
+    return smooth_diagnostics
+
+
+# =============================================================================
 # Post-Fit Model Diagnostics
 # =============================================================================
 
@@ -3950,23 +4070,16 @@ def compute_diagnostics(
     residual_summary = computer.compute_residual_summary()
     
     # Get matrices for score test (for unfitted factors)
+    # These are needed for Rao's score test on unfitted variables
     score_test_design_matrix = None
     score_test_bread_matrix = None
     score_test_irls_weights = None
-    try:
-        if hasattr(result, 'get_design_matrix'):
-            score_test_design_matrix = result.get_design_matrix()
-        if hasattr(result, 'get_bread_matrix'):
-            score_test_bread_matrix = result.get_bread_matrix()
-        if hasattr(result, 'get_irls_weights'):
-            score_test_irls_weights = result.get_irls_weights()
-    except Exception as e:
-        import warnings
-        warnings.warn(
-            f"Could not retrieve matrices for score tests: {e}. "
-            "Score tests for unfitted factors will be skipped.",
-            RuntimeWarning
-        )
+    if hasattr(result, 'get_design_matrix'):
+        score_test_design_matrix = result.get_design_matrix()
+    if hasattr(result, 'get_bread_matrix'):
+        score_test_bread_matrix = result.get_bread_matrix()
+    if hasattr(result, 'get_irls_weights'):
+        score_test_irls_weights = result.get_irls_weights()
     
     factors = computer.compute_factor_diagnostics(
         data=train_data,
@@ -4260,6 +4373,11 @@ def compute_diagnostics(
         if not spline_info:  # Empty dict -> None
             spline_info = None
     
+    # Smooth term diagnostics with EDF and significance tests
+    smooth_term_diagnostics = None
+    if hasattr(result, 'has_smooth_terms') and result.has_smooth_terms():
+        smooth_term_diagnostics = _compute_smooth_term_diagnostics(result, warnings)
+    
     diagnostics = ModelDiagnostics(
         model_summary=model_summary,
         train_test=train_test,
@@ -4276,6 +4394,7 @@ def compute_diagnostics(
         partial_dependence=partial_dep,
         overdispersion=overdispersion_result,
         spline_info=spline_info,
+        smooth_terms=smooth_term_diagnostics,
     )
     
     # Auto-save JSON to analysis folder

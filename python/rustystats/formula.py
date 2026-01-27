@@ -264,7 +264,7 @@ def _fit_with_smooth_penalties(
         # Build result object compatible with existing code
         # Create a mock result object with the needed attributes
         class FastResult:
-            def __init__(self, d, y, family_name):
+            def __init__(self, d, y, family_name, design_matrix=None, weights=None):
                 self.coefficients = d['coefficients']
                 self.fitted_values = d['fitted_values']
                 self.linear_predictor = d['linear_predictor']
@@ -272,6 +272,20 @@ def _fit_with_smooth_penalties(
                 self.iterations = d['iterations']
                 self.converged = d['converged']
                 self.covariance_unscaled = d['covariance_unscaled']
+                self.cov_params_unscaled = d['covariance_unscaled']  # Alias for compatibility
+                # Store design matrix and weights for score tests
+                self.design_matrix = design_matrix
+                self._weights = weights
+                # Compute IRLS weights from fitted values (W = mu for Poisson, 1 for Gaussian)
+                if family_name.lower() == 'poisson':
+                    self.irls_weights = self.fitted_values
+                elif family_name.lower() == 'binomial':
+                    mu = np.clip(self.fitted_values, 1e-10, 1 - 1e-10)
+                    self.irls_weights = mu * (1 - mu)
+                elif family_name.lower() == 'gamma':
+                    self.irls_weights = self.fitted_values ** 2
+                else:  # Gaussian
+                    self.irls_weights = np.ones(len(self.fitted_values))
                 # Additional attributes needed for summary()
                 self._y = y
                 self._family_name = family_name
@@ -372,7 +386,7 @@ def _fit_with_smooth_penalties(
             def scale(self):
                 return 1.0
         
-        result = FastResult(rust_result, y, family)
+        result = FastResult(rust_result, y, family, design_matrix=X, weights=weights)
         
         # Build smooth term result
         smooth_results = [SmoothTermResult(

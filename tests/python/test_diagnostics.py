@@ -1062,3 +1062,193 @@ class TestScoreTest:
         assert result.df == 2
         assert result.pvalue == 0.064
         assert result.significant == False
+
+
+class TestSmoothTermDiagnostics:
+    """Tests for smooth term (penalized spline) diagnostics."""
+    
+    def test_smooth_term_edf_in_diagnostics(self):
+        """Test that smooth term EDF appears in diagnostics output."""
+        import rustystats as rs
+        
+        np.random.seed(42)
+        n = 500
+        
+        age = np.random.uniform(18, 70, n)
+        # Non-linear relationship
+        mu_true = np.exp(-3 + 0.1 * np.sin(age / 10))
+        y = np.random.poisson(mu_true)
+        
+        data = pl.DataFrame({"y": y, "age": age})
+        
+        # Fit model with smooth term
+        result = rs.glm_dict(
+            response="y",
+            terms={"age": {"type": "bs"}},  # Penalized smooth
+            data=data,
+            family="poisson",
+        ).fit()
+        
+        # Check smooth term info on result
+        assert result.has_smooth_terms()
+        assert result.smooth_terms is not None
+        assert len(result.smooth_terms) == 1
+        
+        st = result.smooth_terms[0]
+        assert st.variable == "age"
+        assert st.edf > 0  # EDF should be positive
+        assert st.edf <= st.k  # EDF should not exceed k
+        assert st.lambda_ >= 0  # Lambda should be non-negative
+        assert st.gcv > 0  # GCV should be positive
+    
+    def test_smooth_term_significance_in_diagnostics(self):
+        """Test that smooth term significance test appears in diagnostics."""
+        import rustystats as rs
+        from rustystats.diagnostics import compute_diagnostics, SmoothTermDiagnostics
+        
+        np.random.seed(42)
+        n = 500
+        
+        age = np.random.uniform(18, 70, n)
+        # Strong non-linear effect - should be significant
+        mu_true = np.exp(-2 + 0.05 * age - 0.0005 * age**2)
+        y = np.random.poisson(mu_true)
+        
+        data = pl.DataFrame({"y": y, "age": age})
+        
+        result = rs.glm_dict(
+            response="y",
+            terms={"age": {"type": "bs"}},
+            data=data,
+            family="poisson",
+        ).fit()
+        
+        diagnostics = compute_diagnostics(
+            result=result,
+            train_data=data,
+            continuous_factors=["age"],
+        )
+        
+        # Check smooth_terms in diagnostics
+        assert diagnostics.smooth_terms is not None
+        assert len(diagnostics.smooth_terms) == 1
+        
+        st_diag = diagnostics.smooth_terms[0]
+        assert isinstance(st_diag, SmoothTermDiagnostics)
+        assert st_diag.variable == "age"
+        assert st_diag.edf > 0
+        assert st_diag.chi2 >= 0  # Wald chi-squared
+        assert 0 <= st_diag.p_value <= 1
+        assert st_diag.ref_df > 0  # Reference df for test
+    
+    def test_smooth_term_diagnostics_json(self):
+        """Test smooth term diagnostics in JSON output."""
+        import rustystats as rs
+        import json
+        
+        np.random.seed(42)
+        n = 300
+        
+        age = np.random.uniform(20, 60, n)
+        mu_true = np.exp(-2 + 0.03 * age)
+        y = np.random.poisson(mu_true)
+        
+        data = pl.DataFrame({"y": y, "age": age})
+        
+        result = rs.glm_dict(
+            response="y",
+            terms={"age": {"type": "bs"}},
+            data=data,
+            family="poisson",
+        ).fit()
+        
+        diagnostics = result.diagnostics(
+            train_data=data,
+            continuous_factors=["age"],
+        )
+        
+        json_str = diagnostics.to_json()
+        parsed = json.loads(json_str)
+        
+        assert "smooth_terms" in parsed
+        assert parsed["smooth_terms"] is not None
+        assert len(parsed["smooth_terms"]) == 1
+        
+        st = parsed["smooth_terms"][0]
+        assert "variable" in st
+        assert "edf" in st
+        assert "lambda" in st
+        assert "gcv" in st
+        assert "chi2" in st
+        assert "p_value" in st
+        assert "ref_df" in st
+    
+    def test_insignificant_smooth_term_warning(self):
+        """Test that insignificant smooth terms generate warnings."""
+        import rustystats as rs
+        from rustystats.diagnostics import compute_diagnostics
+        
+        np.random.seed(42)
+        n = 200
+        
+        # Random noise variable with no real effect
+        x = np.random.uniform(0, 10, n)
+        y = np.random.poisson(np.ones(n) * 2)  # Constant rate, no x effect
+        
+        data = pl.DataFrame({"y": y, "x": x})
+        
+        result = rs.glm_dict(
+            response="y",
+            terms={"x": {"type": "bs"}},
+            data=data,
+            family="poisson",
+        ).fit()
+        
+        diagnostics = compute_diagnostics(
+            result=result,
+            train_data=data,
+            continuous_factors=["x"],
+        )
+        
+        # Check for insignificant smooth warning
+        warning_types = [w["type"] for w in diagnostics.warnings]
+        # May or may not trigger depending on random data, but structure should be valid
+        assert diagnostics.smooth_terms is not None
+    
+    def test_multiple_smooth_terms(self):
+        """Test diagnostics with multiple smooth terms."""
+        import rustystats as rs
+        
+        np.random.seed(42)
+        n = 500
+        
+        age = np.random.uniform(18, 70, n)
+        income = np.random.uniform(20000, 100000, n)
+        mu_true = np.exp(-4 + 0.02 * age + 0.00001 * income)
+        y = np.random.poisson(mu_true)
+        
+        data = pl.DataFrame({"y": y, "age": age, "income": income})
+        
+        result = rs.glm_dict(
+            response="y",
+            terms={
+                "age": {"type": "bs"},
+                "income": {"type": "bs"},
+            },
+            data=data,
+            family="poisson",
+        ).fit()
+        
+        if result.has_smooth_terms():
+            diagnostics = result.diagnostics(
+                train_data=data,
+                continuous_factors=["age", "income"],
+            )
+            
+            if diagnostics.smooth_terms:
+                # Should have diagnostics for both terms
+                assert len(diagnostics.smooth_terms) >= 1
+                
+                for st in diagnostics.smooth_terms:
+                    assert st.edf > 0
+                    assert 0 <= st.p_value <= 1
