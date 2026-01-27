@@ -569,13 +569,15 @@ def _build_results(
     total_edf,
     gcv,
     store_design_matrix: bool = False,
-) -> "FormulaGLMResults":
-    """Build FormulaGLMResults with all metadata."""
+    terms_dict: Optional[Dict[str, Dict[str, Any]]] = None,
+    interactions_spec: Optional[List[Dict[str, Any]]] = None,
+) -> "GLMModel":
+    """Build GLMModel with all metadata."""
     # Clear builder caches to free memory (keep TE stats for prediction)
     if builder is not None:
         builder.clear_caches()
     
-    return FormulaGLMResults(
+    return GLMModel(
         result=result,
         feature_names=feature_names,
         formula=formula,
@@ -589,6 +591,8 @@ def _build_results(
         smooth_results=smooth_results,
         total_edf=total_edf,
         gcv=gcv,
+        terms_dict=terms_dict,
+        interactions_spec=interactions_spec,
     )
 
 
@@ -1084,7 +1088,7 @@ class FormulaGLM:
             
         Returns
         -------
-        FormulaGLMResults
+        GLMModel
             Fitted model results with feature names attached.
             When cv is used, includes additional attributes:
             - cv_deviance: CV deviance at selected alpha
@@ -1237,7 +1241,7 @@ class _DeserializedResult:
     """
     Minimal result object for deserialized models.
     
-    This provides the interface needed by FormulaGLMResults for prediction
+    This provides the interface needed by GLMModel for prediction
     without requiring the full Rust GLMResults object.
     
     Note: fittedvalues and linear_predictor are not stored as they're
@@ -1627,7 +1631,7 @@ class _DeserializedBuilder:
         return X
 
 
-class FormulaGLMResults:
+class GLMModel:
     """
     Results from a formula-based GLM fit.
     
@@ -1659,6 +1663,8 @@ class FormulaGLMResults:
         smooth_results: Optional[List[SmoothTermResult]] = None,
         total_edf: Optional[float] = None,
         gcv: Optional[float] = None,
+        terms_dict: Optional[Dict[str, Dict[str, Any]]] = None,
+        interactions_spec: Optional[List[Dict[str, Any]]] = None,
     ):
         self._result = result
         self._smooth_results = smooth_results
@@ -1673,6 +1679,8 @@ class FormulaGLMResults:
         self._design_matrix = design_matrix  # Store for VIF calculation
         self._offset_spec = offset_spec
         self._offset_is_exposure = offset_is_exposure
+        self._terms_dict = terms_dict
+        self._interactions_spec = interactions_spec
     
     @property
     def smooth_terms(self) -> Optional[List[SmoothTermResult]]:
@@ -1692,6 +1700,16 @@ class FormulaGLMResults:
     def has_smooth_terms(self) -> bool:
         """Check if model contains smooth terms with automatic smoothing."""
         return self._smooth_results is not None and len(self._smooth_results) > 0
+    
+    @property
+    def terms_dict(self) -> Optional[Dict[str, Dict[str, Any]]]:
+        """Original terms dictionary used to specify the model (dict API only)."""
+        return self._terms_dict
+    
+    @property
+    def interactions_spec(self) -> Optional[List[Dict[str, Any]]]:
+        """Original interactions specification used to specify the model (dict API only)."""
+        return self._interactions_spec
     
     # Delegate to underlying result
     @property
@@ -2378,7 +2396,7 @@ class FormulaGLMResults:
         """
         Serialize the fitted model to bytes for storage or transfer.
         
-        The serialized model can be loaded with `FormulaGLMResults.from_bytes()`.
+        The serialized model can be loaded with `GLMModel.from_bytes()`.
         All state needed for prediction is preserved, including:
         - Coefficients and feature names
         - Categorical encoding levels
@@ -2401,7 +2419,7 @@ class FormulaGLMResults:
         >>> 
         >>> # Load later
         >>> with open("model.bin", "rb") as f:
-        ...     loaded = rs.FormulaGLMResults.from_bytes(f.read())
+        ...     loaded = rs.GLMModel.from_bytes(f.read())
         >>> predictions = loaded.predict(new_data)
         """
         import pickle
@@ -2447,12 +2465,14 @@ class FormulaGLMResults:
             "smooth_results": self._smooth_results,
             "total_edf": self._total_edf,
             "gcv": self._gcv,
+            "terms_dict": self._terms_dict,
+            "interactions_spec": self._interactions_spec,
         }
         
         return pickle.dumps(state, protocol=pickle.HIGHEST_PROTOCOL)
     
     @classmethod
-    def from_bytes(cls, data: bytes) -> "FormulaGLMResults":
+    def from_bytes(cls, data: bytes) -> "GLMModel":
         """
         Load a fitted model from bytes.
         
@@ -2463,14 +2483,14 @@ class FormulaGLMResults:
             
         Returns
         -------
-        FormulaGLMResults
+        GLMModel
             Reconstructed fitted model ready for prediction.
             
         Examples
         --------
         >>> # Load from file
         >>> with open("model.bin", "rb") as f:
-        ...     result = rs.FormulaGLMResults.from_bytes(f.read())
+        ...     result = rs.GLMModel.from_bytes(f.read())
         >>> 
         >>> # Make predictions
         >>> predictions = result.predict(new_data)
@@ -2521,11 +2541,13 @@ class FormulaGLMResults:
             smooth_results=state["smooth_results"],
             total_edf=state["total_edf"],
             gcv=state["gcv"],
+            terms_dict=state.get("terms_dict"),
+            interactions_spec=state.get("interactions_spec"),
         )
     
     def __repr__(self) -> str:
         return (
-            f"<FormulaGLMResults: {self.family} family, "
+            f"<GLMModel: {self.family} family, "
             f"{len(self.params)} parameters, "
             f"deviance={self.deviance:.2f}>"
         )
@@ -3098,7 +3120,7 @@ class FormulaGLMDict:
         verbose: bool = False,
         # Memory optimization
         store_design_matrix: bool = False,
-    ) -> FormulaGLMResults:
+    ) -> GLMModel:
         """
         Fit the GLM model, optionally with regularization.
         
@@ -3143,7 +3165,7 @@ class FormulaGLMDict:
             
         Returns
         -------
-        FormulaGLMResults
+        GLMModel
             Fitted model results.
         """
         is_negbinomial = is_negbinomial_family(self.family)
@@ -3217,6 +3239,8 @@ class FormulaGLMDict:
             self._builder, self.X, self._offset_spec, is_exposure_offset, path_info,
             self._smooth_results, self._total_edf, self._gcv,
             store_design_matrix=store_design_matrix,
+            terms_dict=self.terms,
+            interactions_spec=self.interactions_spec,
         )
 
 

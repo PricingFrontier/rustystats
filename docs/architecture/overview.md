@@ -209,7 +209,7 @@ User calls rs.glm("y ~ x1 + C(cat)", data).fit()
 │ Back to Python                           │
 │ - Wrap IRLSResult as PyGLMResults        │
 │ - Convert arrays back to NumPy           │
-│ - Return FormulaGLMResults to user       │
+│ - Return GLMModel to user       │
 └──────────────────────────────────────────┘
 ```
 

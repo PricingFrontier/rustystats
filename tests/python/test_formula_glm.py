@@ -5,7 +5,7 @@ Tests cover:
 - FormulaGLM class construction
 - Offset and weight processing
 - Multiple GLM families (Gaussian, Poisson, Binomial, Gamma, NegBinomial)
-- FormulaGLMResults attributes and methods
+- GLMModel attributes and methods
 - Regularization (Ridge, Lasso, Elastic Net)
 - Cross-validation based regularization
 - Model diagnostics and residuals
@@ -234,11 +234,11 @@ class TestGLMFitting:
 
 
 # =============================================================================
-# FormulaGLMResults Tests
+# GLMModel Tests
 # =============================================================================
 
-class TestFormulaGLMResults:
-    """Test FormulaGLMResults attributes and methods."""
+class TestGLMModel:
+    """Test GLMModel attributes and methods."""
     
     @pytest.fixture
     def fitted_result(self):

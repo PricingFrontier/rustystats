@@ -131,7 +131,7 @@ Object returned by `glm()`.
 
 | Method | Description |
 |--------|-------------|
-| `.fit()` | Fit the model, returns FormulaGLMResults |
+| `.fit()` | Fit the model, returns GLMModel |
 
 ### Example
 
@@ -142,7 +142,7 @@ result = model.fit()
 
 ---
 
-## FormulaGLMResults
+## GLMModel
 
 Results from fitting a formula-based GLM. Inherits all methods from `GLMResults` plus formula-specific methods.
 

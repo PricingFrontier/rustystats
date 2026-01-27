@@ -1136,7 +1136,7 @@ class DiagnosticsComputer:
     def compute_factor_significance(
         self,
         name: str,
-        result,  # GLMResults or FormulaGLMResults
+        result,  # GLMResults or GLMModel
     ) -> Optional[FactorSignificance]:
         """
         Compute significance tests for a factor in the model.
@@ -1844,7 +1844,7 @@ class DiagnosticsComputer:
     
     def compute_coefficient_summary(
         self,
-        result,  # GLMResults or FormulaGLMResults
+        result,  # GLMResults or GLMModel
         link: str = "log",
     ) -> List[CoefficientSummary]:
         """
@@ -3748,7 +3748,7 @@ def explore_data(
 # =============================================================================
 
 def compute_diagnostics(
-    result,  # GLMResults or FormulaGLMResults
+    result,  # GLMResults or GLMModel
     train_data: "pl.DataFrame",
     categorical_factors: Optional[List[str]] = None,
     continuous_factors: Optional[List[str]] = None,
@@ -3780,7 +3780,7 @@ def compute_diagnostics(
     
     Parameters
     ----------
-    result : GLMResults or FormulaGLMResults
+    result : GLMResults or GLMModel
         Fitted model results.
     train_data : pl.DataFrame
         Training data used for fitting.

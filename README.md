@@ -20,8 +20,6 @@
 
 ### Memory Usage
 
-RustyStats uses significantly less RAM by reusing buffers and avoiding Python object overhead:
-
 | Rows | RustyStats | Statsmodels | Reduction |
 |------|------------|-------------|-----------|
 | 10K | 4 MB | 72 MB | **18x** |
@@ -63,8 +61,8 @@ RustyStats uses significantly less RAM by reusing buffers and avoiding Python ob
 - **Fast** - Parallel Rust backend, 4-30x faster than statsmodels
 - **Memory Efficient** - 4x less RAM than statsmodels at scale
 - **Stable** - Step-halving IRLS, warm starts for robust convergence
-- **Splines** - B-splines and natural splines with auto-tuned smoothing
-- **Target Encoding** - CatBoost-style encoding for high-cardinality categoricals (exposure-aware)
+- **Splines** - B-splines and natural splines with auto-tuned smoothing and monotonicity
+- **Target Encoding** - Ordered target encoding for high-cardinality categoricals
 - **Regularisation** - Ridge, Lasso, and Elastic Net via coordinate descent
 - **Serialization** - Save/load fitted models with `to_bytes()` / `from_bytes()`
 - **Validation** - Design matrix checks with fix suggestions before fitting
@@ -296,7 +294,7 @@ with open("model.bin", "wb") as f:
 
 # Load later
 with open("model.bin", "rb") as f:
-    loaded = rs.FormulaGLMResults.from_bytes(f.read())
+    loaded = rs.GLMModel.from_bytes(f.read())
 
 # Predict with loaded model
 predictions = loaded.predict(new_data)
@@ -315,7 +313,7 @@ predictions = loaded.predict(new_data)
 
 ## Regularization
 
-### CV-Based Regularization (Recommended)
+### CV-Based Regularization
 
 ```python
 # Just specify regularization type - cv=5 is automatic
@@ -498,7 +496,7 @@ basis = rs.bs(x, df=5, monotonicity='decreasing')  # Fixed df, decreasing
 
 ## Coefficient Constraints
 
-Constrain coefficient signs using `monotonicity` on linear and expression terms. Useful for enforcing business logic.
+Constrain coefficient signs using `monotonicity` on linear and expression terms.
 
 ```python
 # Constrain age coefficient to be positive
@@ -573,11 +571,6 @@ result_qb = rs.glm_dict(
 ).fit()
 ```
 
-**Key properties of quasi-families:**
-- **Point estimates**: Identical to base family (Poisson/Binomial)
-- **Standard errors**: Inflated by √φ where φ = Pearson χ²/(n-p)
-- **P-values**: More conservative (larger), accounting for extra variance
-
 ---
 
 ## Negative Binomial for Overdispersed Counts
@@ -598,20 +591,7 @@ result = rs.glm_dict(
     data=data, family="negbinomial", theta=1.0, offset="Exposure",
 ).fit()
 
-# θ controls overdispersion: Var(Y) = μ + μ²/θ
-# - θ=0.5: Strong overdispersion (variance = μ + 2μ²)
-# - θ=1.0: Moderate overdispersion (variance = μ + μ²)
-# - θ→∞: Approaches Poisson (variance = μ)
 ```
-
-**NegativeBinomial vs QuasiPoisson:**
-| Aspect | QuasiPoisson | NegativeBinomial |
-|--------|--------------|------------------|
-| **Variance** | φ × μ | μ + μ²/θ |
-| **True distribution** | No (quasi) | Yes |
-| **AIC/BIC valid** | Questionable | Yes |
-| **Prediction intervals** | Not principled | Proper |
-
 ---
 
 ## Target Encoding for High-Cardinality Categoricals
@@ -750,7 +730,6 @@ exploration = rs.explore_data(
 | Feature | RustyStats | Statsmodels |
 |---------|------------|-------------|
 | **Dict-Based API** | ✅ Programmatic model building | ❌ Formula strings only |
-| **Model Serialization** | ✅ `to_bytes()` / `from_bytes()` | ❌ Pickle only (fragile) |
 | **Parallel IRLS Solver** | ✅ Multi-threaded | ❌ Single-threaded only |
 | **Native Polars Support** | ✅ Polars only | ❌ Pandas only |
 | **Built-in Lasso/Elastic Net** | ✅ Fast coordinate descent | ⚠️ Limited |

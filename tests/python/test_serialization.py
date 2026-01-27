@@ -37,7 +37,7 @@ class TestBasicSerialization:
         assert len(model_bytes) > 0
         
         # Deserialize
-        loaded = rs.FormulaGLMResults.from_bytes(model_bytes)
+        loaded = rs.GLMModel.from_bytes(model_bytes)
         
         # Check basic properties
         assert loaded.family == result.family
@@ -51,7 +51,7 @@ class TestBasicSerialization:
         result = rs.glm("y ~ x1 + C(cat)", sample_data, family="poisson").fit()
         
         model_bytes = result.to_bytes()
-        loaded = rs.FormulaGLMResults.from_bytes(model_bytes)
+        loaded = rs.GLMModel.from_bytes(model_bytes)
         
         np.testing.assert_array_almost_equal(loaded.params, result.params)
         assert loaded.feature_names == result.feature_names
@@ -66,7 +66,7 @@ class TestBasicSerialization:
         ).fit()
         
         model_bytes = result.to_bytes()
-        loaded = rs.FormulaGLMResults.from_bytes(model_bytes)
+        loaded = rs.GLMModel.from_bytes(model_bytes)
         
         np.testing.assert_array_almost_equal(loaded.params, result.params)
 
@@ -83,7 +83,7 @@ class TestPredictionAfterLoad:
         original_pred = result.predict(test)
         
         # Serialize and load
-        loaded = rs.FormulaGLMResults.from_bytes(result.to_bytes())
+        loaded = rs.GLMModel.from_bytes(result.to_bytes())
         loaded_pred = loaded.predict(test)
         
         np.testing.assert_array_almost_equal(original_pred, loaded_pred)
@@ -101,7 +101,7 @@ class TestPredictionAfterLoad:
         ).fit()
         original_pred = result.predict(test)
         
-        loaded = rs.FormulaGLMResults.from_bytes(result.to_bytes())
+        loaded = rs.GLMModel.from_bytes(result.to_bytes())
         loaded_pred = loaded.predict(test)
         
         np.testing.assert_array_almost_equal(original_pred, loaded_pred)
@@ -119,7 +119,7 @@ class TestSplineSerialization:
         ).fit()
         
         model_bytes = result.to_bytes()
-        loaded = rs.FormulaGLMResults.from_bytes(model_bytes)
+        loaded = rs.GLMModel.from_bytes(model_bytes)
         
         np.testing.assert_array_almost_equal(loaded.params, result.params)
     
@@ -135,7 +135,7 @@ class TestSplineSerialization:
         ).fit()
         original_pred = result.predict(test)
         
-        loaded = rs.FormulaGLMResults.from_bytes(result.to_bytes())
+        loaded = rs.GLMModel.from_bytes(result.to_bytes())
         loaded_pred = loaded.predict(test)
         
         np.testing.assert_array_almost_equal(original_pred, loaded_pred)
@@ -149,7 +149,7 @@ class TestInteractionSerialization:
         result = rs.glm("y ~ x1*x2", sample_data, family="poisson").fit()
         
         model_bytes = result.to_bytes()
-        loaded = rs.FormulaGLMResults.from_bytes(model_bytes)
+        loaded = rs.GLMModel.from_bytes(model_bytes)
         
         np.testing.assert_array_almost_equal(loaded.params, result.params)
     
@@ -161,7 +161,7 @@ class TestInteractionSerialization:
         result = rs.glm("y ~ C(cat)*x1", train, family="poisson").fit()
         original_pred = result.predict(test)
         
-        loaded = rs.FormulaGLMResults.from_bytes(result.to_bytes())
+        loaded = rs.GLMModel.from_bytes(result.to_bytes())
         loaded_pred = loaded.predict(test)
         
         np.testing.assert_array_almost_equal(original_pred, loaded_pred)
@@ -173,7 +173,7 @@ class TestModelProperties:
     def test_properties_preserved(self, sample_data):
         """Test that key properties are preserved."""
         result = rs.glm("y ~ x1 + x2 + C(cat)", sample_data, family="poisson").fit()
-        loaded = rs.FormulaGLMResults.from_bytes(result.to_bytes())
+        loaded = rs.GLMModel.from_bytes(result.to_bytes())
         
         assert loaded.deviance == result.deviance
         assert loaded.converged == result.converged
@@ -189,7 +189,7 @@ class TestModelProperties:
             data = sample_data.with_columns(pl.col("y").abs() + 0.1)
             
             result = rs.glm("y ~ x1 + x2", data, family=family).fit()
-            loaded = rs.FormulaGLMResults.from_bytes(result.to_bytes())
+            loaded = rs.GLMModel.from_bytes(result.to_bytes())
             
             assert loaded.family == family
             np.testing.assert_array_almost_equal(loaded.params, result.params)
@@ -201,16 +201,16 @@ class TestEdgeCases:
     def test_invalid_bytes_raises(self):
         """Test that invalid bytes raise an error."""
         with pytest.raises(Exception):
-            rs.FormulaGLMResults.from_bytes(b"invalid data")
+            rs.GLMModel.from_bytes(b"invalid data")
     
     def test_empty_bytes_raises(self):
         """Test that empty bytes raise an error."""
         with pytest.raises(Exception):
-            rs.FormulaGLMResults.from_bytes(b"")
+            rs.GLMModel.from_bytes(b"")
     
     def test_intercept_only_model(self, sample_data):
         """Test serialization of intercept-only model."""
         result = rs.glm("y ~ 1", sample_data, family="poisson").fit()
-        loaded = rs.FormulaGLMResults.from_bytes(result.to_bytes())
+        loaded = rs.GLMModel.from_bytes(result.to_bytes())
         
         np.testing.assert_array_almost_equal(loaded.params, result.params)

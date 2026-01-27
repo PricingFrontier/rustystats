@@ -84,7 +84,7 @@ from rustystats import links
 from rustystats.glm import summary, summary_relativities
 
 # Formula-based API (the primary API)
-from rustystats.formula import glm, FormulaGLM, FormulaGLMResults
+from rustystats.formula import glm, FormulaGLM, GLMModel
 
 # Dict-based API (alternative to formula strings)
 from rustystats.formula import glm_dict, FormulaGLMDict
@@ -120,7 +120,7 @@ __all__ = [
     # Formula-based API (primary interface)
     "glm",
     "FormulaGLM",
-    "FormulaGLMResults",
+    "GLMModel",
     "GLMResults",
     # Dict-based API
     "glm_dict",

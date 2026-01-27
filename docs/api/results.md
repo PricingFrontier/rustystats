@@ -1,6 +1,6 @@
 # Results Object Reference
 
-This page provides complete documentation for the `GLMResults` and `FormulaGLMResults` objects.
+This page provides complete documentation for the `GLMResults` and `GLMModel` objects.
 
 ## GLMResults
 
@@ -401,7 +401,7 @@ json_str = result.diagnostics_json(
 
 ---
 
-## FormulaGLMResults
+## GLMModel
 
 Extends `GLMResults` with formula-specific functionality.
 
