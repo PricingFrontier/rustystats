@@ -3818,7 +3818,11 @@ def _compute_smooth_term_diagnostics(
     
     # Get covariance matrix (unscaled)
     cov_matrix = None
-    if hasattr(result, '_result') and hasattr(result._result, 'covariance_unscaled'):
+    if hasattr(result, 'get_bread_matrix'):
+        cov_matrix = result.get_bread_matrix()
+    elif hasattr(result, '_result') and hasattr(result._result, 'cov_params_unscaled'):
+        cov_matrix = result._result.cov_params_unscaled
+    elif hasattr(result, '_result') and hasattr(result._result, 'covariance_unscaled'):
         cov_matrix = result._result.covariance_unscaled
     elif hasattr(result, 'cov_params'):
         cov_matrix = result.cov_params()
