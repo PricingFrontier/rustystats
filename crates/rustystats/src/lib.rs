@@ -1686,7 +1686,7 @@ use rustystats_core::splines::penalized::penalty_matrix;
 /// -------
 /// dict with coefficients, lambdas, edfs, gcv, deviance, etc.
 #[pyfunction]
-#[pyo3(signature = (y, x_parametric, smooth_basis, family, link=None, offset=None, weights=None, max_iter=25, tol=1e-8, lambda_min=0.001, lambda_max=1000.0))]
+#[pyo3(signature = (y, x_parametric, smooth_basis, family, link=None, offset=None, weights=None, max_iter=25, tol=1e-8, lambda_min=0.001, lambda_max=1000.0, var_power=1.5, theta=1.0))]
 fn fit_smooth_glm_fast_py<'py>(
     py: Python<'py>,
     y: PyReadonlyArray1<f64>,
@@ -1700,6 +1700,8 @@ fn fit_smooth_glm_fast_py<'py>(
     tol: f64,
     lambda_min: f64,
     lambda_max: f64,
+    var_power: f64,
+    theta: f64,
 ) -> PyResult<PyObject> {
     let y_array: Array1<f64> = y.as_array().to_owned();
     let x_param_array: Array2<f64> = x_parametric.as_array().to_owned();
@@ -1786,6 +1788,48 @@ fn fit_smooth_glm_fast_py<'py>(
                 _ => return Err(PyValueError::new_err("Unknown link for Gamma")),
             }
         }
+        "tweedie" => {
+            if var_power > 0.0 && var_power < 1.0 {
+                return Err(PyValueError::new_err(
+                    format!("var_power must be <= 0 or >= 1, got {}", var_power)
+                ));
+            }
+            let fam = TweedieFamily::new(var_power);
+            match link.unwrap_or("log") {
+                "log" => fit_fast!(&fam, &LogLink),
+                "identity" => fit_fast!(&fam, &IdentityLink),
+                _ => return Err(PyValueError::new_err("Unknown link for Tweedie")),
+            }
+        }
+        "quasipoisson" | "quasi-poisson" | "quasi_poisson" => {
+            let fam = QuasiPoissonFamily;
+            match link.unwrap_or("log") {
+                "log" => fit_fast!(&fam, &LogLink),
+                "identity" => fit_fast!(&fam, &IdentityLink),
+                _ => return Err(PyValueError::new_err("Unknown link for QuasiPoisson")),
+            }
+        }
+        "quasibinomial" | "quasi-binomial" | "quasi_binomial" => {
+            let fam = QuasiBinomialFamily;
+            match link.unwrap_or("logit") {
+                "logit" => fit_fast!(&fam, &LogitLink),
+                "log" => fit_fast!(&fam, &LogLink),
+                _ => return Err(PyValueError::new_err("Unknown link for QuasiBinomial")),
+            }
+        }
+        "negbinomial" | "negativebinomial" | "negative_binomial" | "neg_binomial" => {
+            if theta <= 0.0 {
+                return Err(PyValueError::new_err(
+                    format!("theta must be > 0 for Negative Binomial, got {}", theta)
+                ));
+            }
+            let fam = NegativeBinomialFamily::new(theta);
+            match link.unwrap_or("log") {
+                "log" => fit_fast!(&fam, &LogLink),
+                "identity" => fit_fast!(&fam, &IdentityLink),
+                _ => return Err(PyValueError::new_err("Unknown link for NegativeBinomial")),
+            }
+        }
         _ => return Err(PyValueError::new_err(format!("Unknown family: {}", family))),
     }.map_err(|e| PyValueError::new_err(format!("Smooth GLM fit failed: {}", e)))?;
     
@@ -1833,7 +1877,7 @@ fn fit_smooth_glm_fast_py<'py>(
 /// -------
 /// dict with coefficients, lambdas, edfs, gcv, deviance, etc.
 #[pyfunction]
-#[pyo3(signature = (y, x_parametric, smooth_basis, family, monotonicity, link=None, offset=None, weights=None, max_iter=25, tol=1e-8, lambda_min=0.001, lambda_max=1000.0))]
+#[pyo3(signature = (y, x_parametric, smooth_basis, family, monotonicity, link=None, offset=None, weights=None, max_iter=25, tol=1e-8, lambda_min=0.001, lambda_max=1000.0, var_power=1.5, theta=1.0))]
 fn fit_smooth_glm_monotonic_py<'py>(
     py: Python<'py>,
     y: PyReadonlyArray1<f64>,
@@ -1848,6 +1892,8 @@ fn fit_smooth_glm_monotonic_py<'py>(
     tol: f64,
     lambda_min: f64,
     lambda_max: f64,
+    var_power: f64,
+    theta: f64,
 ) -> PyResult<PyObject> {
     let y_array: Array1<f64> = y.as_array().to_owned();
     let x_param_array: Array2<f64> = x_parametric.as_array().to_owned();
@@ -1942,6 +1988,48 @@ fn fit_smooth_glm_monotonic_py<'py>(
                 "log" => fit_mono!(&fam, &LogLink),
                 "identity" => fit_mono!(&fam, &IdentityLink),
                 _ => return Err(PyValueError::new_err("Unknown link for Gamma")),
+            }
+        }
+        "tweedie" => {
+            if var_power > 0.0 && var_power < 1.0 {
+                return Err(PyValueError::new_err(
+                    format!("var_power must be <= 0 or >= 1, got {}", var_power)
+                ));
+            }
+            let fam = TweedieFamily::new(var_power);
+            match link.unwrap_or("log") {
+                "log" => fit_mono!(&fam, &LogLink),
+                "identity" => fit_mono!(&fam, &IdentityLink),
+                _ => return Err(PyValueError::new_err("Unknown link for Tweedie")),
+            }
+        }
+        "quasipoisson" | "quasi-poisson" | "quasi_poisson" => {
+            let fam = QuasiPoissonFamily;
+            match link.unwrap_or("log") {
+                "log" => fit_mono!(&fam, &LogLink),
+                "identity" => fit_mono!(&fam, &IdentityLink),
+                _ => return Err(PyValueError::new_err("Unknown link for QuasiPoisson")),
+            }
+        }
+        "quasibinomial" | "quasi-binomial" | "quasi_binomial" => {
+            let fam = QuasiBinomialFamily;
+            match link.unwrap_or("logit") {
+                "logit" => fit_mono!(&fam, &LogitLink),
+                "log" => fit_mono!(&fam, &LogLink),
+                _ => return Err(PyValueError::new_err("Unknown link for QuasiBinomial")),
+            }
+        }
+        "negbinomial" | "negativebinomial" | "negative_binomial" | "neg_binomial" => {
+            if theta <= 0.0 {
+                return Err(PyValueError::new_err(
+                    format!("theta must be > 0 for Negative Binomial, got {}", theta)
+                ));
+            }
+            let fam = NegativeBinomialFamily::new(theta);
+            match link.unwrap_or("log") {
+                "log" => fit_mono!(&fam, &LogLink),
+                "identity" => fit_mono!(&fam, &IdentityLink),
+                _ => return Err(PyValueError::new_err("Unknown link for NegativeBinomial")),
             }
         }
         _ => return Err(PyValueError::new_err(format!("Unknown family: {}", family))),

@@ -221,17 +221,23 @@ def _fit_with_smooth_penalties(
         # Check if this is a monotonic smooth term
         monotonicity = getattr(smooth_terms[0], '_smooth_monotonicity', None)
         
+        # Use defaults for var_power and theta if not specified
+        vp = var_power if var_power is not None else 1.5
+        th = theta if theta is not None else 1.0
+        
         if monotonicity:
             # Use monotonic solver with NNLS
             rust_result = _fit_smooth_monotonic(
                 y, x_parametric, smooth_basis, family, monotonicity, link,
-                offset, weights, max_iter, tol, lambda_min, lambda_max
+                offset, weights, max_iter, tol, lambda_min, lambda_max,
+                vp, th
             )
         else:
             # Call fast Rust solver (unconstrained)
             rust_result = _fit_smooth_fast(
                 y, x_parametric, smooth_basis, family, link,
-                offset, weights, max_iter, tol, lambda_min, lambda_max
+                offset, weights, max_iter, tol, lambda_min, lambda_max,
+                vp, th
             )
         
         # Reorder coefficients to match original design matrix order:
