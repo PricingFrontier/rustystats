@@ -320,6 +320,14 @@ def _fit_with_smooth_penalties(
             def penalty_type(self):
                 return "none"
             
+            @property
+            def alpha(self):
+                return 0.0
+            
+            @property
+            def l1_ratio(self):
+                return 0.0
+            
             def bse(self):
                 return np.sqrt(np.diag(self.covariance_unscaled))
             
