@@ -590,7 +590,7 @@ def _build_results(
     smooth_results,
     total_edf,
     gcv,
-    store_design_matrix: bool = False,
+    store_design_matrix: bool = True,
     terms_dict: Optional[Dict[str, Dict[str, Any]]] = None,
     interactions_spec: Optional[List[Dict[str, Any]]] = None,
 ) -> "GLMModel":
@@ -1054,7 +1054,7 @@ class FormulaGLM:
         include_unregularized: bool = True,
         verbose: bool = False,
         # Memory optimization
-        store_design_matrix: bool = False,
+        store_design_matrix: bool = True,
     ):
         """
         Fit the GLM model, optionally with regularization.
@@ -1108,6 +1108,11 @@ class FormulaGLM:
         verbose : bool, default=False
             Print progress during CV fitting.
             
+        store_design_matrix : bool, default=True
+            Whether to store the design matrix in results. Required for VIF
+            and other diagnostics. Set to False to reduce memory usage for
+            large datasets where diagnostics are not needed.
+            
         Returns
         -------
         GLMModel
@@ -1132,11 +1137,6 @@ class FormulaGLM:
         >>> result = model.fit(cv=5, regularization="ridge", selection="1se")
         >>> print(f"Selected alpha: {result.alpha}")
         >>> print(f"CV deviance: {result.cv_deviance}")
-        
-        store_design_matrix : bool, default=False
-            Whether to store the design matrix in results. Set to True if you
-            need to compute VIF or other diagnostics that require the design
-            matrix. Default is False to reduce memory usage.
         """
         from rustystats._rustystats import fit_glm_py as _fit_glm_rust, fit_negbinomial_py as _fit_negbinomial_rust
         
@@ -3141,7 +3141,7 @@ class FormulaGLMDict:
         include_unregularized: bool = True,
         verbose: bool = False,
         # Memory optimization
-        store_design_matrix: bool = False,
+        store_design_matrix: bool = True,
     ) -> GLMModel:
         """
         Fit the GLM model, optionally with regularization.

@@ -454,10 +454,13 @@ def fit_cv_regularization_path(
             offset_val = offset[val_idx] if offset is not None else None
             weights_train = weights[train_idx] if weights is not None else None
             
-            result = _fit_glm_rust(
-                y_train, X_train, family, link, var_power, theta,
-                offset_train, weights_train, 0.0, 0.0, max_iter, tol
-            )
+            try:
+                result = _fit_glm_rust(
+                    y_train, X_train, family, link, var_power, theta,
+                    offset_train, weights_train, 0.0, 0.0, max_iter, tol
+                )
+            except ValueError:
+                continue
             linear_pred = X_val @ result.params
             if offset_val is not None:
                 linear_pred = linear_pred + offset_val

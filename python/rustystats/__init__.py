@@ -55,8 +55,8 @@ For Actuaries
 - **Pure Premium**: Use Tweedie family with var_power=1.5
 """
 
-# Version of the package
-__version__ = "0.1.0"
+# Version of the package (must match pyproject.toml)
+__version__ = "0.3.2"
 
 # Import the Rust extension module
 # This contains the fast implementations

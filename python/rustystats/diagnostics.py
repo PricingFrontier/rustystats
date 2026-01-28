@@ -1071,10 +1071,40 @@ class DiagnosticsComputer:
         return factors
     
     def _get_transformation(self, name: str) -> Optional[str]:
-        """Find transformation for a factor in the model."""
+        """Find transformation for a factor in the model.
+        
+        Prioritizes actual transforms (splines, TE, C) over interaction terms.
+        """
+        import re
+        
+        # Priority 1: Spline transforms - bs(name, ...), ns(name, ...), s(name, ...), ms(name, ...)
+        spline_pattern = re.compile(rf'^(?:bs|ns|s|ms)\({re.escape(name)}[,)]')
+        for fn in self.feature_names:
+            if spline_pattern.match(fn):
+                return fn
+        
+        # Priority 2: Target encoding - TE(name)
+        te_pattern = f"TE({name})"
+        for fn in self.feature_names:
+            if fn == te_pattern or fn.startswith(f"TE({name})"):
+                return fn
+        
+        # Priority 3: Categorical encoding - C(name)[...]
+        cat_pattern = f"C({name})"
+        for fn in self.feature_names:
+            if fn.startswith(cat_pattern):
+                return fn
+        
+        # Priority 4: Other transforms (I(...), log, sqrt, etc.) - but NOT interactions
+        for fn in self.feature_names:
+            if name in fn and fn != name and ':' not in fn:
+                return fn
+        
+        # Priority 5: Interactions (only if nothing else found)
         for fn in self.feature_names:
             if name in fn and fn != name:
                 return fn
+        
         return None
     
     def _get_factor_terms(self, name: str) -> List[str]:
