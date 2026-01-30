@@ -89,6 +89,13 @@ class TargetEncodingTermSpec:
     var_name: str
     prior_weight: float = 1.0
     n_permutations: int = 4
+    interaction_vars: Optional[List[str]] = None  # For TE(a:b) interactions
+
+
+@dataclass
+class FrequencyEncodingTermSpec:
+    """Parsed frequency encoding term specification from formula."""
+    var_name: str
 
 
 @dataclass
@@ -130,6 +137,7 @@ class ParsedFormula:
     categorical_vars: Set[str]  # Variables marked as categorical with C()
     spline_terms: List[SplineTerm] = field(default_factory=list)  # Spline terms
     target_encoding_terms: List[TargetEncodingTermSpec] = field(default_factory=list)  # TE() terms
+    frequency_encoding_terms: List[FrequencyEncodingTermSpec] = field(default_factory=list)  # FE() terms
     identity_terms: List[IdentityTermSpec] = field(default_factory=list)  # I() terms
     categorical_terms: List[CategoricalTermSpec] = field(default_factory=list)  # C(var, level='...') terms
     constraint_terms: List[ConstraintTermSpec] = field(default_factory=list)  # pos()/neg() terms
@@ -192,9 +200,16 @@ def parse_formula_interactions(formula: str) -> ParsedFormula:
         TargetEncodingTermSpec(
             var_name=t['var_name'],
             prior_weight=t['prior_weight'],
-            n_permutations=t['n_permutations']
+            n_permutations=t['n_permutations'],
+            interaction_vars=t.get('interaction_vars')
         )
         for t in parsed.get('target_encoding_terms', [])
+    ]
+    
+    # Parse frequency encoding terms
+    frequency_encoding_terms = [
+        FrequencyEncodingTermSpec(var_name=f['var_name'])
+        for f in parsed.get('frequency_encoding_terms', [])
     ]
     
     # Parse identity terms (I() expressions)
@@ -231,6 +246,7 @@ def parse_formula_interactions(formula: str) -> ParsedFormula:
         categorical_vars=set(parsed['categorical_vars']),
         spline_terms=spline_terms,
         target_encoding_terms=target_encoding_terms,
+        frequency_encoding_terms=frequency_encoding_terms,
         identity_terms=identity_terms,
         categorical_terms=categorical_terms,
         constraint_terms=constraint_terms,
@@ -902,9 +918,6 @@ class InteractionBuilder:
         stats : dict
             Level statistics for prediction on new data
         """
-        col = self.data[te_term.var_name].to_numpy()
-        categories = [str(v) for v in col]
-        
         # Use rate (target/exposure) for encoding when exposure is available
         # This prevents near-constant encoded values for low-frequency count data
         if exposure is not None:
@@ -912,14 +925,47 @@ class InteractionBuilder:
         else:
             encoding_target = target.astype(np.float64)
         
-        encoded, name, prior, stats = _target_encode_rust(
-            categories,
-            encoding_target,
-            te_term.var_name,
-            te_term.prior_weight,
-            te_term.n_permutations,
-            seed,
-        )
+        # Check if this is a TE interaction (e.g., TE(brand:region))
+        if te_term.interaction_vars is not None and len(te_term.interaction_vars) >= 2:
+            # Get columns for each variable in the interaction
+            cols = [self.data[var].to_numpy() for var in te_term.interaction_vars]
+            cat1 = [str(v) for v in cols[0]]
+            cat2 = [str(v) for v in cols[1]]
+            
+            # For 2-way interactions, use the dedicated interaction function
+            from rustystats._rustystats import target_encode_interaction_py
+            encoded, name, prior, stats = target_encode_interaction_py(
+                cat1, cat2, encoding_target,
+                te_term.interaction_vars[0], te_term.interaction_vars[1],
+                te_term.prior_weight, te_term.n_permutations, seed
+            )
+            
+            # For 3+ way interactions, combine first two then continue
+            for i in range(2, len(te_term.interaction_vars)):
+                # Create combined categories from previous result
+                combined = [f"{a}:{b}" for a, b in zip(cat1, cat2)]
+                cat1 = combined
+                cat2 = [str(v) for v in cols[i]]
+                
+                # Re-encode with next variable
+                encoded, name, prior, stats = target_encode_interaction_py(
+                    cat1, cat2, encoding_target,
+                    ":".join(te_term.interaction_vars[:i]), te_term.interaction_vars[i],
+                    te_term.prior_weight, te_term.n_permutations, seed
+                )
+        else:
+            # Single variable target encoding
+            col = self.data[te_term.var_name].to_numpy()
+            categories = [str(v) for v in col]
+            
+            encoded, name, prior, stats = _target_encode_rust(
+                categories,
+                encoding_target,
+                te_term.var_name,
+                te_term.prior_weight,
+                te_term.n_permutations,
+                seed,
+            )
         
         # Store whether we used rate encoding for prediction
         return encoded, name, {
@@ -927,6 +973,45 @@ class InteractionBuilder:
             'stats': stats, 
             'prior_weight': te_term.prior_weight,
             'used_rate_encoding': exposure is not None,
+            'interaction_vars': te_term.interaction_vars,
+        }
+    
+    def _build_frequency_encoding_columns(
+        self,
+        fe_term: FrequencyEncodingTermSpec,
+    ) -> Tuple[np.ndarray, str, dict]:
+        """
+        Build frequency-encoded column for a categorical variable.
+        
+        Encodes categories by their frequency (count / max_count).
+        No target variable needed - purely based on category prevalence.
+        
+        Parameters
+        ----------
+        fe_term : FrequencyEncodingTermSpec
+            Frequency encoding term specification
+            
+        Returns
+        -------
+        encoded : np.ndarray
+            Frequency-encoded values (n,)
+        name : str
+            Column name like "FE(brand)"
+        stats : dict
+            Level counts for prediction on new data
+        """
+        from rustystats._rustystats import frequency_encode_py
+        
+        col = self.data[fe_term.var_name].to_numpy()
+        categories = [str(v) for v in col]
+        
+        encoded, name, level_counts, max_count, n_obs = frequency_encode_py(
+            categories, fe_term.var_name
+        )
+        
+        return encoded, name, {
+            'level_counts': level_counts,
+            'max_count': max_count,
         }
     
     def _build_constraint_columns(
@@ -1205,6 +1290,14 @@ class InteractionBuilder:
             names.append(te_name)
             self._te_stats[te_term.var_name] = te_stats
             te_encodings[te_name] = te_col  # Store for interactions
+        
+        # Add frequency encoding terms
+        self._fe_stats: Dict[str, dict] = {}
+        for fe_term in parsed.frequency_encoding_terms:
+            fe_col, fe_name, fe_stats = self._build_frequency_encoding_columns(fe_term)
+            columns.append(fe_col.reshape(-1, 1))
+            names.append(fe_name)
+            self._fe_stats[fe_term.var_name] = fe_stats
         
         # Add interactions (now with TE encodings available)
         for interaction in parsed.interactions:
@@ -1533,6 +1626,11 @@ class InteractionBuilder:
             te_col = self._encode_target_new(new_data, te_term)
             columns.append(te_col.reshape(-1, 1))
         
+        # Add frequency encoding terms
+        for fe_term in parsed.frequency_encoding_terms:
+            fe_col = self._encode_frequency_new(new_data, fe_term)
+            columns.append(fe_col.reshape(-1, 1))
+        
         # Add interactions (after TE terms to match build_design_matrix order)
         for interaction in parsed.interactions:
             int_cols = self._build_interaction_new(new_data, interaction, n_new)
@@ -1722,6 +1820,32 @@ class InteractionBuilder:
             else:
                 # Unknown level - use global prior
                 encoded[i] = prior
+        
+        return encoded
+    
+    def _encode_frequency_new(
+        self,
+        new_data: "pl.DataFrame",
+        fe_term: FrequencyEncodingTermSpec,
+    ) -> np.ndarray:
+        """Encode using frequency statistics from training."""
+        if fe_term.var_name not in self._fe_stats:
+            raise ValueError(
+                f"Frequency encoding for '{fe_term.var_name}' was not fitted during training."
+            )
+        
+        stats = self._fe_stats[fe_term.var_name]
+        level_counts = stats['level_counts']
+        max_count = stats['max_count']
+        
+        col = new_data[fe_term.var_name].to_numpy()
+        n = len(col)
+        encoded = np.zeros(n, dtype=self.dtype)
+        
+        for i, val in enumerate(col):
+            val_str = str(val)
+            count = level_counts.get(val_str, 0)
+            encoded[i] = count / max_count if max_count > 0 else 0.0
         
         return encoded
     

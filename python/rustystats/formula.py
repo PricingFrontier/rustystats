@@ -2715,6 +2715,7 @@ def _parse_term_spec(
     identity_terms: List[IdentityTermSpec],
     categorical_terms: List[CategoricalTermSpec],
     constraint_terms: List[ConstraintTermSpec],
+    frequency_encoding_terms: Optional[List] = None,
 ) -> None:
     """Parse a single term specification and add to appropriate lists."""
     # Valid keys for each term type
@@ -2723,7 +2724,8 @@ def _parse_term_spec(
         "categorical": {"type", "levels"},
         "bs": {"type", "df", "k", "degree", "monotonicity"},
         "ns": {"type", "df", "k"},
-        "target_encoding": {"type", "prior_weight", "n_permutations"},
+        "target_encoding": {"type", "prior_weight", "n_permutations", "interaction", "variable"},
+        "frequency_encoding": {"type", "variable"},
         "expression": {"type", "expr", "monotonicity"},
     }
     
@@ -2831,14 +2833,44 @@ def _parse_term_spec(
     elif term_type == "target_encoding":
         prior_weight = spec.get("prior_weight", 1.0)
         n_permutations = spec.get("n_permutations", 4)
-        # Only add if not already present (avoid duplicates from interactions)
-        existing_te_vars = {te.var_name for te in target_encoding_terms}
-        if var_name not in existing_te_vars:
-            target_encoding_terms.append(TargetEncodingTermSpec(
-                var_name=var_name,
-                prior_weight=prior_weight,
-                n_permutations=n_permutations,
-            ))
+        interaction_spec = spec.get("interaction")  # e.g., ["brand", "region"] for TE(brand:region)
+        
+        if interaction_spec:
+            # TE interaction: TE(brand:region)
+            if isinstance(interaction_spec, list) and len(interaction_spec) >= 2:
+                combined_name = ":".join(interaction_spec)
+                target_encoding_terms.append(TargetEncodingTermSpec(
+                    var_name=combined_name,
+                    prior_weight=prior_weight,
+                    n_permutations=n_permutations,
+                    interaction_vars=interaction_spec,
+                ))
+            else:
+                raise ValueError(
+                    f"'interaction' for target_encoding must be a list of at least 2 variable names, "
+                    f"got: {interaction_spec}"
+                )
+        else:
+            # Single variable TE - use 'variable' key if provided
+            actual_var = spec.get("variable", var_name)
+            existing_te_vars = {te.var_name for te in target_encoding_terms}
+            if actual_var not in existing_te_vars:
+                target_encoding_terms.append(TargetEncodingTermSpec(
+                    var_name=actual_var,
+                    prior_weight=prior_weight,
+                    n_permutations=n_permutations,
+                ))
+    
+    elif term_type == "frequency_encoding":
+        from rustystats.interactions import FrequencyEncodingTermSpec as FETermSpec
+        if frequency_encoding_terms is None:
+            raise ValueError(
+                f"frequency_encoding type not supported in this context. "
+                f"Use formula string 'FE({var_name})' instead."
+            )
+        # Use 'variable' key if provided, otherwise use the dict key
+        actual_var = spec.get("variable", var_name)
+        frequency_encoding_terms.append(FETermSpec(var_name=actual_var))
     
     elif term_type == "expression":
         expr = spec.get("expr", var_name)
@@ -2967,10 +2999,13 @@ def dict_to_parsed_formula(
     ParsedFormula
         Parsed formula object compatible with build_design_matrix
     """
+    from rustystats.interactions import FrequencyEncodingTermSpec
+    
     categorical_vars: Set[str] = set()
     main_effects: List[str] = []
     spline_terms_list: List[SplineTerm] = []
     target_encoding_terms_list: List[TargetEncodingTermSpec] = []
+    frequency_encoding_terms_list: List[FrequencyEncodingTermSpec] = []
     identity_terms_list: List[IdentityTermSpec] = []
     categorical_terms_list: List[CategoricalTermSpec] = []
     constraint_terms_list: List[ConstraintTermSpec] = []
@@ -2981,7 +3016,7 @@ def dict_to_parsed_formula(
         _parse_term_spec(
             var_name, spec, categorical_vars, main_effects,
             spline_terms_list, target_encoding_terms_list, identity_terms_list,
-            categorical_terms_list, constraint_terms_list,
+            categorical_terms_list, constraint_terms_list, frequency_encoding_terms_list,
         )
     
     # Parse interactions
@@ -3000,6 +3035,7 @@ def dict_to_parsed_formula(
         categorical_vars=categorical_vars,
         spline_terms=spline_terms_list,
         target_encoding_terms=target_encoding_terms_list,
+        frequency_encoding_terms=frequency_encoding_terms_list,
         identity_terms=identity_terms_list,
         categorical_terms=categorical_terms_list,
         constraint_terms=constraint_terms_list,
@@ -3087,7 +3123,13 @@ class FormulaGLMDict:
                 df = spec.get("df", 4)
                 term_strs.append(f"ns({var_name}, df={df})")
             elif term_type == "target_encoding":
-                term_strs.append(f"TE({var_name})")
+                interaction = spec.get("interaction")
+                if interaction:
+                    term_strs.append(f"TE({':'.join(interaction)})")
+                else:
+                    term_strs.append(f"TE({var_name})")
+            elif term_type == "frequency_encoding":
+                term_strs.append(f"FE({var_name})")
             elif term_type == "expression":
                 expr = spec.get("expr", var_name)
                 term_strs.append(f"I({expr})")

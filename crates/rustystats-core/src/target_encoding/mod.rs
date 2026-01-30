@@ -275,6 +275,207 @@ pub fn apply_target_encoding(
 }
 
 // =============================================================================
+// FREQUENCY ENCODING
+// =============================================================================
+//
+// Encodes categorical variables by their frequency (count/max_count).
+// No target variable involved - purely based on category prevalence.
+// Useful when category frequency itself is predictive.
+//
+// =============================================================================
+
+/// Result of frequency encoding
+#[derive(Debug, Clone)]
+pub struct FrequencyEncoding {
+    /// Encoded values (one per observation)
+    pub values: Array1<f64>,
+    /// Column name
+    pub name: String,
+    /// Unique levels (sorted)
+    pub levels: Vec<String>,
+    /// Count for each level (for prediction on new data)
+    pub level_counts: HashMap<String, usize>,
+    /// Maximum count (for normalization)
+    pub max_count: usize,
+    /// Total number of observations
+    pub n_obs: usize,
+}
+
+/// Frequency encode categorical variables.
+///
+/// Each category is encoded as: count(category) / max_count
+/// This gives values in (0, 1] where 1.0 is the most frequent category.
+///
+/// # Arguments
+/// * `categories` - Categorical values as strings
+/// * `var_name` - Variable name for output column
+///
+/// # Returns
+/// FrequencyEncoding with encoded values and statistics for prediction
+pub fn frequency_encode(
+    categories: &[String],
+    var_name: &str,
+) -> FrequencyEncoding {
+    let n = categories.len();
+    
+    // Count occurrences of each level
+    let mut level_counts: HashMap<String, usize> = HashMap::new();
+    for cat in categories {
+        *level_counts.entry(cat.clone()).or_insert(0) += 1;
+    }
+    
+    // Find maximum count for normalization
+    let max_count = level_counts.values().copied().max().unwrap_or(1);
+    
+    // Get sorted unique levels
+    let mut levels: Vec<String> = level_counts.keys().cloned().collect();
+    levels.sort();
+    
+    // Encode values (parallel for large data)
+    let values: Vec<f64> = if n > 10000 {
+        categories
+            .par_iter()
+            .map(|cat| {
+                let count = level_counts.get(cat).copied().unwrap_or(0);
+                count as f64 / max_count as f64
+            })
+            .collect()
+    } else {
+        categories
+            .iter()
+            .map(|cat| {
+                let count = level_counts.get(cat).copied().unwrap_or(0);
+                count as f64 / max_count as f64
+            })
+            .collect()
+    };
+    
+    FrequencyEncoding {
+        values: Array1::from_vec(values),
+        name: format!("FE({})", var_name),
+        levels,
+        level_counts,
+        max_count,
+        n_obs: n,
+    }
+}
+
+/// Apply frequency encoding to new data using pre-computed statistics.
+///
+/// # Arguments
+/// * `categories` - Categorical values for new data
+/// * `encoding` - FrequencyEncoding from training data
+///
+/// # Returns
+/// Encoded values for new data (unseen categories get 0.0)
+pub fn apply_frequency_encoding(
+    categories: &[String],
+    encoding: &FrequencyEncoding,
+) -> Array1<f64> {
+    let max_count = encoding.max_count;
+    
+    let values: Vec<f64> = categories
+        .iter()
+        .map(|cat| {
+            let count = encoding.level_counts.get(cat).copied().unwrap_or(0);
+            count as f64 / max_count as f64
+        })
+        .collect();
+    
+    Array1::from_vec(values)
+}
+
+// =============================================================================
+// TARGET ENCODING FOR INTERACTIONS
+// =============================================================================
+//
+// Encodes categorical interactions (e.g., brand:region) as combined categories.
+// Uses the same ordered target statistics as single-variable encoding.
+//
+// =============================================================================
+
+/// Target encode a categorical interaction (two variables combined).
+///
+/// Creates combined categories like "brand_Nike:region_North" and applies
+/// ordered target statistics encoding.
+///
+/// # Arguments
+/// * `cat1` - First categorical variable values
+/// * `cat2` - Second categorical variable values
+/// * `target` - Target variable
+/// * `var_name1` - Name of first variable
+/// * `var_name2` - Name of second variable
+/// * `config` - Encoding configuration
+///
+/// # Returns
+/// TargetEncoding with encoded values for the interaction
+pub fn target_encode_interaction(
+    cat1: &[String],
+    cat2: &[String],
+    target: &[f64],
+    var_name1: &str,
+    var_name2: &str,
+    config: &TargetEncodingConfig,
+) -> TargetEncoding {
+    let n = cat1.len();
+    assert_eq!(n, cat2.len(), "cat1 and cat2 must have same length");
+    assert_eq!(n, target.len(), "categories and target must have same length");
+    
+    // Create combined categories
+    let combined: Vec<String> = cat1
+        .iter()
+        .zip(cat2.iter())
+        .map(|(a, b)| format!("{}:{}", a, b))
+        .collect();
+    
+    // Apply standard target encoding to combined categories
+    let var_name = format!("{}:{}", var_name1, var_name2);
+    target_encode(&combined, target, &var_name, config)
+}
+
+/// Target encode a multi-way categorical interaction.
+///
+/// Creates combined categories from multiple variables.
+///
+/// # Arguments
+/// * `categories` - Vector of categorical variable values (each inner vec is one variable)
+/// * `target` - Target variable
+/// * `var_names` - Names of variables
+/// * `config` - Encoding configuration
+///
+/// # Returns
+/// TargetEncoding with encoded values for the interaction
+pub fn target_encode_multi_interaction(
+    categories: &[Vec<String>],
+    target: &[f64],
+    var_names: &[&str],
+    config: &TargetEncodingConfig,
+) -> TargetEncoding {
+    assert!(!categories.is_empty(), "categories must not be empty");
+    let n = categories[0].len();
+    
+    for (i, cat) in categories.iter().enumerate() {
+        assert_eq!(cat.len(), n, "All category vectors must have same length (vector {} has {} vs {})", i, cat.len(), n);
+    }
+    assert_eq!(n, target.len(), "categories and target must have same length");
+    
+    // Create combined categories by joining with ":"
+    let combined: Vec<String> = (0..n)
+        .map(|i| {
+            categories
+                .iter()
+                .map(|cat| cat[i].as_str())
+                .collect::<Vec<_>>()
+                .join(":")
+        })
+        .collect();
+    
+    // Apply standard target encoding
+    let var_name = var_names.join(":");
+    target_encode(&combined, target, &var_name, config)
+}
+
+// =============================================================================
 // TESTS
 // =============================================================================
 
@@ -415,5 +616,181 @@ mod tests {
         for i in 0..6 {
             assert!((enc1.values[i] - enc2.values[i]).abs() < 1e-10);
         }
+    }
+    
+    // =========================================================================
+    // Frequency Encoding Tests
+    // =========================================================================
+    
+    #[test]
+    fn test_frequency_encode_basic() {
+        let categories: Vec<String> = vec!["A", "B", "A", "A", "B", "C"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        
+        let enc = frequency_encode(&categories, "cat");
+        
+        // Check structure
+        assert_eq!(enc.values.len(), 6);
+        assert_eq!(enc.name, "FE(cat)");
+        assert_eq!(enc.levels.len(), 3);
+        assert_eq!(enc.max_count, 3);  // A appears 3 times
+        
+        // Check counts
+        assert_eq!(enc.level_counts["A"], 3);
+        assert_eq!(enc.level_counts["B"], 2);
+        assert_eq!(enc.level_counts["C"], 1);
+        
+        // Check encoded values: count / max_count
+        // A=3, B=2, C=1, max=3
+        // [A, B, A, A, B, C] -> [3/3, 2/3, 3/3, 3/3, 2/3, 1/3]
+        assert!((enc.values[0] - 1.0).abs() < 1e-10);      // A: 3/3
+        assert!((enc.values[1] - 2.0/3.0).abs() < 1e-10);  // B: 2/3
+        assert!((enc.values[2] - 1.0).abs() < 1e-10);      // A: 3/3
+        assert!((enc.values[3] - 1.0).abs() < 1e-10);      // A: 3/3
+        assert!((enc.values[4] - 2.0/3.0).abs() < 1e-10);  // B: 2/3
+        assert!((enc.values[5] - 1.0/3.0).abs() < 1e-10);  // C: 1/3
+    }
+    
+    #[test]
+    fn test_apply_frequency_encoding() {
+        let categories: Vec<String> = vec!["A", "B", "A", "A"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        
+        let enc = frequency_encode(&categories, "cat");
+        
+        // Apply to new data including unseen category
+        let new_categories: Vec<String> = vec!["A", "B", "C", "D"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        
+        let new_encoded = apply_frequency_encoding(&new_categories, &enc);
+        
+        assert_eq!(new_encoded.len(), 4);
+        assert!((new_encoded[0] - 1.0).abs() < 1e-10);      // A: 3/3
+        assert!((new_encoded[1] - 1.0/3.0).abs() < 1e-10);  // B: 1/3
+        assert!((new_encoded[2] - 0.0).abs() < 1e-10);      // C: unseen -> 0
+        assert!((new_encoded[3] - 0.0).abs() < 1e-10);      // D: unseen -> 0
+    }
+    
+    #[test]
+    fn test_frequency_encode_single_category() {
+        let categories: Vec<String> = vec!["X", "X", "X"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        
+        let enc = frequency_encode(&categories, "cat");
+        
+        // All should be 1.0 (max count = only count)
+        assert_eq!(enc.max_count, 3);
+        for i in 0..3 {
+            assert!((enc.values[i] - 1.0).abs() < 1e-10);
+        }
+    }
+    
+    // =========================================================================
+    // Target Encoding Interaction Tests
+    // =========================================================================
+    
+    #[test]
+    fn test_target_encode_interaction_basic() {
+        let cat1: Vec<String> = vec!["A", "A", "B", "B"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let cat2: Vec<String> = vec!["X", "Y", "X", "Y"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let target = vec![1.0, 2.0, 3.0, 4.0];
+        
+        let config = TargetEncodingConfig {
+            prior_weight: 1.0,
+            n_permutations: 1,
+            seed: Some(42),
+        };
+        
+        let enc = target_encode_interaction(&cat1, &cat2, &target, "c1", "c2", &config);
+        
+        // Check structure
+        assert_eq!(enc.values.len(), 4);
+        assert_eq!(enc.name, "TE(c1:c2)");
+        
+        // Should have 4 unique combinations: A:X, A:Y, B:X, B:Y
+        assert_eq!(enc.levels.len(), 4);
+        
+        // Check that prior is correct (mean of target)
+        assert!((enc.prior - 2.5).abs() < 1e-10);
+    }
+    
+    #[test]
+    fn test_target_encode_interaction_repeated_combinations() {
+        let cat1: Vec<String> = vec!["A", "A", "A", "B", "B", "B"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let cat2: Vec<String> = vec!["X", "X", "Y", "X", "Y", "Y"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let target = vec![1.0, 1.0, 0.0, 1.0, 0.0, 0.0];
+        
+        let config = TargetEncodingConfig {
+            prior_weight: 1.0,
+            n_permutations: 4,
+            seed: Some(42),
+        };
+        
+        let enc = target_encode_interaction(&cat1, &cat2, &target, "c1", "c2", &config);
+        
+        // Check that level stats reflect combined categories
+        assert!(enc.level_stats.contains_key("A:X"));
+        assert!(enc.level_stats.contains_key("A:Y"));
+        assert!(enc.level_stats.contains_key("B:X"));
+        assert!(enc.level_stats.contains_key("B:Y"));
+        
+        // A:X appears twice with sum=2.0
+        assert_eq!(enc.level_stats["A:X"].count, 2);
+        assert!((enc.level_stats["A:X"].sum_target - 2.0).abs() < 1e-10);
+    }
+    
+    #[test]
+    fn test_target_encode_multi_interaction() {
+        let cat1: Vec<String> = vec!["A", "A", "B", "B"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let cat2: Vec<String> = vec!["X", "Y", "X", "Y"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let cat3: Vec<String> = vec!["1", "1", "2", "2"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let target = vec![1.0, 2.0, 3.0, 4.0];
+        
+        let config = TargetEncodingConfig::default();
+        
+        let enc = target_encode_multi_interaction(
+            &[cat1, cat2, cat3],
+            &target,
+            &["c1", "c2", "c3"],
+            &config,
+        );
+        
+        // Check structure
+        assert_eq!(enc.values.len(), 4);
+        assert_eq!(enc.name, "TE(c1:c2:c3)");
+        
+        // Should have 4 unique three-way combinations
+        assert_eq!(enc.levels.len(), 4);
+        assert!(enc.levels.contains(&"A:X:1".to_string()));
+        assert!(enc.levels.contains(&"B:Y:2".to_string()));
     }
 }

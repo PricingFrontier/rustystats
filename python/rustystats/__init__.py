@@ -101,6 +101,12 @@ from rustystats.target_encoding import (
     apply_target_encoding,
     TargetEncoder,
     TargetEncodingTerm,
+    # Frequency encoding (CatBoost Counter CTR)
+    frequency_encode,
+    apply_frequency_encoding,
+    FrequencyEncoder,
+    # Target encoding for interactions
+    target_encode_interaction,
 )
 
 # Model diagnostics
@@ -143,6 +149,12 @@ __all__ = [
     "apply_target_encoding",
     "TargetEncoder",
     "TargetEncodingTerm",
+    # Frequency encoding
+    "frequency_encode",
+    "apply_frequency_encoding",
+    "FrequencyEncoder",
+    # Target encoding for interactions
+    "target_encode_interaction",
     # Sub-modules
     "families",
     "links",

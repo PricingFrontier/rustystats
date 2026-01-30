@@ -2628,6 +2628,139 @@ fn apply_target_encoding_py<'py>(
     Ok(Array1::from_vec(values).into_pyarray_bound(py))
 }
 
+/// Frequency encode categorical variables.
+///
+/// Encodes categories by their frequency (count / max_count).
+/// No target variable involved - purely based on category prevalence.
+/// Useful when category frequency itself is predictive.
+///
+/// Parameters
+/// ----------
+/// categories : list[str]
+///     Categorical values as strings
+/// var_name : str
+///     Variable name for output column
+///
+/// Returns
+/// -------
+/// tuple[numpy.ndarray, str, dict, int, int]
+///     (encoded_values, column_name, level_counts, max_count, n_obs)
+///     level_counts is a dict mapping level -> count for prediction
+#[pyfunction]
+fn frequency_encode_py<'py>(
+    py: Python<'py>,
+    categories: Vec<String>,
+    var_name: &str,
+) -> PyResult<(Bound<'py, PyArray1<f64>>, String, std::collections::HashMap<String, usize>, usize, usize)> {
+    let enc = target_encoding::frequency_encode(&categories, var_name);
+    
+    Ok((
+        enc.values.into_pyarray_bound(py),
+        enc.name,
+        enc.level_counts,
+        enc.max_count,
+        enc.n_obs,
+    ))
+}
+
+/// Apply frequency encoding to new data using pre-computed statistics.
+///
+/// Parameters
+/// ----------
+/// categories : list[str]
+///     Categorical values for new data
+/// level_counts : dict
+///     Mapping of level -> count from training
+/// max_count : int
+///     Maximum count from training (for normalization)
+///
+/// Returns
+/// -------
+/// numpy.ndarray
+///     Encoded values for new data (unseen categories get 0.0)
+#[pyfunction]
+fn apply_frequency_encoding_py<'py>(
+    py: Python<'py>,
+    categories: Vec<String>,
+    level_counts: std::collections::HashMap<String, usize>,
+    max_count: usize,
+) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    let values: Vec<f64> = categories
+        .iter()
+        .map(|cat| {
+            let count = level_counts.get(cat).copied().unwrap_or(0);
+            count as f64 / max_count as f64
+        })
+        .collect();
+    
+    Ok(Array1::from_vec(values).into_pyarray_bound(py))
+}
+
+/// Target encode a categorical interaction (two variables combined).
+///
+/// Creates combined categories like "brand:region" and applies
+/// ordered target statistics encoding.
+///
+/// Parameters
+/// ----------
+/// cat1 : list[str]
+///     First categorical variable values
+/// cat2 : list[str]
+///     Second categorical variable values
+/// target : numpy.ndarray
+///     Target variable
+/// var_name1 : str
+///     Name of first variable
+/// var_name2 : str
+///     Name of second variable
+/// prior_weight : float, optional
+///     Regularization strength (default: 1.0)
+/// n_permutations : int, optional
+///     Number of permutations (default: 4)
+/// seed : int, optional
+///     Random seed
+///
+/// Returns
+/// -------
+/// tuple[numpy.ndarray, str, float, dict]
+///     (encoded_values, column_name, prior, level_stats)
+#[pyfunction]
+#[pyo3(signature = (cat1, cat2, target, var_name1, var_name2, prior_weight=1.0, n_permutations=4, seed=None))]
+fn target_encode_interaction_py<'py>(
+    py: Python<'py>,
+    cat1: Vec<String>,
+    cat2: Vec<String>,
+    target: PyReadonlyArray1<f64>,
+    var_name1: &str,
+    var_name2: &str,
+    prior_weight: f64,
+    n_permutations: usize,
+    seed: Option<u64>,
+) -> PyResult<(Bound<'py, PyArray1<f64>>, String, f64, std::collections::HashMap<String, (f64, usize)>)> {
+    let target_vec: Vec<f64> = target.as_array().to_vec();
+    
+    let config = target_encoding::TargetEncodingConfig {
+        prior_weight,
+        n_permutations,
+        seed,
+    };
+    
+    let enc = target_encoding::target_encode_interaction(&cat1, &cat2, &target_vec, var_name1, var_name2, &config);
+    
+    // Convert level_stats to Python-friendly format
+    let stats: std::collections::HashMap<String, (f64, usize)> = enc.level_stats
+        .into_iter()
+        .map(|(k, v)| (k, (v.sum_target, v.count)))
+        .collect();
+    
+    Ok((
+        enc.values.into_pyarray_bound(py),
+        enc.name,
+        enc.prior,
+        stats,
+    ))
+}
+
 // =============================================================================
 // Formula Parsing
 // =============================================================================
@@ -2706,10 +2839,22 @@ fn parse_formula_py(formula_str: &str) -> PyResult<std::collections::HashMap<Str
                 dict.set_item("var_name", t.var_name).unwrap();
                 dict.set_item("prior_weight", t.prior_weight).unwrap();
                 dict.set_item("n_permutations", t.n_permutations).unwrap();
+                dict.set_item("interaction_vars", t.interaction_vars).unwrap();
                 dict.into_py(py)
             })
             .collect();
         result.insert("target_encoding_terms".to_string(), te_terms.into_py(py));
+        
+        // Convert frequency encoding terms
+        let fe_terms: Vec<_> = parsed.frequency_encoding_terms
+            .into_iter()
+            .map(|t| {
+                let dict = PyDict::new_bound(py);
+                dict.set_item("var_name", t.var_name).unwrap();
+                dict.into_py(py)
+            })
+            .collect();
+        result.insert("frequency_encoding_terms".to_string(), fe_terms.into_py(py));
         
         // Convert identity terms (I() expressions)
         let identity_terms: Vec<_> = parsed.identity_terms
@@ -3923,6 +4068,13 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Add target encoding
     m.add_function(wrap_pyfunction!(target_encode_py, m)?)?;
     m.add_function(wrap_pyfunction!(apply_target_encoding_py, m)?)?;
+    
+    // Add frequency encoding
+    m.add_function(wrap_pyfunction!(frequency_encode_py, m)?)?;
+    m.add_function(wrap_pyfunction!(apply_frequency_encoding_py, m)?)?;
+    
+    // Add target encoding for interactions
+    m.add_function(wrap_pyfunction!(target_encode_interaction_py, m)?)?;
     
     // Add diagnostics functions
     m.add_function(wrap_pyfunction!(compute_calibration_curve_py, m)?)?;

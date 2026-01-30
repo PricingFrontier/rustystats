@@ -23,6 +23,14 @@ pub struct TargetEncodingTermSpec {
     pub var_name: String,
     pub prior_weight: f64,
     pub n_permutations: usize,
+    /// For TE interactions: list of variable names (e.g., ["brand", "region"] for TE(brand:region))
+    pub interaction_vars: Option<Vec<String>>,
+}
+
+/// Parsed frequency encoding term specification
+#[derive(Debug, Clone, PartialEq)]
+pub struct FrequencyEncodingTermSpec {
+    pub var_name: String,
 }
 
 /// Parsed identity term specification for I() expressions
@@ -68,6 +76,7 @@ pub struct ParsedFormula {
     pub categorical_terms: Vec<CategoricalTermSpec>,  // C() terms with optional level selection
     pub spline_terms: Vec<SplineTerm>,
     pub target_encoding_terms: Vec<TargetEncodingTermSpec>,
+    pub frequency_encoding_terms: Vec<FrequencyEncodingTermSpec>,  // FE() terms
     pub identity_terms: Vec<IdentityTermSpec>,
     pub constraint_terms: Vec<ConstraintTermSpec>,  // pos()/neg() terms for coefficient constraints
     pub has_intercept: bool,
@@ -129,7 +138,7 @@ fn split_respecting_parens(s: &str, delim: char) -> Vec<String> {
     parts
 }
 
-/// Parse a target encoding term like "TE(brand)" or "TE(brand, prior_weight=2.0)"
+/// Parse a target encoding term like "TE(brand)", "TE(brand, prior_weight=2.0)", or "TE(brand:region)"
 fn parse_target_encoding_term(term: &str) -> Option<TargetEncodingTermSpec> {
     let term = term.trim();
     
@@ -152,9 +161,22 @@ fn parse_target_encoding_term(term: &str) -> Option<TargetEncodingTermSpec> {
         return None;
     }
     
-    let var_name = parts[0].trim().to_string();
+    let var_spec = parts[0].trim();
     let mut prior_weight = 1.0f64;
     let mut n_permutations = 4usize;
+    
+    // Check for interaction: TE(brand:region)
+    let (var_name, interaction_vars) = if var_spec.contains(':') {
+        let vars: Vec<String> = var_spec.split(':').map(|s| s.trim().to_string()).collect();
+        if vars.len() >= 2 {
+            // Use joined name as var_name, store individual vars
+            (vars.join(":"), Some(vars))
+        } else {
+            (var_spec.to_string(), None)
+        }
+    } else {
+        (var_spec.to_string(), None)
+    };
     
     // Parse remaining arguments
     for part in parts.iter().skip(1) {
@@ -184,7 +206,32 @@ fn parse_target_encoding_term(term: &str) -> Option<TargetEncodingTermSpec> {
         var_name,
         prior_weight,
         n_permutations,
+        interaction_vars,
     })
+}
+
+/// Parse a frequency encoding term like "FE(brand)"
+fn parse_frequency_encoding_term(term: &str) -> Option<FrequencyEncodingTermSpec> {
+    let term = term.trim();
+    
+    // Check if starts with FE(
+    if !term.starts_with("FE(") {
+        return None;
+    }
+    
+    // Find matching parenthesis
+    let start = term.find('(')?;
+    let end = find_matching_paren(term, start)?;
+    if end <= start {
+        return None;
+    }
+    
+    let var_name = term[start + 1..end].trim().to_string();
+    if var_name.is_empty() {
+        return None;
+    }
+    
+    Some(FrequencyEncodingTermSpec { var_name })
 }
 
 /// Parse an identity term like "I(x**2)" or "I(x + y)"
@@ -504,7 +551,7 @@ fn check_single_term_function(term: &str) -> Option<String> {
             let func_name = term[..paren_pos].trim();
             
             // Skip supported functions
-            let supported = ["C", "bs", "ns", "ms", "s", "TE", "I", "pos", "neg"];
+            let supported = ["C", "bs", "ns", "ms", "s", "TE", "FE", "I", "pos", "neg"];
             if !supported.contains(&func_name) && !func_name.is_empty() {
                 // This looks like an unsupported function call
                 return Some(func_name.to_string());
@@ -588,6 +635,7 @@ pub fn parse_formula(formula: &str) -> Result<ParsedFormula, String> {
     let mut interactions = Vec::new();
     let mut spline_terms = Vec::new();
     let mut target_encoding_terms = Vec::new();
+    let mut frequency_encoding_terms = Vec::new();
     let mut identity_terms = Vec::new();
     let mut categorical_terms = Vec::new();
     let mut constraint_terms = Vec::new();
@@ -620,6 +668,12 @@ pub fn parse_formula(formula: &str) -> Result<ParsedFormula, String> {
         // Check for target encoding term
         if let Some(te_term) = parse_target_encoding_term(&term) {
             target_encoding_terms.push(te_term);
+            continue;
+        }
+        
+        // Check for frequency encoding term
+        if let Some(fe_term) = parse_frequency_encoding_term(&term) {
+            frequency_encoding_terms.push(fe_term);
             continue;
         }
         
@@ -710,6 +764,7 @@ pub fn parse_formula(formula: &str) -> Result<ParsedFormula, String> {
         categorical_terms,
         spline_terms,
         target_encoding_terms,
+        frequency_encoding_terms,
         identity_terms,
         constraint_terms,
         has_intercept,
@@ -894,5 +949,54 @@ mod tests {
         assert_eq!(parsed.spline_terms[0].spline_type, "ms");
         assert_eq!(parsed.spline_terms[1].spline_type, "bs");
         assert!(parsed.categorical_vars.contains("region"));
+    }
+
+    #[test]
+    fn test_parse_frequency_encoding() {
+        // Basic FE() term
+        let parsed = parse_formula("y ~ FE(brand) + age").unwrap();
+        assert_eq!(parsed.frequency_encoding_terms.len(), 1);
+        assert_eq!(parsed.frequency_encoding_terms[0].var_name, "brand");
+        assert_eq!(parsed.main_effects, vec!["age"]);
+        
+        // Multiple FE() terms
+        let parsed = parse_formula("y ~ FE(brand) + FE(region) + x").unwrap();
+        assert_eq!(parsed.frequency_encoding_terms.len(), 2);
+        assert_eq!(parsed.frequency_encoding_terms[0].var_name, "brand");
+        assert_eq!(parsed.frequency_encoding_terms[1].var_name, "region");
+        
+        // FE() combined with TE()
+        let parsed = parse_formula("y ~ TE(brand) + FE(brand) + age").unwrap();
+        assert_eq!(parsed.target_encoding_terms.len(), 1);
+        assert_eq!(parsed.frequency_encoding_terms.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_te_interaction() {
+        // TE with interaction: TE(brand:region)
+        let parsed = parse_formula("y ~ TE(brand:region) + age").unwrap();
+        assert_eq!(parsed.target_encoding_terms.len(), 1);
+        assert_eq!(parsed.target_encoding_terms[0].var_name, "brand:region");
+        assert_eq!(parsed.target_encoding_terms[0].interaction_vars, 
+            Some(vec!["brand".to_string(), "region".to_string()]));
+        assert_eq!(parsed.main_effects, vec!["age"]);
+        
+        // TE interaction with options
+        let parsed = parse_formula("y ~ TE(brand:region, prior_weight=2.0)").unwrap();
+        assert_eq!(parsed.target_encoding_terms.len(), 1);
+        assert_eq!(parsed.target_encoding_terms[0].interaction_vars, 
+            Some(vec!["brand".to_string(), "region".to_string()]));
+        assert!((parsed.target_encoding_terms[0].prior_weight - 2.0).abs() < 1e-10);
+        
+        // Three-way TE interaction
+        let parsed = parse_formula("y ~ TE(brand:region:year)").unwrap();
+        assert_eq!(parsed.target_encoding_terms.len(), 1);
+        assert_eq!(parsed.target_encoding_terms[0].var_name, "brand:region:year");
+        assert_eq!(parsed.target_encoding_terms[0].interaction_vars, 
+            Some(vec!["brand".to_string(), "region".to_string(), "year".to_string()]));
+        
+        // Regular TE (no interaction) should have None for interaction_vars
+        let parsed = parse_formula("y ~ TE(brand)").unwrap();
+        assert_eq!(parsed.target_encoding_terms[0].interaction_vars, None);
     }
 }
