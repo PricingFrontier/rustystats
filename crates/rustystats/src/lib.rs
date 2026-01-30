@@ -2150,6 +2150,40 @@ fn ns_py<'py>(
     Ok(result.into_pyarray_bound(py))
 }
 
+/// Compute natural spline basis with explicit interior knots.
+///
+/// This is essential for prediction on new data where the knots must
+/// match those computed during training.
+///
+/// Parameters
+/// ----------
+/// x : numpy.ndarray
+///     Data points (1D array)
+/// interior_knots : list
+///     Interior knot positions (computed from training data)
+/// boundary_knots : tuple
+///     (min, max) boundary knots
+/// include_intercept : bool, optional
+///     Whether to include intercept. Default False.
+///
+/// Returns
+/// -------
+/// numpy.ndarray
+///     Natural spline basis matrix
+#[pyfunction]
+#[pyo3(signature = (x, interior_knots, boundary_knots, include_intercept=false))]
+fn ns_with_knots_py<'py>(
+    py: Python<'py>,
+    x: PyReadonlyArray1<f64>,
+    interior_knots: Vec<f64>,
+    boundary_knots: (f64, f64),
+    include_intercept: bool,
+) -> PyResult<Bound<'py, PyArray2<f64>>> {
+    let x_array = x.as_array().to_owned();
+    let result = splines::ns_basis_with_knots(&x_array, &interior_knots, boundary_knots, include_intercept);
+    Ok(result.into_pyarray_bound(py))
+}
+
 /// Compute B-spline basis with explicit knots.
 ///
 /// For cases where you want to specify interior knots directly rather
@@ -2263,6 +2297,25 @@ fn ms_py<'py>(
 ) -> PyResult<Bound<'py, PyArray2<f64>>> {
     let x_array = x.as_array().to_owned();
     let result = splines::is_basis(&x_array, df, degree, boundary_knots, increasing);
+    Ok(result.into_pyarray_bound(py))
+}
+
+/// Compute I-spline (monotonic spline) basis with explicit interior knots.
+///
+/// Essential for prediction on new data where knots must match training.
+#[pyfunction]
+#[pyo3(signature = (x, interior_knots, degree, boundary_knots, df, increasing=true))]
+fn ms_with_knots_py<'py>(
+    py: Python<'py>,
+    x: PyReadonlyArray1<f64>,
+    interior_knots: Vec<f64>,
+    degree: usize,
+    boundary_knots: (f64, f64),
+    df: usize,
+    increasing: bool,
+) -> PyResult<Bound<'py, PyArray2<f64>>> {
+    let x_array = x.as_array().to_owned();
+    let result = splines::is_basis_with_knots(&x_array, &interior_knots, degree, boundary_knots, df, increasing);
     Ok(result.into_pyarray_bound(py))
 }
 
@@ -3848,10 +3901,12 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Add spline functions
     m.add_function(wrap_pyfunction!(bs_py, m)?)?;
     m.add_function(wrap_pyfunction!(ns_py, m)?)?;
+    m.add_function(wrap_pyfunction!(ns_with_knots_py, m)?)?;
     m.add_function(wrap_pyfunction!(bs_knots_py, m)?)?;
     m.add_function(wrap_pyfunction!(bs_names_py, m)?)?;
     m.add_function(wrap_pyfunction!(ns_names_py, m)?)?;
     m.add_function(wrap_pyfunction!(ms_py, m)?)?;
+    m.add_function(wrap_pyfunction!(ms_with_knots_py, m)?)?;
     m.add_function(wrap_pyfunction!(ms_names_py, m)?)?;
     
     // Add design matrix functions

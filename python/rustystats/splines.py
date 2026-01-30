@@ -76,10 +76,12 @@ if TYPE_CHECKING:
 from rustystats._rustystats import (
     bs_py as _bs_rust,
     ns_py as _ns_rust,
+    ns_with_knots_py as _ns_with_knots_rust,
     bs_knots_py as _bs_knots_rust,
     bs_names_py as _bs_names_rust,
     ns_names_py as _ns_names_rust,
     ms_py as _ms_rust,  # Used internally by bs() with monotonicity parameter
+    ms_with_knots_py as _ms_with_knots_rust,  # Monotonic splines with explicit knots
 )
 
 
@@ -191,6 +193,9 @@ def bs(
                 f"monotonicity must be 'increasing' or 'decreasing', got '{monotonicity}'"
             )
         increasing = monotonicity == "increasing"
+        # Use explicit knots if provided for consistent prediction on new data
+        if knots is not None and boundary_knots is not None:
+            return _ms_with_knots_rust(x, knots, degree, boundary_knots, effective_df, increasing)
         return _ms_rust(x, effective_df, degree, boundary_knots, increasing)
     
     if knots is not None:
@@ -294,8 +299,11 @@ def ns(
     # Default to penalized smooth (k=10) if neither df nor k specified
     effective_df = df if df is not None else (k if k is not None else 10)
     
-    # Natural splines don't support explicit interior knots in our implementation
-    # (knots are computed from df)
+    # If explicit interior knots are provided, use them for consistent prediction
+    if knots is not None and boundary_knots is not None:
+        return _ns_with_knots_rust(x, knots, boundary_knots, include_intercept)
+    
+    # Otherwise compute knots from data (training mode)
     return _ns_rust(x, effective_df, boundary_knots, include_intercept)
 
 
@@ -452,7 +460,9 @@ class SplineTerm:
         
         if self.spline_type == "bs":
             # Use bs() with monotonicity parameter for unified API
-            basis = bs(x, df=self.df, degree=self.degree, 
+            # Pass stored internal knots to ensure consistent basis on new data
+            basis = bs(x, df=self.df, degree=self.degree,
+                      knots=self._computed_internal_knots,
                       boundary_knots=boundary_knots_to_use, include_intercept=False,
                       monotonicity=effective_monotonicity)
             
@@ -476,7 +486,9 @@ class SplineTerm:
                     f"Use bs({self.var_name}, df={self.df}, monotonicity='increasing') "
                     f"instead, which uses I-splines designed for monotonic effects."
                 )
-            basis = ns(x, df=self.df, boundary_knots=boundary_knots_to_use,
+            # Pass stored internal knots to ensure consistent basis on new data
+            basis = ns(x, df=self.df, knots=self._computed_internal_knots,
+                      boundary_knots=boundary_knots_to_use,
                       include_intercept=False)
             if self._is_smooth:
                 names = [f"ns({self.var_name}, {i+1}/{self.df}, k)" for i in range(self.df)]

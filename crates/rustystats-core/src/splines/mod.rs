@@ -104,6 +104,35 @@ pub fn compute_knots(
     knots
 }
 
+/// Build complete knot vector from interior knots and boundary knots.
+///
+/// This is used when we have pre-computed interior knots (from training)
+/// and need to rebuild the full knot vector for prediction.
+pub fn build_knot_vector(
+    interior_knots: &[f64],
+    degree: usize,
+    x_min: f64,
+    x_max: f64,
+) -> Vec<f64> {
+    let n_interior = interior_knots.len();
+    let mut knots = Vec::with_capacity(2 * (degree + 1) + n_interior);
+    
+    // Left boundary knots (repeated)
+    for _ in 0..=degree {
+        knots.push(x_min);
+    }
+    
+    // Interior knots
+    knots.extend(interior_knots);
+    
+    // Right boundary knots (repeated)
+    for _ in 0..=degree {
+        knots.push(x_max);
+    }
+    
+    knots
+}
+
 /// Compute knot sequence for natural splines.
 ///
 /// Natural splines have additional constraints (linear at boundaries)
@@ -360,6 +389,61 @@ pub fn ns_basis(
     result
 }
 
+/// Compute natural cubic spline basis with explicit interior knots.
+///
+/// This variant accepts pre-computed interior knots, which is essential for
+/// prediction on new data where the knots must match those from training.
+///
+/// # Arguments
+/// * `x` - Data points to evaluate
+/// * `interior_knots` - Pre-computed interior knot positions
+/// * `boundary_knots` - (min, max) boundary knots
+/// * `include_intercept` - Whether to include intercept column
+///
+/// # Returns
+/// Basis matrix with natural spline basis functions
+pub fn ns_basis_with_knots(
+    x: &Array1<f64>,
+    interior_knots: &[f64],
+    boundary_knots: (f64, f64),
+    include_intercept: bool,
+) -> Array2<f64> {
+    let n = x.len();
+    let (x_min, x_max) = boundary_knots;
+    
+    // df = n_interior + 1 for natural splines
+    let df = interior_knots.len() + 1;
+    let n_basis = if include_intercept { df } else { df.saturating_sub(1).max(1) };
+    
+    // Build all knots including boundaries
+    let mut all_knots = Vec::with_capacity(interior_knots.len() + 2);
+    all_knots.push(x_min);
+    all_knots.extend(interior_knots);
+    all_knots.push(x_max);
+    
+    // Compute basis using same algorithm as ns_basis
+    let result_rows: Vec<Vec<f64>> = (0..n)
+        .into_par_iter()
+        .map(|i| {
+            let xi = x[i];
+            compute_ns_row(xi, &all_knots, n_basis, include_intercept)
+        })
+        .collect();
+    
+    // Convert to Array2
+    let actual_cols = n_basis;
+    let mut result = Array2::zeros((n, actual_cols));
+    for (i, row) in result_rows.into_iter().enumerate() {
+        for (j, &val) in row.iter().enumerate() {
+            if j < actual_cols {
+                result[[i, j]] = val;
+            }
+        }
+    }
+    
+    result
+}
+
 /// Compute a single row of the natural spline basis.
 #[inline]
 fn compute_ns_row(x: f64, knots: &[f64], n_basis: usize, include_intercept: bool) -> Vec<f64> {
@@ -573,6 +657,51 @@ pub fn is_basis(
         for i in 0..n {
             for j in 0..df {
                 // 1 - I_j gives decreasing function, reverse column order
+                flipped[[i, j]] = 1.0 - result[[i, df - 1 - j]];
+            }
+        }
+        result = flipped;
+    }
+    
+    result
+}
+
+/// Compute I-spline (monotonic spline) basis with explicit knots.
+///
+/// This variant accepts pre-computed knots, essential for prediction on new data.
+pub fn is_basis_with_knots(
+    x: &Array1<f64>,
+    interior_knots: &[f64],
+    degree: usize,
+    boundary_knots: (f64, f64),
+    df: usize,
+    increasing: bool,
+) -> Array2<f64> {
+    let n = x.len();
+    let (x_min, x_max) = boundary_knots;
+    
+    // Build full knot vector from interior knots and boundaries
+    let knots = build_knot_vector(interior_knots, degree, x_min, x_max);
+    
+    // Parallel evaluation over observations
+    let basis_rows: Vec<Vec<f64>> = (0..n)
+        .into_par_iter()
+        .map(|i| compute_ispline_row(x[i], degree, &knots, df, x_min, x_max))
+        .collect();
+    
+    // Convert to Array2
+    let mut result = Array2::zeros((n, df));
+    for (i, row) in basis_rows.into_iter().enumerate() {
+        for (j, val) in row.into_iter().enumerate() {
+            result[[i, j]] = val;
+        }
+    }
+    
+    // For decreasing monotonicity, reverse the basis columns and flip values
+    if !increasing {
+        let mut flipped = Array2::zeros((n, df));
+        for i in 0..n {
+            for j in 0..df {
                 flipped[[i, j]] = 1.0 - result[[i, df - 1 - j]];
             }
         }
