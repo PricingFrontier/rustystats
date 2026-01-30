@@ -2168,6 +2168,8 @@ class GLMModel:
         compute_deviance_by_level: bool = True,
         compute_lift: bool = True,
         compute_partial_dep: bool = True,
+        # Base predictions comparison
+        base_predictions: Optional[str] = None,
         # Legacy parameter (deprecated)
         data: Optional["pl.DataFrame"] = None,
     ):
@@ -2207,6 +2209,12 @@ class GLMModel:
             Compute full lift chart with all deciles.
         compute_partial_dep : bool, default=True
             Compute partial dependence plots for each variable.
+        base_predictions : str, optional
+            Column name in train_data containing predictions from another model
+            (e.g., a base/benchmark model). When provided, computes:
+            - A/E ratio, loss, Gini for base predictions
+            - Model vs base decile analysis sorted by model/base ratio
+            - Summary of which model performs better in each decile
         
         Returns
         -------
@@ -2278,6 +2286,7 @@ class GLMModel:
             compute_deviance_by_level=compute_deviance_by_level,
             compute_lift=compute_lift,
             compute_partial_dep=compute_partial_dep,
+            base_predictions=base_predictions,
         )
     
     def diagnostics_json(

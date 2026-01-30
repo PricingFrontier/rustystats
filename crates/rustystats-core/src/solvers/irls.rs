@@ -395,10 +395,11 @@ pub fn fit_glm_full(
                 
                 // IRLS weight: use true Hessian if available, else Fisher info
                 let iw = if let Some(ref hw) = hessian_weights {
-                    // True Hessian weight (already accounts for link via derivation)
-                    (hw[i] / (d * d)).max(min_weight).min(1e10)
+                    // True Hessian weight - use directly without dividing by d²
+                    // For Gamma+log link: w = μ (not μ/(1/μ)² = μ³ which was the bug)
+                    hw[i].max(min_weight).min(1e10)
                 } else {
-                    // Standard Fisher information weight
+                    // Standard Fisher information weight: w = 1/(V(μ) × (dη/dμ)²)
                     let v = variance.as_ref().unwrap()[i];
                     (1.0 / (v * d * d)).max(min_weight).min(1e10)
                 };
@@ -1087,7 +1088,8 @@ pub fn fit_glm_regularized_warm(
             .map(|i| {
                 let d = link_deriv[i];
                 let iw = if let Some(ref hw) = hessian_weights {
-                    (hw[i] / (d * d)).max(min_weight).min(1e10)
+                    // True Hessian weight - use directly without dividing by d²
+                    hw[i].max(min_weight).min(1e10)
                 } else {
                     let v = variance.as_ref().unwrap()[i];
                     (1.0 / (v * d * d)).max(min_weight).min(1e10)

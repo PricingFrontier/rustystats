@@ -240,7 +240,8 @@ pub fn fit_glm_coordinate_descent(
             .map(|i| {
                 let d = link_deriv[i];
                 let iw = if let Some(ref hw) = hessian_weights {
-                    (hw[i] / (d * d)).max(min_weight).min(1e10)
+                    // True Hessian weight - use directly without dividing by d²
+                    hw[i].max(min_weight).min(1e10)
                 } else {
                     let v = variance.as_ref().unwrap()[i];
                     (1.0 / (v * d * d)).max(min_weight).min(1e10)

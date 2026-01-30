@@ -124,12 +124,13 @@ impl Family for GammaFamily {
         mu.iter().all(|&x| x > 0.0 && x.is_finite())
     }
     
-    /// Gamma with log link benefits from true Hessian weights.
+    /// Whether to use true Hessian weights for IRLS.
     /// 
-    /// Using the observed Hessian instead of Fisher information can reduce
-    /// IRLS iterations from 50-100 down to 5-10 for Gamma regression.
+    /// Note: While true Hessian can reduce IRLS iterations, it produces a different
+    /// covariance matrix than Fisher information. Statsmodels uses Fisher weights
+    /// (W=1 for Gamma+log link), so we disable true Hessian to match standard inference.
     fn use_true_hessian_weights(&self) -> bool {
-        true
+        false
     }
     
     /// For Gamma with log link, the true Hessian weight is μ.

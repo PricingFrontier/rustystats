@@ -582,6 +582,63 @@ class SmoothTermDiagnostics:
 
 
 @dataclass
+class ModelVsBaseDecile:
+    """Metrics for a single decile when comparing model vs base predictions.
+    
+    Deciles are formed by sorting on model_predictions / base_predictions ratio.
+    """
+    decile: int  # 1-10
+    n: int
+    exposure: float
+    actual: float  # actual frequency = sum(y) / exposure
+    model_predicted: float  # model frequency = sum(mu_model) / exposure
+    base_predicted: float  # base frequency = sum(mu_base) / exposure
+    model_ae_ratio: float  # actual / model_predicted
+    base_ae_ratio: float  # actual / base_predicted
+    model_base_ratio_mean: float  # mean(model / base) in this decile
+
+
+@dataclass
+class BasePredictionsMetrics:
+    """Metrics for base predictions (from another model).
+    
+    Provides the same key metrics as the model predictions for comparison.
+    """
+    total_predicted: float
+    ae_ratio: float
+    loss: float  # Family-appropriate per-obs loss
+    gini: float
+    auc: float
+
+
+@dataclass
+class BasePredictionsComparison:
+    """Comparison between model predictions and base predictions.
+    
+    Includes:
+    - Side-by-side metrics for model vs base
+    - Decile analysis sorted by model/base ratio
+    """
+    # Model metrics (for side-by-side comparison)
+    model_metrics: BasePredictionsMetrics
+    
+    # Base prediction metrics
+    base_metrics: BasePredictionsMetrics
+    
+    # Model vs base decile analysis
+    model_vs_base_deciles: List[ModelVsBaseDecile]
+    
+    # Summary stats
+    model_better_deciles: int  # Number of deciles where model A/E closer to 1
+    base_better_deciles: int  # Number of deciles where base A/E closer to 1
+    
+    # Improvement metrics (positive = model is better)
+    loss_improvement_pct: float  # (base_loss - model_loss) / base_loss * 100
+    gini_improvement: float  # model_gini - base_gini
+    auc_improvement: float  # model_auc - base_auc
+
+
+@dataclass
 class ModelDiagnostics:
     """Complete model diagnostics output."""
     
@@ -632,6 +689,9 @@ class ModelDiagnostics:
     
     # Spline knot information
     spline_info: Optional[Dict[str, Dict[str, Any]]] = None
+    
+    # Base predictions comparison (when comparing against another model)
+    base_predictions_comparison: Optional[BasePredictionsComparison] = None
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary, handling nested dataclasses."""
@@ -2549,6 +2609,160 @@ class DiagnosticsComputer:
         
         return metrics
     
+    def compute_base_predictions_comparison(
+        self,
+        y: np.ndarray,
+        mu_model: np.ndarray,
+        mu_base: np.ndarray,
+        exposure: np.ndarray,
+        n_deciles: int = 10,
+    ) -> BasePredictionsComparison:
+        """
+        Compute comparison between model predictions and base predictions.
+        
+        Parameters
+        ----------
+        y : np.ndarray
+            Actual response values
+        mu_model : np.ndarray
+            Model predictions
+        mu_base : np.ndarray
+            Base/benchmark model predictions
+        exposure : np.ndarray
+            Exposure weights
+        n_deciles : int
+            Number of deciles for ratio analysis
+            
+        Returns
+        -------
+        BasePredictionsComparison
+            Complete comparison with metrics and decile analysis
+        """
+        # Compute base metrics
+        total_predicted_base = float(np.sum(mu_base))
+        total_actual = float(np.sum(y))
+        ae_ratio_base = total_actual / total_predicted_base if total_predicted_base > 0 else float('nan')
+        
+        # Base loss using Rust backend
+        base_dataset_metrics = _rust_dataset_metrics(y, mu_base, self.family, self.n_params)
+        base_loss = float(base_dataset_metrics["mean_deviance"])
+        
+        # Base discrimination
+        base_stats = _rust_discrimination_stats(y, mu_base, exposure)
+        base_gini = float(base_stats["gini"])
+        base_auc = float(base_stats["auc"])
+        
+        base_metrics = BasePredictionsMetrics(
+            total_predicted=round(total_predicted_base, 2),
+            ae_ratio=round(ae_ratio_base, 4),
+            loss=round(base_loss, 6),
+            gini=round(base_gini, 4),
+            auc=round(base_auc, 4),
+        )
+        
+        # Model metrics for side-by-side comparison
+        total_predicted_model = float(np.sum(mu_model))
+        ae_ratio_model = total_actual / total_predicted_model if total_predicted_model > 0 else float('nan')
+        model_dataset_metrics = _rust_dataset_metrics(y, mu_model, self.family, self.n_params)
+        model_loss = float(model_dataset_metrics["mean_deviance"])
+        model_stats = _rust_discrimination_stats(y, mu_model, exposure)
+        model_gini = float(model_stats["gini"])
+        model_auc = float(model_stats["auc"])
+        
+        model_metrics = BasePredictionsMetrics(
+            total_predicted=round(total_predicted_model, 2),
+            ae_ratio=round(ae_ratio_model, 4),
+            loss=round(model_loss, 6),
+            gini=round(model_gini, 4),
+            auc=round(model_auc, 4),
+        )
+        
+        # Compute model/base ratio and sort into deciles
+        # Handle divide by zero - use small epsilon where base is 0
+        epsilon = 1e-10
+        mu_base_safe = np.where(mu_base > epsilon, mu_base, epsilon)
+        model_base_ratio = mu_model / mu_base_safe
+        
+        # Sort by model/base ratio
+        sort_idx = np.argsort(model_base_ratio)
+        y_sorted = y[sort_idx]
+        mu_model_sorted = mu_model[sort_idx]
+        mu_base_sorted = mu_base[sort_idx]
+        exp_sorted = exposure[sort_idx]
+        ratio_sorted = model_base_ratio[sort_idx]
+        
+        n = len(y)
+        decile_size = n // n_deciles
+        
+        deciles = []
+        model_better_count = 0
+        base_better_count = 0
+        
+        for d in range(n_deciles):
+            start = d * decile_size
+            end = (d + 1) * decile_size if d < n_deciles - 1 else n
+            
+            y_d = y_sorted[start:end]
+            mu_model_d = mu_model_sorted[start:end]
+            mu_base_d = mu_base_sorted[start:end]
+            exp_d = exp_sorted[start:end]
+            ratio_d = ratio_sorted[start:end]
+            
+            actual_sum = float(np.sum(y_d))
+            model_sum = float(np.sum(mu_model_d))
+            base_sum = float(np.sum(mu_base_d))
+            exp_sum = float(np.sum(exp_d))
+            
+            model_ae = actual_sum / model_sum if model_sum > 0 else float('nan')
+            base_ae = actual_sum / base_sum if base_sum > 0 else float('nan')
+            
+            # Frequencies (per exposure)
+            actual_freq = actual_sum / exp_sum if exp_sum > 0 else 0.0
+            model_freq = model_sum / exp_sum if exp_sum > 0 else 0.0
+            base_freq = base_sum / exp_sum if exp_sum > 0 else 0.0
+            
+            # Mean ratio in this decile
+            ratio_mean = float(np.mean(ratio_d))
+            
+            deciles.append(ModelVsBaseDecile(
+                decile=d + 1,
+                n=len(y_d),
+                exposure=round(exp_sum, 2),
+                actual=round(actual_freq, 6),
+                model_predicted=round(model_freq, 6),
+                base_predicted=round(base_freq, 6),
+                model_ae_ratio=round(model_ae, 4) if not np.isnan(model_ae) else None,
+                base_ae_ratio=round(base_ae, 4) if not np.isnan(base_ae) else None,
+                model_base_ratio_mean=round(ratio_mean, 4),
+            ))
+            
+            # Count which model is better (A/E closer to 1)
+            if not np.isnan(model_ae) and not np.isnan(base_ae):
+                model_dist = abs(model_ae - 1.0)
+                base_dist = abs(base_ae - 1.0)
+                if model_dist < base_dist:
+                    model_better_count += 1
+                elif base_dist < model_dist:
+                    base_better_count += 1
+        
+        # Improvement metrics (positive = model is better)
+        loss_improvement = 0.0
+        if base_loss > 0:
+            loss_improvement = (base_loss - model_loss) / base_loss * 100
+        gini_improvement = model_gini - base_gini
+        auc_improvement = model_auc - base_auc
+        
+        return BasePredictionsComparison(
+            model_metrics=model_metrics,
+            base_metrics=base_metrics,
+            model_vs_base_deciles=deciles,
+            model_better_deciles=model_better_count,
+            base_better_deciles=base_better_count,
+            loss_improvement_pct=round(loss_improvement, 2),
+            gini_improvement=round(gini_improvement, 4),
+            auc_improvement=round(auc_improvement, 4),
+        )
+    
     def compute_train_test_comparison(
         self,
         train_data: "pl.DataFrame",
@@ -3922,6 +4136,8 @@ def compute_diagnostics(
     compute_deviance_by_level: bool = True,
     compute_lift: bool = True,
     compute_partial_dep: bool = True,
+    # Base predictions comparison (column name in train_data with predictions from another model)
+    base_predictions: Optional[str] = None,
     # Legacy parameters (deprecated, use train_data instead)
     data: Optional["pl.DataFrame"] = None,
     test_response: Optional[str] = None,
@@ -3969,6 +4185,12 @@ def compute_diagnostics(
         Whether to compute full lift chart.
     compute_partial_dep : bool, default=True
         Whether to compute partial dependence plots.
+    base_predictions : str, optional
+        Column name in train_data containing predictions from another model 
+        (e.g., a base/benchmark model). When provided, computes:
+        - A/E ratio, loss, Gini for base predictions
+        - Model vs base decile analysis sorted by model/base ratio
+        - Summary of which model performs better in each decile
     
     Returns
     -------
@@ -3985,6 +4207,7 @@ def compute_diagnostics(
             - overfitting_risk: True if gini_gap > 0.03
             - calibration_drift: True if test A/E outside [0.95, 1.05]
             - unstable_factors: Factors where train/test A/E differ by > 0.1
+        - base_predictions_comparison: Comparison against base predictions (if provided)
     
     Examples
     --------
@@ -3994,6 +4217,7 @@ def compute_diagnostics(
     ...     test_data=test_data,
     ...     categorical_factors=["Region", "VehBrand"],
     ...     continuous_factors=["Age", "VehPower"],
+    ...     base_predictions="old_model_pred",  # Compare against another model
     ... )
     >>> 
     >>> # Check overfitting flags
@@ -4412,6 +4636,32 @@ def compute_diagnostics(
     if hasattr(result, 'has_smooth_terms') and result.has_smooth_terms():
         smooth_term_diagnostics = _compute_smooth_term_diagnostics(result, warnings)
     
+    # Base predictions comparison (if provided)
+    base_predictions_comparison = None
+    if base_predictions is not None:
+        if base_predictions not in train_data.columns:
+            raise ValueError(f"base_predictions column '{base_predictions}' not found in train_data")
+        mu_base = train_data[base_predictions].to_numpy().astype(np.float64)
+        base_predictions_comparison = computer.compute_base_predictions_comparison(
+            y=y,
+            mu_model=mu,
+            mu_base=mu_base,
+            exposure=computer.exposure,
+        )
+        # Add summary to warnings
+        if base_predictions_comparison.loss_improvement_pct > 0:
+            warnings.append({
+                "type": "model_improvement",
+                "message": f"Model improves on base predictions: {base_predictions_comparison.loss_improvement_pct:.1f}% lower loss, "
+                          f"better A/E in {base_predictions_comparison.model_better_deciles}/10 deciles"
+            })
+        elif base_predictions_comparison.loss_improvement_pct < 0:
+            warnings.append({
+                "type": "model_regression",
+                "message": f"Model is worse than base predictions: {-base_predictions_comparison.loss_improvement_pct:.1f}% higher loss, "
+                          f"better A/E in only {base_predictions_comparison.model_better_deciles}/10 deciles"
+            })
+    
     diagnostics = ModelDiagnostics(
         model_summary=model_summary,
         train_test=train_test,
@@ -4429,6 +4679,7 @@ def compute_diagnostics(
         overdispersion=overdispersion_result,
         spline_info=spline_info,
         smooth_terms=smooth_term_diagnostics,
+        base_predictions_comparison=base_predictions_comparison,
     )
     
     # Auto-save JSON to analysis folder

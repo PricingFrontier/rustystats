@@ -958,14 +958,131 @@
     },
     {
       "type": "insignificant_smooth",
-      "message": "Smooth term s(age) is not significant (p=1.000, EDF=6.9). Consider using linear term or removing."
+      "message": "Smooth term s(age) is not significant (p=0.682, EDF=6.9). Consider using linear term or removing."
     },
     {
       "type": "insignificant_smooth",
-      "message": "Smooth term s(income) is not significant (p=1.000, EDF=6.9). Consider using linear term or removing."
+      "message": "Smooth term s(income) is not significant (p=0.498, EDF=6.9). Consider using linear term or removing."
     }
   ],
-  "vif": null,
+  "vif": [
+    {
+      "feature": "bs(income, 3/9)",
+      "vif": 6.28,
+      "severity": "moderate",
+      "collinear_with": null
+    },
+    {
+      "feature": "bs(income, 1/9)",
+      "vif": 5.9,
+      "severity": "moderate",
+      "collinear_with": null
+    },
+    {
+      "feature": "bs(income, 5/9)",
+      "vif": 5.81,
+      "severity": "moderate",
+      "collinear_with": null
+    },
+    {
+      "feature": "bs(age, 1/9)",
+      "vif": 5.69,
+      "severity": "expected",
+      "collinear_with": [
+        "bs(age, 2/9)"
+      ]
+    },
+    {
+      "feature": "bs(age, 3/9)",
+      "vif": 5.5,
+      "severity": "moderate",
+      "collinear_with": null
+    },
+    {
+      "feature": "bs(income, 6/9)",
+      "vif": 5.2,
+      "severity": "moderate",
+      "collinear_with": null
+    },
+    {
+      "feature": "bs(income, 7/9)",
+      "vif": 5.18,
+      "severity": "expected",
+      "collinear_with": [
+        "bs(income, 8/9)"
+      ]
+    },
+    {
+      "feature": "bs(age, 5/9)",
+      "vif": 4.97,
+      "severity": "none",
+      "collinear_with": null
+    },
+    {
+      "feature": "bs(age, 6/9)",
+      "vif": 4.56,
+      "severity": "none",
+      "collinear_with": null
+    },
+    {
+      "feature": "bs(income, 4/9)",
+      "vif": 4.53,
+      "severity": "none",
+      "collinear_with": null
+    },
+    {
+      "feature": "bs(age, 7/9)",
+      "vif": 4.49,
+      "severity": "none",
+      "collinear_with": null
+    },
+    {
+      "feature": "bs(income, 8/9)",
+      "vif": 4.44,
+      "severity": "none",
+      "collinear_with": [
+        "bs(income, 7/9)"
+      ]
+    },
+    {
+      "feature": "bs(age, 4/9)",
+      "vif": 3.96,
+      "severity": "none",
+      "collinear_with": null
+    },
+    {
+      "feature": "bs(age, 8/9)",
+      "vif": 3.87,
+      "severity": "none",
+      "collinear_with": null
+    },
+    {
+      "feature": "bs(income, 2/9)",
+      "vif": 3.57,
+      "severity": "none",
+      "collinear_with": null
+    },
+    {
+      "feature": "bs(age, 2/9)",
+      "vif": 3.02,
+      "severity": "none",
+      "collinear_with": [
+        "bs(age, 1/9)"
+      ]
+    },
+    {
+      "feature": "bs(age, 9/9)",
+      "vif": 2.5,
+      "severity": "none",
+      "collinear_with": null
+    },
+    {
+      "feature": "bs(income, 9/9)",
+      "vif": 2.46,
+      "severity": "none",
+      "collinear_with": null
+    }
+  ],
   "smooth_terms": [
     {
       "variable": "age",
@@ -974,8 +1091,8 @@
       "lambda": 0.1,
       "gcv": 0.4436,
       "ref_df": 6.88,
-      "chi2": 0.0,
-      "p_value": 1.0
+      "chi2": 4.72,
+      "p_value": 0.6815
     },
     {
       "variable": "income",
@@ -984,8 +1101,8 @@
       "lambda": 0.1,
       "gcv": 0.4563,
       "ref_df": 6.88,
-      "chi2": 0.0,
-      "p_value": 1.0
+      "chi2": 6.24,
+      "p_value": 0.498
     }
   ],
   "coefficient_summary": [
@@ -1483,7 +1600,7 @@
         null,
         null,
         null,
-        1.421978641140556e+53,
+        1.4219786411406148e+53,
         0.0,
         0.0,
         0.0,
@@ -1573,5 +1690,6 @@
       "lambda": 0.1,
       "edf": 6.8768
     }
-  }
+  },
+  "base_predictions_comparison": null
 }

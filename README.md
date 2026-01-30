@@ -722,6 +722,47 @@ exploration = rs.explore_data(
 - **Overfitting Detection**: Compare train vs test metrics when test data provided
 - **Interaction Detection**: Greedy residual-based detection of potential interactions
 - **Warnings**: Auto-generated alerts for high dispersion, poor calibration, missing factors
+- **Base Model Comparison**: Compare new model against existing/benchmark predictions
+
+### Comparing Against a Base Model
+
+Compare your new model against predictions from an existing model (e.g., current production model):
+
+```python
+# Add base model predictions to your data
+data = data.with_columns(pl.lit(old_model_predictions).alias("base_pred"))
+
+# Run diagnostics with base_predictions
+diagnostics = result.diagnostics(
+    train_data=data,
+    categorical_factors=["Region", "VehBrand"],
+    continuous_factors=["Age", "VehPower"],
+    base_predictions="base_pred",  # Column name with base model predictions
+)
+
+# Access comparison results
+bc = diagnostics.base_predictions_comparison
+
+# Side-by-side metrics
+print(f"Model loss: {bc.model_metrics.loss}, Base loss: {bc.base_metrics.loss}")
+print(f"Model Gini: {bc.model_metrics.gini}, Base Gini: {bc.base_metrics.gini}")
+
+# Improvement metrics (positive = new model is better)
+print(f"Loss improvement: {bc.loss_improvement_pct}%")
+print(f"Gini improvement: {bc.gini_improvement}")
+print(f"AUC improvement: {bc.auc_improvement}")
+
+# Decile analysis sorted by model/base prediction ratio
+for d in bc.model_vs_base_deciles:
+    print(f"Decile {d.decile}: actual={d.actual:.4f}, "
+          f"model={d.model_predicted:.4f}, base={d.base_predicted:.4f}")
+```
+
+The comparison includes:
+- **Side-by-side metrics**: Loss (mean deviance), Gini, AUC, A/E ratio for both models
+- **Improvement metrics**: `loss_improvement_pct`, `gini_improvement`, `auc_improvement`
+- **Decile analysis**: Data sorted by model/base ratio, showing where the new model diverges
+- **Calibration comparison**: Count of deciles where each model has better A/E
 
 ---
 

@@ -595,20 +595,21 @@ impl PyGLMResults {
         self.irls_weights.clone().into_pyarray_bound(py)
     }
 
-    /// Get the dispersion parameter φ.
+    /// Get the dispersion parameter φ for standard error computation.
     ///
     /// For Poisson/Binomial: φ = 1 (fixed by assumption)
     /// For QuasiPoisson/QuasiBinomial: φ = Pearson χ² / df_resid (estimated)
-    /// For Gaussian/Gamma/Tweedie: φ = deviance / df_resid (estimated)
+    /// For Gamma/Gaussian/Tweedie: φ = Pearson χ² / df_resid (estimated)
     ///
-    /// This matches statsmodels behavior.
+    /// This matches statsmodels default behavior for SE computation.
+    /// Note: For log-likelihood/AIC, deviance-based scale is used separately.
     fn scale(&self) -> f64 {
         match self.family_name.as_str() {
             // True Poisson and Binomial have fixed dispersion = 1
             "Poisson" | "Binomial" => 1.0,
-            // Quasi-families estimate dispersion from Pearson residuals
-            // This is the key difference: SE's are inflated by √φ
-            "QuasiPoisson" | "QuasiBinomial" => {
+            // All other families estimate dispersion from Pearson residuals
+            // This matches statsmodels default (scale='X2')
+            _ => {
                 let family = self.get_family();
                 estimate_dispersion_pearson(
                     &self.y,
@@ -617,15 +618,6 @@ impl PyGLMResults {
                     self.df_resid(),
                     self.maybe_weights(),
                 )
-            }
-            _ => {
-                // Estimate dispersion for Gaussian, Gamma, Tweedie using deviance
-                let df = self.df_resid() as f64;
-                if df > 0.0 {
-                    self.deviance / df
-                } else {
-                    1.0
-                }
             }
         }
     }
@@ -3146,8 +3138,12 @@ fn compute_fit_statistics_py<'py>(
 /// - Binomial: -sum(y * log(μ) + (1-y) * log(1-μ))
 /// 
 /// Returns deviance (sum), mean_deviance (per-obs), log_likelihood, and AIC.
+///
+/// # Arguments
+/// * `scale` - Dispersion parameter for Gamma/Gaussian. If None, estimated from deviance.
+///             For Poisson/Binomial, scale is always 1 regardless of this parameter.
 #[pyfunction]
-#[pyo3(signature = (y, mu, family, n_params, var_power=1.5, theta=1.0))]
+#[pyo3(signature = (y, mu, family, n_params, var_power=1.5, theta=1.0, scale=None))]
 fn compute_dataset_metrics_py<'py>(
     py: Python<'py>,
     y: PyReadonlyArray1<f64>,
@@ -3156,6 +3152,7 @@ fn compute_dataset_metrics_py<'py>(
     n_params: usize,
     var_power: f64,
     theta: f64,
+    scale: Option<f64>,
 ) -> PyResult<PyObject> {
     use rustystats_core::diagnostics::loss::{
         poisson_deviance_loss, gamma_deviance_loss, mse, log_loss,
@@ -3228,8 +3225,25 @@ fn compute_dataset_metrics_py<'py>(
     // Total deviance (sum, not mean)
     let deviance = mean_deviance * n_obs as f64;
     
+    // Compute scale (dispersion) for log-likelihood calculation
+    // For Gamma/Gaussian: use provided scale or estimate from deviance/(n-p)
+    // For Poisson/Binomial: scale is always 1 by definition
+    let df_resid = if n_obs > n_params { n_obs - n_params } else { 1 };
+    let estimated_scale = deviance / df_resid as f64;
+    
+    let effective_scale = match family_lower.as_str() {
+        // Poisson and Binomial have fixed scale = 1
+        "poisson" | "binomial" => 1.0,
+        // QuasiPoisson/QuasiBinomial use estimated scale but from Pearson, not deviance
+        // For now, use deviance-based estimate as approximation
+        "quasipoisson" | "quasibinomial" => scale.unwrap_or(estimated_scale),
+        // Gamma and Gaussian use deviance-based scale
+        "gamma" | "gaussian" | "normal" => scale.unwrap_or(estimated_scale),
+        // For other families, use provided or estimated
+        _ => scale.unwrap_or(estimated_scale),
+    };
+    
     // Compute log-likelihood for AIC calculation
-    let scale = 1.0; // For test data, we use scale=1 (conservative)
     let llf = if family_lower.starts_with("negativebinomial") || family_lower.starts_with("negbinomial") {
         nb_loglikelihood(&y_arr, &mu_arr, parsed_theta, None)
     } else if family_lower.starts_with("tweedie") {
@@ -3237,10 +3251,10 @@ fn compute_dataset_metrics_py<'py>(
         -deviance / 2.0
     } else {
         match family_lower.as_str() {
-            "gaussian" | "normal" => log_likelihood_gaussian(&y_arr, &mu_arr, scale, None),
+            "gaussian" | "normal" => log_likelihood_gaussian(&y_arr, &mu_arr, effective_scale, None),
             "poisson" | "quasipoisson" => log_likelihood_poisson(&y_arr, &mu_arr, None),
             "binomial" | "quasibinomial" => log_likelihood_binomial(&y_arr, &mu_arr, None),
-            "gamma" => log_likelihood_gamma(&y_arr, &mu_arr, scale, None),
+            "gamma" => log_likelihood_gamma(&y_arr, &mu_arr, effective_scale, None),
             _ => f64::NAN,
         }
     };
@@ -3254,6 +3268,7 @@ fn compute_dataset_metrics_py<'py>(
     dict.set_item("log_likelihood", llf)?;
     dict.set_item("aic", aic_val)?;
     dict.set_item("n_obs", n_obs)?;
+    dict.set_item("scale", effective_scale)?;
     
     Ok(dict.into_py(py))
 }
