@@ -893,8 +893,9 @@ class InteractionBuilder:
         
         Uses ordered target statistics to prevent target leakage.
         
-        For frequency models with exposure, uses claim rate (target/exposure)
-        instead of raw counts to produce more meaningful encoded values.
+        For frequency models with exposure, uses exposure-weighted encoding:
+        cumulative claims / cumulative exposure. This aligns with actuarial
+        credibility theory where high-exposure observations contribute more.
         
         Parameters
         ----------
@@ -905,9 +906,8 @@ class InteractionBuilder:
         seed : int, optional
             Random seed for reproducibility
         exposure : np.ndarray, optional
-            Exposure values. If provided, target encoding uses rate (target/exposure)
-            instead of raw target values. This prevents collapse to near-constant
-            values for low-frequency count data.
+            Exposure values. If provided, uses exposure-weighted target encoding
+            (sum_claims / sum_exposure) instead of observation-weighted encoding.
             
         Returns
         -------
@@ -918,19 +918,19 @@ class InteractionBuilder:
         stats : dict
             Level statistics for prediction on new data
         """
-        # Use rate (target/exposure) for encoding when exposure is available
-        # This prevents near-constant encoded values for low-frequency count data
-        if exposure is not None:
-            encoding_target = (target / np.maximum(exposure, 1e-10)).astype(np.float64)
-        else:
-            encoding_target = target.astype(np.float64)
-        
         # Check if this is a TE interaction (e.g., TE(brand:region))
         if te_term.interaction_vars is not None and len(te_term.interaction_vars) >= 2:
             # Get columns for each variable in the interaction
             cols = [self.data[var].to_numpy() for var in te_term.interaction_vars]
             cat1 = [str(v) for v in cols[0]]
             cat2 = [str(v) for v in cols[1]]
+            
+            # For interactions with exposure, use rate encoding (current behavior)
+            # TODO: Add exposure-weighted interaction encoding
+            if exposure is not None:
+                encoding_target = (target / np.maximum(exposure, 1e-10)).astype(np.float64)
+            else:
+                encoding_target = target.astype(np.float64)
             
             # For 2-way interactions, use the dedicated interaction function
             from rustystats._rustystats import target_encode_interaction_py
@@ -953,28 +953,57 @@ class InteractionBuilder:
                     ":".join(te_term.interaction_vars[:i]), te_term.interaction_vars[i],
                     te_term.prior_weight, te_term.n_permutations, seed
                 )
+            
+            # Store stats for rate-based encoding
+            return encoded, name, {
+                'prior': prior, 
+                'stats': stats, 
+                'prior_weight': te_term.prior_weight,
+                'used_exposure_weighted': False,  # Interactions still use rate encoding
+                'interaction_vars': te_term.interaction_vars,
+            }
         else:
             # Single variable target encoding
             col = self.data[te_term.var_name].to_numpy()
             categories = [str(v) for v in col]
             
-            encoded, name, prior, stats = _target_encode_rust(
-                categories,
-                encoding_target,
-                te_term.var_name,
-                te_term.prior_weight,
-                te_term.n_permutations,
-                seed,
-            )
-        
-        # Store whether we used rate encoding for prediction
-        return encoded, name, {
-            'prior': prior, 
-            'stats': stats, 
-            'prior_weight': te_term.prior_weight,
-            'used_rate_encoding': exposure is not None,
-            'interaction_vars': te_term.interaction_vars,
-        }
+            if exposure is not None:
+                # Use exposure-weighted encoding: cumulative claims / cumulative exposure
+                from rustystats._rustystats import target_encode_with_exposure_py
+                encoded, name, prior, stats = target_encode_with_exposure_py(
+                    categories,
+                    target.astype(np.float64),
+                    exposure.astype(np.float64),
+                    te_term.var_name,
+                    te_term.prior_weight,
+                    te_term.n_permutations,
+                    seed,
+                )
+                # stats contains (sum_claims, sum_exposure) per level
+                return encoded, name, {
+                    'prior': prior, 
+                    'stats': stats, 
+                    'prior_weight': te_term.prior_weight,
+                    'used_exposure_weighted': True,
+                    'interaction_vars': te_term.interaction_vars,
+                }
+            else:
+                # Standard observation-weighted encoding
+                encoded, name, prior, stats = _target_encode_rust(
+                    categories,
+                    target.astype(np.float64),
+                    te_term.var_name,
+                    te_term.prior_weight,
+                    te_term.n_permutations,
+                    seed,
+                )
+                return encoded, name, {
+                    'prior': prior, 
+                    'stats': stats, 
+                    'prior_weight': te_term.prior_weight,
+                    'used_exposure_weighted': False,
+                    'interaction_vars': te_term.interaction_vars,
+                }
     
     def _build_frequency_encoding_columns(
         self,
@@ -1804,22 +1833,36 @@ class InteractionBuilder:
         
         stats = self._te_stats[te_term.var_name]
         prior = stats['prior']
-        level_stats = stats['stats']  # Dict[str, (sum, count)]
+        level_stats = stats['stats']
         prior_weight = stats['prior_weight']
+        used_exposure_weighted = stats.get('used_exposure_weighted', False)
         
         col = new_data[te_term.var_name].to_numpy()
         n = len(col)
         encoded = np.zeros(n, dtype=self.dtype)
         
-        for i, val in enumerate(col):
-            val_str = str(val)
-            if val_str in level_stats:
-                level_sum, level_count = level_stats[val_str]
-                # Use full training statistics for prediction
-                encoded[i] = (level_sum + prior * prior_weight) / (level_count + prior_weight)
-            else:
-                # Unknown level - use global prior
-                encoded[i] = prior
+        if used_exposure_weighted:
+            # Exposure-weighted: level_stats contains (sum_claims, sum_exposure)
+            for i, val in enumerate(col):
+                val_str = str(val)
+                if val_str in level_stats:
+                    sum_claims, sum_exposure = level_stats[val_str]
+                    # (sum_claims + prior * prior_weight) / (sum_exposure + prior_weight)
+                    encoded[i] = (sum_claims + prior * prior_weight) / (sum_exposure + prior_weight)
+                else:
+                    # Unknown level - use global prior
+                    encoded[i] = prior
+        else:
+            # Observation-weighted: level_stats contains (sum_target, count)
+            for i, val in enumerate(col):
+                val_str = str(val)
+                if val_str in level_stats:
+                    level_sum, level_count = level_stats[val_str]
+                    # Use full training statistics for prediction
+                    encoded[i] = (level_sum + prior * prior_weight) / (level_count + prior_weight)
+                else:
+                    # Unknown level - use global prior
+                    encoded[i] = prior
         
         return encoded
     

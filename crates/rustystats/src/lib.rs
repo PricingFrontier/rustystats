@@ -2628,6 +2628,115 @@ fn apply_target_encoding_py<'py>(
     Ok(Array1::from_vec(values).into_pyarray_bound(py))
 }
 
+/// Exposure-weighted target encode categorical variables.
+///
+/// For frequency models with varying exposure per observation.
+/// Uses cumulative claims / cumulative exposure for each category,
+/// aligned with actuarial credibility theory.
+///
+/// Parameters
+/// ----------
+/// categories : list[str]
+///     Categorical values as strings
+/// claims : numpy.ndarray
+///     Claim counts (target variable)
+/// exposure : numpy.ndarray
+///     Exposure values (e.g., policy years)
+/// var_name : str
+///     Variable name for output column
+/// prior_weight : float, optional
+///     Regularization strength (interpreted as equivalent exposure, default: 1.0)
+/// n_permutations : int, optional
+///     Number of random permutations to average (default: 4)
+/// seed : int, optional
+///     Random seed for reproducibility
+///
+/// Returns
+/// -------
+/// tuple[numpy.ndarray, str, float, dict]
+///     (encoded_values, column_name, prior, level_stats)
+///     level_stats is a dict mapping level -> (sum_claims, sum_exposure) for prediction
+#[pyfunction]
+#[pyo3(signature = (categories, claims, exposure, var_name, prior_weight=1.0, n_permutations=4, seed=None))]
+fn target_encode_with_exposure_py<'py>(
+    py: Python<'py>,
+    categories: Vec<String>,
+    claims: PyReadonlyArray1<f64>,
+    exposure: PyReadonlyArray1<f64>,
+    var_name: &str,
+    prior_weight: f64,
+    n_permutations: usize,
+    seed: Option<u64>,
+) -> PyResult<(Bound<'py, PyArray1<f64>>, String, f64, std::collections::HashMap<String, (f64, f64)>)> {
+    let claims_vec: Vec<f64> = claims.as_array().to_vec();
+    let exposure_vec: Vec<f64> = exposure.as_array().to_vec();
+    
+    let config = target_encoding::TargetEncodingConfig {
+        prior_weight,
+        n_permutations,
+        seed,
+    };
+    
+    let enc = target_encoding::target_encode_with_exposure(&categories, &claims_vec, &exposure_vec, var_name, &config);
+    
+    // Convert level_stats to Python-friendly format
+    let stats: std::collections::HashMap<String, (f64, f64)> = enc.level_stats
+        .into_iter()
+        .map(|(k, v)| (k, (v.sum_claims, v.sum_exposure)))
+        .collect();
+    
+    Ok((
+        enc.values.into_pyarray_bound(py),
+        enc.name,
+        enc.prior,
+        stats,
+    ))
+}
+
+/// Apply exposure-weighted target encoding to new data using pre-computed statistics.
+///
+/// For prediction: uses full training statistics (no ordering needed).
+///
+/// Parameters
+/// ----------
+/// categories : list[str]
+///     Categorical values for new data
+/// level_stats : dict
+///     Mapping of level -> (sum_claims, sum_exposure) from training
+/// prior : float
+///     Global prior (total claims / total exposure from training)
+/// prior_weight : float, optional
+///     Prior weight (should match training, default: 1.0)
+///
+/// Returns
+/// -------
+/// numpy.ndarray
+///     Encoded values for new data
+#[pyfunction]
+#[pyo3(signature = (categories, level_stats, prior, prior_weight=1.0))]
+fn apply_exposure_weighted_target_encoding_py<'py>(
+    py: Python<'py>,
+    categories: Vec<String>,
+    level_stats: std::collections::HashMap<String, (f64, f64)>,
+    prior: f64,
+    prior_weight: f64,
+) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    let n = categories.len();
+    let mut values = Vec::with_capacity(n);
+    
+    for cat in &categories {
+        let encoded = if let Some(&(sum_claims, sum_exposure)) = level_stats.get(cat) {
+            (sum_claims + prior * prior_weight) / (sum_exposure + prior_weight)
+        } else {
+            // Unseen category: use prior
+            prior
+        };
+        values.push(encoded);
+    }
+    
+    Ok(Array1::from_vec(values).into_pyarray_bound(py))
+}
+
 /// Frequency encode categorical variables.
 ///
 /// Encodes categories by their frequency (count / max_count).
@@ -4068,6 +4177,8 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Add target encoding
     m.add_function(wrap_pyfunction!(target_encode_py, m)?)?;
     m.add_function(wrap_pyfunction!(apply_target_encoding_py, m)?)?;
+    m.add_function(wrap_pyfunction!(target_encode_with_exposure_py, m)?)?;
+    m.add_function(wrap_pyfunction!(apply_exposure_weighted_target_encoding_py, m)?)?;
     
     // Add frequency encoding
     m.add_function(wrap_pyfunction!(frequency_encode_py, m)?)?;

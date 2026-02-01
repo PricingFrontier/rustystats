@@ -1421,18 +1421,30 @@ class _DeserializedBuilder:
         prior = stats['prior']
         level_stats = stats['stats']
         prior_weight = stats['prior_weight']
+        used_exposure_weighted = stats.get('used_exposure_weighted', False)
         
         col = new_data[te_term.var_name].to_numpy()
         n = len(col)
         encoded = np.zeros(n, dtype=self.dtype)
         
-        for i, val in enumerate(col):
-            val_str = str(val)
-            if val_str in level_stats:
-                level_sum, level_count = level_stats[val_str]
-                encoded[i] = (level_sum + prior * prior_weight) / (level_count + prior_weight)
-            else:
-                encoded[i] = prior
+        if used_exposure_weighted:
+            # Exposure-weighted: level_stats contains (sum_claims, sum_exposure)
+            for i, val in enumerate(col):
+                val_str = str(val)
+                if val_str in level_stats:
+                    sum_claims, sum_exposure = level_stats[val_str]
+                    encoded[i] = (sum_claims + prior * prior_weight) / (sum_exposure + prior_weight)
+                else:
+                    encoded[i] = prior
+        else:
+            # Observation-weighted: level_stats contains (sum_target, count)
+            for i, val in enumerate(col):
+                val_str = str(val)
+                if val_str in level_stats:
+                    level_sum, level_count = level_stats[val_str]
+                    encoded[i] = (level_sum + prior * prior_weight) / (level_count + prior_weight)
+                else:
+                    encoded[i] = prior
         
         return encoded
     

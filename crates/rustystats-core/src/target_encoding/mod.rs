@@ -45,6 +45,38 @@ impl LevelStatistics {
     }
 }
 
+/// Statistics for a single categorical level (exposure-weighted version)
+#[derive(Debug, Clone)]
+pub struct ExposureWeightedLevelStatistics {
+    /// Sum of claims (target) for this level
+    pub sum_claims: f64,
+    /// Sum of exposure for this level
+    pub sum_exposure: f64,
+}
+
+impl ExposureWeightedLevelStatistics {
+    /// Compute encoded value using these statistics
+    /// prior_weight is interpreted as "equivalent exposure"
+    pub fn encode(&self, prior: f64, prior_weight: f64) -> f64 {
+        (self.sum_claims + prior * prior_weight) / (self.sum_exposure + prior_weight)
+    }
+}
+
+/// Result of exposure-weighted target encoding
+#[derive(Debug, Clone)]
+pub struct ExposureWeightedTargetEncoding {
+    /// Encoded values (one per observation)
+    pub values: Array1<f64>,
+    /// Column name
+    pub name: String,
+    /// Unique levels (sorted)
+    pub levels: Vec<String>,
+    /// Statistics for each level (for prediction on new data)
+    pub level_stats: HashMap<String, ExposureWeightedLevelStatistics>,
+    /// Global prior (total claims / total exposure)
+    pub prior: f64,
+}
+
 /// Configuration for target encoding
 #[derive(Debug, Clone)]
 pub struct TargetEncodingConfig {
@@ -240,6 +272,207 @@ fn generate_permutation(n: usize, seed: Option<u64>) -> Vec<usize> {
     }
     
     indices
+}
+
+// =============================================================================
+// EXPOSURE-WEIGHTED TARGET ENCODING
+// =============================================================================
+//
+// For frequency/severity modeling where exposure varies by observation.
+// Uses cumulative claims / cumulative exposure instead of mean of individual rates.
+// This gives exposure-weighted estimates aligned with actuarial credibility theory.
+//
+// =============================================================================
+
+/// Compute exposure-weighted ordered target statistics encoding.
+///
+/// For frequency models with varying exposure per observation.
+/// Uses cumulative claims / cumulative exposure for each category.
+///
+/// # Algorithm
+/// For each observation i in permutation order:
+/// ```text
+/// encoded[i] = (sum_claims_before[category] + prior * prior_weight) / (sum_exposure_before[category] + prior_weight)
+/// ```
+///
+/// # Arguments
+/// * `categories` - Categorical values as strings
+/// * `claims` - Claim counts (target variable)
+/// * `exposure` - Exposure values (e.g., policy years)
+/// * `var_name` - Variable name for output column
+/// * `config` - Encoding configuration (prior_weight is interpreted as "equivalent exposure")
+///
+/// # Returns
+/// ExposureWeightedTargetEncoding with encoded values and statistics for prediction
+pub fn target_encode_with_exposure(
+    categories: &[String],
+    claims: &[f64],
+    exposure: &[f64],
+    var_name: &str,
+    config: &TargetEncodingConfig,
+) -> ExposureWeightedTargetEncoding {
+    let n = categories.len();
+    assert_eq!(n, claims.len(), "categories and claims must have same length");
+    assert_eq!(n, exposure.len(), "categories and exposure must have same length");
+    
+    // Compute global prior (total claims / total exposure)
+    let total_claims: f64 = claims.iter().sum();
+    let total_exposure: f64 = exposure.iter().sum();
+    let prior = total_claims / total_exposure.max(1e-10);
+    
+    // Get unique levels
+    let mut levels: Vec<String> = categories.iter().cloned().collect();
+    levels.sort();
+    levels.dedup();
+    
+    // Create level-to-index mapping
+    let level_map: HashMap<&str, usize> = levels
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.as_str(), i))
+        .collect();
+    
+    // Convert categories to indices
+    let cat_indices: Vec<usize> = categories
+        .iter()
+        .map(|c| *level_map.get(c.as_str()).unwrap_or(&0))
+        .collect();
+    
+    // Compute full statistics for each level (for prediction)
+    let mut level_stats = HashMap::new();
+    let mut claims_by_level = vec![0.0; levels.len()];
+    let mut exposure_by_level = vec![0.0; levels.len()];
+    
+    for i in 0..n {
+        let idx = cat_indices[i];
+        claims_by_level[idx] += claims[i];
+        exposure_by_level[idx] += exposure[i];
+    }
+    
+    for (i, level) in levels.iter().enumerate() {
+        level_stats.insert(level.clone(), ExposureWeightedLevelStatistics {
+            sum_claims: claims_by_level[i],
+            sum_exposure: exposure_by_level[i],
+        });
+    }
+    
+    // Compute ordered target statistics with multiple permutations
+    let encoded_values = if config.n_permutations > 1 {
+        // Average over multiple permutations (parallel)
+        let permutation_results: Vec<Vec<f64>> = (0..config.n_permutations)
+            .into_par_iter()
+            .map(|perm_idx| {
+                let seed = config.seed.map(|s| s + perm_idx as u64);
+                compute_ordered_exposure_weighted_stats(
+                    &cat_indices,
+                    claims,
+                    exposure,
+                    levels.len(),
+                    prior,
+                    config.prior_weight,
+                    seed,
+                )
+            })
+            .collect();
+        
+        // Average the results
+        let mut averaged = vec![0.0; n];
+        for i in 0..n {
+            let sum: f64 = permutation_results.iter().map(|r| r[i]).sum();
+            averaged[i] = sum / config.n_permutations as f64;
+        }
+        averaged
+    } else {
+        compute_ordered_exposure_weighted_stats(
+            &cat_indices,
+            claims,
+            exposure,
+            levels.len(),
+            prior,
+            config.prior_weight,
+            config.seed,
+        )
+    };
+    
+    ExposureWeightedTargetEncoding {
+        values: Array1::from_vec(encoded_values),
+        name: format!("TE({})", var_name),
+        levels,
+        level_stats,
+        prior,
+    }
+}
+
+/// Compute exposure-weighted ordered target statistics for a single permutation.
+fn compute_ordered_exposure_weighted_stats(
+    cat_indices: &[usize],
+    claims: &[f64],
+    exposure: &[f64],
+    n_levels: usize,
+    prior: f64,
+    prior_weight: f64,
+    seed: Option<u64>,
+) -> Vec<f64> {
+    let n = cat_indices.len();
+    
+    // Generate random permutation
+    let permutation = generate_permutation(n, seed);
+    
+    // Track running statistics for each level (claims and exposure)
+    let mut claims_by_level = vec![0.0; n_levels];
+    let mut exposure_by_level = vec![0.0; n_levels];
+    
+    // Compute encoded values in permutation order
+    let mut encoded = vec![0.0; n];
+    
+    for &perm_idx in &permutation {
+        let cat_idx = cat_indices[perm_idx];
+        
+        // Encode using ONLY observations seen so far (before current in permutation)
+        let claims_before = claims_by_level[cat_idx];
+        let exposure_before = exposure_by_level[cat_idx];
+        
+        // Exposure-weighted encoding: (sum_claims + prior * prior_weight) / (sum_exposure + prior_weight)
+        encoded[perm_idx] = (claims_before + prior * prior_weight) / (exposure_before + prior_weight);
+        
+        // Update running statistics with current observation
+        claims_by_level[cat_idx] += claims[perm_idx];
+        exposure_by_level[cat_idx] += exposure[perm_idx];
+    }
+    
+    encoded
+}
+
+/// Apply exposure-weighted target encoding to new data using pre-computed statistics.
+///
+/// For prediction: uses full training statistics (no ordering needed).
+///
+/// # Arguments
+/// * `categories` - Categorical values for new data
+/// * `encoding` - ExposureWeightedTargetEncoding from training data
+/// * `prior_weight` - Prior weight (should match training, interpreted as equivalent exposure)
+///
+/// # Returns
+/// Encoded values for new data
+pub fn apply_exposure_weighted_target_encoding(
+    categories: &[String],
+    encoding: &ExposureWeightedTargetEncoding,
+    prior_weight: f64,
+) -> Array1<f64> {
+    let n = categories.len();
+    let mut values = Vec::with_capacity(n);
+    
+    for cat in categories {
+        let encoded = if let Some(stats) = encoding.level_stats.get(cat) {
+            stats.encode(encoding.prior, prior_weight)
+        } else {
+            // Unseen category: use prior
+            encoding.prior
+        };
+        values.push(encoded);
+    }
+    
+    Array1::from_vec(values)
 }
 
 /// Apply target encoding to new data using pre-computed statistics.
