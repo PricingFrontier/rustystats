@@ -170,24 +170,44 @@ Add `"monotonicity": "increasing"` or `"decreasing"` to `linear` or `expression`
 
 ### Interactions
 
-Each interaction is a dict with variable specs and `include_main`:
+Each interaction is a dict with variable specs. Use `include_main` to also add main effects.
 
 ```python
 interactions=[
-    # Main effects + interaction
+    # Standard interaction: product terms (main effects + interaction)
     {
         "DrivAge": {"type": "bs", "df": 5}, 
         "Brand": {"type": "target_encoding"},
         "include_main": True
     },
-    # Interaction only
+    # Categorical × continuous (interaction only)
     {
         "VehAge": {"type": "linear"}, 
         "Region": {"type": "categorical"}, 
         "include_main": False
     },
+    # TE interaction: combined target encoding TE(Brand:Region)
+    {
+        "Brand": {"type": "categorical"},
+        "Region": {"type": "categorical"},
+        "target_encoding": True,
+        "prior_weight": 1.0,  # optional
+    },
+    # FE interaction: combined frequency encoding FE(Brand:Region)
+    {
+        "Brand": {"type": "categorical"},
+        "Region": {"type": "categorical"},
+        "frequency_encoding": True,
+    },
 ]
 ```
+
+**Interaction types:**
+| Flag | Effect |
+|------|--------|
+| (none) | Standard product terms (cat×cat, cat×cont, etc.) |
+| `target_encoding: True` | Combined TE encoding: `TE(var1:var2)` |
+| `frequency_encoding: True` | Combined FE encoding: `FE(var1:var2)` |
 
 ---
 
@@ -379,6 +399,32 @@ result = rs.glm_dict(
         "Area": {"type": "categorical"},
         "VehPower": {"type": "linear"},
         "include_main": False,  # Area-specific VehPower slopes only
+    }],
+    data=data, family="poisson", offset="Exposure",
+).fit()
+
+# Target encoding interaction: TE(Brand:Region)
+# Creates single encoded column for brand×region combinations
+result = rs.glm_dict(
+    response="ClaimNb",
+    terms={"Age": {"type": "linear"}},
+    interactions=[{
+        "Brand": {"type": "categorical"},
+        "Region": {"type": "categorical"},
+        "target_encoding": True,
+        "prior_weight": 1.0,
+    }],
+    data=data, family="poisson", offset="Exposure",
+).fit()
+
+# Frequency encoding interaction: FE(Brand:Region)
+result = rs.glm_dict(
+    response="ClaimNb",
+    terms={"Age": {"type": "linear"}},
+    interactions=[{
+        "Brand": {"type": "categorical"},
+        "Region": {"type": "categorical"},
+        "frequency_encoding": True,
     }],
     data=data, family="poisson", offset="Exposure",
 ).fit()
@@ -623,6 +669,18 @@ result = rs.glm_dict(
 encoder = rs.TargetEncoder(prior_weight=1.0, n_permutations=4)
 train_encoded = encoder.fit_transform(train_categories, train_target)
 test_encoded = encoder.transform(test_categories)
+
+# TE interaction: encode combinations of multiple categoricals
+result = rs.glm_dict(
+    response="ClaimNb",
+    terms={"Age": {"type": "linear"}},
+    interactions=[{
+        "Brand": {"type": "categorical"},
+        "Region": {"type": "categorical"},
+        "target_encoding": True,  # Creates TE(Brand:Region)
+    }],
+    data=data, family="poisson", offset="Exposure",
+).fit()
 ```
 
 **Key benefits:**
@@ -630,6 +688,7 @@ test_encoded = encoder.transform(test_categories)
 - **Regularization**: Prior weight controls shrinkage toward global mean
 - **High-cardinality**: Single column instead of thousands of dummies
 - **Exposure-aware**: For frequency models with `offset="Exposure"`, target encoding automatically uses claim rate (ClaimCount/Exposure) instead of raw counts
+- **Interactions**: Use `target_encoding: True` in interactions to encode variable combinations
 
 ---
 

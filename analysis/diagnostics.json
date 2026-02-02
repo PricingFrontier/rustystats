@@ -1,382 +1,112 @@
 {
   "model_summary": {
-    "formula": "y ~ bs(age, df=5) + bs(income, df=5)",
-    "family": "poisson",
-    "link": "log",
-    "n_obs": 500,
-    "n_params": 21,
-    "df_resid": 479,
+    "formula": "y ~ age",
+    "family": "gaussian",
+    "link": "identity",
+    "n_obs": 8,
+    "n_params": 3,
+    "df_resid": 5,
     "converged": true,
-    "iterations": 6,
-    "regularization": {
-      "type": "ridge",
-      "alpha": 0.48,
-      "l1_ratio": 0.0
-    }
+    "iterations": 2
   },
   "train_test": {
     "train": {
       "dataset": "train",
-      "n_obs": 500,
-      "total_exposure": 500.0,
-      "total_actual": 46.0,
-      "total_predicted": 46.0,
-      "loss": 0.425355,
-      "deviance": 212.68,
-      "log_likelihood": -149.57,
-      "aic": 341.13,
-      "gini": 0.3837,
-      "auc": 0.6919,
-      "ae_ratio": 1.0,
+      "n_obs": 8,
+      "total_exposure": 8.0,
+      "total_actual": 15.0,
+      "total_predicted": 15.16,
+      "loss": 1.0042,
+      "deviance": 8.03,
+      "log_likelihood": -11.75,
+      "aic": 29.5,
+      "gini": -0.1083,
+      "auc": 0.4458,
+      "ae_ratio": 0.9891,
       "ae_by_decile": [
         {
           "decile": 1,
-          "n": 50,
-          "exposure": 50.0,
+          "n": 0,
+          "exposure": 0.0,
           "actual": 0.0,
-          "predicted": 0.031935,
-          "ae_ratio": 0.0
+          "predicted": 0.0,
+          "ae_ratio": null
         },
         {
           "decile": 2,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.02,
-          "predicted": 0.054233,
-          "ae_ratio": 0.3688
+          "n": 0,
+          "exposure": 0.0,
+          "actual": 0.0,
+          "predicted": 0.0,
+          "ae_ratio": null
         },
         {
           "decile": 3,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.02,
-          "predicted": 0.065,
-          "ae_ratio": 0.3077
+          "n": 0,
+          "exposure": 0.0,
+          "actual": 0.0,
+          "predicted": 0.0,
+          "ae_ratio": null
         },
         {
           "decile": 4,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.06,
-          "predicted": 0.075612,
-          "ae_ratio": 0.7935
+          "n": 0,
+          "exposure": 0.0,
+          "actual": 0.0,
+          "predicted": 0.0,
+          "ae_ratio": null
         },
         {
           "decile": 5,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.02,
-          "predicted": 0.084279,
-          "ae_ratio": 0.2373
+          "n": 0,
+          "exposure": 0.0,
+          "actual": 0.0,
+          "predicted": 0.0,
+          "ae_ratio": null
         },
         {
           "decile": 6,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.18,
-          "predicted": 0.092299,
-          "ae_ratio": 1.9502
+          "n": 0,
+          "exposure": 0.0,
+          "actual": 0.0,
+          "predicted": 0.0,
+          "ae_ratio": null
         },
         {
           "decile": 7,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.14,
-          "predicted": 0.101783,
-          "ae_ratio": 1.3755
+          "n": 0,
+          "exposure": 0.0,
+          "actual": 0.0,
+          "predicted": 0.0,
+          "ae_ratio": null
         },
         {
           "decile": 8,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.16,
-          "predicted": 0.115517,
-          "ae_ratio": 1.3851
+          "n": 0,
+          "exposure": 0.0,
+          "actual": 0.0,
+          "predicted": 0.0,
+          "ae_ratio": null
         },
         {
           "decile": 9,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.14,
-          "predicted": 0.132403,
-          "ae_ratio": 1.0574
+          "n": 0,
+          "exposure": 0.0,
+          "actual": 0.0,
+          "predicted": 0.0,
+          "ae_ratio": null
         },
         {
           "decile": 10,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.18,
-          "predicted": 0.166938,
-          "ae_ratio": 1.0782
+          "n": 8,
+          "exposure": 8.0,
+          "actual": 1.875,
+          "predicted": 1.8956,
+          "ae_ratio": 0.9891
         }
       ],
       "factor_diagnostics": {},
-      "continuous_diagnostics": {
-        "age": [
-          {
-            "band": 1,
-            "range_min": 18.2632,
-            "range_max": 22.3704,
-            "midpoint": 20.3168,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.02,
-            "predicted": 0.042628,
-            "ae_ratio": 0.4692,
-            "partial_dep": 0.042628,
-            "residual_mean": -0.238634
-          },
-          {
-            "band": 2,
-            "range_min": 22.3704,
-            "range_max": 27.0559,
-            "midpoint": 24.7132,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.1,
-            "predicted": 0.094818,
-            "ae_ratio": 1.0546,
-            "partial_dep": 0.094818,
-            "residual_mean": -0.221787
-          },
-          {
-            "band": 3,
-            "range_min": 27.0559,
-            "range_max": 33.1772,
-            "midpoint": 30.1166,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.1,
-            "predicted": 0.100692,
-            "ae_ratio": 0.9931,
-            "partial_dep": 0.100692,
-            "residual_mean": -0.236013
-          },
-          {
-            "band": 4,
-            "range_min": 33.1772,
-            "range_max": 38.0564,
-            "midpoint": 35.6168,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.06,
-            "predicted": 0.076939,
-            "ae_ratio": 0.7798,
-            "partial_dep": 0.076939,
-            "residual_mean": -0.262901
-          },
-          {
-            "band": 5,
-            "range_min": 38.0564,
-            "range_max": 44.6845,
-            "midpoint": 41.3705,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.1,
-            "predicted": 0.096192,
-            "ae_ratio": 1.0396,
-            "partial_dep": 0.096192,
-            "residual_mean": -0.236039
-          },
-          {
-            "band": 6,
-            "range_min": 44.6845,
-            "range_max": 49.9979,
-            "midpoint": 47.3412,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.16,
-            "predicted": 0.124593,
-            "ae_ratio": 1.2842,
-            "partial_dep": 0.124593,
-            "residual_mean": -0.185775
-          },
-          {
-            "band": 7,
-            "range_min": 49.9979,
-            "range_max": 54.567,
-            "midpoint": 52.2824,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.08,
-            "predicted": 0.09799,
-            "ae_ratio": 0.8164,
-            "partial_dep": 0.09799,
-            "residual_mean": -0.291485
-          },
-          {
-            "band": 8,
-            "range_min": 54.567,
-            "range_max": 60.0251,
-            "midpoint": 57.296,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.08,
-            "predicted": 0.07543,
-            "ae_ratio": 1.0606,
-            "partial_dep": 0.07543,
-            "residual_mean": -0.208779
-          },
-          {
-            "band": 9,
-            "range_min": 60.0251,
-            "range_max": 65.0849,
-            "midpoint": 62.555,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.08,
-            "predicted": 0.086067,
-            "ae_ratio": 0.9295,
-            "partial_dep": 0.086067,
-            "residual_mean": -0.239813
-          },
-          {
-            "band": 10,
-            "range_min": 65.0849,
-            "range_max": 69.6342,
-            "midpoint": 67.3595,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.14,
-            "predicted": 0.12465,
-            "ae_ratio": 1.1231,
-            "partial_dep": 0.12465,
-            "residual_mean": -0.22091
-          }
-        ],
-        "income": [
-          {
-            "band": 1,
-            "range_min": 20370.56,
-            "range_max": 29082.05,
-            "midpoint": 24726.31,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.04,
-            "predicted": 0.062714,
-            "ae_ratio": 0.6378,
-            "partial_dep": 0.062714,
-            "residual_mean": -0.257652
-          },
-          {
-            "band": 2,
-            "range_min": 29082.05,
-            "range_max": 34275.43,
-            "midpoint": 31678.74,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.12,
-            "predicted": 0.104776,
-            "ae_ratio": 1.1453,
-            "partial_dep": 0.104776,
-            "residual_mean": -0.199135
-          },
-          {
-            "band": 3,
-            "range_min": 34275.43,
-            "range_max": 41623.54,
-            "midpoint": 37949.49,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.1,
-            "predicted": 0.074292,
-            "ae_ratio": 1.346,
-            "partial_dep": 0.074292,
-            "residual_mean": -0.160251
-          },
-          {
-            "band": 4,
-            "range_min": 41623.54,
-            "range_max": 50171.86,
-            "midpoint": 45897.7,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.02,
-            "predicted": 0.076935,
-            "ae_ratio": 0.26,
-            "partial_dep": 0.076935,
-            "residual_mean": -0.342981
-          },
-          {
-            "band": 5,
-            "range_min": 50171.86,
-            "range_max": 57745.73,
-            "midpoint": 53958.79,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.16,
-            "predicted": 0.124314,
-            "ae_ratio": 1.2871,
-            "partial_dep": 0.124314,
-            "residual_mean": -0.203617
-          },
-          {
-            "band": 6,
-            "range_min": 57745.73,
-            "range_max": 65820.55,
-            "midpoint": 61783.14,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.14,
-            "predicted": 0.140446,
-            "ae_ratio": 0.9968,
-            "partial_dep": 0.140446,
-            "residual_mean": -0.243251
-          },
-          {
-            "band": 7,
-            "range_min": 65820.55,
-            "range_max": 73206.79,
-            "midpoint": 69513.67,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.1,
-            "predicted": 0.088458,
-            "ae_ratio": 1.1305,
-            "partial_dep": 0.088458,
-            "residual_mean": -0.241598
-          },
-          {
-            "band": 8,
-            "range_min": 73206.79,
-            "range_max": 83211.36,
-            "midpoint": 78209.07,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.06,
-            "predicted": 0.06884,
-            "ae_ratio": 0.8716,
-            "partial_dep": 0.06884,
-            "residual_mean": -0.237574
-          },
-          {
-            "band": 9,
-            "range_min": 83211.36,
-            "range_max": 91625.58,
-            "midpoint": 87418.47,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.12,
-            "predicted": 0.098814,
-            "ae_ratio": 1.2144,
-            "partial_dep": 0.098814,
-            "residual_mean": -0.192691
-          },
-          {
-            "band": 10,
-            "range_min": 91625.58,
-            "range_max": 99977.41,
-            "midpoint": 95801.5,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.06,
-            "predicted": 0.080409,
-            "ae_ratio": 0.7462,
-            "partial_dep": 0.080409,
-            "residual_mean": -0.263387
-          }
-        ]
-      }
+      "continuous_diagnostics": {}
     },
     "test": null,
     "gini_gap": null,
@@ -388,1024 +118,82 @@
     "unstable_factors": []
   },
   "calibration": {
-    "ae_ratio": 1.0,
-    "hl_pvalue": 0.1233,
-    "problem_deciles": [
-      {
-        "decile": 0,
-        "ae": 0.0,
-        "n": 50,
-        "ae_ci": [
-          0.0,
-          1.23
-        ]
-      },
-      {
-        "decile": 1,
-        "ae": 0.37,
-        "n": 50,
-        "ae_ci": [
-          0.0,
-          1.09
-        ]
-      },
-      {
-        "decile": 2,
-        "ae": 0.31,
-        "n": 50,
-        "ae_ci": [
-          0.0,
-          0.91
-        ]
-      },
-      {
-        "decile": 3,
-        "ae": 0.79,
-        "n": 50,
-        "ae_ci": [
-          0.0,
-          1.69
-        ]
-      },
-      {
-        "decile": 4,
-        "ae": 0.24,
-        "n": 50,
-        "ae_ci": [
-          0.0,
-          0.7
-        ]
-      },
-      {
-        "decile": 5,
-        "ae": 1.95,
-        "n": 50,
-        "ae_ci": [
-          0.68,
-          3.22
-        ]
-      },
-      {
-        "decile": 6,
-        "ae": 1.38,
-        "n": 50,
-        "ae_ci": [
-          0.36,
-          2.39
-        ]
-      },
-      {
-        "decile": 7,
-        "ae": 1.39,
-        "n": 50,
-        "ae_ci": [
-          0.43,
-          2.34
-        ]
-      }
-    ]
+    "ae_ratio": 0.989,
+    "hl_pvalue": 0.9181,
+    "problem_deciles": []
   },
   "residual_summary": {
     "pearson": {
       "mean": -0.02,
-      "std": 0.95,
-      "skewness": 3.5
+      "std": 1.0,
+      "skewness": 0.4
     },
     "deviance": {
-      "mean": -0.23,
-      "std": 0.61,
-      "skewness": 3.1
+      "mean": -0.02,
+      "std": 1.0,
+      "skewness": 0.4
     }
   },
-  "factors": [
-    {
-      "name": "age",
-      "factor_type": "continuous",
-      "in_model": true,
-      "transform": "bs(age, 1/10, k)",
-      "coefficients": [
-        {
-          "term": "bs(age, 1/10, k)",
-          "estimate": -1.1347,
-          "std_error": 1.1686,
-          "z_value": -0.971,
-          "p_value": 0.3315,
-          "relativity": 0.3215
-        },
-        {
-          "term": "bs(age, 2/10, k)",
-          "estimate": -0.739139,
-          "std_error": 0.99848,
-          "z_value": -0.74,
-          "p_value": 0.4591,
-          "relativity": 0.4775
-        },
-        {
-          "term": "bs(age, 3/10, k)",
-          "estimate": 0.880026,
-          "std_error": 0.948581,
-          "z_value": 0.928,
-          "p_value": 0.3535,
-          "relativity": 2.411
-        },
-        {
-          "term": "bs(age, 4/10, k)",
-          "estimate": -0.205612,
-          "std_error": 0.862046,
-          "z_value": -0.239,
-          "p_value": 0.8115,
-          "relativity": 0.8141
-        },
-        {
-          "term": "bs(age, 5/10, k)",
-          "estimate": -0.06754,
-          "std_error": 0.850554,
-          "z_value": -0.079,
-          "p_value": 0.9367,
-          "relativity": 0.9347
-        },
-        {
-          "term": "bs(age, 6/10, k)",
-          "estimate": 0.859138,
-          "std_error": 0.787291,
-          "z_value": 1.091,
-          "p_value": 0.2752,
-          "relativity": 2.3611
-        },
-        {
-          "term": "bs(age, 7/10, k)",
-          "estimate": -0.439931,
-          "std_error": 0.866507,
-          "z_value": -0.508,
-          "p_value": 0.6117,
-          "relativity": 0.6441
-        },
-        {
-          "term": "bs(age, 8/10, k)",
-          "estimate": 0.101368,
-          "std_error": 0.961355,
-          "z_value": 0.105,
-          "p_value": 0.916,
-          "relativity": 1.1067
-        },
-        {
-          "term": "bs(age, 9/10, k)",
-          "estimate": 0.089999,
-          "std_error": 0.929921,
-          "z_value": 0.097,
-          "p_value": 0.9229,
-          "relativity": 1.0942
-        },
-        {
-          "term": "bs(age, 10/10, k)",
-          "estimate": 0.778088,
-          "std_error": 0.872206,
-          "z_value": 0.892,
-          "p_value": 0.3723,
-          "relativity": 2.1773
-        }
-      ],
-      "univariate": {
-        "mean": 43.9252,
-        "std": 15.5163,
-        "min": 18.2632,
-        "max": 69.6342,
-        "missing_count": 0,
-        "percentiles": [
-          18.59,
-          20.24,
-          22.37,
-          30.55,
-          44.68,
-          57.32,
-          65.08,
-          67.61,
-          69.28
-        ]
-      },
-      "actual_vs_expected": [
-        {
-          "bin": "18.26-22.37",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.02,
-          "expected": 0.042628,
-          "ae_ratio": 0.47,
-          "ae_ci": [
-            0.0,
-            1.39
-          ]
-        },
-        {
-          "bin": "22.37-27.07",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.1,
-          "expected": 0.094818,
-          "ae_ratio": 1.05,
-          "ae_ci": [
-            0.13,
-            1.98
-          ]
-        },
-        {
-          "bin": "27.07-33.19",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.1,
-          "expected": 0.100692,
-          "ae_ratio": 0.99,
-          "ae_ci": [
-            0.12,
-            1.86
-          ]
-        },
-        {
-          "bin": "33.19-38.08",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.06,
-          "expected": 0.076939,
-          "ae_ratio": 0.78,
-          "ae_ci": [
-            0.0,
-            1.66
-          ]
-        },
-        {
-          "bin": "38.08-44.74",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.1,
-          "expected": 0.096192,
-          "ae_ratio": 1.04,
-          "ae_ci": [
-            0.13,
-            1.95
-          ]
-        },
-        {
-          "bin": "44.74-49.98",
-          "n": 49,
-          "exposure": 49.0,
-          "actual": 0.163265,
-          "expected": 0.124162,
-          "ae_ratio": 1.31,
-          "ae_ci": [
-            0.4,
-            2.23
-          ]
-        },
-        {
-          "bin": "49.98-54.56",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.08,
-          "expected": 0.09973,
-          "ae_ratio": 0.8,
-          "ae_ci": [
-            0.02,
-            1.59
-          ]
-        },
-        {
-          "bin": "54.56-60.02",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.08,
-          "expected": 0.075282,
-          "ae_ratio": 1.06,
-          "ae_ci": [
-            0.02,
-            2.1
-          ]
-        },
-        {
-          "bin": "60.02-65.08",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.08,
-          "expected": 0.086116,
-          "ae_ratio": 0.93,
-          "ae_ci": [
-            0.02,
-            1.84
-          ]
-        },
-        {
-          "bin": "65.08-69.63",
-          "n": 51,
-          "exposure": 51.0,
-          "actual": 0.137255,
-          "expected": 0.123453,
-          "ae_ratio": 1.11,
-          "ae_ci": [
-            0.29,
-            1.94
-          ]
-        }
-      ],
-      "residual_pattern": {
-        "resid_corr": 0.0224,
-        "var_explained": 0.000501
-      },
-      "significance": {
-        "chi2": 4.68,
-        "p": 0.9115,
-        "dev_contrib": 4.68
-      },
-      "score_test": null
-    },
-    {
-      "name": "income",
-      "factor_type": "continuous",
-      "in_model": true,
-      "transform": "bs(income, 1/10, k)",
-      "coefficients": [
-        {
-          "term": "bs(income, 1/10, k)",
-          "estimate": -1.0644,
-          "std_error": 1.1669,
-          "z_value": -0.912,
-          "p_value": 0.3617,
-          "relativity": 0.3449
-        },
-        {
-          "term": "bs(income, 2/10, k)",
-          "estimate": -0.13322,
-          "std_error": 1.0689,
-          "z_value": -0.125,
-          "p_value": 0.9008,
-          "relativity": 0.8753
-        },
-        {
-          "term": "bs(income, 3/10, k)",
-          "estimate": 0.956258,
-          "std_error": 0.898065,
-          "z_value": 1.065,
-          "p_value": 0.287,
-          "relativity": 2.6019
-        },
-        {
-          "term": "bs(income, 4/10, k)",
-          "estimate": -0.502039,
-          "std_error": 0.880142,
-          "z_value": -0.57,
-          "p_value": 0.5684,
-          "relativity": 0.6053
-        },
-        {
-          "term": "bs(income, 5/10, k)",
-          "estimate": 0.546357,
-          "std_error": 0.79727,
-          "z_value": 0.685,
-          "p_value": 0.4932,
-          "relativity": 1.7269
-        },
-        {
-          "term": "bs(income, 6/10, k)",
-          "estimate": 0.942403,
-          "std_error": 0.770705,
-          "z_value": 1.223,
-          "p_value": 0.2214,
-          "relativity": 2.5661
-        },
-        {
-          "term": "bs(income, 7/10, k)",
-          "estimate": -0.549727,
-          "std_error": 0.893238,
-          "z_value": -0.615,
-          "p_value": 0.5383,
-          "relativity": 0.5771
-        },
-        {
-          "term": "bs(income, 8/10, k)",
-          "estimate": 0.456483,
-          "std_error": 0.965653,
-          "z_value": 0.473,
-          "p_value": 0.6364,
-          "relativity": 1.5785
-        },
-        {
-          "term": "bs(income, 9/10, k)",
-          "estimate": 0.740652,
-          "std_error": 0.966345,
-          "z_value": 0.766,
-          "p_value": 0.4434,
-          "relativity": 2.0973
-        },
-        {
-          "term": "bs(income, 10/10, k)",
-          "estimate": -1.2039,
-          "std_error": 1.2014,
-          "z_value": -1.002,
-          "p_value": 0.3163,
-          "relativity": 0.3
-        }
-      ],
-      "univariate": {
-        "mean": 58556.11,
-        "std": 22816.63,
-        "min": 20370.56,
-        "max": 99977.41,
-        "missing_count": 0,
-        "percentiles": [
-          21445.96,
-          24369.18,
-          29082.05,
-          38327.94,
-          57745.73,
-          78106.95,
-          91625.58,
-          94759.21,
-          98921.83
-        ]
-      },
-      "actual_vs_expected": [
-        {
-          "bin": "20370.56-29084.61",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.04,
-          "expected": 0.062714,
-          "ae_ratio": 0.64,
-          "ae_ci": [
-            0.0,
-            1.52
-          ]
-        },
-        {
-          "bin": "29084.61-34283.57",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.12,
-          "expected": 0.104776,
-          "ae_ratio": 1.15,
-          "ae_ci": [
-            0.23,
-            2.06
-          ]
-        },
-        {
-          "bin": "34283.57-41659.57",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.1,
-          "expected": 0.074292,
-          "ae_ratio": 1.35,
-          "ae_ci": [
-            0.17,
-            2.53
-          ]
-        },
-        {
-          "bin": "41659.57-50182.73",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.02,
-          "expected": 0.076935,
-          "ae_ratio": 0.26,
-          "ae_ci": [
-            0.0,
-            0.77
-          ]
-        },
-        {
-          "bin": "50182.73-57765.36",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.16,
-          "expected": 0.124314,
-          "ae_ratio": 1.29,
-          "ae_ci": [
-            0.4,
-            2.18
-          ]
-        },
-        {
-          "bin": "57765.36-65729.02",
-          "n": 49,
-          "exposure": 49.0,
-          "actual": 0.142857,
-          "expected": 0.141373,
-          "ae_ratio": 1.01,
-          "ae_ci": [
-            0.26,
-            1.76
-          ]
-        },
-        {
-          "bin": "65729.02-73202.93",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.1,
-          "expected": 0.088405,
-          "ae_ratio": 1.13,
-          "ae_ci": [
-            0.14,
-            2.12
-          ]
-        },
-        {
-          "bin": "73202.93-83133.70",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.06,
-          "expected": 0.069967,
-          "ae_ratio": 0.86,
-          "ae_ci": [
-            0.0,
-            1.83
-          ]
-        },
-        {
-          "bin": "83133.70-91616.55",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.12,
-          "expected": 0.09701,
-          "ae_ratio": 1.24,
-          "ae_ci": [
-            0.25,
-            2.23
-          ]
-        },
-        {
-          "bin": "91616.55-99977.41",
-          "n": 51,
-          "exposure": 51.0,
-          "actual": 0.058824,
-          "expected": 0.081411,
-          "ae_ratio": 0.72,
-          "ae_ci": [
-            0.0,
-            1.54
-          ]
-        }
-      ],
-      "residual_pattern": {
-        "resid_corr": -0.0066,
-        "var_explained": 4.4e-05
-      },
-      "significance": {
-        "chi2": 6.47,
-        "p": 0.7748,
-        "dev_contrib": 6.47
-      },
-      "score_test": null
-    }
-  ],
+  "factors": [],
   "interaction_candidates": [],
   "model_comparison": {
-    "likelihood_ratio_chi2": 17.9216,
-    "likelihood_ratio_df": 20,
-    "likelihood_ratio_pvalue": 0.592575,
-    "deviance_reduction_pct": 7.7717,
-    "aic_improvement": -22.0784
+    "likelihood_ratio_chi2": 0.828478,
+    "likelihood_ratio_df": 2,
+    "likelihood_ratio_pvalue": 0.660843,
+    "deviance_reduction_pct": 16.9944,
+    "aic_improvement": -3.1715
   },
   "warnings": [
     {
       "type": "weak_discrimination",
-      "message": "Model has weak discrimination in deciles: [1, 2, 3, 4, 5, 6, 7, 8]. Consider adding features or interactions to improve separation."
-    },
-    {
-      "type": "nonlinear_effect",
-      "message": "Variable 'income' shows complex pattern. Use spline (df=5+) to capture non-linearity"
-    },
-    {
-      "type": "insignificant_smooth",
-      "message": "Smooth term s(age) is not significant (p=0.669, EDF=7.6). Consider using linear term or removing."
-    },
-    {
-      "type": "insignificant_smooth",
-      "message": "Smooth term s(income) is not significant (p=0.522, EDF=7.6). Consider using linear term or removing."
+      "message": "Model has weak discrimination in deciles: [8, 9, 10]. Consider adding features or interactions to improve separation."
     }
   ],
   "vif": [
     {
-      "feature": "bs(income, 6/10, k)",
-      "vif": 28.68,
-      "severity": "severe",
+      "feature": "age",
+      "vif": 1.13,
+      "severity": "none",
       "collinear_with": null
     },
     {
-      "feature": "bs(age, 6/10, k)",
-      "vif": 28.09,
-      "severity": "severe",
-      "collinear_with": null
-    },
-    {
-      "feature": "bs(age, 7/10, k)",
-      "vif": 25.77,
-      "severity": "severe",
-      "collinear_with": null
-    },
-    {
-      "feature": "bs(income, 4/10, k)",
-      "vif": 25.54,
-      "severity": "severe",
-      "collinear_with": null
-    },
-    {
-      "feature": "bs(age, 4/10, k)",
-      "vif": 25.52,
-      "severity": "severe",
-      "collinear_with": null
-    },
-    {
-      "feature": "bs(income, 5/10, k)",
-      "vif": 25.48,
-      "severity": "severe",
-      "collinear_with": null
-    },
-    {
-      "feature": "bs(income, 7/10, k)",
-      "vif": 24.92,
-      "severity": "severe",
-      "collinear_with": null
-    },
-    {
-      "feature": "bs(age, 5/10, k)",
-      "vif": 24.43,
-      "severity": "severe",
-      "collinear_with": null
-    },
-    {
-      "feature": "bs(income, 3/10, k)",
-      "vif": 24.04,
-      "severity": "severe",
-      "collinear_with": null
-    },
-    {
-      "feature": "bs(income, 8/10, k)",
-      "vif": 19.9,
-      "severity": "expected",
-      "collinear_with": [
-        "bs(income, 9/10, k)"
-      ]
-    },
-    {
-      "feature": "bs(age, 2/10, k)",
-      "vif": 19.53,
-      "severity": "expected",
-      "collinear_with": [
-        "bs(age, 3/10, k)"
-      ]
-    },
-    {
-      "feature": "bs(age, 8/10, k)",
-      "vif": 19.39,
-      "severity": "severe",
-      "collinear_with": null
-    },
-    {
-      "feature": "bs(age, 3/10, k)",
-      "vif": 19.3,
-      "severity": "expected",
-      "collinear_with": [
-        "bs(age, 2/10, k)"
-      ]
-    },
-    {
-      "feature": "bs(income, 9/10, k)",
-      "vif": 17.78,
-      "severity": "expected",
-      "collinear_with": [
-        "bs(income, 8/10, k)"
-      ]
-    },
-    {
-      "feature": "bs(age, 9/10, k)",
-      "vif": 17.72,
-      "severity": "severe",
-      "collinear_with": null
-    },
-    {
-      "feature": "bs(income, 2/10, k)",
-      "vif": 13.32,
-      "severity": "severe",
-      "collinear_with": null
-    },
-    {
-      "feature": "bs(age, 1/10, k)",
-      "vif": 11.94,
-      "severity": "severe",
-      "collinear_with": null
-    },
-    {
-      "feature": "bs(income, 1/10, k)",
-      "vif": 10.96,
-      "severity": "severe",
-      "collinear_with": null
-    },
-    {
-      "feature": "bs(age, 10/10, k)",
-      "vif": 10.9,
-      "severity": "severe",
-      "collinear_with": null
-    },
-    {
-      "feature": "bs(income, 10/10, k)",
-      "vif": 8.9,
-      "severity": "moderate",
+      "feature": "TE(brand:region)",
+      "vif": 1.13,
+      "severity": "none",
       "collinear_with": null
     }
   ],
-  "smooth_terms": [
-    {
-      "variable": "age",
-      "k": 10,
-      "edf": 7.59,
-      "lambda": 0.1,
-      "gcv": 0.4403,
-      "ref_df": 7.59,
-      "chi2": 5.44,
-      "p_value": 0.6691
-    },
-    {
-      "variable": "income",
-      "k": 10,
-      "edf": 7.59,
-      "lambda": 0.1,
-      "gcv": 0.4543,
-      "ref_df": 7.59,
-      "chi2": 6.73,
-      "p_value": 0.5224
-    }
-  ],
+  "smooth_terms": null,
   "coefficient_summary": [
     {
-      "feature": "bs(income, 6/10, k)",
-      "estimate": 0.942403,
-      "std_error": 0.770705,
-      "z_value": 1.223,
-      "p_value": 0.2214,
+      "feature": "TE(brand:region)",
+      "estimate": -1.3187,
+      "std_error": 1.3477,
+      "z_value": -0.979,
+      "p_value": 0.3278,
       "significant": false,
-      "relativity": 2.5661,
-      "relativity_ci": [
-        0.5666,
-        11.6227
-      ]
+      "relativity": null,
+      "relativity_ci": null
     },
     {
-      "feature": "bs(age, 6/10, k)",
-      "estimate": 0.859138,
-      "std_error": 0.787291,
-      "z_value": 1.091,
-      "p_value": 0.2752,
+      "feature": "age",
+      "estimate": 0.017053,
+      "std_error": 0.029552,
+      "z_value": 0.577,
+      "p_value": 0.5639,
       "significant": false,
-      "relativity": 2.3611,
-      "relativity_ci": [
-        0.5046,
-        11.0474
-      ]
-    },
-    {
-      "feature": "bs(income, 3/10, k)",
-      "estimate": 0.956258,
-      "std_error": 0.898065,
-      "z_value": 1.065,
-      "p_value": 0.287,
-      "significant": false,
-      "relativity": 2.6019,
-      "relativity_ci": [
-        0.4476,
-        15.1263
-      ]
-    },
-    {
-      "feature": "bs(income, 10/10, k)",
-      "estimate": -1.2039,
-      "std_error": 1.2014,
-      "z_value": -1.002,
-      "p_value": 0.3163,
-      "significant": false,
-      "relativity": 0.3,
-      "relativity_ci": [
-        0.0285,
-        3.1607
-      ]
-    },
-    {
-      "feature": "bs(age, 1/10, k)",
-      "estimate": -1.1347,
-      "std_error": 1.1686,
-      "z_value": -0.971,
-      "p_value": 0.3315,
-      "significant": false,
-      "relativity": 0.3215,
-      "relativity_ci": [
-        0.0325,
-        3.1761
-      ]
-    },
-    {
-      "feature": "bs(age, 3/10, k)",
-      "estimate": 0.880026,
-      "std_error": 0.948581,
-      "z_value": 0.928,
-      "p_value": 0.3535,
-      "significant": false,
-      "relativity": 2.411,
-      "relativity_ci": [
-        0.3756,
-        15.4748
-      ]
-    },
-    {
-      "feature": "bs(income, 1/10, k)",
-      "estimate": -1.0644,
-      "std_error": 1.1669,
-      "z_value": -0.912,
-      "p_value": 0.3617,
-      "significant": false,
-      "relativity": 0.3449,
-      "relativity_ci": [
-        0.035,
-        3.3965
-      ]
-    },
-    {
-      "feature": "bs(age, 10/10, k)",
-      "estimate": 0.778088,
-      "std_error": 0.872206,
-      "z_value": 0.892,
-      "p_value": 0.3723,
-      "significant": false,
-      "relativity": 2.1773,
-      "relativity_ci": [
-        0.394,
-        12.0321
-      ]
-    },
-    {
-      "feature": "bs(income, 9/10, k)",
-      "estimate": 0.740652,
-      "std_error": 0.966345,
-      "z_value": 0.766,
-      "p_value": 0.4434,
-      "significant": false,
-      "relativity": 2.0973,
-      "relativity_ci": [
-        0.3156,
-        13.9385
-      ]
-    },
-    {
-      "feature": "bs(age, 2/10, k)",
-      "estimate": -0.739139,
-      "std_error": 0.99848,
-      "z_value": -0.74,
-      "p_value": 0.4591,
-      "significant": false,
-      "relativity": 0.4775,
-      "relativity_ci": [
-        0.0675,
-        3.3799
-      ]
-    },
-    {
-      "feature": "bs(income, 5/10, k)",
-      "estimate": 0.546357,
-      "std_error": 0.79727,
-      "z_value": 0.685,
-      "p_value": 0.4932,
-      "significant": false,
-      "relativity": 1.7269,
-      "relativity_ci": [
-        0.3619,
-        8.2398
-      ]
-    },
-    {
-      "feature": "bs(income, 7/10, k)",
-      "estimate": -0.549727,
-      "std_error": 0.893238,
-      "z_value": -0.615,
-      "p_value": 0.5383,
-      "significant": false,
-      "relativity": 0.5771,
-      "relativity_ci": [
-        0.1002,
-        3.3234
-      ]
-    },
-    {
-      "feature": "bs(income, 4/10, k)",
-      "estimate": -0.502039,
-      "std_error": 0.880142,
-      "z_value": -0.57,
-      "p_value": 0.5684,
-      "significant": false,
-      "relativity": 0.6053,
-      "relativity_ci": [
-        0.1078,
-        3.3974
-      ]
-    },
-    {
-      "feature": "bs(age, 7/10, k)",
-      "estimate": -0.439931,
-      "std_error": 0.866507,
-      "z_value": -0.508,
-      "p_value": 0.6117,
-      "significant": false,
-      "relativity": 0.6441,
-      "relativity_ci": [
-        0.1179,
-        3.5198
-      ]
-    },
-    {
-      "feature": "bs(income, 8/10, k)",
-      "estimate": 0.456483,
-      "std_error": 0.965653,
-      "z_value": 0.473,
-      "p_value": 0.6364,
-      "significant": false,
-      "relativity": 1.5785,
-      "relativity_ci": [
-        0.2378,
-        10.4764
-      ]
-    },
-    {
-      "feature": "bs(age, 4/10, k)",
-      "estimate": -0.205612,
-      "std_error": 0.862046,
-      "z_value": -0.239,
-      "p_value": 0.8115,
-      "significant": false,
-      "relativity": 0.8141,
-      "relativity_ci": [
-        0.1503,
-        4.4104
-      ]
-    },
-    {
-      "feature": "bs(income, 2/10, k)",
-      "estimate": -0.13322,
-      "std_error": 1.0689,
-      "z_value": -0.125,
-      "p_value": 0.9008,
-      "significant": false,
-      "relativity": 0.8753,
-      "relativity_ci": [
-        0.1077,
-        7.112
-      ]
-    },
-    {
-      "feature": "bs(age, 8/10, k)",
-      "estimate": 0.101368,
-      "std_error": 0.961355,
-      "z_value": 0.105,
-      "p_value": 0.916,
-      "significant": false,
-      "relativity": 1.1067,
-      "relativity_ci": [
-        0.1682,
-        7.2833
-      ]
-    },
-    {
-      "feature": "bs(age, 9/10, k)",
-      "estimate": 0.089999,
-      "std_error": 0.929921,
-      "z_value": 0.097,
-      "p_value": 0.9229,
-      "significant": false,
-      "relativity": 1.0942,
-      "relativity_ci": [
-        0.1768,
-        6.7707
-      ]
-    },
-    {
-      "feature": "bs(age, 5/10, k)",
-      "estimate": -0.06754,
-      "std_error": 0.850554,
-      "z_value": -0.079,
-      "p_value": 0.9367,
-      "significant": false,
-      "relativity": 0.9347,
-      "relativity_ci": [
-        0.1765,
-        4.9506
-      ]
+      "relativity": null,
+      "relativity_ci": null
     },
     {
       "feature": "Intercept",
-      "estimate": -2.755,
-      "std_error": 0.681522,
-      "z_value": -4.042,
-      "p_value": 0.0001,
-      "significant": true,
-      "relativity": 0.0636,
-      "relativity_ci": [
-        0.0167,
-        0.2419
-      ]
+      "estimate": 3.6435,
+      "std_error": 2.4449,
+      "z_value": 1.49,
+      "p_value": 0.1362,
+      "significant": false,
+      "relativity": null,
+      "relativity_ci": null
     }
   ],
   "factor_deviance": null,
@@ -1413,338 +201,136 @@
     "deciles": [
       {
         "decile": 1,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 0.0,
-        "predicted": 0.031935,
-        "ae_ratio": 0.0,
+        "n": 0,
+        "exposure": 0.0,
+        "actual": 0,
+        "predicted": 0,
+        "ae_ratio": null,
         "cumulative_actual_pct": 0.0,
-        "cumulative_predicted_pct": 3.47,
+        "cumulative_predicted_pct": 0.0,
         "lift": 0.0,
         "cumulative_lift": 0.0
       },
       {
         "decile": 2,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 0.02,
-        "predicted": 0.054233,
-        "ae_ratio": 0.369,
-        "cumulative_actual_pct": 2.17,
-        "cumulative_predicted_pct": 9.37,
-        "lift": 0.217,
-        "cumulative_lift": 0.109
+        "n": 0,
+        "exposure": 0.0,
+        "actual": 0,
+        "predicted": 0,
+        "ae_ratio": null,
+        "cumulative_actual_pct": 0.0,
+        "cumulative_predicted_pct": 0.0,
+        "lift": 0.0,
+        "cumulative_lift": 0.0
       },
       {
         "decile": 3,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 0.02,
-        "predicted": 0.065,
-        "ae_ratio": 0.308,
-        "cumulative_actual_pct": 4.35,
-        "cumulative_predicted_pct": 16.43,
-        "lift": 0.217,
-        "cumulative_lift": 0.145
+        "n": 0,
+        "exposure": 0.0,
+        "actual": 0,
+        "predicted": 0,
+        "ae_ratio": null,
+        "cumulative_actual_pct": 0.0,
+        "cumulative_predicted_pct": 0.0,
+        "lift": 0.0,
+        "cumulative_lift": 0.0
       },
       {
         "decile": 4,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 0.06,
-        "predicted": 0.075612,
-        "ae_ratio": 0.794,
-        "cumulative_actual_pct": 10.87,
-        "cumulative_predicted_pct": 24.65,
-        "lift": 0.652,
-        "cumulative_lift": 0.272
+        "n": 0,
+        "exposure": 0.0,
+        "actual": 0,
+        "predicted": 0,
+        "ae_ratio": null,
+        "cumulative_actual_pct": 0.0,
+        "cumulative_predicted_pct": 0.0,
+        "lift": 0.0,
+        "cumulative_lift": 0.0
       },
       {
         "decile": 5,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 0.02,
-        "predicted": 0.084279,
-        "ae_ratio": 0.237,
-        "cumulative_actual_pct": 13.04,
-        "cumulative_predicted_pct": 33.81,
-        "lift": 0.217,
-        "cumulative_lift": 0.261
+        "n": 0,
+        "exposure": 0.0,
+        "actual": 0,
+        "predicted": 0,
+        "ae_ratio": null,
+        "cumulative_actual_pct": 0.0,
+        "cumulative_predicted_pct": 0.0,
+        "lift": 0.0,
+        "cumulative_lift": 0.0
       },
       {
         "decile": 6,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 0.18,
-        "predicted": 0.092299,
-        "ae_ratio": 1.95,
-        "cumulative_actual_pct": 32.61,
-        "cumulative_predicted_pct": 43.84,
-        "lift": 1.957,
-        "cumulative_lift": 0.543
+        "n": 0,
+        "exposure": 0.0,
+        "actual": 0,
+        "predicted": 0,
+        "ae_ratio": null,
+        "cumulative_actual_pct": 0.0,
+        "cumulative_predicted_pct": 0.0,
+        "lift": 0.0,
+        "cumulative_lift": 0.0
       },
       {
         "decile": 7,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 0.14,
-        "predicted": 0.101783,
-        "ae_ratio": 1.375,
-        "cumulative_actual_pct": 47.83,
-        "cumulative_predicted_pct": 54.91,
-        "lift": 1.522,
-        "cumulative_lift": 0.683
+        "n": 0,
+        "exposure": 0.0,
+        "actual": 0,
+        "predicted": 0,
+        "ae_ratio": null,
+        "cumulative_actual_pct": 0.0,
+        "cumulative_predicted_pct": 0.0,
+        "lift": 0.0,
+        "cumulative_lift": 0.0
       },
       {
         "decile": 8,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 0.16,
-        "predicted": 0.115517,
-        "ae_ratio": 1.385,
-        "cumulative_actual_pct": 65.22,
-        "cumulative_predicted_pct": 67.46,
-        "lift": 1.739,
-        "cumulative_lift": 0.815
+        "n": 0,
+        "exposure": 0.0,
+        "actual": 0,
+        "predicted": 0,
+        "ae_ratio": null,
+        "cumulative_actual_pct": 0.0,
+        "cumulative_predicted_pct": 0.0,
+        "lift": 0.0,
+        "cumulative_lift": 0.0
       },
       {
         "decile": 9,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 0.14,
-        "predicted": 0.132403,
-        "ae_ratio": 1.057,
-        "cumulative_actual_pct": 80.43,
-        "cumulative_predicted_pct": 81.85,
-        "lift": 1.522,
-        "cumulative_lift": 0.894
+        "n": 0,
+        "exposure": 0.0,
+        "actual": 0,
+        "predicted": 0,
+        "ae_ratio": null,
+        "cumulative_actual_pct": 0.0,
+        "cumulative_predicted_pct": 0.0,
+        "lift": 0.0,
+        "cumulative_lift": 0.0
       },
       {
         "decile": 10,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 0.18,
-        "predicted": 0.166938,
-        "ae_ratio": 1.078,
+        "n": 8,
+        "exposure": 8.0,
+        "actual": 1.875,
+        "predicted": 1.8956,
+        "ae_ratio": 0.989,
         "cumulative_actual_pct": 100.0,
         "cumulative_predicted_pct": 100.0,
-        "lift": 1.957,
+        "lift": 1.0,
         "cumulative_lift": 1.0
       }
     ],
-    "gini": 0.384,
-    "ks_statistic": 20.77,
-    "ks_decile": 5,
+    "gini": -0.108,
+    "ks_statistic": 0,
+    "ks_decile": 1,
     "weak_deciles": [
-      1,
-      2,
-      3,
-      4,
-      5,
-      6,
-      7,
-      8
+      8,
+      9,
+      10
     ]
   },
-  "partial_dependence": [
-    {
-      "variable": "age",
-      "variable_type": "continuous",
-      "grid_values": [
-        18.5901,
-        21.2582,
-        23.9262,
-        26.5943,
-        29.2623,
-        31.9304,
-        34.5985,
-        37.2665,
-        39.9346,
-        42.6026,
-        45.2707,
-        47.9387,
-        50.6068,
-        53.2748,
-        55.9429,
-        58.611,
-        61.279,
-        63.9471,
-        66.6151,
-        69.2832
-      ],
-      "predictions": [
-        280980154475.34,
-        13610791479.88,
-        659312203.22,
-        31937347.8,
-        1547057.95,
-        74940.11,
-        3630.13,
-        175.84,
-        8.518,
-        0.412615,
-        0.019987,
-        0.000968,
-        4.7e-05,
-        2e-06,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0
-      ],
-      "relativities": [
-        14057971668471.48,
-        680973791073.94,
-        32986643810.76,
-        1597886268.4,
-        77402252.3,
-        3749396.17,
-        181622.26,
-        8797.85,
-        426.17,
-        20.6439,
-        1.0,
-        0.0484,
-        0.0023,
-        0.0001,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0
-      ],
-      "std_errors": null,
-      "shape": "linear_decreasing",
-      "recommendation": "Linear effect adequate"
-    },
-    {
-      "variable": "income",
-      "variable_type": "continuous",
-      "grid_values": [
-        21445.96,
-        25523.64,
-        29601.32,
-        33678.99,
-        37756.67,
-        41834.35,
-        45912.03,
-        49989.7,
-        54067.38,
-        58145.06,
-        62222.73,
-        66300.41,
-        70378.09,
-        74455.77,
-        78533.44,
-        82611.12,
-        86688.8,
-        90766.47,
-        94844.15,
-        98921.83
-      ],
-      "predictions": [
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        9.404140455646967e+188,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0
-      ],
-      "relativities": [
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0
-      ],
-      "std_errors": null,
-      "shape": "complex",
-      "recommendation": "Use spline (df=5+) to capture non-linearity"
-    }
-  ],
-  "overdispersion": {
-    "pearson_dispersion": 0.9391,
-    "pearson_chi2": 449.82,
-    "df_resid": 479,
-    "raw_dispersion": 1.0841,
-    "mean_count": 0.092,
-    "var_count": 0.0997,
-    "severity": "none",
-    "recommendation": "Poisson assumption appears reasonable"
-  },
-  "spline_info": {
-    "age": {
-      "type": "bs",
-      "df": 10,
-      "degree": 3,
-      "knots": [
-        23.8161,
-        32.6366,
-        40.2289,
-        48.355,
-        55.3341,
-        63.5343
-      ],
-      "boundary_knots": [
-        18.2632,
-        69.6342
-      ],
-      "is_smooth": true,
-      "lambda": 0.1,
-      "edf": 7.5856
-    },
-    "income": {
-      "type": "bs",
-      "df": 10,
-      "degree": 3,
-      "knots": [
-        31189.58,
-        40631.71,
-        52040.93,
-        63427.42,
-        73998.6,
-        87617.13
-      ],
-      "boundary_knots": [
-        20370.56,
-        99977.41
-      ],
-      "is_smooth": true,
-      "lambda": 0.1,
-      "edf": 7.5856
-    }
-  },
+  "partial_dependence": null,
+  "overdispersion": null,
+  "spline_info": null,
   "base_predictions_comparison": null
 }

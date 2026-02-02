@@ -36,16 +36,31 @@ rs.glm_dict(
         "DiscNeg": {"type": "expression", "expr": "Discount**2", "monotonicity": "decreasing"},   # neg(I(x²))
     },
     interactions=[
+        # Standard interaction: spline × TE (product terms)
         {
             "DrivAge": {"type": "bs", "df": 5}, 
             "Brand": {"type": "target_encoding"},
             "include_main": True
         },
+        # Standard interaction: continuous × categorical
         {
             "VehAge": {"type": "linear"}, 
             "Region": {"type": "categorical"}, 
             "include_main": False
-        }
+        },
+        # TE interaction: TE(Brand:Region) - combined target encoding
+        {
+            "Brand": {"type": "categorical"},
+            "Region": {"type": "categorical"},
+            "target_encoding": True,
+            "prior_weight": 1.0,
+        },
+        # FE interaction: FE(Brand:Region) - combined frequency encoding
+        {
+            "Brand": {"type": "categorical"},
+            "Region": {"type": "categorical"},
+            "frequency_encoding": True,
+        },
     ],
     intercept=True,                     # default True
     data=data,

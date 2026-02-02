@@ -473,19 +473,22 @@ class TestDictAPIFrequencyEncoding:
 
 
 class TestDictAPITargetEncodingInteraction:
-    """Test target_encoding with interaction in dict API."""
+    """Test target_encoding with interaction in dict API via interactions list."""
     
     def test_dict_te_interaction_parsed(self):
-        """type='target_encoding' with interaction should work."""
+        """target_encoding: True in interactions should work."""
         parsed = dict_to_parsed_formula(
             response="y",
             terms={
-                "brand_region": {
-                    "type": "target_encoding",
-                    "interaction": ["brand", "region"],
-                },
                 "age": {"type": "linear"},
             },
+            interactions=[
+                {
+                    "brand": {"type": "categorical"},
+                    "region": {"type": "categorical"},
+                    "target_encoding": True,
+                },
+            ],
         )
         
         assert len(parsed.target_encoding_terms) == 1
@@ -497,32 +500,77 @@ class TestDictAPITargetEncodingInteraction:
         """TE interaction with prior_weight option."""
         parsed = dict_to_parsed_formula(
             response="y",
-            terms={
-                "te_inter": {
-                    "type": "target_encoding",
-                    "interaction": ["brand", "region"],
+            terms={},
+            interactions=[
+                {
+                    "brand": {"type": "categorical"},
+                    "region": {"type": "categorical"},
+                    "target_encoding": True,
                     "prior_weight": 2.5,
                     "n_permutations": 10,
                 },
-            },
+            ],
         )
         
         te_term = parsed.target_encoding_terms[0]
         np.testing.assert_allclose(te_term.prior_weight, 2.5)
         assert te_term.n_permutations == 10
     
-    def test_dict_te_interaction_requires_list(self):
-        """interaction must be a list of at least 2 variables."""
-        with pytest.raises(ValueError, match="list of at least 2"):
+    def test_dict_te_interaction_requires_two_vars(self):
+        """TE interaction must have at least 2 variables."""
+        with pytest.raises(ValueError, match="at least 2 variables"):
             dict_to_parsed_formula(
                 response="y",
-                terms={
-                    "bad": {
-                        "type": "target_encoding",
-                        "interaction": ["only_one"],
+                terms={},
+                interactions=[
+                    {
+                        "brand": {"type": "categorical"},
+                        "target_encoding": True,
                     },
-                },
+                ],
             )
+    
+    def test_dict_te_interaction_with_include_main(self):
+        """TE interaction with include_main adds main effects."""
+        parsed = dict_to_parsed_formula(
+            response="y",
+            terms={},
+            interactions=[
+                {
+                    "brand": {"type": "categorical"},
+                    "region": {"type": "categorical"},
+                    "target_encoding": True,
+                    "include_main": True,
+                },
+            ],
+        )
+        
+        # Should have TE interaction
+        assert len(parsed.target_encoding_terms) == 1
+        te_term = parsed.target_encoding_terms[0]
+        assert te_term.var_name == "brand:region"
+        
+        # Should also have categorical vars tracked
+        assert "brand" in parsed.categorical_vars
+        assert "region" in parsed.categorical_vars
+    
+    def test_dict_te_interaction_continuous_categorical(self):
+        """TE interaction with continuous variable (type=linear)."""
+        parsed = dict_to_parsed_formula(
+            response="y",
+            terms={},
+            interactions=[
+                {
+                    "age": {"type": "linear"},
+                    "region": {"type": "categorical"},
+                    "target_encoding": True,
+                },
+            ],
+        )
+        
+        te_term = parsed.target_encoding_terms[0]
+        assert te_term.var_name == "age:region"
+        assert te_term.interaction_vars == ["age", "region"]
 
 
 # =============================================================================
@@ -575,6 +623,82 @@ class TestEdgeCases:
         
         assert len(encoded) == n_obs
         assert max_count == n_categories  # cat_0 has highest count
+
+
+class TestTEInteractionPredict:
+    """Test TE interaction prediction on new data."""
+    
+    def test_te_interaction_predict_new_data(self):
+        """TE interaction should work with predict() on new data.
+        
+        Regression test: _encode_target_new was trying to access 
+        new_data["VehBrand:Region"] instead of combining the columns.
+        """
+        import polars as pl
+        
+        # Create train data
+        train_data = pl.DataFrame({
+            "y": [1.0, 2.0, 3.0, 1.0, 2.0, 3.0, 1.0, 2.0],
+            "brand": ["A", "A", "B", "B", "A", "B", "A", "B"],
+            "region": ["X", "Y", "X", "Y", "X", "Y", "Y", "X"],
+            "age": [25, 30, 35, 40, 45, 50, 55, 60],
+        })
+        
+        # Create test data (separate columns, no "brand:region" column)
+        test_data = pl.DataFrame({
+            "brand": ["A", "B", "A"],
+            "region": ["X", "Y", "X"],
+            "age": [28, 42, 52],
+        })
+        
+        # Fit model with TE interaction
+        result = rs.glm_dict(
+            response="y",
+            terms={"age": {"type": "linear"}},
+            interactions=[{
+                "brand": {"type": "categorical"},
+                "region": {"type": "categorical"},
+                "target_encoding": True,
+            }],
+            data=train_data,
+            family="gaussian",
+        ).fit()
+        
+        # This should NOT raise ColumnNotFoundError
+        predictions = result.predict(test_data)
+        
+        assert len(predictions) == 3
+        assert all(np.isfinite(predictions))
+    
+    def test_te_interaction_diagnostics(self):
+        """TE interaction should work with diagnostics().
+        
+        Regression test: diagnostics() calls predict() internally.
+        """
+        import polars as pl
+        
+        train_data = pl.DataFrame({
+            "y": [1.0, 2.0, 3.0, 1.0, 2.0, 3.0, 1.0, 2.0],
+            "brand": ["A", "A", "B", "B", "A", "B", "A", "B"],
+            "region": ["X", "Y", "X", "Y", "X", "Y", "Y", "X"],
+            "age": [25, 30, 35, 40, 45, 50, 55, 60],
+        })
+        
+        result = rs.glm_dict(
+            response="y",
+            terms={"age": {"type": "linear"}},
+            interactions=[{
+                "brand": {"type": "categorical"},
+                "region": {"type": "categorical"},
+                "target_encoding": True,
+            }],
+            data=train_data,
+            family="gaussian",
+        ).fit()
+        
+        # This should NOT raise ColumnNotFoundError
+        diag = result.diagnostics(train_data=train_data)
+        assert diag is not None
 
 
 if __name__ == "__main__":

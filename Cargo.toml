@@ -35,7 +35,8 @@ ndarray = { version = "0.16", features = ["approx"] }
 
 # nalgebra: Pure Rust linear algebra library
 # Used for matrix operations in the IRLS solver (no system dependencies needed!)
-nalgebra = "0.33"
+# The matrixmultiply feature enables optimized cache-blocked matrix multiplication
+nalgebra = { version = "0.33", features = ["matrixmultiply"] }
 
 # --- Python Integration ---
 pyo3 = { version = "0.22", features = ["extension-module"] }  # Rust <-> Python bridge

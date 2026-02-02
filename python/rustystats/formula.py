@@ -2712,7 +2712,8 @@ def glm(
 from typing import Dict, Any, Set
 from rustystats.interactions import (
     ParsedFormula, InteractionTerm, TargetEncodingTermSpec, 
-    IdentityTermSpec, CategoricalTermSpec, ConstraintTermSpec
+    IdentityTermSpec, CategoricalTermSpec, ConstraintTermSpec,
+    FrequencyEncodingTermSpec,
 )
 from rustystats.splines import SplineTerm
 
@@ -2736,7 +2737,7 @@ def _parse_term_spec(
         "categorical": {"type", "levels"},
         "bs": {"type", "df", "k", "degree", "monotonicity"},
         "ns": {"type", "df", "k"},
-        "target_encoding": {"type", "prior_weight", "n_permutations", "interaction", "variable"},
+        "target_encoding": {"type", "prior_weight", "n_permutations", "variable"},
         "frequency_encoding": {"type", "variable"},
         "expression": {"type", "expr", "monotonicity"},
     }
@@ -2845,33 +2846,16 @@ def _parse_term_spec(
     elif term_type == "target_encoding":
         prior_weight = spec.get("prior_weight", 1.0)
         n_permutations = spec.get("n_permutations", 4)
-        interaction_spec = spec.get("interaction")  # e.g., ["brand", "region"] for TE(brand:region)
-        
-        if interaction_spec:
-            # TE interaction: TE(brand:region)
-            if isinstance(interaction_spec, list) and len(interaction_spec) >= 2:
-                combined_name = ":".join(interaction_spec)
-                target_encoding_terms.append(TargetEncodingTermSpec(
-                    var_name=combined_name,
-                    prior_weight=prior_weight,
-                    n_permutations=n_permutations,
-                    interaction_vars=interaction_spec,
-                ))
-            else:
-                raise ValueError(
-                    f"'interaction' for target_encoding must be a list of at least 2 variable names, "
-                    f"got: {interaction_spec}"
-                )
-        else:
-            # Single variable TE - use 'variable' key if provided
-            actual_var = spec.get("variable", var_name)
-            existing_te_vars = {te.var_name for te in target_encoding_terms}
-            if actual_var not in existing_te_vars:
-                target_encoding_terms.append(TargetEncodingTermSpec(
-                    var_name=actual_var,
-                    prior_weight=prior_weight,
-                    n_permutations=n_permutations,
-                ))
+        # Single variable TE - use 'variable' key if provided
+        # For TE interactions, use the interactions list with target_encoding: True
+        actual_var = spec.get("variable", var_name)
+        existing_te_vars = {te.var_name for te in target_encoding_terms}
+        if actual_var not in existing_te_vars:
+            target_encoding_terms.append(TargetEncodingTermSpec(
+                var_name=actual_var,
+                prior_weight=prior_weight,
+                n_permutations=n_permutations,
+            ))
     
     elif term_type == "frequency_encoding":
         from rustystats.interactions import FrequencyEncodingTermSpec as FETermSpec
@@ -2909,16 +2893,76 @@ def _parse_interaction_spec(
     identity_terms: List[IdentityTermSpec],
     categorical_terms: List[CategoricalTermSpec],
     constraint_terms: List[ConstraintTermSpec],
+    frequency_encoding_terms: Optional[List] = None,
 ) -> None:
-    """Parse an interaction specification."""
-    include_main = interaction.get("include_main", False)
+    """Parse an interaction specification.
     
-    # Extract variable specs (everything except include_main)
-    var_specs = {k: v for k, v in interaction.items() if k != "include_main"}
+    Supports two modes:
+    1. Standard interaction: creates product terms (cat×cat, cat×cont, etc.)
+    2. Encoding interaction: combines variables into single encoded value
+       - target_encoding: True → TE(var1:var2:...)
+       - frequency_encoding: True → FE(var1:var2:...)
+    """
+    # Reserved keys (not variable specs)
+    RESERVED_KEYS = {"include_main", "target_encoding", "frequency_encoding", 
+                     "prior_weight", "n_permutations"}
+    
+    include_main = interaction.get("include_main", False)
+    is_te_interaction = interaction.get("target_encoding", False)
+    is_fe_interaction = interaction.get("frequency_encoding", False)
+    
+    if is_te_interaction and is_fe_interaction:
+        raise ValueError(
+            "Cannot specify both target_encoding and frequency_encoding for same interaction"
+        )
+    
+    # Extract variable specs (everything except reserved keys)
+    var_specs = {k: v for k, v in interaction.items() if k not in RESERVED_KEYS}
     
     if len(var_specs) < 2:
         raise ValueError("Interaction must have at least 2 variables")
     
+    # Helper: track categorical vars and optionally add main effects
+    def _process_encoding_interaction() -> None:
+        for var_name, spec in var_specs.items():
+            if spec.get("type", "categorical") == "categorical":
+                categorical_vars.add(var_name)
+        
+        if include_main:
+            for var_name, spec in var_specs.items():
+                _parse_term_spec(
+                    var_name, spec, categorical_vars, main_effects,
+                    spline_terms, target_encoding_terms, identity_terms,
+                    categorical_terms, constraint_terms, frequency_encoding_terms,
+                )
+    
+    # Handle TE interaction: TE(var1:var2:...)
+    if is_te_interaction:
+        interaction_vars = list(var_specs.keys())
+        target_encoding_terms.append(TargetEncodingTermSpec(
+            var_name=":".join(interaction_vars),
+            prior_weight=interaction.get("prior_weight", 1.0),
+            n_permutations=interaction.get("n_permutations", 4),
+            interaction_vars=interaction_vars,
+        ))
+        _process_encoding_interaction()
+        return
+    
+    # Handle FE interaction: FE(var1:var2:...)
+    if is_fe_interaction:
+        if frequency_encoding_terms is None:
+            raise ValueError(
+                "frequency_encoding interaction not supported in this context"
+            )
+        interaction_vars = list(var_specs.keys())
+        frequency_encoding_terms.append(FrequencyEncodingTermSpec(
+            var_name=":".join(interaction_vars),
+            interaction_vars=interaction_vars,
+        ))
+        _process_encoding_interaction()
+        return
+    
+    # Standard interaction: product terms
     # Determine which factors are categorical, splines, or TE
     cat_factors = set()
     spline_factors = []
@@ -3038,6 +3082,7 @@ def dict_to_parsed_formula(
                 interaction, interaction_terms_list, categorical_vars,
                 main_effects, spline_terms_list, target_encoding_terms_list,
                 identity_terms_list, categorical_terms_list, constraint_terms_list,
+                frequency_encoding_terms_list,
             )
     
     return ParsedFormula(

@@ -96,6 +96,7 @@ class TargetEncodingTermSpec:
 class FrequencyEncodingTermSpec:
     """Parsed frequency encoding term specification from formula."""
     var_name: str
+    interaction_vars: Optional[List[str]] = None  # For FE(a:b) interactions
 
 
 @dataclass
@@ -1836,8 +1837,15 @@ class InteractionBuilder:
         level_stats = stats['stats']
         prior_weight = stats['prior_weight']
         used_exposure_weighted = stats.get('used_exposure_weighted', False)
+        interaction_vars = stats.get('interaction_vars')
         
-        col = new_data[te_term.var_name].to_numpy()
+        # Handle TE interactions: combine columns from separate variables
+        if interaction_vars is not None and len(interaction_vars) >= 2:
+            cols = [new_data[var].to_numpy() for var in interaction_vars]
+            # Combine into "var1:var2:..." format
+            col = np.array([":".join(str(c[i]) for c in cols) for i in range(len(cols[0]))])
+        else:
+            col = new_data[te_term.var_name].to_numpy()
         n = len(col)
         encoded = np.zeros(n, dtype=self.dtype)
         
