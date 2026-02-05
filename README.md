@@ -7,8 +7,8 @@
 ## Features
 
 - **Dict-First API** - Programmatic model building ideal for automated workflows and agents
-- **Fast** - Parallel Rust backend, 5-24x faster than statsmodels
-- **Memory Efficient** - 5-18x less RAM than statsmodels at scale
+- **Fast** - Parallel Rust backend, 5-10x faster than statsmodels
+- **Memory Efficient** - 4-5x less RAM than statsmodels at scale
 - **Stable** - Step-halving IRLS, warm starts for robust convergence
 - **Splines** - B-splines and natural splines with auto-tuned smoothing and monotonicity
 - **Target Encoding** - Ordered target encoding for high-cardinality categoricals
