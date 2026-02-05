@@ -11,7 +11,7 @@ RustyStats is a statistical modeling library designed for actuarial and data sci
 | **Parallel IRLS Solver** | ✅ Multi-threaded via Rayon | ❌ Single-threaded |
 | **Native Polars Support** | ✅ Formula API with Polars | ❌ Pandas only |
 | **Built-in Lasso/Elastic Net** | ✅ All GLM families | ⚠️ Limited |
-| **Performance (678K rows)** | ~1 second | ~5-10 seconds |
+| **Performance** | 5-23x faster | Baseline |
 
 ## Quick Example
 
@@ -21,11 +21,19 @@ import polars as pl
 
 data = pl.read_parquet("insurance.parquet")
 
-result = rs.glm(
-    formula="ClaimCount ~ VehPower + VehAge + C(Area) + C(Region)",
+# Dict API (recommended for production)
+result = rs.glm_dict(
+    response="ClaimCount",
+    terms={
+        "VehPower": {"type": "linear"},
+        "VehAge": {"type": "bs"},  # Penalized smooth
+        "Area": {"type": "categorical"},
+        "Region": {"type": "categorical"},
+        "Brand": {"type": "target_encoding"},
+    },
     data=data,
     family="poisson",
-    offset="Exposure"
+    offset="Exposure",
 ).fit()
 
 print(result.summary())
@@ -35,6 +43,12 @@ print(result.relativities())  # exp(coef) for pricing
 ## Documentation Structure
 
 This documentation is organized for maintainers who may be new to Rust and/or GLMs:
+
+### API Reference
+- [**Dict API**](api/dict-api.md) - Primary API for programmatic model building
+- [**Results Object**](api/results.md) - GLMResults and GLMModel methods
+- [**Diagnostics API**](api/diagnostics.md) - Model diagnostics and exploration
+- [**Model Serialization**](api/serialization.md) - Save and load fitted models
 
 ### For Understanding the Math
 - [**GLM Theory**](theory/glm-intro.md) - Complete mathematical foundation
@@ -66,9 +80,10 @@ This documentation is organized for maintainers who may be new to Rust and/or GL
 ### Advanced Features
 - **[Regularization](components/regularization.md)** - Ridge, Lasso, Elastic Net with automatic CV-based alpha selection
 - **[Splines](components/splines.md)** - B-splines and natural splines for non-linear effects
-- **[Target Encoding](components/target-encoding.md)** - Encoding for high-cardinality categoricals
+- **[Target Encoding](components/target-encoding.md)** - Target and frequency encoding for high-cardinality categoricals
+- **[Coefficient Constraints](components/constraints.md)** - Monotonicity constraints on coefficients
 - **Robust Standard Errors** - HC0, HC1, HC2, HC3 sandwich estimators
-- **[Model Diagnostics](components/diagnostics.md)** - Calibration, discrimination, residual analysis
+- **[Model Diagnostics](components/diagnostics.md)** - Calibration, discrimination, base model comparison
 
 ## Installation
 

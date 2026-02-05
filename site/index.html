@@ -326,7 +326,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="api/formula-api/" class="md-tabs__link">
+        <a href="api/dict-api/" class="md-tabs__link">
           
   
   
@@ -542,6 +542,17 @@
   
     <nav class="md-nav" aria-label="Documentation Structure">
       <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#api-reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        API Reference
+      
+    </span>
+  </a>
+  
+</li>
         
           <li class="md-nav__item">
   <a href="#for-understanding-the-math" class="md-nav__link">
@@ -1454,6 +1465,62 @@
   
   
     <li class="md-nav__item">
+      <a href="components/constraints/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Coefficient Constraints
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="components/regularization/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Regularization
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="components/diagnostics/" class="md-nav__link">
         
   
@@ -1571,14 +1638,14 @@
   
   
     <li class="md-nav__item">
-      <a href="api/formula-api/" class="md-nav__link">
+      <a href="api/dict-api/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Formula API
+    Dict API
   
 
     
@@ -1635,6 +1702,34 @@
     
   
     Diagnostics
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="api/serialization/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Model Serialization
   
 
     
@@ -2151,6 +2246,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#api-reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        API Reference
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#for-understanding-the-math" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2298,9 +2404,9 @@
 <td>⚠️ Limited</td>
 </tr>
 <tr>
-<td><strong>Performance (678K rows)</strong></td>
-<td>~1 second</td>
-<td>~5-10 seconds</td>
+<td><strong>Performance</strong></td>
+<td>5-23x faster</td>
+<td>Baseline</td>
 </tr>
 </tbody>
 </table>
@@ -2310,18 +2416,33 @@
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">data</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">read_parquet</span><span class="p">(</span><span class="s2">&quot;insurance.parquet&quot;</span><span class="p">)</span>
 </span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="n">result</span> <span class="o">=</span> <span class="n">rs</span><span class="o">.</span><span class="n">glm</span><span class="p">(</span>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">formula</span><span class="o">=</span><span class="s2">&quot;ClaimCount ~ VehPower + VehAge + C(Area) + C(Region)&quot;</span><span class="p">,</span>
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">data</span><span class="o">=</span><span class="n">data</span><span class="p">,</span>
-</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">family</span><span class="o">=</span><span class="s2">&quot;poisson&quot;</span><span class="p">,</span>
-</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="n">offset</span><span class="o">=</span><span class="s2">&quot;Exposure&quot;</span>
-</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="p">)</span><span class="o">.</span><span class="n">fit</span><span class="p">()</span>
-</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>
-</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="nb">print</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">summary</span><span class="p">())</span>
-</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="nb">print</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">relativities</span><span class="p">())</span>  <span class="c1"># exp(coef) for pricing</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="c1"># Dict API (recommended for production)</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="n">result</span> <span class="o">=</span> <span class="n">rs</span><span class="o">.</span><span class="n">glm_dict</span><span class="p">(</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">response</span><span class="o">=</span><span class="s2">&quot;ClaimCount&quot;</span><span class="p">,</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">terms</span><span class="o">=</span><span class="p">{</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>        <span class="s2">&quot;VehPower&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;linear&quot;</span><span class="p">},</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>        <span class="s2">&quot;VehAge&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;bs&quot;</span><span class="p">},</span>  <span class="c1"># Penalized smooth</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>        <span class="s2">&quot;Area&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;categorical&quot;</span><span class="p">},</span>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>        <span class="s2">&quot;Region&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;categorical&quot;</span><span class="p">},</span>
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>        <span class="s2">&quot;Brand&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;target_encoding&quot;</span><span class="p">},</span>
+</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>    <span class="p">},</span>
+</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>    <span class="n">data</span><span class="o">=</span><span class="n">data</span><span class="p">,</span>
+</span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>    <span class="n">family</span><span class="o">=</span><span class="s2">&quot;poisson&quot;</span><span class="p">,</span>
+</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>    <span class="n">offset</span><span class="o">=</span><span class="s2">&quot;Exposure&quot;</span><span class="p">,</span>
+</span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a><span class="p">)</span><span class="o">.</span><span class="n">fit</span><span class="p">()</span>
+</span><span id="__span-0-20"><a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>
+</span><span id="__span-0-21"><a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a><span class="nb">print</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">summary</span><span class="p">())</span>
+</span><span id="__span-0-22"><a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a><span class="nb">print</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">relativities</span><span class="p">())</span>  <span class="c1"># exp(coef) for pricing</span>
 </span></code></pre></div>
 <h2 id="documentation-structure">Documentation Structure<a class="headerlink" href="#documentation-structure" title="Permanent link">&para;</a></h2>
 <p>This documentation is organized for maintainers who may be new to Rust and/or GLMs:</p>
+<h3 id="api-reference">API Reference<a class="headerlink" href="#api-reference" title="Permanent link">&para;</a></h3>
+<ul>
+<li><a href="api/dict-api/"><strong>Dict API</strong></a> - Primary API for programmatic model building</li>
+<li><a href="api/results/"><strong>Results Object</strong></a> - GLMResults and GLMModel methods</li>
+<li><a href="api/diagnostics/"><strong>Diagnostics API</strong></a> - Model diagnostics and exploration</li>
+<li><a href="api/serialization/"><strong>Model Serialization</strong></a> - Save and load fitted models</li>
+</ul>
 <h3 id="for-understanding-the-math">For Understanding the Math<a class="headerlink" href="#for-understanding-the-math" title="Permanent link">&para;</a></h3>
 <ul>
 <li><a href="theory/glm-intro/"><strong>GLM Theory</strong></a> - Complete mathematical foundation</li>
@@ -2354,11 +2475,12 @@
 </ul>
 <h3 id="advanced-features">Advanced Features<a class="headerlink" href="#advanced-features" title="Permanent link">&para;</a></h3>
 <ul>
-<li><strong>Regularization</strong> - Ridge, Lasso, Elastic Net with cross-validation</li>
-<li><strong>Splines</strong> - B-splines and natural splines for non-linear effects</li>
-<li><strong>Target Encoding</strong> - Encoding for high-cardinality categoricals</li>
+<li><strong><a href="components/regularization/">Regularization</a></strong> - Ridge, Lasso, Elastic Net with automatic CV-based alpha selection</li>
+<li><strong><a href="components/splines/">Splines</a></strong> - B-splines and natural splines for non-linear effects</li>
+<li><strong><a href="components/target-encoding/">Target Encoding</a></strong> - Target and frequency encoding for high-cardinality categoricals</li>
+<li><strong><a href="components/constraints/">Coefficient Constraints</a></strong> - Monotonicity constraints on coefficients</li>
 <li><strong>Robust Standard Errors</strong> - HC0, HC1, HC2, HC3 sandwich estimators</li>
-<li><strong>Model Diagnostics</strong> - Calibration, discrimination, residual analysis</li>
+<li><strong><a href="components/diagnostics/">Model Diagnostics</a></strong> - Calibration, discrimination, base model comparison</li>
 </ul>
 <h2 id="installation">Installation<a class="headerlink" href="#installation" title="Permanent link">&para;</a></h2>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># Development installation</span>

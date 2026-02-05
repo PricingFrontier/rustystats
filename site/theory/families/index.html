@@ -328,7 +328,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../api/formula-api/" class="md-tabs__link">
+        <a href="../../api/dict-api/" class="md-tabs__link">
           
   
   
@@ -1476,6 +1476,39 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#86-numerical-stability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.6 Numerical Stability
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#87-log-likelihood-for-large-theta" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.7 Log-Likelihood for Large \(\theta\)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#88-diagnostics-warnings" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.8 Diagnostics Warnings
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -2128,6 +2161,62 @@
   
   
     <li class="md-nav__item">
+      <a href="../../components/constraints/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Coefficient Constraints
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../components/regularization/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Regularization
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../components/diagnostics/" class="md-nav__link">
         
   
@@ -2245,14 +2334,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../../api/formula-api/" class="md-nav__link">
+      <a href="../../api/dict-api/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Formula API
+    Dict API
   
 
     
@@ -2309,6 +2398,34 @@
     
   
     Diagnostics
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/serialization/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Model Serialization
   
 
     
@@ -3526,6 +3643,39 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#86-numerical-stability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.6 Numerical Stability
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#87-log-likelihood-for-large-theta" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.7 Log-Likelihood for Large \(\theta\)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#88-diagnostics-warnings" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.8 Diagnostics Warnings
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -4538,31 +4688,91 @@ V(\mu) = \mu + \frac{\mu^2}{\theta}
 </table>
 <p><strong>Rule of thumb</strong>: Use NegBin when overdispersion increases with the mean.</p>
 <h3 id="85-estimating-theta">8.5 Estimating <span class="arithmatex">\(\theta\)</span><a class="headerlink" href="#85-estimating-theta" title="Permanent link">&para;</a></h3>
-<p>RustyStats estimates <span class="arithmatex">\(\theta\)</span> by profiling:
-1. For fixed <span class="arithmatex">\(\theta\)</span>, fit GLM to get <span class="arithmatex">\(\hat{\boldsymbol{\beta}}(\theta)\)</span>
-2. Compute profile log-likelihood <span class="arithmatex">\(\ell_p(\theta)\)</span>
-3. Maximize over <span class="arithmatex">\(\theta\)</span></p>
-<p>Or use an iterative algorithm alternating between <span class="arithmatex">\(\boldsymbol{\beta}\)</span> and <span class="arithmatex">\(\theta\)</span>.</p>
+<p>RustyStats estimates <span class="arithmatex">\(\theta\)</span> using an iterative moment-based approach:</p>
+<ol>
+<li><strong>Initial fit</strong>: Fit a Poisson GLM to get starting <span class="arithmatex">\(\hat{\mu}\)</span></li>
+<li><strong>Moment estimation</strong>: Estimate <span class="arithmatex">\(\theta\)</span> from residuals:
+   $<span class="arithmatex">\(\hat{\theta} = \frac{\bar{\mu}^2}{\text{Var}(Y - \mu) - \bar{\mu}}\)</span>$</li>
+<li><strong>Iterate</strong>: Fit NegBin GLM with current <span class="arithmatex">\(\theta\)</span>, re-estimate <span class="arithmatex">\(\theta\)</span>, repeat until convergence</li>
+</ol>
+<p><strong>Bounds</strong>: <span class="arithmatex">\(\theta\)</span> is constrained to <span class="arithmatex">\([0.01, 1000]\)</span> to prevent numerical issues.</p>
+<h3 id="86-numerical-stability">8.6 Numerical Stability<a class="headerlink" href="#86-numerical-stability" title="Permanent link">&para;</a></h3>
+<p>Negative Binomial fitting is numerically challenging due to:</p>
+<ol>
+<li><strong>Larger variance function</strong>: <span class="arithmatex">\(V(\mu) = \mu + \mu^2/\theta\)</span> produces smaller IRLS weights than Poisson</li>
+<li><strong>Ill-conditioned design matrices</strong>: Common with splines + target encoding</li>
+<li><strong>Large <span class="arithmatex">\(\theta\)</span> instability</strong>: When <span class="arithmatex">\(\theta \to \infty\)</span>, the log-likelihood involves <span class="arithmatex">\(\log\Gamma(y + \theta) - \log\Gamma(\theta)\)</span> which loses precision</li>
+</ol>
+<p><strong>RustyStats Solution</strong>:</p>
+<p>RustyStats applies <strong>minimum ridge regularization</strong> (α ≥ 1e-6) automatically for NegBin models:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># The formula API automatically applies minimum regularization</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="n">result</span> <span class="o">=</span> <span class="n">rs</span><span class="o">.</span><span class="n">glm</span><span class="p">(</span><span class="s2">&quot;claims ~ ns(age, df=5) + TE(region)&quot;</span><span class="p">,</span> 
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>                <span class="n">data</span><span class="p">,</span> <span class="n">family</span><span class="o">=</span><span class="s2">&quot;negbinomial&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">fit</span><span class="p">()</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="c1"># You&#39;ll see &quot;Method: IRLS + Ridge&quot; in the summary</span>
+</span></code></pre></div>
+<div class="admonition warning">
+<p class="admonition-title">Coefficient Interpretation</p>
+<p>The ridge penalty introduces negligible bias (~1e-6 × coefficient magnitude) but makes inference approximate. For actuarial applications, this bias is typically irrelevant.</p>
+</div>
+<h3 id="87-log-likelihood-for-large-theta">8.7 Log-Likelihood for Large <span class="arithmatex">\(\theta\)</span><a class="headerlink" href="#87-log-likelihood-for-large-theta" title="Permanent link">&para;</a></h3>
+<p>When <span class="arithmatex">\(\theta &gt; 100\)</span>, the NegBin distribution is essentially Poisson. RustyStats uses the Poisson log-likelihood in this case to avoid numerical overflow:</p>
+<div class="arithmatex">\[
+\ell(\mu; y) = \sum_i \left[ y_i \log\mu_i - \mu_i - \log\Gamma(y_i + 1) \right]
+\]</div>
+<h3 id="88-diagnostics-warnings">8.8 Diagnostics Warnings<a class="headerlink" href="#88-diagnostics-warnings" title="Permanent link">&para;</a></h3>
+<p>The diagnostics system generates warnings for NegBin models:</p>
+<table>
+<thead>
+<tr>
+<th>Warning</th>
+<th>Condition</th>
+<th>Recommendation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>negbinomial_regularization</code></td>
+<td>Always</td>
+<td>Informational: ridge penalty applied</td>
+</tr>
+<tr>
+<td><code>negbinomial_large_theta</code></td>
+<td><span class="arithmatex">\(\theta \geq 100\)</span></td>
+<td>Consider Poisson instead</td>
+</tr>
+<tr>
+<td><code>negbinomial_small_theta</code></td>
+<td><span class="arithmatex">\(\theta \leq 0.1\)</span></td>
+<td>Check for missing covariates</td>
+</tr>
+</tbody>
+</table>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># Access warnings via diagnostics</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="n">diag</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">diagnostics</span><span class="p">(</span><span class="n">data</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="k">for</span> <span class="n">w</span> <span class="ow">in</span> <span class="n">diag</span><span class="o">.</span><span class="n">warnings</span><span class="p">:</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;[</span><span class="si">{</span><span class="n">w</span><span class="p">[</span><span class="s1">&#39;type&#39;</span><span class="p">]</span><span class="si">}</span><span class="s2">]: </span><span class="si">{</span><span class="n">w</span><span class="p">[</span><span class="s1">&#39;message&#39;</span><span class="p">]</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+</span></code></pre></div>
 <hr />
 <h2 id="part-9-summary-and-selection-guide">Part 9: Summary and Selection Guide<a class="headerlink" href="#part-9-summary-and-selection-guide" title="Permanent link">&para;</a></h2>
 <h3 id="91-decision-tree">9.1 Decision Tree<a class="headerlink" href="#91-decision-tree" title="Permanent link">&para;</a></h3>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>Response type?
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>│
-</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>├── Continuous
-</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>│   ├── Can be negative → Gaussian
-</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>│   └── Always positive
-</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>│       ├── Has exact zeros → Tweedie (p ∈ (1,2))
-</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>│       └── No zeros → Gamma
-</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>│
-</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>└── Discrete
-</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a>    ├── Binary (0/1) → Binomial
-</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a>    │   └── Overdispersed? → QuasiBinomial
-</span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a>    │
-</span><span id="__span-6-13"><a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a>    └── Counts (0, 1, 2, ...)
-</span><span id="__span-6-14"><a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a>        ├── Var ≈ Mean → Poisson
-</span><span id="__span-6-15"><a id="__codelineno-6-15" name="__codelineno-6-15" href="#__codelineno-6-15"></a>        └── Var &gt; Mean (overdispersion)
-</span><span id="__span-6-16"><a id="__codelineno-6-16" name="__codelineno-6-16" href="#__codelineno-6-16"></a>            ├── Quick fix → QuasiPoisson
-</span><span id="__span-6-17"><a id="__codelineno-6-17" name="__codelineno-6-17" href="#__codelineno-6-17"></a>            └── Better model → Negative Binomial
+<div class="language-text highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>Response type?
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>│
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>├── Continuous
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>│   ├── Can be negative → Gaussian
+</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>│   └── Always positive
+</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>│       ├── Has exact zeros → Tweedie (p ∈ (1,2))
+</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>│       └── No zeros → Gamma
+</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>│
+</span><span id="__span-8-9"><a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>└── Discrete
+</span><span id="__span-8-10"><a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>    ├── Binary (0/1) → Binomial
+</span><span id="__span-8-11"><a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>    │   └── Overdispersed? → QuasiBinomial
+</span><span id="__span-8-12"><a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a>    │
+</span><span id="__span-8-13"><a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a>    └── Counts (0, 1, 2, ...)
+</span><span id="__span-8-14"><a id="__codelineno-8-14" name="__codelineno-8-14" href="#__codelineno-8-14"></a>        ├── Var ≈ Mean → Poisson
+</span><span id="__span-8-15"><a id="__codelineno-8-15" name="__codelineno-8-15" href="#__codelineno-8-15"></a>        └── Var &gt; Mean (overdispersion)
+</span><span id="__span-8-16"><a id="__codelineno-8-16" name="__codelineno-8-16" href="#__codelineno-8-16"></a>            ├── Quick fix → QuasiPoisson
+</span><span id="__span-8-17"><a id="__codelineno-8-17" name="__codelineno-8-17" href="#__codelineno-8-17"></a>            └── Better model → Negative Binomial
 </span></code></pre></div>
 <h3 id="92-key-formulas-summary">9.2 Key Formulas Summary<a class="headerlink" href="#92-key-formulas-summary" title="Permanent link">&para;</a></h3>
 <table>

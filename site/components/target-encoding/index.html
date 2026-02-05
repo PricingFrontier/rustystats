@@ -16,7 +16,7 @@
         <link rel="prev" href="../splines/">
       
       
-        <link rel="next" href="../diagnostics/">
+        <link rel="next" href="../constraints/">
       
       
         
@@ -328,7 +328,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../api/formula-api/" class="md-tabs__link">
+        <a href="../../api/dict-api/" class="md-tabs__link">
           
   
   
@@ -1571,10 +1571,155 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#frequency-encoding" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Frequency Encoding
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Frequency Encoding">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#when-to-use" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When to Use
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#usage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Usage
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Usage">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#dict-api" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dict API
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#how-it-works" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How It Works
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#comparison-target-vs-frequency-encoding" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Comparison: Target vs Frequency Encoding
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#unseen-categories" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Unseen Categories
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
     </ul>
   
 </nav>
       
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../constraints/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Coefficient Constraints
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../regularization/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Regularization
+  
+
+    
+  </span>
+  
+  
+
+      </a>
     </li>
   
 
@@ -1704,14 +1849,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../../api/formula-api/" class="md-nav__link">
+      <a href="../../api/dict-api/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Formula API
+    Dict API
   
 
     
@@ -1768,6 +1913,34 @@
     
   
     Diagnostics
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/serialization/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Model Serialization
   
 
     
@@ -2510,6 +2683,95 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#frequency-encoding" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Frequency Encoding
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Frequency Encoding">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#when-to-use" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When to Use
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#usage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Usage
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Usage">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#dict-api" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dict API
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#how-it-works" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How It Works
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#comparison-target-vs-frequency-encoding" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Comparison: Target vs Frequency Encoding
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#unseen-categories" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Unseen Categories
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -2865,6 +3127,93 @@
 </tr>
 </tbody>
 </table>
+<hr />
+<h2 id="frequency-encoding">Frequency Encoding<a class="headerlink" href="#frequency-encoding" title="Permanent link">&para;</a></h2>
+<p>Frequency encoding converts categorical values to their relative frequency in the training data.</p>
+<h3 id="when-to-use">When to Use<a class="headerlink" href="#when-to-use" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Simpler alternative</strong> to target encoding when target leakage is a concern</li>
+<li><strong>Baseline features</strong> that capture category prevalence</li>
+<li><strong>Interaction encoding</strong> for category combinations</li>
+</ul>
+<h3 id="usage">Usage<a class="headerlink" href="#usage" title="Permanent link">&para;</a></h3>
+<h4 id="dict-api">Dict API<a class="headerlink" href="#dict-api" title="Permanent link">&para;</a></h4>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="n">result</span> <span class="o">=</span> <span class="n">rs</span><span class="o">.</span><span class="n">glm_dict</span><span class="p">(</span>
+</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>    <span class="n">response</span><span class="o">=</span><span class="s2">&quot;ClaimNb&quot;</span><span class="p">,</span>
+</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>    <span class="n">terms</span><span class="o">=</span><span class="p">{</span>
+</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a>        <span class="s2">&quot;Age&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;linear&quot;</span><span class="p">},</span>
+</span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a>    <span class="p">},</span>
+</span><span id="__span-11-6"><a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a>    <span class="n">interactions</span><span class="o">=</span><span class="p">[</span>
+</span><span id="__span-11-7"><a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a>        <span class="p">{</span>
+</span><span id="__span-11-8"><a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a>            <span class="s2">&quot;Brand&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;categorical&quot;</span><span class="p">},</span>
+</span><span id="__span-11-9"><a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a>            <span class="s2">&quot;Region&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;categorical&quot;</span><span class="p">},</span>
+</span><span id="__span-11-10"><a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a>            <span class="s2">&quot;frequency_encoding&quot;</span><span class="p">:</span> <span class="kc">True</span><span class="p">,</span>  <span class="c1"># FE(Brand:Region)</span>
+</span><span id="__span-11-11"><a id="__codelineno-11-11" name="__codelineno-11-11" href="#__codelineno-11-11"></a>        <span class="p">},</span>
+</span><span id="__span-11-12"><a id="__codelineno-11-12" name="__codelineno-11-12" href="#__codelineno-11-12"></a>    <span class="p">],</span>
+</span><span id="__span-11-13"><a id="__codelineno-11-13" name="__codelineno-11-13" href="#__codelineno-11-13"></a>    <span class="n">data</span><span class="o">=</span><span class="n">data</span><span class="p">,</span>
+</span><span id="__span-11-14"><a id="__codelineno-11-14" name="__codelineno-11-14" href="#__codelineno-11-14"></a>    <span class="n">family</span><span class="o">=</span><span class="s2">&quot;poisson&quot;</span><span class="p">,</span>
+</span><span id="__span-11-15"><a id="__codelineno-11-15" name="__codelineno-11-15" href="#__codelineno-11-15"></a>    <span class="n">offset</span><span class="o">=</span><span class="s2">&quot;Exposure&quot;</span><span class="p">,</span>
+</span><span id="__span-11-16"><a id="__codelineno-11-16" name="__codelineno-11-16" href="#__codelineno-11-16"></a><span class="p">)</span><span class="o">.</span><span class="n">fit</span><span class="p">()</span>
+</span></code></pre></div>
+<h3 id="how-it-works">How It Works<a class="headerlink" href="#how-it-works" title="Permanent link">&para;</a></h3>
+<p>Each category (or combination) is replaced by its frequency:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>Category    Count    Frequency
+</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>--------    -----    ---------
+</span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>Toyota      5000     0.50
+</span><span id="__span-12-4"><a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a>Ford        3000     0.30
+</span><span id="__span-12-5"><a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a>BMW         2000     0.20
+</span></code></pre></div>
+<p>For interactions, the combination frequency is used:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>Brand:Region    Count    Frequency
+</span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>------------    -----    ---------
+</span><span id="__span-13-3"><a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a>Toyota:North    2000     0.20
+</span><span id="__span-13-4"><a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a>Toyota:South    3000     0.30
+</span><span id="__span-13-5"><a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a>Ford:North      1500     0.15
+</span><span id="__span-13-6"><a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a>...
+</span></code></pre></div>
+<h3 id="comparison-target-vs-frequency-encoding">Comparison: Target vs Frequency Encoding<a class="headerlink" href="#comparison-target-vs-frequency-encoding" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Aspect</th>
+<th>Target Encoding</th>
+<th>Frequency Encoding</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Uses target</td>
+<td>Yes</td>
+<td>No</td>
+</tr>
+<tr>
+<td>Leakage risk</td>
+<td>Low (with ordering)</td>
+<td>None</td>
+</tr>
+<tr>
+<td>Predictive power</td>
+<td>Higher</td>
+<td>Lower</td>
+</tr>
+<tr>
+<td>Interpretability</td>
+<td>Target rate proxy</td>
+<td>Prevalence</td>
+</tr>
+<tr>
+<td>Use case</td>
+<td>Primary feature</td>
+<td>Baseline/interaction</td>
+</tr>
+</tbody>
+</table>
+<h3 id="unseen-categories">Unseen Categories<a class="headerlink" href="#unseen-categories" title="Permanent link">&para;</a></h3>
+<p>Unseen categories in new data get frequency = 0 (or a small epsilon).</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="c1"># Training: Toyota, Ford, BMW</span>
+</span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="c1"># New data: Tesla (unseen)</span>
+</span><span id="__span-14-3"><a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="c1"># Tesla gets frequency ≈ 0</span>
+</span></code></pre></div>
 
 
 

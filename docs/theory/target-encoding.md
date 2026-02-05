@@ -387,5 +387,5 @@ result = rs.glm(
 
 ## Next Steps
 
-- [Formula API](../api/formula-api.md) — TE() syntax in formulas
+- [Dict API](../api/dict-api.md) — Target encoding in the Dict API
 - [Code Walkthrough](../rust-guide/code-walkthrough.md) — Implementation details

@@ -83,12 +83,15 @@ nav:
     - Design Matrix: components/design-matrix.md
     - Splines: components/splines.md
     - Target Encoding: components/target-encoding.md
+    - Coefficient Constraints: components/constraints.md
+    - Regularization: components/regularization.md
     - Diagnostics: components/diagnostics.md
     - Interaction Detection: components/interaction-detection.md
   - Python API:
-    - Formula API: api/formula-api.md
+    - Dict API: api/dict-api.md
     - Results Object: api/results.md
     - Diagnostics: api/diagnostics.md
+    - Model Serialization: api/serialization.md
   - Rust Guide:
     - Rust Fundamentals: rust-guide/fundamentals.md
     - Code Walkthrough: rust-guide/code-walkthrough.md

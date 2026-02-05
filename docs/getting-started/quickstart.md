@@ -142,4 +142,4 @@ result_nb = rs.glm("claims ~ age + C(region)", data, family="negbinomial", theta
 
 - [GLM Theory](../theory/glm-intro.md) - Understand the mathematics
 - [Architecture](../architecture/overview.md) - How the code is organized
-- [Formula API](../api/formula-api.md) - Complete API reference
+- [Dict API](../api/dict-api.md) - Complete API reference

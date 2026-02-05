@@ -64,7 +64,6 @@
 - **Splines** - B-splines and natural splines with auto-tuned smoothing and monotonicity
 - **Target Encoding** - Ordered target encoding for high-cardinality categoricals
 - **Regularisation** - Ridge, Lasso, and Elastic Net via coordinate descent
-- **Serialization** - Save/load fitted models with `to_bytes()` / `from_bytes()`
 - **Validation** - Design matrix checks with fix suggestions before fitting
 - **Complete** - 8 families, robust SEs, full diagnostics, VIF, partial dependence
 - **Minimal** - Only `numpy` and `polars` required
@@ -121,7 +120,7 @@ print(result.summary())
 
 ## Dict-Based API
 
-The primary API for programmatic model building. Ideal for automated workflows and agentic systems.
+API built for programmatic model building.
 
 ```python
 result = rs.glm_dict(
@@ -469,21 +468,11 @@ result = rs.glm_dict(
     data=data, family="gaussian",
 ).fit()
 
-# Direct basis computation
-import numpy as np
-x = np.linspace(0, 10, 100)
-basis = rs.bs(x)        # Penalized smooth (default k=10)
-basis = rs.bs(x, df=5)  # Fixed 5 df (4 basis columns)
-basis = rs.ns(x, df=5)  # Natural spline, fixed 5 df
 ```
 
 **When to use each spline type:**
 - **B-splines (`bs`)**: Standard choice, more flexible at boundaries, supports monotonicity
-- **Natural splines (`ns`)**: Better extrapolation, linear beyond boundaries (recommended for actuarial work)
-
-**When to use `df` vs default:**
-- **Default (no params)**: Auto-tuned smoothing via GCV - best for exploratory analysis
-- **Explicit `df`**: Fixed complexity - use when you know the exact flexibility needed
+- **Natural splines (`ns`)**: Better extrapolation, linear beyond boundaries
 
 ---
 
@@ -520,24 +509,7 @@ result = rs.glm_dict(
     data=data, family="gaussian",
 ).fit()
 
-# Direct basis computation
-basis = rs.bs(x, monotonicity='increasing')   # Monotonically increasing
-basis = rs.bs(x, df=5, monotonicity='decreasing')  # Fixed df, decreasing
 ```
-
-**Key properties:**
-- Uses I-spline (integrated spline) basis internally
-- All basis values in [0, 1]
-- With non-negative coefficients, fitted curve is guaranteed monotonic
-- Prevents implausible "wiggles" that can occur with unconstrained splines
-
-**When to use:**
-| Use Case | Term Spec |
-|----------|-----------|
-| Age → claim frequency | `{"type": "bs", "monotonicity": "increasing"}` |
-| Vehicle age → value | `{"type": "bs", "monotonicity": "decreasing"}` |
-| Credit score → risk | `{"type": "bs", "df": 5, "monotonicity": "decreasing"}` |
-
 ---
 
 ## Coefficient Constraints
@@ -617,27 +589,6 @@ result_qb = rs.glm_dict(
 ).fit()
 ```
 
----
-
-## Negative Binomial for Overdispersed Counts
-
-```python
-# Automatic θ estimation (default when theta not supplied)
-result = rs.glm_dict(
-    response="ClaimNb",
-    terms={"Age": {"type": "linear"}, "Region": {"type": "categorical"}},
-    data=data, family="negbinomial", offset="Exposure",
-).fit()
-print(result.family)  # "NegativeBinomial(theta=2.1234)"
-
-# Fixed θ value
-result = rs.glm_dict(
-    response="ClaimNb",
-    terms={"Age": {"type": "linear"}, "Region": {"type": "categorical"}},
-    data=data, family="negbinomial", theta=1.0, offset="Exposure",
-).fit()
-
-```
 ---
 
 ## Target Encoding for High-Cardinality Categoricals
@@ -822,60 +773,6 @@ The comparison includes:
 - **Improvement metrics**: `loss_improvement_pct`, `gini_improvement`, `auc_improvement`
 - **Decile analysis**: Data sorted by model/base ratio, showing where the new model diverges
 - **Calibration comparison**: Count of deciles where each model has better A/E
-
----
-
-## RustyStats vs Statsmodels
-
-| Feature | RustyStats | Statsmodels |
-|---------|------------|-------------|
-| **Dict-Based API** | ✅ Programmatic model building | ❌ Formula strings only |
-| **Parallel IRLS Solver** | ✅ Multi-threaded | ❌ Single-threaded only |
-| **Native Polars Support** | ✅ Polars only | ❌ Pandas only |
-| **Built-in Lasso/Elastic Net** | ✅ Fast coordinate descent | ⚠️ Limited |
-| **Relativities Table** | ✅ `result.relativities()` | ❌ Must compute manually |
-| **Robust Standard Errors** | ✅ HC0, HC1, HC2, HC3 | ✅ HC0-HC3 |
-
----
-
-## Project Structure
-
-```
-rustystats/
-├── Cargo.toml                    # Workspace config
-├── pyproject.toml                # Python package config
-│
-├── crates/
-│   ├── rustystats-core/          # Pure Rust GLM library
-│   │   └── src/
-│   │       ├── families/         # Gaussian, Poisson, Binomial, Gamma, Tweedie, Quasi, NegativeBinomial
-│   │       ├── links/            # Identity, Log, Logit
-│   │       ├── solvers/          # IRLS, coordinate descent
-│   │       ├── inference/        # P-values, CIs, robust SE (HC0-HC3)
-│   │       ├── interactions/     # Lazy interaction term computation
-│   │       ├── splines/          # B-spline and natural spline basis functions
-│   │       ├── design_matrix/    # Categorical encoding, interaction matrices
-│   │       ├── formula/          # R-style formula parsing
-│   │       ├── target_encoding/  # Ordered target statistics
-│   │       └── diagnostics/      # Residuals, dispersion, AIC/BIC, calibration, loss
-│   │
-│   └── rustystats/               # Python bindings (PyO3)
-│       └── src/lib.rs
-│
-├── python/rustystats/            # Python package
-│   ├── __init__.py               # Main exports
-│   ├── formula.py                # Formula API with DataFrame support
-│   ├── interactions.py           # Interaction terms, I() expressions, design matrix
-│   ├── splines.py                # bs() and ns() spline basis functions
-│   ├── target_encoding.py        # Target encoding (exposure-aware)
-│   ├── diagnostics.py            # Model diagnostics with JSON export
-│   └── families.py               # Family wrappers
-│
-├── examples/
-│   └── frequency.ipynb           # Claim frequency example
-│
-└── tests/python/                 # Python test suite
-```
 
 ---
 

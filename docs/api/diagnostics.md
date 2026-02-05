@@ -391,3 +391,133 @@ for w in diagnostics.warnings:
 # Export for LLM analysis
 json_output = diagnostics.to_json()
 ```
+
+---
+
+## Base Model Comparison
+
+Compare your new model against predictions from an existing model (e.g., current production model).
+
+### Usage
+
+```python
+# Add base model predictions to your data
+data = data.with_columns(pl.lit(old_model_predictions).alias("base_pred"))
+
+# Run diagnostics with base_predictions
+diagnostics = result.diagnostics(
+    data=data,
+    categorical_factors=["Region", "VehBrand"],
+    continuous_factors=["Age", "VehPower"],
+    base_predictions="base_pred",  # Column name with base model predictions
+)
+```
+
+### BaseModelComparison
+
+Access via `diagnostics.base_predictions_comparison`:
+
+```python
+bc = diagnostics.base_predictions_comparison
+
+# Side-by-side metrics
+print(f"Model loss: {bc.model_metrics.loss}")
+print(f"Base loss: {bc.base_metrics.loss}")
+print(f"Model Gini: {bc.model_metrics.gini}")
+print(f"Base Gini: {bc.base_metrics.gini}")
+
+# Improvement metrics (positive = new model is better)
+print(f"Loss improvement: {bc.loss_improvement_pct}%")
+print(f"Gini improvement: {bc.gini_improvement}")
+print(f"AUC improvement: {bc.auc_improvement}")
+```
+
+### Attributes
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `model_metrics` | `ModelMetrics` | Metrics for new model |
+| `base_metrics` | `ModelMetrics` | Metrics for base model |
+| `loss_improvement_pct` | float | % improvement in loss (positive = better) |
+| `gini_improvement` | float | Absolute Gini improvement |
+| `auc_improvement` | float | Absolute AUC improvement |
+| `model_vs_base_deciles` | list | Decile analysis by model/base ratio |
+
+### ModelMetrics
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `loss` | float | Mean deviance loss |
+| `gini` | float | Gini coefficient |
+| `auc` | float | Area under ROC curve |
+| `ae_ratio` | float | Actual/Expected ratio |
+
+### Decile Analysis
+
+Data sorted by model/base prediction ratio, showing where the new model diverges:
+
+```python
+for d in bc.model_vs_base_deciles:
+    print(f"Decile {d.decile}: actual={d.actual:.4f}, "
+          f"model={d.model_predicted:.4f}, base={d.base_predicted:.4f}")
+```
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `decile` | int | Decile number (1-10) |
+| `actual` | float | Actual response rate |
+| `model_predicted` | float | New model prediction |
+| `base_predicted` | float | Base model prediction |
+| `exposure` | float | Total exposure in decile |
+| `model_ae` | float | New model A/E |
+| `base_ae` | float | Base model A/E |
+
+### Complete Example
+
+```python
+import rustystats as rs
+import polars as pl
+
+# Load data with production model predictions
+data = pl.read_parquet("insurance.parquet")
+data = data.with_columns(
+    pl.col("production_model_pred").alias("base_pred")
+)
+
+# Fit new model
+result = rs.glm_dict(
+    response="ClaimNb",
+    terms={
+        "Age": {"type": "bs"},
+        "Region": {"type": "categorical"},
+        "Brand": {"type": "target_encoding"},
+    },
+    data=data,
+    family="poisson",
+    offset="Exposure",
+).fit()
+
+# Compare against production model
+diagnostics = result.diagnostics(
+    data=data,
+    categorical_factors=["Region"],
+    continuous_factors=["Age"],
+    base_predictions="base_pred",
+)
+
+bc = diagnostics.base_predictions_comparison
+
+print("=== Model Comparison ===")
+print(f"Loss:  New={bc.model_metrics.loss:.4f}, Base={bc.base_metrics.loss:.4f}")
+print(f"       Improvement: {bc.loss_improvement_pct:+.2f}%")
+print(f"Gini:  New={bc.model_metrics.gini:.3f}, Base={bc.base_metrics.gini:.3f}")
+print(f"       Improvement: {bc.gini_improvement:+.3f}")
+print(f"A/E:   New={bc.model_metrics.ae_ratio:.3f}, Base={bc.base_metrics.ae_ratio:.3f}")
+
+# Where does new model differ most?
+print("\n=== Decile Analysis (sorted by model/base ratio) ===")
+for d in bc.model_vs_base_deciles:
+    ratio = d.model_predicted / d.base_predicted if d.base_predicted > 0 else float('inf')
+    better = "✓" if abs(d.model_ae - 1) < abs(d.base_ae - 1) else ""
+    print(f"D{d.decile:2d}: ratio={ratio:.2f}, model_ae={d.model_ae:.2f}, base_ae={d.base_ae:.2f} {better}")
+```

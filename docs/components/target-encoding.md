@@ -324,3 +324,81 @@ mod tests {
 | Target (naive) | 1 | High | Medium |
 | Target (CatBoost) | 1 | Low | Medium |
 | Ordinal | 1 | None | Low |
+
+---
+
+## Frequency Encoding
+
+Frequency encoding converts categorical values to their relative frequency in the training data.
+
+### When to Use
+
+- **Simpler alternative** to target encoding when target leakage is a concern
+- **Baseline features** that capture category prevalence
+- **Interaction encoding** for category combinations
+
+### Usage
+
+#### Dict API
+
+```python
+result = rs.glm_dict(
+    response="ClaimNb",
+    terms={
+        "Age": {"type": "linear"},
+    },
+    interactions=[
+        {
+            "Brand": {"type": "categorical"},
+            "Region": {"type": "categorical"},
+            "frequency_encoding": True,  # FE(Brand:Region)
+        },
+    ],
+    data=data,
+    family="poisson",
+    offset="Exposure",
+).fit()
+```
+
+### How It Works
+
+Each category (or combination) is replaced by its frequency:
+
+```
+Category    Count    Frequency
+--------    -----    ---------
+Toyota      5000     0.50
+Ford        3000     0.30
+BMW         2000     0.20
+```
+
+For interactions, the combination frequency is used:
+
+```
+Brand:Region    Count    Frequency
+------------    -----    ---------
+Toyota:North    2000     0.20
+Toyota:South    3000     0.30
+Ford:North      1500     0.15
+...
+```
+
+### Comparison: Target vs Frequency Encoding
+
+| Aspect | Target Encoding | Frequency Encoding |
+|--------|-----------------|-------------------|
+| Uses target | Yes | No |
+| Leakage risk | Low (with ordering) | None |
+| Predictive power | Higher | Lower |
+| Interpretability | Target rate proxy | Prevalence |
+| Use case | Primary feature | Baseline/interaction |
+
+### Unseen Categories
+
+Unseen categories in new data get frequency = 0 (or a small epsilon).
+
+```python
+# Training: Toyota, Ford, BMW
+# New data: Tesla (unseen)
+# Tesla gets frequency ≈ 0
+```
