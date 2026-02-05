@@ -26,8 +26,6 @@
 | 250K | 253 MB | 1,796 MB | **7.1x** |
 | 500K | 780 MB | 3,590 MB | **4.6x** |
 
-*Memory advantage grows with data size — at 500K rows, RustyStats uses ~4.6x less RAM.*
-
 <details>
 <summary>Full benchmark details</summary>
 
@@ -207,49 +205,6 @@ interactions=[
 | (none) | Standard product terms (cat×cat, cat×cont, etc.) |
 | `target_encoding: True` | Combined TE encoding: `TE(var1:var2)` |
 | `frequency_encoding: True` | Combined FE encoding: `FE(var1:var2)` |
-
----
-
-## Formula Syntax (Alternative)
-
-For those who prefer R-style formula strings:
-
-```python
-result = rs.glm("ClaimCount ~ VehAge + C(Region) + TE(Brand)", data, family="poisson").fit()
-```
-
-<details>
-<summary>Formula syntax reference</summary>
-
-```python
-# Main effects
-"y ~ x1 + x2 + C(category)"
-
-# Single-level categorical indicators
-"y ~ C(Region, level='Paris')"              # 0/1 indicator for Paris only
-
-# Interactions
-"y ~ x1*x2"              # x1 + x2 + x1:x2
-"y ~ C(area):age"        # Area-specific age effects
-
-# Splines (non-linear effects)
-"y ~ bs(age)"            # Penalized smooth (auto-tuned)
-"y ~ bs(age, df=5)"      # Fixed 5 degrees of freedom
-"y ~ ns(income)"         # Natural spline (auto-tuned)
-"y ~ bs(age, monotonicity='increasing')"   # Monotonic
-
-# Identity terms (polynomial/arithmetic expressions)
-"y ~ I(age ** 2)"        # Polynomial terms
-
-# Coefficient constraints
-"y ~ pos(age)"           # Coefficient ≥ 0
-"y ~ neg(risk)"          # Coefficient ≤ 0
-
-# Target encoding (high-cardinality categoricals)
-"y ~ TE(brand) + TE(model)"
-```
-
-</details>
 
 ---
 
@@ -554,40 +509,6 @@ result = rs.glm_dict(
 |------------|-----------|--------|
 | β ≥ 0 | `"monotonicity": "increasing"` | Positive effect |
 | β ≤ 0 | `"monotonicity": "decreasing"` | Negative effect |
-
----
-
-## Quasi-Families for Overdispersion
-
-```python
-# Fit a standard Poisson model first
-result_poisson = rs.glm_dict(
-    response="ClaimNb",
-    terms={"Age": {"type": "linear"}, "Region": {"type": "categorical"}},
-    data=data, family="poisson", offset="Exposure",
-).fit()
-
-# Check for overdispersion: Pearson χ² / df >> 1 indicates overdispersion
-dispersion_ratio = result_poisson.pearson_chi2() / result_poisson.df_resid
-print(f"Dispersion ratio: {dispersion_ratio:.2f}")  # If >> 1, use quasi-family
-
-# Fit QuasiPoisson if overdispersed
-result_quasi = rs.glm_dict(
-    response="ClaimNb",
-    terms={"Age": {"type": "linear"}, "Region": {"type": "categorical"}},
-    data=data, family="quasipoisson", offset="Exposure",
-).fit()
-
-# Coefficients are IDENTICAL to Poisson, but standard errors are inflated by √φ
-print(f"Estimated dispersion (φ): {result_quasi.scale():.3f}")
-
-# For binary data with overdispersion
-result_qb = rs.glm_dict(
-    response="Binary",
-    terms={"x1": {"type": "linear"}, "x2": {"type": "linear"}},
-    data=data, family="quasibinomial",
-).fit()
-```
 
 ---
 
