@@ -4,60 +4,11 @@
 
 **Codebase Documentation**: [pricingfrontier.github.io/rustystats/](https://pricingfrontier.github.io/rustystats/)
 
-## Performance Benchmarks
-
-**RustyStats vs Statsmodels** — Synthetic data, 101 features (10 continuous + 10 categorical with 10 levels each).
-
-| Family | 10K rows | 250K rows | 500K rows |
-|--------|----------|-----------|-----------|
-| Gaussian | **18.3x** | **6.4x** | **5.1x** |
-| Poisson | **19.6x** | **7.1x** | **5.2x** |
-| Binomial | **23.5x** | **7.1x** | **5.4x** |
-| Gamma | **9.0x** | **13.4x** | **8.9x** |
-| NegBinomial | **22.5x** | **7.2x** | **5.0x** |
-
-**Average speedup: 10.9x** (range: 5.0x – 23.5x)
-
-### Memory Usage
-
-| Rows | RustyStats | Statsmodels | Reduction |
-|------|------------|-------------|-----------|
-| 10K | 4 MB | 72 MB | **18x** |
-| 250K | 253 MB | 1,796 MB | **7.1x** |
-| 500K | 780 MB | 3,590 MB | **4.6x** |
-
-<details>
-<summary>Full benchmark details</summary>
-
-| Family | Rows | RustyStats | Statsmodels | Speedup |
-|--------|------|------------|-------------|--------|
-| Gaussian | 10,000 | 0.085s | 1.559s | **18.3x** |
-| Gaussian | 250,000 | 1.769s | 11.363s | **6.4x** |
-| Gaussian | 500,000 | 3.399s | 17.386s | **5.1x** |
-| Poisson | 10,000 | 0.137s | 2.692s | **19.6x** |
-| Poisson | 250,000 | 2.128s | 15.072s | **7.1x** |
-| Poisson | 500,000 | 4.581s | 23.693s | **5.2x** |
-| Binomial | 10,000 | 0.093s | 2.189s | **23.5x** |
-| Binomial | 250,000 | 1.851s | 13.155s | **7.1x** |
-| Binomial | 500,000 | 3.842s | 20.862s | **5.4x** |
-| Gamma | 10,000 | 0.486s | 4.353s | **9.0x** |
-| Gamma | 250,000 | 2.377s | 31.885s | **13.4x** |
-| Gamma | 500,000 | 5.202s | 46.167s | **8.9x** |
-| NegBinomial | 10,000 | 0.141s | 3.177s | **22.5x** |
-| NegBinomial | 250,000 | 2.128s | 15.278s | **7.2x** |
-| NegBinomial | 500,000 | 4.900s | 24.331s | **5.0x** |
-
-*Times are median of 3 runs. Benchmark scripts in `benchmarks/`.*
-
-</details>
-
----
-
 ## Features
 
 - **Dict-First API** - Programmatic model building ideal for automated workflows and agents
-- **Fast** - Parallel Rust backend, 4-30x faster than statsmodels
-- **Memory Efficient** - 4x less RAM than statsmodels at scale
+- **Fast** - Parallel Rust backend, 5-24x faster than statsmodels
+- **Memory Efficient** - 5-18x less RAM than statsmodels at scale
 - **Stable** - Step-halving IRLS, warm starts for robust convergence
 - **Splines** - B-splines and natural splines with auto-tuned smoothing and monotonicity
 - **Target Encoding** - Ordered target encoding for high-cardinality categoricals
@@ -157,14 +108,6 @@ result = rs.glm_dict(
 | `target_encoding` | `prior_weight=1` | Regularized target encoding |
 | `expression` | `expr`, `monotonicity` (optional) | Arbitrary expression (like `I()`) |
 
-**Spline parameters:**
-- No parameters → penalized smooth with automatic tuning (k=10)
-- `df=5` → fixed 5 degrees of freedom
-- `k=15` → penalized smooth with 15 basis functions
-- `monotonicity="increasing"` or `"decreasing"` → constrained effect (bs only)
-
-Add `"monotonicity": "increasing"` or `"decreasing"` to `linear` or `expression` terms to constrain coefficient sign.
-
 ### Interactions
 
 Each interaction is a dict with variable specs. Use `include_main` to also add main effects.
@@ -199,7 +142,6 @@ interactions=[
 ]
 ```
 
-**Interaction types:**
 | Flag | Effect |
 |------|--------|
 | (none) | Standard product terms (cat×cat, cat×cont, etc.) |
@@ -208,80 +150,139 @@ interactions=[
 
 ---
 
-## Results Methods
+## Splines
 
 ```python
-# Coefficients & Inference
-result.params              # Coefficients
-result.fittedvalues        # Predicted means
-result.deviance            # Model deviance
-result.bse()               # Standard errors
-result.tvalues()           # z-statistics
-result.pvalues()           # P-values
-result.conf_int(alpha)     # Confidence intervals
+# Default: penalized smooth with automatic tuning via GCV
+result = rs.glm_dict(
+    response="ClaimNb",
+    terms={
+        "Age": {"type": "bs"},           # B-spline (auto-tuned)
+        "VehPower": {"type": "ns"},      # Natural spline (auto-tuned)
+        "Region": {"type": "categorical"},
+    },
+    data=data, family="poisson", offset="Exposure",
+).fit()
 
-# Robust Standard Errors (sandwich estimators)
-result.bse_robust("HC1")   # Robust SE (HC0, HC1, HC2, HC3)
-result.tvalues_robust()    # z-stats with robust SE
-result.pvalues_robust()    # P-values with robust SE
-result.conf_int_robust()   # Confidence intervals with robust SE
-result.cov_robust()        # Full robust covariance matrix
+# Fixed degrees of freedom (no penalty)
+result = rs.glm_dict(
+    response="ClaimNb",
+    terms={
+        "Age": {"type": "bs", "df": 5},       # Fixed 5 df
+        "VehPower": {"type": "ns", "df": 4},  # Fixed 4 df
+        "Region": {"type": "categorical"},
+    },
+    data=data, family="poisson", offset="Exposure",
+).fit()
+```
 
-# Diagnostics (statsmodels-compatible)
-result.resid_response()    # Raw residuals (y - μ)
-result.resid_pearson()     # Pearson residuals
-result.resid_deviance()    # Deviance residuals
-result.resid_working()     # Working residuals
-result.llf()               # Log-likelihood
-result.aic()               # Akaike Information Criterion
-result.bic()               # Bayesian Information Criterion
-result.null_deviance()     # Null model deviance
-result.pearson_chi2()      # Pearson chi-squared
-result.scale()             # Dispersion (deviance-based)
-result.scale_pearson()     # Dispersion (Pearson-based)
-result.family              # Family name
+**Spline parameters:**
+- No parameters → penalized smooth with automatic tuning (k=10)
+- `df=5` → fixed 5 degrees of freedom
+- `k=15` → penalized smooth with 15 basis functions
+- `monotonicity="increasing"` or `"decreasing"` → constrained effect (bs only)
+
+**When to use each type:**
+- **B-splines (`bs`)**: Standard choice, more flexible at boundaries, supports monotonicity
+- **Natural splines (`ns`)**: Better extrapolation, linear beyond boundaries
+
+### Monotonic Splines
+
+Constrain the fitted curve to be monotonically increasing or decreasing. Essential when business logic dictates a monotonic relationship.
+
+```python
+# Monotonically increasing effect (e.g., age → risk)
+result = rs.glm_dict(
+    response="ClaimNb",
+    terms={
+        "Age": {"type": "bs", "monotonicity": "increasing"},
+        "Region": {"type": "categorical"},
+    },
+    data=data, family="poisson", offset="Exposure",
+).fit()
+
+# Monotonically decreasing effect (e.g., vehicle value with age)
+result = rs.glm_dict(
+    response="ClaimAmt",
+    terms={"VehAge": {"type": "bs", "df": 4, "monotonicity": "decreasing"}},
+    data=data, family="gamma",
+).fit()
 ```
 
 ---
 
-## Model Serialization
+## Coefficient Constraints
 
-Save and load fitted models for later use:
+Constrain coefficient signs using `monotonicity` on linear and expression terms.
 
 ```python
-# Fit and save
+result = rs.glm_dict(
+    response="y",
+    terms={
+        "age": {"type": "linear", "monotonicity": "increasing"},  # β ≥ 0
+        "age2": {"type": "expression", "expr": "age ** 2", "monotonicity": "decreasing"},  # β ≤ 0
+        "income": {"type": "linear"},
+    },
+    data=data, family="poisson",
+).fit()
+```
+
+| Constraint | Term Spec | Effect |
+|------------|-----------|--------|
+| β ≥ 0 | `"monotonicity": "increasing"` | Positive effect |
+| β ≤ 0 | `"monotonicity": "decreasing"` | Negative effect |
+
+---
+
+## Target Encoding
+
+Ordered target encoding for high-cardinality categoricals.
+
+```python
+# Dict API
 result = rs.glm_dict(
     response="ClaimNb",
     terms={
-        "Age": {"type": "bs"},
-        "Region": {"type": "categorical"},
         "Brand": {"type": "target_encoding"},
+        "Model": {"type": "target_encoding", "prior_weight": 2.0},
+        "Age": {"type": "linear"},
+        "Region": {"type": "categorical"},
     },
-    data=data,
-    family="poisson",
-    offset="Exposure",
+    data=data, family="poisson", offset="Exposure",
 ).fit()
-model_bytes = result.to_bytes()
 
-with open("model.bin", "wb") as f:
-    f.write(model_bytes)
-
-# Load later
-with open("model.bin", "rb") as f:
-    loaded = rs.GLMModel.from_bytes(f.read())
-
-# Predict with loaded model
-predictions = loaded.predict(new_data)
+# Sklearn-style API
+encoder = rs.TargetEncoder(prior_weight=1.0, n_permutations=4)
+train_encoded = encoder.fit_transform(train_categories, train_target)
+test_encoded = encoder.transform(test_categories)
 ```
 
-**What's preserved:**
-- Coefficients and feature names
-- Categorical encoding levels
-- Spline knot positions
-- Target encoding statistics
-- Formula, family, link function
+**Key benefits:**
+- **No target leakage**: Ordered target statistics
+- **Regularization**: Prior weight controls shrinkage toward global mean
+- **High-cardinality**: Single column instead of thousands of dummies
+- **Exposure-aware**: For frequency models with `offset="Exposure"`, automatically uses claim rate (ClaimCount/Exposure) instead of raw counts
+- **Interactions**: Use `target_encoding: True` in interactions to encode variable combinations
 
-**Compact storage:** Only prediction-essential state is stored (~KB, not MB).
+---
+
+## Expression Terms
+
+```python
+result = rs.glm_dict(
+    response="y",
+    terms={
+        "age": {"type": "linear"},
+        "age2": {"type": "expression", "expr": "age ** 2"},
+        "age3": {"type": "expression", "expr": "age ** 3"},
+        "income_k": {"type": "expression", "expr": "income / 1000"},
+        "bmi": {"type": "expression", "expr": "weight / (height ** 2)"},
+    },
+    data=data, family="gaussian",
+).fit()
+```
+
+**Supported operations:** `+`, `-`, `*`, `/`, `**` (power)
 
 ---
 
@@ -318,281 +319,6 @@ result = rs.glm_dict(response="y", terms={"x1": {"type": "linear"}, "x2": {"type
 
 ---
 
-## Interaction Terms
-
-```python
-# Continuous × Continuous interaction (main effects + interaction)
-result = rs.glm_dict(
-    response="ClaimNb",
-    terms={},
-    interactions=[{
-        "Age": {"type": "linear"},
-        "VehPower": {"type": "linear"},
-        "include_main": True,  # Includes Age + VehPower + Age:VehPower
-    }],
-    data=data, family="poisson", offset="Exposure",
-).fit()
-
-# Categorical × Continuous interaction
-result = rs.glm_dict(
-    response="ClaimNb",
-    terms={},
-    interactions=[{
-        "Area": {"type": "categorical"},
-        "Age": {"type": "linear"},
-        "include_main": True,  # Each area level has different age effect
-    }],
-    data=data, family="poisson", offset="Exposure",
-).fit()
-
-# Pure interaction (no main effects added)
-result = rs.glm_dict(
-    response="ClaimNb",
-    terms={"Age": {"type": "linear"}},
-    interactions=[{
-        "Area": {"type": "categorical"},
-        "VehPower": {"type": "linear"},
-        "include_main": False,  # Area-specific VehPower slopes only
-    }],
-    data=data, family="poisson", offset="Exposure",
-).fit()
-
-# Target encoding interaction: TE(Brand:Region)
-# Creates single encoded column for brand×region combinations
-result = rs.glm_dict(
-    response="ClaimNb",
-    terms={"Age": {"type": "linear"}},
-    interactions=[{
-        "Brand": {"type": "categorical"},
-        "Region": {"type": "categorical"},
-        "target_encoding": True,
-        "prior_weight": 1.0,
-    }],
-    data=data, family="poisson", offset="Exposure",
-).fit()
-
-# Frequency encoding interaction: FE(Brand:Region)
-result = rs.glm_dict(
-    response="ClaimNb",
-    terms={"Age": {"type": "linear"}},
-    interactions=[{
-        "Brand": {"type": "categorical"},
-        "Region": {"type": "categorical"},
-        "frequency_encoding": True,
-    }],
-    data=data, family="poisson", offset="Exposure",
-).fit()
-```
-
----
-
-## Spline Basis Functions
-
-```python
-# Default: penalized smooth with automatic tuning via GCV
-result = rs.glm_dict(
-    response="ClaimNb",
-    terms={
-        "Age": {"type": "bs"},           # B-spline (auto-tuned)
-        "VehPower": {"type": "ns"},      # Natural spline (auto-tuned)
-        "Region": {"type": "categorical"},
-    },
-    data=data, family="poisson", offset="Exposure",
-).fit()
-
-# Fixed degrees of freedom (no penalty)
-result = rs.glm_dict(
-    response="ClaimNb",
-    terms={
-        "Age": {"type": "bs", "df": 5},       # Fixed 5 df
-        "VehPower": {"type": "ns", "df": 4},  # Fixed 4 df
-        "Region": {"type": "categorical"},
-    },
-    data=data, family="poisson", offset="Exposure",
-).fit()
-
-# Splines with interactions
-result = rs.glm_dict(
-    response="y",
-    terms={"income": {"type": "ns"}},
-    interactions=[{
-        "age": {"type": "bs", "df": 4},
-        "gender": {"type": "categorical"},
-        "include_main": True,
-    }],
-    data=data, family="gaussian",
-).fit()
-
-```
-
-**When to use each spline type:**
-- **B-splines (`bs`)**: Standard choice, more flexible at boundaries, supports monotonicity
-- **Natural splines (`ns`)**: Better extrapolation, linear beyond boundaries
-
----
-
-## Monotonic Splines
-
-Monotonic splines constrain the fitted curve to be monotonically increasing or decreasing. Essential when business logic dictates a monotonic relationship.
-
-```python
-# Monotonically increasing effect (e.g., age → risk)
-result = rs.glm_dict(
-    response="ClaimNb",
-    terms={
-        "Age": {"type": "bs", "monotonicity": "increasing"},
-        "Region": {"type": "categorical"},
-    },
-    data=data, family="poisson", offset="Exposure",
-).fit()
-
-# Monotonically decreasing effect (e.g., vehicle value with age)
-result = rs.glm_dict(
-    response="ClaimAmt",
-    terms={"VehAge": {"type": "bs", "df": 4, "monotonicity": "decreasing"}},
-    data=data, family="gamma",
-).fit()
-
-# Combine monotonic and unconstrained splines
-result = rs.glm_dict(
-    response="y",
-    terms={
-        "age": {"type": "bs", "monotonicity": "increasing"},
-        "income": {"type": "bs", "df": 4},
-        "experience": {"type": "ns"},
-    },
-    data=data, family="gaussian",
-).fit()
-
-```
----
-
-## Coefficient Constraints
-
-Constrain coefficient signs using `monotonicity` on linear and expression terms.
-
-```python
-# Constrain age coefficient to be positive
-result = rs.glm_dict(
-    response="y",
-    terms={
-        "age": {"type": "linear", "monotonicity": "increasing"},  # β ≥ 0
-        "income": {"type": "linear"},
-    },
-    data=data, family="poisson",
-).fit()
-
-# Force quadratic to bend downward (diminishing returns)
-result = rs.glm_dict(
-    response="y",
-    terms={
-        "age": {"type": "linear"},
-        "age2": {"type": "expression", "expr": "age ** 2", "monotonicity": "decreasing"},  # β ≤ 0
-    },
-    data=data, family="gaussian",
-).fit()
-
-# Combine with monotonic splines
-result = rs.glm_dict(
-    response="ClaimNb",
-    terms={
-        "VehAge": {"type": "bs", "monotonicity": "increasing"},
-        "BonusMalus": {"type": "linear", "monotonicity": "increasing"},
-        "DrivAge2": {"type": "expression", "expr": "DrivAge ** 2", "monotonicity": "decreasing"},
-    },
-    data=data, family="poisson", offset="Exposure",
-).fit()
-```
-
-**Supported patterns:**
-| Constraint | Term Spec | Effect |
-|------------|-----------|--------|
-| β ≥ 0 | `"monotonicity": "increasing"` | Positive effect |
-| β ≤ 0 | `"monotonicity": "decreasing"` | Negative effect |
-
----
-
-## Target Encoding for High-Cardinality Categoricals
-
-```python
-# Dict API - target_encoding type
-result = rs.glm_dict(
-    response="ClaimNb",
-    terms={
-        "Brand": {"type": "target_encoding"},
-        "Model": {"type": "target_encoding"},
-        "Age": {"type": "linear"},
-        "Region": {"type": "categorical"},
-    },
-    data=data, family="poisson", offset="Exposure",
-).fit()
-
-# With options
-result = rs.glm_dict(
-    response="y",
-    terms={
-        "brand": {"type": "target_encoding", "prior_weight": 2.0},
-        "age": {"type": "linear"},
-    },
-    data=data, family="gaussian",
-).fit()
-
-# Sklearn-style API
-encoder = rs.TargetEncoder(prior_weight=1.0, n_permutations=4)
-train_encoded = encoder.fit_transform(train_categories, train_target)
-test_encoded = encoder.transform(test_categories)
-
-# TE interaction: encode combinations of multiple categoricals
-result = rs.glm_dict(
-    response="ClaimNb",
-    terms={"Age": {"type": "linear"}},
-    interactions=[{
-        "Brand": {"type": "categorical"},
-        "Region": {"type": "categorical"},
-        "target_encoding": True,  # Creates TE(Brand:Region)
-    }],
-    data=data, family="poisson", offset="Exposure",
-).fit()
-```
-
-**Key benefits:**
-- **No target leakage**: Ordered target statistics
-- **Regularization**: Prior weight controls shrinkage toward global mean
-- **High-cardinality**: Single column instead of thousands of dummies
-- **Exposure-aware**: For frequency models with `offset="Exposure"`, target encoding automatically uses claim rate (ClaimCount/Exposure) instead of raw counts
-- **Interactions**: Use `target_encoding: True` in interactions to encode variable combinations
-
----
-
-## Expression Terms for Polynomials
-
-```python
-# Polynomial terms
-result = rs.glm_dict(
-    response="y",
-    terms={
-        "age": {"type": "linear"},
-        "age2": {"type": "expression", "expr": "age ** 2"},
-        "age3": {"type": "expression", "expr": "age ** 3"},
-    },
-    data=data, family="gaussian",
-).fit()
-
-# Arithmetic expressions
-result = rs.glm_dict(
-    response="y",
-    terms={
-        "income_k": {"type": "expression", "expr": "income / 1000"},
-        "bmi": {"type": "expression", "expr": "weight / (height ** 2)"},
-    },
-    data=data, family="gaussian",
-).fit()
-```
-
-**Supported operations:** `+`, `-`, `*`, `/`, `**` (power)
-
----
-
 ## Design Matrix Validation
 
 ```python
@@ -616,6 +342,42 @@ if not results['valid']:
 - Zero variance columns
 - NaN/Inf values
 - Highly correlated column pairs (>0.999)
+
+---
+
+## Results
+
+```python
+# Coefficients & Inference
+result.params              # Coefficients
+result.fittedvalues        # Predicted means
+result.deviance            # Model deviance
+result.bse()               # Standard errors
+result.tvalues()           # z-statistics
+result.pvalues()           # P-values
+result.conf_int(alpha)     # Confidence intervals
+
+# Robust Standard Errors (sandwich estimators)
+result.bse_robust("HC1")   # Robust SE (HC0, HC1, HC2, HC3)
+result.tvalues_robust()    # z-stats with robust SE
+result.pvalues_robust()    # P-values with robust SE
+result.conf_int_robust()   # Confidence intervals with robust SE
+result.cov_robust()        # Full robust covariance matrix
+
+# Diagnostics (statsmodels-compatible)
+result.resid_response()    # Raw residuals (y - μ)
+result.resid_pearson()     # Pearson residuals
+result.resid_deviance()    # Deviance residuals
+result.resid_working()     # Working residuals
+result.llf()               # Log-likelihood
+result.aic()               # Akaike Information Criterion
+result.bic()               # Bayesian Information Criterion
+result.null_deviance()     # Null model deviance
+result.pearson_chi2()      # Pearson chi-squared
+result.scale()             # Dispersion (deviance-based)
+result.scale_pearson()     # Dispersion (Pearson-based)
+result.family              # Family name
+```
 
 ---
 
@@ -694,6 +456,85 @@ The comparison includes:
 - **Improvement metrics**: `loss_improvement_pct`, `gini_improvement`, `auc_improvement`
 - **Decile analysis**: Data sorted by model/base ratio, showing where the new model diverges
 - **Calibration comparison**: Count of deciles where each model has better A/E
+
+---
+
+## Model Serialization
+
+Save and load fitted models for later use:
+
+```python
+# Fit and save
+model_bytes = result.to_bytes()
+
+with open("model.bin", "wb") as f:
+    f.write(model_bytes)
+
+# Load later
+with open("model.bin", "rb") as f:
+    loaded = rs.GLMModel.from_bytes(f.read())
+
+# Predict with loaded model
+predictions = loaded.predict(new_data)
+```
+
+**What's preserved:**
+- Coefficients and feature names
+- Categorical encoding levels
+- Spline knot positions
+- Target encoding statistics
+- Formula, family, link function
+
+**Compact storage:** Only prediction-essential state is stored (~KB, not MB).
+
+---
+
+## Performance Benchmarks
+
+**RustyStats vs Statsmodels** — Synthetic data, 101 features (10 continuous + 10 categorical with 10 levels each).
+
+| Family | 10K rows | 250K rows | 500K rows |
+|--------|----------|-----------|-----------|
+| Gaussian | **18.3x** | **6.4x** | **5.1x** |
+| Poisson | **19.6x** | **7.1x** | **5.2x** |
+| Binomial | **23.5x** | **7.1x** | **5.4x** |
+| Gamma | **9.0x** | **13.4x** | **8.9x** |
+| NegBinomial | **22.5x** | **7.2x** | **5.0x** |
+
+**Average speedup: 10.9x** (range: 5.0x – 23.5x)
+
+### Memory Usage
+
+| Rows | RustyStats | Statsmodels | Reduction |
+|------|------------|-------------|-----------|
+| 10K | 4 MB | 72 MB | **18x** |
+| 250K | 253 MB | 1,796 MB | **7.1x** |
+| 500K | 780 MB | 3,590 MB | **4.6x** |
+
+<details>
+<summary>Full benchmark details</summary>
+
+| Family | Rows | RustyStats | Statsmodels | Speedup |
+|--------|------|------------|-------------|--------|
+| Gaussian | 10,000 | 0.085s | 1.559s | **18.3x** |
+| Gaussian | 250,000 | 1.769s | 11.363s | **6.4x** |
+| Gaussian | 500,000 | 3.399s | 17.386s | **5.1x** |
+| Poisson | 10,000 | 0.137s | 2.692s | **19.6x** |
+| Poisson | 250,000 | 2.128s | 15.072s | **7.1x** |
+| Poisson | 500,000 | 4.581s | 23.693s | **5.2x** |
+| Binomial | 10,000 | 0.093s | 2.189s | **23.5x** |
+| Binomial | 250,000 | 1.851s | 13.155s | **7.1x** |
+| Binomial | 500,000 | 3.842s | 20.862s | **5.4x** |
+| Gamma | 10,000 | 0.486s | 4.353s | **9.0x** |
+| Gamma | 250,000 | 2.377s | 31.885s | **13.4x** |
+| Gamma | 500,000 | 5.202s | 46.167s | **8.9x** |
+| NegBinomial | 10,000 | 0.141s | 3.177s | **22.5x** |
+| NegBinomial | 250,000 | 2.128s | 15.278s | **7.2x** |
+| NegBinomial | 500,000 | 4.900s | 24.331s | **5.0x** |
+
+*Times are median of 3 runs. Benchmark scripts in `benchmarks/`.*
+
+</details>
 
 ---
 
