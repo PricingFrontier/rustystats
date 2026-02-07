@@ -439,6 +439,66 @@ pub fn null_deviance_with_offset(
     }
 }
 
+/// Compute null deviance using a Family trait object instead of family name string.
+///
+/// This is the trait-based replacement for `null_deviance_with_offset`.
+/// It uses `family.is_log_link_default()` for offset handling and
+/// `family.unit_deviance()` for deviance computation, eliminating all
+/// string-based dispatch.
+pub fn null_deviance_for_family(
+    y: &Array1<f64>,
+    family: &dyn crate::families::Family,
+    weights: Option<&Array1<f64>>,
+    offset: Option<&Array1<f64>>,
+) -> f64 {
+    let n = y.len();
+    
+    let mu_null: Array1<f64> = match offset {
+        Some(off) => {
+            if family.is_log_link_default() {
+                let exp_offset: Array1<f64> = off.mapv(|x| x.exp());
+                let sum_exp_offset: f64 = match weights {
+                    Some(w) => ndarray::Zip::from(&exp_offset).and(w).fold(0.0, |acc, &e, &wi| acc + e * wi),
+                    None => exp_offset.sum(),
+                };
+                let sum_y: f64 = match weights {
+                    Some(w) => ndarray::Zip::from(y).and(w).fold(0.0, |acc, &yi, &wi| acc + yi * wi),
+                    None => y.sum(),
+                };
+                let mean_rate = sum_y / sum_exp_offset;
+                exp_offset.mapv(|e| mean_rate * e)
+            } else {
+                let (sum_y, sum_w) = match weights {
+                    Some(w) => {
+                        let sy: f64 = ndarray::Zip::from(y).and(w).fold(0.0, |acc, &yi, &wi| acc + yi * wi);
+                        (sy, w.sum())
+                    }
+                    None => (y.sum(), n as f64),
+                };
+                Array1::from_elem(n, sum_y / sum_w)
+            }
+        }
+        None => {
+            let (sum_y, sum_w) = match weights {
+                Some(w) => {
+                    let sy: f64 = ndarray::Zip::from(y).and(w).fold(0.0, |acc, &yi, &wi| acc + yi * wi);
+                    (sy, w.sum())
+                }
+                None => (y.sum(), n as f64),
+            };
+            Array1::from_elem(n, sum_y / sum_w)
+        }
+    };
+    
+    // Use the family's own unit_deviance — no string dispatch needed
+    let unit_dev = family.unit_deviance(y, &mu_null);
+    
+    match weights {
+        Some(w) => (&unit_dev * w).sum(),
+        None => unit_dev.sum(),
+    }
+}
+
 // =============================================================================
 // Tests
 // =============================================================================

@@ -90,6 +90,10 @@ impl Family for GaussianFamily {
     fn is_valid_mu(&self, mu: &Array1<f64>) -> bool {
         mu.iter().all(|&x| x.is_finite())
     }
+    
+    fn log_likelihood(&self, y: &Array1<f64>, mu: &Array1<f64>, scale: f64, weights: Option<&Array1<f64>>) -> f64 {
+        crate::diagnostics::log_likelihood_gaussian(y, mu, scale, weights)
+    }
 }
 
 // =============================================================================

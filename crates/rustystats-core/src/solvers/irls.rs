@@ -1,3 +1,5 @@
+use super::initialize_mu_safe;
+
 // =============================================================================
 // IRLS: Iteratively Reweighted Least Squares
 // =============================================================================
@@ -53,7 +55,6 @@ use nalgebra::{DMatrix, DVector};
 
 use crate::constants::{
     CONVERGENCE_TOL, MIN_IRLS_WEIGHT, DEFAULT_MAX_ITER, ZERO_TOL,
-    MU_MIN_POSITIVE, MU_MIN_PROBABILITY, MU_MAX_PROBABILITY,
 };
 use crate::error::{RustyStatsError, Result};
 use crate::families::Family;
@@ -247,6 +248,28 @@ pub fn fit_glm_full(
     offset: Option<&Array1<f64>>,
     weights: Option<&Array1<f64>>,
 ) -> Result<IRLSResult> {
+    fit_glm_core(y, x, family, link, config, offset, weights, None, 0.0, false, Penalty::None)
+}
+
+/// Core IRLS fitting function with optional warm start and optional L2 penalty.
+///
+/// This is the unified implementation used by `fit_glm_full`, `fit_glm_warm_start`,
+/// and `fit_glm_regularized_warm`. When `init_coefficients` is provided, initialization
+/// starts from those coefficients instead of the family's default. When `l2_penalty > 0`,
+/// Ridge regularization is applied: (X'WX + λI)β = X'Wz.
+fn fit_glm_core(
+    y: &Array1<f64>,
+    x: &Array2<f64>,
+    family: &dyn Family,
+    link: &dyn Link,
+    config: &IRLSConfig,
+    offset: Option<&Array1<f64>>,
+    weights: Option<&Array1<f64>>,
+    init_coefficients: Option<&Array1<f64>>,
+    l2_penalty: f64,
+    penalize_intercept: bool,
+    penalty: Penalty,
+) -> Result<IRLSResult> {
     // -------------------------------------------------------------------------
     // Step 0: Validate inputs
     // -------------------------------------------------------------------------
@@ -309,20 +332,32 @@ pub fn fit_glm_full(
     };
 
     // -------------------------------------------------------------------------
-    // Step 1: Initialize μ using the family's method
+    // Step 1: Initialize μ (from coefficients if warm-starting, else from family)
     // -------------------------------------------------------------------------
-    let mut mu = family.initialize_mu(y);
-
-    // Ensure μ is valid (e.g., positive for Poisson, in (0,1) for Binomial)
-    if !family.is_valid_mu(&mu) {
-        // Try a safer initialization - warn user this is happening
-        eprintln!(
-            "Warning: Family '{}' initial μ values were invalid. Using safe fallback initialization. \
-            This may indicate unusual response values (e.g., all zeros, extreme values).",
-            family.name()
-        );
-        mu = initialize_mu_safe(y, family);
-    }
+    let mut mu = if let Some(init) = init_coefficients {
+        if init.len() != p {
+            return Err(RustyStatsError::DimensionMismatch(format!(
+                "init_coefficients has {} elements but X has {} columns",
+                init.len(), p
+            )));
+        }
+        let eta_init = x.dot(init) + &offset_vec;
+        let mu_init = link.inverse(&eta_init);
+        family.clamp_mu(&mu_init)
+    } else {
+        let mu_init = family.initialize_mu(y);
+        // Ensure μ is valid (e.g., positive for Poisson, in (0,1) for Binomial)
+        if !family.is_valid_mu(&mu_init) {
+            eprintln!(
+                "Warning: Family '{}' initial μ values were invalid. Using safe fallback initialization. \
+                This may indicate unusual response values (e.g., all zeros, extreme values).",
+                family.name()
+            );
+            initialize_mu_safe(y, family)
+        } else {
+            mu_init
+        }
+    };
 
     // -------------------------------------------------------------------------
     // Step 2: Initialize linear predictor η = g(μ)
@@ -435,7 +470,7 @@ pub fn fit_glm_full(
         // We're finding β that minimizes: Σ w_i (z_i - x_i'β)²
         // ---------------------------------------------------------------------
         let (mut new_coefficients, xtwinv) =
-            solve_weighted_least_squares(x, &working_response, &combined_weights)?;
+            solve_weighted_least_squares_penalized(x, &working_response, &combined_weights, l2_penalty, penalize_intercept)?;
 
         // Check for NaN in coefficients - indicates numerical instability
         if new_coefficients.iter().any(|&c| c.is_nan() || c.is_infinite()) {
@@ -477,7 +512,7 @@ pub fn fit_glm_full(
         let eta_base = x.dot(&new_coefficients);
         let mut eta_new = &eta_base + &offset_vec;
         let mut mu_new = link.inverse(&eta_new);
-        mu_new = clamp_mu(&mu_new, family);
+        mu_new = family.clamp_mu(&mu_new);
         let mut deviance_new = family.deviance(y, &mu_new, Some(&prior_weights_vec));
         
         // Step-halving: if deviance increased, try smaller steps
@@ -508,7 +543,7 @@ pub fn fit_glm_full(
                     let eta_blend = x.dot(&blended_coefficients);
                     eta_new = &eta_blend + &offset_vec;
                     mu_new = link.inverse(&eta_new);
-                    mu_new = clamp_mu(&mu_new, family);
+                    mu_new = family.clamp_mu(&mu_new);
                     deviance_new = family.deviance(y, &mu_new, Some(&prior_weights_vec));
                     
                     if deviance_new <= deviance_old * 1.0001 {
@@ -532,7 +567,7 @@ pub fn fit_glm_full(
                         .collect();
                     eta_new = &eta_blend + &offset_vec;
                     mu_new = link.inverse(&eta_new);
-                    mu_new = clamp_mu(&mu_new, family);
+                    mu_new = family.clamp_mu(&mu_new);
                     deviance_new = family.deviance(y, &mu_new, Some(&prior_weights_vec));
                     
                     if deviance_new <= deviance_old * 1.0001 {
@@ -611,7 +646,7 @@ pub fn fit_glm_full(
         .collect();
 
     // Try final coefficient extraction, but fall back to iteration coefficients if it produces NaN
-    let final_coefficients = match solve_weighted_least_squares(x, &compute_working_response(y, &final_mu, &eta_no_offset, link), &combined_final_weights) {
+    let final_coefficients = match solve_weighted_least_squares_penalized(x, &compute_working_response(y, &final_mu, &eta_no_offset, link), &combined_final_weights, l2_penalty, penalize_intercept) {
         Ok((coef, _)) if !coef.iter().any(|&c| c.is_nan() || c.is_infinite()) => {
             // For constrained problems, apply projection and check if it's better than stored best
             if has_constraints {
@@ -693,7 +728,7 @@ pub fn fit_glm_full(
         offset: offset_vec,
         y: y.to_owned(),  // Only clone at the end, needed for diagnostics
         family_name: family.name().to_string(),
-        penalty: Penalty::None,
+        penalty,
         design_matrix: None,  // Computed lazily in Python layer to avoid expensive copy
     })
 }
@@ -704,6 +739,9 @@ pub fn fit_glm_full(
 /// - Iterative theta estimation in Negative Binomial
 /// - Sequential model fitting with similar data
 /// - Continuation from a partially converged model
+///
+/// Delegates to `fit_glm_core` with the full IRLS implementation including
+/// true Hessian optimization and step-halving.
 ///
 /// # Arguments
 /// * `y` - Response variable (n × 1)
@@ -728,160 +766,7 @@ pub fn fit_glm_warm_start(
     weights: Option<&Array1<f64>>,
     init_coefficients: &Array1<f64>,
 ) -> Result<IRLSResult> {
-    let n = y.len();
-    let p = x.ncols();
-
-    if x.nrows() != n {
-        return Err(RustyStatsError::DimensionMismatch(format!(
-            "X has {} rows but y has {} elements", x.nrows(), n
-        )));
-    }
-
-    if init_coefficients.len() != p {
-        return Err(RustyStatsError::DimensionMismatch(format!(
-            "init_coefficients has {} elements but X has {} columns",
-            init_coefficients.len(), p
-        )));
-    }
-
-    let offset_vec = match offset {
-        Some(o) => o.clone(),
-        None => Array1::zeros(n),
-    };
-
-    let prior_weights_vec = match weights {
-        Some(w) => w.clone(),
-        None => Array1::ones(n),
-    };
-
-    // Initialize from provided coefficients instead of family method
-    let mut eta: Array1<f64> = x.dot(init_coefficients) + &offset_vec;
-    let mut mu = link.inverse(&eta);
-    
-    // Clamp mu to valid range for the family (using same function as fit_glm_full)
-    mu = clamp_mu(&mu, family);
-
-    let mut deviance = family.deviance(y, &mu, Some(&prior_weights_vec));
-    let mut deviance_old: f64;
-    let mut converged = false;
-    let mut iteration = 0;
-    let mut cov_unscaled = Array2::zeros((p, p));
-    let mut final_weights = Array1::zeros(n);
-    let mut iter_coefficients = init_coefficients.clone();  // Store coefficients from iteration
-
-    while iteration < config.max_iterations {
-        iteration += 1;
-
-        let variance = family.variance(&mu);
-        let link_deriv = link.derivative(&mu);
-
-        let min_weight = config.min_weight;
-        let results: Vec<(f64, f64, f64)> = (0..n)
-            .into_par_iter()
-            .map(|i| {
-                let v = variance[i];
-                let d = link_deriv[i];
-                let iw = (1.0 / (v * d * d)).max(min_weight).min(1e10);
-                let cw = prior_weights_vec[i] * iw;
-                let e = eta[i] - offset_vec[i];
-                let wr = e + (y[i] - mu[i]) * d;
-                (iw, cw, wr)
-            })
-            .collect();
-
-        let mut irls_weights = Array1::zeros(n);
-        let mut combined_weights = Array1::zeros(n);
-        let mut working_response = Array1::zeros(n);
-        for i in 0..n {
-            irls_weights[i] = results[i].0;
-            combined_weights[i] = results[i].1;
-            working_response[i] = results[i].2;
-        }
-
-        let (beta, covariance) = solve_weighted_least_squares(x, &working_response, &combined_weights)?;
-        
-        // Check for NaN in coefficients - indicates numerical instability
-        if beta.iter().any(|&c| c.is_nan() || c.is_infinite()) {
-            return Err(RustyStatsError::NumericalError(
-                "IRLS produced NaN or infinite coefficients. This usually indicates: \
-                 (1) severe multicollinearity in predictors, \
-                 (2) extreme scale differences between variables, or \
-                 (3) separation in binary response data. \
-                 Try standardizing continuous predictors or removing correlated terms.".to_string()
-            ));
-        }
-        
-        cov_unscaled = covariance;
-        final_weights = irls_weights;
-        iter_coefficients = beta.clone();  // Store coefficients from this iteration
-
-        eta = x.dot(&beta) + &offset_vec;
-        mu = link.inverse(&eta);
-        
-        // Clamp mu to valid range for the family
-        mu = clamp_mu(&mu, family);
-
-        deviance_old = deviance;
-        deviance = family.deviance(y, &mu, Some(&prior_weights_vec));
-
-        // Use same convergence criterion as fit_glm_full: relative change in deviance
-        let rel_change = if deviance_old.abs() > 1e-10 {
-            (deviance_old - deviance).abs() / deviance_old.abs()
-        } else {
-            (deviance_old - deviance).abs()
-        };
-
-        if rel_change < config.tolerance {
-            converged = true;
-            break;
-        }
-    }
-
-    let eta_no_offset: Array1<f64> = eta.iter().zip(offset_vec.iter())
-        .map(|(&e, &o)| e - o).collect();
-    
-    let combined_final_weights: Array1<f64> = prior_weights_vec.iter()
-        .zip(final_weights.iter())
-        .map(|(&pw, &iw)| pw * iw).collect();
-
-    // Try final coefficient extraction, but fall back to iteration coefficients if it produces NaN
-    let final_coefficients = match solve_weighted_least_squares(x, &compute_working_response(y, &mu, &eta_no_offset, link), &combined_final_weights) {
-        Ok((coef, _)) if !coef.iter().any(|&c| c.is_nan() || c.is_infinite()) => coef,
-        _ => {
-            // Final extraction failed or produced NaN - use coefficients from last iteration
-            eprintln!(
-                "Warning: Final coefficient extraction produced NaN/Inf. \
-                Using coefficients from last iteration instead. This may indicate numerical instability."
-            );
-            if iter_coefficients.iter().any(|&c| c.is_nan() || c.is_infinite()) {
-                return Err(RustyStatsError::NumericalError(
-                    "IRLS produced NaN or infinite coefficients. This usually indicates: \
-                     (1) severe multicollinearity in predictors, \
-                     (2) extreme scale differences between variables, or \
-                     (3) separation in binary response data. \
-                     Try standardizing continuous predictors or removing correlated terms.".to_string()
-                ));
-            }
-            iter_coefficients
-        }
-    };
-
-    Ok(IRLSResult {
-        coefficients: final_coefficients,
-        fitted_values: mu,
-        linear_predictor: eta,
-        deviance,
-        iterations: iteration,
-        converged,
-        covariance_unscaled: cov_unscaled,
-        irls_weights: final_weights,
-        prior_weights: prior_weights_vec,
-        offset: offset_vec,
-        y: y.to_owned(),
-        family_name: family.name().to_string(),
-        penalty: Penalty::None,
-        design_matrix: None,
-    })
+    fit_glm_core(y, x, family, link, config, offset, weights, Some(init_coefficients), 0.0, false, Penalty::None)
 }
 
 /// Fit a regularized GLM using Iteratively Reweighted Least Squares.
@@ -933,8 +818,9 @@ pub fn fit_glm_regularized(
 
 /// Fit a regularized GLM with optional warm start from initial coefficients.
 /// 
-/// This is the core Ridge fitting function with warm-start support for
-/// efficient regularization path fitting.
+/// Delegates to `fit_glm_core` with Ridge penalty parameters.
+/// This gives the regularized path the same benefits as the core solver
+/// (true Hessian optimization, step-halving, constraint-aware best-solution tracking).
 pub fn fit_glm_regularized_warm(
     y: &Array1<f64>,
     x: &Array2<f64>,
@@ -958,301 +844,39 @@ pub fn fit_glm_regularized_warm(
     let l2_penalty = reg_config.penalty.l2_penalty();
     let penalize_intercept = !reg_config.fit_intercept;
 
-    // -------------------------------------------------------------------------
-    // Step 0: Validate inputs (same as fit_glm_full)
-    // -------------------------------------------------------------------------
-    let n = y.len();
-    let p = x.ncols();
-
-    if x.nrows() != n {
-        return Err(RustyStatsError::DimensionMismatch(format!(
-            "X has {} rows but y has {} elements",
-            x.nrows(),
-            n
-        )));
-    }
-
-    if n == 0 {
-        return Err(RustyStatsError::EmptyInput("y is empty".to_string()));
-    }
-
-    if p == 0 {
-        return Err(RustyStatsError::EmptyInput("X has no columns".to_string()));
-    }
-
-    // -------------------------------------------------------------------------
-    // Step 0b: Set up offset and prior weights
-    // -------------------------------------------------------------------------
-    let offset_vec = match offset {
-        Some(o) => {
-            if o.len() != n {
-                return Err(RustyStatsError::DimensionMismatch(format!(
-                    "offset has {} elements but y has {}",
-                    o.len(),
-                    n
-                )));
-            }
-            o.clone()
-        }
-        None => Array1::zeros(n),
-    };
-
-    let prior_weights_vec = match weights {
-        Some(w) => {
-            if w.len() != n {
-                return Err(RustyStatsError::DimensionMismatch(format!(
-                    "weights has {} elements but y has {}",
-                    w.len(),
-                    n
-                )));
-            }
-            if w.iter().any(|&x| x < 0.0) {
-                return Err(RustyStatsError::InvalidValue(
-                    "weights must be non-negative".to_string(),
-                ));
-            }
-            w.clone()
-        }
-        None => Array1::ones(n),
-    };
-
-    // -------------------------------------------------------------------------
-    // Step 1: Initialize μ (with warm-start support)
-    // -------------------------------------------------------------------------
-    let mut mu = if let Some(init) = init_coefficients {
-        // Warm start: compute μ from provided coefficients
-        if init.len() == p {
-            let eta_init = x.dot(init) + &offset_vec;
-            let mu_init = link.inverse(&eta_init);
-            clamp_mu(&mu_init, family)
-        } else {
-            // Dimension mismatch - fall back to cold start with warning
-            eprintln!(
-                "Warning: Warm-start coefficient dimension mismatch (got {}, expected {}). \
-                Falling back to cold start. This may indicate a bug in the caller.",
-                init.len(), p
-            );
-            let mu_init = family.initialize_mu(y);
-            if !family.is_valid_mu(&mu_init) {
-                initialize_mu_safe(y, family)
-            } else {
-                mu_init
-            }
-        }
-    } else {
-        let mu_init = family.initialize_mu(y);
-        if !family.is_valid_mu(&mu_init) {
-            initialize_mu_safe(y, family)
-        } else {
-            mu_init
-        }
-    };
-
-    // -------------------------------------------------------------------------
-    // Step 2: Initialize linear predictor η = g(μ)
-    // -------------------------------------------------------------------------
-    let mut eta = link.link(&mu);
-
-    // -------------------------------------------------------------------------
-    // Step 3: Calculate initial deviance
-    // -------------------------------------------------------------------------
-    let mut deviance = family.deviance(y, &mu, Some(&prior_weights_vec));
-    let mut deviance_old: f64;
-
-    // -------------------------------------------------------------------------
-    // Step 4: IRLS iteration loop (with Ridge penalty)
-    // -------------------------------------------------------------------------
-    let mut converged = false;
-    let mut iteration = 0;
-    let mut cov_unscaled = Array2::zeros((p, p));
-    let mut final_weights = Array1::zeros(n);
-
-    while iteration < irls_config.max_iterations {
-        iteration += 1;
-
-        // Compute working weights W (with true Hessian optimization)
-        let link_deriv = link.derivative(&mu);
-        
-        let use_true_hessian = family.use_true_hessian_weights() && link.name() == "log";
-        let hessian_weights = if use_true_hessian {
-            Some(family.true_hessian_weights(&mu, y))
-        } else {
-            None
-        };
-        let variance = if use_true_hessian { None } else { Some(family.variance(&mu)) };
-
-        let min_weight = irls_config.min_weight;
-        
-        let results: Vec<(f64, f64, f64)> = (0..n)
-            .into_par_iter()
-            .map(|i| {
-                let d = link_deriv[i];
-                let iw = if let Some(ref hw) = hessian_weights {
-                    // True Hessian weight - use directly without dividing by d²
-                    hw[i].max(min_weight).min(1e10)
-                } else {
-                    let v = variance.as_ref().unwrap()[i];
-                    (1.0 / (v * d * d)).max(min_weight).min(1e10)
-                };
-                let cw = prior_weights_vec[i] * iw;
-                let e = eta[i] - offset_vec[i];
-                let wr = e + (y[i] - mu[i]) * d;
-                (iw, cw, wr)
-            })
-            .collect();
-        
-        let mut irls_weights_vec = Vec::with_capacity(n);
-        let mut combined_weights_vec = Vec::with_capacity(n);
-        let mut working_response_vec = Vec::with_capacity(n);
-        for (iw, cw, wr) in results {
-            irls_weights_vec.push(iw);
-            combined_weights_vec.push(cw);
-            working_response_vec.push(wr);
-        }
-        
-        let irls_weights = Array1::from_vec(irls_weights_vec);
-        let combined_weights = Array1::from_vec(combined_weights_vec);
-        let working_response = Array1::from_vec(working_response_vec);
-
-        // Solve PENALIZED weighted least squares: (X'WX + λI)β = X'Wz
-        let (mut new_coefficients, xtwinv) =
-            solve_weighted_least_squares_penalized(x, &working_response, &combined_weights, l2_penalty, penalize_intercept)?;
-
-        // Check for NaN in coefficients - indicates numerical instability
-        if new_coefficients.iter().any(|&c| c.is_nan() || c.is_infinite()) {
-            return Err(RustyStatsError::NumericalError(
-                "IRLS produced NaN or infinite coefficients. This usually indicates: \
-                 (1) severe multicollinearity in predictors, \
-                 (2) extreme scale differences between variables, or \
-                 (3) separation in binary response data. \
-                 Try standardizing continuous predictors or removing correlated terms.".to_string()
-            ));
-        }
-
-        // Apply coefficient sign constraints
-        for &idx in &irls_config.nonneg_indices {
-            if idx < new_coefficients.len() && new_coefficients[idx] < 0.0 {
-                new_coefficients[idx] = 0.0;
-            }
-        }
-        for &idx in &irls_config.nonpos_indices {
-            if idx < new_coefficients.len() && new_coefficients[idx] > 0.0 {
-                new_coefficients[idx] = 0.0;
-            }
-        }
-
-        // Update η and μ
-        let eta_base = x.dot(&new_coefficients);
-        eta = &eta_base + &offset_vec;
-        mu = link.inverse(&eta);
-        mu = clamp_mu(&mu, family);
-
-        // Check convergence
-        deviance_old = deviance;
-        deviance = family.deviance(y, &mu, Some(&prior_weights_vec));
-
-        let rel_change = if deviance_old.abs() > ZERO_TOL {
-            (deviance_old - deviance).abs() / deviance_old.abs()
-        } else {
-            (deviance_old - deviance).abs()
-        };
-
-        if irls_config.verbose {
-            eprintln!(
-                "Iteration {}: deviance = {:.6}, rel_change = {:.2e}, penalty = {:.4}",
-                iteration, deviance, rel_change, l2_penalty
-            );
-        }
-
-        if rel_change < irls_config.tolerance {
-            converged = true;
-            cov_unscaled = xtwinv;
-            final_weights = irls_weights;
-            break;
-        }
-
-        cov_unscaled = xtwinv;
-        final_weights = irls_weights;
-    }
-
-    // -------------------------------------------------------------------------
-    // Step 5: Extract final coefficients
-    // -------------------------------------------------------------------------
-    let eta_no_offset: Array1<f64> = eta
-        .iter()
-        .zip(offset_vec.iter())
-        .map(|(&e, &o)| e - o)
-        .collect();
-    
-    let combined_final_weights: Array1<f64> = prior_weights_vec
-        .iter()
-        .zip(final_weights.iter())
-        .map(|(&pw, &iw)| pw * iw)
-        .collect();
-
-    let (final_coefficients, _) =
-        solve_weighted_least_squares_penalized(
-            x, 
-            &compute_working_response(y, &mu, &eta_no_offset, link), 
-            &combined_final_weights,
-            l2_penalty,
-            penalize_intercept,
-        )?;
-
-    // Check for NaN in final coefficients
-    if final_coefficients.iter().any(|&c| c.is_nan() || c.is_infinite()) {
-        return Err(RustyStatsError::NumericalError(
-            "IRLS produced NaN or infinite coefficients in final extraction. This usually indicates: \
-             (1) severe multicollinearity in predictors, \
-             (2) extreme scale differences between variables, or \
-             (3) separation in binary response data. \
-             Try standardizing continuous predictors or removing correlated terms.".to_string()
-        ));
-    }
-
-    Ok(IRLSResult {
-        coefficients: final_coefficients,
-        fitted_values: mu,
-        linear_predictor: eta,
-        deviance,
-        iterations: iteration,
-        converged,
-        covariance_unscaled: cov_unscaled,
-        irls_weights: final_weights,
-        prior_weights: prior_weights_vec,
-        offset: offset_vec,
-        y: y.to_owned(),
-        family_name: family.name().to_string(),
-        penalty: reg_config.penalty.clone(),
-        design_matrix: None,  // Computed lazily in Python layer to avoid expensive copy
-    })
+    fit_glm_core(
+        y, x, family, link, irls_config, offset, weights,
+        init_coefficients, l2_penalty, penalize_intercept, reg_config.penalty.clone(),
+    )
 }
 
 // =============================================================================
 // Helper Functions
 // =============================================================================
 
-/// Solve weighted least squares: minimize Σ w_i (z_i - x_i'β)²
+/// Compute X'WX and X'Wz using parallel chunked computation with raw slice access.
 ///
-/// Returns (coefficients, (X'WX)⁻¹)
-/// 
+/// This is the hot-path inner loop shared by all WLS solvers.
+/// Returns (X'WX as DMatrix, X'Wz as DVector) in nalgebra types.
+///
 /// OPTIMIZATION NOTES:
-/// This is a hot path - called every IRLS iteration.
-/// Key optimizations:
-/// - Use matrix multiplication X'WX = (√W·X)'(√W·X) which is cache-optimized
-/// - Reuse Cholesky factorization for both solve and inverse
-/// - Parallel scaling of X by √W
+/// - Uses raw slice access with unsafe for maximum throughput
+/// - Parallel chunked reduction via Rayon to utilize all cores
+/// - Only computes upper triangle of X'WX (symmetric)
+///
+/// Safety: All unsafe accesses are within bounds because:
+/// - k ranges from 0 to n-1, and w_slice/z_slice have length n
+/// - row_start + j = k*p + j where k < n and j < p, so max index is (n-1)*p + (p-1) < n*p = x_slice.len()
+/// - i, j range from 0 to p-1, and xtx_local has length p*p, xtz_local has length p
 #[inline]
-fn solve_weighted_least_squares(
+fn compute_xtwx_xtwz(
     x: &Array2<f64>,
     z: &Array1<f64>,
     w: &Array1<f64>,
-) -> Result<(Array1<f64>, Array2<f64>)> {
+) -> Result<(DMatrix<f64>, DVector<f64>)> {
     let n = x.nrows();
     let p = x.ncols();
 
-    // OPTIMIZED: Use raw slice access for better performance
-    // Safety: We verify slices are contiguous and all index bounds are checked at loop boundaries
     let x_slice = match x.as_slice() {
         Some(s) => s,
         None => {
@@ -1281,10 +905,6 @@ fn solve_weighted_least_squares(
     const CHUNK_SIZE: usize = 8192;
     let num_chunks = (n + CHUNK_SIZE - 1) / CHUNK_SIZE;
     
-    // Safety: All unsafe accesses are within bounds because:
-    // - k ranges from 0 to n-1, and w_slice/z_slice have length n
-    // - row_start + j = k*p + j where k < n and j < p, so max index is (n-1)*p + (p-1) < n*p = x_slice.len()
-    // - i, j range from 0 to p-1, and xtx_local has length p*p, xtz_local has length p
     let (xtx_data, xtz_data): (Vec<f64>, Vec<f64>) = (0..num_chunks)
         .into_par_iter()
         .map(|chunk_idx| {
@@ -1325,7 +945,7 @@ fn solve_weighted_least_squares(
             },
         );
     
-    // Convert to nalgebra types
+    // Convert to nalgebra symmetric DMatrix
     let mut xtx = DMatrix::zeros(p, p);
     for i in 0..p {
         for j in i..p {
@@ -1336,30 +956,44 @@ fn solve_weighted_least_squares(
     }
     let xtz = DVector::from_vec(xtz_data);
 
-    // Solve using Cholesky decomposition
-    let chol = match xtx.clone().cholesky() {
+    Ok((xtx, xtz))
+}
+
+/// Solve a symmetric positive-definite system Aβ = b using Cholesky decomposition.
+///
+/// Falls back to LU decomposition if Cholesky fails (near-singular systems).
+/// Returns (coefficients, A⁻¹) as ndarray types.
+#[inline]
+fn cholesky_solve(
+    a: DMatrix<f64>,
+    b: &DVector<f64>,
+) -> Result<(Array1<f64>, Array2<f64>)> {
+    let p = a.nrows();
+
+    let chol = match a.clone().cholesky() {
         Some(c) => c,
         None => {
-            match xtx.clone().lu().solve(&xtz) {
+            // Fall back to LU decomposition
+            match a.clone().lu().solve(b) {
                 Some(sol) => {
                     let coef_array: Array1<f64> = sol.iter().copied().collect();
-                    let xtx_inv = xtx.try_inverse().ok_or_else(|| {
+                    let a_inv = a.try_inverse().ok_or_else(|| {
                         RustyStatsError::LinearAlgebraError(
-                            "Failed to compute covariance matrix - X'WX is not invertible. \
+                            "Failed to compute covariance matrix - system is not invertible. \
                              This often indicates multicollinearity in predictors.".to_string()
                         )
                     })?;
                     let mut cov_array = Array2::zeros((p, p));
                     for i in 0..p {
                         for j in 0..p {
-                            cov_array[[i, j]] = xtx_inv[(i, j)];
+                            cov_array[[i, j]] = a_inv[(i, j)];
                         }
                     }
                     return Ok((coef_array, cov_array));
                 }
                 None => {
                     return Err(RustyStatsError::LinearAlgebraError(
-                        "Failed to solve weighted least squares - matrix may be singular. \
+                        "Failed to solve linear system - matrix may be singular. \
                          This often indicates multicollinearity in predictors.".to_string(),
                     ));
                 }
@@ -1367,15 +1001,15 @@ fn solve_weighted_least_squares(
         }
     };
 
-    let coefficients = chol.solve(&xtz);
+    let coefficients = chol.solve(b);
     let identity = DMatrix::identity(p, p);
-    let xtx_inv = chol.solve(&identity);
+    let a_inv = chol.solve(&identity);
 
     let coef_array: Array1<f64> = coefficients.iter().copied().collect();
     let mut cov_array = Array2::zeros((p, p));
     for i in 0..p {
         for j in 0..p {
-            cov_array[[i, j]] = xtx_inv[(i, j)];
+            cov_array[[i, j]] = a_inv[(i, j)];
         }
     }
 
@@ -1402,102 +1036,11 @@ fn solve_weighted_least_squares_penalized(
     l2_penalty: f64,
     penalize_intercept: bool,
 ) -> Result<(Array1<f64>, Array2<f64>)> {
-    let n = x.nrows();
     let p = x.ncols();
+    let (mut xtx, xtz) = compute_xtwx_xtwz(x, z, w)?;
 
-    // -------------------------------------------------------------------------
-    // OPTIMIZED: Use raw slice access for better performance
-    // Safety: We verify slices are contiguous and all index bounds are checked at loop boundaries
-    // -------------------------------------------------------------------------
-    let x_slice = match x.as_slice() {
-        Some(s) => s,
-        None => {
-            return Err(RustyStatsError::LinearAlgebraError(
-                "Design matrix X must be contiguous in memory (C-order)".to_string()
-            ));
-        }
-    };
-    let w_slice = match w.as_slice() {
-        Some(s) => s,
-        None => {
-            return Err(RustyStatsError::LinearAlgebraError(
-                "Weight vector W must be contiguous in memory".to_string()
-            ));
-        }
-    };
-    let z_slice = match z.as_slice() {
-        Some(s) => s,
-        None => {
-            return Err(RustyStatsError::LinearAlgebraError(
-                "Working response Z must be contiguous in memory".to_string()
-            ));
-        }
-    };
-    
-    const CHUNK_SIZE: usize = 8192;
-    let num_chunks = (n + CHUNK_SIZE - 1) / CHUNK_SIZE;
-    
-    // Safety: All unsafe accesses are within bounds because:
-    // - k ranges from 0 to n-1, and w_slice/z_slice have length n
-    // - row_start + j = k*p + j where k < n and j < p, so max index is (n-1)*p + (p-1) < n*p = x_slice.len()
-    // - i, j range from 0 to p-1, and xtx_local has length p*p, xtz_local has length p
-    let (xtx_data, xtz_data): (Vec<f64>, Vec<f64>) = (0..num_chunks)
-        .into_par_iter()
-        .map(|chunk_idx| {
-            let chunk_start = chunk_idx * CHUNK_SIZE;
-            let chunk_end = (chunk_start + CHUNK_SIZE).min(n);
-            let mut xtx_local = vec![0.0; p * p];
-            let mut xtz_local = vec![0.0; p];
-            
-            for k in chunk_start..chunk_end {
-                let wk = unsafe { *w_slice.get_unchecked(k) };
-                let zk = unsafe { *z_slice.get_unchecked(k) };
-                let wz = wk * zk;
-                let row_start = k * p;
-                
-                for i in 0..p {
-                    let xki = unsafe { *x_slice.get_unchecked(row_start + i) };
-                    let xki_w = xki * wk;
-                    unsafe { *xtz_local.get_unchecked_mut(i) += xki * wz };
-                    
-                    for j in i..p {
-                        let xkj = unsafe { *x_slice.get_unchecked(row_start + j) };
-                        unsafe { *xtx_local.get_unchecked_mut(i * p + j) += xki_w * xkj };
-                    }
-                }
-            }
-            (xtx_local, xtz_local)
-        })
-        .reduce(
-            || (vec![0.0; p * p], vec![0.0; p]),
-            |(mut a_xtx, mut a_xtz), (b_xtx, b_xtz)| {
-                for i in 0..a_xtx.len() {
-                    a_xtx[i] += b_xtx[i];
-                }
-                for i in 0..a_xtz.len() {
-                    a_xtz[i] += b_xtz[i];
-                }
-                (a_xtx, a_xtz)
-            },
-        );
-
-    // Convert to nalgebra types
-    let mut xtx = DMatrix::zeros(p, p);
-    for i in 0..p {
-        for j in i..p {
-            let val = xtx_data[i * p + j];
-            xtx[(i, j)] = val;
-            xtx[(j, i)] = val;
-        }
-    }
-    
-    let xtz = DVector::from_vec(xtz_data);
-
-    // -------------------------------------------------------------------------
     // Add L2 (Ridge) penalty to diagonal: (X'WX + λI)
-    // -------------------------------------------------------------------------
     // The intercept (first column) is typically NOT penalized.
-    // This prevents the baseline from being shrunk toward zero.
     if l2_penalty > 0.0 {
         let start_idx = if penalize_intercept { 0 } else { 1 };
         for j in start_idx..p {
@@ -1505,59 +1048,7 @@ fn solve_weighted_least_squares_penalized(
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Solve using Cholesky decomposition (reuse for inverse)
-    // -------------------------------------------------------------------------
-    let chol = match xtx.clone().cholesky() {
-        Some(c) => c,
-        None => {
-            // Fall back to LU decomposition
-            match xtx.clone().lu().solve(&xtz) {
-                Some(sol) => {
-                    // LU worked for solve, try inverse
-                    let coef_array: Array1<f64> = sol.iter().copied().collect();
-                    let xtx_inv = xtx.try_inverse().ok_or_else(|| {
-                        RustyStatsError::LinearAlgebraError(
-                            "Failed to compute covariance matrix - X'WX is not invertible. \
-                             This often indicates multicollinearity in predictors.".to_string()
-                        )
-                    })?;
-                    let mut cov_array = Array2::zeros((p, p));
-                    for i in 0..p {
-                        for j in 0..p {
-                            cov_array[[i, j]] = xtx_inv[(i, j)];
-                        }
-                    }
-                    return Ok((coef_array, cov_array));
-                }
-                None => {
-                    return Err(RustyStatsError::LinearAlgebraError(
-                        "Failed to solve weighted least squares - matrix may be singular. \
-                         This often indicates multicollinearity in predictors."
-                            .to_string(),
-                    ));
-                }
-            }
-        }
-    };
-
-    // Solve for coefficients
-    let coefficients = chol.solve(&xtz);
-
-    // Compute inverse using same Cholesky factorization
-    let identity = DMatrix::identity(p, p);
-    let xtx_inv = chol.solve(&identity);
-
-    // Convert back to ndarray
-    let coef_array: Array1<f64> = coefficients.iter().copied().collect();
-    let mut cov_array = Array2::zeros((p, p));
-    for i in 0..p {
-        for j in 0..p {
-            cov_array[[i, j]] = xtx_inv[(i, j)];
-        }
-    }
-
-    Ok((coef_array, cov_array))
+    cholesky_solve(xtx, &xtz)
 }
 
 /// Solve weighted least squares with a full penalty matrix.
@@ -1584,7 +1075,6 @@ pub fn solve_weighted_least_squares_with_penalty_matrix(
     w: &Array1<f64>,
     penalty_matrix: &Array2<f64>,
 ) -> Result<(Array1<f64>, Array2<f64>)> {
-    let n = x.nrows();
     let p = x.ncols();
 
     // Validate penalty matrix dimensions
@@ -1595,139 +1085,17 @@ pub fn solve_weighted_least_squares_with_penalty_matrix(
         )));
     }
 
-    // OPTIMIZED: Use raw slice access for better performance
-    // Safety: We verify slices are contiguous and all index bounds are checked at loop boundaries
-    let x_slice = match x.as_slice() {
-        Some(s) => s,
-        None => {
-            return Err(RustyStatsError::LinearAlgebraError(
-                "Design matrix X must be contiguous in memory (C-order)".to_string()
-            ));
-        }
-    };
-    let w_slice = match w.as_slice() {
-        Some(s) => s,
-        None => {
-            return Err(RustyStatsError::LinearAlgebraError(
-                "Weight vector W must be contiguous in memory".to_string()
-            ));
-        }
-    };
-    let z_slice = match z.as_slice() {
-        Some(s) => s,
-        None => {
-            return Err(RustyStatsError::LinearAlgebraError(
-                "Working response Z must be contiguous in memory".to_string()
-            ));
-        }
-    };
-    
-    const CHUNK_SIZE: usize = 8192;
-    let num_chunks = (n + CHUNK_SIZE - 1) / CHUNK_SIZE;
-    
-    // Safety: All unsafe accesses are within bounds because:
-    // - k ranges from 0 to n-1, and w_slice/z_slice have length n
-    // - row_start + j = k*p + j where k < n and j < p, so max index is (n-1)*p + (p-1) < n*p = x_slice.len()
-    // - i, j range from 0 to p-1, and xtx_local has length p*p, xtz_local has length p
-    let (xtx_data, xtz_data): (Vec<f64>, Vec<f64>) = (0..num_chunks)
-        .into_par_iter()
-        .map(|chunk_idx| {
-            let chunk_start = chunk_idx * CHUNK_SIZE;
-            let chunk_end = (chunk_start + CHUNK_SIZE).min(n);
-            let mut xtx_local = vec![0.0; p * p];
-            let mut xtz_local = vec![0.0; p];
-            
-            for k in chunk_start..chunk_end {
-                let wk = unsafe { *w_slice.get_unchecked(k) };
-                let zk = unsafe { *z_slice.get_unchecked(k) };
-                let wz = wk * zk;
-                let row_start = k * p;
-                
-                for i in 0..p {
-                    let xki = unsafe { *x_slice.get_unchecked(row_start + i) };
-                    let xki_w = xki * wk;
-                    unsafe { *xtz_local.get_unchecked_mut(i) += xki * wz };
-                    
-                    for j in i..p {
-                        let xkj = unsafe { *x_slice.get_unchecked(row_start + j) };
-                        unsafe { *xtx_local.get_unchecked_mut(i * p + j) += xki_w * xkj };
-                    }
-                }
-            }
-            (xtx_local, xtz_local)
-        })
-        .reduce(
-            || (vec![0.0; p * p], vec![0.0; p]),
-            |(mut a_xtx, mut a_xtz), (b_xtx, b_xtz)| {
-                for i in 0..a_xtx.len() {
-                    a_xtx[i] += b_xtx[i];
-                }
-                for i in 0..a_xtz.len() {
-                    a_xtz[i] += b_xtz[i];
-                }
-                (a_xtx, a_xtz)
-            },
-        );
+    let (mut xtx, xtz) = compute_xtwx_xtwz(x, z, w)?;
 
-    // Convert to nalgebra types and add penalty matrix
-    let mut xtx_pen = DMatrix::zeros(p, p);
+    // Add full penalty matrix S to X'WX
     for i in 0..p {
         for j in i..p {
-            let val = xtx_data[i * p + j];
-            xtx_pen[(i, j)] = val + penalty_matrix[[i, j]];
-            xtx_pen[(j, i)] = val + penalty_matrix[[j, i]];  // Symmetrize
-        }
-    }
-    
-    let xtz = DVector::from_vec(xtz_data);
-
-    // Solve using Cholesky decomposition
-    let chol = match xtx_pen.clone().cholesky() {
-        Some(c) => c,
-        None => {
-            // Fall back to LU decomposition
-            match xtx_pen.clone().lu().solve(&xtz) {
-                Some(sol) => {
-                    let coef_array: Array1<f64> = sol.iter().copied().collect();
-                    let xtx_inv = xtx_pen.try_inverse().ok_or_else(|| {
-                        RustyStatsError::LinearAlgebraError(
-                            "Failed to compute penalized covariance matrix - singular system.".to_string()
-                        )
-                    })?;
-                    let mut cov_array = Array2::zeros((p, p));
-                    for i in 0..p {
-                        for j in 0..p {
-                            cov_array[[i, j]] = xtx_inv[(i, j)];
-                        }
-                    }
-                    return Ok((coef_array, cov_array));
-                }
-                None => {
-                    return Err(RustyStatsError::LinearAlgebraError(
-                        "Failed to solve penalized weighted least squares - singular matrix.".to_string(),
-                    ));
-                }
-            }
-        }
-    };
-
-    // Solve for coefficients
-    let coefficients = chol.solve(&xtz);
-
-    // Compute inverse using same Cholesky factorization
-    let identity = DMatrix::identity(p, p);
-    let xtx_inv = chol.solve(&identity);
-
-    // Convert back to ndarray
-    let coef_array: Array1<f64> = coefficients.iter().copied().collect();
-    let mut cov_array = Array2::zeros((p, p));
-    for i in 0..p {
-        for j in 0..p {
-            cov_array[[i, j]] = xtx_inv[(i, j)];
+            xtx[(i, j)] += penalty_matrix[[i, j]];
+            xtx[(j, i)] += penalty_matrix[[j, i]];
         }
     }
 
-    Ok((coef_array, cov_array))
+    cholesky_solve(xtx, &xtz)
 }
 
 /// Compute X'WX matrix for EDF calculation.
@@ -1790,34 +1158,6 @@ fn compute_working_response(
         .zip(link_deriv.iter())
         .map(|(((&e, &yi), &mui), &d)| e + (yi - mui) * d)
         .collect()
-}
-
-/// Safe initialization of μ that works for any family
-fn initialize_mu_safe(y: &Array1<f64>, family: &dyn Family) -> Array1<f64> {
-    let y_mean = y.mean().unwrap_or(1.0).max(0.01);
-    let name = family.name();
-
-    // Initialize to a weighted average of y and the mean
-    // This avoids extreme values while staying close to the data
-    y.mapv(|yi| {
-        let val = (yi + y_mean) / 2.0;
-        // Clamp based on family
-        match name {
-            "Poisson" | "Gamma" => val.max(0.001),
-            "Binomial" => val.max(0.001).min(0.999),
-            _ => val,
-        }
-    })
-}
-
-/// Clamp μ to valid range for the family
-fn clamp_mu(mu: &Array1<f64>, family: &dyn Family) -> Array1<f64> {
-    let name = family.name();
-    mu.mapv(|x| match name {
-        "Poisson" | "Gamma" => x.max(MU_MIN_POSITIVE), // Must be positive
-        "Binomial" => x.max(MU_MIN_PROBABILITY).min(MU_MAX_PROBABILITY), // Must be in (0, 1)
-        _ => x, // Gaussian allows any value
-    })
 }
 
 // =============================================================================

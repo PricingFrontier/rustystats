@@ -124,6 +124,17 @@ impl Family for GammaFamily {
         mu.iter().all(|&x| x > 0.0 && x.is_finite())
     }
     
+    fn clamp_mu(&self, mu: &Array1<f64>) -> Array1<f64> {
+        use crate::constants::MU_MIN_POSITIVE;
+        mu.mapv(|x| x.max(MU_MIN_POSITIVE))
+    }
+    
+    fn is_log_link_default(&self) -> bool { true }
+    
+    fn log_likelihood(&self, y: &Array1<f64>, mu: &Array1<f64>, scale: f64, weights: Option<&Array1<f64>>) -> f64 {
+        crate::diagnostics::log_likelihood_gamma(y, mu, scale, weights)
+    }
+    
     /// Whether to use true Hessian weights for IRLS.
     /// 
     /// Note: While true Hessian can reduce IRLS iterations, it produces a different

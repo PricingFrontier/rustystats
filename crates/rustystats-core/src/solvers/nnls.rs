@@ -247,8 +247,10 @@ pub fn nnls_weighted(
 /// This is used for penalized monotonic spline fitting.
 /// The penalty term is incorporated by augmenting the system:
 ///
+/// ```text
 ///     [    A   ]       [b]
 ///     [√λ L    ] x  ≈  [0]
+/// ```
 ///
 /// where S = L'L (Cholesky decomposition of penalty matrix)
 pub fn nnls_penalized(

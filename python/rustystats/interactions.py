@@ -255,6 +255,102 @@ def parse_formula_interactions(formula: str) -> ParsedFormula:
     )
 
 
+def parse_spline_factor(factor: str) -> Optional["SplineTerm"]:
+    """Parse a spline term from a factor string like 'bs(VehAge, df=4)' or 'ns(age, df=3)'.
+    
+    Returns a SplineTerm if the factor matches bs()/ns()/ms()/s() syntax, else None.
+    This is shared by InteractionBuilder and _DeserializedBuilder.
+    """
+    from rustystats.splines import SplineTerm
+    
+    factor_lower = factor.strip().lower()
+    if factor_lower.startswith('bs(') or factor_lower.startswith('ns(') or factor_lower.startswith('ms(') or factor_lower.startswith('s('):
+        if factor_lower.startswith('bs('):
+            spline_type = 'bs'
+            prefix_len = 3
+        elif factor_lower.startswith('ns('):
+            spline_type = 'ns'
+            prefix_len = 3
+        elif factor_lower.startswith('ms('):
+            spline_type = 'ms'
+            prefix_len = 3
+        else:
+            # s() is sugar for bs() with is_smooth=True
+            spline_type = 'bs'
+            prefix_len = 2
+        # Extract content inside parentheses
+        content = factor[prefix_len:-1] if factor.endswith(')') else factor[prefix_len:]
+        parts = [p.strip() for p in content.split(',')]
+        var_name = parts[0]
+        df = None  # default: penalized smooth
+        k = None
+        degree = 3  # default for B-splines
+        monotonicity = None
+        for part in parts[1:]:
+            if '=' in part:
+                key, val = part.split('=', 1)
+                key = key.strip().lower()
+                val = val.strip()
+                if key == 'df':
+                    df = int(val)
+                elif key == 'k':
+                    k = int(val)
+                elif key == 'degree':
+                    degree = int(val)
+                elif key == 'monotonicity':
+                    monotonicity = val.strip("'\"").lower()
+        
+        # Determine effective df and whether this is a smooth term
+        # s() always implies smooth; bs()/ns()/ms() are smooth when k= is used
+        is_s_syntax = factor_lower.startswith('s(')
+        is_smooth = is_s_syntax
+        if df is None and k is None:
+            # No df or k specified: default to penalized smooth with k=10
+            effective_df = 10
+            is_smooth = True
+        elif k is not None:
+            # k parameter specified: penalized smooth
+            effective_df = k
+            is_smooth = True
+        else:
+            # df parameter specified: fixed df unless s() syntax
+            effective_df = df
+        
+        term = SplineTerm(var_name=var_name, spline_type=spline_type, df=effective_df, 
+                          degree=degree, monotonicity=monotonicity)
+        if is_smooth:
+            term._is_smooth = True
+        return term
+    
+    return None
+
+
+def parse_te_factor(factor: str) -> Optional["TargetEncodingTermSpec"]:
+    """Parse a TE term from a factor string like 'TE(Region)' or 'TE(Brand, pw=2)'.
+    
+    Returns a TargetEncodingTermSpec if the factor matches TE() syntax, else None.
+    This is shared by InteractionBuilder and _DeserializedBuilder.
+    """
+    factor_stripped = factor.strip()
+    if factor_stripped.upper().startswith('TE(') and factor_stripped.endswith(')'):
+        content = factor_stripped[3:-1]
+        parts = [p.strip() for p in content.split(',')]
+        var_name = parts[0]
+        prior_weight = 1.0
+        n_permutations = 4
+        for part in parts[1:]:
+            if '=' in part:
+                key, val = part.split('=', 1)
+                key = key.strip().lower()
+                val = val.strip()
+                if key in ('pw', 'prior_weight'):
+                    prior_weight = float(val)
+                elif key in ('n', 'n_permutations'):
+                    n_permutations = int(val)
+        return TargetEncodingTermSpec(var_name=var_name, prior_weight=prior_weight, n_permutations=n_permutations)
+    return None
+
+
 class InteractionBuilder:
     """
     Efficiently builds design matrices with interaction terms.
@@ -357,73 +453,11 @@ class InteractionBuilder:
     
     def _parse_spline_factor(self, factor: str) -> Optional[SplineTerm]:
         """Parse a spline term from a factor name like 'bs(VehAge, df=4)' or 'ns(age, df=3)'."""
-        factor_lower = factor.strip().lower()
-        if factor_lower.startswith('bs(') or factor_lower.startswith('ns('):
-            spline_type = 'bs' if factor_lower.startswith('bs(') else 'ns'
-            # Extract content inside parentheses
-            content = factor[3:-1] if factor.endswith(')') else factor[3:]
-            parts = [p.strip() for p in content.split(',')]
-            var_name = parts[0]
-            df = None  # default: penalized smooth
-            k = None
-            degree = 3  # default for B-splines
-            monotonicity = None
-            for part in parts[1:]:
-                if '=' in part:
-                    key, val = part.split('=', 1)
-                    key = key.strip().lower()
-                    val = val.strip()
-                    if key == 'df':
-                        df = int(val)
-                    elif key == 'k':
-                        k = int(val)
-                    elif key == 'degree':
-                        degree = int(val)
-                    elif key == 'monotonicity':
-                        monotonicity = val.strip("'\"").lower()
-            
-            # Determine effective df and whether this is a smooth term
-            is_smooth = False
-            if df is None and k is None:
-                # No df or k specified: default to penalized smooth with k=10
-                effective_df = 10
-                is_smooth = True
-            elif k is not None:
-                # k parameter specified: penalized smooth
-                effective_df = k
-                is_smooth = True
-            else:
-                # df parameter specified: fixed df, no penalty
-                effective_df = df
-            
-            term = SplineTerm(var_name=var_name, spline_type=spline_type, df=effective_df, 
-                              degree=degree, monotonicity=monotonicity)
-            if is_smooth:
-                term._is_smooth = True
-            return term
-        
-        return None
+        return parse_spline_factor(factor)
     
     def _parse_te_factor(self, factor: str) -> Optional[TargetEncodingTermSpec]:
         """Parse a TE term from a factor name like 'TE(Region)' or 'TE(Brand, pw=2)'."""
-        factor_stripped = factor.strip()
-        if factor_stripped.upper().startswith('TE(') and factor_stripped.endswith(')'):
-            content = factor_stripped[3:-1]
-            parts = [p.strip() for p in content.split(',')]
-            var_name = parts[0]
-            prior_weight = 1.0
-            n_permutations = 4
-            for part in parts[1:]:
-                if '=' in part:
-                    key, val = part.split('=', 1)
-                    key = key.strip().lower()
-                    val = val.strip()
-                    if key in ('pw', 'prior_weight'):
-                        prior_weight = float(val)
-                    elif key in ('n', 'n_permutations'):
-                        n_permutations = int(val)
-            return TargetEncodingTermSpec(var_name=var_name, prior_weight=prior_weight, n_permutations=n_permutations)
-        return None
+        return parse_te_factor(factor)
     
     def _get_column(self, name: str) -> np.ndarray:
         """Extract column as numpy array."""
@@ -926,43 +960,61 @@ class InteractionBuilder:
             cat1 = [str(v) for v in cols[0]]
             cat2 = [str(v) for v in cols[1]]
             
-            # For interactions with exposure, use rate encoding (current behavior)
-            # TODO: Add exposure-weighted interaction encoding
             if exposure is not None:
-                encoding_target = (target / np.maximum(exposure, 1e-10)).astype(np.float64)
-            else:
-                encoding_target = target.astype(np.float64)
-            
-            # For 2-way interactions, use the dedicated interaction function
-            from rustystats._rustystats import target_encode_interaction_py
-            encoded, name, prior, stats = target_encode_interaction_py(
-                cat1, cat2, encoding_target,
-                te_term.interaction_vars[0], te_term.interaction_vars[1],
-                te_term.prior_weight, te_term.n_permutations, seed
-            )
-            
-            # For 3+ way interactions, combine first two then continue
-            for i in range(2, len(te_term.interaction_vars)):
-                # Create combined categories from previous result
-                combined = [f"{a}:{b}" for a, b in zip(cat1, cat2)]
-                cat1 = combined
-                cat2 = [str(v) for v in cols[i]]
-                
-                # Re-encode with next variable
-                encoded, name, prior, stats = target_encode_interaction_py(
-                    cat1, cat2, encoding_target,
-                    ":".join(te_term.interaction_vars[:i]), te_term.interaction_vars[i],
+                # Exposure-weighted interaction encoding: sum(claims) / sum(exposure)
+                from rustystats._rustystats import target_encode_interaction_with_exposure_py
+                encoded, name, prior, stats = target_encode_interaction_with_exposure_py(
+                    cat1, cat2, target.astype(np.float64), exposure.astype(np.float64),
+                    te_term.interaction_vars[0], te_term.interaction_vars[1],
                     te_term.prior_weight, te_term.n_permutations, seed
                 )
-            
-            # Store stats for rate-based encoding
-            return encoded, name, {
-                'prior': prior, 
-                'stats': stats, 
-                'prior_weight': te_term.prior_weight,
-                'used_exposure_weighted': False,  # Interactions still use rate encoding
-                'interaction_vars': te_term.interaction_vars,
-            }
+                
+                # For 3+ way interactions, combine first two then continue
+                for i in range(2, len(te_term.interaction_vars)):
+                    combined = [f"{a}:{b}" for a, b in zip(cat1, cat2)]
+                    cat1 = combined
+                    cat2 = [str(v) for v in cols[i]]
+                    encoded, name, prior, stats = target_encode_interaction_with_exposure_py(
+                        cat1, cat2, target.astype(np.float64), exposure.astype(np.float64),
+                        ":".join(te_term.interaction_vars[:i]), te_term.interaction_vars[i],
+                        te_term.prior_weight, te_term.n_permutations, seed
+                    )
+                
+                return encoded, name, {
+                    'prior': prior, 
+                    'stats': stats, 
+                    'prior_weight': te_term.prior_weight,
+                    'used_exposure_weighted': True,
+                    'interaction_vars': te_term.interaction_vars,
+                }
+            else:
+                # Standard interaction encoding (no exposure)
+                from rustystats._rustystats import target_encode_interaction_py
+                encoding_target = target.astype(np.float64)
+                encoded, name, prior, stats = target_encode_interaction_py(
+                    cat1, cat2, encoding_target,
+                    te_term.interaction_vars[0], te_term.interaction_vars[1],
+                    te_term.prior_weight, te_term.n_permutations, seed
+                )
+                
+                # For 3+ way interactions, combine first two then continue
+                for i in range(2, len(te_term.interaction_vars)):
+                    combined = [f"{a}:{b}" for a, b in zip(cat1, cat2)]
+                    cat1 = combined
+                    cat2 = [str(v) for v in cols[i]]
+                    encoded, name, prior, stats = target_encode_interaction_py(
+                        cat1, cat2, encoding_target,
+                        ":".join(te_term.interaction_vars[:i]), te_term.interaction_vars[i],
+                        te_term.prior_weight, te_term.n_permutations, seed
+                    )
+                
+                return encoded, name, {
+                    'prior': prior, 
+                    'stats': stats, 
+                    'prior_weight': te_term.prior_weight,
+                    'used_exposure_weighted': False,
+                    'interaction_vars': te_term.interaction_vars,
+                }
         else:
             # Single variable target encoding
             col = self.data[te_term.var_name].to_numpy()
@@ -1726,11 +1778,41 @@ class InteractionBuilder:
     ) -> np.ndarray:
         """Build interaction columns for new data."""
         if interaction.is_pure_continuous:
-            # Continuous × continuous
-            result = new_data[interaction.factors[0]].to_numpy().astype(self.dtype)
-            for factor in interaction.factors[1:]:
-                result = result * new_data[factor].to_numpy().astype(self.dtype)
-            return result.reshape(-1, 1)
+            # Continuous × continuous (may include TE or spline factors)
+            def _resolve_factor(factor):
+                te = self._parse_te_factor(factor)
+                if te is not None:
+                    return self._encode_target_new(new_data, te)
+                spline = self._parse_spline_factor(factor)
+                if spline is not None:
+                    x = new_data[spline.var_name].to_numpy().astype(self.dtype)
+                    fitted_spline = self._fitted_splines.get(spline.var_name, spline)
+                    basis, _ = fitted_spline.transform(x)
+                    return basis  # 2-D
+                return new_data[factor].to_numpy().astype(self.dtype)
+
+            resolved = [_resolve_factor(f) for f in interaction.factors]
+
+            # If any factor is multi-column (spline basis), build cross-product
+            has_multi = any(r.ndim == 2 and r.shape[1] > 1 for r in resolved)
+            if not has_multi:
+                # All scalar columns — element-wise product
+                result = resolved[0].ravel()
+                for r in resolved[1:]:
+                    result = result * r.ravel()
+                return result.reshape(-1, 1)
+            else:
+                # Expand multi-column factors via outer product
+                from itertools import product as cartesian_product
+                bases = [r if r.ndim == 2 else r.reshape(-1, 1) for r in resolved]
+                indices = [range(b.shape[1]) for b in bases]
+                all_columns = []
+                for idx_combo in cartesian_product(*indices):
+                    col = np.ones(n, dtype=self.dtype)
+                    for i, j in enumerate(idx_combo):
+                        col = col * bases[i][:, j]
+                    all_columns.append(col)
+                return np.column_stack(all_columns)
         
         elif interaction.is_pure_categorical:
             # Categorical × categorical

@@ -152,6 +152,43 @@ pub trait Family: Send + Sync {
     /// - Binomial: μ must be in (0, 1)
     fn is_valid_mu(&self, mu: &Array1<f64>) -> bool;
     
+    /// Clamp μ to the valid range for this family.
+    /// 
+    /// This is called after each IRLS iteration to ensure μ stays in bounds.
+    /// Default: no clamping (Gaussian).
+    fn clamp_mu(&self, mu: &Array1<f64>) -> Array1<f64> {
+        mu.clone()
+    }
+    
+    /// Whether this family has a fixed dispersion parameter (φ = 1).
+    /// 
+    /// True for Poisson and Binomial (exact distributions with known variance).
+    /// False for Gaussian, Gamma, Tweedie, Quasi-families (dispersion estimated from data).
+    fn fixed_dispersion(&self) -> bool {
+        false
+    }
+    
+    /// Compute the log-likelihood for this family.
+    /// 
+    /// Default implementation returns a deviance-based approximation: -deviance/2.
+    /// Families with closed-form log-likelihoods override this.
+    /// 
+    /// # Arguments
+    /// * `y` - Observed response
+    /// * `mu` - Fitted values
+    /// * `scale` - Dispersion parameter φ
+    /// * `weights` - Optional prior weights
+    fn log_likelihood(&self, y: &Array1<f64>, mu: &Array1<f64>, _scale: f64, _weights: Option<&Array1<f64>>) -> f64 {
+        // Fallback: deviance-based approximation
+        -self.deviance(y, mu, None) / 2.0
+    }
+    
+    /// Whether this family uses a log link by default.
+    /// Used by null deviance computation to handle offsets correctly.
+    fn is_log_link_default(&self) -> bool {
+        false
+    }
+    
     /// Whether this family supports true Hessian-based IRLS weights for the log link.
     /// 
     /// For certain family/link combinations (Gamma, Tweedie with log link),

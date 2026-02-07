@@ -143,6 +143,17 @@ impl Family for BinomialFamily {
     fn is_valid_mu(&self, mu: &Array1<f64>) -> bool {
         mu.iter().all(|&x| x > 0.0 && x < 1.0 && x.is_finite())
     }
+    
+    fn clamp_mu(&self, mu: &Array1<f64>) -> Array1<f64> {
+        use crate::constants::{MU_MIN_PROBABILITY, MU_MAX_PROBABILITY};
+        mu.mapv(|x| x.max(MU_MIN_PROBABILITY).min(MU_MAX_PROBABILITY))
+    }
+    
+    fn fixed_dispersion(&self) -> bool { true }
+    
+    fn log_likelihood(&self, y: &Array1<f64>, mu: &Array1<f64>, _scale: f64, weights: Option<&Array1<f64>>) -> f64 {
+        crate::diagnostics::log_likelihood_binomial(y, mu, weights)
+    }
 }
 
 // =============================================================================

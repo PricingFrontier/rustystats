@@ -398,10 +398,12 @@ fn parse_spline_term(term: &str) -> Option<SplineTerm> {
     }
     
     let var_name = parts[0].trim().to_string();
-    let mut df = 5usize;
+    let mut df = 10usize;  // Default to k=10 (penalized smooth) when neither df= nor k= given
     let mut degree = 3usize;
     let mut increasing = true;  // Default for monotonic splines
     let mut has_increasing = false;  // Track if increasing was explicitly specified
+    let mut has_k = false;  // Track if k= was used (implies penalized smooth)
+    let mut has_df = false;  // Track if df= was used (implies fixed df)
     
     // Parse remaining arguments
     for part in parts.iter().skip(1) {
@@ -414,12 +416,14 @@ fn parse_spline_term(term: &str) -> Option<SplineTerm> {
                     df = value.parse().unwrap_or_else(|_| {
                         panic!("Invalid df value '{}' in {}() - expected an integer", value, spline_type)
                     });
+                    has_df = true;
                 }
                 "k" => {
-                    // k is alias for df in s() smooth terms
+                    // k parameter implies penalized smooth with auto lambda
                     df = value.parse().unwrap_or_else(|_| {
                         panic!("Invalid k value '{}' in {}() - expected an integer", value, spline_type)
                     });
+                    has_k = true;
                 }
                 "degree" => {
                     degree = value.parse().unwrap_or_else(|_| {
@@ -434,20 +438,30 @@ fn parse_spline_term(term: &str) -> Option<SplineTerm> {
                         _ => panic!("Invalid increasing value '{}' - expected true/false", value)
                     };
                 }
+                "monotonicity" => {
+                    has_increasing = true;
+                    let val = value.trim_matches(|c| c == '\'' || c == '"').to_lowercase();
+                    increasing = match val.as_str() {
+                        "increasing" => true,
+                        "decreasing" => false,
+                        _ => panic!("Invalid monotonicity value '{}' - expected 'increasing' or 'decreasing'", value)
+                    };
+                }
                 other => {
                     let supported = if spline_type == "s" { 
                         "k, df, degree" 
                     } else if spline_type == "ms" { 
-                        "df, degree, increasing" 
+                        "df, degree, increasing, monotonicity" 
                     } else { 
-                        "df, degree, increasing" 
+                        "df, k, degree, increasing, monotonicity" 
                     };
                     panic!("Unknown argument '{}' in {}(). Supported: {}", other, spline_type, supported)
                 }
             }
         } else if let Ok(v) = part.parse::<usize>() {
-            // Positional argument assumed to be df
+            // Positional argument assumed to be df (fixed, not smooth)
             df = v;
+            has_df = true;
         } else {
             panic!("Invalid argument '{}' in {}() - expected 'key=value' or a number for df", part, spline_type)
         }
@@ -456,8 +470,11 @@ fn parse_spline_term(term: &str) -> Option<SplineTerm> {
     // Monotonicity is always applied for ms(), or for bs()/ns() if increasing was explicitly specified
     let monotonic = spline_type == "ms" || has_increasing;
     
-    // Track if this is a smooth term (s()) for penalized fitting
-    let is_smooth = spline_type == "s";
+    // A term is smooth (penalized with auto lambda) if:
+    // - It's an s() term, OR
+    // - k= was specified on bs()/ns() (e.g., bs(x, k=10)), OR
+    // - Neither df= nor k= was specified (default to penalized smooth)
+    let is_smooth = spline_type == "s" || has_k || (!has_df && !has_k);
     
     // For s() smooth terms, use B-spline basis internally
     // The penalty is applied during fitting, not in the basis generation

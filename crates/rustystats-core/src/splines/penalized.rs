@@ -371,72 +371,7 @@ pub struct LambdaSearchResult {
 /// Solve A @ X = B where A is symmetric positive definite.
 /// Returns X = A⁻¹ @ B
 fn solve_symmetric_system(a: &Array2<f64>, b: &Array2<f64>) -> Array2<f64> {
-    let n = a.nrows();
-    
-    // Use nalgebra for Cholesky decomposition
-    use nalgebra::{DMatrix, DVector};
-    
-    // Ensure arrays are contiguous
-    let a_contig = if a.is_standard_layout() { a.clone() } else { a.as_standard_layout().to_owned() };
-    let b_contig = if b.is_standard_layout() { b.clone() } else { b.as_standard_layout().to_owned() };
-    
-    let a_nalg = DMatrix::from_row_slice(n, n, a_contig.as_slice().unwrap());
-    
-    // Try Cholesky first (faster, but requires positive definite)
-    if let Some(chol) = a_nalg.clone().cholesky() {
-        let mut result = Array2::zeros((n, b.ncols()));
-        for j in 0..b.ncols() {
-            // Extract column data manually since column views may not be contiguous
-            let col_data: Vec<f64> = (0..n).map(|i| b_contig[[i, j]]).collect();
-            let b_col = DVector::from_vec(col_data);
-            let x_col = chol.solve(&b_col);
-            for i in 0..n {
-                result[[i, j]] = x_col[i];
-            }
-        }
-        return result;
-    }
-    
-    // Fall back to LU decomposition if not positive definite
-    if let Some(lu) = a_nalg.clone().lu().try_inverse() {
-        let mut result = Array2::zeros((n, b.ncols()));
-        for i in 0..n {
-            for j in 0..b.ncols() {
-                for k in 0..n {
-                    result[[i, j]] += lu[(i, k)] * b[[k, j]];
-                }
-            }
-        }
-        return result;
-    }
-    
-    // Last resort: pseudo-inverse via SVD
-    let svd = a_nalg.svd(true, true);
-    let u = svd.u.unwrap();
-    let v_t = svd.v_t.unwrap();
-    let s = svd.singular_values;
-    
-    // Compute pseudo-inverse: V @ S⁺ @ U'
-    let tol = 1e-10 * s[0];
-    let mut result = Array2::zeros((n, b.ncols()));
-    
-    for j in 0..b.ncols() {
-        for i in 0..n {
-            let mut sum = 0.0;
-            for k in 0..n {
-                if s[k] > tol {
-                    let mut inner = 0.0;
-                    for l in 0..n {
-                        inner += u[(l, k)] * b[[l, j]];
-                    }
-                    sum += v_t[(k, i)] * inner / s[k];
-                }
-            }
-            result[[i, j]] = sum;
-        }
-    }
-    
-    result
+    crate::convert::solve_symmetric_matrix(a, b)
 }
 
 /// Invert a symmetric positive (semi-)definite matrix.

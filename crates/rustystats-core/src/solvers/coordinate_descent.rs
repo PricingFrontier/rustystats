@@ -1,3 +1,5 @@
+use super::initialize_mu_safe;
+
 // =============================================================================
 // Coordinate Descent for Penalized GLMs
 // =============================================================================
@@ -187,7 +189,7 @@ pub fn fit_glm_coordinate_descent(
     let mut mu = if init_coefficients.is_some() {
         let eta = x.dot(&coefficients) + &offset_vec;
         let mu_init = link.inverse(&eta);
-        clamp_mu(&mu_init, family)
+        family.clamp_mu(&mu_init)
     } else {
         let mu_init = family.initialize_mu(y);
         if !family.is_valid_mu(&mu_init) {
@@ -413,7 +415,7 @@ pub fn fit_glm_coordinate_descent(
         let eta_base = x.dot(&coefficients);
         eta = &eta_base + &offset_vec;
         mu = link.inverse(&eta);
-        mu = clamp_mu(&mu, family);
+        mu = family.clamp_mu(&mu);
 
         // ---------------------------------------------------------------------
         // Step 5e: Check outer loop convergence
@@ -535,32 +537,6 @@ fn compute_penalized_covariance(
     }
 
     cov
-}
-
-/// Safe initialization of μ
-fn initialize_mu_safe(y: &Array1<f64>, family: &dyn Family) -> Array1<f64> {
-    let y_mean = y.mean().unwrap_or(1.0).max(0.01);
-    let name = family.name();
-
-    y.mapv(|yi| {
-        let val = (yi + y_mean) / 2.0;
-        match name {
-            "Poisson" | "Gamma" => val.max(0.001),
-            "Binomial" => val.max(0.001).min(0.999),
-            _ => val,
-        }
-    })
-}
-
-/// Clamp μ to valid range for the family
-fn clamp_mu(mu: &Array1<f64>, family: &dyn Family) -> Array1<f64> {
-    use crate::constants::{MU_MIN_POSITIVE, MU_MIN_PROBABILITY, MU_MAX_PROBABILITY};
-    let name = family.name();
-    mu.mapv(|x| match name {
-        "Poisson" | "Gamma" => x.max(MU_MIN_POSITIVE),
-        "Binomial" => x.max(MU_MIN_PROBABILITY).min(MU_MAX_PROBABILITY),
-        _ => x,
-    })
 }
 
 // =============================================================================

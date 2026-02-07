@@ -121,6 +121,16 @@ impl Family for QuasiPoissonFamily {
     fn is_valid_mu(&self, mu: &Array1<f64>) -> bool {
         PoissonFamily.is_valid_mu(mu)
     }
+    
+    fn clamp_mu(&self, mu: &Array1<f64>) -> Array1<f64> {
+        PoissonFamily.clamp_mu(mu)
+    }
+    
+    fn is_log_link_default(&self) -> bool { true }
+    
+    fn log_likelihood(&self, y: &Array1<f64>, mu: &Array1<f64>, _scale: f64, weights: Option<&Array1<f64>>) -> f64 {
+        crate::diagnostics::log_likelihood_poisson(y, mu, weights)
+    }
 }
 
 // =============================================================================
@@ -190,6 +200,14 @@ impl Family for QuasiBinomialFamily {
     /// Valid μ check (same as Binomial: must be in (0, 1))
     fn is_valid_mu(&self, mu: &Array1<f64>) -> bool {
         BinomialFamily.is_valid_mu(mu)
+    }
+    
+    fn clamp_mu(&self, mu: &Array1<f64>) -> Array1<f64> {
+        BinomialFamily.clamp_mu(mu)
+    }
+    
+    fn log_likelihood(&self, y: &Array1<f64>, mu: &Array1<f64>, _scale: f64, weights: Option<&Array1<f64>>) -> f64 {
+        crate::diagnostics::log_likelihood_binomial(y, mu, weights)
     }
 }
 

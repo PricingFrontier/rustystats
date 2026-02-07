@@ -1281,7 +1281,7 @@ class DiagnosticsComputer:
             )
         except Exception as e:
             # Re-raise to surface bugs - factor significance computation shouldn't fail silently
-            raise RuntimeError(f"Failed to compute factor significance for '{factor_name}': {e}") from e
+            raise RuntimeError(f"Failed to compute factor significance for '{name}': {e}") from e
     
     def _compute_ae_continuous(self, values: np.ndarray, n_bins: int) -> List[ActualExpectedBin]:
         """Compute A/E for continuous factor using Rust backend (compact format)."""
@@ -1346,15 +1346,13 @@ class DiagnosticsComputer:
     
     def _compute_residual_pattern_categorical(self, values: np.ndarray) -> ResidualPattern:
         """Compute residual pattern for categorical factor (compressed)."""
-        # Use pandas groupby for vectorized computation (faster than Python loop)
-        import pandas as pd
-        
-        df = pd.DataFrame({'level': values, 'resid': self.pearson_residuals})
-        
-        # Compute group means in one vectorized operation
-        group_stats = df.groupby('level')['resid'].agg(['mean', 'count'])
-        level_means = group_stats['mean'].values
-        level_counts = group_stats['count'].values
+        unique_levels = np.unique(values)
+        level_means = np.empty(len(unique_levels))
+        level_counts = np.empty(len(unique_levels))
+        for i, level in enumerate(unique_levels):
+            mask = values == level
+            level_counts[i] = np.sum(mask)
+            level_means[i] = np.mean(self.pearson_residuals[mask])
         
         # Compute eta-squared (variance explained)
         overall_mean = np.mean(self.pearson_residuals)

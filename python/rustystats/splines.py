@@ -411,8 +411,8 @@ class SplineTerm:
         self._lambda: Optional[float] = None
         self._edf: Optional[float] = None
         
-        if self.spline_type not in ("bs", "ns"):
-            raise ValueError(f"spline_type must be 'bs' or 'ns', got '{spline_type}'")
+        if self.spline_type not in ("bs", "ns", "ms"):
+            raise ValueError(f"spline_type must be 'bs', 'ns', or 'ms', got '{spline_type}'")
     
     def transform(self, x: np.ndarray) -> Tuple[np.ndarray, List[str]]:
         """
@@ -434,24 +434,22 @@ class SplineTerm:
         # On subsequent calls (prediction), reuse the stored boundary knots
         x_arr = np.asarray(x).ravel()
         if self._computed_boundary_knots is None:
-            # First call - compute and store boundary knots
-            if self.boundary_knots is not None:
-                self._computed_boundary_knots = self.boundary_knots
-            else:
-                self._computed_boundary_knots = (float(np.min(x_arr)), float(np.max(x_arr)))
+            # First call - compute and store knots using Rust for consistency
+            from rustystats._rustystats import compute_knots_py, compute_knots_natural_py
             
-            # Compute internal knots based on quantiles (only on first call)
-            # Number of internal knots = df - degree - 1 (for bs) or df - 1 (for ns/ms)
+            bk = self.boundary_knots  # user-specified or None
+            
             if self.spline_type == "bs":
-                n_internal = max(0, self.df - self.degree - 1)
+                interior, (x_min, x_max) = compute_knots_py(
+                    x_arr, self.df, self.degree, bk,
+                )
             else:  # ns, ms
-                n_internal = max(0, self.df - 1)
+                interior, (x_min, x_max) = compute_knots_natural_py(
+                    x_arr, self.df, bk,
+                )
             
-            if n_internal > 0:
-                quantiles = np.linspace(0, 1, n_internal + 2)[1:-1]
-                self._computed_internal_knots = [float(np.quantile(x_arr, q)) for q in quantiles]
-            else:
-                self._computed_internal_knots = []
+            self._computed_boundary_knots = (x_min, x_max)
+            self._computed_internal_knots = list(interior)
         
         # Use stored boundary knots for basis computation
         boundary_knots_to_use = self._computed_boundary_knots
@@ -494,6 +492,18 @@ class SplineTerm:
                 names = [f"ns({self.var_name}, {i+1}/{self.df}, k)" for i in range(self.df)]
             else:
                 names = ns_names(self.var_name, self.df, include_intercept=False)
+        elif self.spline_type == "ms":
+            # Monotonic splines use I-spline basis via bs() with monotonicity
+            mono = self.monotonicity or "increasing"
+            basis = bs(x, df=self.df, degree=self.degree,
+                      knots=self._computed_internal_knots,
+                      boundary_knots=boundary_knots_to_use, include_intercept=False,
+                      monotonicity=mono)
+            sign = "+" if mono == "increasing" else "-"
+            if self._is_smooth:
+                names = [f"ms({self.var_name}, {i+1}/{self.df}, k, {sign})" for i in range(self.df)]
+            else:
+                names = [f"ms({self.var_name}, {i+1}/{self.df}, {sign})" for i in range(self.df)]
         else:
             raise ValueError(f"Unknown spline_type: {self.spline_type}")
         

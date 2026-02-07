@@ -61,6 +61,7 @@ pub use model_fit::{
     bic,
     null_deviance,
     null_deviance_with_offset,
+    null_deviance_for_family,
 };
 
 pub use negbinomial::{

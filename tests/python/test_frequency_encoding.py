@@ -701,5 +701,149 @@ class TestTEInteractionPredict:
         assert diag is not None
 
 
+class TestTEInteractionWithExposure:
+    """Test exposure-weighted interaction target encoding."""
+    
+    def test_basic_exposure_weighted_interaction(self):
+        """Exposure-weighted TE interaction should use sum(claims)/sum(exposure)."""
+        import polars as pl
+        
+        # Create data where exposure varies significantly
+        train_data = pl.DataFrame({
+            "y": [10, 5, 20, 2, 8, 1, 15, 3, 12, 6],
+            "brand": ["A", "A", "B", "B", "A", "B", "A", "B", "A", "B"],
+            "region": ["X", "Y", "X", "Y", "X", "Y", "Y", "X", "X", "Y"],
+            "exposure": [1.0, 0.5, 2.0, 0.1, 1.0, 0.5, 1.5, 0.2, 1.0, 0.5],
+            "age": [25.0, 30.0, 35.0, 40.0, 45.0, 50.0, 55.0, 60.0, 65.0, 70.0],
+        })
+        
+        # Fit with exposure as offset - auto-logs for Poisson
+        # Internally extracts raw exposure for TE encoding
+        result = rs.glm(
+            "y ~ TE(brand:region) + age",
+            train_data,
+            family="poisson",
+            offset="exposure",
+        ).fit()
+        
+        assert result.converged
+        # TE column should be present
+        assert any("TE(" in n for n in result.feature_names)
+    
+    def test_exposure_weighted_vs_rate_encoding_differs(self):
+        """Exposure-weighted and rate-based encoding should give different results."""
+        from rustystats._rustystats import (
+            target_encode_interaction_py,
+            target_encode_interaction_with_exposure_py,
+        )
+        
+        # Create data where exposure varies a lot
+        cat1 = ["A", "A", "A", "B", "B", "B"]
+        cat2 = ["X", "X", "Y", "X", "Y", "Y"]
+        claims = np.array([10.0, 1.0, 5.0, 20.0, 2.0, 8.0])
+        exposure = np.array([10.0, 0.1, 1.0, 2.0, 0.5, 4.0])
+        
+        # Rate-based: mean(claims/exposure) per level
+        rates = claims / exposure
+        _, _, prior_rate, stats_rate = target_encode_interaction_py(
+            cat1, cat2, rates, "brand", "region", 1.0, 1, 42
+        )
+        
+        # Exposure-weighted: sum(claims)/sum(exposure) per level
+        _, _, prior_exp, stats_exp = target_encode_interaction_with_exposure_py(
+            cat1, cat2, claims, exposure, "brand", "region", 1.0, 1, 42
+        )
+        
+        # Priors should differ: mean(rate) != total_claims/total_exposure
+        # mean(rate) = mean([1.0, 10.0, 5.0, 10.0, 4.0, 2.0]) = 5.33
+        # total_claims/total_exposure = 46/17.6 = 2.61
+        assert abs(prior_rate - prior_exp) > 0.1
+    
+    def test_exposure_weighted_interaction_stats_format(self):
+        """Stats from exposure-weighted interaction should contain (sum_claims, sum_exposure)."""
+        from rustystats._rustystats import target_encode_interaction_with_exposure_py
+        
+        cat1 = ["A", "A", "B", "B"]
+        cat2 = ["X", "Y", "X", "Y"]
+        claims = np.array([10.0, 5.0, 20.0, 8.0])
+        exposure = np.array([1.0, 0.5, 2.0, 1.0])
+        
+        _, name, prior, stats = target_encode_interaction_with_exposure_py(
+            cat1, cat2, claims, exposure, "brand", "region", 1.0, 4, 42
+        )
+        
+        assert "TE(" in name
+        assert prior > 0
+        # Stats should be (sum_claims, sum_exposure) per combined level
+        for level, (sc, se) in stats.items():
+            assert sc >= 0  # sum_claims
+            assert se > 0   # sum_exposure
+        
+        # Check specific level
+        assert "A:X" in stats
+        np.testing.assert_allclose(stats["A:X"][0], 10.0)  # sum_claims for A:X
+        np.testing.assert_allclose(stats["A:X"][1], 1.0)   # sum_exposure for A:X
+    
+    def test_exposure_weighted_prior_is_correct(self):
+        """Prior should equal total_claims / total_exposure, not mean(claims/exposure)."""
+        from rustystats._rustystats import target_encode_interaction_with_exposure_py
+        
+        cat1 = ["A", "A", "B", "B", "A", "B"]
+        cat2 = ["X", "Y", "X", "Y", "X", "Y"]
+        claims = np.array([10.0, 5.0, 20.0, 8.0, 3.0, 12.0])
+        exposure = np.array([2.0, 1.0, 4.0, 2.0, 0.5, 3.0])
+        
+        _, _, prior, stats = target_encode_interaction_with_exposure_py(
+            cat1, cat2, claims, exposure, "c1", "c2", 1.0, 4, 42
+        )
+        
+        # Prior must be total_claims / total_exposure
+        expected_prior = claims.sum() / exposure.sum()
+        np.testing.assert_allclose(prior, expected_prior, rtol=1e-10,
+            err_msg=f"Prior {prior} != total_claims/total_exposure {expected_prior}")
+        
+        # Per-level stats must aggregate correctly
+        # A:X has observations 0 and 4: claims=[10,3], exposure=[2,0.5]
+        np.testing.assert_allclose(stats["A:X"][0], 13.0)  # sum_claims
+        np.testing.assert_allclose(stats["A:X"][1], 2.5)   # sum_exposure
+        # B:Y has observations 3 and 5: claims=[8,12], exposure=[2,3]
+        np.testing.assert_allclose(stats["B:Y"][0], 20.0)
+        np.testing.assert_allclose(stats["B:Y"][1], 5.0)
+    
+    def test_exposure_weighted_interaction_prediction(self):
+        """Model with exposure-weighted TE interaction should predict on new data."""
+        import polars as pl
+        
+        np.random.seed(42)
+        n = 100
+        train_data = pl.DataFrame({
+            "y": np.random.poisson(3, n),
+            "brand": np.random.choice(["A", "B", "C"], n),
+            "region": np.random.choice(["X", "Y"], n),
+            "exposure": np.random.uniform(0.5, 2.0, n),
+            "age": np.random.uniform(20, 60, n).round(1),
+        })
+        
+        result = rs.glm(
+            "y ~ TE(brand:region) + age",
+            train_data,
+            family="poisson",
+            offset="exposure",
+        ).fit()
+        
+        # Predict on new data
+        test_data = pl.DataFrame({
+            "brand": ["A", "B", "C"],
+            "region": ["X", "Y", "X"],
+            "exposure": [1.0, 1.0, 1.0],
+            "age": [30.0, 40.0, 50.0],
+        })
+        
+        predictions = result.predict(test_data)
+        assert len(predictions) == 3
+        assert all(np.isfinite(predictions))
+        assert all(predictions > 0)  # Poisson predictions must be positive
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -56,7 +56,7 @@ For Actuaries
 """
 
 # Version of the package (must match pyproject.toml)
-__version__ = "0.3.2"
+__version__ = "0.3.8"
 
 # Import the Rust extension module
 # This contains the fast implementations

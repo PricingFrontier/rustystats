@@ -172,6 +172,13 @@ impl Family for TweedieFamily {
         mu.iter().all(|&m| m > 0.0)
     }
     
+    fn clamp_mu(&self, mu: &Array1<f64>) -> Array1<f64> {
+        use crate::constants::MU_MIN_POSITIVE;
+        mu.mapv(|x| x.max(MU_MIN_POSITIVE))
+    }
+    
+    fn is_log_link_default(&self) -> bool { true }
+    
     /// Tweedie (1 < p < 2) with log link benefits from true Hessian weights.
     /// 
     /// Using the observed Hessian can significantly reduce IRLS iterations.

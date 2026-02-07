@@ -173,6 +173,17 @@ impl Family for NegativeBinomialFamily {
     fn is_valid_mu(&self, mu: &Array1<f64>) -> bool {
         mu.iter().all(|&m| m > 0.0 && m.is_finite())
     }
+    
+    fn clamp_mu(&self, mu: &Array1<f64>) -> Array1<f64> {
+        use crate::constants::MU_MIN_POSITIVE;
+        mu.mapv(|x| x.max(MU_MIN_POSITIVE))
+    }
+    
+    fn is_log_link_default(&self) -> bool { true }
+    
+    fn log_likelihood(&self, y: &Array1<f64>, mu: &Array1<f64>, _scale: f64, weights: Option<&Array1<f64>>) -> f64 {
+        crate::diagnostics::nb_loglikelihood(y, mu, self.theta, weights)
+    }
 }
 
 // =============================================================================

@@ -163,8 +163,9 @@ def _fit_with_smooth_penalties(
     """
     Fit GLM with penalized smooth terms using fast GCV optimization.
     
-    Uses mgcv-style Brent's method for lambda optimization within IRLS,
-    which is much faster than grid search for large datasets.
+    Uses a unified Rust entry point that takes the full design matrix and
+    smooth term specs (column ranges + penalties + monotonicity). No column
+    splitting or coefficient reordering needed.
     
     Parameters
     ----------
@@ -188,338 +189,55 @@ def _fit_with_smooth_penalties(
     total_edf : float
     gcv : float
     """
-    from rustystats._rustystats import fit_glm_py as _fit_glm_rust
-    from rustystats._rustystats import fit_smooth_glm_fast_py as _fit_smooth_fast
-    from rustystats._rustystats import fit_smooth_glm_monotonic_py as _fit_smooth_monotonic
-    from rustystats.smooth import penalty_matrix, gcv_score, compute_edf
-    
     n, p = X.shape
     n_terms = len(smooth_terms)
     
     if n_terms == 0:
-        # No smooth terms - use standard fitting
+        from rustystats._rustystats import fit_glm_py as _fit_glm_rust
         result = _fit_glm_rust(
             y, X, family, link, var_power, theta,
             offset, weights, 0.0, 0.0, max_iter, tol, None, None
         )
         return result, [], float(p), 0.0
     
-    # For single smooth term, use fast Rust implementation
-    if n_terms == 1:
-        start, end = smooth_col_indices[0]
-        
-        # Split design matrix into parametric and smooth parts
-        # Parametric = columns before smooth term + columns after smooth term
-        x_before = X[:, :start]  # Columns before smooth term (including intercept)
-        x_after = X[:, end:]     # Columns after smooth term (e.g., other predictors)
-        if x_after.shape[1] > 0:
-            x_parametric = np.column_stack([x_before, x_after])
-        else:
-            x_parametric = x_before
-        smooth_basis = X[:, start:end]  # Smooth term columns
-        
-        # Check if this is a monotonic smooth term
-        monotonicity = getattr(smooth_terms[0], '_smooth_monotonicity', None)
-        
-        # Use defaults for var_power and theta if not specified
-        vp = var_power if var_power is not None else 1.5
-        th = theta if theta is not None else 1.0
-        
-        if monotonicity:
-            # Use monotonic solver with NNLS
-            rust_result = _fit_smooth_monotonic(
-                y, x_parametric, smooth_basis, family, monotonicity, link,
-                offset, weights, max_iter, tol, lambda_min, lambda_max,
-                vp, th
-            )
-        else:
-            # Call fast Rust solver (unconstrained)
-            rust_result = _fit_smooth_fast(
-                y, x_parametric, smooth_basis, family, link,
-                offset, weights, max_iter, tol, lambda_min, lambda_max,
-                vp, th
-            )
-        
-        # Reorder coefficients to match original design matrix order:
-        # [parametric_before, smooth, parametric_after]
-        coef = rust_result['coefficients']
-        n_before = x_before.shape[1]
-        n_smooth = smooth_basis.shape[1]
-        n_after = x_after.shape[1]
-        
-        # Rust returns: [parametric (before+after), smooth]
-        # We need: [before, smooth, after]
-        coef_reordered = np.zeros(len(coef))
-        coef_reordered[:n_before] = coef[:n_before]  # Before smooth
-        coef_reordered[n_before:n_before+n_smooth] = coef[n_before+n_after:]  # Smooth
-        if n_after > 0:
-            coef_reordered[n_before+n_smooth:] = coef[n_before:n_before+n_after]  # After smooth
-        rust_result['coefficients'] = coef_reordered
-        
-        # Also reorder covariance matrix
-        cov = rust_result['covariance_unscaled']
-        if cov.shape[0] == len(coef):
-            # Build reordering indices
-            idx_before = list(range(n_before))
-            idx_smooth = list(range(n_before + n_after, n_before + n_after + n_smooth))
-            idx_after = list(range(n_before, n_before + n_after))
-            reorder_idx = idx_before + idx_smooth + idx_after
-            cov_reordered = cov[np.ix_(reorder_idx, reorder_idx)]
-            rust_result['covariance_unscaled'] = cov_reordered
-        
-        # Build result object compatible with existing code
-        # Create a mock result object with the needed attributes
-        class FastResult:
-            def __init__(self, d, y, family_name, design_matrix=None, weights=None):
-                self.coefficients = d['coefficients']
-                self.fitted_values = d['fitted_values']
-                self.linear_predictor = d['linear_predictor']
-                self.deviance = d['deviance']
-                self.iterations = d['iterations']
-                self.converged = d['converged']
-                self.covariance_unscaled = d['covariance_unscaled']
-                self.cov_params_unscaled = d['covariance_unscaled']  # Alias for compatibility
-                # Store design matrix and weights for score tests
-                self.design_matrix = design_matrix
-                self._weights = weights
-                # Compute IRLS weights from fitted values (W = mu for Poisson, 1 for Gaussian)
-                if family_name.lower() == 'poisson':
-                    self.irls_weights = self.fitted_values
-                elif family_name.lower() == 'binomial':
-                    mu = np.clip(self.fitted_values, 1e-10, 1 - 1e-10)
-                    self.irls_weights = mu * (1 - mu)
-                elif family_name.lower() == 'gamma':
-                    self.irls_weights = self.fitted_values ** 2
-                else:  # Gaussian
-                    self.irls_weights = np.ones(len(self.fitted_values))
-                # Additional attributes needed for summary()
-                self._y = y
-                self._family_name = family_name
-                self._n = len(y)
-                self._p = len(d['coefficients'])
-            
-            @property
-            def params(self):
-                return self.coefficients
-            
-            @property
-            def nobs(self):
-                return self._n
-            
-            @property
-            def df_resid(self):
-                return self._n - self._p
-            
-            @property
-            def df_model(self):
-                return self._p - 1  # Exclude intercept
-            
-            @property
-            def family(self):
-                return self._family_name
-            
-            @property
-            def is_regularized(self):
-                return False
-            
-            @property
-            def penalty_type(self):
-                return "none"
-            
-            @property
-            def alpha(self):
-                return 0.0
-            
-            @property
-            def l1_ratio(self):
-                return 0.0
-            
-            def bse(self):
-                return np.sqrt(np.diag(self.covariance_unscaled))
-            
-            def tvalues(self):
-                return self.params / self.bse()
-            
-            def pvalues(self):
-                # Two-tailed p-values using normal approximation
-                # erfc is the complementary error function: erfc(x) = 1 - erf(x)
-                # For standard normal: P(|Z| > |z|) = erfc(|z| / sqrt(2))
-                from math import erfc, sqrt
-                z = np.abs(self.tvalues())
-                return np.array([erfc(abs(zi) / sqrt(2)) for zi in z])
-            
-            def conf_int(self, alpha=0.05):
-                # Use standard normal quantile for confidence intervals
-                # For 95% CI: z = 1.96
-                z_multipliers = {0.05: 1.959964, 0.01: 2.575829, 0.10: 1.644854}
-                z = z_multipliers.get(alpha, 1.959964)
-                se = self.bse()
-                return np.column_stack([self.params - z * se, self.params + z * se])
-            
-            def significance_codes(self):
-                codes = []
-                for p in self.pvalues():
-                    if p < 0.001:
-                        codes.append("***")
-                    elif p < 0.01:
-                        codes.append("**")
-                    elif p < 0.05:
-                        codes.append("*")
-                    elif p < 0.1:
-                        codes.append(".")
-                    else:
-                        codes.append("")
-                return codes
-            
-            def llf(self):
-                # Approximate log-likelihood from deviance
-                return -0.5 * self.deviance
-            
-            def aic(self):
-                return -2 * self.llf() + 2 * self._p
-            
-            def bic(self):
-                return -2 * self.llf() + np.log(self._n) * self._p
-            
-            def pearson_chi2(self):
-                # Approximate from fitted values
-                residuals = self._y - self.fitted_values
-                return np.sum(residuals**2 / np.maximum(self.fitted_values, 1e-10))
-            
-            def null_deviance(self):
-                # Compute null deviance (intercept-only model)
-                y_mean = np.mean(self._y)
-                if self._family_name.lower() in ('poisson', 'gamma'):
-                    # Poisson/Gamma deviance
-                    y_safe = np.maximum(self._y, 1e-10)
-                    return 2 * np.sum(self._y * np.log(y_safe / y_mean) - (self._y - y_mean))
-                else:
-                    # Gaussian
-                    return np.sum((self._y - y_mean)**2)
-            
-            def scale(self):
-                return 1.0
-        
-        result = FastResult(rust_result, y, family, design_matrix=X, weights=weights)
-        
-        # Build smooth term result
-        smooth_results = [SmoothTermResult(
-            variable=smooth_terms[0].var_name,
-            k=smooth_terms[0].df,
-            edf=rust_result['smooth_edfs'][0],
-            lambda_=rust_result['lambdas'][0],
-            gcv=rust_result['gcv'],
-            col_start=start,
-            col_end=end,
-        )]
-        
-        # Update the smooth term with fitted values
-        smooth_terms[0]._lambda = rust_result['lambdas'][0]
-        smooth_terms[0]._edf = rust_result['smooth_edfs'][0]
-        
-        return result, smooth_results, rust_result['total_edf'], rust_result['gcv']
+    from rustystats._rustystats import fit_smooth_glm_unified_py as _fit_smooth_unified
     
-    # For multiple smooth terms, fall back to Python implementation for now
-    # Build penalty matrices for each smooth term
+    # Build penalty matrices and monotonicity specs for each smooth term
     penalties = []
+    monotonicity_specs = []
     for i, term in enumerate(smooth_terms):
         start, end = smooth_col_indices[i]
-        n_cols = end - start
-        penalty = penalty_matrix(n_cols, order=2)
-        penalties.append(penalty)
-    
-    # For multiple smooth terms, use coordinate-wise optimization with coarse grid
-    log_lambdas = np.linspace(np.log10(lambda_min), np.log10(lambda_max), n_lambda)
-    lambda_grid = 10 ** log_lambdas
-    lambdas = [1.0] * n_terms
-    
-    for _ in range(3):  # Reduced outer iterations (was 10)
-        old_lambdas = lambdas.copy()
+        k = end - start
+        penalties.append(term.compute_penalty_matrix(k)[:k, :k])
         
-        for term_idx in range(n_terms):
-            best_lambda = lambdas[term_idx]
-            best_gcv = float('inf')
-            
-            for lam in lambda_grid:
-                test_lambdas = lambdas.copy()
-                test_lambdas[term_idx] = lam
-                
-                # Compute total penalty
-                total_penalty = 0.0
-                for i, (start, end) in enumerate(smooth_col_indices):
-                    total_penalty += test_lambdas[i] * np.sum(np.diag(penalties[i]))
-                
-                alpha = total_penalty / max(p - 1, 1)
-                
-                try:
-                    result = _fit_glm_rust(
-                        y, X, family, link, var_power, theta,
-                        offset, weights, alpha, 0.0, max_iter, tol, None, None
-                    )
-                    
-                    # Compute total EDF
-                    total_edf = smooth_col_indices[0][0]  # Parametric terms
-                    for i, (start, end) in enumerate(smooth_col_indices):
-                        total_edf += compute_edf(np.eye(end - start), penalties[i], test_lambdas[i])
-                    
-                    gcv = gcv_score(result.deviance, n, total_edf)
-                    
-                    if gcv < best_gcv:
-                        best_gcv = gcv
-                        best_lambda = lam
-                except Exception as e:
-                    warnings.warn(
-                        f"Multi-smooth term {term_idx} lambda={lam:.4f} fit failed: {e}.",
-                        RuntimeWarning,
-                        stacklevel=2
-                    )
-                    continue
-            
-            lambdas[term_idx] = best_lambda
-        
-        # Check convergence
-        max_change = max(abs(l1 - l2) / max(l2, 1e-10) for l1, l2 in zip(lambdas, old_lambdas))
-        if max_change < 0.1:  # Relaxed convergence (was 0.01)
-            break
+        mono = getattr(term, '_smooth_monotonicity', None) or \
+               getattr(term, 'monotonicity', None)
+        monotonicity_specs.append(mono)
     
-    # Final fit with selected lambdas
-    total_penalty = sum(
-        lambdas[i] * np.sum(np.diag(penalties[i])) 
-        for i in range(n_terms)
-    )
-    alpha = total_penalty / max(p - 1, 1)
-    
-    final_result = _fit_glm_rust(
-        y, X, family, link, var_power, theta,
-        offset, weights, alpha, 0.0, max_iter, tol, None, None
+    # Call unified Rust solver — full design matrix, no splitting needed
+    rust_result, smooth_meta = _fit_smooth_unified(
+        y, X, smooth_col_indices, penalties, family,
+        link, offset, weights, max_iter, tol, lambda_min, lambda_max,
+        monotonicity_specs if any(m is not None for m in monotonicity_specs) else None,
     )
     
-    # Compute EDFs and build results
+    # Build smooth term results — coefficients are already in original column order
     smooth_results = []
-    n_parametric = smooth_col_indices[0][0]
-    total_edf = float(n_parametric)
-    
     for i, term in enumerate(smooth_terms):
         start, end = smooth_col_indices[i]
-        edf_term = compute_edf(np.eye(end - start), penalties[i], lambdas[i])
-        total_edf += edf_term
-        
         smooth_results.append(SmoothTermResult(
             variable=term.var_name,
             k=term.df,
-            edf=edf_term,
-            lambda_=lambdas[i],
-            gcv=gcv_score(final_result.deviance, n, total_edf),
+            edf=smooth_meta['smooth_edfs'][i],
+            lambda_=smooth_meta['lambdas'][i],
+            gcv=smooth_meta['gcv'],
             col_start=start,
             col_end=end,
         ))
-        
-        term._lambda = lambdas[i]
-        term._edf = edf_term
+        term._lambda = smooth_meta['lambdas'][i]
+        term._edf = smooth_meta['smooth_edfs'][i]
     
-    final_gcv = gcv_score(final_result.deviance, n, total_edf)
-    
-    return final_result, smooth_results, total_edf, final_gcv
+    return rust_result, smooth_results, smooth_meta['total_edf'], smooth_meta['gcv']
 
 
 def _fit_glm_core(
@@ -624,7 +342,139 @@ def _build_results(
     )
 
 
-class FormulaGLM:
+class _GLMBase:
+    """
+    Shared base for FormulaGLM and FormulaGLMDict.
+    
+    Provides common data access, offset/weights processing, and CV path handling.
+    Subclasses must set: _data_ref, family, link, _offset_spec, _seed.
+    """
+    
+    @property
+    def data(self):
+        """Access the original DataFrame (may raise if garbage collected)."""
+        d = self._data_ref()
+        if d is None:
+            raise RuntimeError(
+                "Original DataFrame has been garbage collected. "
+                "Keep a reference to the DataFrame if you need to access it after fitting."
+            )
+        return d
+    
+    def _uses_log_link(self) -> bool:
+        """Check if model uses log link (explicit or canonical)."""
+        if self.link == "log":
+            return True
+        if self.link is None and self.family in ("poisson", "quasipoisson", "negbinomial", "gamma"):
+            return True
+        return False
+    
+    def _process_offset(
+        self,
+        offset: Optional[Union[str, np.ndarray]],
+    ) -> Optional[np.ndarray]:
+        """Process offset specification, applying log for log-link families."""
+        if offset is None:
+            return None
+        
+        if isinstance(offset, str):
+            offset_values = _get_column(self.data, offset)
+            if self._uses_log_link():
+                if np.all(offset_values > 0) and np.mean(offset_values) > 0.01:
+                    offset_values = np.log(offset_values)
+            return offset_values.astype(np.float64)
+        else:
+            return np.asarray(offset, dtype=np.float64)
+    
+    def _process_weights(
+        self,
+        weights: Optional[Union[str, np.ndarray]],
+    ) -> Optional[np.ndarray]:
+        """Process weights specification."""
+        if weights is None:
+            return None
+        if isinstance(weights, str):
+            return _get_column(self.data, weights).astype(np.float64)
+        else:
+            return np.asarray(weights, dtype=np.float64)
+    
+    def _get_raw_exposure(
+        self,
+        offset: Optional[Union[str, np.ndarray]],
+    ) -> Optional[np.ndarray]:
+        """Get raw exposure values for target encoding (before log transform)."""
+        if offset is None:
+            return None
+        if isinstance(offset, str):
+            return _get_column(self.data, offset).astype(np.float64)
+        else:
+            return np.asarray(offset, dtype=np.float64)
+    
+    def _resolve_cv_path(
+        self,
+        alpha: float,
+        l1_ratio: float,
+        max_iter: int,
+        tol: float,
+        cv: Optional[int],
+        selection: str,
+        regularization: Optional[str],
+        n_alphas: int,
+        alpha_min_ratio: float,
+        cv_seed: Optional[int],
+        include_unregularized: bool,
+        verbose: bool,
+    ) -> tuple:
+        """
+        Handle CV-based regularization path if requested.
+        
+        Returns (alpha, l1_ratio, path_info) with updated alpha/l1_ratio
+        from CV selection, or original values if no CV.
+        """
+        if regularization is not None and cv is None:
+            cv = 5
+        
+        if cv is None:
+            return alpha, l1_ratio, None
+        
+        if regularization is None:
+            raise ValueError(
+                "When cv is specified, 'regularization' must be set to 'ridge', 'lasso', or 'elastic_net'"
+            )
+        
+        from rustystats.regularization_path import fit_cv_regularization_path
+        
+        if regularization == "ridge":
+            cv_l1_ratio = 0.0
+        elif regularization == "lasso":
+            cv_l1_ratio = 1.0
+        elif regularization == "elastic_net":
+            cv_l1_ratio = l1_ratio if l1_ratio > 0 else 0.5
+        else:
+            raise ValueError(f"Unknown regularization type: {regularization}")
+        
+        path_info = fit_cv_regularization_path(
+            glm_instance=self,
+            cv=cv,
+            selection=selection,
+            regularization=regularization,
+            n_alphas=n_alphas,
+            alpha_min_ratio=alpha_min_ratio,
+            l1_ratio=cv_l1_ratio,
+            max_iter=max_iter,
+            tol=tol,
+            seed=cv_seed if cv_seed is not None else self._seed,
+            include_unregularized=include_unregularized,
+            verbose=verbose,
+        )
+        
+        if verbose:
+            print(f"\nRefitting on full data with alpha={path_info.selected_alpha:.6f}")
+        
+        return path_info.selected_alpha, path_info.selected_l1_ratio, path_info
+
+
+class FormulaGLM(_GLMBase):
     """
     GLM model with formula-based specification.
     
@@ -735,90 +585,6 @@ class FormulaGLM:
         
         # Process weights
         self.weights = self._process_weights(weights)
-    
-    @property
-    def data(self):
-        """Access the original DataFrame (may raise if garbage collected)."""
-        d = self._data_ref()
-        if d is None:
-            raise RuntimeError(
-                "Original DataFrame has been garbage collected. "
-                "Keep a reference to the DataFrame if you need to access it after fitting."
-            )
-        return d
-    
-    def _uses_log_link(self) -> bool:
-        """
-        Check if model uses log link (explicit or canonical).
-        
-        Returns True if:
-        - link is explicitly "log", OR
-        - link is None (canonical) and family defaults to log link
-        """
-        if self.link == "log":
-            return True
-        if self.link is None and self.family in ("poisson", "quasipoisson", "negbinomial", "gamma"):
-            return True
-        return False
-    
-    def _process_offset(
-        self, 
-        offset: Optional[Union[str, np.ndarray]]
-    ) -> Optional[np.ndarray]:
-        """Process offset specification."""
-        if offset is None:
-            return None
-            
-        if isinstance(offset, str):
-            # It's a column name
-            offset_values = _get_column(self.data, offset)
-            
-            # For log-link models, auto-apply log to exposure
-            if self._uses_log_link():
-                # Check if values look like exposure (positive, not already logged)
-                if np.all(offset_values > 0) and np.mean(offset_values) > 0.01:
-                    offset_values = np.log(offset_values)
-            
-            return offset_values.astype(np.float64)
-        else:
-            return np.asarray(offset, dtype=np.float64)
-    
-    def _process_weights(
-        self, 
-        weights: Optional[Union[str, np.ndarray]]
-    ) -> Optional[np.ndarray]:
-        """Process weights specification."""
-        if weights is None:
-            return None
-            
-        if isinstance(weights, str):
-            return _get_column(self.data, weights).astype(np.float64)
-        else:
-            return np.asarray(weights, dtype=np.float64)
-    
-    def _get_raw_exposure(
-        self,
-        offset: Optional[Union[str, np.ndarray]]
-    ) -> Optional[np.ndarray]:
-        """
-        Get raw exposure values for target encoding.
-        
-        For frequency models (Poisson, NegBinomial, etc.), the offset is typically
-        log(exposure). However, target encoding needs the raw exposure values
-        to compute claim rates (claims/exposure) instead of raw claim counts.
-        
-        This method extracts the raw exposure BEFORE log transformation.
-        """
-        if offset is None:
-            return None
-        
-        if isinstance(offset, str):
-            # It's a column name - extract raw values
-            return _get_column(self.data, offset).astype(np.float64)
-        else:
-            # It's an array - assume it's raw exposure values
-            # (if user passed log(exposure), they'll get log-rate encoding which is also valid)
-            return np.asarray(offset, dtype=np.float64)
     
     @property
     def df_model(self) -> int:
@@ -949,17 +715,20 @@ class FormulaGLM:
         max_theta_iter: int = 10,
     ) -> tuple:
         """
-        Fit negative binomial GLM with moment-based theta estimation.
+        Fit negative binomial GLM with profile-likelihood theta estimation.
         
-        Applies minimum ridge regularization (alpha >= 1e-6) for numerical
-        stability when fitting negative binomial models.
+        Delegates to the Rust ``fit_negbinomial_py`` which performs:
+        1. Initial Poisson fit for starting μ
+        2. Moment-based theta estimate
+        3. Profile iteration: fit NegBin(θ) → update θ → repeat
+        4. Final fit with converged θ
         
         Parameters
         ----------
         X : np.ndarray
             Design matrix
         alpha : float
-            User-specified regularization (will be at least 1e-6)
+            Regularization strength
         l1_ratio : float
             Elastic net mixing parameter
         max_iter : int
@@ -976,73 +745,13 @@ class FormulaGLM:
         tuple
             (GLMResults, family_string) where family_string includes theta
         """
-        from rustystats._rustystats import fit_glm_py as _fit_glm_rust
+        from rustystats._rustystats import fit_negbinomial_py as _fit_nb_rust
         
-        # Initial Poisson fit to get starting mu values
-        poisson_result = _fit_glm_rust(
-            self.y, X, "poisson", self.link, 1.5, 1.0,
-            self.offset, self.weights, alpha, l1_ratio, max_iter, tol
+        result = _fit_nb_rust(
+            self.y, X, self.link, None, theta_tol, max_theta_iter,
+            self.offset, self.weights, max_iter, tol, alpha, l1_ratio,
         )
-        mu = poisson_result.fittedvalues
-        
-        # Estimate initial theta from method of moments
-        # Var(Y) = mu + mu^2/theta => theta = mu^2 / (Var(Y) - mu)
-        y_arr = np.asarray(self.y)
-        residuals = y_arr - mu
-        var_estimate = np.mean(residuals**2)
-        mean_mu = np.mean(mu)
-        theta = max(0.01, min(1000.0, mean_mu**2 / max(var_estimate - mean_mu, 0.01)))
-        
-        # Profile likelihood iteration with minimum ridge for stability
-        effective_alpha = max(alpha, 1e-6)
-        
-        coefficients = poisson_result.params
-        result = poisson_result  # Fallback if all iterations fail
-        
-        for _ in range(max_theta_iter):
-            result = _fit_glm_rust(
-                self.y, X, "negbinomial", self.link, 1.5, theta,
-                self.offset, self.weights, effective_alpha, l1_ratio, max_iter, tol
-            )
-            
-            # If NaN, increase regularization and retry
-            if np.any(np.isnan(result.params)):
-                effective_alpha *= 10
-                if effective_alpha > 1.0:
-                    raise ValueError(
-                        "Negative binomial fitting failed due to numerical instability. "
-                        "Try simplifying the model or using Poisson instead."
-                    )
-                continue
-            
-            coefficients = result.params
-            mu = result.fittedvalues
-            
-            # Moment-based theta update
-            residuals = y_arr - mu
-            excess_var = np.mean(residuals**2) - np.mean(mu)
-            if excess_var > 0:
-                new_theta = np.mean(mu)**2 / excess_var
-                new_theta = max(0.01, min(1000.0, new_theta))
-            else:
-                new_theta = 1000.0  # No overdispersion
-            
-            if abs(new_theta - theta) < theta_tol:
-                theta = new_theta
-                break
-            theta = new_theta
-        
-        # Final fit with converged theta
-        final_result = _fit_glm_rust(
-            self.y, X, "negbinomial", self.link, 1.5, theta,
-            self.offset, self.weights, max(alpha, 1e-6), l1_ratio, max_iter, tol
-        )
-        
-        # Fall back to iteration result if final has NaN
-        if np.any(np.isnan(final_result.params)) and not np.any(np.isnan(coefficients)):
-            final_result = result
-        
-        return final_result, f"NegativeBinomial(theta={theta:.4f})"
+        return result, result.family
     
     def fit(
         self,
@@ -1150,65 +859,20 @@ class FormulaGLM:
         is_negbinomial = is_negbinomial_family(self.family)
         auto_theta = is_negbinomial and self.theta is None
         
-        # Handle CV-based regularization path
-        # If regularization is specified without cv, default to cv=5
-        if regularization is not None and cv is None:
-            cv = 5
-        
-        if cv is not None:
-            if regularization is None:
-                raise ValueError(
-                    "When cv is specified, 'regularization' must be set to 'ridge', 'lasso', or 'elastic_net'"
-                )
-            
-            from rustystats.regularization_path import fit_cv_regularization_path
-            
-            # For negbinomial with auto theta, first estimate theta then do CV
-            if auto_theta:
-                # Quick fit to estimate theta
-                _, result_family = self._fit_negbinomial_profile(
-                    self.X, 0.0, 0.0, max_iter, tol
-                )
-                # Extract theta from family string
-                theta_start = result_family.find("theta=") + 6
-                theta_end = result_family.find(")", theta_start)
-                estimated_theta = float(result_family[theta_start:theta_end])
-                self.theta = estimated_theta  # Store for CV fits
-            
-            # Determine l1_ratio from regularization type
-            if regularization == "ridge":
-                cv_l1_ratio = 0.0
-            elif regularization == "lasso":
-                cv_l1_ratio = 1.0
-            elif regularization == "elastic_net":
-                cv_l1_ratio = l1_ratio if l1_ratio > 0 else 0.5
-            else:
-                raise ValueError(f"Unknown regularization type: {regularization}")
-            
-            # Fit regularization path with CV
-            path_info = fit_cv_regularization_path(
-                glm_instance=self,
-                cv=cv,
-                selection=selection,
-                regularization=regularization,
-                n_alphas=n_alphas,
-                alpha_min_ratio=alpha_min_ratio,
-                l1_ratio=cv_l1_ratio,
-                max_iter=max_iter,
-                tol=tol,
-                seed=cv_seed,
-                include_unregularized=include_unregularized,
-                verbose=verbose,
+        # For negbinomial with auto theta + CV, pre-estimate theta
+        if auto_theta and (cv is not None or regularization is not None):
+            _, result_family = self._fit_negbinomial_profile(
+                self.X, 0.0, 0.0, max_iter, tol
             )
-            
-            # Use selected alpha for final fit
-            alpha = path_info.selected_alpha
-            l1_ratio = path_info.selected_l1_ratio
-            
-            if verbose:
-                print(f"\nRefitting on full data with alpha={alpha:.6f}")
-        else:
-            path_info = None
+            theta_start = result_family.find("theta=") + 6
+            theta_end = result_family.find(")", theta_start)
+            self.theta = float(result_family[theta_start:theta_end])
+        
+        # Handle CV-based regularization path (shared logic in _GLMBase)
+        alpha, l1_ratio, path_info = self._resolve_cv_path(
+            alpha, l1_ratio, max_iter, tol, cv, selection, regularization,
+            n_alphas, alpha_min_ratio, cv_seed, include_unregularized, verbose,
+        )
         
         # For negbinomial with auto theta, use Python-side profile likelihood
         # This allows regularization to be applied for numerical stability
@@ -1361,314 +1025,25 @@ class _DeserializedResult:
         return self._penalty_type
 
 
-class _DeserializedBuilder:
+class _DeserializedBuilder(InteractionBuilder):
     """
     Minimal builder for deserialized models.
     
-    This provides the transform_new_data interface needed for prediction
-    using the saved encoding state.
+    Inherits all transform_new_data / prediction logic from InteractionBuilder.
+    Only overrides __init__ to restore state from a serialized dict instead
+    of building from a live DataFrame.
     """
     
     def __init__(self, state: dict):
+        # Bypass InteractionBuilder.__init__ — set state directly from dict
         self._parsed_formula = state["parsed_formula"]
         self._cat_encoding_cache = state["cat_encoding_cache"]
         self._fitted_splines = state["fitted_splines"]
         self._te_stats = state["te_stats"]
+        self._fe_stats: Dict[str, dict] = {}
         self.dtype = state["dtype"]
-    
-    def _get_categorical_levels(self, name: str) -> List[str]:
-        """Get cached categorical levels for a variable."""
-        cache_key = f"{name}_True"
-        if cache_key not in self._cat_encoding_cache:
-            raise ValueError(f"Categorical variable '{name}' was not seen during training.")
-        return self._cat_encoding_cache[cache_key].levels
-    
-    def _encode_categorical_new(
-        self,
-        new_data: "pl.DataFrame",
-        var_name: str,
-    ) -> np.ndarray:
-        """Encode categorical variable using levels from training."""
-        levels = self._get_categorical_levels(var_name)
-        col = new_data[var_name].to_numpy()
-        n = len(col)
-        
-        level_to_idx = {level: i for i, level in enumerate(levels)}
-        n_dummies = len(levels) - 1
-        encoding = np.zeros((n, n_dummies), dtype=self.dtype)
-        
-        for i, val in enumerate(col):
-            val_str = str(val)
-            if val_str in level_to_idx:
-                idx = level_to_idx[val_str]
-                if idx > 0:
-                    encoding[i, idx - 1] = 1.0
-        
-        return encoding
-    
-    def _encode_target_new(
-        self,
-        new_data: "pl.DataFrame",
-        te_term,
-    ) -> np.ndarray:
-        """Encode using target statistics from training."""
-        if te_term.var_name not in self._te_stats:
-            raise ValueError(
-                f"Target encoding for '{te_term.var_name}' was not fitted during training."
-            )
-        
-        stats = self._te_stats[te_term.var_name]
-        prior = stats['prior']
-        level_stats = stats['stats']
-        prior_weight = stats['prior_weight']
-        used_exposure_weighted = stats.get('used_exposure_weighted', False)
-        
-        col = new_data[te_term.var_name].to_numpy()
-        n = len(col)
-        encoded = np.zeros(n, dtype=self.dtype)
-        
-        if used_exposure_weighted:
-            # Exposure-weighted: level_stats contains (sum_claims, sum_exposure)
-            for i, val in enumerate(col):
-                val_str = str(val)
-                if val_str in level_stats:
-                    sum_claims, sum_exposure = level_stats[val_str]
-                    encoded[i] = (sum_claims + prior * prior_weight) / (sum_exposure + prior_weight)
-                else:
-                    encoded[i] = prior
-        else:
-            # Observation-weighted: level_stats contains (sum_target, count)
-            for i, val in enumerate(col):
-                val_str = str(val)
-                if val_str in level_stats:
-                    level_sum, level_count = level_stats[val_str]
-                    encoded[i] = (level_sum + prior * prior_weight) / (level_count + prior_weight)
-                else:
-                    encoded[i] = prior
-        
-        return encoded
-    
-    def _parse_spline_factor(self, factor: str):
-        """Parse a spline term from a factor name."""
-        from rustystats.splines import SplineTerm
-        
-        factor_lower = factor.strip().lower()
-        if factor_lower.startswith('bs(') or factor_lower.startswith('ns('):
-            spline_type = 'bs' if factor_lower.startswith('bs(') else 'ns'
-            content = factor[3:-1] if factor.endswith(')') else factor[3:]
-            parts = [p.strip() for p in content.split(',')]
-            var_name = parts[0]
-            df = None
-            k = None
-            degree = 3
-            monotonicity = None
-            for part in parts[1:]:
-                if '=' in part:
-                    key, val = part.split('=', 1)
-                    key = key.strip().lower()
-                    val = val.strip()
-                    if key == 'df':
-                        df = int(val)
-                    elif key == 'k':
-                        k = int(val)
-                    elif key == 'degree':
-                        degree = int(val)
-                    elif key == 'monotonicity':
-                        monotonicity = val.strip("'\"").lower()
-            
-            is_smooth = False
-            if df is None and k is None:
-                effective_df = 10
-                is_smooth = True
-            elif k is not None:
-                effective_df = k
-                is_smooth = True
-            else:
-                effective_df = df
-            
-            term = SplineTerm(var_name=var_name, spline_type=spline_type, df=effective_df, 
-                              degree=degree, monotonicity=monotonicity)
-            if is_smooth:
-                term._is_smooth = True
-            return term
-        
-        return None
-    
-    def _build_identity_columns(self, identity, data: "pl.DataFrame"):
-        """Evaluate an I() expression on data."""
-        expr = identity.expression
-        local_vars = {col: data[col].to_numpy().astype(self.dtype) for col in data.columns}
-        result = eval(expr, {"__builtins__": {}}, local_vars)
-        name = f"I({expr})"
-        return np.asarray(result, dtype=self.dtype), name
-    
-    def _build_constraint_columns(self, constraint, data: "pl.DataFrame"):
-        """Build columns for constraint terms."""
-        col = data[constraint.var_name].to_numpy().astype(self.dtype)
-        name = f"{constraint.constraint}({constraint.var_name})"
-        return col, name
-    
-    def _build_categorical_level_indicators_new(self, cat_term, new_data: "pl.DataFrame"):
-        """Build indicator columns for specific categorical levels."""
-        col = new_data[cat_term.var_name].to_numpy()
-        n = len(col)
-        
-        if cat_term.levels is None:
-            return self._encode_categorical_new(new_data, cat_term.var_name), []
-        
-        n_levels = len(cat_term.levels)
-        encoding = np.zeros((n, n_levels), dtype=self.dtype)
-        names = []
-        
-        for j, level in enumerate(cat_term.levels):
-            names.append(f"{cat_term.var_name}[{level}]")
-            for i, val in enumerate(col):
-                if str(val) == level:
-                    encoding[i, j] = 1.0
-        
-        return encoding, names
-    
-    def _build_interaction_new(
-        self,
-        new_data: "pl.DataFrame",
-        interaction,
-        n: int,
-    ) -> np.ndarray:
-        """Build interaction columns for new data."""
-        if interaction.is_pure_continuous:
-            result = new_data[interaction.factors[0]].to_numpy().astype(self.dtype)
-            for factor in interaction.factors[1:]:
-                result = result * new_data[factor].to_numpy().astype(self.dtype)
-            return result.reshape(-1, 1)
-        
-        elif interaction.is_pure_categorical:
-            encodings = []
-            for factor in interaction.factors:
-                enc = self._encode_categorical_new(new_data, factor)
-                encodings.append(enc)
-            
-            result = encodings[0]
-            for enc in encodings[1:]:
-                n_cols1, n_cols2 = result.shape[1], enc.shape[1]
-                new_result = np.zeros((n, n_cols1 * n_cols2), dtype=self.dtype)
-                for i in range(n_cols1):
-                    for j in range(n_cols2):
-                        new_result[:, i * n_cols2 + j] = result[:, i] * enc[:, j]
-                result = new_result
-            return result
-        
-        else:
-            cat_factors = []
-            cont_factors = []
-            spline_factors = []
-            
-            for factor, is_cat in zip(interaction.factors, interaction.categorical_flags):
-                if is_cat:
-                    cat_factors.append(factor)
-                else:
-                    spline = self._parse_spline_factor(factor)
-                    if spline is not None:
-                        spline_factors.append((factor, spline))
-                    else:
-                        cont_factors.append(factor)
-            
-            if len(cat_factors) == 1:
-                cat_enc = self._encode_categorical_new(new_data, cat_factors[0])
-            else:
-                cat_enc = self._encode_categorical_new(new_data, cat_factors[0])
-                for factor in cat_factors[1:]:
-                    enc = self._encode_categorical_new(new_data, factor)
-                    n_cols1, n_cols2 = cat_enc.shape[1], enc.shape[1]
-                    new_enc = np.zeros((n, n_cols1 * n_cols2), dtype=self.dtype)
-                    for i in range(n_cols1):
-                        for j in range(n_cols2):
-                            new_enc[:, i * n_cols2 + j] = cat_enc[:, i] * enc[:, j]
-                    cat_enc = new_enc
-            
-            if spline_factors:
-                all_columns = []
-                
-                for spline_str, spline in spline_factors:
-                    x = new_data[spline.var_name].to_numpy().astype(self.dtype)
-                    fitted_spline = self._fitted_splines.get(spline.var_name, spline)
-                    spline_basis, _ = fitted_spline.transform(x)
-                    
-                    for j in range(spline_basis.shape[1]):
-                        for i in range(cat_enc.shape[1]):
-                            col = cat_enc[:, i] * spline_basis[:, j]
-                            all_columns.append(col)
-                
-                if cont_factors:
-                    cont_product = new_data[cont_factors[0]].to_numpy().astype(self.dtype)
-                    for factor in cont_factors[1:]:
-                        cont_product = cont_product * new_data[factor].to_numpy().astype(self.dtype)
-                    all_columns = [col * cont_product for col in all_columns]
-                
-                if all_columns:
-                    return np.column_stack(all_columns)
-                return np.zeros((n, 0), dtype=self.dtype)
-            
-            cont_product = new_data[cont_factors[0]].to_numpy().astype(self.dtype)
-            for factor in cont_factors[1:]:
-                cont_product = cont_product * new_data[factor].to_numpy().astype(self.dtype)
-            
-            result = cat_enc * cont_product.reshape(-1, 1)
-            return result
-    
-    def transform_new_data(self, new_data: "pl.DataFrame") -> np.ndarray:
-        """Transform new data using the encoding state from training."""
-        if self._parsed_formula is None:
-            raise ValueError("No formula has been fitted yet.")
-        
-        parsed = self._parsed_formula
-        n_new = len(new_data)
-        columns = []
-        
-        if parsed.has_intercept:
-            columns.append(np.ones(n_new, dtype=self.dtype))
-        
-        for var in parsed.main_effects:
-            if var in parsed.categorical_vars:
-                enc = self._encode_categorical_new(new_data, var)
-                columns.append(enc)
-            else:
-                col = new_data[var].to_numpy().astype(self.dtype)
-                columns.append(col.reshape(-1, 1))
-        
-        for spline in parsed.spline_terms:
-            x = new_data[spline.var_name].to_numpy().astype(self.dtype)
-            fitted_spline = self._fitted_splines.get(spline.var_name, spline)
-            spline_cols, _ = fitted_spline.transform(x)
-            columns.append(spline_cols)
-        
-        for te_term in parsed.target_encoding_terms:
-            te_col = self._encode_target_new(new_data, te_term)
-            columns.append(te_col.reshape(-1, 1))
-        
-        for interaction in parsed.interactions:
-            int_cols = self._build_interaction_new(new_data, interaction, n_new)
-            if int_cols.ndim == 1:
-                int_cols = int_cols.reshape(-1, 1)
-            columns.append(int_cols)
-        
-        for identity in parsed.identity_terms:
-            id_col, _ = self._build_identity_columns(identity, new_data)
-            columns.append(id_col.reshape(-1, 1))
-        
-        for constraint in parsed.constraint_terms:
-            con_col, _ = self._build_constraint_columns(constraint, new_data)
-            columns.append(con_col.reshape(-1, 1))
-        
-        for cat_term in parsed.categorical_terms:
-            cat_cols, _ = self._build_categorical_level_indicators_new(cat_term, new_data)
-            columns.append(cat_cols)
-        
-        if columns:
-            X = np.hstack([c if c.ndim == 2 else c.reshape(-1, 1) for c in columns])
-        else:
-            X = np.ones((n_new, 1), dtype=self.dtype)
-        
-        return X
+        self.data = None
+        self._n = 0
 
 
 class GLMModel:
@@ -1722,6 +1097,18 @@ class GLMModel:
         self._terms_dict = terms_dict
         self._interactions_spec = interactions_spec
     
+    def __getattr__(self, name):
+        """Delegate attribute access to the underlying result object.
+        
+        This handles all properties and methods from PyGLMResults that are
+        not explicitly defined on GLMModel (params, fittedvalues, deviance,
+        bse, tvalues, pvalues, conf_int, resid_*, llf, aic, bic, scale,
+        robust SEs, regularization properties, etc.).
+        """
+        if name.startswith('_'):
+            raise AttributeError(name)
+        return getattr(self._result, name)
+    
     @property
     def smooth_terms(self) -> Optional[List[SmoothTermResult]]:
         """Smooth term results with EDF, lambda, and GCV for each s() term."""
@@ -1751,223 +1138,26 @@ class GLMModel:
         """Original interactions specification used to specify the model (dict API only)."""
         return self._interactions_spec
     
-    # Delegate to underlying result
-    @property
-    def params(self) -> np.ndarray:
-        """Fitted coefficients."""
-        return self._result.params
-    
-    @property
-    def fittedvalues(self) -> np.ndarray:
-        """Fitted values (predicted means)."""
-        return self._result.fittedvalues
-    
-    @property
-    def linear_predictor(self) -> np.ndarray:
-        """Linear predictor (eta = X @ beta)."""
-        return self._result.linear_predictor
-    
-    @property
-    def deviance(self) -> float:
-        """Model deviance."""
-        return self._result.deviance
-    
-    @property
-    def converged(self) -> bool:
-        """Whether IRLS converged."""
-        return self._result.converged
-    
-    @property
-    def iterations(self) -> int:
-        """Number of IRLS iterations."""
-        return self._result.iterations
-    
-    def bse(self) -> np.ndarray:
-        """Standard errors of coefficients."""
-        return self._result.bse()
-    
-    def tvalues(self) -> np.ndarray:
-        """z/t statistics."""
-        return self._result.tvalues()
-    
-    def pvalues(self) -> np.ndarray:
-        """P-values for coefficients."""
-        return self._result.pvalues()
-    
-    def conf_int(self, alpha: float = 0.05) -> np.ndarray:
-        """Confidence intervals."""
-        return self._result.conf_int(alpha)
-    
-    def significance_codes(self) -> List[str]:
-        """Significance codes."""
-        return self._result.significance_codes()
-    
-    # Robust standard errors (sandwich estimators)
-    def bse_robust(self, cov_type: str = "HC1") -> np.ndarray:
-        """Robust standard errors of coefficients (HC/sandwich estimator).
-        
-        Unlike model-based standard errors that assume correct variance
-        specification, robust standard errors are valid under heteroscedasticity.
-        
-        Parameters
-        ----------
-        cov_type : str, optional
-            Type of robust covariance. Options:
-            - "HC0": No small-sample correction
-            - "HC1": Degrees of freedom correction (default, recommended)
-            - "HC2": Leverage-adjusted
-            - "HC3": Jackknife-like (most conservative)
-        
-        Returns
-        -------
-        numpy.ndarray
-            Array of robust standard errors, one for each coefficient.
-        """
-        return self._result.bse_robust(cov_type)
-    
-    def tvalues_robust(self, cov_type: str = "HC1") -> np.ndarray:
-        """z/t statistics using robust standard errors.
-        
-        Parameters
-        ----------
-        cov_type : str, optional
-            Type of robust covariance. Default "HC1".
-        
-        Returns
-        -------
-        numpy.ndarray
-            Array of t/z statistics (coefficient / robust SE).
-        """
-        return self._result.tvalues_robust(cov_type)
-    
-    def pvalues_robust(self, cov_type: str = "HC1") -> np.ndarray:
-        """P-values using robust standard errors.
-        
-        Parameters
-        ----------
-        cov_type : str, optional
-            Type of robust covariance. Default "HC1".
-        
-        Returns
-        -------
-        numpy.ndarray
-            Array of p-values.
-        """
-        return self._result.pvalues_robust(cov_type)
-    
-    def conf_int_robust(self, alpha: float = 0.05, cov_type: str = "HC1") -> np.ndarray:
-        """Confidence intervals using robust standard errors.
-        
-        Parameters
-        ----------
-        alpha : float, optional
-            Significance level. Default 0.05 gives 95% CI.
-        cov_type : str, optional
-            Type of robust covariance. Default "HC1".
-        
-        Returns
-        -------
-        numpy.ndarray
-            2D array of shape (n_params, 2) with [lower, upper] bounds.
-        """
-        return self._result.conf_int_robust(alpha, cov_type)
-    
-    def cov_robust(self, cov_type: str = "HC1") -> np.ndarray:
-        """Robust covariance matrix (HC/sandwich estimator).
-        
-        Parameters
-        ----------
-        cov_type : str, optional
-            Type of robust covariance. Default "HC1".
-        
-        Returns
-        -------
-        numpy.ndarray
-            Robust covariance matrix (p × p).
-        """
-        return self._result.cov_robust(cov_type)
-    
-    # Diagnostic methods (statsmodels-compatible)
-    def resid_response(self) -> np.ndarray:
-        """Response residuals: y - μ."""
-        return self._result.resid_response()
-    
-    def resid_pearson(self) -> np.ndarray:
-        """Pearson residuals: (y - μ) / √V(μ)."""
-        return self._result.resid_pearson()
-    
-    def resid_deviance(self) -> np.ndarray:
-        """Deviance residuals: sign(y - μ) × √d_i."""
-        return self._result.resid_deviance()
-    
-    def resid_working(self) -> np.ndarray:
-        """Working residuals: (y - μ) × g'(μ)."""
-        return self._result.resid_working()
-    
-    def llf(self) -> float:
-        """Log-likelihood of the fitted model."""
-        return self._result.llf()
-    
-    def aic(self) -> float:
-        """Akaike Information Criterion."""
-        return self._result.aic()
-    
-    def bic(self) -> float:
-        """Bayesian Information Criterion."""
-        return self._result.bic()
-    
-    def null_deviance(self) -> float:
-        """Deviance of intercept-only model."""
-        return self._result.null_deviance()
-    
-    def pearson_chi2(self) -> float:
-        """Pearson chi-squared statistic."""
-        return self._result.pearson_chi2()
-    
-    def scale(self) -> float:
-        """Estimated dispersion parameter (deviance-based)."""
-        return self._result.scale()
-    
-    def scale_pearson(self) -> float:
-        """Estimated dispersion parameter (Pearson-based)."""
-        return self._result.scale_pearson()
-    
-    def get_design_matrix(self) -> np.ndarray:
+    def get_design_matrix(self) -> Optional[np.ndarray]:
         """Get the design matrix X used in fitting."""
-        return np.asarray(self._result.design_matrix)
+        try:
+            return np.asarray(self._result.design_matrix)
+        except AttributeError:
+            return None
     
-    def get_irls_weights(self) -> np.ndarray:
+    def get_irls_weights(self) -> Optional[np.ndarray]:
         """Get the IRLS working weights from final iteration."""
-        return np.asarray(self._result.irls_weights)
+        try:
+            return np.asarray(self._result.irls_weights)
+        except AttributeError:
+            return None
     
-    def get_bread_matrix(self) -> np.ndarray:
+    def get_bread_matrix(self) -> Optional[np.ndarray]:
         """Get the (X'WX)^-1 matrix (unscaled covariance)."""
-        return np.asarray(self._result.cov_params_unscaled)
-    
-    # Regularization properties
-    @property
-    def alpha(self) -> float:
-        """Regularization strength (lambda)."""
-        return self._result.alpha
-    
-    @property
-    def l1_ratio(self):
-        """L1 ratio for Elastic Net (1.0=Lasso, 0.0=Ridge)."""
-        return self._result.l1_ratio
-    
-    @property
-    def is_regularized(self) -> bool:
-        """Whether this is a regularized model."""
-        return self._result.is_regularized
-    
-    @property
-    def penalty_type(self) -> str:
-        """Type of penalty: 'none', 'ridge', 'lasso', or 'elasticnet'."""
-        return self._result.penalty_type
-    
-    def n_nonzero(self) -> int:
-        """Number of non-zero coefficients (excluding intercept)."""
-        return self._result.n_nonzero()
+        try:
+            return np.asarray(self._result.cov_params_unscaled)
+        except AttributeError:
+            return None
     
     def selected_features(self) -> List[str]:
         """
@@ -2043,13 +1233,26 @@ class GLMModel:
         return self._result.nobs
     
     @property
-    def df_resid(self) -> int:
-        """Residual degrees of freedom."""
+    def df_resid(self) -> float:
+        """Residual degrees of freedom.
+        
+        For smooth models, uses n - total_edf instead of n - p,
+        where total_edf accounts for the effective complexity of
+        penalized smooth terms.
+        """
+        if self._total_edf is not None:
+            return self._result.nobs - self._total_edf
         return self._result.df_resid
     
     @property
-    def df_model(self) -> int:
-        """Model degrees of freedom."""
+    def df_model(self) -> float:
+        """Model degrees of freedom.
+        
+        For smooth models, uses total_edf - 1 (excluding intercept)
+        instead of raw p - 1.
+        """
+        if self._total_edf is not None:
+            return self._total_edf - 1
         return self._result.df_model
     
     def compute_loss(
@@ -2274,6 +1477,13 @@ class GLMModel:
         # Support legacy 'data' parameter
         if train_data is None and data is not None:
             train_data = data
+        
+        # Deserialized models lack covariance / design matrix — disable
+        # features that depend on them to avoid AttributeErrors.
+        is_deserialized = isinstance(self._result, _DeserializedResult)
+        if is_deserialized:
+            compute_vif = False
+            compute_coefficients = False
         
         # Get design matrix for VIF calculation
         design_matrix = None
@@ -3100,7 +2310,7 @@ def dict_to_parsed_formula(
     )
 
 
-class FormulaGLMDict:
+class FormulaGLMDict(_GLMBase):
     """
     GLM model with dict-based specification.
     
@@ -3197,48 +2407,6 @@ class FormulaGLMDict:
         parts.append(" + ".join(term_strs) if term_strs else "1")
         return " ".join(parts)
     
-    @property
-    def data(self):
-        """Access the original DataFrame (may raise if garbage collected)."""
-        d = self._data_ref()
-        if d is None:
-            raise RuntimeError(
-                "Original DataFrame has been garbage collected. "
-                "Keep a reference to the DataFrame if you need to access it after fitting."
-            )
-        return d
-    
-    def _get_raw_exposure(self, offset) -> Optional[np.ndarray]:
-        """Extract raw exposure values for target encoding."""
-        if offset is None:
-            return None
-        if isinstance(offset, str):
-            return self.data[offset].to_numpy().astype(np.float64)
-        return np.asarray(offset, dtype=np.float64)
-    
-    def _process_offset(self, offset) -> Optional[np.ndarray]:
-        """Process offset, applying log for log-link families."""
-        if offset is None:
-            return None
-        
-        if isinstance(offset, str):
-            offset_values = self.data[offset].to_numpy().astype(np.float64)
-        else:
-            offset_values = np.asarray(offset, dtype=np.float64)
-        
-        # Apply log for Poisson/Gamma families
-        if self.family in ("poisson", "gamma", "quasipoisson", "tweedie", "negbinomial"):
-            return np.log(offset_values)
-        return offset_values
-    
-    def _process_weights(self, weights) -> Optional[np.ndarray]:
-        """Process weights."""
-        if weights is None:
-            return None
-        if isinstance(weights, str):
-            return self.data[weights].to_numpy().astype(np.float64)
-        return np.asarray(weights, dtype=np.float64)
-    
     def fit(
         self,
         alpha: float = 0.0,
@@ -3306,53 +2474,11 @@ class FormulaGLMDict:
         """
         is_negbinomial = is_negbinomial_family(self.family)
         
-        # Handle CV-based regularization path
-        # If regularization is specified without cv, default to cv=5
-        if regularization is not None and cv is None:
-            cv = 5
-        
-        if cv is not None:
-            if regularization is None:
-                raise ValueError(
-                    "When cv is specified, 'regularization' must be set to 'ridge', 'lasso', or 'elastic_net'"
-                )
-            
-            from rustystats.regularization_path import fit_cv_regularization_path
-            
-            # Determine l1_ratio from regularization type
-            if regularization == "ridge":
-                cv_l1_ratio = 0.0
-            elif regularization == "lasso":
-                cv_l1_ratio = 1.0
-            elif regularization == "elastic_net":
-                cv_l1_ratio = l1_ratio if l1_ratio > 0 else 0.5
-            else:
-                raise ValueError(f"Unknown regularization type: {regularization}")
-            
-            # Fit regularization path with CV
-            path_info = fit_cv_regularization_path(
-                glm_instance=self,
-                cv=cv,
-                selection=selection,
-                regularization=regularization,
-                n_alphas=n_alphas,
-                alpha_min_ratio=alpha_min_ratio,
-                l1_ratio=cv_l1_ratio,
-                max_iter=max_iter,
-                tol=tol,
-                seed=cv_seed if cv_seed is not None else self._seed,
-                include_unregularized=include_unregularized,
-                verbose=verbose,
-            )
-            
-            # Use selected alpha for final fit
-            alpha = path_info.selected_alpha
-            l1_ratio = path_info.selected_l1_ratio
-            
-            if verbose:
-                print(f"\nRefitting on full data with alpha={alpha:.6f}")
-        else:
-            path_info = None
+        # Handle CV-based regularization path (shared logic in _GLMBase)
+        alpha, l1_ratio, path_info = self._resolve_cv_path(
+            alpha, l1_ratio, max_iter, tol, cv, selection, regularization,
+            n_alphas, alpha_min_ratio, cv_seed, include_unregularized, verbose,
+        )
         
         theta = self.theta if self.theta is not None else DEFAULT_NEGBINOMIAL_THETA
         

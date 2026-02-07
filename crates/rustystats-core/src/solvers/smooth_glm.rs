@@ -22,15 +22,24 @@
 //
 // =============================================================================
 
-use ndarray::{Array1, Array2};
+use ndarray::{Array1, Array2, s};
 
 use crate::error::{RustyStatsError, Result};
 use crate::families::Family;
 use crate::links::Link;
 use crate::regularization::{Penalty, SmoothPenalty};
-use crate::splines::penalized::{gcv_score, lambda_grid, compute_edf, penalty_matrix};
-use crate::solvers::irls::{IRLSConfig, solve_weighted_least_squares_with_penalty_matrix, compute_xtwx};
-use crate::constants::{MU_MIN_POSITIVE, MU_MIN_PROBABILITY, MU_MAX_PROBABILITY};
+use crate::splines::penalized::{gcv_score, compute_edf, penalty_matrix};
+use crate::solvers::irls::{IRLSConfig, fit_glm_full, solve_weighted_least_squares_with_penalty_matrix, compute_xtwx};
+// MU constants no longer needed here - clamp_mu delegates to Family::clamp_mu
+use crate::convert;
+
+/// Embed a scaled penalty sub-matrix into a larger penalty matrix.
+/// `target[offset..offset+k, offset..offset+k] += scale * source`
+fn embed_penalty(target: &mut Array2<f64>, source: &Array2<f64>, offset: usize, scale: f64) {
+    let k = source.nrows();
+    let mut slice = target.slice_mut(s![offset..offset+k, offset..offset+k]);
+    slice.scaled_add(scale, source);
+}
 
 /// Result from fitting a smooth GLM (GAM).
 #[derive(Debug, Clone)]
@@ -73,6 +82,21 @@ pub struct SmoothGLMResult {
     
     /// The smooth penalty configuration
     pub penalty: Penalty,
+    
+    /// IRLS weights from the final iteration (for robust SEs)
+    pub irls_weights: Array1<f64>,
+    
+    /// Prior weights
+    pub prior_weights: Array1<f64>,
+    
+    /// Combined design matrix [parametric | smooth]
+    pub design_matrix: Array2<f64>,
+    
+    /// Original response variable (for residuals/diagnostics)
+    pub y: Array1<f64>,
+    
+    /// Offset values (if any)
+    pub offset: Option<Array1<f64>>,
 }
 
 /// Configuration for smooth GLM fitting.
@@ -184,458 +208,80 @@ impl SmoothTermData {
     }
 }
 
-/// Fit a GLM with smooth terms using penalized IRLS.
-///
-/// This is the main entry point for GAM fitting with automatic smoothness selection.
-///
-/// # Arguments
-/// * `y` - Response variable (n × 1)
-/// * `x_parametric` - Parametric part of design matrix (n × p), including intercept
-/// * `smooth_terms` - Smooth term data (basis + penalty for each)
-/// * `family` - Distribution family
-/// * `link` - Link function
-/// * `config` - Fitting configuration
-/// * `offset` - Optional offset term
-/// * `weights` - Optional prior weights
-///
-/// # Returns
-/// * `Ok(SmoothGLMResult)` - Fitted model with selected lambdas and EDFs
-/// * `Err(RustyStatsError)` - If fitting fails
-pub fn fit_smooth_glm(
+
+/// Compute final EDFs, GCV, and assemble the SmoothGLMResult from SmoothTermSpec data.
+fn assemble_smooth_result_from_specs(
+    coefficients: Array1<f64>,
+    mu: Array1<f64>,
+    eta: Array1<f64>,
+    deviance: f64,
+    iterations: usize,
+    converged: bool,
+    final_weights: &Array1<f64>,
+    x_combined: &Array2<f64>,
+    penalty_specs: &[(&Array2<f64>, usize, usize)],
+    lambdas: &[f64],
+    p_param: usize,
+    family_name: &str,
+    prior_weights: Array1<f64>,
     y: &Array1<f64>,
-    x_parametric: &Array2<f64>,
-    smooth_terms: &[SmoothTermData],
-    family: &dyn Family,
-    link: &dyn Link,
-    config: &SmoothGLMConfig,
     offset: Option<&Array1<f64>>,
-    weights: Option<&Array1<f64>>,
-) -> Result<SmoothGLMResult> {
+    cov_unscaled: Option<Array2<f64>>,
+) -> SmoothGLMResult {
     let n = y.len();
-    let p_param = x_parametric.ncols();
     
-    // Validate inputs
-    if x_parametric.nrows() != n {
-        return Err(RustyStatsError::DimensionMismatch(format!(
-            "x_parametric has {} rows but y has {} elements", x_parametric.nrows(), n
-        )));
+    // Compute EDFs
+    let xtwx = compute_xtwx(x_combined, final_weights);
+    let mut smooth_edfs = Vec::with_capacity(penalty_specs.len());
+    
+    for (i, &(penalty, start, _end)) in penalty_specs.iter().enumerate() {
+        let lambda = lambdas[i];
+        let k = penalty.nrows();
+        let xtwx_block = xtwx.slice(s![start..start+k, start..start+k]).to_owned();
+        let edf = compute_edf(&xtwx_block, penalty, lambda);
+        smooth_edfs.push(edf);
     }
     
-    for (i, term) in smooth_terms.iter().enumerate() {
-        if term.basis.nrows() != n {
-            return Err(RustyStatsError::DimensionMismatch(format!(
-                "Smooth term {} has {} rows but y has {} elements", i, term.basis.nrows(), n
-            )));
-        }
-    }
-    
-    // Build combined design matrix: [parametric | smooth1 | smooth2 | ...]
-    let total_smooth_cols: usize = smooth_terms.iter().map(|t| t.k()).sum();
-    let total_cols = p_param + total_smooth_cols;
-    
-    let mut x_combined = Array2::zeros((n, total_cols));
-    
-    // Copy parametric columns
-    for i in 0..n {
-        for j in 0..p_param {
-            x_combined[[i, j]] = x_parametric[[i, j]];
-        }
-    }
-    
-    // Copy smooth basis columns
-    let mut col_offset = p_param;
-    let mut term_indices = Vec::with_capacity(smooth_terms.len());
-    
-    for term in smooth_terms {
-        let start = col_offset;
-        let end = col_offset + term.k();
-        term_indices.push(start..end);
-        
-        for i in 0..n {
-            for j in 0..term.k() {
-                x_combined[[i, col_offset + j]] = term.basis[[i, j]];
-            }
-        }
-        col_offset = end;
-    }
-    
-    // Set up offset and weights
-    let offset_vec = match offset {
-        Some(o) => o.clone(),
-        None => Array1::zeros(n),
-    };
-    
-    let prior_weights = match weights {
-        Some(w) => w.clone(),
-        None => Array1::ones(n),
-    };
-    
-    // Initialize lambdas
-    let mut lambdas: Vec<f64> = smooth_terms.iter().map(|t| t.initial_lambda).collect();
-    
-    // Select lambdas via GCV if requested
-    if config.lambda_method == "gcv" && !smooth_terms.is_empty() {
-        lambdas = select_lambdas_gcv(
-            y,
-            &x_combined,
-            smooth_terms,
-            &term_indices,
-            p_param,
-            family,
-            link,
-            &config.irls_config,
-            &offset_vec,
-            &prior_weights,
-            config,
-        )?;
-    }
-    
-    // Build final penalty matrix with selected lambdas
-    let penalty_matrix = build_penalty_matrix(
-        total_cols,
-        smooth_terms,
-        &term_indices,
-        &lambdas,
-    );
-    
-    // Fit model with selected lambdas
-    let (coefficients, fitted_values, linear_predictor, deviance, iterations, converged, cov_unscaled, final_weights) = 
-        fit_with_penalty(
-            y,
-            &x_combined,
-            &penalty_matrix,
-            family,
-            link,
-            &config.irls_config,
-            &offset_vec,
-            &prior_weights,
-        )?;
-    
-    // Compute EDFs and GCV
-    let xtwx = compute_xtwx(&x_combined, &final_weights);
-    let smooth_edfs = compute_smooth_edfs(&xtwx, smooth_terms, &term_indices, &lambdas);
     let total_edf = (p_param as f64) + smooth_edfs.iter().sum::<f64>();
     let gcv = gcv_score(deviance, n, total_edf);
     
     // Build SmoothPenalty for result
     let mut smooth_penalty = SmoothPenalty::new();
-    for (i, term) in smooth_terms.iter().enumerate() {
-        smooth_penalty.add_term(term.penalty.clone(), lambdas[i], term_indices[i].clone());
+    for (i, &(penalty, start, end)) in penalty_specs.iter().enumerate() {
+        smooth_penalty.add_term(penalty.clone(), lambdas[i], start..end);
     }
     
-    Ok(SmoothGLMResult {
+    // Use provided covariance or compute from X'WX + S
+    let cov = cov_unscaled.unwrap_or_else(|| {
+        let total_cols = x_combined.ncols();
+        let mut penalty_matrix = Array2::zeros((total_cols, total_cols));
+        for (i, &(penalty, start, _end)) in penalty_specs.iter().enumerate() {
+            embed_penalty(&mut penalty_matrix, penalty, start, lambdas[i]);
+        }
+        let xtwx_pen = &xtwx + &penalty_matrix;
+        invert_matrix(&xtwx_pen).unwrap_or_else(|| Array2::eye(total_cols))
+    });
+    
+    SmoothGLMResult {
         coefficients,
-        fitted_values,
-        linear_predictor,
+        fitted_values: mu,
+        linear_predictor: eta,
         deviance,
         iterations,
         converged,
-        lambdas,
+        lambdas: lambdas.to_vec(),
         smooth_edfs,
         total_edf,
         gcv,
-        covariance_unscaled: cov_unscaled,
-        family_name: family.name().to_string(),
+        covariance_unscaled: cov,
+        family_name: family_name.to_string(),
         penalty: Penalty::Smooth(smooth_penalty),
-    })
-}
-
-/// Select lambdas via GCV grid search.
-fn select_lambdas_gcv(
-    y: &Array1<f64>,
-    x: &Array2<f64>,
-    smooth_terms: &[SmoothTermData],
-    term_indices: &[std::ops::Range<usize>],
-    p_param: usize,
-    family: &dyn Family,
-    link: &dyn Link,
-    irls_config: &IRLSConfig,
-    offset: &Array1<f64>,
-    weights: &Array1<f64>,
-    config: &SmoothGLMConfig,
-) -> Result<Vec<f64>> {
-    let n = y.len();
-    let n_terms = smooth_terms.len();
-    let total_cols = x.ncols();
-    
-    if n_terms == 0 {
-        return Ok(vec![]);
+        irls_weights: final_weights.clone(),
+        prior_weights,
+        design_matrix: x_combined.clone(),
+        y: y.clone(),
+        offset: offset.cloned(),
     }
-    
-    // Generate lambda grid
-    let grid = lambda_grid(config.n_lambda, config.lambda_min, config.lambda_max);
-    
-    // For single smooth term, do simple grid search
-    if n_terms == 1 {
-        let mut best_lambda = smooth_terms[0].initial_lambda;
-        let mut best_gcv = f64::INFINITY;
-        
-        for &lambda in &grid {
-            let penalty_mat = build_penalty_matrix(
-                total_cols,
-                smooth_terms,
-                term_indices,
-                &[lambda],
-            );
-            
-            match fit_with_penalty(y, x, &penalty_mat, family, link, irls_config, offset, weights) {
-                Ok((_, _, _, deviance, _, _, _, final_weights)) => {
-                    let xtwx = compute_xtwx(x, &final_weights);
-                    let edfs = compute_smooth_edfs(&xtwx, smooth_terms, term_indices, &[lambda]);
-                    let total_edf = (p_param as f64) + edfs.iter().sum::<f64>();
-                    let gcv = gcv_score(deviance, n, total_edf);
-                    
-                    if gcv < best_gcv {
-                        best_gcv = gcv;
-                        best_lambda = lambda;
-                    }
-                }
-                Err(_) => continue,  // Skip failed fits
-            }
-        }
-        
-        return Ok(vec![best_lambda]);
-    }
-    
-    // For multiple smooth terms, use coordinate-wise optimization
-    let mut lambdas: Vec<f64> = smooth_terms.iter().map(|t| t.initial_lambda).collect();
-    
-    for _outer_iter in 0..config.max_lambda_iter {
-        let old_lambdas = lambdas.clone();
-        
-        // Optimize each lambda while holding others fixed
-        for term_idx in 0..n_terms {
-            let mut best_lambda = lambdas[term_idx];
-            let mut best_gcv = f64::INFINITY;
-            
-            for &lambda in &grid {
-                let mut test_lambdas = lambdas.clone();
-                test_lambdas[term_idx] = lambda;
-                
-                let penalty_mat = build_penalty_matrix(
-                    total_cols,
-                    smooth_terms,
-                    term_indices,
-                    &test_lambdas,
-                );
-                
-                match fit_with_penalty(y, x, &penalty_mat, family, link, irls_config, offset, weights) {
-                    Ok((_, _, _, deviance, _, _, _, final_weights)) => {
-                        let xtwx = compute_xtwx(x, &final_weights);
-                        let edfs = compute_smooth_edfs(&xtwx, smooth_terms, term_indices, &test_lambdas);
-                        let total_edf = (p_param as f64) + edfs.iter().sum::<f64>();
-                        let gcv = gcv_score(deviance, n, total_edf);
-                        
-                        if gcv < best_gcv {
-                            best_gcv = gcv;
-                            best_lambda = lambda;
-                        }
-                    }
-                    Err(_) => continue,
-                }
-            }
-            
-            lambdas[term_idx] = best_lambda;
-        }
-        
-        // Check convergence
-        let max_rel_change: f64 = lambdas.iter()
-            .zip(old_lambdas.iter())
-            .map(|(&new, &old)| ((new - old) / old.max(1e-10)).abs())
-            .fold(0.0, f64::max);
-        
-        if max_rel_change < config.lambda_tol {
-            break;
-        }
-    }
-    
-    Ok(lambdas)
-}
-
-/// Build combined penalty matrix from smooth terms.
-fn build_penalty_matrix(
-    total_cols: usize,
-    smooth_terms: &[SmoothTermData],
-    term_indices: &[std::ops::Range<usize>],
-    lambdas: &[f64],
-) -> Array2<f64> {
-    let mut penalty = Array2::zeros((total_cols, total_cols));
-    
-    for (i, term) in smooth_terms.iter().enumerate() {
-        let range = &term_indices[i];
-        let lambda = lambdas[i];
-        
-        for r in 0..term.penalty.nrows() {
-            for c in 0..term.penalty.ncols() {
-                penalty[[range.start + r, range.start + c]] = lambda * term.penalty[[r, c]];
-            }
-        }
-    }
-    
-    penalty
-}
-
-/// Compute EDF for each smooth term.
-fn compute_smooth_edfs(
-    xtwx: &Array2<f64>,
-    smooth_terms: &[SmoothTermData],
-    term_indices: &[std::ops::Range<usize>],
-    lambdas: &[f64],
-) -> Vec<f64> {
-    let mut edfs = Vec::with_capacity(smooth_terms.len());
-    
-    for (i, term) in smooth_terms.iter().enumerate() {
-        let range = &term_indices[i];
-        let lambda = lambdas[i];
-        
-        // Extract the subblock of X'WX for this term
-        let k = term.k();
-        let mut xtwx_block = Array2::zeros((k, k));
-        for r in 0..k {
-            for c in 0..k {
-                xtwx_block[[r, c]] = xtwx[[range.start + r, range.start + c]];
-            }
-        }
-        
-        // Compute EDF for this term
-        let edf = compute_edf(&xtwx_block, &term.penalty, lambda);
-        edfs.push(edf);
-    }
-    
-    edfs
-}
-
-/// Fit model with a fixed penalty matrix.
-/// Returns: (coefficients, fitted_values, linear_predictor, deviance, iterations, converged, cov_unscaled, final_weights)
-fn fit_with_penalty(
-    y: &Array1<f64>,
-    x: &Array2<f64>,
-    penalty_matrix: &Array2<f64>,
-    family: &dyn Family,
-    link: &dyn Link,
-    config: &IRLSConfig,
-    offset: &Array1<f64>,
-    prior_weights: &Array1<f64>,
-) -> Result<(Array1<f64>, Array1<f64>, Array1<f64>, f64, usize, bool, Array2<f64>, Array1<f64>)> {
-    let n = y.len();
-    let p = x.ncols();
-    
-    // Initialize μ
-    let mut mu = family.initialize_mu(y);
-    let mut eta = link.link(&mu);
-    let mut deviance = family.deviance(y, &mu, Some(prior_weights));
-    
-    let mut converged = false;
-    let mut iteration = 0;
-    let mut cov_unscaled = Array2::zeros((p, p));
-    let mut final_weights = Array1::ones(n);
-    let mut coefficients = Array1::zeros(p);
-    
-    while iteration < config.max_iterations {
-        iteration += 1;
-        let deviance_old = deviance;
-        
-        // Compute IRLS weights
-        let link_deriv = link.derivative(&mu);
-        let variance = family.variance(&mu);
-        
-        let irls_weights: Array1<f64> = (0..n)
-            .map(|i| {
-                let d = link_deriv[i];
-                let v = variance[i];
-                (1.0 / (v * d * d)).max(config.min_weight).min(1e10)
-            })
-            .collect();
-        
-        let combined_weights: Array1<f64> = prior_weights
-            .iter()
-            .zip(irls_weights.iter())
-            .map(|(&pw, &iw)| pw * iw)
-            .collect();
-        
-        // Working response
-        let working_response: Array1<f64> = (0..n)
-            .map(|i| {
-                let e = eta[i] - offset[i];
-                e + (y[i] - mu[i]) * link_deriv[i]
-            })
-            .collect();
-        
-        // Solve penalized WLS
-        let (new_coef, xtwinv) = solve_weighted_least_squares_with_penalty_matrix(
-            x,
-            &working_response,
-            &combined_weights,
-            penalty_matrix,
-        )?;
-        
-        // Update eta and mu
-        let eta_base = x.dot(&new_coef);
-        let eta_new: Array1<f64> = eta_base.iter().zip(offset.iter()).map(|(&e, &o)| e + o).collect();
-        let mu_new = clamp_mu(&link.inverse(&eta_new), family);
-        let deviance_new = family.deviance(y, &mu_new, Some(prior_weights));
-        
-        // Step halving if deviance increased
-        if deviance_new > deviance_old * 1.0001 && iteration > 1 {
-            let mut step = 0.5;
-            let mut best_coef = new_coef.clone();
-            let mut best_dev = deviance_new;
-            
-            for _ in 0..5 {
-                let blended: Array1<f64> = coefficients.iter()
-                    .zip(new_coef.iter())
-                    .map(|(&old, &new)| (1.0 - step) * old + step * new)
-                    .collect();
-                
-                let eta_blend = x.dot(&blended);
-                let eta_full: Array1<f64> = eta_blend.iter().zip(offset.iter()).map(|(&e, &o)| e + o).collect();
-                let mu_blend = clamp_mu(&link.inverse(&eta_full), family);
-                let dev_blend = family.deviance(y, &mu_blend, Some(prior_weights));
-                
-                if dev_blend < best_dev {
-                    best_dev = dev_blend;
-                    best_coef = blended;
-                }
-                step *= 0.5;
-            }
-            
-            coefficients = best_coef;
-        } else {
-            coefficients = new_coef;
-        }
-        
-        // Update state
-        let eta_base = x.dot(&coefficients);
-        eta = eta_base.iter().zip(offset.iter()).map(|(&e, &o)| e + o).collect();
-        mu = clamp_mu(&link.inverse(&eta), family);
-        deviance = family.deviance(y, &mu, Some(prior_weights));
-        cov_unscaled = xtwinv;
-        final_weights = irls_weights;
-        
-        // Check convergence
-        let rel_change = if deviance_old.abs() > 1e-10 {
-            (deviance_old - deviance).abs() / deviance_old.abs()
-        } else {
-            (deviance_old - deviance).abs()
-        };
-        
-        if rel_change < config.tolerance {
-            converged = true;
-            break;
-        }
-    }
-    
-    Ok((coefficients, mu, eta, deviance, iteration, converged, cov_unscaled, final_weights))
-}
-
-/// Clamp μ to valid range for the family.
-fn clamp_mu(mu: &Array1<f64>, family: &dyn Family) -> Array1<f64> {
-    let name = family.name();
-    mu.mapv(|x| match name {
-        "Poisson" | "Gamma" => x.max(MU_MIN_POSITIVE),
-        "Binomial" => x.max(MU_MIN_PROBABILITY).min(MU_MAX_PROBABILITY),
-        _ => x,
-    })
 }
 
 // =============================================================================
@@ -651,588 +297,9 @@ fn clamp_mu(mu: &Array1<f64>, family: &dyn Family) -> Array1<f64> {
 // This is ~10-20x faster than grid search for large datasets.
 // =============================================================================
 
-use super::gcv_optimizer::{GCVCache, MultiTermGCVOptimizer};
-
-/// Fit GLM with smooth terms using fast GCV optimization.
-/// 
-/// This is the fast version that optimizes lambda within IRLS iterations
-/// instead of doing multiple separate fits.
-pub fn fit_smooth_glm_fast(
-    y: &Array1<f64>,
-    x_parametric: &Array2<f64>,
-    smooth_terms: &[SmoothTermData],
-    family: &dyn Family,
-    link: &dyn Link,
-    config: &SmoothGLMConfig,
-    offset: Option<&Array1<f64>>,
-    weights: Option<&Array1<f64>>,
-) -> Result<SmoothGLMResult> {
-    let n = y.len();
-    let p_param = x_parametric.ncols();
-    
-    // Validate inputs
-    if x_parametric.nrows() != n {
-        return Err(RustyStatsError::DimensionMismatch(format!(
-            "x_parametric has {} rows but y has {} elements", x_parametric.nrows(), n
-        )));
-    }
-    
-    if smooth_terms.is_empty() {
-        // No smooth terms - use standard IRLS
-        return fit_smooth_glm(y, x_parametric, smooth_terms, family, link, config, offset, weights);
-    }
-    
-    // Build combined design matrix
-    let total_smooth_cols: usize = smooth_terms.iter().map(|t| t.k()).sum();
-    let total_cols = p_param + total_smooth_cols;
-    
-    let mut x_combined = Array2::zeros((n, total_cols));
-    for i in 0..n {
-        for j in 0..p_param {
-            x_combined[[i, j]] = x_parametric[[i, j]];
-        }
-    }
-    
-    let mut col_offset = p_param;
-    let mut term_indices: Vec<(usize, usize)> = Vec::with_capacity(smooth_terms.len());
-    
-    for term in smooth_terms {
-        let start = col_offset;
-        let end = col_offset + term.k();
-        term_indices.push((start, end));
-        
-        for i in 0..n {
-            for j in 0..term.k() {
-                x_combined[[i, col_offset + j]] = term.basis[[i, j]];
-            }
-        }
-        col_offset = end;
-    }
-    
-    // Set up offset and weights
-    let offset_vec = offset.cloned().unwrap_or_else(|| Array1::zeros(n));
-    let prior_weights = weights.cloned().unwrap_or_else(|| Array1::ones(n));
-    
-    // Initialize lambdas
-    let mut lambdas: Vec<f64> = smooth_terms.iter().map(|t| t.initial_lambda).collect();
-    
-    // Initialize μ
-    let mut mu = family.initialize_mu(y);
-    let mut eta = link.link(&mu);
-    let mut deviance = family.deviance(y, &mu, Some(&prior_weights));
-    
-    let mut converged = false;
-    let mut iteration = 0;
-    let mut coefficients = Array1::zeros(total_cols);
-    let mut cov_unscaled = Array2::zeros((total_cols, total_cols));
-    let mut final_weights = Array1::ones(n);
-    
-    // Log-scale bounds for lambda search
-    let log_lambda_min = config.lambda_min.ln();
-    let log_lambda_max = config.lambda_max.ln();
-    
-    while iteration < config.irls_config.max_iterations {
-        iteration += 1;
-        let deviance_old = deviance;
-        
-        // Compute IRLS weights
-        let link_deriv = link.derivative(&mu);
-        let variance = family.variance(&mu);
-        
-        let irls_weights: Array1<f64> = (0..n)
-            .map(|i| {
-                let d = link_deriv[i];
-                let v = variance[i];
-                (1.0 / (v * d * d)).max(config.irls_config.min_weight).min(1e10)
-            })
-            .collect();
-        
-        let combined_weights: Array1<f64> = prior_weights
-            .iter()
-            .zip(irls_weights.iter())
-            .map(|(&pw, &iw)| pw * iw)
-            .collect();
-        
-        // Working response
-        let working_response: Array1<f64> = (0..n)
-            .map(|i| {
-                let e = eta[i] - offset_vec[i];
-                e + (y[i] - mu[i]) * link_deriv[i]
-            })
-            .collect();
-        
-        // Optimize lambdas using fast GCV (every iteration for first few, then less often)
-        if iteration <= 3 || iteration % 2 == 0 {
-            let penalties: Vec<Array2<f64>> = smooth_terms.iter()
-                .map(|t| t.penalty.clone())
-                .collect();
-            
-            if smooth_terms.len() == 1 {
-                // Single term - use simple Brent optimization
-                let cache = GCVCache::new(
-                    &x_combined,
-                    &working_response,
-                    &combined_weights,
-                    &smooth_terms[0].penalty,
-                    term_indices[0].0,
-                    term_indices[0].1,
-                    p_param,
-                );
-                
-                let (opt_lambda, _, _) = cache.optimize_lambda(
-                    log_lambda_min,
-                    log_lambda_max,
-                    config.lambda_tol,
-                );
-                lambdas[0] = opt_lambda;
-            } else {
-                // Multiple terms - use coordinate descent
-                let optimizer = MultiTermGCVOptimizer::new(
-                    &x_combined,
-                    &working_response,
-                    &combined_weights,
-                    penalties,
-                    term_indices.clone(),
-                    p_param,
-                );
-                
-                lambdas = optimizer.optimize_lambdas(
-                    log_lambda_min,
-                    log_lambda_max,
-                    config.lambda_tol,
-                    3,  // Just a few outer iterations per IRLS step
-                );
-            }
-        }
-        
-        // Build penalty matrix with current lambdas
-        let mut penalty_matrix = Array2::zeros((total_cols, total_cols));
-        for (i, term) in smooth_terms.iter().enumerate() {
-            let (start, _end) = term_indices[i];
-            let lambda = lambdas[i];
-            for r in 0..term.penalty.nrows() {
-                for c in 0..term.penalty.ncols() {
-                    penalty_matrix[[start + r, start + c]] = lambda * term.penalty[[r, c]];
-                }
-            }
-        }
-        
-        // Solve penalized WLS
-        let (new_coef, xtwinv) = solve_weighted_least_squares_with_penalty_matrix(
-            &x_combined,
-            &working_response,
-            &combined_weights,
-            &penalty_matrix,
-        )?;
-        
-        // Update eta and mu
-        let eta_base = x_combined.dot(&new_coef);
-        let eta_new: Array1<f64> = eta_base.iter().zip(offset_vec.iter()).map(|(&e, &o)| e + o).collect();
-        let mu_new = clamp_mu(&link.inverse(&eta_new), family);
-        let deviance_new = family.deviance(y, &mu_new, Some(&prior_weights));
-        
-        // Step halving if deviance increased
-        if deviance_new > deviance_old * 1.0001 && iteration > 1 {
-            let mut step = 0.5;
-            let mut best_coef = new_coef.clone();
-            let mut best_dev = deviance_new;
-            
-            for _ in 0..5 {
-                let blended: Array1<f64> = coefficients.iter()
-                    .zip(new_coef.iter())
-                    .map(|(&old, &new)| (1.0 - step) * old + step * new)
-                    .collect();
-                
-                let eta_blend = x_combined.dot(&blended);
-                let eta_full: Array1<f64> = eta_blend.iter().zip(offset_vec.iter()).map(|(&e, &o)| e + o).collect();
-                let mu_blend = clamp_mu(&link.inverse(&eta_full), family);
-                let dev_blend = family.deviance(y, &mu_blend, Some(&prior_weights));
-                
-                if dev_blend < best_dev {
-                    best_dev = dev_blend;
-                    best_coef = blended;
-                }
-                step *= 0.5;
-            }
-            
-            coefficients = best_coef;
-        } else {
-            coefficients = new_coef;
-        }
-        
-        // Update state
-        let eta_base = x_combined.dot(&coefficients);
-        eta = eta_base.iter().zip(offset_vec.iter()).map(|(&e, &o)| e + o).collect();
-        mu = clamp_mu(&link.inverse(&eta), family);
-        deviance = family.deviance(y, &mu, Some(&prior_weights));
-        cov_unscaled = xtwinv;
-        final_weights = irls_weights;
-        
-        // Check convergence
-        let rel_change = if deviance_old.abs() > 1e-10 {
-            (deviance_old - deviance).abs() / deviance_old.abs()
-        } else {
-            (deviance_old - deviance).abs()
-        };
-        
-        if rel_change < config.irls_config.tolerance {
-            converged = true;
-            break;
-        }
-    }
-    
-    // Compute final EDFs
-    let xtwx = compute_xtwx(&x_combined, &final_weights);
-    let mut smooth_edfs = Vec::with_capacity(smooth_terms.len());
-    
-    for (i, term) in smooth_terms.iter().enumerate() {
-        let (start, _end) = term_indices[i];
-        let lambda = lambdas[i];
-        
-        // Extract subblock
-        let k = term.k();
-        let mut xtwx_block = Array2::zeros((k, k));
-        for r in 0..k {
-            for c in 0..k {
-                xtwx_block[[r, c]] = xtwx[[start + r, start + c]];
-            }
-        }
-        
-        let edf = compute_edf(&xtwx_block, &term.penalty, lambda);
-        smooth_edfs.push(edf);
-    }
-    
-    let total_edf = (p_param as f64) + smooth_edfs.iter().sum::<f64>();
-    let gcv = gcv_score(deviance, n, total_edf);
-    
-    // Build SmoothPenalty for result
-    let mut smooth_penalty = SmoothPenalty::new();
-    for (i, term) in smooth_terms.iter().enumerate() {
-        let (start, end) = term_indices[i];
-        smooth_penalty.add_term(term.penalty.clone(), lambdas[i], start..end);
-    }
-    
-    Ok(SmoothGLMResult {
-        coefficients,
-        fitted_values: mu,
-        linear_predictor: eta,
-        deviance,
-        iterations: iteration,
-        converged,
-        lambdas,
-        smooth_edfs,
-        total_edf,
-        gcv,
-        covariance_unscaled: cov_unscaled,
-        family_name: family.name().to_string(),
-        penalty: Penalty::Smooth(smooth_penalty),
-    })
-}
-
-// =============================================================================
-// CONSTRAINED SMOOTH GLM FITTING (Monotonic Splines)
-// =============================================================================
-//
-// This extends the fast smooth GLM fitting to support monotonicity constraints.
-// For monotonic terms, we use NNLS (Non-Negative Least Squares) to enforce
-// that coefficients are non-negative (for I-spline basis).
-//
-// The approach:
-// 1. Use I-spline basis for monotonic terms (provided externally)
-// 2. Split coefficients into unconstrained (parametric) and constrained (smooth)
-// 3. Use NNLS for the smooth term coefficients
-// 4. Combine with penalty for smoothness control
-//
-// =============================================================================
-
+use super::gcv_optimizer::MultiTermGCVOptimizer;
 use super::nnls::{nnls_weighted_penalized, NNLSConfig};
 use nalgebra::{DMatrix, DVector};
-
-/// Fit GLM with monotonic smooth terms using NNLS.
-/// 
-/// This version handles monotonicity constraints by using non-negative least squares
-/// for smooth term coefficients. The basis should be I-splines for monotonic terms.
-pub fn fit_smooth_glm_monotonic(
-    y: &Array1<f64>,
-    x_parametric: &Array2<f64>,
-    smooth_terms: &[SmoothTermData],
-    family: &dyn Family,
-    link: &dyn Link,
-    config: &SmoothGLMConfig,
-    offset: Option<&Array1<f64>>,
-    weights: Option<&Array1<f64>>,
-) -> Result<SmoothGLMResult> {
-    let n = y.len();
-    let p_param = x_parametric.ncols();
-    
-    // Check if any term is monotonic
-    let has_monotonic = smooth_terms.iter().any(|t| t.is_monotonic());
-    
-    if !has_monotonic {
-        // No monotonic terms - use standard fast fitting
-        return fit_smooth_glm_fast(y, x_parametric, smooth_terms, family, link, config, offset, weights);
-    }
-    
-    // Validate inputs
-    if x_parametric.nrows() != n {
-        return Err(RustyStatsError::DimensionMismatch(format!(
-            "x_parametric has {} rows but y has {} elements", x_parametric.nrows(), n
-        )));
-    }
-    
-    // Build combined design matrix
-    let total_smooth_cols: usize = smooth_terms.iter().map(|t| t.k()).sum();
-    let total_cols = p_param + total_smooth_cols;
-    
-    let mut x_combined = Array2::zeros((n, total_cols));
-    for i in 0..n {
-        for j in 0..p_param {
-            x_combined[[i, j]] = x_parametric[[i, j]];
-        }
-    }
-    
-    let mut col_offset = p_param;
-    let mut term_indices: Vec<(usize, usize)> = Vec::with_capacity(smooth_terms.len());
-    
-    for term in smooth_terms {
-        let start = col_offset;
-        let end = col_offset + term.k();
-        term_indices.push((start, end));
-        
-        for i in 0..n {
-            for j in 0..term.k() {
-                x_combined[[i, col_offset + j]] = term.basis[[i, j]];
-            }
-        }
-        col_offset = end;
-    }
-    
-    // Set up offset and weights
-    let offset_vec = offset.cloned().unwrap_or_else(|| Array1::zeros(n));
-    let prior_weights = weights.cloned().unwrap_or_else(|| Array1::ones(n));
-    
-    // Initialize lambdas
-    let mut lambdas: Vec<f64> = smooth_terms.iter().map(|t| t.initial_lambda).collect();
-    
-    // Initialize μ
-    let mut mu = family.initialize_mu(y);
-    let mut eta = link.link(&mu);
-    let mut deviance = family.deviance(y, &mu, Some(&prior_weights));
-    
-    let mut converged = false;
-    let mut iteration = 0;
-    let mut coefficients = Array1::zeros(total_cols);
-    let mut cov_unscaled = Array2::zeros((total_cols, total_cols));
-    let mut final_weights = Array1::ones(n);
-    
-    // Log-scale bounds for lambda search
-    let log_lambda_min = config.lambda_min.ln();
-    let log_lambda_max = config.lambda_max.ln();
-    
-    // NNLS config
-    let nnls_config = NNLSConfig::default();
-    
-    while iteration < config.irls_config.max_iterations {
-        iteration += 1;
-        let deviance_old = deviance;
-        
-        // Compute IRLS weights
-        let link_deriv = link.derivative(&mu);
-        let variance = family.variance(&mu);
-        
-        let irls_weights: Array1<f64> = (0..n)
-            .map(|i| {
-                let d = link_deriv[i];
-                let v = variance[i];
-                (1.0 / (v * d * d)).max(config.irls_config.min_weight).min(1e10)
-            })
-            .collect();
-        
-        let combined_weights: Array1<f64> = prior_weights
-            .iter()
-            .zip(irls_weights.iter())
-            .map(|(&pw, &iw)| pw * iw)
-            .collect();
-        
-        // Working response
-        let working_response: Array1<f64> = (0..n)
-            .map(|i| {
-                let e = eta[i] - offset_vec[i];
-                e + (y[i] - mu[i]) * link_deriv[i]
-            })
-            .collect();
-        
-        // Optimize lambdas (same as unconstrained version)
-        if iteration <= 3 || iteration % 2 == 0 {
-            if smooth_terms.len() == 1 {
-                let cache = GCVCache::new(
-                    &x_combined,
-                    &working_response,
-                    &combined_weights,
-                    &smooth_terms[0].penalty,
-                    term_indices[0].0,
-                    term_indices[0].1,
-                    p_param,
-                );
-                
-                let (opt_lambda, _, _) = cache.optimize_lambda(
-                    log_lambda_min,
-                    log_lambda_max,
-                    config.lambda_tol,
-                );
-                lambdas[0] = opt_lambda;
-            } else {
-                let penalties: Vec<Array2<f64>> = smooth_terms.iter()
-                    .map(|t| t.penalty.clone())
-                    .collect();
-                
-                let optimizer = MultiTermGCVOptimizer::new(
-                    &x_combined,
-                    &working_response,
-                    &combined_weights,
-                    penalties,
-                    term_indices.clone(),
-                    p_param,
-                );
-                
-                lambdas = optimizer.optimize_lambdas(
-                    log_lambda_min,
-                    log_lambda_max,
-                    config.lambda_tol,
-                    3,
-                );
-            }
-        }
-        
-        // Solve using constrained approach for monotonic terms
-        let new_coef = solve_constrained_wls(
-            &x_combined,
-            &working_response,
-            &combined_weights,
-            smooth_terms,
-            &term_indices,
-            &lambdas,
-            p_param,
-            &nnls_config,
-        )?;
-        
-        // Update eta and mu
-        let eta_base = x_combined.dot(&new_coef);
-        let eta_new: Array1<f64> = eta_base.iter().zip(offset_vec.iter()).map(|(&e, &o)| e + o).collect();
-        let mu_new = clamp_mu(&link.inverse(&eta_new), family);
-        let deviance_new = family.deviance(y, &mu_new, Some(&prior_weights));
-        
-        // Step halving if deviance increased
-        if deviance_new > deviance_old * 1.0001 && iteration > 1 {
-            let mut step = 0.5;
-            let mut best_coef = new_coef.clone();
-            let mut best_dev = deviance_new;
-            
-            for _ in 0..5 {
-                let blended: Array1<f64> = coefficients.iter()
-                    .zip(new_coef.iter())
-                    .map(|(&old, &new)| (1.0 - step) * old + step * new)
-                    .collect();
-                
-                let eta_blend = x_combined.dot(&blended);
-                let eta_full: Array1<f64> = eta_blend.iter().zip(offset_vec.iter()).map(|(&e, &o)| e + o).collect();
-                let mu_blend = clamp_mu(&link.inverse(&eta_full), family);
-                let dev_blend = family.deviance(y, &mu_blend, Some(&prior_weights));
-                
-                if dev_blend < best_dev {
-                    best_dev = dev_blend;
-                    best_coef = blended;
-                }
-                step *= 0.5;
-            }
-            
-            coefficients = best_coef;
-        } else {
-            coefficients = new_coef;
-        }
-        
-        // Update state
-        let eta_base = x_combined.dot(&coefficients);
-        eta = eta_base.iter().zip(offset_vec.iter()).map(|(&e, &o)| e + o).collect();
-        mu = clamp_mu(&link.inverse(&eta), family);
-        deviance = family.deviance(y, &mu, Some(&prior_weights));
-        final_weights = irls_weights;
-        
-        // Check convergence
-        let rel_change = if deviance_old.abs() > 1e-10 {
-            (deviance_old - deviance).abs() / deviance_old.abs()
-        } else {
-            (deviance_old - deviance).abs()
-        };
-        
-        if rel_change < config.irls_config.tolerance {
-            converged = true;
-            break;
-        }
-    }
-    
-    // Compute final EDFs
-    let xtwx = compute_xtwx(&x_combined, &final_weights);
-    let mut smooth_edfs = Vec::with_capacity(smooth_terms.len());
-    
-    for (i, term) in smooth_terms.iter().enumerate() {
-        let (start, _end) = term_indices[i];
-        let lambda = lambdas[i];
-        
-        let k = term.k();
-        let mut xtwx_block = Array2::zeros((k, k));
-        for r in 0..k {
-            for c in 0..k {
-                xtwx_block[[r, c]] = xtwx[[start + r, start + c]];
-            }
-        }
-        
-        let edf = compute_edf(&xtwx_block, &term.penalty, lambda);
-        smooth_edfs.push(edf);
-    }
-    
-    let total_edf = (p_param as f64) + smooth_edfs.iter().sum::<f64>();
-    let gcv = gcv_score(deviance, n, total_edf);
-    
-    // Build SmoothPenalty for result
-    let mut smooth_penalty = SmoothPenalty::new();
-    for (i, term) in smooth_terms.iter().enumerate() {
-        let (start, end) = term_indices[i];
-        smooth_penalty.add_term(term.penalty.clone(), lambdas[i], start..end);
-    }
-    
-    // Compute approximate covariance (note: this is approximate for constrained problems)
-    // For now, use the unconstrained covariance as an approximation
-    let mut penalty_matrix = Array2::zeros((total_cols, total_cols));
-    for (i, term) in smooth_terms.iter().enumerate() {
-        let (start, _end) = term_indices[i];
-        let lambda = lambdas[i];
-        for r in 0..term.penalty.nrows() {
-            for c in 0..term.penalty.ncols() {
-                penalty_matrix[[start + r, start + c]] = lambda * term.penalty[[r, c]];
-            }
-        }
-    }
-    
-    let xtwx_pen = &xtwx + &penalty_matrix;
-    cov_unscaled = invert_matrix(&xtwx_pen).unwrap_or_else(|| Array2::eye(total_cols));
-    
-    Ok(SmoothGLMResult {
-        coefficients,
-        fitted_values: mu,
-        linear_predictor: eta,
-        deviance,
-        iterations: iteration,
-        converged,
-        lambdas,
-        smooth_edfs,
-        total_edf,
-        gcv,
-        covariance_unscaled: cov_unscaled,
-        family_name: family.name().to_string(),
-        penalty: Penalty::Smooth(smooth_penalty),
-    })
-}
 
 /// Solve constrained weighted least squares for monotonic smooth terms.
 /// 
@@ -1263,13 +330,7 @@ fn solve_constrained_wls(
         // No monotonic terms - use standard WLS
         let mut penalty_matrix = Array2::zeros((p, p));
         for (i, term) in smooth_terms.iter().enumerate() {
-            let (start, _end) = term_indices[i];
-            let lambda = lambdas[i];
-            for r in 0..term.penalty.nrows() {
-                for c in 0..term.penalty.ncols() {
-                    penalty_matrix[[start + r, start + c]] = lambda * term.penalty[[r, c]];
-                }
-            }
+            embed_penalty(&mut penalty_matrix, &term.penalty, term_indices[i].0, lambdas[i]);
         }
         let (coef, _) = solve_weighted_least_squares_with_penalty_matrix(x, z, w, &penalty_matrix)?;
         return Ok(coef);
@@ -1401,13 +462,7 @@ fn solve_constrained_wls(
     // Initialize with unconstrained solution
     let mut penalty_matrix = Array2::zeros((p, p));
     for (i, term) in smooth_terms.iter().enumerate() {
-        let (start, _end) = term_indices[i];
-        let lambda = lambdas[i];
-        for r in 0..term.penalty.nrows() {
-            for c in 0..term.penalty.ncols() {
-                penalty_matrix[[start + r, start + c]] = lambda * term.penalty[[r, c]];
-            }
-        }
+        embed_penalty(&mut penalty_matrix, &term.penalty, term_indices[i].0, lambdas[i]);
     }
     let (init_coef, _) = solve_weighted_least_squares_with_penalty_matrix(x, z, w, &penalty_matrix)?;
     coefficients = init_coef;
@@ -1439,39 +494,297 @@ fn solve_constrained_wls(
 
 /// Simple symmetric system solver for small systems.
 fn solve_symmetric(a: &Array2<f64>, b: &Array1<f64>) -> Result<Array1<f64>> {
-    let n = a.nrows();
-    let a_contig = if a.is_standard_layout() { a.clone() } else { a.as_standard_layout().to_owned() };
-    let a_nalg = DMatrix::from_row_slice(n, n, a_contig.as_slice().unwrap());
-    let b_nalg = DVector::from_row_slice(b.as_slice().unwrap());
-    
-    if let Some(chol) = a_nalg.clone().cholesky() {
-        let x = chol.solve(&b_nalg);
-        Ok(Array1::from_vec(x.as_slice().to_vec()))
-    } else {
-        // Fall back to LU
-        let lu = a_nalg.lu();
-        let x = lu.solve(&b_nalg).ok_or_else(|| {
-            RustyStatsError::LinearAlgebraError("Cannot solve linear system".to_string())
-        })?;
-        Ok(Array1::from_vec(x.as_slice().to_vec()))
-    }
+    convert::solve_symmetric(a, b).ok_or_else(|| {
+        RustyStatsError::LinearAlgebraError("Cannot solve linear system".to_string())
+    })
 }
 
 /// Simple matrix inversion helper.
 fn invert_matrix(a: &Array2<f64>) -> Option<Array2<f64>> {
-    let n = a.nrows();
-    let a_contig = if a.is_standard_layout() { a.clone() } else { a.as_standard_layout().to_owned() };
-    let a_nalg = DMatrix::from_row_slice(n, n, a_contig.as_slice().unwrap());
+    convert::invert_matrix(a)
+}
+
+// =============================================================================
+// Unified entry point: takes full design matrix + smooth specs
+// =============================================================================
+
+/// Smooth term specification for the unified entry point.
+///
+/// Instead of passing separate basis matrices, callers provide the full design
+/// matrix and indicate which column ranges are smooth terms via this struct.
+#[derive(Debug, Clone)]
+pub struct SmoothTermSpec {
+    /// Start column index (inclusive) in the full design matrix
+    pub col_start: usize,
+    /// End column index (exclusive) in the full design matrix
+    pub col_end: usize,
+    /// Penalty matrix (k × k) for this smooth term
+    pub penalty: Array2<f64>,
+    /// Monotonicity constraint
+    pub monotonicity: Monotonicity,
+    /// Initial lambda value
+    pub initial_lambda: f64,
+}
+
+/// Fit GLM with smooth terms from a full design matrix.
+///
+/// This is the unified entry point that eliminates the need for Python to split
+/// the design matrix into parametric + smooth parts. The full design matrix is
+/// passed with column ranges identifying smooth terms. Coefficients are returned
+/// in the same column order as the input matrix — no reordering needed.
+///
+/// Handles both unconstrained and monotonic smooth terms in a single call.
+pub fn fit_smooth_glm_full_matrix(
+    y: &Array1<f64>,
+    x_full: &Array2<f64>,
+    smooth_specs: &[SmoothTermSpec],
+    family: &dyn Family,
+    link: &dyn Link,
+    config: &SmoothGLMConfig,
+    offset: Option<&Array1<f64>>,
+    weights: Option<&Array1<f64>>,
+) -> Result<SmoothGLMResult> {
+    let n = y.len();
+    let p = x_full.ncols();
     
-    a_nalg.clone().try_inverse().map(|inv| {
-        let mut result = Array2::zeros((n, n));
-        for i in 0..n {
-            for j in 0..n {
-                result[[i, j]] = inv[(i, j)];
-            }
+    if x_full.nrows() != n {
+        return Err(RustyStatsError::DimensionMismatch(format!(
+            "x_full has {} rows but y has {} elements", x_full.nrows(), n
+        )));
+    }
+    
+    if smooth_specs.is_empty() {
+        // No smooth terms — delegate to standard GLM fit and wrap result
+        let irls = fit_glm_full(y, x_full, family, link, &config.irls_config, offset, weights)?;
+        return Ok(SmoothGLMResult {
+            coefficients: irls.coefficients,
+            fitted_values: irls.fitted_values,
+            linear_predictor: irls.linear_predictor,
+            deviance: irls.deviance,
+            iterations: irls.iterations,
+            converged: irls.converged,
+            lambdas: vec![],
+            smooth_edfs: vec![],
+            total_edf: p as f64,
+            gcv: 0.0,
+            covariance_unscaled: irls.covariance_unscaled,
+            family_name: irls.family_name,
+            penalty: irls.penalty,
+            irls_weights: irls.irls_weights,
+            prior_weights: irls.prior_weights,
+            design_matrix: irls.design_matrix.unwrap_or_else(|| x_full.clone()),
+            y: irls.y,
+            offset: if irls.offset.iter().all(|&v| v == 0.0) { None } else { Some(irls.offset) },
+        });
+    }
+    
+    // Validate specs
+    for (i, spec) in smooth_specs.iter().enumerate() {
+        if spec.col_end > p || spec.col_start >= spec.col_end {
+            return Err(RustyStatsError::InvalidValue(format!(
+                "Smooth spec {} has invalid column range [{}, {}), matrix has {} columns",
+                i, spec.col_start, spec.col_end, p
+            )));
         }
-        result
-    })
+        let k = spec.col_end - spec.col_start;
+        if spec.penalty.nrows() != k || spec.penalty.ncols() != k {
+            return Err(RustyStatsError::DimensionMismatch(format!(
+                "Smooth spec {} penalty has shape ({}, {}) but expected ({}, {})",
+                i, spec.penalty.nrows(), spec.penalty.ncols(), k, k
+            )));
+        }
+    }
+    
+    // Determine parametric column count (everything NOT in a smooth term)
+    let mut smooth_cols = std::collections::HashSet::new();
+    for spec in smooth_specs {
+        for c in spec.col_start..spec.col_end {
+            smooth_cols.insert(c);
+        }
+    }
+    let p_param = p - smooth_cols.len();
+    
+    // Build column ranges in x_full order (smooth specs are already indexed into x_full)
+    let term_indices: Vec<(usize, usize)> = smooth_specs.iter()
+        .map(|s| (s.col_start, s.col_end))
+        .collect();
+    
+    let offset_vec = offset.cloned().unwrap_or_else(|| Array1::zeros(n));
+    let prior_weights = weights.cloned().unwrap_or_else(|| Array1::ones(n));
+    let mut lambdas: Vec<f64> = smooth_specs.iter().map(|s| s.initial_lambda).collect();
+    
+    let has_monotonic = smooth_specs.iter().any(|s| s.is_monotonic());
+    
+    // Use x_full directly as x_combined — no reassembly needed
+    let x_combined = x_full;
+    let total_cols = p;
+    
+    // Initialize μ
+    let mut mu = family.initialize_mu(y);
+    let mut eta = link.link(&mu);
+    let mut deviance = family.deviance(y, &mu, Some(&prior_weights));
+    
+    let mut converged = false;
+    let mut iteration = 0;
+    let mut coefficients = Array1::zeros(total_cols);
+    let mut cov_unscaled = Array2::zeros((total_cols, total_cols));
+    let mut final_weights = Array1::ones(n);
+    
+    let log_lambda_min = config.lambda_min.ln();
+    let log_lambda_max = config.lambda_max.ln();
+    let mut penalty_matrix = Array2::zeros((total_cols, total_cols));
+    
+    while iteration < config.irls_config.max_iterations {
+        iteration += 1;
+        let deviance_old = deviance;
+        
+        // IRLS weights
+        let link_deriv = link.derivative(&mu);
+        let variance = family.variance(&mu);
+        
+        let irls_weights: Array1<f64> = (0..n)
+            .map(|i| {
+                let d = link_deriv[i];
+                let v = variance[i];
+                (1.0 / (v * d * d)).max(config.irls_config.min_weight).min(1e10)
+            })
+            .collect();
+        
+        let combined_weights = &prior_weights * &irls_weights;
+        
+        // Working response: (eta - offset) + (y - mu) * link_deriv
+        let working_response = (&eta - &offset_vec) + &((y - &mu) * &link_deriv);
+        
+        // Optimize lambdas
+        if iteration <= 3 || iteration % 2 == 0 {
+            let penalties: Vec<Array2<f64>> = smooth_specs.iter()
+                .map(|s| s.penalty.clone())
+                .collect();
+            
+            let optimizer = MultiTermGCVOptimizer::new(
+                x_combined,
+                &working_response,
+                &combined_weights,
+                penalties,
+                term_indices.clone(),
+                p_param,
+            );
+            
+            lambdas = optimizer.optimize_lambdas(
+                log_lambda_min,
+                log_lambda_max,
+                config.lambda_tol,
+                3,
+            );
+        }
+        
+        // Build penalty matrix (reuse allocation, zero and refill)
+        penalty_matrix.fill(0.0);
+        for (i, spec) in smooth_specs.iter().enumerate() {
+            embed_penalty(&mut penalty_matrix, &spec.penalty, spec.col_start, lambdas[i]);
+        }
+        
+        // Solve WLS — keep new_coef separate so step-halving can blend old ↔ new
+        let new_coef;
+        if has_monotonic {
+            // Build SmoothTermData for the constrained solver
+            let term_data: Vec<SmoothTermData> = smooth_specs.iter()
+                .map(|s| SmoothTermData {
+                    name: String::new(),
+                    basis: x_combined.slice(ndarray::s![.., s.col_start..s.col_end]).to_owned(),
+                    penalty: s.penalty.clone(),
+                    monotonicity: s.monotonicity,
+                    initial_lambda: s.initial_lambda,
+                })
+                .collect();
+            let nnls_config = super::nnls::NNLSConfig::default();
+            new_coef = solve_constrained_wls(
+                x_combined,
+                &working_response,
+                &combined_weights,
+                &term_data,
+                &term_indices,
+                &lambdas,
+                p_param,
+                &nnls_config,
+            )?;
+        } else {
+            let (coef, xtwinv) = solve_weighted_least_squares_with_penalty_matrix(
+                x_combined,
+                &working_response,
+                &combined_weights,
+                &penalty_matrix,
+            )?;
+            new_coef = coef;
+            cov_unscaled = xtwinv;
+        }
+        
+        // Update eta and mu with new coefficients
+        let eta_new = &x_combined.dot(&new_coef) + &offset_vec;
+        let mu_new = family.clamp_mu(&link.inverse(&eta_new));
+        let deviance_new = family.deviance(y, &mu_new, Some(&prior_weights));
+        
+        // Step halving if deviance increased (blend old coefficients ↔ new)
+        if deviance_new > deviance_old * 1.0001 && iteration > 1 {
+            let mut step = 0.5;
+            let mut best_coef = new_coef.clone();
+            let mut best_dev = deviance_new;
+            
+            for _ in 0..5 {
+                let blended = &coefficients * (1.0 - step) + &new_coef * step;
+                
+                let eta_full = &x_combined.dot(&blended) + &offset_vec;
+                let mu_blend = family.clamp_mu(&link.inverse(&eta_full));
+                let dev_blend = family.deviance(y, &mu_blend, Some(&prior_weights));
+                
+                if dev_blend < best_dev {
+                    best_dev = dev_blend;
+                    best_coef = blended;
+                }
+                step *= 0.5;
+            }
+            
+            coefficients = best_coef;
+        } else {
+            coefficients = new_coef;
+        }
+        
+        // Update state
+        eta = &x_combined.dot(&coefficients) + &offset_vec;
+        mu = family.clamp_mu(&link.inverse(&eta));
+        deviance = family.deviance(y, &mu, Some(&prior_weights));
+        final_weights = irls_weights;
+        
+        let rel_change = if deviance_old.abs() > 1e-10 {
+            (deviance_old - deviance).abs() / deviance_old.abs()
+        } else {
+            (deviance_old - deviance).abs()
+        };
+        
+        if rel_change < config.irls_config.tolerance {
+            converged = true;
+            break;
+        }
+    }
+    
+    // Assemble result directly from SmoothTermSpec (no SmoothTermData conversion)
+    let penalty_specs: Vec<(&Array2<f64>, usize, usize)> = smooth_specs.iter()
+        .map(|s| (&s.penalty, s.col_start, s.col_end))
+        .collect();
+    
+    Ok(assemble_smooth_result_from_specs(
+        coefficients, mu, eta, deviance, iteration, converged,
+        &final_weights, x_combined, &penalty_specs, &lambdas,
+        p_param, family.name(), prior_weights, y, offset,
+        if has_monotonic { None } else { Some(cov_unscaled) },
+    ))
+}
+
+impl SmoothTermSpec {
+    /// Whether this term has a monotonicity constraint.
+    pub fn is_monotonic(&self) -> bool {
+        !matches!(self.monotonicity, Monotonicity::None)
+    }
 }
 
 // =============================================================================
@@ -1481,10 +794,14 @@ fn invert_matrix(a: &Array2<f64>) -> Option<Array2<f64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::families::GaussianFamily;
-    use crate::links::IdentityLink;
+    use crate::families::{GaussianFamily, PoissonFamily, GammaFamily};
+    use crate::links::{IdentityLink, LogLink};
     use crate::splines::bs_basis;
-    
+
+    // =========================================================================
+    // Unit tests for structs and helpers
+    // =========================================================================
+
     #[test]
     fn test_smooth_term_creation() {
         let x = Array1::from_vec((0..100).map(|i| i as f64 / 10.0).collect());
@@ -1498,31 +815,13 @@ mod tests {
     }
     
     #[test]
-    fn test_build_penalty_matrix() {
+    fn test_embed_penalty() {
         let penalty1 = Array2::eye(5);
         let penalty2 = Array2::eye(3);
         
-        let terms = vec![
-            SmoothTermData {
-                name: "x1".to_string(),
-                basis: Array2::zeros((10, 5)),
-                penalty: penalty1,
-                initial_lambda: 1.0,
-                monotonicity: Monotonicity::None,
-            },
-            SmoothTermData {
-                name: "x2".to_string(),
-                basis: Array2::zeros((10, 3)),
-                penalty: penalty2,
-                initial_lambda: 1.0,
-                monotonicity: Monotonicity::None,
-            },
-        ];
-        
-        let term_indices = vec![2..7, 7..10];  // After 2 parametric columns
-        let lambdas = vec![0.5, 2.0];
-        
-        let penalty = build_penalty_matrix(10, &terms, &term_indices, &lambdas);
+        let mut penalty = Array2::zeros((10, 10));
+        embed_penalty(&mut penalty, &penalty1, 2, 0.5);
+        embed_penalty(&mut penalty, &penalty2, 7, 2.0);
         
         // Check shape
         assert_eq!(penalty.shape(), &[10, 10]);
@@ -1534,5 +833,314 @@ mod tests {
         // Check that smooth columns have scaled penalty
         assert_eq!(penalty[[2, 2]], 0.5);  // lambda1 * I
         assert_eq!(penalty[[7, 7]], 2.0);  // lambda2 * I
+    }
+
+    #[test]
+    fn test_smooth_term_with_monotonicity() {
+        let x = Array1::from_vec((0..50).map(|i| i as f64 / 5.0).collect());
+        let basis = bs_basis(&x, 8, 3, None, false);
+
+        let term = SmoothTermData::new("age".to_string(), basis)
+            .with_monotonicity(Monotonicity::Increasing)
+            .with_lambda(2.5);
+
+        assert!(term.is_monotonic());
+        assert_eq!(term.monotonicity, Monotonicity::Increasing);
+        assert_eq!(term.initial_lambda, 2.5);
+    }
+
+    // =========================================================================
+    // Integration tests: fit_smooth_glm_full_matrix (unified entry point)
+    // =========================================================================
+
+    /// Helper: generate Gaussian data with a smooth sin(x) effect.
+    fn gaussian_smooth_data(n: usize) -> (Array1<f64>, Array2<f64>, Array1<f64>) {
+        let x_vals: Array1<f64> = (0..n).map(|i| i as f64 * 10.0 / n as f64).collect();
+        let y: Array1<f64> = x_vals.iter().map(|&xi| 2.0 + xi.sin() + 0.1 * (xi * 7.3).sin()).collect();
+        // Parametric part: intercept column
+        let x_param = Array2::from_shape_fn((n, 1), |(_, _)| 1.0);
+        (y, x_param, x_vals)
+    }
+
+    /// Helper: generate Poisson data with a smooth effect.
+    fn poisson_smooth_data(n: usize) -> (Array1<f64>, Array2<f64>, Array1<f64>) {
+        let x_vals: Array1<f64> = (0..n).map(|i| i as f64 * 10.0 / n as f64).collect();
+        let y: Array1<f64> = x_vals.iter().map(|&xi| {
+            let mu = (0.5 + 0.3 * xi.sin()).exp();
+            // Deterministic "Poisson-like" values (round to nearest int, min 0)
+            (mu + 0.5).floor().max(0.0)
+        }).collect();
+        let x_param = Array2::from_shape_fn((n, 1), |(_, _)| 1.0);
+        (y, x_param, x_vals)
+    }
+
+    /// Helper: concatenate parametric + basis into full design matrix and build SmoothTermSpec.
+    fn make_full_matrix(x_param: &Array2<f64>, basis: &Array2<f64>) -> (Array2<f64>, Vec<SmoothTermSpec>) {
+        let p_param = x_param.ncols();
+        let k = basis.ncols();
+        let x_full = ndarray::concatenate![ndarray::Axis(1), *x_param, *basis]
+            .as_standard_layout().to_owned();
+        let spec = SmoothTermSpec {
+            col_start: p_param,
+            col_end: p_param + k,
+            penalty: crate::splines::penalized::penalty_matrix(k, 2),
+            monotonicity: Monotonicity::None,
+            initial_lambda: 1.0,
+        };
+        (x_full, vec![spec])
+    }
+
+    #[test]
+    fn test_fit_smooth_glm_gaussian_converges() {
+        let (y, x_param, x_vals) = gaussian_smooth_data(100);
+        let basis = bs_basis(&x_vals, 10, 3, None, false);
+        let (x_full, specs) = make_full_matrix(&x_param, &basis);
+        let config = SmoothGLMConfig::default();
+
+        let result = fit_smooth_glm_full_matrix(
+            &y, &x_full, &specs,
+            &GaussianFamily, &IdentityLink,
+            &config, None, None,
+        ).unwrap();
+
+        assert!(result.converged, "Gaussian smooth GLM should converge");
+        assert!(result.deviance > 0.0);
+        assert!(result.iterations > 0);
+    }
+
+    #[test]
+    fn test_fit_smooth_glm_gaussian_edf_less_than_k() {
+        let (y, x_param, x_vals) = gaussian_smooth_data(200);
+        let basis = bs_basis(&x_vals, 10, 3, None, false);
+        let k = basis.ncols();
+        let (x_full, specs) = make_full_matrix(&x_param, &basis);
+        let config = SmoothGLMConfig::default();
+
+        let result = fit_smooth_glm_full_matrix(
+            &y, &x_full, &specs,
+            &GaussianFamily, &IdentityLink,
+            &config, None, None,
+        ).unwrap();
+
+        assert_eq!(result.smooth_edfs.len(), 1);
+        assert!(result.smooth_edfs[0] > 1.0, "EDF should be > 1 for non-trivial smooth");
+        assert!(result.smooth_edfs[0] < k as f64, "EDF {} should be < k {}", result.smooth_edfs[0], k);
+        assert!(result.total_edf > 1.0);
+    }
+
+    #[test]
+    fn test_fit_smooth_glm_gaussian_gcv_positive() {
+        let (y, x_param, x_vals) = gaussian_smooth_data(100);
+        let basis = bs_basis(&x_vals, 10, 3, None, false);
+        let (x_full, specs) = make_full_matrix(&x_param, &basis);
+        let config = SmoothGLMConfig::default();
+
+        let result = fit_smooth_glm_full_matrix(
+            &y, &x_full, &specs,
+            &GaussianFamily, &IdentityLink,
+            &config, None, None,
+        ).unwrap();
+
+        assert!(result.gcv > 0.0, "GCV should be positive");
+        assert_eq!(result.lambdas.len(), 1);
+        assert!(result.lambdas[0] > 0.0, "Selected lambda should be positive");
+    }
+
+    #[test]
+    fn test_fit_smooth_glm_poisson_converges() {
+        let (y, x_param, x_vals) = poisson_smooth_data(200);
+        let basis = bs_basis(&x_vals, 8, 3, None, false);
+        let (x_full, specs) = make_full_matrix(&x_param, &basis);
+        let config = SmoothGLMConfig::default();
+
+        let result = fit_smooth_glm_full_matrix(
+            &y, &x_full, &specs,
+            &PoissonFamily, &LogLink,
+            &config, None, None,
+        ).unwrap();
+
+        assert!(result.converged, "Poisson smooth GLM should converge");
+        assert!(result.fitted_values.iter().all(|&v| v > 0.0),
+            "Poisson fitted values must be positive");
+    }
+
+    #[test]
+    fn test_fit_smooth_glm_covariance_shape() {
+        let (y, x_param, x_vals) = gaussian_smooth_data(100);
+        let basis = bs_basis(&x_vals, 8, 3, None, false);
+        let p_total = x_param.ncols() + basis.ncols();
+        let (x_full, specs) = make_full_matrix(&x_param, &basis);
+        let config = SmoothGLMConfig::default();
+
+        let result = fit_smooth_glm_full_matrix(
+            &y, &x_full, &specs,
+            &GaussianFamily, &IdentityLink,
+            &config, None, None,
+        ).unwrap();
+
+        assert_eq!(result.covariance_unscaled.shape(), &[p_total, p_total]);
+        assert_eq!(result.coefficients.len(), p_total);
+    }
+
+    #[test]
+    fn test_fit_smooth_glm_with_offset() {
+        let n = 100;
+        let (y, x_param, x_vals) = poisson_smooth_data(n);
+        let basis = bs_basis(&x_vals, 8, 3, None, false);
+        let (x_full, specs) = make_full_matrix(&x_param, &basis);
+        let offset = Array1::from_vec(vec![0.5; n]);
+        let mut config = SmoothGLMConfig::default();
+        config.irls_config.max_iterations = 50;
+
+        let result = fit_smooth_glm_full_matrix(
+            &y, &x_full, &specs,
+            &PoissonFamily, &LogLink,
+            &config, Some(&offset), None,
+        ).unwrap();
+
+        assert!(result.converged);
+    }
+
+    #[test]
+    fn test_fit_smooth_glm_with_weights() {
+        let n = 100;
+        let (y, x_param, x_vals) = gaussian_smooth_data(n);
+        let basis = bs_basis(&x_vals, 8, 3, None, false);
+        let (x_full, specs) = make_full_matrix(&x_param, &basis);
+        let weights = Array1::from_vec(vec![2.0; n]);
+        let config = SmoothGLMConfig::default();
+
+        let result = fit_smooth_glm_full_matrix(
+            &y, &x_full, &specs,
+            &GaussianFamily, &IdentityLink,
+            &config, None, Some(&weights),
+        ).unwrap();
+
+        assert!(result.converged);
+    }
+
+    #[test]
+    fn test_fit_smooth_glm_dimension_mismatch() {
+        let n = 100;
+        let (y, x_param, _x_vals) = gaussian_smooth_data(n);
+        let bad_x = Array1::from_vec((0..50).map(|i| i as f64).collect());
+        let basis = bs_basis(&bad_x, 8, 3, None, false);
+        // Build full matrix from mismatched basis (50 rows) and x_param (100 rows)
+        // fit_smooth_glm_full_matrix validates x_full.nrows() == y.len()
+        let k = basis.ncols();
+        let x_full = ndarray::concatenate![ndarray::Axis(1), x_param.slice(ndarray::s![0..50, ..]), basis]
+            .as_standard_layout().to_owned();
+        let specs = vec![SmoothTermSpec {
+            col_start: 1, col_end: 1 + k,
+            penalty: crate::splines::penalized::penalty_matrix(k, 2),
+            monotonicity: Monotonicity::None,
+            initial_lambda: 1.0,
+        }];
+        let config = SmoothGLMConfig::default();
+
+        let result = fit_smooth_glm_full_matrix(
+            &y, &x_full, &specs,
+            &GaussianFamily, &IdentityLink,
+            &config, None, None,
+        );
+
+        assert!(result.is_err());
+    }
+
+    // =========================================================================
+    // Multi-term tests
+    // =========================================================================
+
+    #[test]
+    fn test_fit_smooth_glm_two_terms() {
+        let n = 200;
+        let x1: Array1<f64> = (0..n).map(|i| i as f64 * 10.0 / n as f64).collect();
+        let x2: Array1<f64> = (0..n).map(|i| i as f64 * 5.0 / n as f64).collect();
+        let y: Array1<f64> = x1.iter().zip(x2.iter())
+            .map(|(&a, &b)| 2.0 + a.sin() + 0.5 * b.cos())
+            .collect();
+
+        let x_param = Array2::from_shape_fn((n, 1), |(_, _)| 1.0);
+        let basis1 = bs_basis(&x1, 8, 3, None, false);
+        let basis2 = bs_basis(&x2, 6, 3, None, false);
+        let k1 = basis1.ncols();
+        let k2 = basis2.ncols();
+        let x_full = ndarray::concatenate![ndarray::Axis(1), x_param, basis1, basis2]
+            .as_standard_layout().to_owned();
+        let specs = vec![
+            SmoothTermSpec {
+                col_start: 1, col_end: 1 + k1,
+                penalty: crate::splines::penalized::penalty_matrix(k1, 2),
+                monotonicity: Monotonicity::None,
+                initial_lambda: 1.0,
+            },
+            SmoothTermSpec {
+                col_start: 1 + k1, col_end: 1 + k1 + k2,
+                penalty: crate::splines::penalized::penalty_matrix(k2, 2),
+                monotonicity: Monotonicity::None,
+                initial_lambda: 1.0,
+            },
+        ];
+        let config = SmoothGLMConfig::default();
+
+        let result = fit_smooth_glm_full_matrix(
+            &y, &x_full, &specs,
+            &GaussianFamily, &IdentityLink,
+            &config, None, None,
+        ).unwrap();
+
+        assert!(result.converged);
+        assert_eq!(result.lambdas.len(), 2);
+        assert_eq!(result.smooth_edfs.len(), 2);
+        assert!(result.lambdas.iter().all(|&l| l > 0.0));
+        assert!(result.smooth_edfs.iter().all(|&e| e > 1.0));
+    }
+
+    // =========================================================================
+    // Result fields are populated correctly
+    // =========================================================================
+
+    #[test]
+    fn test_smooth_result_fields_populated() {
+        let n = 100;
+        let (y, x_param, x_vals) = gaussian_smooth_data(n);
+        let basis = bs_basis(&x_vals, 8, 3, None, false);
+        let (x_full, specs) = make_full_matrix(&x_param, &basis);
+        let config = SmoothGLMConfig::default();
+
+        let result = fit_smooth_glm_full_matrix(
+            &y, &x_full, &specs,
+            &GaussianFamily, &IdentityLink,
+            &config, None, None,
+        ).unwrap();
+
+        assert_eq!(result.fitted_values.len(), n);
+        assert_eq!(result.linear_predictor.len(), n);
+        assert_eq!(result.irls_weights.len(), n);
+        assert_eq!(result.prior_weights.len(), n);
+        assert_eq!(result.design_matrix.nrows(), n);
+        assert_eq!(result.y.len(), n);
+        assert!(result.family_name.contains("Gaussian") || result.family_name.contains("gaussian"));
+    }
+
+    // =========================================================================
+    // Empty specs fallback (standard GLM through unified entry point)
+    // =========================================================================
+
+    #[test]
+    fn test_fit_smooth_glm_no_smooth_terms() {
+        let (y, x_param, _x_vals) = gaussian_smooth_data(100);
+        let config = SmoothGLMConfig::default();
+
+        let result = fit_smooth_glm_full_matrix(
+            &y, &x_param, &[],
+            &GaussianFamily, &IdentityLink,
+            &config, None, None,
+        ).unwrap();
+
+        assert!(result.converged);
+        assert!(result.lambdas.is_empty());
+        assert!(result.smooth_edfs.is_empty());
+        assert_eq!(result.coefficients.len(), 1); // intercept only
     }
 }

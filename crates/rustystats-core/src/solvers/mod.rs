@@ -39,6 +39,20 @@ pub mod nnls;
 pub use irls::{IRLSConfig, IRLSResult, fit_glm, fit_glm_full, fit_glm_warm_start, fit_glm_regularized, fit_glm_regularized_warm};
 pub use irls::{solve_weighted_least_squares_with_penalty_matrix, compute_xtwx};
 pub use coordinate_descent::fit_glm_coordinate_descent;
-pub use smooth_glm::{SmoothGLMResult, SmoothGLMConfig, SmoothTermData, Monotonicity, fit_smooth_glm, fit_smooth_glm_fast, fit_smooth_glm_monotonic};
-pub use gcv_optimizer::{GCVCache, MultiTermGCVOptimizer, brent_minimize};
+pub use smooth_glm::{SmoothGLMResult, SmoothGLMConfig, SmoothTermData, Monotonicity, SmoothTermSpec, fit_smooth_glm_full_matrix};
+pub use gcv_optimizer::{MultiTermGCVOptimizer, brent_minimize};
 pub use nnls::{NNLSResult, NNLSConfig, nnls, nnls_weighted, nnls_penalized, nnls_weighted_penalized};
+
+use ndarray::Array1;
+use crate::families::Family;
+
+/// Safe initialization of μ that works for any family.
+///
+/// Used as fallback when `family.initialize_mu(y)` produces invalid values
+/// (e.g., all zeros for Poisson). Computes a weighted average of each y_i
+/// with the global mean, then clamps to the family's valid range.
+pub(crate) fn initialize_mu_safe(y: &Array1<f64>, family: &dyn Family) -> Array1<f64> {
+    let y_mean = y.mean().unwrap_or(1.0).max(0.01);
+    let raw: Array1<f64> = y.mapv(|yi| (yi + y_mean) / 2.0);
+    family.clamp_mu(&raw)
+}

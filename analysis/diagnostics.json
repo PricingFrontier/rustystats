@@ -1,436 +1,112 @@
 {
   "model_summary": {
-    "formula": "y ~ age + C(region)",
-    "family": "poisson",
-    "link": "log",
-    "n_obs": 500,
-    "n_params": 4,
-    "df_resid": 496,
+    "formula": "y ~ age",
+    "family": "gaussian",
+    "link": "identity",
+    "n_obs": 8,
+    "n_params": 3,
+    "df_resid": 5,
     "converged": true,
-    "iterations": 5
+    "iterations": 2
   },
   "train_test": {
     "train": {
       "dataset": "train",
-      "n_obs": 500,
-      "total_exposure": 500.0,
-      "total_actual": 495.0,
-      "total_predicted": 495.0,
-      "loss": 1.0701,
-      "deviance": 535.07,
-      "log_likelihood": -630.39,
-      "aic": 1268.77,
-      "gini": 0.1479,
-      "auc": 0.574,
+      "n_obs": 8,
+      "total_exposure": 8.0,
+      "total_actual": 15.0,
+      "total_predicted": 15.0,
+      "loss": 1.0677,
+      "deviance": 8.54,
+      "log_likelihood": -11.99,
+      "aic": 29.99,
+      "gini": -0.1083,
+      "auc": 0.4458,
       "ae_ratio": 1.0,
       "ae_by_decile": [
         {
           "decile": 1,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.76,
-          "predicted": 0.643592,
-          "ae_ratio": 1.1809
+          "n": 0,
+          "exposure": 0.0,
+          "actual": 0.0,
+          "predicted": 0.0,
+          "ae_ratio": null
         },
         {
           "decile": 2,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.56,
-          "predicted": 0.699684,
-          "ae_ratio": 0.8004
+          "n": 0,
+          "exposure": 0.0,
+          "actual": 0.0,
+          "predicted": 0.0,
+          "ae_ratio": null
         },
         {
           "decile": 3,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.74,
-          "predicted": 0.76515,
-          "ae_ratio": 0.9671
+          "n": 0,
+          "exposure": 0.0,
+          "actual": 0.0,
+          "predicted": 0.0,
+          "ae_ratio": null
         },
         {
           "decile": 4,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.9,
-          "predicted": 0.847863,
-          "ae_ratio": 1.0615
+          "n": 0,
+          "exposure": 0.0,
+          "actual": 0.0,
+          "predicted": 0.0,
+          "ae_ratio": null
         },
         {
           "decile": 5,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 1.02,
-          "predicted": 0.922223,
-          "ae_ratio": 1.106
+          "n": 0,
+          "exposure": 0.0,
+          "actual": 0.0,
+          "predicted": 0.0,
+          "ae_ratio": null
         },
         {
           "decile": 6,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 1.0,
-          "predicted": 0.98393,
-          "ae_ratio": 1.0163
+          "n": 0,
+          "exposure": 0.0,
+          "actual": 0.0,
+          "predicted": 0.0,
+          "ae_ratio": null
         },
         {
           "decile": 7,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 1.02,
-          "predicted": 1.0512,
-          "ae_ratio": 0.9703
+          "n": 0,
+          "exposure": 0.0,
+          "actual": 0.0,
+          "predicted": 0.0,
+          "ae_ratio": null
         },
         {
           "decile": 8,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 1.02,
-          "predicted": 1.1262,
-          "ae_ratio": 0.9057
+          "n": 0,
+          "exposure": 0.0,
+          "actual": 0.0,
+          "predicted": 0.0,
+          "ae_ratio": null
         },
         {
           "decile": 9,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 1.24,
-          "predicted": 1.3154,
-          "ae_ratio": 0.9426
+          "n": 0,
+          "exposure": 0.0,
+          "actual": 0.0,
+          "predicted": 0.0,
+          "ae_ratio": null
         },
         {
           "decile": 10,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 1.64,
-          "predicted": 1.5446,
-          "ae_ratio": 1.0617
+          "n": 8,
+          "exposure": 8.0,
+          "actual": 1.875,
+          "predicted": 1.875,
+          "ae_ratio": 1.0
         }
       ],
-      "factor_diagnostics": {
-        "region": [
-          {
-            "level": "B",
-            "n": 169,
-            "exposure": 169.0,
-            "actual": 0.87574,
-            "predicted": 0.87574,
-            "ae_ratio": 1.0,
-            "residual_mean": -0.210584
-          },
-          {
-            "level": "A",
-            "n": 167,
-            "exposure": 167.0,
-            "actual": 1.2754,
-            "predicted": 1.2754,
-            "ae_ratio": 1.0,
-            "residual_mean": -0.184398
-          },
-          {
-            "level": "C",
-            "n": 164,
-            "exposure": 164.0,
-            "actual": 0.817073,
-            "predicted": 0.817073,
-            "ae_ratio": 1.0,
-            "residual_mean": -0.224684
-          }
-        ],
-        "unfitted_cat": [
-          {
-            "level": "X",
-            "n": 175,
-            "exposure": 175.0,
-            "actual": 0.982857,
-            "predicted": 1.0093,
-            "ae_ratio": 0.9738,
-            "residual_mean": -0.24003
-          },
-          {
-            "level": "Y",
-            "n": 170,
-            "exposure": 170.0,
-            "actual": 0.958824,
-            "predicted": 0.964574,
-            "ae_ratio": 0.994,
-            "residual_mean": -0.215092
-          },
-          {
-            "level": "Z",
-            "n": 155,
-            "exposure": 155.0,
-            "actual": 1.0323,
-            "predicted": 0.996066,
-            "ae_ratio": 1.0363,
-            "residual_mean": -0.159099
-          }
-        ]
-      },
-      "continuous_diagnostics": {
-        "age": [
-          {
-            "band": 1,
-            "range_min": 20.2025,
-            "range_max": 23.3618,
-            "midpoint": 21.7822,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.92,
-            "predicted": 0.749347,
-            "ae_ratio": 1.2277,
-            "partial_dep": 0.749347,
-            "residual_mean": -0.027969
-          },
-          {
-            "band": 2,
-            "range_min": 23.3618,
-            "range_max": 26.9661,
-            "midpoint": 25.164,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.78,
-            "predicted": 0.762636,
-            "ae_ratio": 1.0228,
-            "partial_dep": 0.762636,
-            "residual_mean": -0.218879
-          },
-          {
-            "band": 3,
-            "range_min": 26.9661,
-            "range_max": 31.6748,
-            "midpoint": 29.3204,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.62,
-            "predicted": 0.816887,
-            "ae_ratio": 0.759,
-            "partial_dep": 0.816887,
-            "residual_mean": -0.441426
-          },
-          {
-            "band": 4,
-            "range_min": 31.6748,
-            "range_max": 35.428,
-            "midpoint": 33.5514,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.84,
-            "predicted": 0.865404,
-            "ae_ratio": 0.9706,
-            "partial_dep": 0.865404,
-            "residual_mean": -0.202
-          },
-          {
-            "band": 5,
-            "range_min": 35.428,
-            "range_max": 40.5265,
-            "midpoint": 37.9773,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.84,
-            "predicted": 0.934699,
-            "ae_ratio": 0.8987,
-            "partial_dep": 0.934699,
-            "residual_mean": -0.282721
-          },
-          {
-            "band": 6,
-            "range_min": 40.5265,
-            "range_max": 44.6138,
-            "midpoint": 42.5702,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 1.0,
-            "predicted": 1.0479,
-            "ae_ratio": 0.9543,
-            "partial_dep": 1.0479,
-            "residual_mean": -0.249206
-          },
-          {
-            "band": 7,
-            "range_min": 44.6138,
-            "range_max": 48.1284,
-            "midpoint": 46.3711,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 1.18,
-            "predicted": 1.0807,
-            "ae_ratio": 1.0919,
-            "partial_dep": 1.0807,
-            "residual_mean": -0.119032
-          },
-          {
-            "band": 8,
-            "range_min": 48.1284,
-            "range_max": 52.327,
-            "midpoint": 50.2277,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 1.3,
-            "predicted": 1.1474,
-            "ae_ratio": 1.133,
-            "partial_dep": 1.1474,
-            "residual_mean": -0.067904
-          },
-          {
-            "band": 9,
-            "range_min": 52.327,
-            "range_max": 56.2192,
-            "midpoint": 54.2731,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 1.16,
-            "predicted": 1.2552,
-            "ae_ratio": 0.9242,
-            "partial_dep": 1.2552,
-            "residual_mean": -0.29125
-          },
-          {
-            "band": 10,
-            "range_min": 56.2192,
-            "range_max": 59.7186,
-            "midpoint": 57.9689,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 1.26,
-            "predicted": 1.2398,
-            "ae_ratio": 1.0163,
-            "partial_dep": 1.2398,
-            "residual_mean": -0.164237
-          }
-        ],
-        "unfitted_var": [
-          {
-            "band": 1,
-            "range_min": -3.4808,
-            "range_max": -1.3201,
-            "midpoint": -2.4004,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 1.08,
-            "predicted": 0.989526,
-            "ae_ratio": 1.0914,
-            "partial_dep": 0.989526,
-            "residual_mean": -0.147115
-          },
-          {
-            "band": 2,
-            "range_min": -1.3201,
-            "range_max": -0.8545,
-            "midpoint": -1.0873,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 1.26,
-            "predicted": 1.0388,
-            "ae_ratio": 1.2129,
-            "partial_dep": 1.0388,
-            "residual_mean": 0.048588
-          },
-          {
-            "band": 3,
-            "range_min": -0.8545,
-            "range_max": -0.5269,
-            "midpoint": -0.6907,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.88,
-            "predicted": 0.978759,
-            "ae_ratio": 0.8991,
-            "partial_dep": 0.978759,
-            "residual_mean": -0.300056
-          },
-          {
-            "band": 4,
-            "range_min": -0.5269,
-            "range_max": -0.2293,
-            "midpoint": -0.3781,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.88,
-            "predicted": 0.961915,
-            "ae_ratio": 0.9148,
-            "partial_dep": 0.961915,
-            "residual_mean": -0.235988
-          },
-          {
-            "band": 5,
-            "range_min": -0.2293,
-            "range_max": -0.006,
-            "midpoint": -0.1176,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 1.04,
-            "predicted": 1.0212,
-            "ae_ratio": 1.0184,
-            "partial_dep": 1.0212,
-            "residual_mean": -0.216176
-          },
-          {
-            "band": 6,
-            "range_min": -0.006,
-            "range_max": 0.2792,
-            "midpoint": 0.1366,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 1.02,
-            "predicted": 0.973194,
-            "ae_ratio": 1.0481,
-            "partial_dep": 0.973194,
-            "residual_mean": -0.124748
-          },
-          {
-            "band": 7,
-            "range_min": 0.2792,
-            "range_max": 0.5219,
-            "midpoint": 0.4005,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 1.06,
-            "predicted": 0.934043,
-            "ae_ratio": 1.1349,
-            "partial_dep": 0.934043,
-            "residual_mean": -0.045917
-          },
-          {
-            "band": 8,
-            "range_min": 0.5219,
-            "range_max": 0.8013,
-            "midpoint": 0.6616,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.9,
-            "predicted": 1.0054,
-            "ae_ratio": 0.8952,
-            "partial_dep": 1.0054,
-            "residual_mean": -0.317286
-          },
-          {
-            "band": 9,
-            "range_min": 0.8013,
-            "range_max": 1.1291,
-            "midpoint": 0.9652,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.8,
-            "predicted": 0.993537,
-            "ae_ratio": 0.8052,
-            "partial_dep": 0.993537,
-            "residual_mean": -0.40449
-          },
-          {
-            "band": 10,
-            "range_min": 1.1291,
-            "range_max": 2.965,
-            "midpoint": 2.0471,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.98,
-            "predicted": 1.0036,
-            "ae_ratio": 0.9765,
-            "partial_dep": 1.0036,
-            "residual_mean": -0.321436
-          }
-        ]
-      }
+      "factor_diagnostics": {},
+      "continuous_diagnostics": {}
     },
     "test": null,
     "gini_gap": null,
@@ -443,543 +119,46 @@
   },
   "calibration": {
     "ae_ratio": 1.0,
-    "hl_pvalue": 0.8361,
-    "problem_deciles": [
-      {
-        "decile": 0,
-        "ae": 1.18,
-        "n": 50,
-        "ae_ci": [
-          0.81,
-          1.56
-        ]
-      },
-      {
-        "decile": 1,
-        "ae": 0.8,
-        "n": 50,
-        "ae_ci": [
-          0.5,
-          1.1
-        ]
-      },
-      {
-        "decile": 4,
-        "ae": 1.11,
-        "n": 50,
-        "ae_ci": [
-          0.8,
-          1.41
-        ]
-      }
-    ]
+    "hl_pvalue": 0.9505,
+    "problem_deciles": []
   },
   "residual_summary": {
     "pearson": {
       "mean": 0.0,
-      "std": 0.95,
-      "skewness": 0.8
+      "std": 1.03,
+      "skewness": 0.4
     },
     "deviance": {
-      "mean": -0.21,
-      "std": 1.01,
-      "skewness": 0.2
+      "mean": 0.0,
+      "std": 1.03,
+      "skewness": 0.4
     }
   },
-  "factors": [
-    {
-      "name": "region",
-      "factor_type": "categorical",
-      "in_model": true,
-      "transform": "region[T.B]",
-      "coefficients": [
-        {
-          "term": "region[T.B]",
-          "estimate": -0.374874,
-          "std_error": 0.107012,
-          "z_value": -3.503,
-          "p_value": 0.0005,
-          "relativity": 0.6874
-        },
-        {
-          "term": "region[T.C]",
-          "estimate": -0.417808,
-          "std_error": 0.110487,
-          "z_value": -3.782,
-          "p_value": 0.0002,
-          "relativity": 0.6585
-        }
-      ],
-      "univariate": {
-        "n_levels": 3,
-        "n_rare_levels": 0,
-        "rare_level_total_pct": 0
-      },
-      "actual_vs_expected": [
-        {
-          "bin": "B",
-          "n": 169,
-          "exposure": 169.0,
-          "actual": 0.87574,
-          "expected": 0.87574,
-          "ae_ratio": 1.0,
-          "ae_ci": [
-            0.84,
-            1.16
-          ]
-        },
-        {
-          "bin": "A",
-          "n": 167,
-          "exposure": 167.0,
-          "actual": 1.2754,
-          "expected": 1.2754,
-          "ae_ratio": 1.0,
-          "ae_ci": [
-            0.87,
-            1.13
-          ]
-        },
-        {
-          "bin": "C",
-          "n": 164,
-          "exposure": 164.0,
-          "actual": 0.817073,
-          "expected": 0.817073,
-          "ae_ratio": 1.0,
-          "ae_ci": [
-            0.83,
-            1.17
-          ]
-        }
-      ],
-      "residual_pattern": {
-        "resid_corr": 0.0022,
-        "var_explained": 6e-06
-      },
-      "significance": {
-        "chi2": 26.57,
-        "p": 0.0,
-        "dev_contrib": 26.57
-      },
-      "score_test": null
-    },
-    {
-      "name": "unfitted_cat",
-      "factor_type": "categorical",
-      "in_model": false,
-      "transform": null,
-      "coefficients": null,
-      "univariate": {
-        "n_levels": 3,
-        "n_rare_levels": 0,
-        "rare_level_total_pct": 0
-      },
-      "actual_vs_expected": [
-        {
-          "bin": "X",
-          "n": 175,
-          "exposure": 175.0,
-          "actual": 0.982857,
-          "expected": 1.0093,
-          "ae_ratio": 0.97,
-          "ae_ci": [
-            0.83,
-            1.12
-          ]
-        },
-        {
-          "bin": "Y",
-          "n": 170,
-          "exposure": 170.0,
-          "actual": 0.958824,
-          "expected": 0.964574,
-          "ae_ratio": 0.99,
-          "ae_ci": [
-            0.84,
-            1.15
-          ]
-        },
-        {
-          "bin": "Z",
-          "n": 155,
-          "exposure": 155.0,
-          "actual": 1.0323,
-          "expected": 0.996066,
-          "ae_ratio": 1.04,
-          "ae_ci": [
-            0.88,
-            1.2
-          ]
-        }
-      ],
-      "residual_pattern": {
-        "resid_corr": 0.0237,
-        "var_explained": 0.000898
-      },
-      "significance": null,
-      "score_test": {
-        "statistic": 0.2,
-        "df": 1,
-        "pvalue": 0.6514,
-        "significant": false
-      }
-    },
-    {
-      "name": "age",
-      "factor_type": "continuous",
-      "in_model": true,
-      "transform": null,
-      "coefficients": [
-        {
-          "term": "age",
-          "estimate": 0.01486,
-          "std_error": 0.003829,
-          "z_value": 3.881,
-          "p_value": 0.0001,
-          "relativity": 1.015
-        }
-      ],
-      "univariate": {
-        "mean": 39.9425,
-        "std": 11.9356,
-        "min": 20.2025,
-        "max": 59.7186,
-        "missing_count": 0,
-        "percentiles": [
-          20.45,
-          21.72,
-          23.36,
-          29.65,
-          40.53,
-          50.24,
-          56.22,
-          58.16,
-          59.45
-        ]
-      },
-      "actual_vs_expected": [
-        {
-          "bin": "20.20-23.36",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.92,
-          "expected": 0.749347,
-          "ae_ratio": 1.23,
-          "ae_ci": [
-            0.87,
-            1.58
-          ]
-        },
-        {
-          "bin": "23.36-26.97",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.78,
-          "expected": 0.762636,
-          "ae_ratio": 1.02,
-          "ae_ci": [
-            0.7,
-            1.34
-          ]
-        },
-        {
-          "bin": "26.97-31.69",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.62,
-          "expected": 0.816887,
-          "ae_ratio": 0.76,
-          "ae_ci": [
-            0.49,
-            1.03
-          ]
-        },
-        {
-          "bin": "31.69-35.44",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.84,
-          "expected": 0.865404,
-          "ae_ratio": 0.97,
-          "ae_ci": [
-            0.68,
-            1.26
-          ]
-        },
-        {
-          "bin": "35.44-40.57",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.84,
-          "expected": 0.934699,
-          "ae_ratio": 0.9,
-          "ae_ci": [
-            0.63,
-            1.17
-          ]
-        },
-        {
-          "bin": "40.57-44.60",
-          "n": 49,
-          "exposure": 49.0,
-          "actual": 1.0204,
-          "expected": 1.0514,
-          "ae_ratio": 0.97,
-          "ae_ci": [
-            0.7,
-            1.24
-          ]
-        },
-        {
-          "bin": "44.60-48.12",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 1.14,
-          "expected": 1.0702,
-          "ae_ratio": 1.07,
-          "ae_ci": [
-            0.79,
-            1.34
-          ]
-        },
-        {
-          "bin": "48.12-52.32",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 1.34,
-          "expected": 1.155,
-          "ae_ratio": 1.16,
-          "ae_ci": [
-            0.88,
-            1.44
-          ]
-        },
-        {
-          "bin": "52.32-56.22",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 1.06,
-          "expected": 1.244,
-          "ae_ratio": 0.85,
-          "ae_ci": [
-            0.62,
-            1.08
-          ]
-        },
-        {
-          "bin": "56.22-59.72",
-          "n": 51,
-          "exposure": 51.0,
-          "actual": 1.3333,
-          "expected": 1.2466,
-          "ae_ratio": 1.07,
-          "ae_ci": [
-            0.82,
-            1.32
-          ]
-        }
-      ],
-      "residual_pattern": {
-        "resid_corr": -0.0046,
-        "var_explained": 2.1e-05
-      },
-      "significance": {
-        "chi2": 15.07,
-        "p": 0.0001,
-        "dev_contrib": 15.07
-      },
-      "score_test": null
-    },
-    {
-      "name": "unfitted_var",
-      "factor_type": "continuous",
-      "in_model": false,
-      "transform": null,
-      "coefficients": null,
-      "univariate": {
-        "mean": -0.021579,
-        "std": 0.982642,
-        "min": -3.4808,
-        "max": 2.965,
-        "missing_count": 0,
-        "percentiles": [
-          -2.24,
-          -1.68,
-          -1.32,
-          -0.69,
-          -0.01,
-          0.63,
-          1.13,
-          1.5,
-          2.36
-        ]
-      },
-      "actual_vs_expected": [
-        {
-          "bin": "-3.48--1.32",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 1.08,
-          "expected": 0.989526,
-          "ae_ratio": 1.09,
-          "ae_ci": [
-            0.8,
-            1.38
-          ]
-        },
-        {
-          "bin": "-1.32--0.85",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 1.26,
-          "expected": 1.0388,
-          "ae_ratio": 1.21,
-          "ae_ci": [
-            0.91,
-            1.51
-          ]
-        },
-        {
-          "bin": "-0.85--0.53",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.88,
-          "expected": 0.978759,
-          "ae_ratio": 0.9,
-          "ae_ci": [
-            0.63,
-            1.16
-          ]
-        },
-        {
-          "bin": "-0.53--0.23",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.88,
-          "expected": 0.961915,
-          "ae_ratio": 0.91,
-          "ae_ci": [
-            0.64,
-            1.19
-          ]
-        },
-        {
-          "bin": "-0.23--0.01",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 1.04,
-          "expected": 1.0212,
-          "ae_ratio": 1.02,
-          "ae_ci": [
-            0.74,
-            1.3
-          ]
-        },
-        {
-          "bin": "-0.01-0.28",
-          "n": 49,
-          "exposure": 49.0,
-          "actual": 1.0204,
-          "expected": 0.978859,
-          "ae_ratio": 1.04,
-          "ae_ci": [
-            0.75,
-            1.33
-          ]
-        },
-        {
-          "bin": "0.28-0.52",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 1.0,
-          "expected": 0.928541,
-          "ae_ratio": 1.08,
-          "ae_ci": [
-            0.78,
-            1.38
-          ]
-        },
-        {
-          "bin": "0.52-0.80",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.98,
-          "expected": 1.0095,
-          "ae_ratio": 0.97,
-          "ae_ci": [
-            0.7,
-            1.24
-          ]
-        },
-        {
-          "bin": "0.80-1.13",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.78,
-          "expected": 0.987005,
-          "ae_ratio": 0.79,
-          "ae_ci": [
-            0.54,
-            1.04
-          ]
-        },
-        {
-          "bin": "1.13-2.97",
-          "n": 51,
-          "exposure": 51.0,
-          "actual": 0.980392,
-          "expected": 1.0054,
-          "ae_ratio": 0.98,
-          "ae_ci": [
-            0.7,
-            1.25
-          ]
-        }
-      ],
-      "residual_pattern": {
-        "resid_corr": -0.049,
-        "var_explained": 0.002398
-      },
-      "significance": null,
-      "score_test": {
-        "statistic": 1.05,
-        "df": 1,
-        "pvalue": 0.3045,
-        "significant": false
-      }
-    }
-  ],
+  "factors": [],
   "interaction_candidates": [],
   "model_comparison": {
-    "likelihood_ratio_chi2": 35.4319,
-    "likelihood_ratio_df": 3,
-    "likelihood_ratio_pvalue": 0.0,
-    "deviance_reduction_pct": 6.2106,
-    "aic_improvement": 29.4319
+    "likelihood_ratio_chi2": 0.9238,
+    "likelihood_ratio_df": 2,
+    "likelihood_ratio_pvalue": 0.630085,
+    "deviance_reduction_pct": 18.9497,
+    "aic_improvement": -3.0762
   },
   "warnings": [
     {
       "type": "weak_discrimination",
-      "message": "Model has weak discrimination in deciles: [8]. Consider adding features or interactions to improve separation."
+      "message": "Model has weak discrimination in deciles: [8, 9, 10]. Consider adding features or interactions to improve separation."
     }
   ],
   "vif": [
     {
-      "feature": "region[T.C]",
-      "vif": 1.34,
-      "severity": "none",
-      "collinear_with": null
-    },
-    {
-      "feature": "region[T.B]",
-      "vif": 1.33,
-      "severity": "none",
-      "collinear_with": null
-    },
-    {
       "feature": "age",
-      "vif": 1.0,
+      "vif": 1.16,
+      "severity": "none",
+      "collinear_with": null
+    },
+    {
+      "feature": "TE(brand:region)",
+      "vif": 1.16,
       "severity": "none",
       "collinear_with": null
     }
@@ -987,460 +166,171 @@
   "smooth_terms": null,
   "coefficient_summary": [
     {
+      "feature": "TE(brand:region)",
+      "estimate": -1.4768,
+      "std_error": 1.4072,
+      "z_value": -1.049,
+      "p_value": 0.294,
+      "significant": false,
+      "relativity": null,
+      "relativity_ci": null
+    },
+    {
       "feature": "age",
-      "estimate": 0.01486,
-      "std_error": 0.003829,
-      "z_value": 3.881,
-      "p_value": 0.0001,
-      "significant": true,
-      "relativity": 1.015,
-      "relativity_ci": [
-        1.0074,
-        1.0226
-      ]
-    },
-    {
-      "feature": "region[T.C]",
-      "estimate": -0.417808,
-      "std_error": 0.110487,
-      "z_value": -3.782,
-      "p_value": 0.0002,
-      "significant": true,
-      "relativity": 0.6585,
-      "relativity_ci": [
-        0.5303,
-        0.8177
-      ]
-    },
-    {
-      "feature": "region[T.B]",
-      "estimate": -0.374874,
-      "std_error": 0.107012,
-      "z_value": -3.503,
-      "p_value": 0.0005,
-      "significant": true,
-      "relativity": 0.6874,
-      "relativity_ci": [
-        0.5573,
-        0.8478
-      ]
+      "estimate": 0.01857,
+      "std_error": 0.029516,
+      "z_value": 0.629,
+      "p_value": 0.5292,
+      "significant": false,
+      "relativity": null,
+      "relativity_ci": null
     },
     {
       "feature": "Intercept",
-      "estimate": -0.375239,
-      "std_error": 0.17705,
-      "z_value": -2.119,
-      "p_value": 0.0341,
-      "significant": true,
-      "relativity": 0.6871,
-      "relativity_ci": [
-        0.4857,
-        0.9722
-      ]
+      "estimate": 3.8547,
+      "std_error": 2.4884,
+      "z_value": 1.549,
+      "p_value": 0.1214,
+      "significant": false,
+      "relativity": null,
+      "relativity_ci": null
     }
   ],
-  "factor_deviance": [
-    {
-      "factor": "region",
-      "total_deviance": 535.07,
-      "levels": [
-        {
-          "level": "A",
-          "n": 167,
-          "deviance": 181.83,
-          "deviance_pct": 33.98,
-          "mean_deviance": 1.0888,
-          "ae_ratio": 1.0,
-          "problem": false
-        },
-        {
-          "level": "B",
-          "n": 169,
-          "deviance": 179.77,
-          "deviance_pct": 33.6,
-          "mean_deviance": 1.0637,
-          "ae_ratio": 1.0,
-          "problem": false
-        },
-        {
-          "level": "C",
-          "n": 164,
-          "deviance": 173.48,
-          "deviance_pct": 32.42,
-          "mean_deviance": 1.0578,
-          "ae_ratio": 1.0,
-          "problem": false
-        }
-      ],
-      "problem_levels": []
-    },
-    {
-      "factor": "unfitted_cat",
-      "total_deviance": 535.07,
-      "levels": [
-        {
-          "level": "X",
-          "n": 175,
-          "deviance": 187.09,
-          "deviance_pct": 34.97,
-          "mean_deviance": 1.0691,
-          "ae_ratio": 0.974,
-          "problem": false
-        },
-        {
-          "level": "Y",
-          "n": 170,
-          "deviance": 186.91,
-          "deviance_pct": 34.93,
-          "mean_deviance": 1.0995,
-          "ae_ratio": 0.994,
-          "problem": false
-        },
-        {
-          "level": "Z",
-          "n": 155,
-          "deviance": 161.07,
-          "deviance_pct": 30.1,
-          "mean_deviance": 1.0392,
-          "ae_ratio": 1.036,
-          "problem": false
-        }
-      ],
-      "problem_levels": []
-    }
-  ],
+  "factor_deviance": null,
   "lift_chart": {
     "deciles": [
       {
         "decile": 1,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 0.76,
-        "predicted": 0.643592,
-        "ae_ratio": 1.181,
-        "cumulative_actual_pct": 7.68,
-        "cumulative_predicted_pct": 6.5,
-        "lift": 0.768,
-        "cumulative_lift": 0.768
+        "n": 0,
+        "exposure": 0.0,
+        "actual": 0,
+        "predicted": 0,
+        "ae_ratio": null,
+        "cumulative_actual_pct": 0.0,
+        "cumulative_predicted_pct": 0.0,
+        "lift": 0.0,
+        "cumulative_lift": 0.0
       },
       {
         "decile": 2,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 0.56,
-        "predicted": 0.699684,
-        "ae_ratio": 0.8,
-        "cumulative_actual_pct": 13.33,
-        "cumulative_predicted_pct": 13.57,
-        "lift": 0.566,
-        "cumulative_lift": 0.667
+        "n": 0,
+        "exposure": 0.0,
+        "actual": 0,
+        "predicted": 0,
+        "ae_ratio": null,
+        "cumulative_actual_pct": 0.0,
+        "cumulative_predicted_pct": 0.0,
+        "lift": 0.0,
+        "cumulative_lift": 0.0
       },
       {
         "decile": 3,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 0.74,
-        "predicted": 0.76515,
-        "ae_ratio": 0.967,
-        "cumulative_actual_pct": 20.81,
-        "cumulative_predicted_pct": 21.3,
-        "lift": 0.747,
-        "cumulative_lift": 0.694
+        "n": 0,
+        "exposure": 0.0,
+        "actual": 0,
+        "predicted": 0,
+        "ae_ratio": null,
+        "cumulative_actual_pct": 0.0,
+        "cumulative_predicted_pct": 0.0,
+        "lift": 0.0,
+        "cumulative_lift": 0.0
       },
       {
         "decile": 4,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 0.9,
-        "predicted": 0.847863,
-        "ae_ratio": 1.061,
-        "cumulative_actual_pct": 29.9,
-        "cumulative_predicted_pct": 29.86,
-        "lift": 0.909,
-        "cumulative_lift": 0.747
+        "n": 0,
+        "exposure": 0.0,
+        "actual": 0,
+        "predicted": 0,
+        "ae_ratio": null,
+        "cumulative_actual_pct": 0.0,
+        "cumulative_predicted_pct": 0.0,
+        "lift": 0.0,
+        "cumulative_lift": 0.0
       },
       {
         "decile": 5,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 1.02,
-        "predicted": 0.922223,
-        "ae_ratio": 1.106,
-        "cumulative_actual_pct": 40.2,
-        "cumulative_predicted_pct": 39.18,
-        "lift": 1.03,
-        "cumulative_lift": 0.804
+        "n": 0,
+        "exposure": 0.0,
+        "actual": 0,
+        "predicted": 0,
+        "ae_ratio": null,
+        "cumulative_actual_pct": 0.0,
+        "cumulative_predicted_pct": 0.0,
+        "lift": 0.0,
+        "cumulative_lift": 0.0
       },
       {
         "decile": 6,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 1.0,
-        "predicted": 0.98393,
-        "ae_ratio": 1.016,
-        "cumulative_actual_pct": 50.3,
-        "cumulative_predicted_pct": 49.12,
-        "lift": 1.01,
-        "cumulative_lift": 0.838
+        "n": 0,
+        "exposure": 0.0,
+        "actual": 0,
+        "predicted": 0,
+        "ae_ratio": null,
+        "cumulative_actual_pct": 0.0,
+        "cumulative_predicted_pct": 0.0,
+        "lift": 0.0,
+        "cumulative_lift": 0.0
       },
       {
         "decile": 7,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 1.02,
-        "predicted": 1.0512,
-        "ae_ratio": 0.97,
-        "cumulative_actual_pct": 60.61,
-        "cumulative_predicted_pct": 59.73,
-        "lift": 1.03,
-        "cumulative_lift": 0.866
+        "n": 0,
+        "exposure": 0.0,
+        "actual": 0,
+        "predicted": 0,
+        "ae_ratio": null,
+        "cumulative_actual_pct": 0.0,
+        "cumulative_predicted_pct": 0.0,
+        "lift": 0.0,
+        "cumulative_lift": 0.0
       },
       {
         "decile": 8,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 1.02,
-        "predicted": 1.1262,
-        "ae_ratio": 0.906,
-        "cumulative_actual_pct": 70.91,
-        "cumulative_predicted_pct": 71.11,
-        "lift": 1.03,
-        "cumulative_lift": 0.886
+        "n": 0,
+        "exposure": 0.0,
+        "actual": 0,
+        "predicted": 0,
+        "ae_ratio": null,
+        "cumulative_actual_pct": 0.0,
+        "cumulative_predicted_pct": 0.0,
+        "lift": 0.0,
+        "cumulative_lift": 0.0
       },
       {
         "decile": 9,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 1.24,
-        "predicted": 1.3154,
-        "ae_ratio": 0.943,
-        "cumulative_actual_pct": 83.43,
-        "cumulative_predicted_pct": 84.4,
-        "lift": 1.253,
-        "cumulative_lift": 0.927
+        "n": 0,
+        "exposure": 0.0,
+        "actual": 0,
+        "predicted": 0,
+        "ae_ratio": null,
+        "cumulative_actual_pct": 0.0,
+        "cumulative_predicted_pct": 0.0,
+        "lift": 0.0,
+        "cumulative_lift": 0.0
       },
       {
         "decile": 10,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 1.64,
-        "predicted": 1.5446,
-        "ae_ratio": 1.062,
+        "n": 8,
+        "exposure": 8.0,
+        "actual": 1.875,
+        "predicted": 1.875,
+        "ae_ratio": 1.0,
         "cumulative_actual_pct": 100.0,
         "cumulative_predicted_pct": 100.0,
-        "lift": 1.657,
+        "lift": 1.0,
         "cumulative_lift": 1.0
       }
     ],
-    "gini": 0.148,
-    "ks_statistic": 1.19,
-    "ks_decile": 6,
+    "gini": -0.108,
+    "ks_statistic": 0,
+    "ks_decile": 1,
     "weak_deciles": [
-      8
+      8,
+      9,
+      10
     ]
   },
-  "partial_dependence": [
-    {
-      "variable": "age",
-      "variable_type": "continuous",
-      "grid_values": [
-        20.4539,
-        22.5063,
-        24.5586,
-        26.611,
-        28.6633,
-        30.7157,
-        32.768,
-        34.8204,
-        36.8727,
-        38.9251,
-        40.9774,
-        43.0298,
-        45.0821,
-        47.1345,
-        49.1868,
-        51.2392,
-        53.2915,
-        55.3439,
-        57.3963,
-        59.4486
-      ],
-      "predictions": [
-        0.741072,
-        0.764022,
-        0.787682,
-        0.812076,
-        0.837225,
-        0.863152,
-        0.889883,
-        0.917441,
-        0.945853,
-        0.975145,
-        1.0053,
-        1.0365,
-        1.0686,
-        1.1017,
-        1.1358,
-        1.171,
-        1.2072,
-        1.2446,
-        1.2832,
-        1.3229
-      ],
-      "relativities": [
-        0.7371,
-        0.76,
-        0.7835,
-        0.8078,
-        0.8328,
-        0.8586,
-        0.8852,
-        0.9126,
-        0.9408,
-        0.97,
-        1.0,
-        1.031,
-        1.0629,
-        1.0958,
-        1.1297,
-        1.1647,
-        1.2008,
-        1.238,
-        1.2763,
-        1.3159
-      ],
-      "std_errors": null,
-      "shape": "linear_increasing",
-      "recommendation": "Linear effect adequate"
-    },
-    {
-      "variable": "unfitted_var",
-      "variable_type": "continuous",
-      "grid_values": [
-        -2.2353,
-        -1.9935,
-        -1.7518,
-        -1.5101,
-        -1.2683,
-        -1.0266,
-        -0.7848,
-        -0.5431,
-        -0.3013,
-        -0.0596,
-        0.1821,
-        0.4239,
-        0.6656,
-        0.9074,
-        1.1491,
-        1.3909,
-        1.6326,
-        1.8743,
-        2.1161,
-        2.3578
-      ],
-      "predictions": [
-        0.99,
-        0.99,
-        0.99,
-        0.99,
-        0.99,
-        0.99,
-        0.99,
-        0.99,
-        0.99,
-        0.99,
-        0.99,
-        0.99,
-        0.99,
-        0.99,
-        0.99,
-        0.99,
-        0.99,
-        0.99,
-        0.99,
-        0.99
-      ],
-      "relativities": [
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0
-      ],
-      "std_errors": null,
-      "shape": "flat",
-      "recommendation": "May not need in model - negligible effect"
-    },
-    {
-      "variable": "region",
-      "variable_type": "categorical",
-      "grid_values": [
-        "A",
-        "B",
-        "C"
-      ],
-      "predictions": [
-        1.2754,
-        0.87574,
-        0.817073
-      ],
-      "relativities": [
-        1.0,
-        0.6866,
-        0.6406
-      ],
-      "std_errors": null,
-      "shape": "moderate_variation",
-      "recommendation": "Categorical appropriate, consider grouping similar levels"
-    },
-    {
-      "variable": "unfitted_cat",
-      "variable_type": "categorical",
-      "grid_values": [
-        "X",
-        "Y",
-        "Z"
-      ],
-      "predictions": [
-        1.0093,
-        0.964574,
-        0.996066
-      ],
-      "relativities": [
-        1.0,
-        0.9557,
-        0.9869
-      ],
-      "std_errors": null,
-      "shape": "low_variation",
-      "recommendation": "Consider removing - little variation across levels"
-    }
-  ],
-  "overdispersion": {
-    "pearson_dispersion": 0.9058,
-    "pearson_chi2": 449.27,
-    "df_resid": 496,
-    "raw_dispersion": 0.9817,
-    "mean_count": 0.99,
-    "var_count": 0.9718,
-    "severity": "none",
-    "recommendation": "Poisson assumption appears reasonable"
-  },
+  "partial_dependence": null,
+  "overdispersion": null,
   "spline_info": null,
   "base_predictions_comparison": null
 }

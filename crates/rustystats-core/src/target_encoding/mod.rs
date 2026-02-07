@@ -666,6 +666,48 @@ pub fn target_encode_interaction(
     target_encode(&combined, target, &var_name, config)
 }
 
+/// Target encode a categorical interaction with exposure weighting.
+///
+/// Creates combined categories like "brand_Nike:region_North" and applies
+/// exposure-weighted ordered target statistics encoding.
+///
+/// # Arguments
+/// * `cat1` - First categorical variable values
+/// * `cat2` - Second categorical variable values
+/// * `claims` - Claim counts (target variable)
+/// * `exposure` - Exposure values (e.g., policy years)
+/// * `var_name1` - Name of first variable
+/// * `var_name2` - Name of second variable
+/// * `config` - Encoding configuration
+///
+/// # Returns
+/// ExposureWeightedTargetEncoding with encoded values for the interaction
+pub fn target_encode_interaction_with_exposure(
+    cat1: &[String],
+    cat2: &[String],
+    claims: &[f64],
+    exposure: &[f64],
+    var_name1: &str,
+    var_name2: &str,
+    config: &TargetEncodingConfig,
+) -> ExposureWeightedTargetEncoding {
+    let n = cat1.len();
+    assert_eq!(n, cat2.len(), "cat1 and cat2 must have same length");
+    assert_eq!(n, claims.len(), "categories and claims must have same length");
+    assert_eq!(n, exposure.len(), "categories and exposure must have same length");
+    
+    // Create combined categories
+    let combined: Vec<String> = cat1
+        .iter()
+        .zip(cat2.iter())
+        .map(|(a, b)| format!("{}:{}", a, b))
+        .collect();
+    
+    // Apply exposure-weighted target encoding to combined categories
+    let var_name = format!("{}:{}", var_name1, var_name2);
+    target_encode_with_exposure(&combined, claims, exposure, &var_name, config)
+}
+
 /// Target encode a multi-way categorical interaction.
 ///
 /// Creates combined categories from multiple variables.
