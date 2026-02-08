@@ -120,6 +120,7 @@ DEFAULT_LINKS = {
     "poisson": "log",
     "quasipoisson": "log",
     "binomial": "logit",
+    "quasibinomial": "logit",
     "gamma": "log",
     "tweedie": "log",
     "negbinomial": "log",

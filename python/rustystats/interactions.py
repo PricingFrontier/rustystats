@@ -890,8 +890,16 @@ class InteractionBuilder:
         """
         from rustystats._rustystats import frequency_encode_py
         
-        col = self.data[fe_term.var_name].to_numpy()
-        categories = [str(v) for v in col]
+        # Handle FE interactions (e.g., FE(brand:region))
+        if fe_term.interaction_vars is not None and len(fe_term.interaction_vars) >= 2:
+            cols = [self.data[var].to_numpy() for var in fe_term.interaction_vars]
+            categories = [
+                ":".join(str(cols[j][i]) for j in range(len(cols)))
+                for i in range(len(cols[0]))
+            ]
+        else:
+            col = self.data[fe_term.var_name].to_numpy()
+            categories = [str(v) for v in col]
         
         encoded, name, level_counts, max_count, n_obs = frequency_encode_py(
             categories, fe_term.var_name
@@ -900,6 +908,7 @@ class InteractionBuilder:
         return encoded, name, {
             'level_counts': level_counts,
             'max_count': max_count,
+            'interaction_vars': fe_term.interaction_vars,
         }
     
     def _build_constraint_columns(
@@ -1830,7 +1839,18 @@ class InteractionBuilder:
             )
         
         stats = self._fe_stats[fe_term.var_name]
-        categories = [str(v) for v in new_data[fe_term.var_name].to_numpy()]
+        
+        # Handle FE interactions (e.g., FE(brand:region))
+        interaction_vars = stats.get('interaction_vars')
+        if interaction_vars is not None and len(interaction_vars) >= 2:
+            cols = [new_data[var].to_numpy() for var in interaction_vars]
+            categories = [
+                ":".join(str(cols[j][i]) for j in range(len(cols)))
+                for i in range(len(cols[0]))
+            ]
+        else:
+            categories = [str(v) for v in new_data[fe_term.var_name].to_numpy()]
+        
         encoded = _apply_frequency_encoding_rust(
             categories, stats['level_counts'], stats['max_count']
         )
