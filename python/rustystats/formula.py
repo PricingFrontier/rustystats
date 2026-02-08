@@ -1554,13 +1554,16 @@ def _parse_interaction_spec(
     # Standard interaction: product terms
     # Determine which factors are categorical, splines, or TE
     cat_factors = set()
+    linear_factors = set()  # Factors explicitly typed as linear (no spline expansion)
     spline_factors = []
     te_factor_names = {}  # Maps original name -> TE(name) format
     
     for var_name, spec in var_specs.items():
         term_type = spec.get("type", "linear")
         
-        if term_type == "categorical":
+        if term_type == "linear":
+            linear_factors.add(var_name)
+        elif term_type == "categorical":
             cat_factors.add(var_name)
             categorical_vars.add(var_name)
         elif term_type in ("bs", "ns", "s"):
@@ -1606,6 +1609,7 @@ def _parse_interaction_spec(
     interaction_term = InteractionTerm(
         factors=factors,
         categorical_flags=categorical_flags,
+        force_linear=linear_factors if linear_factors else None,
     )
     interactions.append(interaction_term)
     

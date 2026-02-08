@@ -63,6 +63,7 @@ class InteractionTerm:
     
     factors: List[str]  # Variables involved (e.g., ['x1', 'x2'] or ['cat1', 'x2'])
     categorical_flags: List[bool]  # Which factors are categorical
+    force_linear: Optional[Set[str]] = None  # Factors that must stay linear (no spline expansion)
     
     @property
     def order(self) -> int:
@@ -401,7 +402,11 @@ class InteractionBuilder:
         spline_factors = []
         te_factors = []
         cont_factors = []
+        force_linear = interaction.force_linear or set()
         for factor in factors:
+            if factor in force_linear:
+                cont_factors.append(factor)
+                continue
             spline = self._parse_spline_factor(factor)
             te = self._parse_te_factor(factor)
             if spline is not None:
@@ -630,9 +635,12 @@ class InteractionBuilder:
         cont_factors = []
         spline_factors = []  # Spline terms need special handling
         
+        force_linear = interaction.force_linear or set()
         for factor, is_cat in zip(interaction.factors, interaction.categorical_flags):
             if is_cat:
                 cat_factors.append(factor)
+            elif factor in force_linear:
+                cont_factors.append(factor)
             else:
                 # Check if this is a spline term
                 spline = self._parse_spline_factor(factor)
@@ -1567,20 +1575,23 @@ class InteractionBuilder:
         self,
         new_data: "pl.DataFrame",
         factor: str,
+        force_linear: Optional[Set[str]] = None,
     ) -> np.ndarray:
         """Resolve a single interaction factor to column(s) for new data.
         
         Returns 1-D array for scalar factors, 2-D for spline basis.
         """
+        _force_linear = force_linear or set()
         te = self._parse_te_factor(factor)
         if te is not None:
             return self._encode_target_new(new_data, te)
-        spline = self._parse_spline_factor(factor)
-        if spline is not None:
-            x = new_data[spline.var_name].to_numpy().astype(self.dtype)
-            fitted_spline = self._fitted_splines.get(spline.var_name, spline)
-            basis, _ = fitted_spline.transform(x)
-            return basis  # 2-D
+        if factor not in _force_linear:
+            spline = self._parse_spline_factor(factor)
+            if spline is not None:
+                x = new_data[spline.var_name].to_numpy().astype(self.dtype)
+                fitted_spline = self._fitted_splines.get(spline.var_name, spline)
+                basis, _ = fitted_spline.transform(x)
+                return basis  # 2-D
         return new_data[factor].to_numpy().astype(self.dtype)
     
     def _build_continuous_interaction_new(
@@ -1590,7 +1601,7 @@ class InteractionBuilder:
         n: int,
     ) -> np.ndarray:
         """Build continuous × continuous interaction for new data (may include spline/TE)."""
-        resolved = [self._resolve_factor_new(new_data, f) for f in interaction.factors]
+        resolved = [self._resolve_factor_new(new_data, f, interaction.force_linear) for f in interaction.factors]
         
         # If any factor is multi-column (spline basis), build cross-product
         has_multi = any(r.ndim == 2 and r.shape[1] > 1 for r in resolved)
@@ -1647,9 +1658,12 @@ class InteractionBuilder:
         cont_factors = []
         spline_factors = []
         
+        force_linear = interaction.force_linear or set()
         for factor, is_cat in zip(interaction.factors, interaction.categorical_flags):
             if is_cat:
                 cat_factors.append(factor)
+            elif factor in force_linear:
+                cont_factors.append(factor)
             else:
                 spline = self._parse_spline_factor(factor)
                 if spline is not None:

@@ -433,11 +433,16 @@ def fit_cv_regularization_path(
     if verbose:
         print("  Using Rust parallel CV")
     
+    # Use relaxed settings for CV fold fits: full convergence is unnecessary
+    # since we only need approximate coefficients to estimate validation deviance.
+    cv_max_iter = min(max_iter, 10)
+    cv_tol = max(tol, 1e-4)
+    
     rust_result = _fit_cv_path_rust(
         y, X, family, link, var_power, theta,
         offset, weights,
         list(alphas), effective_l1_ratio,
-        cv, max_iter, tol,
+        cv, cv_max_iter, cv_tol,
         seed if seed is not None else DEFAULT_CV_SEED,
     )
     

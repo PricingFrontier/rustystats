@@ -130,7 +130,7 @@ pub fn fit_glm_py(
 
     let result: IRLSResult = if use_coordinate_descent {
         fit_glm_coordinate_descent(&y_array, &x_array, fam.as_ref(), lnk.as_ref(), &irls_config, &reg_config,
-            offset_array.as_ref(), weights_array.as_ref(), None)
+            offset_array.as_ref(), weights_array.as_ref(), None, false)
     } else if use_regularization {
         fit_glm_regularized(&y_array, &x_array, fam.as_ref(), lnk.as_ref(), &irls_config, &reg_config,
             offset_array.as_ref(), weights_array.as_ref())
@@ -354,7 +354,7 @@ pub fn fit_cv_path_py<'py>(
             let result = if l1_ratio > 0.0 {
                 match fit_glm_coordinate_descent(&y_train, &x_train, thread_fam.as_ref(),
                     thread_link.as_ref(), &irls_config, &reg_config,
-                    offset_train.as_ref(), weights_train.as_ref(), warm_coefficients.as_ref())
+                    offset_train.as_ref(), weights_train.as_ref(), warm_coefficients.as_ref(), true)
                 { Ok(r) => r, Err(_) => { fold_deviances.push(f64::INFINITY); continue; } }
             } else {
                 match fit_glm_regularized_warm(&y_train, &x_train, thread_fam.as_ref(),
