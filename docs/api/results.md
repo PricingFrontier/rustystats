@@ -9,7 +9,7 @@ Core results object returned when fitting a GLM. Contains all fitted model infor
 ### Construction
 
 ```python
-result = rs.glm("y ~ x1 + x2", data, family="poisson").fit()
+result = rs.glm_dict(response="y", terms={"x1": {"type": "linear"}, "x2": {"type": "linear"}}, data=data, family="poisson").fit()
 ```
 
 ---
@@ -359,7 +359,7 @@ phi = result.scale_pearson()
 Number of non-zero coefficients (for regularized models).
 
 ```python
-result = rs.glm("y ~ x1 + x2 + C(cat)", data).fit(alpha=0.1, l1_ratio=1.0)
+result = rs.glm_dict(response="y", terms={"x1": {"type": "linear"}, "x2": {"type": "linear"}, "cat": {"type": "categorical"}}, data=data).fit(alpha=0.1, l1_ratio=1.0)
 print(f"Selected {result.n_nonzero()} of {len(result.params)} features")
 ```
 

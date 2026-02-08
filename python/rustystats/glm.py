@@ -9,7 +9,7 @@ Note: The array-based API (fit_glm, GLM class) has been removed.
 Use the formula-based API instead:
 
 >>> import rustystats as rs
->>> result = rs.glm("y ~ x1 + x2 + C(cat)", data, family="poisson").fit()
+>>> result = rs.glm_dict(response="y", terms={"x1": {"type": "linear"}, "x2": {"type": "linear"}, "cat": {"type": "categorical"}}, data=data, family="poisson").fit()
 >>> print(result.summary())
 """
 

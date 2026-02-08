@@ -77,13 +77,13 @@ For formula-based models, use `pos()` and `neg()`:
 
 ```python
 # Positive coefficient (β ≥ 0)
-result = rs.glm("y ~ pos(age) + x2", data, family="poisson").fit()
+result = rs.glm_dict(response="y", terms={"age": {"type": "linear", "monotonicity": "increasing"}, "x2": {"type": "linear"}}, data=data, family="poisson").fit()
 
 # Negative coefficient (β ≤ 0)
-result = rs.glm("y ~ neg(risk_score) + x2", data, family="poisson").fit()
+result = rs.glm_dict(response="y", terms={"risk_score": {"type": "linear", "monotonicity": "decreasing"}, "x2": {"type": "linear"}}, data=data, family="poisson").fit()
 
 # Multiple constraints
-result = rs.glm("y ~ pos(age) + neg(discount) + C(region)", data, family="poisson").fit()
+result = rs.glm_dict(response="y", terms={"age": {"type": "linear", "monotonicity": "increasing"}, "discount": {"type": "linear", "monotonicity": "decreasing"}, "region": {"type": "categorical"}}, data=data, family="poisson").fit()
 ```
 
 ---

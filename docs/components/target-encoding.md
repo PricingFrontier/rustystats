@@ -208,11 +208,16 @@ train_encoded = encoder.fit_transform(train_categories, train_target)
 test_encoded = encoder.transform(test_categories)
 ```
 
-### Formula API
+### Dict API
 
 ```python
-result = rs.glm(
-    "ClaimNb ~ TE(VehicleBrand) + TE(ZipCode, prior_weight=2.0) + Age",
+result = rs.glm_dict(
+    response="ClaimNb",
+    terms={
+        "VehicleBrand": {"type": "target_encoding"},
+        "ZipCode": {"type": "target_encoding", "prior_weight": 2.0},
+        "Age": {"type": "linear"},
+    },
     data=data,
     family="poisson",
     offset="Exposure"

@@ -31,7 +31,7 @@ def validate_family(name, y, X, sm_family, rs_family, link_name="log"):
     # Fit rustystats
     try:
         data = pl.DataFrame({"y": y, "x": X[:, 1]})
-        rs_result = rs.glm("y ~ x", data, family=rs_family).fit()
+        rs_result = rs.glm_dict(response="y", terms={"x": {"type": "linear"}}, data=data, family=rs_family).fit()
     except Exception as e:
         print(f"Rustystats failed: {e}")
         return None
@@ -236,7 +236,7 @@ try:
     
     data_nb = pl.DataFrame({"y": y_nb.astype(float), "x": x})
     # rustystats uses theta parameter separately
-    rs_nb_result = rs.glm("y ~ x", data_nb, family="negbinomial", theta=theta_nb).fit()
+    rs_nb_result = rs.glm_dict(response="y", terms={"x": {"type": "linear"}}, data=data_nb, family="negbinomial", theta=theta_nb).fit()
     
     print(f"\n{'=' * 80}")
     print("NEGATIVE BINOMIAL GLM VALIDATION")
@@ -299,7 +299,7 @@ try:
     
     data_tw = pl.DataFrame({"y": y_tw_pos, "x": x_tw})
     # rustystats uses var_power parameter separately
-    rs_tw_result = rs.glm("y ~ x", data_tw, family="tweedie", var_power=p_tweedie).fit()
+    rs_tw_result = rs.glm_dict(response="y", terms={"x": {"type": "linear"}}, data=data_tw, family="tweedie", var_power=p_tweedie).fit()
     
     print(f"\n{'=' * 80}")
     print("TWEEDIE (p=1.5) GLM VALIDATION")

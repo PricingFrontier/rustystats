@@ -276,34 +276,13 @@ class TestPriorWeight:
         assert abs(val_high - prior) < abs(val_low - prior)
 
 
-class TestFormulaIntegration:
-    """Tests for TE() in formulas."""
-    
-    def test_parse_te_term(self):
-        """TE() should be parsed correctly."""
-        from rustystats.interactions import parse_formula_interactions
-        
-        parsed = parse_formula_interactions("y ~ TE(brand) + age")
-        
-        assert len(parsed.target_encoding_terms) == 1
-        assert parsed.target_encoding_terms[0].var_name == "brand"
-        assert parsed.main_effects == ["age"]
-    
-    def test_parse_te_with_options(self):
-        """TE() with options should be parsed correctly."""
-        from rustystats.interactions import parse_formula_interactions
-        
-        parsed = parse_formula_interactions("y ~ TE(brand, prior_weight=2.0, n_permutations=8)")
-        
-        assert len(parsed.target_encoding_terms) == 1
-        assert parsed.target_encoding_terms[0].var_name == "brand"
-        assert abs(parsed.target_encoding_terms[0].prior_weight - 2.0) < 1e-10
-        assert parsed.target_encoding_terms[0].n_permutations == 8
+class TestDesignMatrixIntegration:
+    """Tests for TE in design matrix construction."""
     
     def test_te_in_design_matrix(self):
-        """TE() should work in design matrix construction."""
+        """TE should work in design matrix construction."""
         import polars as pl
-        from rustystats.interactions import InteractionBuilder
+        from rustystats.interactions import InteractionBuilder, ParsedFormula, TargetEncodingTermSpec
         
         # Create test data
         data = pl.DataFrame({
@@ -312,19 +291,27 @@ class TestFormulaIntegration:
             "age": [25.0, 30.0, 35.0, 40.0, 45.0, 50.0],
         })
         
+        parsed = ParsedFormula(
+            response="y",
+            main_effects=["age"],
+            interactions=[],
+            categorical_vars=set(),
+            target_encoding_terms=[TargetEncodingTermSpec(var_name="brand")],
+            has_intercept=True,
+        )
         builder = InteractionBuilder(data)
-        y, X, names = builder.build_design_matrix("y ~ TE(brand) + age")
+        y, X, names = builder.build_design_matrix_from_parsed(parsed)
         
-        # Should have: Intercept, TE(brand), age
+        # Should have: Intercept, age, TE(brand)
         assert X.shape == (6, 3)
         assert "TE(brand)" in names
         assert "age" in names
         assert "Intercept" in names
     
-    def test_te_combined_with_splines_and_categorical(self):
-        """TE() should work with other term types."""
+    def test_te_combined_with_categorical(self):
+        """TE should work with other term types."""
         import polars as pl
-        from rustystats.interactions import InteractionBuilder
+        from rustystats.interactions import InteractionBuilder, ParsedFormula, TargetEncodingTermSpec
         
         data = pl.DataFrame({
             "y": np.random.randn(20),
@@ -333,8 +320,16 @@ class TestFormulaIntegration:
             "age": np.random.uniform(20, 60, 20),
         })
         
+        parsed = ParsedFormula(
+            response="y",
+            main_effects=["region", "age"],
+            interactions=[],
+            categorical_vars={"region"},
+            target_encoding_terms=[TargetEncodingTermSpec(var_name="brand")],
+            has_intercept=True,
+        )
         builder = InteractionBuilder(data)
-        y, X, names = builder.build_design_matrix("y ~ TE(brand) + C(region) + age")
+        y, X, names = builder.build_design_matrix_from_parsed(parsed)
         
         assert "TE(brand)" in names
         assert any("region" in n for n in names)

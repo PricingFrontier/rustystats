@@ -297,8 +297,9 @@ for ic in exploration.interaction_candidates:
 
 ```python
 # Fit base model
-result = rs.glm(
-    "ClaimNb ~ DrivAge + VehAge + C(Region)",
+result = rs.glm_dict(
+    response="ClaimNb",
+    terms={"DrivAge": {"type": "linear"}, "VehAge": {"type": "linear"}, "Region": {"type": "categorical"}},
     data=data,
     family="poisson",
     offset="Exposure"
@@ -321,11 +322,13 @@ for ic in diagnostics.interaction_candidates:
 
 ```python
 # Add interaction term
-result_with_interaction = rs.glm(
-    "ClaimNb ~ DrivAge * VehAge + C(Region)",  # DrivAge:VehAge interaction
+result_with_interaction = rs.glm_dict(
+    response="ClaimNb",
+    terms={"DrivAge": {"type": "linear"}, "VehAge": {"type": "linear"}, "Region": {"type": "categorical"}},
+    interactions=[{"DrivAge": {"type": "linear"}, "VehAge": {"type": "linear"}}],
     data=data,
     family="poisson",
-    offset="Exposure"
+    offset="Exposure",
 ).fit()
 
 # Compare AIC

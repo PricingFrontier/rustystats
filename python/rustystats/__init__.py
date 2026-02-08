@@ -12,16 +12,21 @@ Quick Start
 >>> # Load data
 >>> data = pl.read_parquet("insurance.parquet")
 >>>
->>> # Fit a Poisson GLM using the formula API
->>> result = rs.glm(
-...     formula="ClaimNb ~ VehPower + VehAge + C(Area) + C(Region)",
+>>> # Fit a Poisson GLM using the dict API
+>>> result = rs.glm_dict(
+...     response="ClaimNb",
+...     terms={
+...         "VehPower": {"type": "linear"},
+...         "VehAge": {"type": "linear"},
+...         "Area": {"type": "categorical"},
+...         "Region": {"type": "categorical"},
+...     },
 ...     data=data,
 ...     family="poisson",
-...     offset="Exposure"
+...     offset="Exposure",
 ... ).fit()
 >>>
 >>> print(result.summary())
->>> print(result.coef_table())
 
 Available Families
 ------------------
@@ -39,13 +44,6 @@ Available Link Functions
 - **identity**: η = μ (default for Gaussian)
 - **log**: η = log(μ) (default for Poisson, Gamma)
 - **logit**: η = log(μ/(1-μ)) (default for Binomial)
-
-Formula Syntax
---------------
-- Main effects: ``x1``, ``x2``, ``C(cat)`` (categorical)
-- Interactions: ``x1*x2`` (main + interaction), ``x1:x2`` (interaction only)
-- Splines: ``bs(x, df=5)``, ``ns(x, df=4)``, ``bs(x, df=5, monotonicity='increasing')``
-- Target encoding: ``TE(brand)`` for high-cardinality categoricals
 
 For Actuaries
 -------------
@@ -83,11 +81,8 @@ from rustystats import families
 from rustystats import links
 from rustystats.glm import summary, summary_relativities
 
-# Formula-based API (the primary API)
-from rustystats.formula import glm, FormulaGLM, GLMModel
-
-# Dict-based API (alternative to formula strings)
-from rustystats.formula import glm_dict, FormulaGLMDict
+# Dict-based API (the primary API)
+from rustystats.formula import GLMModel, glm_dict, FormulaGLMDict
 
 # Spline basis functions (for non-linear continuous effects)
 from rustystats.splines import bs, ns, bs_names, ns_names, SplineTerm
@@ -127,7 +122,6 @@ from rustystats.exceptions import (
     ConvergenceError,
     PredictionError,
     EncodingError,
-    FormulaError,
     ValidationError,
     SerializationError,
 )
@@ -136,12 +130,9 @@ from rustystats.exceptions import (
 __all__ = [
     # Version
     "__version__",
-    # Formula-based API (primary interface)
-    "glm",
-    "FormulaGLM",
+    # Dict-based API (primary interface)
     "GLMModel",
     "GLMResults",
-    # Dict-based API
     "glm_dict",
     "FormulaGLMDict",
     "summary",
@@ -194,7 +185,6 @@ __all__ = [
     "ConvergenceError",
     "PredictionError",
     "EncodingError",
-    "FormulaError",
     "ValidationError",
     "SerializationError",
 ]

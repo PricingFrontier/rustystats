@@ -14,7 +14,7 @@ Features:
 
 Usage:
 ------
->>> result = rs.glm("y ~ x1 + C(region)", data, family="poisson").fit()
+>>> result = rs.glm_dict(response="y", terms={"x1": {"type": "linear"}, "region": {"type": "categorical"}}, data=data, family="poisson").fit()
 >>> diagnostics = result.diagnostics(
 ...     data=data,
 ...     categorical_factors=["region", "brand"],

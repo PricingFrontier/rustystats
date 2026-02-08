@@ -16,8 +16,9 @@ Example
 >>> import numpy as np
 >>> 
 >>> # Use penalized splines in formula API with k parameter
->>> result = rs.glm(
-...     "y ~ bs(age, k=10) + bs(income, k=15) + C(region)",
+>>> result = rs.glm_dict(
+...     response="y",
+...     terms={"age": {"type": "bs", "k": 10}, "income": {"type": "bs", "k": 15}, "region": {"type": "categorical"}},
 ...     data=data,
 ...     family="poisson"
 ... ).fit()

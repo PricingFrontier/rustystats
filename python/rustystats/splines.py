@@ -37,10 +37,10 @@ Example
 (5, 4)
 
 >>> # Penalized smooth (auto-tuned via GCV during fitting)
->>> result = rs.glm("y ~ bs(age, k=10)", data=data, family="poisson").fit()
+>>> result = rs.glm_dict(response="y", terms={"age": {"type": "bs", "k": 10}}, data=data, family="poisson").fit()
 
 >>> # Monotonically increasing effect
->>> result = rs.glm("y ~ bs(age, df=5, monotonicity='increasing')", data=data).fit()
+>>> result = rs.glm_dict(response="y", terms={"age": {"type": "bs", "df": 5, "monotonicity": "increasing"}}, data=data).fit()
 
 When to Use Each Type
 ---------------------
@@ -69,7 +69,7 @@ from __future__ import annotations
 from typing import Optional, Union, List, Tuple, TYPE_CHECKING
 import numpy as np
 
-from rustystats.exceptions import ValidationError, FormulaError
+from rustystats.exceptions import ValidationError
 
 if TYPE_CHECKING:
     import polars as pl
@@ -481,7 +481,7 @@ class SplineTerm:
         elif self.spline_type == "ns":
             # Check if monotonicity was requested on natural splines
             if effective_monotonicity:
-                raise FormulaError(
+                raise ValidationError(
                     f"Monotonicity constraints are not supported for natural splines (ns). "
                     f"Use bs({self.var_name}, df={self.df}, monotonicity='increasing') "
                     f"instead, which uses I-splines designed for monotonic effects."

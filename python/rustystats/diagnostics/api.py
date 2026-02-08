@@ -243,7 +243,7 @@ def compute_diagnostics(
     
     Examples
     --------
-    >>> result = rs.glm("ClaimNb ~ Age + C(Region)", data, family="poisson", offset="Exposure").fit()
+    >>> result = rs.glm_dict(response="ClaimNb", terms={"Age": {"type": "linear"}, "Region": {"type": "categorical"}}, data=data, family="poisson", offset="Exposure").fit()
     >>> diagnostics = result.diagnostics(
     ...     train_data=train_data,
     ...     test_data=test_data,

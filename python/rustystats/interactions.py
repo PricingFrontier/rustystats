@@ -8,7 +8,6 @@ All heavy computation is done in Rust for maximum speed:
 - Spline basis functions (Rust with Rayon)
 
 The Python layer handles only:
-- Formula parsing (string manipulation)
 - DataFrame column extraction
 - Orchestration of Rust calls
 
@@ -17,7 +16,7 @@ Example
 >>> from rustystats.interactions import InteractionBuilder
 >>> 
 >>> builder = InteractionBuilder(data)
->>> y, X, names = builder.build_design_matrix('y ~ x1*x2 + C(cat) + bs(age, df=5)')
+>>> y, X, names = builder.build_design_matrix_from_parsed(parsed)
 """
 
 from __future__ import annotations
@@ -30,7 +29,6 @@ import numpy as np
 from rustystats.exceptions import (
     ValidationError,
     EncodingError,
-    FormulaError,
     DesignMatrixError,
     PredictionError,
 )
@@ -52,7 +50,6 @@ from rustystats._rustystats import (
     build_cat_cont_interaction_py as _build_cat_cont_rust,
     build_cont_cont_interaction_py as _build_cont_cont_rust,
     multiply_matrix_by_continuous_py as _multiply_matrix_cont_rust,
-    parse_formula_py as _parse_formula_rust,
     target_encode_py as _target_encode_rust,
 )
 
@@ -181,239 +178,6 @@ class ParsedFormula:
         return self._te_by_var
 
 
-def parse_formula_interactions(formula: str) -> ParsedFormula:
-    """
-    Parse a formula string and extract interaction terms.
-    
-    Uses Rust for fast parsing of:
-    - Main effects: x1, x2, C(cat)
-    - Two-way interactions: x1:x2, x1*x2, C(cat):x
-    - Higher-order: x1:x2:x3
-    - Intercept removal: 0 + ... or -1
-    - Spline terms: bs(x, df=5), ns(x, df=4)
-    
-    Parameters
-    ----------
-    formula : str
-        R-style formula like "y ~ x1*x2 + C(cat) + bs(age, df=5)"
-        
-    Returns
-    -------
-    ParsedFormula
-        Parsed structure with all terms identified
-    """
-    # Use Rust parser
-    parsed = _parse_formula_rust(formula)
-    
-    # Convert to Python dataclasses
-    interactions = [
-        InteractionTerm(
-            factors=i['factors'],
-            categorical_flags=i['categorical_flags']
-        )
-        for i in parsed['interactions']
-    ]
-    
-    spline_terms = []
-    for s in parsed['spline_terms']:
-        monotonicity = s.get('monotonicity')
-        term = SplineTerm(
-            var_name=s['var_name'],
-            spline_type=s['spline_type'],
-            df=s['df'],
-            degree=s['degree'],
-            monotonicity=monotonicity
-        )
-        # Set smooth flag for penalized splines with auto lambda selection
-        term._is_smooth = s.get('is_smooth', False)
-        spline_terms.append(term)
-    
-    # Parse target encoding terms
-    target_encoding_terms = [
-        TargetEncodingTermSpec(
-            var_name=t['var_name'],
-            prior_weight=t['prior_weight'],
-            n_permutations=t['n_permutations'],
-            interaction_vars=t.get('interaction_vars')
-        )
-        for t in parsed.get('target_encoding_terms', [])
-    ]
-    
-    # Parse frequency encoding terms
-    frequency_encoding_terms = [
-        FrequencyEncodingTermSpec(var_name=f['var_name'])
-        for f in parsed.get('frequency_encoding_terms', [])
-    ]
-    
-    # Parse identity terms (I() expressions)
-    identity_terms = [
-        IdentityTermSpec(expression=i['expression'])
-        for i in parsed.get('identity_terms', [])
-    ]
-    
-    # Parse categorical terms with level selection (C(var, level='...'))
-    categorical_terms = [
-        CategoricalTermSpec(
-            var_name=c['var_name'],
-            levels=c['levels']
-        )
-        for c in parsed.get('categorical_terms', [])
-    ]
-    
-    # Parse constraint terms (pos() / neg())
-    constraint_terms = [
-        ConstraintTermSpec(
-            var_name=c['var_name'],
-            constraint=c['constraint']
-        )
-        for c in parsed.get('constraint_terms', [])
-    ]
-    
-    # Filter out "1" from main effects (it's just an explicit intercept indicator)
-    main_effects = [m for m in parsed['main_effects'] if m != '1']
-    
-    return ParsedFormula(
-        response=parsed['response'],
-        main_effects=main_effects,
-        interactions=interactions,
-        categorical_vars=set(parsed['categorical_vars']),
-        spline_terms=spline_terms,
-        target_encoding_terms=target_encoding_terms,
-        frequency_encoding_terms=frequency_encoding_terms,
-        identity_terms=identity_terms,
-        categorical_terms=categorical_terms,
-        constraint_terms=constraint_terms,
-        has_intercept=parsed['has_intercept'],
-    )
-
-
-def _extract_term_var_name(factor: str) -> Optional[str]:
-    """Extract variable name from a function-like factor string.
-    
-    Lightweight extraction that does NOT re-parse term parameters.
-    Use with ParsedFormula.spline_terms_by_var / te_terms_by_var for lookups.
-    
-    Examples
-    --------
-    >>> _extract_term_var_name('bs(VehAge, df=4)')
-    'VehAge'
-    >>> _extract_term_var_name('TE(Region)')
-    'Region'
-    >>> _extract_term_var_name('DrivAge')
-    None
-    """
-    f = factor.strip()
-    fl = f.lower()
-    for prefix in ('bs(', 'ns(', 'ms(', 'te(', 'fe('):
-        if fl.startswith(prefix):
-            content = f[len(prefix):]
-            if content.endswith(')'):
-                content = content[:-1]
-            return content.split(',')[0].strip()
-    if fl.startswith('s(') and not fl.startswith('sc'):
-        content = f[2:]
-        if content.endswith(')'):
-            content = content[:-1]
-        return content.split(',')[0].strip()
-    return None
-
-
-def parse_spline_factor(factor: str) -> Optional["SplineTerm"]:
-    """Parse a spline term from a factor string like 'bs(VehAge, df=4)' or 'ns(age, df=3)'.
-    
-    Returns a SplineTerm if the factor matches bs()/ns()/ms()/s() syntax, else None.
-    Used in the pre-pass to populate ParsedFormula lookup dicts for interaction factors.
-    """
-    from rustystats.splines import SplineTerm
-    
-    factor_lower = factor.strip().lower()
-    if factor_lower.startswith('bs(') or factor_lower.startswith('ns(') or factor_lower.startswith('ms(') or factor_lower.startswith('s('):
-        if factor_lower.startswith('bs('):
-            spline_type = 'bs'
-            prefix_len = 3
-        elif factor_lower.startswith('ns('):
-            spline_type = 'ns'
-            prefix_len = 3
-        elif factor_lower.startswith('ms('):
-            spline_type = 'ms'
-            prefix_len = 3
-        else:
-            # s() is sugar for bs() with is_smooth=True
-            spline_type = 'bs'
-            prefix_len = 2
-        # Extract content inside parentheses
-        content = factor[prefix_len:-1] if factor.endswith(')') else factor[prefix_len:]
-        parts = [p.strip() for p in content.split(',')]
-        var_name = parts[0]
-        df = None  # default: penalized smooth
-        k = None
-        degree = DEFAULT_SPLINE_DEGREE  # default for B-splines
-        monotonicity = None
-        for part in parts[1:]:
-            if '=' in part:
-                key, val = part.split('=', 1)
-                key = key.strip().lower()
-                val = val.strip()
-                if key == 'df':
-                    df = int(val)
-                elif key == 'k':
-                    k = int(val)
-                elif key == 'degree':
-                    degree = int(val)
-                elif key == 'monotonicity':
-                    monotonicity = val.strip("'\"").lower()
-        
-        # Determine effective df and whether this is a smooth term
-        # s() always implies smooth; bs()/ns()/ms() are smooth when k= is used
-        is_s_syntax = factor_lower.startswith('s(')
-        is_smooth = is_s_syntax
-        if df is None and k is None:
-            # No df or k specified: default to penalized smooth with k=DEFAULT_SPLINE_DF
-            effective_df = DEFAULT_SPLINE_DF
-            is_smooth = True
-        elif k is not None:
-            # k parameter specified: penalized smooth
-            effective_df = k
-            is_smooth = True
-        else:
-            # df parameter specified: fixed df unless s() syntax
-            effective_df = df
-        
-        term = SplineTerm(var_name=var_name, spline_type=spline_type, df=effective_df, 
-                          degree=degree, monotonicity=monotonicity)
-        if is_smooth:
-            term._is_smooth = True
-        return term
-    
-    return None
-
-
-def parse_te_factor(factor: str) -> Optional["TargetEncodingTermSpec"]:
-    """Parse a TE term from a factor string like 'TE(Region)' or 'TE(Brand, pw=2)'.
-    
-    Returns a TargetEncodingTermSpec if the factor matches TE() syntax, else None.
-    This is shared by InteractionBuilder and _DeserializedBuilder.
-    """
-    factor_stripped = factor.strip()
-    if factor_stripped.upper().startswith('TE(') and factor_stripped.endswith(')'):
-        content = factor_stripped[3:-1]
-        parts = [p.strip() for p in content.split(',')]
-        var_name = parts[0]
-        prior_weight = DEFAULT_PRIOR_WEIGHT
-        n_permutations = DEFAULT_N_PERMUTATIONS
-        for part in parts[1:]:
-            if '=' in part:
-                key, val = part.split('=', 1)
-                key = key.strip().lower()
-                val = val.strip()
-                if key in ('pw', 'prior_weight'):
-                    prior_weight = float(val)
-                elif key in ('n', 'n_permutations'):
-                    n_permutations = int(val)
-        return TargetEncodingTermSpec(var_name=var_name, prior_weight=prior_weight, n_permutations=n_permutations)
-    return None
-
-
 class InteractionBuilder:
     """
     Efficiently builds design matrices with interaction terms.
@@ -433,7 +197,7 @@ class InteractionBuilder:
     Example
     -------
     >>> builder = InteractionBuilder(df)
-    >>> X, names = builder.build_matrix('y ~ x1*x2 + C(area):age')
+    >>> y, X, names = builder.build_design_matrix_from_parsed(parsed)
     """
     
     def __init__(
@@ -515,24 +279,20 @@ class InteractionBuilder:
         self._last_names = None
     
     def _parse_spline_factor(self, factor: str) -> Optional[SplineTerm]:
-        """Look up a pre-parsed spline term by extracting var_name from the factor string.
-        
-        Uses ParsedFormula.spline_terms_by_var for O(1) lookup.
-        """
+        """Look up a pre-parsed spline term by variable name."""
         if self._parsed_formula is not None:
-            var_name = _extract_term_var_name(factor)
-            if var_name is not None:
-                return self._parsed_formula.spline_terms_by_var.get(var_name)
+            return self._parsed_formula.spline_terms_by_var.get(factor)
         return None
     
     def _parse_te_factor(self, factor: str) -> Optional[TargetEncodingTermSpec]:
-        """Look up a pre-parsed TE term by extracting var_name from the factor string.
-        
-        Uses ParsedFormula.te_terms_by_var for O(1) lookup.
-        """
+        """Look up a pre-parsed TE term by variable name."""
         if self._parsed_formula is not None:
-            var_name = _extract_term_var_name(factor)
-            if var_name is not None:
+            result = self._parsed_formula.te_terms_by_var.get(factor)
+            if result is not None:
+                return result
+            # Handle TE(...) wrapped names from interaction specs
+            if factor.startswith("TE(") and factor.endswith(")"):
+                var_name = factor[3:-1]
                 return self._parsed_formula.te_terms_by_var.get(var_name)
         return None
     
@@ -1211,7 +971,7 @@ class InteractionBuilder:
             result = data.select(polars_expr.alias("__result__"))["__result__"].to_numpy()
             return result.astype(self.dtype), name
         except Exception as e:
-            raise FormulaError(
+            raise ValidationError(
                 f"Failed to evaluate I() expression '{expr}': {e}\n"
                 f"Supported operations: +, -, *, /, ** (power)\n"
                 f"Example: I(x ** 2), I(x + y), I(x * y)"
@@ -1272,7 +1032,7 @@ class InteractionBuilder:
         if re.match(r'^\w+$', expr):
             return pl.col(expr)
         
-        raise FormulaError(
+        raise ValidationError(
             f"Cannot parse expression '{expr}'. "
             f"Supported formats: 'x ** 2', 'x + y', 'x * y', 'x / y', 'x - y'"
         )
@@ -1369,9 +1129,6 @@ class InteractionBuilder:
         """
         Core implementation for building design matrix from parsed formula.
         
-        This is the shared implementation used by both build_design_matrix()
-        and build_design_matrix_from_parsed().
-        
         Parameters
         ----------
         parsed : ParsedFormula
@@ -1427,26 +1184,8 @@ class InteractionBuilder:
                 self._smooth_terms.append(spline)
                 self._smooth_col_indices.append((col_start, col_end))
         
-        # Store parsed formula for prediction and lookup-based interaction building
+        # Store parsed formula for prediction
         self._parsed_formula = parsed
-        
-        # Pre-pass: parse any spline/TE terms inside interaction factors ONCE upfront.
-        # This populates the ParsedFormula lookup dicts so _parse_spline_factor/_parse_te_factor
-        # can use O(1) lookups instead of re-parsing during interaction column building.
-        for interaction in parsed.interactions:
-            for factor in interaction.factors:
-                var_name = _extract_term_var_name(factor)
-                if var_name is not None:
-                    # Add spline term to lookup if not already present
-                    if var_name not in parsed.spline_terms_by_var:
-                        spline = parse_spline_factor(factor)
-                        if spline is not None:
-                            parsed.spline_terms_by_var[var_name] = spline
-                    # Add TE term to lookup if not already present
-                    if var_name not in parsed.te_terms_by_var:
-                        te = parse_te_factor(factor)
-                        if te is not None:
-                            parsed.te_terms_by_var[var_name] = te
         
         # Get response (needed for target encoding)
         y = self._get_column(parsed.response)
@@ -1509,39 +1248,6 @@ class InteractionBuilder:
         self._last_names = names
         
         return y, X, names
-    
-    def build_design_matrix(
-        self,
-        formula: str,
-        exposure: Optional[np.ndarray] = None,
-        seed: Optional[int] = None,
-    ) -> Tuple[np.ndarray, np.ndarray, List[str]]:
-        """
-        Build complete design matrix from formula.
-        
-        Parameters
-        ----------
-        formula : str
-            R-style formula like "y ~ x1*x2 + C(cat) + bs(age, df=5)"
-        exposure : np.ndarray, optional
-            Exposure values. If provided, target encoding (TE) will use
-            rate (y/exposure) instead of raw y values. This is important
-            for frequency models to prevent TE values collapsing to near-constant.
-        seed : int, optional
-            Random seed for deterministic target encoding. If None, TE uses
-            random permutations (non-deterministic).
-            
-        Returns
-        -------
-        y : np.ndarray
-            Response variable
-        X : np.ndarray
-            Design matrix
-        names : list[str]
-            Column names
-        """
-        parsed = parse_formula_interactions(formula)
-        return self._build_design_matrix_core(parsed, exposure=exposure, seed=seed)
     
     def build_design_matrix_from_parsed(
         self,
@@ -1611,7 +1317,7 @@ class InteractionBuilder:
             X = getattr(self, '_last_X', None)
             names = getattr(self, '_last_names', None)
         if X is None:
-            raise DesignMatrixError("No design matrix to validate. Call build_design_matrix() first.")
+            raise DesignMatrixError("No design matrix to validate. Call build_design_matrix_from_parsed() first.")
         
         n_rows, n_cols = X.shape
         results = {
@@ -1728,7 +1434,7 @@ class InteractionBuilder:
         Transform new data using the encoding state from training.
         
         This method applies the same transformations learned during
-        build_design_matrix() to new data for prediction.
+        build_design_matrix_from_parsed() to new data for prediction.
         
         Parameters
         ----------
@@ -1743,13 +1449,13 @@ class InteractionBuilder:
         Raises
         ------
         ValueError
-            If build_design_matrix() was not called first, or if new data
+            If build_design_matrix_from_parsed() was not called first, or if new data
             contains unseen categorical levels.
         """
         if self._parsed_formula is None:
             raise PredictionError(
-                "Must call build_design_matrix() before transform_new_data(). "
-                "No formula has been fitted yet."
+                "Must call build_design_matrix_from_parsed() before transform_new_data(). "
+                "No parsed formula has been fitted yet."
             )
         
         parsed = self._parsed_formula
@@ -1777,7 +1483,7 @@ class InteractionBuilder:
             spline_cols, _ = fitted_spline.transform(x)
             columns.append(spline_cols)
         
-        # Add target encoding terms BEFORE interactions (must match build_design_matrix order)
+        # Add target encoding terms BEFORE interactions (must match build order)
         for te_term in parsed.target_encoding_terms:
             te_col = self._encode_target_new(new_data, te_term)
             columns.append(te_col.reshape(-1, 1))
@@ -1787,7 +1493,7 @@ class InteractionBuilder:
             fe_col = self._encode_frequency_new(new_data, fe_term)
             columns.append(fe_col.reshape(-1, 1))
         
-        # Add interactions (after TE terms to match build_design_matrix order)
+        # Add interactions (after TE terms to match build order)
         for interaction in parsed.interactions:
             int_cols = self._build_interaction_new(new_data, interaction, n_new)
             if int_cols.ndim == 1:
@@ -2100,41 +1806,3 @@ class InteractionBuilder:
         return np.zeros((n, 0), dtype=self.dtype), []
 
 
-def build_design_matrix(
-    formula: str,
-    data: "pl.DataFrame",
-) -> Tuple[np.ndarray, np.ndarray, List[str]]:
-    """
-    Build design matrix with optimized interaction handling.
-    
-    This is a drop-in replacement for formulaic's model_matrix that is
-    optimized for:
-    - Large datasets (uses vectorized operations)
-    - High-cardinality categoricals (sparse intermediate representations)
-    - Many interaction terms
-    
-    Parameters
-    ----------
-    formula : str
-        R-style formula
-    data : pl.DataFrame
-        Polars DataFrame
-        
-    Returns
-    -------
-    y : np.ndarray
-        Response variable
-    X : np.ndarray
-        Design matrix
-    feature_names : list[str]
-        Column names
-        
-    Example
-    -------
-    >>> y, X, names = build_design_matrix(
-    ...     "claims ~ age*C(region) + C(brand)*C(fuel)",
-    ...     data
-    ... )
-    """
-    builder = InteractionBuilder(data)
-    return builder.build_design_matrix(formula)

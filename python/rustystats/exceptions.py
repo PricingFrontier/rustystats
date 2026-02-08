@@ -12,7 +12,6 @@ __all__ = [
     "ConvergenceError",
     "PredictionError",
     "EncodingError",
-    "FormulaError",
     "ValidationError",
     "SerializationError",
     "wrap_fitting_error",
@@ -84,18 +83,6 @@ class EncodingError(RustyStatsError):
     - Empty categories
     - Target values with wrong dtype
     - Mismatched array lengths
-    """
-    pass
-
-
-class FormulaError(RustyStatsError):
-    """
-    Error parsing formula string.
-    
-    Check:
-    - Matching parentheses
-    - Valid variable names
-    - Correct function syntax (C(), TE(), bs(), etc.)
     """
     pass
 

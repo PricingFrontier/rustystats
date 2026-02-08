@@ -13,10 +13,10 @@ N_CATEGORICAL = 10
 CAT_LEVELS = 10
 SIZES = [10_000, 250_000, 500_000]
 
-FORMULA = "y ~ " + " + ".join(
-    [f"x{i}" for i in range(N_CONTINUOUS)] + 
-    [f"C(c{i})" for i in range(N_CATEGORICAL)]
-)
+TERMS = {
+    **{f"x{i}": {"type": "linear"} for i in range(N_CONTINUOUS)},
+    **{f"c{i}": {"type": "categorical"} for i in range(N_CATEGORICAL)},
+}
 
 def generate_data(n_rows, family, seed=42):
     """Generate data for a given family."""
@@ -107,9 +107,9 @@ def main():
             df = generate_data(n_rows, family)
             
             if family == "negbinomial":
-                fit_fn = lambda: rs.glm(FORMULA, data=df, family=family, theta=2.0).fit()
+                fit_fn = lambda: rs.glm_dict(response="y", terms=TERMS, data=df, family=family, theta=2.0).fit()
             else:
-                fit_fn = lambda: rs.glm(FORMULA, data=df, family=family).fit()
+                fit_fn = lambda: rs.glm_dict(response="y", terms=TERMS, data=df, family=family).fit()
             
             t = time_fn(fit_fn)
             mem = measure_memory(fit_fn)

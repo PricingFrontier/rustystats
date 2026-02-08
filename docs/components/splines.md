@@ -8,13 +8,16 @@ The spline API uses sensible defaults:
 
 ```python
 # Default: penalized smooth with automatic tuning via GCV
-rs.glm("y ~ bs(age) + ns(income)", data, family="poisson").fit()
+rs.glm_dict(response="y", terms={"age": {"type": "bs"}, "income": {"type": "ns"}},
+            data=data, family="poisson").fit()
 
 # Fixed degrees of freedom (no penalty)
-rs.glm("y ~ bs(age, df=5) + ns(income, df=4)", data, family="poisson").fit()
+rs.glm_dict(response="y", terms={"age": {"type": "bs", "df": 5}, "income": {"type": "ns", "df": 4}},
+            data=data, family="poisson").fit()
 
 # Monotonic effects (increasing/decreasing)
-rs.glm("y ~ bs(age, monotonicity='increasing')", data, family="poisson").fit()
+rs.glm_dict(response="y", terms={"age": {"type": "bs", "monotonicity": "increasing"}},
+            data=data, family="poisson").fit()
 ```
 
 | Call | Behavior |
@@ -288,24 +291,24 @@ Splines can be used directly in formulas:
 
 ```python
 # Default: penalized smooth with automatic tuning
-result = rs.glm(
-    "y ~ bs(age) + ns(income) + C(region)",
-    data=data,
-    family="poisson"
+result = rs.glm_dict(
+    response="y",
+    terms={"age": {"type": "bs"}, "income": {"type": "ns"}, "region": {"type": "categorical"}},
+    data=data, family="poisson",
 ).fit()
 
 # Fixed df (no penalty)
-result = rs.glm(
-    "y ~ bs(age, df=5) + ns(income, df=4) + C(region)",
-    data=data,
-    family="poisson"
+result = rs.glm_dict(
+    response="y",
+    terms={"age": {"type": "bs", "df": 5}, "income": {"type": "ns", "df": 4}, "region": {"type": "categorical"}},
+    data=data, family="poisson",
 ).fit()
 
 # Monotonic constraint
-result = rs.glm(
-    "y ~ bs(age, monotonicity='increasing') + C(region)",
-    data=data,
-    family="poisson"
+result = rs.glm_dict(
+    response="y",
+    terms={"age": {"type": "bs", "monotonicity": "increasing"}, "region": {"type": "categorical"}},
+    data=data, family="poisson"
 ).fit()
 ```
 
@@ -435,18 +438,18 @@ basis = rs.bs(x, monotonicity='increasing')   # Monotonically increasing
 basis = rs.bs(x, df=5, monotonicity='decreasing')  # Fixed df, decreasing
 
 # In formulas
-result = rs.glm(
-    "ClaimNb ~ bs(Age, monotonicity='increasing') + C(Region)",
-    data=data,
-    family="poisson",
+result = rs.glm_dict(
+    response="ClaimNb",
+    terms={"Age": {"type": "bs", "monotonicity": "increasing"}, "Region": {"type": "categorical"}},
+    data=data, family="poisson",
     offset="Exposure"
 ).fit()
 
 # Combine with other spline types
-result = rs.glm(
-    "y ~ bs(age, monotonicity='increasing') + bs(income, df=4) + ns(experience)",
-    data=data,
-    family="gaussian"
+result = rs.glm_dict(
+    response="y",
+    terms={"age": {"type": "bs", "monotonicity": "increasing"}, "income": {"type": "bs", "df": 4}, "experience": {"type": "ns"}},
+    data=data, family="gaussian"
 ).fit()
 ```
 

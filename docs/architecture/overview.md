@@ -7,7 +7,7 @@ RustyStats is a hybrid Rust/Python library. This chapter explains how the compon
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                        Python User Code                          │
-│         import rustystats as rs; rs.glm(...).fit()              │
+│       import rustystats as rs; rs.glm_dict(...).fit()           │
 └─────────────────────────────────────────────────────────────────┘
                                 │
                                 ▼
@@ -175,12 +175,12 @@ python/rustystats/
 ### Fitting a Model
 
 ```
-User calls rs.glm("y ~ x1 + C(cat)", data).fit()
+User calls rs.glm_dict(response="y", terms={...}, data=data).fit()
            │
            ▼
 ┌──────────────────────────────────────────┐
 │ python/rustystats/formula.py             │
-│ - Parse formula string                   │
+│ - Convert dict spec to ParsedFormula     │
 │ - Extract columns from DataFrame         │
 │ - Build design matrix                    │
 │ - Handle categoricals, splines, etc.     │
@@ -327,7 +327,7 @@ def test_poisson_fit():
         "y": np.random.poisson(5, 100),
         "x": np.random.randn(100),
     })
-    result = rs.glm("y ~ x", data, family="poisson").fit()
+    result = rs.glm_dict(response="y", terms={"x": {"type": "linear"}}, data=data, family="poisson").fit()
     assert result.converged
 ```
 
@@ -342,7 +342,7 @@ def test_vs_statsmodels():
     data = pl.DataFrame({"y": y, "x": x})
     
     # Fit with RustyStats
-    rs_result = rs.glm("y ~ x", data, family="gaussian").fit()
+    rs_result = rs.glm_dict(response="y", terms={"x": {"type": "linear"}}, data=data, family="gaussian").fit()
     
     # Fit with statsmodels
     sm_result = sm.GLM(y, sm.add_constant(x), family=sm.families.Gaussian()).fit()

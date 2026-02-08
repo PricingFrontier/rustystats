@@ -58,36 +58,38 @@ import polars as pl
 
 data = pl.read_parquet("insurance.parquet")
 
-result = rs.glm(
-    formula="ClaimNb ~ Age + C(Region) + bs(VehPower, df=4)",
+result = rs.glm_dict(
+    response="ClaimNb",
+    terms={
+        "Age": {"type": "linear"},
+        "Region": {"type": "categorical"},
+        "VehPower": {"type": "bs", "df": 4},
+    },
     data=data,
     family="poisson",
-    offset="Exposure"
+    offset="Exposure",
 ).fit()
 ```
 
-### Step 1: Formula Parsing (`python/rustystats/formula.py`)
+### Step 1: Dict to ParsedFormula (`python/rustystats/formula.py`)
 
 ```python
-class FormulaGLM:
-    def __init__(self, formula, data, family, offset=None, ...):
-        self.formula = formula
+class FormulaGLMDict:
+    def __init__(self, response, terms, data, family, offset=None, ...):
+        self.response = response
         self.data = data
         
-        # Parse formula
-        self.parsed = parse_formula(formula)
-        # parsed = {
-        #     'response': 'ClaimNb',
-        #     'terms': ['Age', 'C(Region)', 'bs(VehPower, df=4)'],
-        #     'interactions': []
-        # }
+        # Convert dict spec to ParsedFormula
+        parsed = dict_to_parsed_formula(
+            response=response, terms=terms, ...
+        )
     
     def fit(self):
         # 1. Extract response
-        y = self.data[self.parsed['response']].to_numpy()
+        y = self.data[self.response].to_numpy()
         
-        # 2. Build design matrix
-        X = self._build_design_matrix()
+        # 2. Build design matrix (already done in __init__)
+        X = self.X
         
         # 3. Handle offset
         offset = None
@@ -246,7 +248,7 @@ print(f"Data shape: {data.shape}")
 print(f"Columns: {data.columns}")
 
 # Fit with verbose output
-result = rs.glm("y ~ x1 + C(cat)", data, family="poisson").fit()
+result = rs.glm_dict(response="y", terms={"x1": {"type": "linear"}, "cat": {"type": "categorical"}}, data=data, family="poisson").fit()
 print(f"Converged: {result.converged}")
 print(f"Iterations: {result.iterations}")
 ```
@@ -259,7 +261,7 @@ print(f"Iterations: {result.iterations}")
 import time
 
 start = time.time()
-result = rs.glm("y ~ x1 + x2 + C(cat)", data, family="poisson").fit()
+result = rs.glm_dict(response="y", terms={"x1": {"type": "linear"}, "x2": {"type": "linear"}, "cat": {"type": "categorical"}}, data=data, family="poisson").fit()
 print(f"Total time: {time.time() - start:.3f}s")
 print(f"IRLS iterations: {result.iterations}")
 ```

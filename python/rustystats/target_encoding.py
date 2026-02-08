@@ -24,8 +24,8 @@ Direct API:
     >>> # For prediction on new data:
     >>> new_encoded = rs.apply_target_encoding(new_categories, stats, prior)
 
-Formula API:
-    >>> result = rs.glm("y ~ TE(brand) + age", data, family="poisson").fit()
+Dict API:
+    >>> result = rs.glm_dict(response="y", terms={"brand": {"type": "target_encoding"}, "age": {"type": "linear"}}, data=data, family="poisson").fit()
 """
 
 from typing import Dict, List, Optional, Tuple, Union

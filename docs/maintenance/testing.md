@@ -233,7 +233,7 @@ class TestPoissonFit:
             "x": [1.0, 2.0, 3.0, 4.0, 5.0],
         })
         
-        result = rs.glm("y ~ x", data, family="poisson").fit()
+        result = rs.glm_dict(response="y", terms={"x": {"type": "linear"}}, data=data, family="poisson").fit()
         
         assert result.converged
         assert len(result.params) == 2
@@ -245,7 +245,7 @@ class TestPoissonFit:
             "x": np.random.randn(100),
         })
         
-        result = rs.glm("y ~ x", data, family="poisson").fit()
+        result = rs.glm_dict(response="y", terms={"x": {"type": "linear"}}, data=data, family="poisson").fit()
         
         assert np.all(result.fittedvalues > 0)
 ```
@@ -384,7 +384,7 @@ def test_formula_to_fit():
         "cat": ["A", "B", "A", "B", "A"],
     })
     
-    result = rs.glm("y ~ x + C(cat)", data, family="gaussian").fit()
+    result = rs.glm_dict(response="y", terms={"x": {"type": "linear"}, "cat": {"type": "categorical"}}, data=data, family="gaussian").fit()
     
     assert result.converged
     assert "x" in result.feature_names

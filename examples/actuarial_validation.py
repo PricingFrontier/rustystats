@@ -35,7 +35,7 @@ sm_model = sm.GLM(y, X_const, family=sm.families.Gamma(sm.families.links.Log()))
 sm_result = sm_model.fit()
 
 # Rustystats - intercept only via formula
-rs_result = rs.glm("ClaimAmount ~ 1", data, family="gamma").fit()
+rs_result = rs.glm_dict(response="ClaimAmount", terms={}, data=data, family="gamma", intercept=True).fit()
 
 print(f"\n{'Metric':<25} {'Statsmodels':>15} {'Rustystats':>15} {'Diff':>12} {'Status':>10}")
 print("-" * 80)
@@ -89,7 +89,7 @@ sm_model2 = sm.GLM(y, X, family=sm.families.Gamma(sm.families.links.Log()))
 sm_result2 = sm_model2.fit()
 
 # Rustystats
-rs_result2 = rs.glm("ClaimAmount ~ DrivAge", data, family="gamma").fit()
+rs_result2 = rs.glm_dict(response="ClaimAmount", terms={"DrivAge": {"type": "linear"}}, data=data, family="gamma").fit()
 
 print(f"\n{'Metric':<25} {'Statsmodels':>15} {'Rustystats':>15} {'Diff':>12} {'Status':>10}")
 print("-" * 80)

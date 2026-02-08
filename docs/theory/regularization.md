@@ -56,7 +56,10 @@ P_{\text{Ridge}}(\boldsymbol{\beta}) = \sum_{j=1}^{p} \beta_j^2 = \|\boldsymbol{
 import rustystats as rs
 
 # Ridge regression (l1_ratio = 0)
-result = rs.glm("y ~ x1 + x2 + C(cat)", data, family="gaussian").fit(
+result = rs.glm_dict(
+    response="y", terms={"x1": {"type": "linear"}, "x2": {"type": "linear"}, "cat": {"type": "categorical"}},
+    data=data, family="gaussian",
+).fit(
     alpha=0.1,      # Penalty strength
     l1_ratio=0.0    # Pure L2 (Ridge)
 )
@@ -113,7 +116,7 @@ pub fn soft_threshold(z: f64, gamma: f64) -> f64 {
 
 ```python
 # Lasso (l1_ratio = 1)
-result = rs.glm("y ~ x1 + x2 + C(cat)", data, family="poisson").fit(
+result = rs.glm_dict(response="y", terms={"x1": {"type": "linear"}, "x2": {"type": "linear"}, "cat": {"type": "categorical"}}, data=data, family="poisson").fit(
     alpha=0.1,      # Penalty strength
     l1_ratio=1.0    # Pure L1 (Lasso)
 )
@@ -156,7 +159,7 @@ where \(\rho \in [0, 1]\) is the L1 ratio.
 
 ```python
 # Elastic Net (0 < l1_ratio < 1)
-result = rs.glm("y ~ x1 + x2 + C(cat)", data, family="gaussian").fit(
+result = rs.glm_dict(response="y", terms={"x1": {"type": "linear"}, "x2": {"type": "linear"}, "cat": {"type": "categorical"}}, data=data, family="gaussian").fit(
     alpha=0.1,
     l1_ratio=0.5    # 50% L1, 50% L2
 )
@@ -205,7 +208,7 @@ Try different alpha values to find the right balance:
 ```python
 # Test different regularization strengths
 for alpha in [0.001, 0.01, 0.1, 1.0]:
-    result = rs.glm("y ~ x1 + x2 + C(cat)", data, family="poisson").fit(
+    result = rs.glm_dict(response="y", terms={"x1": {"type": "linear"}, "x2": {"type": "linear"}, "cat": {"type": "categorical"}}, data=data, family="poisson").fit(
         alpha=alpha, l1_ratio=1.0
     )
     print(f"α={alpha}: {result.n_nonzero()} features, deviance={result.deviance:.2f}")
@@ -234,7 +237,7 @@ RustyStats internally standardizes features before fitting:
 ```python
 # Features are standardized internally
 # Coefficients are returned on original scale
-result = rs.glm("y ~ x1 + x2", data, family="gaussian").fit(alpha=0.1, l1_ratio=1.0)
+result = rs.glm_dict(response="y", terms={"x1": {"type": "linear"}, "x2": {"type": "linear"}}, data=data, family="gaussian").fit(alpha=0.1, l1_ratio=1.0)
 ```
 
 ### Intercept
@@ -251,13 +254,13 @@ Regularization works with all GLM families:
 
 ```python
 # Regularized Poisson
-result = rs.glm("y ~ x1 + x2", data, family="poisson").fit(alpha=0.1, l1_ratio=1.0)
+result = rs.glm_dict(response="y", terms={"x1": {"type": "linear"}, "x2": {"type": "linear"}}, data=data, family="poisson").fit(alpha=0.1, l1_ratio=1.0)
 
 # Regularized Binomial (Logistic)
-result = rs.glm("y ~ x1 + x2", data, family="binomial").fit(alpha=0.1, l1_ratio=0.5)
+result = rs.glm_dict(response="y", terms={"x1": {"type": "linear"}, "x2": {"type": "linear"}}, data=data, family="binomial").fit(alpha=0.1, l1_ratio=0.5)
 
 # Regularized Gamma
-result = rs.glm("y ~ x1 + x2", data, family="gamma").fit(alpha=0.1, l1_ratio=0.0)
+result = rs.glm_dict(response="y", terms={"x1": {"type": "linear"}, "x2": {"type": "linear"}}, data=data, family="gamma").fit(alpha=0.1, l1_ratio=0.0)
 ```
 
 The coordinate descent algorithm adapts to each family's variance function and link.

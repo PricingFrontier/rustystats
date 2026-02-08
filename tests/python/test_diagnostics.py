@@ -316,8 +316,9 @@ class TestModelDiagnostics:
             "region": region,
         })
         
-        result = rs.glm(
-            "y ~ age + C(region)",
+        result = rs.glm_dict(
+            response="y",
+            terms={"age": {"type": "linear"}, "region": {"type": "categorical"}},
             data=data,
             family="poisson",
         ).fit()
@@ -411,7 +412,10 @@ class TestDifferentFamilies:
         y = 2 + 0.5 * x + np.random.randn(n) * 0.5
         
         data = pl.DataFrame({"y": y, "x": x})
-        result = rs.glm("y ~ x", data, family="gaussian").fit()
+        result = rs.glm_dict(
+            response="y", terms={"x": {"type": "linear"}},
+            data=data, family="gaussian",
+        ).fit()
         
         return result, data
     
@@ -427,7 +431,10 @@ class TestDifferentFamilies:
         y = np.random.binomial(1, p).astype(float)
         
         data = pl.DataFrame({"y": y, "x": x})
-        result = rs.glm("y ~ x", data, family="binomial").fit()
+        result = rs.glm_dict(
+            response="y", terms={"x": {"type": "linear"}},
+            data=data, family="binomial",
+        ).fit()
         
         return result, data
     
@@ -553,7 +560,7 @@ class TestPreFitExploration:
         assert "factor_stats" in parsed
     
     def test_explore_method_on_model(self):
-        """Test explore method on FormulaGLM."""
+        """Test explore method on FormulaGLMDict."""
         import rustystats as rs
         
         np.random.seed(42)
@@ -569,8 +576,9 @@ class TestPreFitExploration:
             "region": region,
         })
         
-        model = rs.glm(
-            "y ~ age + C(region)",
+        model = rs.glm_dict(
+            response="y",
+            terms={"age": {"type": "linear"}, "region": {"type": "categorical"}},
             data=data,
             family="poisson",
         )
@@ -615,8 +623,9 @@ class TestEnhancedDiagnostics:
             "exposure": exposure,
         })
         
-        result = rs.glm(
-            "y ~ age + veh_power + C(region)",
+        result = rs.glm_dict(
+            response="y",
+            terms={"age": {"type": "linear"}, "veh_power": {"type": "linear"}, "region": {"type": "categorical"}},
             data=data,
             family="poisson",
             offset="exposure",
@@ -866,7 +875,10 @@ class TestEnhancedDiagnostics:
         
         data = pl.DataFrame({"y": y, "x1": x1, "x2": x2})
         
-        result = rs.glm("y ~ x1 + x2", data, family="poisson").fit()
+        result = rs.glm_dict(
+            response="y", terms={"x1": {"type": "linear"}, "x2": {"type": "linear"}},
+            data=data, family="poisson",
+        ).fit()
         
         diagnostics = result.diagnostics(
             train_data=data,
@@ -1025,8 +1037,9 @@ class TestScoreTest:
         })
         
         # Fit model without unfitted_var and unfitted_cat
-        result = rs.glm(
-            "y ~ age + C(region)",
+        result = rs.glm_dict(
+            response="y",
+            terms={"age": {"type": "linear"}, "region": {"type": "categorical"}},
             data=data,
             family="poisson",
         ).fit()

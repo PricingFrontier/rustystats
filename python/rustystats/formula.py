@@ -1,8 +1,7 @@
 """
-Formula-based API for RustyStats GLM.
+Dict-based API for RustyStats GLM.
 
-This module provides R-style formula support for fitting GLMs with DataFrames.
-It uses the `formulaic` library for formula parsing and supports Polars DataFrames.
+This module provides the dict-based API for fitting GLMs with DataFrames.
 
 Example
 -------
@@ -10,13 +9,17 @@ Example
 >>> import polars as pl
 >>> 
 >>> data = pl.read_parquet("insurance_data.parquet")
->>> model = rs.glm(
-...     formula="ClaimNb ~ VehPower + VehAge + C(VehBrand)",
+>>> result = rs.glm_dict(
+...     response="ClaimNb",
+...     terms={
+...         "VehPower": {"type": "linear"},
+...         "VehAge": {"type": "linear"},
+...         "VehBrand": {"type": "categorical"},
+...     },
 ...     data=data,
 ...     family="poisson",
-...     offset="Exposure"
-... )
->>> result = model.fit()
+...     offset="Exposure",
+... ).fit()
 >>> print(rs.summary(result))
 """
 
@@ -33,7 +36,6 @@ from rustystats.exceptions import (
     FittingError,
     PredictionError,
     SerializationError,
-    FormulaError,
 )
 
 from rustystats.constants import (
@@ -107,7 +109,7 @@ def _get_column(data: "pl.DataFrame", column: str) -> np.ndarray:
 
 
 # Import from interactions module (the canonical implementation)
-from rustystats.interactions import build_design_matrix, InteractionBuilder
+from rustystats.interactions import InteractionBuilder
 
 
 def _get_constraint_indices(feature_names: List[str]) -> tuple:
@@ -471,461 +473,6 @@ class _GLMBase:
             print(f"\nRefitting on full data with alpha={path_info.selected_alpha:.6f}")
         
         return path_info.selected_alpha, path_info.selected_l1_ratio, path_info
-
-
-class FormulaGLM(_GLMBase):
-    """
-    GLM model with formula-based specification.
-    
-    This class provides an R-like interface for fitting GLMs using
-    formulas and DataFrames.
-    
-    Parameters
-    ----------
-    formula : str
-        R-style formula specifying the model.
-        Examples:
-        - "y ~ x1 + x2": Linear model with intercept
-        - "y ~ x1 + C(cat)": Include categorical variable
-        - "y ~ 0 + x1 + x2": No intercept
-        
-    data : pl.DataFrame
-        Polars DataFrame containing the data.
-        
-    family : str, default="gaussian"
-        Distribution family: "gaussian", "poisson", "binomial", "gamma"
-        
-    link : str, optional
-        Link function. If None, uses canonical link for family.
-        
-    offset : str or array-like, optional
-        Offset term. Can be:
-        - Column name (str): Will extract from data
-        - Array: Use directly
-        For Poisson family, typically log(exposure).
-        
-    weights : str or array-like, optional
-        Prior weights. Can be column name or array.
-        
-    Attributes
-    ----------
-    formula : str
-        The formula used
-    data : DataFrame
-        Original data
-    family : str
-        Distribution family
-    feature_names : list[str]
-        Names of features in the design matrix
-        
-    Examples
-    --------
-    >>> import rustystats as rs
-    >>> import polars as pl
-    >>> 
-    >>> data = pl.DataFrame({
-    ...     "claims": [0, 1, 2, 0, 1],
-    ...     "age": [25, 35, 45, 55, 65],
-    ...     "exposure": [1.0, 0.5, 1.0, 0.8, 1.0]
-    ... })
-    >>> 
-    >>> model = rs.glm(
-    ...     formula="claims ~ age",
-    ...     data=data,
-    ...     family="poisson",
-    ...     offset="exposure"  # Will auto-apply log()
-    ... )
-    >>> result = model.fit()
-    """
-    
-    def __init__(
-        self,
-        formula: str,
-        data: "pl.DataFrame",
-        family: str = "gaussian",
-        link: Optional[str] = None,
-        var_power: float = 1.5,
-        theta: Optional[float] = None,
-        offset: Optional[Union[str, np.ndarray]] = None,
-        weights: Optional[Union[str, np.ndarray]] = None,
-        seed: Optional[int] = None,
-    ):
-        self.formula = formula
-        # Store weak reference to data to allow garbage collection
-        self._data_ref = weakref.ref(data)
-        self.family = family.lower()
-        self.link = link
-        self.var_power = var_power
-        self.theta = theta  # None means auto-estimate for negbinomial
-        self._offset_spec = offset
-        self._weights_spec = weights
-        self._seed = seed
-        
-        # Extract raw exposure for target encoding BEFORE building design matrix
-        # For frequency models with log link, offset is typically log(exposure)
-        # but target encoding needs raw exposure to compute claim rates
-        raw_exposure = self._get_raw_exposure(offset)
-        
-        # Build design matrix (uses optimized backend for interactions)
-        # Pass raw exposure so target encoding can use rate (y/exposure) instead of raw y
-        # Pass seed for deterministic target encoding
-        self._builder = InteractionBuilder(data)
-        self.y, self.X, self.feature_names = self._builder.build_design_matrix(
-            formula, exposure=raw_exposure, seed=seed
-        )
-        self.n_obs = len(self.y)
-        self.n_params = self.X.shape[1]
-        
-        # Store validation results (computed lazily)
-        self._validation_results = None
-        
-        # Process offset (applies log for Poisson/Gamma families)
-        self.offset = self._process_offset(offset)
-        
-        # Process weights
-        self.weights = self._process_weights(weights)
-    
-    @property
-    def df_model(self) -> int:
-        """Degrees of freedom for model (number of parameters - 1)."""
-        return self.n_params - 1
-    
-    @property
-    def df_resid(self) -> int:
-        """Degrees of freedom for residuals (n - p)."""
-        return self.n_obs - self.n_params
-    
-    def validate(self, verbose: bool = True) -> dict:
-        """
-        Validate the design matrix before fitting.
-        
-        Checks for common issues that cause fitting failures:
-        - Rank deficiency (linearly dependent columns)
-        - High multicollinearity
-        - Zero variance columns
-        - NaN/Inf values
-        
-        Parameters
-        ----------
-        verbose : bool, default=True
-            Print diagnostic messages with fix suggestions.
-            
-        Returns
-        -------
-        dict
-            Validation results including 'valid' (bool) and 'suggestions' (list).
-            
-        Examples
-        --------
-        >>> model = rs.glm("y ~ ns(x, df=4) + C(cat)", data, family="poisson")
-        >>> results = model.validate()
-        >>> if not results['valid']:
-        ...     print("Issues found:", results['suggestions'])
-        """
-        self._validation_results = self._builder.validate_design_matrix(
-            self.X, self.feature_names, verbose=verbose
-        )
-        return self._validation_results
-    
-    def explore(
-        self,
-        categorical_factors: Optional[List[str]] = None,
-        continuous_factors: Optional[List[str]] = None,
-        n_bins: int = 10,
-        rare_threshold_pct: float = 1.0,
-        max_categorical_levels: int = 20,
-        detect_interactions: bool = True,
-        max_interaction_factors: int = 10,
-    ) -> "DataExploration":
-        """
-        Explore data before fitting the model.
-        
-        This provides pre-fit analysis including factor statistics and
-        interaction detection based on the response variable.
-        
-        Parameters
-        ----------
-        categorical_factors : list of str, optional
-            Names of categorical factors to analyze.
-        continuous_factors : list of str, optional
-            Names of continuous factors to analyze.
-        n_bins : int, default=10
-            Number of bins for continuous factors.
-        rare_threshold_pct : float, default=1.0
-            Threshold (%) below which categorical levels are grouped.
-        max_categorical_levels : int, default=20
-            Maximum categorical levels to show.
-        detect_interactions : bool, default=True
-            Whether to detect potential interactions.
-        max_interaction_factors : int, default=10
-            Maximum factors for interaction detection.
-        
-        Returns
-        -------
-        DataExploration
-            Pre-fit exploration results with to_json() method.
-        
-        Examples
-        --------
-        >>> model = rs.glm("ClaimNb ~ Age + C(Region)", data, family="poisson")
-        >>> 
-        >>> # Explore before fitting
-        >>> exploration = model.explore(
-        ...     categorical_factors=["Region", "VehBrand"],
-        ...     continuous_factors=["Age", "VehPower"],
-        ... )
-        >>> print(exploration.to_json())
-        >>> 
-        >>> # Then fit
-        >>> result = model.fit()
-        """
-        from rustystats.diagnostics import explore_data
-        
-        # Parse formula to get response column name
-        response = self.formula.split("~")[0].strip()
-        
-        # Get exposure column if set
-        exposure_col = None
-        if isinstance(self._offset_spec, str):
-            exposure_col = self._offset_spec
-        
-        return explore_data(
-            data=self.data,
-            response=response,
-            categorical_factors=categorical_factors,
-            continuous_factors=continuous_factors,
-            exposure=exposure_col,
-            family=self.family,
-            n_bins=n_bins,
-            rare_threshold_pct=rare_threshold_pct,
-            max_categorical_levels=max_categorical_levels,
-            detect_interactions=detect_interactions,
-            max_interaction_factors=max_interaction_factors,
-        )
-    
-    def _fit_negbinomial_profile(
-        self,
-        X: np.ndarray,
-        alpha: float,
-        l1_ratio: float,
-        max_iter: int,
-        tol: float,
-        theta_tol: float = DEFAULT_THETA_TOL,
-        max_theta_iter: int = DEFAULT_MAX_THETA_ITER,
-    ) -> tuple:
-        """
-        Fit negative binomial GLM with profile-likelihood theta estimation.
-        
-        Delegates to the Rust ``fit_negbinomial_py`` which performs:
-        1. Initial Poisson fit for starting μ
-        2. Moment-based theta estimate
-        3. Profile iteration: fit NegBin(θ) → update θ → repeat
-        4. Final fit with converged θ
-        
-        Parameters
-        ----------
-        X : np.ndarray
-            Design matrix
-        alpha : float
-            Regularization strength
-        l1_ratio : float
-            Elastic net mixing parameter
-        max_iter : int
-            Maximum IRLS iterations per fit
-        tol : float
-            IRLS convergence tolerance
-        theta_tol : float
-            Convergence tolerance for theta estimation
-        max_theta_iter : int
-            Maximum iterations for theta estimation
-            
-        Returns
-        -------
-        tuple
-            (GLMResults, family_string) where family_string includes theta
-        """
-        from rustystats._rustystats import fit_negbinomial_py as _fit_nb_rust
-        
-        result = _fit_nb_rust(
-            self.y, X, self.link, None, theta_tol, max_theta_iter,
-            self.offset, self.weights, max_iter, tol, alpha, l1_ratio,
-        )
-        return result, result.family
-    
-    def fit(
-        self,
-        alpha: float = 0.0,
-        l1_ratio: float = 0.0,
-        max_iter: int = DEFAULT_MAX_ITER,
-        tol: float = DEFAULT_TOLERANCE,
-        # Cross-validation based regularization path parameters
-        cv: Optional[int] = None,
-        selection: str = "min",
-        regularization: Optional[str] = None,
-        n_alphas: int = DEFAULT_N_ALPHAS,
-        alpha_min_ratio: float = DEFAULT_ALPHA_MIN_RATIO,
-        cv_seed: Optional[int] = None,
-        include_unregularized: bool = True,
-        verbose: bool = False,
-        # Memory optimization
-        store_design_matrix: bool = True,
-    ) -> "GLMModel":
-        """
-        Fit the GLM model, optionally with regularization.
-        
-        Parameters
-        ----------
-        alpha : float, default=0.0
-            Regularization strength. Higher values = more shrinkage.
-            - alpha=0: No regularization (standard GLM)
-            - alpha>0: Regularized GLM
-            Ignored if cv is specified.
-            
-        l1_ratio : float, default=0.0
-            Elastic Net mixing parameter:
-            - l1_ratio=0.0: Ridge (L2) penalty
-            - l1_ratio=1.0: Lasso (L1) penalty - performs variable selection
-            - 0 < l1_ratio < 1: Elastic Net
-            Ignored if cv is specified with regularization type.
-            
-        max_iter : int, default=25
-            Maximum IRLS iterations.
-        tol : float, default=1e-8
-            Convergence tolerance.
-            
-        cv : int, optional
-            Number of cross-validation folds for regularization path.
-            If specified, fits a path of alpha values and selects optimal via CV.
-            Requires `regularization` to be set.
-            
-        selection : str, default="min"
-            Selection method for CV-based regularization:
-            - "min": Select alpha with minimum CV deviance
-            - "1se": Select largest alpha within 1 SE of minimum (more conservative)
-            
-        regularization : str, optional
-            Type of regularization for CV path: "ridge", "lasso", or "elastic_net".
-            Required when cv is specified.
-            
-        n_alphas : int, default=20
-            Number of alpha values to try in regularization path.
-            
-        alpha_min_ratio : float, default=0.001
-            Smallest alpha as ratio of alpha_max.
-            
-        cv_seed : int, optional
-            Random seed for CV fold creation.
-            
-        include_unregularized : bool, default=True
-            Include unregularized model (alpha=0) in CV comparison.
-            
-        verbose : bool, default=False
-            Print progress during CV fitting.
-            
-        store_design_matrix : bool, default=True
-            Whether to store the design matrix in results. Required for VIF
-            and other diagnostics. Set to False to reduce memory usage for
-            large datasets where diagnostics are not needed.
-            
-        Returns
-        -------
-        GLMModel
-            Fitted model results with feature names attached.
-            When cv is used, includes additional attributes:
-            - cv_deviance: CV deviance at selected alpha
-            - cv_deviance_se: Standard error of CV deviance
-            - regularization_path: Full path results
-            
-        Examples
-        --------
-        >>> # Standard GLM
-        >>> result = model.fit()
-        
-        >>> # Ridge regularization with explicit alpha
-        >>> result = model.fit(alpha=0.1, l1_ratio=0.0)
-        
-        >>> # Lasso for variable selection
-        >>> result = model.fit(alpha=0.1, l1_ratio=1.0)
-        
-        >>> # CV-based regularization selection (recommended)
-        >>> result = model.fit(cv=5, regularization="ridge", selection="1se")
-        >>> print(f"Selected alpha: {result.alpha}")
-        >>> print(f"CV deviance: {result.cv_deviance}")
-        """
-        from rustystats._rustystats import fit_glm_py as _fit_glm_rust, fit_negbinomial_py as _fit_negbinomial_rust
-        
-        # Check if we need auto theta estimation for negbinomial
-        is_negbinomial = is_negbinomial_family(self.family)
-        auto_theta = is_negbinomial and self.theta is None
-        
-        # For negbinomial with auto theta + CV, pre-estimate theta
-        if auto_theta and (cv is not None or regularization is not None):
-            _, result_family = self._fit_negbinomial_profile(
-                self.X, 0.0, 0.0, max_iter, tol
-            )
-            theta_start = result_family.find("theta=") + 6
-            theta_end = result_family.find(")", theta_start)
-            self.theta = float(result_family[theta_start:theta_end])
-        
-        # Handle CV-based regularization path (shared logic in _GLMBase)
-        alpha, l1_ratio, path_info = self._resolve_cv_path(
-            alpha, l1_ratio, max_iter, tol, cv, selection, regularization,
-            n_alphas, alpha_min_ratio, cv_seed, include_unregularized, verbose,
-        )
-        
-        # For negbinomial with auto theta, use Python-side profile likelihood
-        # This allows regularization to be applied for numerical stability
-        try:
-            if auto_theta:
-                result, result_family = self._fit_negbinomial_profile(
-                    self.X, alpha, l1_ratio, max_iter, tol
-                )
-                self._smooth_results = None
-                self._total_edf = None
-                self._gcv = None
-            else:
-                # Use fixed theta (default for negbinomial if not auto)
-                theta = self.theta if self.theta is not None else DEFAULT_NEGBINOMIAL_THETA
-                
-                # Use shared core fitting logic
-                result, smooth_results, total_edf, gcv = _fit_glm_core(
-                    self.y, self.X, self.family, self.link, self.var_power, theta,
-                    self.offset, self.weights, alpha, l1_ratio, max_iter, tol,
-                    self.feature_names, self._builder,
-                )
-                self._smooth_results = smooth_results
-                self._total_edf = total_edf
-                self._gcv = gcv
-                
-                # Include theta in family string for negbinomial so deviance calculations use correct theta
-                if is_negbinomial:
-                    result_family = f"NegativeBinomial(theta={theta:.4f})"
-                else:
-                    result_family = self.family
-        except ValueError as e:
-            if "singular" in str(e).lower() or "multicollinearity" in str(e).lower() or "nan" in str(e).lower():
-                # Run validation to provide helpful diagnostics
-                print("\n" + "=" * 60)
-                print("MODEL FITTING FAILED - Running diagnostics...")
-                print("=" * 60)
-                validation = self.validate(verbose=True)
-                raise FittingError(
-                    f"GLM fitting failed due to design matrix issues. "
-                    f"See diagnostics above for specific problems and fixes.\n"
-                    f"You can also run model.validate() before fit() to check for issues.\n"
-                    f"Original error: {e}"
-                ) from None
-            else:
-                raise
-        
-        # Wrap result with formula metadata
-        is_exposure_offset = self.family in ("poisson", "quasipoisson", "negbinomial", "gamma") and self.link in (None, "log")
-        return _build_results(
-            result, self.feature_names, self.formula, result_family, self.link,
-            self._builder, self.X, self._offset_spec, is_exposure_offset, path_info,
-            self._smooth_results, self._total_edf, self._gcv,
-            store_design_matrix=store_design_matrix,
-        )
 
 
 @dataclass
@@ -1389,7 +936,7 @@ class GLMModel:
         
         Examples
         --------
-        >>> result = rs.glm("ClaimNb ~ Age + C(Region)", data, family="poisson", offset="Exposure").fit()
+        >>> result = rs.glm_dict(response="ClaimNb", terms={"Age": {"type": "linear"}, "Region": {"type": "categorical"}}, data=data, family="poisson", offset="Exposure").fit()
         >>> 
         >>> # Basic diagnostics
         >>> diagnostics = result.diagnostics(
@@ -1522,7 +1069,7 @@ class GLMModel:
             
         Examples
         --------
-        >>> model = rs.glm("ClaimNb ~ Age + C(Region)", data, family="poisson", offset="Exposure")
+        >>> model = rs.glm_dict(response="ClaimNb", terms={"Age": {"type": "linear"}, "Region": {"type": "categorical"}}, data=data, family="poisson", offset="Exposure")
         >>> result = model.fit()
         >>> 
         >>> # Predict on new data
@@ -1598,7 +1145,7 @@ class GLMModel:
             
         Examples
         --------
-        >>> result = rs.glm("y ~ x1 + C(cat)", data, family="poisson").fit()
+        >>> result = rs.glm_dict(response="y", terms={"x1": {"type": "linear"}, "cat": {"type": "categorical"}}, data=data, family="poisson").fit()
         >>> model_bytes = result.to_bytes()
         >>> 
         >>> # Save to file
@@ -1741,109 +1288,6 @@ class GLMModel:
         )
 
 
-def glm(
-    formula: str,
-    data: "pl.DataFrame",
-    family: str = "gaussian",
-    link: Optional[str] = None,
-    var_power: float = 1.5,
-    theta: Optional[float] = None,
-    offset: Optional[Union[str, np.ndarray]] = None,
-    weights: Optional[Union[str, np.ndarray]] = None,
-    seed: Optional[int] = None,
-) -> FormulaGLM:
-    """
-    Create a GLM model from a formula and DataFrame.
-    
-    This is the main entry point for the formula-based API.
-    
-    Parameters
-    ----------
-    formula : str
-        R-style formula specifying the model.
-        
-        Supported syntax:
-        - Main effects: ``x1``, ``x2``, ``C(cat)`` (categorical)
-        - Two-way interactions: ``x1:x2`` (interaction only), ``x1*x2`` (main effects + interaction)
-        - Categorical interactions: ``C(cat1)*C(cat2)``, ``C(cat):x``
-        - Higher-order: ``x1:x2:x3``
-        - Splines: ``bs(x, df=5)``, ``ns(x, df=4)``
-        - Intercept: included by default, use ``0 +`` or ``- 1`` to remove
-        
-    data : pl.DataFrame
-        Polars DataFrame containing the variables.
-        
-    family : str, default="gaussian"
-        Distribution family: "gaussian", "poisson", "binomial", "gamma", "tweedie",
-        "quasipoisson", "quasibinomial", or "negbinomial"
-        
-    link : str, optional
-        Link function. If None, uses canonical link.
-        
-    var_power : float, default=1.5
-        Variance power for Tweedie family (ignored for others).
-        
-    theta : float, optional
-        Dispersion parameter for Negative Binomial family (ignored for others).
-        If None (default), theta is automatically estimated using profile likelihood.
-        
-    offset : str or array-like, optional
-        Offset term. If string, treated as column name.
-        For Poisson, log() is auto-applied to exposure columns.
-        
-    weights : str or array-like, optional
-        Prior weights. If string, treated as column name.
-        
-    seed : int, optional
-        Random seed for deterministic target encoding (TE). If None,
-        TE uses random permutations which may produce different results
-        on each run. Set to a fixed value for reproducibility.
-        
-    Returns
-    -------
-    FormulaGLM
-        Model object. Call .fit() to fit the model.
-        
-    Examples
-    --------
-    >>> import rustystats as rs
-    >>> import polars as pl
-    >>> 
-    >>> # Load data
-    >>> data = pl.read_parquet("insurance.parquet")
-    >>> 
-    >>> # Fit Poisson model for claim frequency
-    >>> model = rs.glm(
-    ...     formula="ClaimNb ~ VehPower + VehAge + C(VehBrand) + C(Area)",
-    ...     data=data,
-    ...     family="poisson",
-    ...     offset="Exposure"
-    ... )
-    >>> result = model.fit()
-    >>> 
-    >>> # Model with interactions
-    >>> model = rs.glm(
-    ...     formula="ClaimNb ~ VehPower*VehAge + C(Area):DrivAge",
-    ...     data=data,
-    ...     family="poisson",
-    ...     offset="Exposure"
-    ... )
-    >>> result = model.fit()
-    >>> print(result.summary())
-    """
-    return FormulaGLM(
-        formula=formula,
-        data=data,
-        family=family,
-        link=link,
-        var_power=var_power,
-        theta=theta,
-        offset=offset,
-        weights=weights,
-        seed=seed,
-    )
-
-
 # =============================================================================
 # Dict-based API
 # =============================================================================
@@ -1906,7 +1350,7 @@ def _parse_term_spec(
                 suggestions.append(f"'{key}' (did you mean '{typo_suggestions[key]}'?)")
             else:
                 suggestions.append(f"'{key}'")
-        raise FormulaError(
+        raise ValidationError(
             f"Unknown key(s) in term spec for '{var_name}': {', '.join(suggestions)}. "
             f"Valid keys for type='{term_type}' are: {sorted(valid_keys)}"
         )
@@ -1975,7 +1419,7 @@ def _parse_term_spec(
         else:
             is_penalized = False
         if monotonicity:
-            raise FormulaError(
+            raise ValidationError(
                 f"Monotonicity constraints are not supported for natural splines (ns). "
                 f"Use type='bs' with monotonicity parameter instead for monotonic effects."
             )
@@ -2005,7 +1449,7 @@ def _parse_term_spec(
     elif term_type == "frequency_encoding":
         from rustystats.interactions import FrequencyEncodingTermSpec as FETermSpec
         if frequency_encoding_terms is None:
-            raise FormulaError(
+            raise ValidationError(
                 f"frequency_encoding type not supported in this context. "
                 f"Use formula string 'FE({var_name})' instead."
             )
@@ -2025,7 +1469,7 @@ def _parse_term_spec(
             identity_terms.append(IdentityTermSpec(expression=expr))
     
     else:
-        raise FormulaError(f"Unknown term type: {term_type}")
+        raise ValidationError(f"Unknown term type: {term_type}")
 
 
 def _parse_interaction_spec(
@@ -2057,7 +1501,7 @@ def _parse_interaction_spec(
     is_fe_interaction = interaction.get("frequency_encoding", False)
     
     if is_te_interaction and is_fe_interaction:
-        raise FormulaError(
+        raise ValidationError(
             "Cannot specify both target_encoding and frequency_encoding for same interaction"
         )
     
@@ -2065,7 +1509,7 @@ def _parse_interaction_spec(
     var_specs = {k: v for k, v in interaction.items() if k not in RESERVED_KEYS}
     
     if len(var_specs) < 2:
-        raise FormulaError("Interaction must have at least 2 variables")
+        raise ValidationError("Interaction must have at least 2 variables")
     
     # Helper: track categorical vars and optionally add main effects
     def _process_encoding_interaction() -> None:
@@ -2096,7 +1540,7 @@ def _parse_interaction_spec(
     # Handle FE interaction: FE(var1:var2:...)
     if is_fe_interaction:
         if frequency_encoding_terms is None:
-            raise FormulaError(
+            raise ValidationError(
                 "frequency_encoding interaction not supported in this context"
             )
         interaction_vars = list(var_specs.keys())
@@ -2341,6 +1785,61 @@ class FormulaGLMDict(_GLMBase):
         
         parts.append(" + ".join(term_strs) if term_strs else "1")
         return " ".join(parts)
+    
+    def explore(
+        self,
+        categorical_factors: Optional[List[str]] = None,
+        continuous_factors: Optional[List[str]] = None,
+        n_bins: int = 10,
+        rare_threshold_pct: float = 1.0,
+        max_categorical_levels: int = 20,
+        detect_interactions: bool = True,
+        max_interaction_factors: int = 10,
+    ) -> "DataExploration":
+        """
+        Explore data before fitting the model.
+        
+        Parameters
+        ----------
+        categorical_factors : list of str, optional
+            Names of categorical factors to analyze.
+        continuous_factors : list of str, optional
+            Names of continuous factors to analyze.
+        n_bins : int, default=10
+            Number of bins for continuous factors.
+        rare_threshold_pct : float, default=1.0
+            Threshold (%) below which categorical levels are grouped.
+        max_categorical_levels : int, default=20
+            Maximum categorical levels to show.
+        detect_interactions : bool, default=True
+            Whether to detect potential interactions.
+        max_interaction_factors : int, default=10
+            Maximum factors for interaction detection.
+        
+        Returns
+        -------
+        DataExploration
+            Pre-fit exploration results with to_json() method.
+        """
+        from rustystats.diagnostics import explore_data
+        
+        exposure_col = None
+        if isinstance(self._offset_spec, str):
+            exposure_col = self._offset_spec
+        
+        return explore_data(
+            data=self.data,
+            response=self.response,
+            categorical_factors=categorical_factors,
+            continuous_factors=continuous_factors,
+            exposure=exposure_col,
+            family=self.family,
+            n_bins=n_bins,
+            rare_threshold_pct=rare_threshold_pct,
+            max_categorical_levels=max_categorical_levels,
+            detect_interactions=detect_interactions,
+            max_interaction_factors=max_interaction_factors,
+        )
     
     def fit(
         self,

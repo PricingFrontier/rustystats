@@ -16,12 +16,16 @@ data = pl.DataFrame({
     "exposure": [1.0, 1.0, 0.5, 1.0, 0.8, 1.0, 1.2, 0.9, 1.0, 0.7]
 })
 
-# Fit model with formula
-result = rs.glm(
-    formula="claims ~ age + C(region)",
+# Fit model with dict API
+result = rs.glm_dict(
+    response="claims",
+    terms={
+        "age": {"type": "linear"},
+        "region": {"type": "categorical"},
+    },
     data=data,
     family="poisson",
-    offset="exposure"  # log(exposure) applied automatically
+    offset="exposure",  # log(exposure) applied automatically
 ).fit()
 
 # Rich output
@@ -60,23 +64,29 @@ result.linear_predictor    # Linear predictor (η = Xβ)
 | Mixed zeros + positive | `"tweedie"` | Pure premium (frequency × severity) |
 
 ```python
-# Examples
-result = rs.glm("y ~ x1 + x2", data, family="gaussian").fit()     # Linear regression
-result = rs.glm("y ~ x1 + x2", data, family="poisson").fit()      # Count data
-result = rs.glm("y ~ x1 + x2", data, family="binomial").fit()     # Binary outcomes
-result = rs.glm("y ~ x1 + x2", data, family="gamma").fit()        # Positive continuous
-result = rs.glm("y ~ x1 + x2", data, family="tweedie", var_power=1.5).fit()  # Pure premium
+terms = {"x1": {"type": "linear"}, "x2": {"type": "linear"}}
+
+result = rs.glm_dict(response="y", terms=terms, data=data, family="gaussian").fit()     # Linear regression
+result = rs.glm_dict(response="y", terms=terms, data=data, family="poisson").fit()      # Count data
+result = rs.glm_dict(response="y", terms=terms, data=data, family="binomial").fit()     # Binary outcomes
+result = rs.glm_dict(response="y", terms=terms, data=data, family="gamma").fit()        # Positive continuous
+result = rs.glm_dict(response="y", terms=terms, data=data, family="tweedie", var_power=1.5).fit()  # Pure premium
 ```
 
 ## Working with Categorical Variables
 
-Use `C()` to mark categorical variables in formulas:
+Use `"type": "categorical"` to mark categorical variables:
 
 ```python
-result = rs.glm(
-    formula="claims ~ age + C(region) + C(vehicle_type)",
+result = rs.glm_dict(
+    response="claims",
+    terms={
+        "age": {"type": "linear"},
+        "region": {"type": "categorical"},
+        "vehicle_type": {"type": "categorical"},
+    },
     data=data,
-    family="poisson"
+    family="poisson",
 ).fit()
 
 # View relativities (exp(coef) for multiplicative interpretation)
@@ -87,37 +97,49 @@ print(result.relativities())
 
 ```python
 # Lasso (L1) - variable selection
-result = rs.glm("claims ~ age + C(region)", data, family="poisson").fit(
-    alpha=0.1, l1_ratio=1.0
-)
+result = rs.glm_dict(
+    response="claims",
+    terms={"age": {"type": "linear"}, "region": {"type": "categorical"}},
+    data=data, family="poisson",
+).fit(alpha=0.1, l1_ratio=1.0)
 print(f"Non-zero coefficients: {result.n_nonzero()}")
 
 # Ridge (L2) - shrinkage without selection
-result = rs.glm("y ~ x1 + x2", data, family="gaussian").fit(
-    alpha=0.1, l1_ratio=0.0
-)
+result = rs.glm_dict(
+    response="y", terms={"x1": {"type": "linear"}, "x2": {"type": "linear"}},
+    data=data, family="gaussian",
+).fit(alpha=0.1, l1_ratio=0.0)
 
 # Elastic Net - mix of both
-result = rs.glm("y ~ x1 + x2", data, family="gaussian").fit(
-    alpha=0.1, l1_ratio=0.5
-)
+result = rs.glm_dict(
+    response="y", terms={"x1": {"type": "linear"}, "x2": {"type": "linear"}},
+    data=data, family="gaussian",
+).fit(alpha=0.1, l1_ratio=0.5)
 ```
 
 ## Non-linear Effects with Splines
 
 ```python
-# Add smooth age effect
-result = rs.glm(
-    formula="claims ~ bs(age, df=5) + C(region)",
+# Add smooth age effect with B-splines
+result = rs.glm_dict(
+    response="claims",
+    terms={
+        "age": {"type": "bs", "df": 5},
+        "region": {"type": "categorical"},
+    },
     data=data,
-    family="poisson"
+    family="poisson",
 ).fit()
 
 # Natural splines (linear at boundaries - better extrapolation)
-result = rs.glm(
-    formula="claims ~ ns(age, df=4) + C(region)",
+result = rs.glm_dict(
+    response="claims",
+    terms={
+        "age": {"type": "ns", "df": 4},
+        "region": {"type": "categorical"},
+    },
     data=data,
-    family="poisson"
+    family="poisson",
 ).fit()
 ```
 
@@ -126,16 +148,18 @@ result = rs.glm(
 When variance exceeds what the model predicts:
 
 ```python
+terms = {"age": {"type": "linear"}, "region": {"type": "categorical"}}
+
 # Check for overdispersion
-result = rs.glm("claims ~ age + C(region)", data, family="poisson").fit()
+result = rs.glm_dict(response="claims", terms=terms, data=data, family="poisson").fit()
 dispersion = result.pearson_chi2() / result.df_resid
 print(f"Dispersion ratio: {dispersion:.2f}")  # >> 1 indicates overdispersion
 
 # Use QuasiPoisson for inflated standard errors
-result_quasi = rs.glm("claims ~ age + C(region)", data, family="quasipoisson").fit()
+result_quasi = rs.glm_dict(response="claims", terms=terms, data=data, family="quasipoisson").fit()
 
 # Or Negative Binomial for proper likelihood
-result_nb = rs.glm("claims ~ age + C(region)", data, family="negbinomial", theta=1.0).fit()
+result_nb = rs.glm_dict(response="claims", terms=terms, data=data, family="negbinomial", theta=1.0).fit()
 ```
 
 ## Next Steps

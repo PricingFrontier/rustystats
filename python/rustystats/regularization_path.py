@@ -15,8 +15,9 @@ Example
 -------
 >>> import rustystats as rs
 >>> 
->>> model = rs.glm(
-...     formula="ClaimCount ~ VehAge + BonusMalus + TE(Region)",
+>>> model = rs.glm_dict(
+...     response="ClaimCount",
+...     terms={"VehAge": {"type": "linear"}, "BonusMalus": {"type": "linear"}, "Region": {"type": "target_encoding"}},
 ...     data=train_df,
 ...     family="negbinomial",
 ...     offset="Exposure",

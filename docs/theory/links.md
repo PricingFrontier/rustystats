@@ -142,7 +142,7 @@ This multiplicative factor is called a **relativity** in actuarial pricing.
 ### Relativities
 
 ```python
-result = rs.glm("claims ~ age + C(region)", data, family="poisson").fit()
+result = rs.glm_dict(response="claims", terms={"age": {"type": "linear"}, "region": {"type": "categorical"}}, data=data, family="poisson").fit()
 
 # Relativities = exp(coefficients)
 relativities = np.exp(result.params)

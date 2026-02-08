@@ -351,8 +351,9 @@ import polars as pl
 
 # Load and fit
 data = pl.read_parquet("insurance.parquet")
-result = rs.glm(
-    "ClaimNb ~ C(Area) + C(VehBrand) + bs(DrivAge, df=4)",
+result = rs.glm_dict(
+    response="ClaimNb",
+    terms={"Area": {"type": "categorical"}, "VehBrand": {"type": "categorical"}, "DrivAge": {"type": "bs", "df": 4}},
     data=data,
     family="poisson",
     offset="Exposure"

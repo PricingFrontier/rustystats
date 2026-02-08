@@ -8,7 +8,6 @@
 // Submodules:
 // - families_py:       Family/link dispatch helpers + PyO3 wrapper types
 // - fitting_py:        GLM fitting functions (standard, smooth, CV path)
-// - formula_py:        Formula string parsing
 // - inference_py:      Score tests + statistical CDFs
 // - results_py:        PyGLMResults class
 // - diagnostics_py:    Model diagnostics
@@ -19,7 +18,6 @@
 
 mod families_py;
 mod fitting_py;
-mod formula_py;
 mod inference_py;
 mod diagnostics_py;
 mod splines_py;
@@ -64,9 +62,6 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fitting_py::fit_negbinomial_py, m)?)?;
     m.add_function(wrap_pyfunction!(fitting_py::fit_smooth_glm_unified_py, m)?)?;
     m.add_function(wrap_pyfunction!(fitting_py::fit_cv_path_py, m)?)?;
-    
-    // Formula parsing
-    m.add_function(wrap_pyfunction!(formula_py::parse_formula_py, m)?)?;
     
     // Inference (score tests + CDFs)
     m.add_function(wrap_pyfunction!(inference_py::score_test_continuous_py, m)?)?;

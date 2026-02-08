@@ -1,18 +1,9 @@
 """
-Dict API equivalents for all formula-based tests.
+Dict API tests for RustyStats.
 
-Each test class mirrors its formula-based counterpart for side-by-side comparison.
-This file exists to validate that rs.glm_dict() produces identical results to rs.glm()
-for every feature, enabling a future migration away from the formula API.
-
-Mirrors:
-- test_formula_glm.py       → TestDictConstruction, TestDictFitting, TestDictModel, etc.
-- test_serialization.py     → TestDictSerialization, TestDictSerializationPrediction, etc.
-- test_interactions.py      → TestDictInteractions
-- test_regularization_path.py → TestDictCVRegularization
-- test_diagnostics.py       → TestDictDiagnostics, TestDictExplore, TestDictEnhancedDiagnostics
-- test_splines.py           → TestDictSplineFormula, TestDictMonotonicSplineFormula
-- test_train_predict_consistency.py → TestDictTrainPredictConsistency
+Comprehensive tests for rs.glm_dict() covering construction, fitting,
+model results, serialization, interactions, regularization, diagnostics,
+splines, and prediction consistency.
 """
 
 import numpy as np
@@ -23,11 +14,11 @@ import rustystats as rs
 
 
 # =============================================================================
-# Mirrors: test_formula_glm.py → TestFormulaGLMConstruction
+# Construction Tests
 # =============================================================================
 
 class TestDictConstruction:
-    """Test FormulaGLMDict construction (mirrors TestFormulaGLMConstruction)."""
+    """Test FormulaGLMDict construction."""
 
     @pytest.fixture
     def sample_data(self):
@@ -1636,97 +1627,6 @@ class TestDictTrainPredictConsistency:
         test_pred = result.predict(test_data)
 
         assert np.all(np.isfinite(test_pred))
-
-
-# =============================================================================
-# Coefficient comparison: formula vs dict should produce identical results
-# =============================================================================
-
-class TestFormulaVsDictEquivalence:
-    """Verify that formula and dict APIs produce identical coefficients."""
-
-    def test_simple_linear(self):
-        np.random.seed(42)
-        x = np.random.uniform(0, 10, 200)
-        y = 2 + 3 * x + np.random.normal(0, 1, 200)
-        data = pl.DataFrame({'y': y, 'x': x})
-
-        result_formula = rs.glm('y ~ x', data).fit()
-        result_dict = rs.glm_dict(
-            response='y', terms={'x': {'type': 'linear'}}, data=data,
-        ).fit()
-
-        np.testing.assert_array_almost_equal(result_formula.params, result_dict.params)
-
-    def test_categorical(self):
-        np.random.seed(42)
-        n = 300
-        cat = np.random.choice(['A', 'B', 'C'], n)
-        y = np.random.poisson(np.where(cat == 'A', 1, np.where(cat == 'B', 2, 3)))
-        data = pl.DataFrame({'y': y, 'cat': cat})
-
-        result_formula = rs.glm('y ~ C(cat)', data, family='poisson').fit()
-        result_dict = rs.glm_dict(
-            response='y', terms={'cat': {'type': 'categorical'}},
-            data=data, family='poisson',
-        ).fit()
-
-        np.testing.assert_array_almost_equal(result_formula.params, result_dict.params)
-
-    def test_mixed_with_offset(self):
-        np.random.seed(42)
-        n = 500
-        x = np.random.uniform(0, 5, n)
-        cat = np.random.choice(['A', 'B'], n)
-        exposure = np.random.uniform(0.5, 1.5, n)
-        mu = exposure * np.exp(0.5 + 0.3 * x + 0.2 * (cat == 'B').astype(float))
-        y = np.random.poisson(mu)
-        data = pl.DataFrame({'y': y, 'x': x, 'cat': cat, 'exposure': exposure})
-
-        result_formula = rs.glm(
-            'y ~ x + C(cat)', data, family='poisson', offset='exposure',
-        ).fit()
-        result_dict = rs.glm_dict(
-            response='y',
-            terms={'x': {'type': 'linear'}, 'cat': {'type': 'categorical'}},
-            data=data, family='poisson', offset='exposure',
-        ).fit()
-
-        np.testing.assert_array_almost_equal(result_formula.params, result_dict.params)
-
-    def test_spline(self):
-        np.random.seed(42)
-        n = 300
-        x = np.random.uniform(0, 10, n)
-        y = np.random.poisson(np.exp(0.5 + 0.2 * x))
-        data = pl.DataFrame({'y': y, 'x': x})
-
-        result_formula = rs.glm('y ~ bs(x, df=4)', data, family='poisson').fit()
-        result_dict = rs.glm_dict(
-            response='y', terms={'x': {'type': 'bs', 'df': 4}},
-            data=data, family='poisson',
-        ).fit()
-
-        np.testing.assert_array_almost_equal(result_formula.params, result_dict.params)
-
-    def test_regularized(self):
-        np.random.seed(42)
-        n = 200
-        x1 = np.random.randn(n)
-        x2 = np.random.randn(n)
-        y = np.random.poisson(np.exp(0.5 + 0.3 * x1))
-        data = pl.DataFrame({'y': y, 'x1': x1, 'x2': x2})
-
-        result_formula = rs.glm('y ~ x1 + x2', data, family='poisson').fit(
-            alpha=0.1, l1_ratio=0.0,
-        )
-        result_dict = rs.glm_dict(
-            response='y',
-            terms={'x1': {'type': 'linear'}, 'x2': {'type': 'linear'}},
-            data=data, family='poisson',
-        ).fit(alpha=0.1, l1_ratio=0.0)
-
-        np.testing.assert_array_almost_equal(result_formula.params, result_dict.params)
 
 
 if __name__ == '__main__':

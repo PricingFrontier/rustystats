@@ -8,8 +8,9 @@ Automatic regularization strength selection via cross-validation.
 import rustystats as rs
 
 # Just specify regularization type - cv=5 is automatic
-result = rs.glm("ClaimCount ~ VehAge + BonusMalus + TE(Region)", data,
-                family="poisson", offset="Exposure").fit(
+result = rs.glm_dict(response="ClaimCount",
+    terms={"VehAge": {"type": "linear"}, "BonusMalus": {"type": "linear"}, "Region": {"type": "target_encoding"}},
+    data=data, family="poisson", offset="Exposure").fit(
     regularization="ridge"  # "ridge", "lasso", or "elastic_net"
 )
 
@@ -105,8 +106,9 @@ import polars as pl
 df = pl.read_csv("insurance.csv")
 
 # Ridge with automatic CV
-ridge_result = rs.glm(
-    "ClaimAmount ~ Age + VehAge + BonusMalus + Density",
+ridge_result = rs.glm_dict(
+    response="ClaimAmount",
+    terms={"Age": {"type": "linear"}, "VehAge": {"type": "linear"}, "BonusMalus": {"type": "linear"}, "Density": {"type": "linear"}},
     data=df,
     family="gamma"
 ).fit(
@@ -122,8 +124,9 @@ print(f"CV deviance: {ridge_result.cv_deviance:.4f}")
 print(ridge_result.summary())
 
 # Lasso for variable selection
-lasso_result = rs.glm(
-    "ClaimCount ~ " + " + ".join([f"x{i}" for i in range(100)]),
+lasso_result = rs.glm_dict(
+    response="ClaimCount",
+    terms={f"x{i}": {"type": "linear"} for i in range(100)},
     data=df,
     family="poisson"
 ).fit(
@@ -139,7 +142,7 @@ nonzero = [(name, coef) for name, coef in
 print(f"Selected {len(nonzero)} features")
 
 # Elastic Net for correlated groups
-enet_result = rs.glm("y ~ x1 + x2 + x3 + x4 + x5", data=df).fit(
+enet_result = rs.glm_dict(response="y", terms={f"x{i}": {"type": "linear"} for i in range(1, 6)}, data=df).fit(
     cv=5,
     regularization="elastic_net",
     l1_ratio=0.5,  # 50% L1, 50% L2
@@ -184,7 +187,7 @@ bootstrap_coefs = []
 for _ in range(1000):
     idx = resample(range(len(df)))
     boot_df = df[idx]
-    result = rs.glm(formula, boot_df, family="poisson").fit(
+    result = rs.glm_dict(response="y", terms=terms, data=boot_df, family="poisson").fit(
         regularization="lasso", cv=5
     )
     bootstrap_coefs.append(result.params)

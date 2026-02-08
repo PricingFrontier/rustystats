@@ -953,7 +953,7 @@ RustyStats applies **minimum ridge regularization** (α ≥ 1e-6) automatically 
 
 ```python
 # The formula API automatically applies minimum regularization
-result = rs.glm("claims ~ ns(age, df=5) + TE(region)", 
+result = rs.glm_dict("claims ~ ns(age, df=5) + TE(region)", 
                 data, family="negbinomial").fit()
 
 # You'll see "Method: IRLS + Ridge" in the summary

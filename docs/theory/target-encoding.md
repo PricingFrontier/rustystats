@@ -319,9 +319,10 @@ test_encoded = encoder.transform(test_categories)
 
 ```python
 # TE() in formulas automatically applies target encoding
-result = rs.glm(
-    "claims ~ TE(brand) + TE(region) + age + C(gender)",
-    data,
+result = rs.glm_dict(
+    response="claims",
+    terms={"brand": {"type": "target_encoding"}, "region": {"type": "target_encoding"}, "age": {"type": "linear"}, "gender": {"type": "categorical"}},
+    data=data,
     family="poisson"
 ).fit()
 ```
