@@ -17,6 +17,7 @@ import numpy as np
 from typing import Optional, List
 
 from rustystats._rustystats import GLMResults
+from rustystats.exceptions import ValidationError, FittingError
 
 
 def summary(
@@ -53,7 +54,7 @@ def summary(
     if feature_names is None:
         feature_names = [f"x{i}" for i in range(n_params)]
     elif len(feature_names) != n_params:
-        raise ValueError(
+        raise ValidationError(
             f"feature_names has {len(feature_names)} elements but model has {n_params} parameters"
         )
     
@@ -76,7 +77,7 @@ def summary(
         scale = result.scale()
     except Exception as e:
         # Re-raise - summary diagnostics shouldn't fail silently
-        raise RuntimeError(f"Failed to compute model summary diagnostics: {e}") from e
+        raise FittingError(f"Failed to compute model summary diagnostics: {e}") from e
     
     # Build the table
     lines = []
@@ -199,7 +200,7 @@ def summary_relativities(
     if feature_names is None:
         feature_names = [f"x{i}" for i in range(n_params)]
     elif len(feature_names) != n_params:
-        raise ValueError(
+        raise ValidationError(
             f"feature_names has {len(feature_names)} elements but model has {n_params} parameters"
         )
     

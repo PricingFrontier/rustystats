@@ -28,33 +28,39 @@ from dataclasses import dataclass
 import warnings
 import numpy as np
 
-# Default dispersion parameter for Negative Binomial family
-DEFAULT_NEGBINOMIAL_THETA = 1.0
+from rustystats.exceptions import (
+    ValidationError,
+    FittingError,
+    PredictionError,
+    SerializationError,
+    FormulaError,
+)
 
-# Canonical aliases for Negative Binomial family
-NEGBINOMIAL_ALIASES = frozenset({
-    "negbinomial", "negativebinomial", "negative_binomial", "neg-binomial", "nb"
-})
+from rustystats.constants import (
+    DEFAULT_NEGBINOMIAL_THETA,
+    DEFAULT_MAX_ITER,
+    DEFAULT_TOLERANCE,
+    DEFAULT_N_ALPHAS,
+    DEFAULT_ALPHA_MIN_RATIO,
+    DEFAULT_SPLINE_DF,
+    DEFAULT_LAMBDA_MIN,
+    DEFAULT_LAMBDA_MAX,
+    DEFAULT_N_LAMBDA,
+    DEFAULT_THETA_TOL,
+    DEFAULT_MAX_THETA_ITER,
+    DEFAULT_N_CALIBRATION_BINS,
+    DEFAULT_N_FACTOR_BINS,
+    DEFAULT_RARE_THRESHOLD_PCT,
+    DEFAULT_MAX_CATEGORICAL_LEVELS,
+    DEFAULT_MAX_INTERACTION_FACTORS,
+    DEFAULT_LINKS,
+    NEGBINOMIAL_ALIASES,
+)
 
 
 def is_negbinomial_family(family: str) -> bool:
     """Check if the family string refers to a Negative Binomial distribution."""
     return family.lower() in NEGBINOMIAL_ALIASES
-
-
-# Canonical default links for each family
-_DEFAULT_LINKS = {
-    "gaussian": "identity",
-    "poisson": "log",
-    "quasipoisson": "log",
-    "negbinomial": "log",
-    "negativebinomial": "log",
-    "binomial": "logit",
-    "quasibinomial": "logit",
-    "gamma": "log",
-    "inversegaussian": "inverse",
-    "tweedie": "log",
-}
 
 
 def get_default_link(family: str) -> str:
@@ -80,11 +86,11 @@ def get_default_link(family: str) -> str:
     # Handle NegativeBinomial(theta=...) format from result strings
     if family_lower.startswith("negativebinomial"):
         return "log"
-    link = _DEFAULT_LINKS.get(family_lower)
+    link = DEFAULT_LINKS.get(family_lower)
     if link is None:
-        raise ValueError(
+        raise ValidationError(
             f"Unknown family '{family}'. "
-            f"Supported families: {sorted(_DEFAULT_LINKS.keys())}"
+            f"Supported families: {sorted(DEFAULT_LINKS.keys())}"
         )
     return link
 
@@ -92,6 +98,7 @@ def get_default_link(family: str) -> str:
 if TYPE_CHECKING:
     import polars as pl
     from rustystats.regularization_path import RegularizationPathInfo
+    from rustystats.diagnostics.types import DataExploration, ModelDiagnostics
 
 
 def _get_column(data: "pl.DataFrame", column: str) -> np.ndarray:
@@ -154,11 +161,11 @@ def _fit_with_smooth_penalties(
     theta: float,
     offset: Optional[np.ndarray],
     weights: Optional[np.ndarray],
-    max_iter: int = 100,
-    tol: float = 1e-6,
-    n_lambda: int = 6,
-    lambda_min: float = 1e-1,
-    lambda_max: float = 1e3,
+    max_iter: int = DEFAULT_MAX_ITER,
+    tol: float = DEFAULT_TOLERANCE,
+    n_lambda: int = DEFAULT_N_LAMBDA,
+    lambda_min: float = DEFAULT_LAMBDA_MIN,
+    lambda_max: float = DEFAULT_LAMBDA_MAX,
 ) -> tuple:
     """
     Fit GLM with penalized smooth terms using fast GCV optimization.
@@ -191,14 +198,6 @@ def _fit_with_smooth_penalties(
     """
     n, p = X.shape
     n_terms = len(smooth_terms)
-    
-    if n_terms == 0:
-        from rustystats._rustystats import fit_glm_py as _fit_glm_rust
-        result = _fit_glm_rust(
-            y, X, family, link, var_power, theta,
-            offset, weights, 0.0, 0.0, max_iter, tol, None, None
-        )
-        return result, [], float(p), 0.0
     
     from rustystats._rustystats import fit_smooth_glm_unified_py as _fit_smooth_unified
     
@@ -301,19 +300,19 @@ def _fit_glm_core(
 
 
 def _build_results(
-    result,
+    result: Any,
     feature_names: List[str],
     formula: str,
     family: str,
     link: Optional[str],
     builder: "InteractionBuilder",
     X: np.ndarray,
-    offset_spec,
+    offset_spec: Optional[Union[str, np.ndarray]],
     is_exposure_offset: bool,
-    path_info,
-    smooth_results,
-    total_edf,
-    gcv,
+    path_info: Optional["RegularizationPathInfo"],
+    smooth_results: Optional[List["SmoothTermResult"]],
+    total_edf: Optional[float],
+    gcv: Optional[float],
     store_design_matrix: bool = True,
     terms_dict: Optional[Dict[str, Dict[str, Any]]] = None,
     interactions_spec: Optional[List[Dict[str, Any]]] = None,
@@ -351,11 +350,11 @@ class _GLMBase:
     """
     
     @property
-    def data(self):
+    def data(self) -> "pl.DataFrame":
         """Access the original DataFrame (may raise if garbage collected)."""
         d = self._data_ref()
         if d is None:
-            raise RuntimeError(
+            raise ValidationError(
                 "Original DataFrame has been garbage collected. "
                 "Keep a reference to the DataFrame if you need to access it after fitting."
             )
@@ -438,7 +437,7 @@ class _GLMBase:
             return alpha, l1_ratio, None
         
         if regularization is None:
-            raise ValueError(
+            raise ValidationError(
                 "When cv is specified, 'regularization' must be set to 'ridge', 'lasso', or 'elastic_net'"
             )
         
@@ -451,7 +450,7 @@ class _GLMBase:
         elif regularization == "elastic_net":
             cv_l1_ratio = l1_ratio if l1_ratio > 0 else 0.5
         else:
-            raise ValueError(f"Unknown regularization type: {regularization}")
+            raise ValidationError(f"Unknown regularization type: {regularization}")
         
         path_info = fit_cv_regularization_path(
             glm_instance=self,
@@ -637,7 +636,7 @@ class FormulaGLM(_GLMBase):
         max_categorical_levels: int = 20,
         detect_interactions: bool = True,
         max_interaction_factors: int = 10,
-    ):
+    ) -> "DataExploration":
         """
         Explore data before fitting the model.
         
@@ -711,8 +710,8 @@ class FormulaGLM(_GLMBase):
         l1_ratio: float,
         max_iter: int,
         tol: float,
-        theta_tol: float = 1e-5,
-        max_theta_iter: int = 10,
+        theta_tol: float = DEFAULT_THETA_TOL,
+        max_theta_iter: int = DEFAULT_MAX_THETA_ITER,
     ) -> tuple:
         """
         Fit negative binomial GLM with profile-likelihood theta estimation.
@@ -757,20 +756,20 @@ class FormulaGLM(_GLMBase):
         self,
         alpha: float = 0.0,
         l1_ratio: float = 0.0,
-        max_iter: int = 25,
-        tol: float = 1e-8,
+        max_iter: int = DEFAULT_MAX_ITER,
+        tol: float = DEFAULT_TOLERANCE,
         # Cross-validation based regularization path parameters
         cv: Optional[int] = None,
         selection: str = "min",
         regularization: Optional[str] = None,
-        n_alphas: int = 20,
-        alpha_min_ratio: float = 0.0001,
+        n_alphas: int = DEFAULT_N_ALPHAS,
+        alpha_min_ratio: float = DEFAULT_ALPHA_MIN_RATIO,
         cv_seed: Optional[int] = None,
         include_unregularized: bool = True,
         verbose: bool = False,
         # Memory optimization
         store_design_matrix: bool = True,
-    ):
+    ) -> "GLMModel":
         """
         Fit the GLM model, optionally with regularization.
         
@@ -910,7 +909,7 @@ class FormulaGLM(_GLMBase):
                 print("MODEL FITTING FAILED - Running diagnostics...")
                 print("=" * 60)
                 validation = self.validate(verbose=True)
-                raise ValueError(
+                raise FittingError(
                     f"GLM fitting failed due to design matrix issues. "
                     f"See diagnostics above for specific problems and fixes.\n"
                     f"You can also run model.validate() before fit() to check for issues.\n"
@@ -929,6 +928,7 @@ class FormulaGLM(_GLMBase):
         )
 
 
+@dataclass
 class _DeserializedResult:
     """
     Minimal result object for deserialized models.
@@ -939,36 +939,17 @@ class _DeserializedResult:
     Note: fittedvalues and linear_predictor are not stored as they're
     large arrays not needed for prediction on new data.
     """
-    
-    def __init__(
-        self,
-        params: np.ndarray,
-        deviance: float,
-        iterations: int,
-        converged: bool,
-        nobs: int,
-        df_resid: int,
-        df_model: int,
-        alpha: float,
-        l1_ratio: float,
-        is_regularized: bool,
-        penalty_type: str,
-    ):
-        self._params = params
-        self._deviance = deviance
-        self._iterations = iterations
-        self._converged = converged
-        self._nobs = nobs
-        self._df_resid = df_resid
-        self._df_model = df_model
-        self._alpha = alpha
-        self._l1_ratio = l1_ratio
-        self._is_regularized = is_regularized
-        self._penalty_type = penalty_type
-    
-    @property
-    def params(self) -> np.ndarray:
-        return self._params
+    params: np.ndarray
+    deviance: float
+    iterations: int
+    converged: bool
+    nobs: int
+    df_resid: int
+    df_model: int
+    alpha: float
+    l1_ratio: float
+    is_regularized: bool
+    penalty_type: str
     
     @property
     def fittedvalues(self) -> np.ndarray:
@@ -983,46 +964,6 @@ class _DeserializedResult:
             "linear_predictor not available on deserialized models. "
             "Only coefficients are stored for prediction."
         )
-    
-    @property
-    def deviance(self) -> float:
-        return self._deviance
-    
-    @property
-    def iterations(self) -> int:
-        return self._iterations
-    
-    @property
-    def converged(self) -> bool:
-        return self._converged
-    
-    @property
-    def nobs(self) -> int:
-        return self._nobs
-    
-    @property
-    def df_resid(self) -> int:
-        return self._df_resid
-    
-    @property
-    def df_model(self) -> int:
-        return self._df_model
-    
-    @property
-    def alpha(self) -> float:
-        return self._alpha
-    
-    @property
-    def l1_ratio(self) -> float:
-        return self._l1_ratio
-    
-    @property
-    def is_regularized(self) -> bool:
-        return self._is_regularized
-    
-    @property
-    def penalty_type(self) -> str:
-        return self._penalty_type
 
 
 class _DeserializedBuilder(InteractionBuilder):
@@ -1082,6 +1023,7 @@ class GLMModel:
         interactions_spec: Optional[List[Dict[str, Any]]] = None,
     ):
         self._result = result
+        self._is_deserialized = isinstance(result, _DeserializedResult)
         self._smooth_results = smooth_results
         self._total_edf = total_edf
         self._gcv = gcv
@@ -1097,7 +1039,7 @@ class GLMModel:
         self._terms_dict = terms_dict
         self._interactions_spec = interactions_spec
     
-    def __getattr__(self, name):
+    def __getattr__(self, name: str) -> Any:
         """Delegate attribute access to the underlying result object.
         
         This handles all properties and methods from PyGLMResults that are
@@ -1296,7 +1238,7 @@ class GLMModel:
             response = formula_parts[0].strip() if formula_parts else None
         
         if response is None or response not in data.columns:
-            raise ValueError(f"Response column '{response}' not found in data")
+            raise ValidationError(f"Response column '{response}' not found in data")
         
         y = data[response].to_numpy().astype(np.float64)
         
@@ -1339,7 +1281,7 @@ class GLMModel:
         import polars as pl
         
         if self.link not in ("log",):
-            raise ValueError(
+            raise ValidationError(
                 f"Relativities only meaningful for log link, not '{self.link}'"
             )
         
@@ -1385,9 +1327,7 @@ class GLMModel:
         compute_partial_dep: bool = True,
         # Base predictions comparison
         base_predictions: Optional[str] = None,
-        # Legacy parameter (deprecated)
-        data: Optional["pl.DataFrame"] = None,
-    ):
+    ) -> "ModelDiagnostics":
         """
         Compute comprehensive model diagnostics.
         
@@ -1474,14 +1414,9 @@ class GLMModel:
         """
         from rustystats.diagnostics import compute_diagnostics
         
-        # Support legacy 'data' parameter
-        if train_data is None and data is not None:
-            train_data = data
-        
         # Deserialized models lack covariance / design matrix — disable
         # features that depend on them to avoid AttributeErrors.
-        is_deserialized = isinstance(self._result, _DeserializedResult)
-        if is_deserialized:
+        if self._is_deserialized:
             compute_vif = False
             compute_coefficients = False
         
@@ -1524,8 +1459,6 @@ class GLMModel:
         max_interaction_factors: int = 10,
         test_data: Optional["pl.DataFrame"] = None,
         indent: Optional[int] = None,
-        # Legacy parameter
-        data: Optional["pl.DataFrame"] = None,
     ) -> str:
         """
         Compute diagnostics and return as JSON string.
@@ -1551,10 +1484,6 @@ class GLMModel:
         str
             JSON string containing all diagnostics.
         """
-        # Support legacy 'data' parameter
-        if train_data is None and data is not None:
-            train_data = data
-        
         diag = self.diagnostics(
             train_data=train_data,
             categorical_factors=categorical_factors,
@@ -1603,7 +1532,7 @@ class GLMModel:
         >>> predictions = result.predict(new_data, offset=np.log(new_exposures))
         """
         if self._builder is None:
-            raise ValueError(
+            raise PredictionError(
                 "Cannot predict: model was not fitted with formula API. "
                 "Use fittedvalues for training data predictions."
             )
@@ -1759,7 +1688,7 @@ class GLMModel:
         state = pickle.loads(data)
         
         if state.get("version", 0) != 1:
-            raise ValueError(
+            raise SerializationError(
                 f"Unsupported serialization version: {state.get('version')}. "
                 "Model was saved with a different version of rustystats."
             )
@@ -1926,6 +1855,12 @@ from rustystats.interactions import (
     FrequencyEncodingTermSpec,
 )
 from rustystats.splines import SplineTerm
+from rustystats.constants import (
+    DEFAULT_SPLINE_DF,
+    DEFAULT_SPLINE_DEGREE,
+    DEFAULT_PRIOR_WEIGHT,
+    DEFAULT_N_PERMUTATIONS,
+)
 
 
 def _parse_term_spec(
@@ -1971,7 +1906,7 @@ def _parse_term_spec(
                 suggestions.append(f"'{key}' (did you mean '{typo_suggestions[key]}'?)")
             else:
                 suggestions.append(f"'{key}'")
-        raise ValueError(
+        raise FormulaError(
             f"Unknown key(s) in term spec for '{var_name}': {', '.join(suggestions)}. "
             f"Valid keys for type='{term_type}' are: {sorted(valid_keys)}"
         )
@@ -2002,18 +1937,18 @@ def _parse_term_spec(
             main_effects.append(var_name)
     
     elif term_type == "bs":
-        # Default to penalized smooth (k=10) if neither df nor k specified
+        # Default to penalized smooth (k=DEFAULT_SPLINE_DF) if neither df nor k specified
         k = spec.get("k")
         df = spec.get("df")
         if df is None and k is None:
-            df = 10  # Default: penalized smooth
+            df = DEFAULT_SPLINE_DF  # Default: penalized smooth
             is_penalized = True
         elif k is not None:
             df = k
             is_penalized = True
         else:
             is_penalized = False
-        degree = spec.get("degree", 3)
+        degree = spec.get("degree", DEFAULT_SPLINE_DEGREE)
         term = SplineTerm(
             var_name=var_name,
             spline_type="bs",
@@ -2028,11 +1963,11 @@ def _parse_term_spec(
         spline_terms.append(term)
     
     elif term_type == "ns":
-        # Default to penalized smooth (k=10) if neither df nor k specified
+        # Default to penalized smooth (k=DEFAULT_SPLINE_DF) if neither df nor k specified
         k = spec.get("k")
         df = spec.get("df")
         if df is None and k is None:
-            df = 10  # Default: penalized smooth
+            df = DEFAULT_SPLINE_DF  # Default: penalized smooth
             is_penalized = True
         elif k is not None:
             df = k
@@ -2040,7 +1975,7 @@ def _parse_term_spec(
         else:
             is_penalized = False
         if monotonicity:
-            raise ValueError(
+            raise FormulaError(
                 f"Monotonicity constraints are not supported for natural splines (ns). "
                 f"Use type='bs' with monotonicity parameter instead for monotonic effects."
             )
@@ -2054,8 +1989,8 @@ def _parse_term_spec(
         spline_terms.append(term)
     
     elif term_type == "target_encoding":
-        prior_weight = spec.get("prior_weight", 1.0)
-        n_permutations = spec.get("n_permutations", 4)
+        prior_weight = spec.get("prior_weight", DEFAULT_PRIOR_WEIGHT)
+        n_permutations = spec.get("n_permutations", DEFAULT_N_PERMUTATIONS)
         # Single variable TE - use 'variable' key if provided
         # For TE interactions, use the interactions list with target_encoding: True
         actual_var = spec.get("variable", var_name)
@@ -2070,7 +2005,7 @@ def _parse_term_spec(
     elif term_type == "frequency_encoding":
         from rustystats.interactions import FrequencyEncodingTermSpec as FETermSpec
         if frequency_encoding_terms is None:
-            raise ValueError(
+            raise FormulaError(
                 f"frequency_encoding type not supported in this context. "
                 f"Use formula string 'FE({var_name})' instead."
             )
@@ -2090,7 +2025,7 @@ def _parse_term_spec(
             identity_terms.append(IdentityTermSpec(expression=expr))
     
     else:
-        raise ValueError(f"Unknown term type: {term_type}")
+        raise FormulaError(f"Unknown term type: {term_type}")
 
 
 def _parse_interaction_spec(
@@ -2122,7 +2057,7 @@ def _parse_interaction_spec(
     is_fe_interaction = interaction.get("frequency_encoding", False)
     
     if is_te_interaction and is_fe_interaction:
-        raise ValueError(
+        raise FormulaError(
             "Cannot specify both target_encoding and frequency_encoding for same interaction"
         )
     
@@ -2130,7 +2065,7 @@ def _parse_interaction_spec(
     var_specs = {k: v for k, v in interaction.items() if k not in RESERVED_KEYS}
     
     if len(var_specs) < 2:
-        raise ValueError("Interaction must have at least 2 variables")
+        raise FormulaError("Interaction must have at least 2 variables")
     
     # Helper: track categorical vars and optionally add main effects
     def _process_encoding_interaction() -> None:
@@ -2151,8 +2086,8 @@ def _parse_interaction_spec(
         interaction_vars = list(var_specs.keys())
         target_encoding_terms.append(TargetEncodingTermSpec(
             var_name=":".join(interaction_vars),
-            prior_weight=interaction.get("prior_weight", 1.0),
-            n_permutations=interaction.get("n_permutations", 4),
+            prior_weight=interaction.get("prior_weight", DEFAULT_PRIOR_WEIGHT),
+            n_permutations=interaction.get("n_permutations", DEFAULT_N_PERMUTATIONS),
             interaction_vars=interaction_vars,
         ))
         _process_encoding_interaction()
@@ -2161,7 +2096,7 @@ def _parse_interaction_spec(
     # Handle FE interaction: FE(var1:var2:...)
     if is_fe_interaction:
         if frequency_encoding_terms is None:
-            raise ValueError(
+            raise FormulaError(
                 "frequency_encoding interaction not supported in this context"
             )
         interaction_vars = list(var_specs.keys())
@@ -2187,10 +2122,10 @@ def _parse_interaction_spec(
         elif term_type in ("bs", "ns", "s"):
             # For s() smooth terms, use k parameter; for bs/ns use df
             if term_type == "s":
-                df = spec.get("k", 10)
+                df = spec.get("k", DEFAULT_SPLINE_DF)
             else:
                 df = spec.get("df", 5 if term_type == "bs" else 4)
-            degree = spec.get("degree", 3)
+            degree = spec.get("degree", DEFAULT_SPLINE_DEGREE)
             monotonicity = spec.get("monotonicity")
             # Use unified bs with monotonicity parameter
             spline_type_out = "bs" if term_type == "s" else term_type
@@ -2208,7 +2143,7 @@ def _parse_interaction_spec(
                     spline._smooth_monotonicity = monotonicity
             spline_factors.append((var_name, spline))
         elif term_type == "target_encoding":
-            prior_weight = spec.get("prior_weight", 1.0)
+            prior_weight = spec.get("prior_weight", DEFAULT_PRIOR_WEIGHT)
             te_factor_names[var_name] = f"TE({var_name})"
             # TE in interaction - add to TE terms so encoding is available (if not already present)
             existing_te_vars = {te.var_name for te in target_encoding_terms}
@@ -2411,14 +2346,14 @@ class FormulaGLMDict(_GLMBase):
         self,
         alpha: float = 0.0,
         l1_ratio: float = 0.0,
-        max_iter: int = 25,
-        tol: float = 1e-8,
+        max_iter: int = DEFAULT_MAX_ITER,
+        tol: float = DEFAULT_TOLERANCE,
         # Cross-validation based regularization path parameters
         cv: Optional[int] = None,
         selection: str = "min",
         regularization: Optional[str] = None,
-        n_alphas: int = 20,
-        alpha_min_ratio: float = 0.0001,
+        n_alphas: int = DEFAULT_N_ALPHAS,
+        alpha_min_ratio: float = DEFAULT_ALPHA_MIN_RATIO,
         cv_seed: Optional[int] = None,
         include_unregularized: bool = True,
         verbose: bool = False,

@@ -35,6 +35,21 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Literal, TYPE_CHECKING
 import numpy as np
 
+from rustystats.exceptions import FittingError, ValidationError
+
+from rustystats.constants import (
+    DEFAULT_CV_FOLDS,
+    DEFAULT_N_ALPHAS,
+    DEFAULT_ALPHA_MIN_RATIO,
+    DEFAULT_MAX_ITER,
+    DEFAULT_TOLERANCE,
+    DEFAULT_NEGBINOMIAL_THETA,
+    DEFAULT_ELASTIC_NET_L1_RATIO,
+    DEFAULT_CV_SEED,
+    L1_RATIO_MIN_CLAMP,
+    ALPHA_MAX_FLOOR,
+)
+
 if TYPE_CHECKING:
     import polars as pl
 
@@ -171,14 +186,14 @@ def compute_alpha_max(
         # For Lasso/Elastic Net: max |X'Wy| / (n * l1_ratio)
         # Skip intercept column (usually first)
         gradients = np.abs(X[:, 1:].T @ (w * y_centered)) / n
-        alpha_max = np.max(gradients) / max(l1_ratio, 1e-3)
+        alpha_max = np.max(gradients) / max(l1_ratio, L1_RATIO_MIN_CLAMP)
     else:
         # For pure Ridge: use heuristic based on coefficient scale
         # Start with alpha that gives ~50% shrinkage on largest coefficient
         XtX_diag = np.sum(X[:, 1:] ** 2, axis=0) / n
         alpha_max = np.median(XtX_diag) * 10
     
-    return max(alpha_max, 1e-4)
+    return max(alpha_max, ALPHA_MAX_FLOOR)
 
 
 def generate_alpha_path(
@@ -305,7 +320,7 @@ def select_optimal_alpha(
     valid_results = [r for r in path_results if np.isfinite(r.cv_deviance_mean)]
     
     if not valid_results:
-        raise ValueError("All regularization path fits failed")
+        raise FittingError("All regularization path fits failed")
     
     if selection == "min":
         # Select minimum CV deviance
@@ -326,19 +341,19 @@ def select_optimal_alpha(
         return min_result
     
     else:
-        raise ValueError(f"Unknown selection method: {selection}")
+        raise ValidationError(f"Unknown selection method: {selection}")
 
 
 def fit_cv_regularization_path(
     glm_instance,
-    cv: int = 5,
+    cv: int = DEFAULT_CV_FOLDS,
     selection: Literal["min", "1se"] = "min",
     regularization: Literal["ridge", "lasso", "elastic_net"] = "ridge",
-    n_alphas: int = 20,
-    alpha_min_ratio: float = 0.0001,
+    n_alphas: int = DEFAULT_N_ALPHAS,
+    alpha_min_ratio: float = DEFAULT_ALPHA_MIN_RATIO,
     l1_ratio: Optional[float] = None,
-    max_iter: int = 25,
-    tol: float = 1e-8,
+    max_iter: int = DEFAULT_MAX_ITER,
+    tol: float = DEFAULT_TOLERANCE,
     seed: Optional[int] = None,
     include_unregularized: bool = True,
     verbose: bool = False,
@@ -388,16 +403,15 @@ def fit_cv_regularization_path(
     elif regularization == "lasso":
         effective_l1_ratio = 1.0
     elif regularization == "elastic_net":
-        effective_l1_ratio = l1_ratio if l1_ratio is not None else 0.5
+        effective_l1_ratio = l1_ratio if l1_ratio is not None else DEFAULT_ELASTIC_NET_L1_RATIO
     else:
-        raise ValueError(f"Unknown regularization type: {regularization}")
+        raise ValidationError(f"Unknown regularization type: {regularization}")
     
     X = glm_instance.X
     y = glm_instance.y
     family = glm_instance.family
     link = glm_instance.link
     var_power = glm_instance.var_power
-    from rustystats.formula import DEFAULT_NEGBINOMIAL_THETA
     theta = glm_instance.theta if glm_instance.theta is not None else DEFAULT_NEGBINOMIAL_THETA
     offset = glm_instance.offset
     weights = glm_instance.weights
@@ -423,7 +437,7 @@ def fit_cv_regularization_path(
         offset, weights,
         list(alphas), effective_l1_ratio,
         cv, max_iter, tol,
-        seed if seed is not None else 42,
+        seed if seed is not None else DEFAULT_CV_SEED,
     )
     
     # Convert Rust result to path_results format

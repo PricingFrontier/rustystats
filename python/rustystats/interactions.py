@@ -27,6 +27,24 @@ from typing import List, Optional, Tuple, Union, Dict, Set, TYPE_CHECKING
 
 import numpy as np
 
+from rustystats.exceptions import (
+    ValidationError,
+    EncodingError,
+    FormulaError,
+    DesignMatrixError,
+    PredictionError,
+)
+
+from rustystats.constants import (
+    DEFAULT_PRIOR_WEIGHT,
+    DEFAULT_N_PERMUTATIONS,
+    DEFAULT_SPLINE_DF,
+    DEFAULT_SPLINE_DEGREE,
+    ZERO_VARIANCE_THRESHOLD,
+    CONDITION_NUMBER_THRESHOLD,
+    DEFAULT_CORRELATION_THRESHOLD,
+)
+
 # Import Rust implementations for heavy computation
 from rustystats._rustystats import (
     encode_categorical_py as _encode_categorical_rust,
@@ -87,8 +105,8 @@ class CategoricalEncoding:
 class TargetEncodingTermSpec:
     """Parsed target encoding term specification from formula."""
     var_name: str
-    prior_weight: float = 1.0
-    n_permutations: int = 4
+    prior_weight: float = DEFAULT_PRIOR_WEIGHT
+    n_permutations: int = DEFAULT_N_PERMUTATIONS
     interaction_vars: Optional[List[str]] = None  # For TE(a:b) interactions
 
 
@@ -143,6 +161,24 @@ class ParsedFormula:
     categorical_terms: List[CategoricalTermSpec] = field(default_factory=list)  # C(var, level='...') terms
     constraint_terms: List[ConstraintTermSpec] = field(default_factory=list)  # pos()/neg() terms
     has_intercept: bool = True
+    
+    # Cached lookup dicts (built lazily)
+    _spline_by_var: Optional[Dict[str, SplineTerm]] = field(default=None, repr=False)
+    _te_by_var: Optional[Dict[str, TargetEncodingTermSpec]] = field(default=None, repr=False)
+    
+    @property
+    def spline_terms_by_var(self) -> Dict[str, SplineTerm]:
+        """Lookup dict: var_name → SplineTerm for O(1) access during interaction building."""
+        if self._spline_by_var is None:
+            self._spline_by_var = {s.var_name: s for s in self.spline_terms}
+        return self._spline_by_var
+    
+    @property
+    def te_terms_by_var(self) -> Dict[str, TargetEncodingTermSpec]:
+        """Lookup dict: var_name → TargetEncodingTermSpec for O(1) access during interaction building."""
+        if self._te_by_var is None:
+            self._te_by_var = {t.var_name: t for t in self.target_encoding_terms}
+        return self._te_by_var
 
 
 def parse_formula_interactions(formula: str) -> ParsedFormula:
@@ -180,11 +216,7 @@ def parse_formula_interactions(formula: str) -> ParsedFormula:
     
     spline_terms = []
     for s in parsed['spline_terms']:
-        # Convert legacy 'increasing' to 'monotonicity' if present
         monotonicity = s.get('monotonicity')
-        if monotonicity is None and s.get('monotonic', False):
-            monotonicity = 'increasing' if s.get('increasing', True) else 'decreasing'
-        
         term = SplineTerm(
             var_name=s['var_name'],
             spline_type=s['spline_type'],
@@ -255,11 +287,42 @@ def parse_formula_interactions(formula: str) -> ParsedFormula:
     )
 
 
+def _extract_term_var_name(factor: str) -> Optional[str]:
+    """Extract variable name from a function-like factor string.
+    
+    Lightweight extraction that does NOT re-parse term parameters.
+    Use with ParsedFormula.spline_terms_by_var / te_terms_by_var for lookups.
+    
+    Examples
+    --------
+    >>> _extract_term_var_name('bs(VehAge, df=4)')
+    'VehAge'
+    >>> _extract_term_var_name('TE(Region)')
+    'Region'
+    >>> _extract_term_var_name('DrivAge')
+    None
+    """
+    f = factor.strip()
+    fl = f.lower()
+    for prefix in ('bs(', 'ns(', 'ms(', 'te(', 'fe('):
+        if fl.startswith(prefix):
+            content = f[len(prefix):]
+            if content.endswith(')'):
+                content = content[:-1]
+            return content.split(',')[0].strip()
+    if fl.startswith('s(') and not fl.startswith('sc'):
+        content = f[2:]
+        if content.endswith(')'):
+            content = content[:-1]
+        return content.split(',')[0].strip()
+    return None
+
+
 def parse_spline_factor(factor: str) -> Optional["SplineTerm"]:
     """Parse a spline term from a factor string like 'bs(VehAge, df=4)' or 'ns(age, df=3)'.
     
     Returns a SplineTerm if the factor matches bs()/ns()/ms()/s() syntax, else None.
-    This is shared by InteractionBuilder and _DeserializedBuilder.
+    Used in the pre-pass to populate ParsedFormula lookup dicts for interaction factors.
     """
     from rustystats.splines import SplineTerm
     
@@ -284,7 +347,7 @@ def parse_spline_factor(factor: str) -> Optional["SplineTerm"]:
         var_name = parts[0]
         df = None  # default: penalized smooth
         k = None
-        degree = 3  # default for B-splines
+        degree = DEFAULT_SPLINE_DEGREE  # default for B-splines
         monotonicity = None
         for part in parts[1:]:
             if '=' in part:
@@ -305,8 +368,8 @@ def parse_spline_factor(factor: str) -> Optional["SplineTerm"]:
         is_s_syntax = factor_lower.startswith('s(')
         is_smooth = is_s_syntax
         if df is None and k is None:
-            # No df or k specified: default to penalized smooth with k=10
-            effective_df = 10
+            # No df or k specified: default to penalized smooth with k=DEFAULT_SPLINE_DF
+            effective_df = DEFAULT_SPLINE_DF
             is_smooth = True
         elif k is not None:
             # k parameter specified: penalized smooth
@@ -336,8 +399,8 @@ def parse_te_factor(factor: str) -> Optional["TargetEncodingTermSpec"]:
         content = factor_stripped[3:-1]
         parts = [p.strip() for p in content.split(',')]
         var_name = parts[0]
-        prior_weight = 1.0
-        n_permutations = 4
+        prior_weight = DEFAULT_PRIOR_WEIGHT
+        n_permutations = DEFAULT_N_PERMUTATIONS
         for part in parts[1:]:
             if '=' in part:
                 key, val = part.split('=', 1)
@@ -452,12 +515,26 @@ class InteractionBuilder:
         self._last_names = None
     
     def _parse_spline_factor(self, factor: str) -> Optional[SplineTerm]:
-        """Parse a spline term from a factor name like 'bs(VehAge, df=4)' or 'ns(age, df=3)'."""
-        return parse_spline_factor(factor)
+        """Look up a pre-parsed spline term by extracting var_name from the factor string.
+        
+        Uses ParsedFormula.spline_terms_by_var for O(1) lookup.
+        """
+        if self._parsed_formula is not None:
+            var_name = _extract_term_var_name(factor)
+            if var_name is not None:
+                return self._parsed_formula.spline_terms_by_var.get(var_name)
+        return None
     
     def _parse_te_factor(self, factor: str) -> Optional[TargetEncodingTermSpec]:
-        """Parse a TE term from a factor name like 'TE(Region)' or 'TE(Brand, pw=2)'."""
-        return parse_te_factor(factor)
+        """Look up a pre-parsed TE term by extracting var_name from the factor string.
+        
+        Uses ParsedFormula.te_terms_by_var for O(1) lookup.
+        """
+        if self._parsed_formula is not None:
+            var_name = _extract_term_var_name(factor)
+            if var_name is not None:
+                return self._parsed_formula.te_terms_by_var.get(var_name)
+        return None
     
     def _get_column(self, name: str) -> np.ndarray:
         """Extract column as numpy array."""
@@ -475,7 +552,7 @@ class InteractionBuilder:
         """Get cached categorical levels for a variable."""
         cache_key = f"{name}_True"
         if cache_key not in self._cat_encoding_cache:
-            raise ValueError(f"Categorical variable '{name}' was not seen during training.")
+            raise EncodingError(f"Categorical variable '{name}' was not seen during training.")
         return self._cat_encoding_cache[cache_key].levels
     
     def _get_categorical_encoding(
@@ -644,7 +721,7 @@ class InteractionBuilder:
                     te_values.append(te_encodings[te_name])
                     te_names_list.append(te_name)
                 else:
-                    raise ValueError(f"TE encoding for '{te_spec.var_name}' not found. "
+                    raise EncodingError(f"TE encoding for '{te_spec.var_name}' not found. "
                                    f"Ensure TE({te_spec.var_name}) is included as a main effect.")
             
             # Build continuous product if any
@@ -953,110 +1030,67 @@ class InteractionBuilder:
         stats : dict
             Level statistics for prediction on new data
         """
+        has_exposure = exposure is not None
+        target_f64 = target.astype(np.float64)
+        exposure_f64 = exposure.astype(np.float64) if has_exposure else None
+        
         # Check if this is a TE interaction (e.g., TE(brand:region))
         if te_term.interaction_vars is not None and len(te_term.interaction_vars) >= 2:
-            # Get columns for each variable in the interaction
             cols = [self.data[var].to_numpy() for var in te_term.interaction_vars]
             cat1 = [str(v) for v in cols[0]]
             cat2 = [str(v) for v in cols[1]]
             
-            if exposure is not None:
-                # Exposure-weighted interaction encoding: sum(claims) / sum(exposure)
-                from rustystats._rustystats import target_encode_interaction_with_exposure_py
-                encoded, name, prior, stats = target_encode_interaction_with_exposure_py(
-                    cat1, cat2, target.astype(np.float64), exposure.astype(np.float64),
-                    te_term.interaction_vars[0], te_term.interaction_vars[1],
-                    te_term.prior_weight, te_term.n_permutations, seed
-                )
-                
-                # For 3+ way interactions, combine first two then continue
-                for i in range(2, len(te_term.interaction_vars)):
-                    combined = [f"{a}:{b}" for a, b in zip(cat1, cat2)]
-                    cat1 = combined
-                    cat2 = [str(v) for v in cols[i]]
-                    encoded, name, prior, stats = target_encode_interaction_with_exposure_py(
-                        cat1, cat2, target.astype(np.float64), exposure.astype(np.float64),
-                        ":".join(te_term.interaction_vars[:i]), te_term.interaction_vars[i],
-                        te_term.prior_weight, te_term.n_permutations, seed
-                    )
-                
-                return encoded, name, {
-                    'prior': prior, 
-                    'stats': stats, 
-                    'prior_weight': te_term.prior_weight,
-                    'used_exposure_weighted': True,
-                    'interaction_vars': te_term.interaction_vars,
-                }
+            # Select the appropriate Rust function and build shared arg tuples
+            if has_exposure:
+                from rustystats._rustystats import target_encode_interaction_with_exposure_py as _te_interact
+                target_args = (target_f64, exposure_f64)
             else:
-                # Standard interaction encoding (no exposure)
-                from rustystats._rustystats import target_encode_interaction_py
-                encoding_target = target.astype(np.float64)
-                encoded, name, prior, stats = target_encode_interaction_py(
-                    cat1, cat2, encoding_target,
-                    te_term.interaction_vars[0], te_term.interaction_vars[1],
-                    te_term.prior_weight, te_term.n_permutations, seed
+                from rustystats._rustystats import target_encode_interaction_py as _te_interact
+                target_args = (target_f64,)
+            tail_args = (te_term.prior_weight, te_term.n_permutations, seed)
+            
+            encoded, name, prior, stats = _te_interact(
+                cat1, cat2, *target_args,
+                te_term.interaction_vars[0], te_term.interaction_vars[1],
+                *tail_args
+            )
+            
+            # For 3+ way interactions, combine first two then continue
+            for i in range(2, len(te_term.interaction_vars)):
+                combined = [f"{a}:{b}" for a, b in zip(cat1, cat2)]
+                cat1 = combined
+                cat2 = [str(v) for v in cols[i]]
+                encoded, name, prior, stats = _te_interact(
+                    cat1, cat2, *target_args,
+                    ":".join(te_term.interaction_vars[:i]), te_term.interaction_vars[i],
+                    *tail_args
                 )
-                
-                # For 3+ way interactions, combine first two then continue
-                for i in range(2, len(te_term.interaction_vars)):
-                    combined = [f"{a}:{b}" for a, b in zip(cat1, cat2)]
-                    cat1 = combined
-                    cat2 = [str(v) for v in cols[i]]
-                    encoded, name, prior, stats = target_encode_interaction_py(
-                        cat1, cat2, encoding_target,
-                        ":".join(te_term.interaction_vars[:i]), te_term.interaction_vars[i],
-                        te_term.prior_weight, te_term.n_permutations, seed
-                    )
-                
-                return encoded, name, {
-                    'prior': prior, 
-                    'stats': stats, 
-                    'prior_weight': te_term.prior_weight,
-                    'used_exposure_weighted': False,
-                    'interaction_vars': te_term.interaction_vars,
-                }
         else:
             # Single variable target encoding
             col = self.data[te_term.var_name].to_numpy()
             categories = [str(v) for v in col]
             
-            if exposure is not None:
-                # Use exposure-weighted encoding: cumulative claims / cumulative exposure
+            if has_exposure:
                 from rustystats._rustystats import target_encode_with_exposure_py
                 encoded, name, prior, stats = target_encode_with_exposure_py(
-                    categories,
-                    target.astype(np.float64),
-                    exposure.astype(np.float64),
-                    te_term.var_name,
-                    te_term.prior_weight,
-                    te_term.n_permutations,
-                    seed,
+                    categories, target_f64, exposure_f64,
+                    te_term.var_name, te_term.prior_weight,
+                    te_term.n_permutations, seed,
                 )
-                # stats contains (sum_claims, sum_exposure) per level
-                return encoded, name, {
-                    'prior': prior, 
-                    'stats': stats, 
-                    'prior_weight': te_term.prior_weight,
-                    'used_exposure_weighted': True,
-                    'interaction_vars': te_term.interaction_vars,
-                }
             else:
-                # Standard observation-weighted encoding
                 encoded, name, prior, stats = _target_encode_rust(
-                    categories,
-                    target.astype(np.float64),
-                    te_term.var_name,
-                    te_term.prior_weight,
-                    te_term.n_permutations,
-                    seed,
+                    categories, target_f64,
+                    te_term.var_name, te_term.prior_weight,
+                    te_term.n_permutations, seed,
                 )
-                return encoded, name, {
-                    'prior': prior, 
-                    'stats': stats, 
-                    'prior_weight': te_term.prior_weight,
-                    'used_exposure_weighted': False,
-                    'interaction_vars': te_term.interaction_vars,
-                }
+        
+        return encoded, name, {
+            'prior': prior,
+            'stats': stats,
+            'prior_weight': te_term.prior_weight,
+            'used_exposure_weighted': has_exposure,
+            'interaction_vars': te_term.interaction_vars,
+        }
     
     def _build_frequency_encoding_columns(
         self,
@@ -1134,7 +1168,7 @@ class InteractionBuilder:
         
         # Simple variable name
         if var_name not in data.columns:
-            raise ValueError(f"Variable '{var_name}' not found in data for {name}")
+            raise ValidationError(f"Variable '{var_name}' not found in data for {name}")
         
         values = data[var_name].to_numpy().astype(self.dtype)
         return values, name
@@ -1177,7 +1211,7 @@ class InteractionBuilder:
             result = data.select(polars_expr.alias("__result__"))["__result__"].to_numpy()
             return result.astype(self.dtype), name
         except Exception as e:
-            raise ValueError(
+            raise FormulaError(
                 f"Failed to evaluate I() expression '{expr}': {e}\n"
                 f"Supported operations: +, -, *, /, ** (power)\n"
                 f"Example: I(x ** 2), I(x + y), I(x * y)"
@@ -1238,7 +1272,7 @@ class InteractionBuilder:
         if re.match(r'^\w+$', expr):
             return pl.col(expr)
         
-        raise ValueError(
+        raise FormulaError(
             f"Cannot parse expression '{expr}'. "
             f"Supported formats: 'x ** 2', 'x + y', 'x * y', 'x / y', 'x - y'"
         )
@@ -1285,6 +1319,46 @@ class InteractionBuilder:
         if columns:
             return np.hstack(columns), names
         return np.zeros((self._n, 0), dtype=self.dtype), []
+    
+    @staticmethod
+    def _stack_columns(columns: List[np.ndarray], n_rows: int, dtype: np.dtype) -> np.ndarray:
+        """Stack a list of 1-D and 2-D column arrays into a single design matrix.
+        
+        Uses pre-allocation for better memory efficiency than np.hstack.
+        
+        Parameters
+        ----------
+        columns : list of np.ndarray
+            Mix of 1-D (single column) and 2-D arrays to stack horizontally.
+        n_rows : int
+            Number of rows (observations).
+        dtype : np.dtype
+            Output data type.
+            
+        Returns
+        -------
+        np.ndarray
+            Stacked (n_rows, total_cols) design matrix.
+        """
+        if not columns:
+            return np.ones((n_rows, 1), dtype=dtype)
+        
+        total_cols = 0
+        for c in columns:
+            total_cols += c.shape[1] if c.ndim == 2 else 1
+        
+        X = np.empty((n_rows, total_cols), dtype=dtype)
+        col_idx = 0
+        for c in columns:
+            if c.ndim == 1:
+                X[:, col_idx] = c
+                col_idx += 1
+            else:
+                width = c.shape[1]
+                X[:, col_idx:col_idx + width] = c
+                col_idx += width
+        
+        return X
     
     def _build_design_matrix_core(
         self,
@@ -1353,8 +1427,26 @@ class InteractionBuilder:
                 self._smooth_terms.append(spline)
                 self._smooth_col_indices.append((col_start, col_end))
         
-        # Store parsed formula for prediction
+        # Store parsed formula for prediction and lookup-based interaction building
         self._parsed_formula = parsed
+        
+        # Pre-pass: parse any spline/TE terms inside interaction factors ONCE upfront.
+        # This populates the ParsedFormula lookup dicts so _parse_spline_factor/_parse_te_factor
+        # can use O(1) lookups instead of re-parsing during interaction column building.
+        for interaction in parsed.interactions:
+            for factor in interaction.factors:
+                var_name = _extract_term_var_name(factor)
+                if var_name is not None:
+                    # Add spline term to lookup if not already present
+                    if var_name not in parsed.spline_terms_by_var:
+                        spline = parse_spline_factor(factor)
+                        if spline is not None:
+                            parsed.spline_terms_by_var[var_name] = spline
+                    # Add TE term to lookup if not already present
+                    if var_name not in parsed.te_terms_by_var:
+                        te = parse_te_factor(factor)
+                        if te is not None:
+                            parsed.te_terms_by_var[var_name] = te
         
         # Get response (needed for target encoding)
         y = self._get_column(parsed.response)
@@ -1407,27 +1499,9 @@ class InteractionBuilder:
             columns.append(cat_cols)
             names.extend(cat_names)
         
-        # Stack all columns using pre-allocation (more memory efficient than np.hstack)
-        if columns:
-            # Calculate total columns and pre-allocate
-            total_cols = 0
-            for c in columns:
-                total_cols += c.shape[1] if c.ndim == 2 else 1
-            
-            X = np.empty((self._n, total_cols), dtype=self.dtype)
-            
-            # Fill in place
-            col_idx = 0
-            for c in columns:
-                if c.ndim == 1:
-                    X[:, col_idx] = c
-                    col_idx += 1
-                else:
-                    width = c.shape[1]
-                    X[:, col_idx:col_idx + width] = c
-                    col_idx += width
-        else:
-            X = np.ones((self._n, 1), dtype=self.dtype)
+        # Stack all columns using pre-allocated helper
+        X = self._stack_columns(columns, self._n, self.dtype)
+        if not columns:
             names = ['Intercept']
         
         # Store for validation
@@ -1504,7 +1578,7 @@ class InteractionBuilder:
         self,
         X: np.ndarray = None,
         names: List[str] = None,
-        corr_threshold: float = 0.999,
+        corr_threshold: float = DEFAULT_CORRELATION_THRESHOLD,
         verbose: bool = True,
     ) -> dict:
         """
@@ -1537,7 +1611,7 @@ class InteractionBuilder:
             X = getattr(self, '_last_X', None)
             names = getattr(self, '_last_names', None)
         if X is None:
-            raise ValueError("No design matrix to validate. Call build_design_matrix() first.")
+            raise DesignMatrixError("No design matrix to validate. Call build_design_matrix() first.")
         
         n_rows, n_cols = X.shape
         results = {
@@ -1563,7 +1637,7 @@ class InteractionBuilder:
         
         # Check for zero variance columns (exclude Intercept which is supposed to be constant)
         variances = np.var(X, axis=0)
-        zero_var_idx = np.where(variances < 1e-10)[0]
+        zero_var_idx = np.where(variances < ZERO_VARIANCE_THRESHOLD)[0]
         if len(zero_var_idx) > 0:
             zero_var_cols = [names[i] for i in zero_var_idx if i < len(names) and names[i] != 'Intercept']
             if zero_var_cols:
@@ -1584,24 +1658,24 @@ class InteractionBuilder:
                     f"{n_cols - results['rank']} columns are linearly dependent."
                 )
         except Exception as e:
-            raise RuntimeError(f"Failed to compute matrix rank: {e}") from e
+            raise DesignMatrixError(f"Failed to compute matrix rank: {e}") from e
         
         # Check condition number
         try:
             results['condition_number'] = np.linalg.cond(X)
-            if results['condition_number'] > 1e10:
+            if results['condition_number'] > CONDITION_NUMBER_THRESHOLD:
                 results['valid'] = False
                 results['suggestions'].append(
                     f"Matrix is ill-conditioned (condition number={results['condition_number']:.2e}). "
                     "This indicates near-linear dependence between columns."
                 )
         except Exception as e:
-            raise RuntimeError(f"Failed to compute condition number: {e}") from e
+            raise DesignMatrixError(f"Failed to compute condition number: {e}") from e
         
         # Check for highly correlated columns (skip intercept)
         try:
             # Compute correlations only for non-constant columns
-            non_const_idx = [i for i in range(n_cols) if variances[i] > 1e-10]
+            non_const_idx = [i for i in range(n_cols) if variances[i] > ZERO_VARIANCE_THRESHOLD]
             if len(non_const_idx) > 1:
                 X_subset = X[:, non_const_idx]
                 corr_matrix = np.corrcoef(X_subset.T)
@@ -1626,7 +1700,7 @@ class InteractionBuilder:
                         "  4. Use linear term instead: just 'VarName' without spline"
                     )
         except Exception as e:
-            raise RuntimeError(f"Failed to compute column correlations: {e}") from e
+            raise DesignMatrixError(f"Failed to compute column correlations: {e}") from e
         
         if verbose:
             print("=" * 60)
@@ -1673,7 +1747,7 @@ class InteractionBuilder:
             contains unseen categorical levels.
         """
         if self._parsed_formula is None:
-            raise ValueError(
+            raise PredictionError(
                 "Must call build_design_matrix() before transform_new_data(). "
                 "No formula has been fitted yet."
             )
@@ -1735,13 +1809,8 @@ class InteractionBuilder:
             cat_cols, _ = self._build_categorical_level_indicators_new(cat_term, new_data)
             columns.append(cat_cols)
         
-        # Stack all columns
-        if columns:
-            X = np.hstack([c if c.ndim == 2 else c.reshape(-1, 1) for c in columns])
-        else:
-            X = np.ones((n_new, 1), dtype=self.dtype)
-        
-        return X
+        # Stack all columns using pre-allocated helper
+        return self._stack_columns(columns, n_new, self.dtype)
     
     def _encode_categorical_new(
         self,
@@ -1776,132 +1845,155 @@ class InteractionBuilder:
         interaction: InteractionTerm,
         n: int,
     ) -> np.ndarray:
-        """Build interaction columns for new data."""
+        """Build interaction columns for new data.
+        
+        Delegates to sub-methods matching the fit-time structure in
+        build_interaction_columns.
+        """
         if interaction.is_pure_continuous:
-            # Continuous × continuous (may include TE or spline factors)
-            def _resolve_factor(factor):
-                te = self._parse_te_factor(factor)
-                if te is not None:
-                    return self._encode_target_new(new_data, te)
+            return self._build_continuous_interaction_new(new_data, interaction, n)
+        elif interaction.is_pure_categorical:
+            return self._build_categorical_interaction_new(new_data, interaction, n)
+        else:
+            return self._build_mixed_interaction_new(new_data, interaction, n)
+    
+    def _resolve_factor_new(
+        self,
+        new_data: "pl.DataFrame",
+        factor: str,
+    ) -> np.ndarray:
+        """Resolve a single interaction factor to column(s) for new data.
+        
+        Returns 1-D array for scalar factors, 2-D for spline basis.
+        """
+        te = self._parse_te_factor(factor)
+        if te is not None:
+            return self._encode_target_new(new_data, te)
+        spline = self._parse_spline_factor(factor)
+        if spline is not None:
+            x = new_data[spline.var_name].to_numpy().astype(self.dtype)
+            fitted_spline = self._fitted_splines.get(spline.var_name, spline)
+            basis, _ = fitted_spline.transform(x)
+            return basis  # 2-D
+        return new_data[factor].to_numpy().astype(self.dtype)
+    
+    def _build_continuous_interaction_new(
+        self,
+        new_data: "pl.DataFrame",
+        interaction: InteractionTerm,
+        n: int,
+    ) -> np.ndarray:
+        """Build continuous × continuous interaction for new data (may include spline/TE)."""
+        resolved = [self._resolve_factor_new(new_data, f) for f in interaction.factors]
+        
+        # If any factor is multi-column (spline basis), build cross-product
+        has_multi = any(r.ndim == 2 and r.shape[1] > 1 for r in resolved)
+        if not has_multi:
+            # All scalar columns — element-wise product
+            result = resolved[0].ravel()
+            for r in resolved[1:]:
+                result = result * r.ravel()
+            return result.reshape(-1, 1)
+        else:
+            # Expand multi-column factors via outer product
+            from itertools import product as cartesian_product
+            bases = [r if r.ndim == 2 else r.reshape(-1, 1) for r in resolved]
+            indices = [range(b.shape[1]) for b in bases]
+            all_columns = []
+            for idx_combo in cartesian_product(*indices):
+                col = np.ones(n, dtype=self.dtype)
+                for i, j in enumerate(idx_combo):
+                    col = col * bases[i][:, j]
+                all_columns.append(col)
+            return np.column_stack(all_columns)
+    
+    def _build_categorical_interaction_new(
+        self,
+        new_data: "pl.DataFrame",
+        interaction: InteractionTerm,
+        n: int,
+    ) -> np.ndarray:
+        """Build categorical × categorical interaction for new data."""
+        encodings = []
+        for factor in interaction.factors:
+            enc = self._encode_categorical_new(new_data, factor)
+            encodings.append(enc)
+        
+        # Build interaction by taking outer product (Kronecker-style)
+        result = encodings[0]
+        for enc in encodings[1:]:
+            n_cols1, n_cols2 = result.shape[1], enc.shape[1]
+            new_result = np.zeros((n, n_cols1 * n_cols2), dtype=self.dtype)
+            for i in range(n_cols1):
+                for j in range(n_cols2):
+                    new_result[:, i * n_cols2 + j] = result[:, i] * enc[:, j]
+            result = new_result
+        return result
+    
+    def _build_mixed_interaction_new(
+        self,
+        new_data: "pl.DataFrame",
+        interaction: InteractionTerm,
+        n: int,
+    ) -> np.ndarray:
+        """Build categorical × continuous interaction for new data (may include splines)."""
+        cat_factors = []
+        cont_factors = []
+        spline_factors = []
+        
+        for factor, is_cat in zip(interaction.factors, interaction.categorical_flags):
+            if is_cat:
+                cat_factors.append(factor)
+            else:
                 spline = self._parse_spline_factor(factor)
                 if spline is not None:
-                    x = new_data[spline.var_name].to_numpy().astype(self.dtype)
-                    fitted_spline = self._fitted_splines.get(spline.var_name, spline)
-                    basis, _ = fitted_spline.transform(x)
-                    return basis  # 2-D
-                return new_data[factor].to_numpy().astype(self.dtype)
-
-            resolved = [_resolve_factor(f) for f in interaction.factors]
-
-            # If any factor is multi-column (spline basis), build cross-product
-            has_multi = any(r.ndim == 2 and r.shape[1] > 1 for r in resolved)
-            if not has_multi:
-                # All scalar columns — element-wise product
-                result = resolved[0].ravel()
-                for r in resolved[1:]:
-                    result = result * r.ravel()
-                return result.reshape(-1, 1)
-            else:
-                # Expand multi-column factors via outer product
-                from itertools import product as cartesian_product
-                bases = [r if r.ndim == 2 else r.reshape(-1, 1) for r in resolved]
-                indices = [range(b.shape[1]) for b in bases]
-                all_columns = []
-                for idx_combo in cartesian_product(*indices):
-                    col = np.ones(n, dtype=self.dtype)
-                    for i, j in enumerate(idx_combo):
-                        col = col * bases[i][:, j]
-                    all_columns.append(col)
-                return np.column_stack(all_columns)
-        
-        elif interaction.is_pure_categorical:
-            # Categorical × categorical
-            encodings = []
-            for factor in interaction.factors:
-                enc = self._encode_categorical_new(new_data, factor)
-                encodings.append(enc)
-            
-            # Build interaction by taking outer product
-            result = encodings[0]
-            for enc in encodings[1:]:
-                # Kronecker-style expansion
-                n_cols1, n_cols2 = result.shape[1], enc.shape[1]
-                new_result = np.zeros((n, n_cols1 * n_cols2), dtype=self.dtype)
-                for i in range(n_cols1):
-                    for j in range(n_cols2):
-                        new_result[:, i * n_cols2 + j] = result[:, i] * enc[:, j]
-                result = new_result
-            return result
-        
-        else:
-            # Mixed: categorical × continuous (may include splines)
-            cat_factors = []
-            cont_factors = []
-            spline_factors = []
-            
-            for factor, is_cat in zip(interaction.factors, interaction.categorical_flags):
-                if is_cat:
-                    cat_factors.append(factor)
+                    spline_factors.append((factor, spline))
                 else:
-                    # Check if this is a spline term
-                    spline = self._parse_spline_factor(factor)
-                    if spline is not None:
-                        spline_factors.append((factor, spline))
-                    else:
-                        cont_factors.append(factor)
+                    cont_factors.append(factor)
+        
+        # Build categorical encoding (single or multi-factor)
+        cat_enc = self._encode_categorical_new(new_data, cat_factors[0])
+        for factor in cat_factors[1:]:
+            enc = self._encode_categorical_new(new_data, factor)
+            n_cols1, n_cols2 = cat_enc.shape[1], enc.shape[1]
+            new_enc = np.zeros((n, n_cols1 * n_cols2), dtype=self.dtype)
+            for i in range(n_cols1):
+                for j in range(n_cols2):
+                    new_enc[:, i * n_cols2 + j] = cat_enc[:, i] * enc[:, j]
+            cat_enc = new_enc
+        
+        # Handle spline × categorical interactions
+        if spline_factors:
+            all_columns = []
             
-            # Build categorical encoding
-            if len(cat_factors) == 1:
-                cat_enc = self._encode_categorical_new(new_data, cat_factors[0])
-            else:
-                # Multiple categorical - build their interaction
-                cat_enc = self._encode_categorical_new(new_data, cat_factors[0])
-                for factor in cat_factors[1:]:
-                    enc = self._encode_categorical_new(new_data, factor)
-                    n_cols1, n_cols2 = cat_enc.shape[1], enc.shape[1]
-                    new_enc = np.zeros((n, n_cols1 * n_cols2), dtype=self.dtype)
-                    for i in range(n_cols1):
-                        for j in range(n_cols2):
-                            new_enc[:, i * n_cols2 + j] = cat_enc[:, i] * enc[:, j]
-                    cat_enc = new_enc
-            
-            # Handle spline × categorical interactions
-            if spline_factors:
-                all_columns = []
+            for spline_str, spline in spline_factors:
+                x = new_data[spline.var_name].to_numpy().astype(self.dtype)
+                fitted_spline = self._fitted_splines.get(spline.var_name, spline)
+                spline_basis, _ = fitted_spline.transform(x)
                 
-                for spline_str, spline in spline_factors:
-                    x = new_data[spline.var_name].to_numpy().astype(self.dtype)
-                    # Use the fitted spline which has the same knots as training
-                    fitted_spline = self._fitted_splines.get(spline.var_name, spline)
-                    spline_basis, _ = fitted_spline.transform(x)
-                    
-                    # Multiply each spline column by each categorical column
-                    for j in range(spline_basis.shape[1]):
-                        for i in range(cat_enc.shape[1]):
-                            col = cat_enc[:, i] * spline_basis[:, j]
-                            all_columns.append(col)
-                
-                # Also include any regular continuous factors
-                if cont_factors:
-                    cont_product = new_data[cont_factors[0]].to_numpy().astype(self.dtype)
-                    for factor in cont_factors[1:]:
-                        cont_product = cont_product * new_data[factor].to_numpy().astype(self.dtype)
-                    
-                    # Multiply by continuous
-                    all_columns = [col * cont_product for col in all_columns]
-                
-                if all_columns:
-                    return np.column_stack(all_columns)
-                return np.zeros((n, 0), dtype=self.dtype)
+                # Multiply each spline column by each categorical column
+                for j in range(spline_basis.shape[1]):
+                    for i in range(cat_enc.shape[1]):
+                        col = cat_enc[:, i] * spline_basis[:, j]
+                        all_columns.append(col)
             
-            # Standard continuous × categorical (no splines)
-            cont_product = new_data[cont_factors[0]].to_numpy().astype(self.dtype)
-            for factor in cont_factors[1:]:
-                cont_product = cont_product * new_data[factor].to_numpy().astype(self.dtype)
+            # Also include any regular continuous factors
+            if cont_factors:
+                cont_product = new_data[cont_factors[0]].to_numpy().astype(self.dtype)
+                for factor in cont_factors[1:]:
+                    cont_product = cont_product * new_data[factor].to_numpy().astype(self.dtype)
+                all_columns = [col * cont_product for col in all_columns]
             
-            # Multiply categorical dummies by continuous
-            result = cat_enc * cont_product.reshape(-1, 1)
-            return result
+            if all_columns:
+                return np.column_stack(all_columns)
+            return np.zeros((n, 0), dtype=self.dtype)
+        
+        # Standard continuous × categorical (no splines)
+        cont_product = new_data[cont_factors[0]].to_numpy().astype(self.dtype)
+        for factor in cont_factors[1:]:
+            cont_product = cont_product * new_data[factor].to_numpy().astype(self.dtype)
+        
+        return cat_enc * cont_product.reshape(-1, 1)
     
     def _encode_target_new(
         self,
@@ -1910,7 +2002,7 @@ class InteractionBuilder:
     ) -> np.ndarray:
         """Encode using target statistics from training."""
         if te_term.var_name not in self._te_stats:
-            raise ValueError(
+            raise EncodingError(
                 f"Target encoding for '{te_term.var_name}' was not fitted during training."
             )
         
@@ -1963,7 +2055,7 @@ class InteractionBuilder:
     ) -> np.ndarray:
         """Encode using frequency statistics from training."""
         if fe_term.var_name not in self._fe_stats:
-            raise ValueError(
+            raise EncodingError(
                 f"Frequency encoding for '{fe_term.var_name}' was not fitted during training."
             )
         

@@ -67,7 +67,7 @@ from rustystats._rustystats import (
 )
 
 
-def Identity():
+def Identity() -> _IdentityLink:
     """
     Identity link function: η = μ
     
@@ -101,7 +101,7 @@ def Identity():
     return _IdentityLink()
 
 
-def Log():
+def Log() -> _LogLink:
     """
     Log link function: η = log(μ)
     
@@ -154,7 +154,7 @@ def Log():
     return _LogLink()
 
 
-def Logit():
+def Logit() -> _LogitLink:
     """
     Logit link function: η = log(μ/(1-μ))
     
@@ -217,5 +217,4 @@ def Logit():
     return _LogitLink()
 
 
-# For backwards compatibility and convenience
 __all__ = ["Identity", "Log", "Logit"]

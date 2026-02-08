@@ -119,6 +119,19 @@ from rustystats.diagnostics import (
     DataExplorer,
 )
 
+# Exceptions
+from rustystats.exceptions import (
+    RustyStatsError,
+    DesignMatrixError,
+    FittingError,
+    ConvergenceError,
+    PredictionError,
+    EncodingError,
+    FormulaError,
+    ValidationError,
+    SerializationError,
+)
+
 # What gets exported when someone does `from rustystats import *`
 __all__ = [
     # Version
@@ -174,4 +187,14 @@ __all__ = [
     "BinomialFamily",
     "GammaFamily",
     "TweedieFamily",
+    # Exceptions
+    "RustyStatsError",
+    "DesignMatrixError",
+    "FittingError",
+    "ConvergenceError",
+    "PredictionError",
+    "EncodingError",
+    "FormulaError",
+    "ValidationError",
+    "SerializationError",
 ]

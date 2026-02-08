@@ -4,217 +4,94 @@ This document provides detailed implementation instructions for each improvement
 
 ---
 
-## Week 1-2: Foundation Work
+## Completed Items ✓
 
-### S3: Split diagnostics.py into Modules
+### S7: Extract Constants ✓ (DONE)
 
-**Goal**: Break 4690-line file into 5 focused modules
+Created `python/rustystats/constants.py` with centralized defaults:
+- IRLS: `DEFAULT_MAX_ITER=25`, `DEFAULT_TOLERANCE=1e-8`
+- Regularization: `DEFAULT_N_ALPHAS=20`, `DEFAULT_ALPHA_MIN_RATIO=0.0001`
+- Splines: `DEFAULT_SPLINE_DF=10`, `DEFAULT_SPLINE_DEGREE=3`
+- Target Encoding: `DEFAULT_PRIOR_WEIGHT=1.0`, `DEFAULT_N_PERMUTATIONS=4`
+- Diagnostics: `DEFAULT_N_CALIBRATION_BINS=10`, etc.
 
-#### Step 1: Create diagnostics package structure
-```bash
-mkdir -p python/rustystats/diagnostics
-touch python/rustystats/diagnostics/__init__.py
+Updated imports in: `formula.py`, `target_encoding.py`, `interactions.py`
+
+### S8: Standardize Error Handling ✓ (DONE)
+
+Created `python/rustystats/exceptions.py` with:
+- `RustyStatsError` (base)
+- `FittingError`, `ConvergenceError`, `PredictionError`
+- `DesignMatrixError`, `EncodingError`, `FormulaError`
+- `ValidationError`, `SerializationError`
+- Helper functions: `wrap_fitting_error()`, `wrap_prediction_error()`
+
+Exported in `__init__.py`.
+
+### Quick Wins ✓ (DONE)
+
+- Added `__all__` exports to `constants.py`, `exceptions.py`
+- All 543 tests passing
+
+### S3: Split diagnostics.py into Modules ✓ (DONE - Fully Modularized + Refactored)
+
+Split the original 4690-line diagnostics.py into a fully modular package with
+focused responsibility classes, shared utilities, and custom exception wiring.
+
+**New Structure (9 modules, ~4950 lines total):**
+```
+python/rustystats/diagnostics/
+├── __init__.py           # Package exports (134 lines)
+├── types.py              # All 30+ dataclasses (623 lines)
+├── utils.py              # Shared utilities: discretize(), validate_factor_in_data() (74 lines)
+├── components.py         # _ResidualComputer, _CalibrationComputer, _DiscriminationComputer (132 lines)
+├── factors.py            # _FactorDiagnosticsComputer: A/E, significance, score tests (534 lines)
+├── interactions.py       # _InteractionDetector: residual-based interaction detection (228 lines)
+├── computer.py           # DiagnosticsComputer orchestrator, delegates to above (1361 lines)
+├── explorer.py           # DataExplorer + explore_data() pre-fit analysis (1151 lines)
+└── api.py                # compute_diagnostics() + smooth term diagnostics (717 lines)
 ```
 
-#### Step 2: Extract dataclasses to types.py
+**Module Responsibilities:**
+- `types.py` - Data structures (what diagnostics look like)
+- `utils.py` - Shared helpers (deduplicates discretize, factor validation)
+- `components.py` - Small focused classes (residuals, calibration, discrimination)
+- `factors.py` - Per-factor analysis: A/E, residual patterns, Wald tests, score tests
+- `interactions.py` - Interaction detection using residual-based eta-squared analysis
+- `computer.py` - Orchestrator delegating to focused classes above
+- `explorer.py` - Pre-fit `DataExplorer` class and `explore_data()` function
+- `api.py` - Top-level `compute_diagnostics()` entry point
 
-Move all `@dataclass` definitions to `diagnostics/types.py`:
-- `Percentiles`, `ResidualSummary`, `CalibrationBin`
-- `LorenzPoint`, `ActualExpectedBin`, `ResidualPattern`
-- `ContinuousFactorStats`, `CategoricalLevelStats`, `CategoricalFactorStats`
-- `FactorSignificance`, `ScoreTestResult`, `FactorCoefficient`
-- `FactorDiagnostics`, `InteractionCandidate`, `VIFResult`
-- `CoefficientSummary`, `DevianceByLevel`, `FactorDeviance`
-- `LiftDecile`, `LiftChart`, `PartialDependence`, `DecileMetrics`
-- `FactorLevelMetrics`, `ContinuousBandMetrics`, `DatasetDiagnostics`
-- `TrainTestComparison`, `ConvergenceDetails`, `DataExploration`
-- `SmoothTermDiagnostics`, `ModelVsBaseDecile`, `BasePredictionsMetrics`
-- `BasePredictionsComparison`, `ModelDiagnostics`
+**Key Improvements Over Initial Split:**
+- `computer.py` reduced from 2048 → 1361 lines by extracting focused classes
+- Duplicated `_discretize()` eliminated via shared `utils.py`
+- 12 repeated factor validation patterns replaced with `validate_factor_in_data()`
+- All bare `ValueError`/`RuntimeError` replaced with custom exceptions:
+  - `ValidationError` for input validation (missing columns, bad attributes)
+  - `FittingError` for computation failures (significance, VIF, coefficients)
+  - `DesignMatrixError` for singular matrix in VIF computation
 
-Also move helper functions:
-- `_json_default`
-- `_round_float`
-- `_to_dict_recursive`
-- `_extract_base_variable`
+**Files Deleted:**
+- `_diagnostics_impl.py` (original monolith)
 
-#### Step 3: Extract calibration.py
-
-Move from diagnostics.py:
-- `_CalibrationComputer` class
-- Any calibration-specific helpers
-
-#### Step 4: Extract discrimination.py
-
-Move from diagnostics.py:
-- `_DiscriminationComputer` class
-- Lift chart computation logic
-
-#### Step 5: Extract factors.py
-
-Move factor-level diagnostic code:
-- `_compute_factor_diagnostics` (if exists)
-- Score test computation
-- A/E by factor level logic
-
-#### Step 6: Keep computer.py
-
-Retain in main computer module:
-- `_ResidualComputer`
-- `DiagnosticsComputer`
-- `compute_diagnostics` function
-- `explore_data` function and `DataExplorer` class
-
-#### Step 7: Update __init__.py exports
-
-```python
-# python/rustystats/diagnostics/__init__.py
-from .types import (
-    ModelDiagnostics,
-    DataExploration,
-    FactorDiagnostics,
-    # ... all public types
-)
-from .computer import (
-    DiagnosticsComputer,
-    compute_diagnostics,
-    explore_data,
-    DataExplorer,
-)
-```
-
-#### Step 8: Update imports in formula.py
-
-```python
-# Before
-from rustystats.diagnostics import compute_diagnostics, ModelDiagnostics
-
-# After (same - __init__.py re-exports)
-from rustystats.diagnostics import compute_diagnostics, ModelDiagnostics
-```
-
-#### Verification
-- Run `pytest tests/python/test_diagnostics.py`
-- Ensure all exports work from `rustystats.diagnostics`
+**Verification:**
+- All 543 tests pass unchanged
 
 ---
 
-### S7: Extract Constants and Configuration
+### S1: Unify Formula Parsing (Week 3-4)
 
-**Goal**: Single source of truth for magic numbers
+**Goal**: Single parser for all formula syntax
 
-#### Step 1: Create constants.py
+Currently formula parsing is scattered across `formula.py` and `interactions.py`.
+Consolidate into a dedicated `parser.py` module.
 
-```python
-# python/rustystats/constants.py
-"""
-Central configuration and constants for RustyStats.
-"""
+### S5: Unify Result Classes (Week 3-4)
 
-# IRLS Algorithm Defaults
-DEFAULT_MAX_ITER = 25
-DEFAULT_TOLERANCE = 1e-8
-DEFAULT_MIN_WEIGHT = 1e-10
+**Goal**: Single result class hierarchy
 
-# Regularization Defaults
-DEFAULT_N_ALPHAS = 20
-DEFAULT_ALPHA_MIN_RATIO = 0.0001
-DEFAULT_CV_FOLDS = 5
-
-# Spline Defaults
-DEFAULT_SPLINE_DF = 10  # For penalized smooth
-DEFAULT_SPLINE_DEGREE = 3
-DEFAULT_LAMBDA_MIN = 1e-4
-DEFAULT_LAMBDA_MAX = 1e6
-
-# Target Encoding Defaults
-DEFAULT_PRIOR_WEIGHT = 1.0
-DEFAULT_N_PERMUTATIONS = 4
-
-# Negative Binomial
-DEFAULT_NEGBINOMIAL_THETA = 1.0
-
-# Diagnostics
-DEFAULT_N_CALIBRATION_BINS = 10
-DEFAULT_RARE_THRESHOLD_PCT = 1.0
-DEFAULT_MAX_CATEGORICAL_LEVELS = 20
-
-# Numerical Stability
-EPSILON = 1e-10
-MU_MIN_POISSON = 1e-10
-MU_MIN_GAMMA = 1e-10
-MU_BOUNDS_BINOMIAL = (1e-10, 1 - 1e-10)
-```
-
-#### Step 2: Update imports across codebase
-
-Replace magic numbers with constant imports:
-```python
-# Before
-max_iter: int = 25
-
-# After
-from rustystats.constants import DEFAULT_MAX_ITER
-max_iter: int = DEFAULT_MAX_ITER
-```
-
----
-
-### S8: Standardize Error Handling
-
-**Goal**: Consistent error messages with actionable suggestions
-
-#### Step 1: Create exceptions.py
-
-```python
-# python/rustystats/exceptions.py
-"""
-Custom exceptions for RustyStats with actionable error messages.
-"""
-
-class RustyStatsError(Exception):
-    """Base exception for all RustyStats errors."""
-    pass
-
-class DesignMatrixError(RustyStatsError):
-    """Error in design matrix construction or validation."""
-    pass
-
-class FittingError(RustyStatsError):
-    """Error during model fitting."""
-    pass
-
-class PredictionError(RustyStatsError):
-    """Error during prediction on new data."""
-    pass
-
-class EncodingError(RustyStatsError):
-    """Error in categorical or target encoding."""
-    pass
-
-class FormulaError(RustyStatsError):
-    """Error parsing formula string."""
-    pass
-```
-
-#### Step 2: Wrap Rust errors with context
-
-```python
-# In fitting code
-try:
-    result = _fit_glm_rust(...)
-except ValueError as e:
-    if "singular" in str(e).lower():
-        raise FittingError(
-            f"Design matrix is singular (rank deficient). "
-            f"This usually means:\n"
-            f"  1. Perfect multicollinearity between predictors\n"
-            f"  2. A categorical variable with only one level\n"
-            f"  3. Duplicate columns in the design matrix\n"
-            f"Run model.validate() to identify the specific issue.\n"
-            f"Original error: {e}"
-        ) from None
-    raise
-```
+Currently have `GLMModel`, `GLMResults`, `_DeserializedResult`.
+Consolidate into unified result structure.
 
 ---
 

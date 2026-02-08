@@ -587,6 +587,36 @@ fn is_categorical(term: &str, categorical_vars: &HashSet<String>) -> bool {
     categorical_vars.contains(&clean_var_name(term))
 }
 
+/// Extract spline/TE/FE terms from interaction factor strings.
+///
+/// When an interaction like `bs(age, df=4):Region` is parsed, the spline term
+/// `bs(age, df=4)` needs to be added to the spline_terms list so that the
+/// Python layer can look it up by var_name instead of re-parsing the string.
+fn extract_terms_from_interaction_factors(
+    factor_strs: &[String],
+    spline_terms: &mut Vec<SplineTerm>,
+    target_encoding_terms: &mut Vec<TargetEncodingTermSpec>,
+    frequency_encoding_terms: &mut Vec<FrequencyEncodingTermSpec>,
+) {
+    for f in factor_strs {
+        if let Some(spline) = parse_spline_term(f) {
+            if !spline_terms.iter().any(|s| s.var_name == spline.var_name) {
+                spline_terms.push(spline);
+            }
+        }
+        if let Some(te) = parse_target_encoding_term(f) {
+            if !target_encoding_terms.iter().any(|t| t.var_name == te.var_name) {
+                target_encoding_terms.push(te);
+            }
+        }
+        if let Some(fe) = parse_frequency_encoding_term(f) {
+            if !frequency_encoding_terms.iter().any(|t| t.var_name == fe.var_name) {
+                frequency_encoding_terms.push(fe);
+            }
+        }
+    }
+}
+
 /// Parse a formula string into structured components.
 ///
 /// Handles:

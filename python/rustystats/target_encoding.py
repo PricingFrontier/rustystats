@@ -32,14 +32,16 @@ from typing import Dict, List, Optional, Tuple, Union
 import numpy as np
 
 from . import _rustystats
+from .constants import DEFAULT_PRIOR_WEIGHT, DEFAULT_N_PERMUTATIONS
+from .exceptions import EncodingError
 
 
 def target_encode(
     categories: Union[List[str], np.ndarray],
     target: np.ndarray,
     var_name: str = "x",
-    prior_weight: float = 1.0,
-    n_permutations: int = 4,
+    prior_weight: float = DEFAULT_PRIOR_WEIGHT,
+    n_permutations: int = DEFAULT_N_PERMUTATIONS,
     seed: Optional[int] = None,
 ) -> Tuple[np.ndarray, str, float, Dict[str, Tuple[float, int]]]:
     """
@@ -121,7 +123,7 @@ def apply_target_encoding(
     categories: Union[List[str], np.ndarray],
     level_stats: Dict[str, Tuple[float, int]],
     prior: float,
-    prior_weight: float = 1.0,
+    prior_weight: float = DEFAULT_PRIOR_WEIGHT,
 ) -> np.ndarray:
     """
     Apply target encoding to new data using pre-computed statistics.
@@ -197,8 +199,8 @@ class TargetEncoder:
     
     def __init__(
         self,
-        prior_weight: float = 1.0,
-        n_permutations: int = 4,
+        prior_weight: float = DEFAULT_PRIOR_WEIGHT,
+        n_permutations: int = DEFAULT_N_PERMUTATIONS,
         seed: Optional[int] = None,
     ):
         self.prior_weight = prior_weight
@@ -252,7 +254,7 @@ class TargetEncoder:
             Encoded values
         """
         if self.level_stats_ is None or self.prior_ is None:
-            raise ValueError("Encoder not fitted. Call fit() first.")
+            raise EncodingError("Encoder not fitted. Call fit() first.")
         
         return apply_target_encoding(
             categories, self.level_stats_, self.prior_, self.prior_weight
@@ -424,7 +426,7 @@ class FrequencyEncoder:
     ) -> np.ndarray:
         """Transform categories using fitted statistics."""
         if self.level_counts_ is None or self.max_count_ is None:
-            raise ValueError("Encoder not fitted. Call fit() first.")
+            raise EncodingError("Encoder not fitted. Call fit() first.")
         return apply_frequency_encoding(categories, self.level_counts_, self.max_count_)
     
     def fit_transform(
@@ -447,8 +449,8 @@ def target_encode_interaction(
     target: np.ndarray,
     var_name1: str = "x1",
     var_name2: str = "x2",
-    prior_weight: float = 1.0,
-    n_permutations: int = 4,
+    prior_weight: float = DEFAULT_PRIOR_WEIGHT,
+    n_permutations: int = DEFAULT_N_PERMUTATIONS,
     seed: Optional[int] = None,
 ) -> Tuple[np.ndarray, str, float, Dict[str, Tuple[float, int]]]:
     """
@@ -545,8 +547,8 @@ class TargetEncodingTerm:
     def __init__(
         self,
         var_name: str,
-        prior_weight: float = 1.0,
-        n_permutations: int = 4,
+        prior_weight: float = DEFAULT_PRIOR_WEIGHT,
+        n_permutations: int = DEFAULT_N_PERMUTATIONS,
     ):
         self.var_name = var_name
         self.prior_weight = prior_weight
@@ -600,7 +602,7 @@ class TargetEncodingTerm:
             Column name
         """
         if self.encoder is None:
-            raise ValueError("Term not fitted. Call fit_transform() first.")
+            raise EncodingError("Term not fitted. Call fit_transform() first.")
         
         # Extract column
         if hasattr(data, 'to_numpy'):

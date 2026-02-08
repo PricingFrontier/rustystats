@@ -69,6 +69,8 @@ from __future__ import annotations
 from typing import Optional, Union, List, Tuple, TYPE_CHECKING
 import numpy as np
 
+from rustystats.exceptions import ValidationError, FormulaError
+
 if TYPE_CHECKING:
     import polars as pl
 
@@ -181,7 +183,7 @@ def bs(
     
     # Determine effective df
     if df is not None and k is not None:
-        raise ValueError("Specify either 'df' (fixed) or 'k' (penalized), not both.")
+        raise ValidationError("Specify either 'df' (fixed) or 'k' (penalized), not both.")
     
     # Default to penalized smooth (k=10) if neither df nor k specified
     effective_df = df if df is not None else (k if k is not None else 10)
@@ -189,7 +191,7 @@ def bs(
     # Handle monotonicity - use I-spline basis
     if monotonicity is not None:
         if monotonicity not in ("increasing", "decreasing"):
-            raise ValueError(
+            raise ValidationError(
                 f"monotonicity must be 'increasing' or 'decreasing', got '{monotonicity}'"
             )
         increasing = monotonicity == "increasing"
@@ -294,7 +296,7 @@ def ns(
     
     # Determine effective df
     if df is not None and k is not None:
-        raise ValueError("Specify either 'df' (fixed) or 'k' (penalized), not both.")
+        raise ValidationError("Specify either 'df' (fixed) or 'k' (penalized), not both.")
     
     # Default to penalized smooth (k=10) if neither df nor k specified
     effective_df = df if df is not None else (k if k is not None else 10)
@@ -412,7 +414,7 @@ class SplineTerm:
         self._edf: Optional[float] = None
         
         if self.spline_type not in ("bs", "ns", "ms"):
-            raise ValueError(f"spline_type must be 'bs', 'ns', or 'ms', got '{spline_type}'")
+            raise ValidationError(f"spline_type must be 'bs', 'ns', or 'ms', got '{spline_type}'")
     
     def transform(self, x: np.ndarray) -> Tuple[np.ndarray, List[str]]:
         """
@@ -479,7 +481,7 @@ class SplineTerm:
         elif self.spline_type == "ns":
             # Check if monotonicity was requested on natural splines
             if effective_monotonicity:
-                raise ValueError(
+                raise FormulaError(
                     f"Monotonicity constraints are not supported for natural splines (ns). "
                     f"Use bs({self.var_name}, df={self.df}, monotonicity='increasing') "
                     f"instead, which uses I-splines designed for monotonic effects."
@@ -505,7 +507,7 @@ class SplineTerm:
             else:
                 names = [f"ms({self.var_name}, {i+1}/{self.df}, {sign})" for i in range(self.df)]
         else:
-            raise ValueError(f"Unknown spline_type: {self.spline_type}")
+            raise ValidationError(f"Unknown spline_type: {self.spline_type}")
         
         # Ensure names match columns
         if len(names) != basis.shape[1]:

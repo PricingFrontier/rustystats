@@ -72,7 +72,7 @@ from rustystats._rustystats import (
 )
 
 
-def Gaussian():
+def Gaussian() -> _GaussianFamily:
     """
     Gaussian (Normal) family for continuous response data.
     
@@ -106,7 +106,7 @@ def Gaussian():
     return _GaussianFamily()
 
 
-def Poisson():
+def Poisson() -> _PoissonFamily:
     """
     Poisson family for count data (0, 1, 2, 3, ...).
     
@@ -154,7 +154,7 @@ def Poisson():
     return _PoissonFamily()
 
 
-def Binomial():
+def Binomial() -> _BinomialFamily:
     """
     Binomial family for binary or proportion data.
     
@@ -199,7 +199,7 @@ def Binomial():
     return _BinomialFamily()
 
 
-def Gamma():
+def Gamma() -> _GammaFamily:
     """
     Gamma family for positive continuous data.
     
@@ -250,7 +250,7 @@ def Gamma():
     return _GammaFamily()
 
 
-def QuasiPoisson():
+def QuasiPoisson() -> _QuasiPoissonFamily:
     """
     QuasiPoisson family for overdispersed count data.
     
@@ -305,7 +305,7 @@ def QuasiPoisson():
     return _QuasiPoissonFamily()
 
 
-def QuasiBinomial():
+def QuasiBinomial() -> _QuasiBinomialFamily:
     """
     QuasiBinomial family for overdispersed binary/proportion data.
     
@@ -358,7 +358,7 @@ def QuasiBinomial():
     return _QuasiBinomialFamily()
 
 
-def NegativeBinomial(theta=1.0):
+def NegativeBinomial(theta: float = 1.0) -> _NegativeBinomialFamily:
     """
     Negative Binomial family for overdispersed count data.
     
@@ -419,5 +419,4 @@ def NegativeBinomial(theta=1.0):
     return _NegativeBinomialFamily(theta)
 
 
-# For backwards compatibility and convenience
 __all__ = ["Gaussian", "Poisson", "Binomial", "Gamma", "QuasiPoisson", "QuasiBinomial", "NegativeBinomial"]

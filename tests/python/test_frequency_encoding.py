@@ -146,7 +146,7 @@ class TestFrequencyEncoder:
         """Transform before fit should raise error."""
         encoder = rs.FrequencyEncoder()
         
-        with pytest.raises(ValueError, match="not fitted"):
+        with pytest.raises(rs.EncodingError, match="not fitted"):
             encoder.transform(["A", "B"])
 
 
@@ -518,7 +518,7 @@ class TestDictAPITargetEncodingInteraction:
     
     def test_dict_te_interaction_requires_two_vars(self):
         """TE interaction must have at least 2 variables."""
-        with pytest.raises(ValueError, match="at least 2 variables"):
+        with pytest.raises(rs.FormulaError, match="at least 2 variables"):
             dict_to_parsed_formula(
                 response="y",
                 terms={},

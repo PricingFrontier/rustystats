@@ -205,7 +205,7 @@ class TestTargetEncoder:
         
         encoder = rs.TargetEncoder()
         
-        with pytest.raises(ValueError, match="not fitted"):
+        with pytest.raises(rs.EncodingError, match="not fitted"):
             encoder.transform(["A", "B"])
 
 

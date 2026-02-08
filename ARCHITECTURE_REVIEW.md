@@ -325,21 +325,21 @@ python/rustystats/
 ## Part 5: Implementation Roadmap
 
 ### Week 1-2: Foundation Work
-- [ ] **S3**: Split diagnostics.py into modules
-- [ ] **S7**: Extract constants and configuration
-- [ ] **S8**: Standardize error handling
+- [x] **S3**: Split diagnostics.py into modules
+- [x] **S7**: Extract constants and configuration
+- [x] **S8**: Standardize error handling (exception hierarchy fully wired — 0 remaining ValueError/RuntimeError across all 11 modules; 5 tests updated)
 
 ### Week 3-4: Core Simplifications
-- [ ] **S1**: Unify formula parsing
-- [ ] **S4**: Simplify smooth GLM fitting
-- [ ] **S5**: Unify result classes
+- [x] **S1**: Unify formula parsing
+- [x] **S4**: Simplify smooth GLM fitting (already unified — 3 Rust entry points collapsed to `fit_smooth_glm_full_matrix`)
+- [x] **S5**: Unify result classes (refactored _DeserializedResult to dataclass, added _is_deserialized flag, removed dead code)
 
 ### Week 5-6: Major Refactoring
-- [ ] **S2**: Consolidate design matrix building
-- [ ] **S6**: Consolidate encoding logic
+- [x] **S2**: Consolidate design matrix building (4 paths already collapsed to 2; extracted shared `_stack_columns`, decomposed predict-time interactions)
+- [x] **S6**: Consolidate encoding logic (deduplicated `_build_target_encoding_columns` — 4 branches → 2 with shared stats dict and 3+ way loop)
 
 ### Week 7-8: Polish and Testing
-- [ ] **S9**: Improve type hints
+- [x] **S9**: Improve type hints (all 16 missing return types fixed across formula.py, families.py, links.py, diagnostics; untyped params in _build_results and compute_diagnostics annotated)
 - [ ] Update all tests for new structure
 - [ ] Update documentation
 - [ ] Performance benchmarking

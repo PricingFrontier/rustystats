@@ -295,7 +295,7 @@ class TestCVRegularizationFit:
             family="poisson",
         )
         
-        with pytest.raises(ValueError, match="regularization"):
+        with pytest.raises(rs.ValidationError, match="regularization"):
             model.fit(cv=5)
     
     def test_explicit_alpha_no_cv(self, simple_data):
