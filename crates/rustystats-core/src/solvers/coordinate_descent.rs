@@ -75,7 +75,7 @@ use super::irls::{IRLSConfig, IRLSResult};
 /// # Returns
 /// * `Ok(IRLSResult)` - Fitted model results
 /// * `Err(RustyStatsError)` - If fitting fails
-pub fn fit_glm_coordinate_descent(
+pub(crate) fn fit_glm_coordinate_descent(
     y: &Array1<f64>,
     x: &Array2<f64>,
     family: &dyn Family,

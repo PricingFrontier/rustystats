@@ -46,7 +46,6 @@
 
 use ndarray::Array2;
 
-#[allow(unused_imports)]
 use ndarray::Axis;
 
 // =============================================================================

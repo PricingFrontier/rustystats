@@ -95,7 +95,6 @@ from rustystats.target_encoding import (
     target_encode,
     apply_target_encoding,
     TargetEncoder,
-    TargetEncodingTerm,
     # Frequency encoding (CatBoost Counter CTR)
     frequency_encode,
     apply_frequency_encoding,

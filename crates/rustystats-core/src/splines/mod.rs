@@ -173,58 +173,10 @@ pub fn compute_knots_natural(
 // B-SPLINE BASIS (Cox-de Boor Algorithm)
 // =============================================================================
 
-/// Evaluate a single B-spline basis function using Cox-de Boor recursion.
+/// Evaluate all B-spline basis functions at a single point using iterative Cox-de Boor.
 ///
-/// The Cox-de Boor algorithm computes B_{i,k}(x) recursively:
-/// - B_{i,0}(x) = 1 if knots[i] <= x < knots[i+1], else 0
-/// - B_{i,k}(x) = w1 * B_{i,k-1}(x) + w2 * B_{i+1,k-1}(x)
-///   where w1 = (x - knots[i]) / (knots[i+k] - knots[i])
-///         w2 = (knots[i+k+1] - x) / (knots[i+k+1] - knots[i+1])
-///
-/// # Arguments
-/// * `x` - Point to evaluate at
-/// * `i` - Basis function index
-/// * `degree` - Spline degree
-/// * `knots` - Knot vector
-///
-/// # Returns
-/// Value of B_{i,degree}(x)
-#[inline]
-#[allow(dead_code)]  // Kept for reference/potential future use
-fn bspline_basis_single(x: f64, i: usize, degree: usize, knots: &[f64]) -> f64 {
-    // Base case: degree 0
-    if degree == 0 {
-        // Handle right boundary: include right endpoint for last interval
-        if i + 1 == knots.len() - 1 {
-            return if knots[i] <= x && x <= knots[i + 1] { 1.0 } else { 0.0 };
-        }
-        return if knots[i] <= x && x < knots[i + 1] { 1.0 } else { 0.0 };
-    }
-    
-    // Recursive case
-    let mut result = 0.0;
-    
-    // First term
-    let denom1 = knots[i + degree] - knots[i];
-    if denom1.abs() > KNOT_TOL {
-        let w1 = (x - knots[i]) / denom1;
-        result += w1 * bspline_basis_single(x, i, degree - 1, knots);
-    }
-    
-    // Second term
-    let denom2 = knots[i + degree + 1] - knots[i + 1];
-    if denom2.abs() > KNOT_TOL {
-        let w2 = (knots[i + degree + 1] - x) / denom2;
-        result += w2 * bspline_basis_single(x, i + 1, degree - 1, knots);
-    }
-    
-    result
-}
-
-/// Evaluate all B-spline basis functions at a single point (iterative version).
-///
-/// More efficient than calling bspline_basis_single repeatedly because it
-/// reuses intermediate computations.
+/// Uses a triangular table to compute all basis values simultaneously,
+/// reusing intermediate computations for efficiency.
 #[inline]
 fn bspline_all_basis_at_point(x: f64, degree: usize, knots: &[f64], n_basis: usize) -> Vec<f64> {
     // Use triangular computation for efficiency

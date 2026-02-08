@@ -29,7 +29,7 @@ use crate::families::Family;
 use crate::links::Link;
 use crate::regularization::{Penalty, SmoothPenalty};
 use crate::splines::penalized::{gcv_score, compute_edf, penalty_matrix};
-use crate::solvers::irls::{IRLSConfig, fit_glm_full, solve_weighted_least_squares_with_penalty_matrix, compute_xtwx};
+use crate::solvers::irls::{IRLSConfig, FitConfig, fit_glm_unified, solve_weighted_least_squares_with_penalty_matrix, compute_xtwx};
 // MU constants no longer needed here - clamp_mu delegates to Family::clamp_mu
 use crate::convert;
 
@@ -555,7 +555,8 @@ pub fn fit_smooth_glm_full_matrix(
     
     if smooth_specs.is_empty() {
         // No smooth terms — delegate to standard GLM fit and wrap result
-        let irls = fit_glm_full(y, x_full, family, link, &config.irls_config, offset, weights)?;
+        let unified_config = FitConfig::from(&config.irls_config);
+        let irls = fit_glm_unified(y, x_full, family, link, &unified_config, offset, weights, None)?;
         return Ok(SmoothGLMResult {
             coefficients: irls.coefficients,
             fitted_values: irls.fitted_values,

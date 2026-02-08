@@ -118,31 +118,13 @@ class RegularizationPathInfo:
 
 
 def _apply_inverse_link(eta: np.ndarray, link: str) -> np.ndarray:
-    """
-    Apply inverse link function to linear predictor.
+    """Apply inverse link function to linear predictor.
     
-    Parameters
-    ----------
-    eta : np.ndarray
-        Linear predictor values
-    link : str or None
-        Link function name
-        
-    Returns
-    -------
-    np.ndarray
-        Predicted means (mu)
+    Delegates to the shared implementation in formula.py which raises
+    on unknown links instead of silently defaulting.
     """
-    if link in (None, "log"):
-        return np.exp(eta)
-    elif link == "identity":
-        return eta
-    elif link == "logit":
-        return 1.0 / (1.0 + np.exp(-eta))
-    elif link == "inverse":
-        return 1.0 / eta
-    # Default to log link for unknown
-    return np.exp(eta)
+    from rustystats.formula import apply_inverse_link
+    return apply_inverse_link(eta, link)
 
 
 def compute_alpha_max(

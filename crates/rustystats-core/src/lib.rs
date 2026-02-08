@@ -53,7 +53,7 @@ pub use inference::{
 };
 pub use links::Link;
 pub use regularization::{Penalty, RegularizationConfig, soft_threshold};
-pub use solvers::{IRLSConfig, IRLSResult, fit_glm, fit_glm_full, fit_glm_regularized, fit_glm_coordinate_descent};
+pub use solvers::{FitConfig, fit_glm_unified, IRLSConfig, IRLSResult};
 pub use splines::{bs, ns, bs_basis, ns_basis, bs_with_knots, bs_names, ns_names, compute_knots, DEFAULT_DEGREE};
 pub use design_matrix::{
     encode_categorical, encode_categorical_from_indices,

@@ -91,13 +91,8 @@ def summary(
     lines.append(f"{'Link Function:':<20} {'(default)':<15} {'Df Residuals:':<20} {result.df_resid:>10}")
     
     # Show regularization info if applicable
-    try:
-        is_reg = result.is_regularized
-        penalty_type = result.penalty_type if is_reg else "none"
-    except AttributeError:
-        # Older result objects may not have these attributes - this is expected
-        is_reg = False
-        penalty_type = "none"
+    is_reg = result.is_regularized
+    penalty_type = result.penalty_type if is_reg else "none"
     
     if is_reg:
         method = f"IRLS + {penalty_type.title()}"

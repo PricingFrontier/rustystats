@@ -34,9 +34,6 @@ __all__ = [
     "DEFAULT_MAX_INTERACTION_FACTORS",
     # Numerical Stability
     "EPSILON",
-    "MU_MIN_POISSON",
-    "MU_MIN_GAMMA",
-    "MU_BOUNDS_BINOMIAL",
     # Validation Thresholds
     "ZERO_VARIANCE_THRESHOLD",
     "CONDITION_NUMBER_THRESHOLD",
@@ -99,9 +96,6 @@ DEFAULT_MAX_INTERACTION_FACTORS = 10
 # Numerical Stability
 # =============================================================================
 EPSILON = 1e-10
-MU_MIN_POISSON = 1e-10
-MU_MIN_GAMMA = 1e-10
-MU_BOUNDS_BINOMIAL = (1e-10, 1 - 1e-10)
 
 # =============================================================================
 # Validation Thresholds
@@ -128,7 +122,6 @@ DEFAULT_LINKS = {
     "binomial": "logit",
     "gamma": "log",
     "tweedie": "log",
-    "inversegaussian": "inverse_squared",
     "negbinomial": "log",
     "negativebinomial": "log",
 }

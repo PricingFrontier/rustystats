@@ -43,24 +43,24 @@ pub fn compute_calibration_curve_py<'py>(
         n_bins,
     );
     
-    let result: Vec<PyObject> = bins.into_iter().map(|bin| {
+    let result: PyResult<Vec<PyObject>> = bins.into_iter().map(|bin| {
         let dict = pyo3::types::PyDict::new_bound(py);
-        dict.set_item("bin_index", bin.bin_index).unwrap();
-        dict.set_item("predicted_lower", bin.predicted_lower).unwrap();
-        dict.set_item("predicted_upper", bin.predicted_upper).unwrap();
-        dict.set_item("predicted_mean", bin.predicted_mean).unwrap();
-        dict.set_item("actual_mean", bin.actual_mean).unwrap();
-        dict.set_item("actual_expected_ratio", bin.actual_expected_ratio).unwrap();
-        dict.set_item("count", bin.count).unwrap();
-        dict.set_item("exposure", bin.exposure).unwrap();
-        dict.set_item("actual_sum", bin.actual_sum).unwrap();
-        dict.set_item("predicted_sum", bin.predicted_sum).unwrap();
-        dict.set_item("ae_ci_lower", bin.ae_ci_lower).unwrap();
-        dict.set_item("ae_ci_upper", bin.ae_ci_upper).unwrap();
-        dict.into_py(py)
+        dict.set_item("bin_index", bin.bin_index)?;
+        dict.set_item("predicted_lower", bin.predicted_lower)?;
+        dict.set_item("predicted_upper", bin.predicted_upper)?;
+        dict.set_item("predicted_mean", bin.predicted_mean)?;
+        dict.set_item("actual_mean", bin.actual_mean)?;
+        dict.set_item("actual_expected_ratio", bin.actual_expected_ratio)?;
+        dict.set_item("count", bin.count)?;
+        dict.set_item("exposure", bin.exposure)?;
+        dict.set_item("actual_sum", bin.actual_sum)?;
+        dict.set_item("predicted_sum", bin.predicted_sum)?;
+        dict.set_item("ae_ci_lower", bin.ae_ci_lower)?;
+        dict.set_item("ae_ci_upper", bin.ae_ci_upper)?;
+        Ok(dict.into_py(py))
     }).collect();
     
-    Ok(result)
+    result
 }
 
 /// Compute discrimination stats (Gini, AUC, etc.) from Rust
@@ -105,8 +105,11 @@ pub fn compute_ae_continuous_py<'py>(
     let mu_arr = mu.as_array().to_owned();
     let exp_arr = exposure.map(|e| e.as_array().to_owned());
     
+    let values_slice = values_arr.as_slice()
+        .ok_or_else(|| PyValueError::new_err("Values array is not contiguous in memory"))?;
+    
     let bins = compute_ae_continuous(
-        values_arr.as_slice().unwrap(),
+        values_slice,
         &y_arr,
         &mu_arr,
         exp_arr.as_ref(),
@@ -116,26 +119,26 @@ pub fn compute_ae_continuous_py<'py>(
         None,  // theta
     );
     
-    let result: Vec<PyObject> = bins.into_iter().map(|bin| {
+    let result: PyResult<Vec<PyObject>> = bins.into_iter().map(|bin| {
         let dict = pyo3::types::PyDict::new_bound(py);
-        dict.set_item("bin_index", bin.bin_index).unwrap();
-        dict.set_item("bin_label", &bin.bin_label).unwrap();
-        dict.set_item("bin_lower", bin.bin_lower).unwrap();
-        dict.set_item("bin_upper", bin.bin_upper).unwrap();
-        dict.set_item("count", bin.count).unwrap();
-        dict.set_item("exposure", bin.exposure).unwrap();
-        dict.set_item("actual_sum", bin.actual_sum).unwrap();
-        dict.set_item("predicted_sum", bin.predicted_sum).unwrap();
-        dict.set_item("actual_mean", bin.actual_mean).unwrap();
-        dict.set_item("predicted_mean", bin.predicted_mean).unwrap();
-        dict.set_item("actual_expected_ratio", bin.actual_expected_ratio).unwrap();
-        dict.set_item("loss", bin.loss).unwrap();
-        dict.set_item("ae_ci_lower", bin.ae_ci_lower).unwrap();
-        dict.set_item("ae_ci_upper", bin.ae_ci_upper).unwrap();
-        dict.into_py(py)
+        dict.set_item("bin_index", bin.bin_index)?;
+        dict.set_item("bin_label", &bin.bin_label)?;
+        dict.set_item("bin_lower", bin.bin_lower)?;
+        dict.set_item("bin_upper", bin.bin_upper)?;
+        dict.set_item("count", bin.count)?;
+        dict.set_item("exposure", bin.exposure)?;
+        dict.set_item("actual_sum", bin.actual_sum)?;
+        dict.set_item("predicted_sum", bin.predicted_sum)?;
+        dict.set_item("actual_mean", bin.actual_mean)?;
+        dict.set_item("predicted_mean", bin.predicted_mean)?;
+        dict.set_item("actual_expected_ratio", bin.actual_expected_ratio)?;
+        dict.set_item("loss", bin.loss)?;
+        dict.set_item("ae_ci_lower", bin.ae_ci_lower)?;
+        dict.set_item("ae_ci_upper", bin.ae_ci_upper)?;
+        Ok(dict.into_py(py))
     }).collect();
     
-    Ok(result)
+    result
 }
 
 /// Compute A/E bins for categorical factor from Rust
@@ -167,24 +170,24 @@ pub fn compute_ae_categorical_py<'py>(
         max_levels,
     );
     
-    let result: Vec<PyObject> = bins.into_iter().map(|bin| {
+    let result: PyResult<Vec<PyObject>> = bins.into_iter().map(|bin| {
         let dict = pyo3::types::PyDict::new_bound(py);
-        dict.set_item("bin_index", bin.bin_index).unwrap();
-        dict.set_item("bin_label", &bin.bin_label).unwrap();
-        dict.set_item("count", bin.count).unwrap();
-        dict.set_item("exposure", bin.exposure).unwrap();
-        dict.set_item("actual_sum", bin.actual_sum).unwrap();
-        dict.set_item("predicted_sum", bin.predicted_sum).unwrap();
-        dict.set_item("actual_mean", bin.actual_mean).unwrap();
-        dict.set_item("predicted_mean", bin.predicted_mean).unwrap();
-        dict.set_item("actual_expected_ratio", bin.actual_expected_ratio).unwrap();
-        dict.set_item("loss", bin.loss).unwrap();
-        dict.set_item("ae_ci_lower", bin.ae_ci_lower).unwrap();
-        dict.set_item("ae_ci_upper", bin.ae_ci_upper).unwrap();
-        dict.into_py(py)
+        dict.set_item("bin_index", bin.bin_index)?;
+        dict.set_item("bin_label", &bin.bin_label)?;
+        dict.set_item("count", bin.count)?;
+        dict.set_item("exposure", bin.exposure)?;
+        dict.set_item("actual_sum", bin.actual_sum)?;
+        dict.set_item("predicted_sum", bin.predicted_sum)?;
+        dict.set_item("actual_mean", bin.actual_mean)?;
+        dict.set_item("predicted_mean", bin.predicted_mean)?;
+        dict.set_item("actual_expected_ratio", bin.actual_expected_ratio)?;
+        dict.set_item("loss", bin.loss)?;
+        dict.set_item("ae_ci_lower", bin.ae_ci_lower)?;
+        dict.set_item("ae_ci_upper", bin.ae_ci_upper)?;
+        Ok(dict.into_py(py))
     }).collect();
     
-    Ok(result)
+    result
 }
 
 /// Compute factor deviance breakdown from Rust (fast groupby)
@@ -216,19 +219,19 @@ pub fn compute_factor_deviance_py<'py>(
     );
     
     // Convert levels to list of dicts
-    let levels_list: Vec<PyObject> = result.levels.into_iter().map(|level| {
+    let levels_list: Vec<PyObject> = result.levels.into_iter().map(|level| -> PyResult<PyObject> {
         let dict = pyo3::types::PyDict::new_bound(py);
-        dict.set_item("level", &level.level).unwrap();
-        dict.set_item("count", level.count).unwrap();
-        dict.set_item("deviance", level.deviance).unwrap();
-        dict.set_item("deviance_pct", level.deviance_pct).unwrap();
-        dict.set_item("mean_deviance", level.mean_deviance).unwrap();
-        dict.set_item("actual_sum", level.actual_sum).unwrap();
-        dict.set_item("predicted_sum", level.predicted_sum).unwrap();
-        dict.set_item("ae_ratio", level.ae_ratio).unwrap();
-        dict.set_item("is_problem", level.is_problem).unwrap();
-        dict.into_py(py)
-    }).collect();
+        dict.set_item("level", &level.level)?;
+        dict.set_item("count", level.count)?;
+        dict.set_item("deviance", level.deviance)?;
+        dict.set_item("deviance_pct", level.deviance_pct)?;
+        dict.set_item("mean_deviance", level.mean_deviance)?;
+        dict.set_item("actual_sum", level.actual_sum)?;
+        dict.set_item("predicted_sum", level.predicted_sum)?;
+        dict.set_item("ae_ratio", level.ae_ratio)?;
+        dict.set_item("is_problem", level.is_problem)?;
+        Ok(dict.into_py(py))
+    }).collect::<PyResult<Vec<_>>>()?;
     
     let dict = pyo3::types::PyDict::new_bound(py);
     dict.set_item("factor_name", result.factor_name)?;
@@ -306,17 +309,17 @@ pub fn detect_interactions_py<'py>(
     
     let interactions = detect_interactions(&factors, &resid_arr, &config);
     
-    let result: Vec<PyObject> = interactions.into_iter().map(|int| {
+    let result: PyResult<Vec<PyObject>> = interactions.into_iter().map(|int| {
         let dict = pyo3::types::PyDict::new_bound(py);
-        dict.set_item("factor1", &int.factor1).unwrap();
-        dict.set_item("factor2", &int.factor2).unwrap();
-        dict.set_item("strength", int.interaction_strength).unwrap();
-        dict.set_item("pvalue", int.pvalue).unwrap();
-        dict.set_item("n_cells", int.n_cells).unwrap();
-        dict.into_py(py)
+        dict.set_item("factor1", &int.factor1)?;
+        dict.set_item("factor2", &int.factor2)?;
+        dict.set_item("strength", int.interaction_strength)?;
+        dict.set_item("pvalue", int.pvalue)?;
+        dict.set_item("n_cells", int.n_cells)?;
+        Ok(dict.into_py(py))
     }).collect();
     
-    Ok(result)
+    result
 }
 
 /// Compute Lorenz curve from Rust
@@ -335,15 +338,15 @@ pub fn compute_lorenz_curve_py<'py>(
     
     let points = compute_lorenz_curve(&y_arr, &mu_arr, exp_arr.as_ref(), n_points);
     
-    let result: Vec<PyObject> = points.into_iter().map(|p| {
+    let result: PyResult<Vec<PyObject>> = points.into_iter().map(|p| {
         let dict = pyo3::types::PyDict::new_bound(py);
-        dict.set_item("cumulative_exposure_pct", p.cumulative_exposure_pct).unwrap();
-        dict.set_item("cumulative_actual_pct", p.cumulative_actual_pct).unwrap();
-        dict.set_item("cumulative_predicted_pct", p.cumulative_predicted_pct).unwrap();
-        dict.into_py(py)
+        dict.set_item("cumulative_exposure_pct", p.cumulative_exposure_pct)?;
+        dict.set_item("cumulative_actual_pct", p.cumulative_actual_pct)?;
+        dict.set_item("cumulative_predicted_pct", p.cumulative_predicted_pct)?;
+        Ok(dict.into_py(py))
     }).collect();
     
-    Ok(result)
+    result
 }
 
 /// Compute Hosmer-Lemeshow test from Rust
@@ -611,8 +614,11 @@ pub fn compute_residual_pattern_py<'py>(
     let values_arr = values.as_array().to_owned();
     let resid_arr = residuals.as_array().to_owned();
     
+    let values_slice = values_arr.as_slice()
+        .ok_or_else(|| PyValueError::new_err("Values array is not contiguous in memory"))?;
+    
     let pattern = compute_residual_pattern_continuous(
-        values_arr.as_slice().unwrap(),
+        values_slice,
         &resid_arr,
         n_bins,
     );
@@ -620,12 +626,12 @@ pub fn compute_residual_pattern_py<'py>(
     let dict = pyo3::types::PyDict::new_bound(py);
     dict.set_item("correlation_with_residuals", pattern.correlation_with_residuals)?;
     
-    let means: Vec<PyObject> = pattern.mean_residual_by_bin.into_iter().enumerate().map(|(i, m)| {
+    let means: Vec<PyObject> = pattern.mean_residual_by_bin.into_iter().enumerate().map(|(i, m)| -> PyResult<PyObject> {
         let d = pyo3::types::PyDict::new_bound(py);
-        d.set_item("bin_index", i).unwrap();
-        d.set_item("mean_residual", m).unwrap();
-        d.into_py(py)
-    }).collect();
+        d.set_item("bin_index", i)?;
+        d.set_item("mean_residual", m)?;
+        Ok(d.into_py(py))
+    }).collect::<PyResult<Vec<_>>>()?;
     
     dict.set_item("mean_residual_by_bin", means)?;
     

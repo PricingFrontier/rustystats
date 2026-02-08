@@ -96,6 +96,43 @@ def get_default_link(family: str) -> str:
         )
     return link
 
+
+def apply_inverse_link(eta: np.ndarray, link: str) -> np.ndarray:
+    """
+    Apply inverse link function to linear predictor.
+    
+    Parameters
+    ----------
+    eta : np.ndarray
+        Linear predictor values
+    link : str
+        Link function name ("identity", "log", "logit", "inverse")
+        
+    Returns
+    -------
+    np.ndarray
+        Predicted means (mu)
+        
+    Raises
+    ------
+    ValidationError
+        If link function is not recognized.
+    """
+    if link == "identity":
+        return eta
+    elif link in (None, "log"):
+        return np.exp(eta)
+    elif link == "logit":
+        return 1.0 / (1.0 + np.exp(-eta))
+    elif link == "inverse":
+        return 1.0 / eta
+    else:
+        raise ValidationError(
+            f"Unknown link function '{link}'. "
+            f"Supported links: 'identity', 'log', 'logit', 'inverse'."
+        )
+
+
 # Lazy imports for optional dependencies
 if TYPE_CHECKING:
     import polars as pl
@@ -258,7 +295,7 @@ def _fit_glm_core(
     builder: "InteractionBuilder",
 ) -> tuple:
     """
-    Core GLM fitting logic shared by FormulaGLM and FormulaGLMDict.
+    Core GLM fitting logic for FormulaGLMDict.
     
     Handles smooth term fitting with GCV-based lambda selection and
     standard fitting with coefficient constraints.
@@ -345,9 +382,9 @@ def _build_results(
 
 class _GLMBase:
     """
-    Shared base for FormulaGLM and FormulaGLMDict.
+    Base class for FormulaGLMDict.
     
-    Provides common data access, offset/weights processing, and CV path handling.
+    Provides data access, offset/weights processing, and CV path handling.
     Subclasses must set: _data_ref, family, link, _offset_spec, _seed.
     """
     
@@ -1114,18 +1151,7 @@ class GLMModel:
     
     def _apply_inverse_link(self, eta: np.ndarray) -> np.ndarray:
         """Apply inverse link function to linear predictor."""
-        link = self.link
-        if link == "identity":
-            return eta
-        elif link == "log":
-            return np.exp(eta)
-        elif link == "logit":
-            return 1.0 / (1.0 + np.exp(-eta))
-        elif link == "inverse":
-            return 1.0 / eta
-        else:
-            # Default to identity
-            return eta
+        return apply_inverse_link(eta, self.link)
     
     def to_bytes(self) -> bytes:
         """
@@ -1767,10 +1793,10 @@ class FormulaGLMDict(_GLMBase):
             elif term_type == "categorical":
                 term_strs.append(f"C({var_name})")
             elif term_type == "bs":
-                df = spec.get("df", 5)
+                df = spec.get("df", DEFAULT_SPLINE_DF)
                 term_strs.append(f"bs({var_name}, df={df})")
             elif term_type == "ns":
-                df = spec.get("df", 4)
+                df = spec.get("df", DEFAULT_SPLINE_DF)
                 term_strs.append(f"ns({var_name}, df={df})")
             elif term_type == "target_encoding":
                 interaction = spec.get("interaction")

@@ -106,12 +106,7 @@ def target_encode(
     For prediction on new data, use `apply_target_encoding()` which uses the full
     training statistics (no ordering needed).
     """
-    # Convert to list of strings if numpy array
-    if isinstance(categories, np.ndarray):
-        categories = [str(x) for x in categories]
-    else:
-        categories = [str(x) for x in categories]
-    
+    categories = [str(x) for x in categories]
     target = np.asarray(target, dtype=np.float64)
     
     return _rustystats.target_encode_py(
@@ -157,11 +152,7 @@ def apply_target_encoding(
     >>> # Predict
     >>> test_encoded = rs.apply_target_encoding(test_cats, stats, prior)
     """
-    # Convert to list of strings if numpy array
-    if isinstance(categories, np.ndarray):
-        categories = [str(x) for x in categories]
-    else:
-        categories = [str(x) for x in categories]
+    categories = [str(x) for x in categories]
     
     return _rustystats.apply_target_encoding_py(
         categories, level_stats, prior, prior_weight
@@ -335,11 +326,7 @@ def frequency_encode(
     >>> print(f"Column: {name}, Max count: {max_count}")
     Column: FE(cat), Max count: 3
     """
-    # Convert to list of strings if numpy array
-    if isinstance(categories, np.ndarray):
-        categories = [str(x) for x in categories]
-    else:
-        categories = [str(x) for x in categories]
+    categories = [str(x) for x in categories]
     
     return _rustystats.frequency_encode_py(categories, var_name)
 
@@ -378,11 +365,7 @@ def apply_frequency_encoding(
     >>> # Predict
     >>> test_encoded = rs.apply_frequency_encoding(test_cats, counts, max_count)
     """
-    # Convert to list of strings if numpy array
-    if isinstance(categories, np.ndarray):
-        categories = [str(x) for x in categories]
-    else:
-        categories = [str(x) for x in categories]
+    categories = [str(x) for x in categories]
     
     return _rustystats.apply_frequency_encoding_py(categories, level_counts, max_count)
 
@@ -504,16 +487,8 @@ def target_encode_interaction(
     >>> print(f"Column: {name}")
     Column: TE(brand:region)
     """
-    # Convert to list of strings
-    if isinstance(cat1, np.ndarray):
-        cat1 = [str(x) for x in cat1]
-    else:
-        cat1 = [str(x) for x in cat1]
-    
-    if isinstance(cat2, np.ndarray):
-        cat2 = [str(x) for x in cat2]
-    else:
-        cat2 = [str(x) for x in cat2]
+    cat1 = [str(x) for x in cat1]
+    cat2 = [str(x) for x in cat2]
     
     target = np.asarray(target, dtype=np.float64)
     
@@ -522,95 +497,3 @@ def target_encode_interaction(
         prior_weight, n_permutations, seed
     )
 
-
-# =============================================================================
-# FORMULA TERM CLASSES
-# =============================================================================
-
-
-class TargetEncodingTerm:
-    """
-    Represents a target encoding term in a formula.
-    
-    Used internally by the formula parser to handle TE(var) syntax.
-    
-    Parameters
-    ----------
-    var_name : str
-        Variable name to encode
-    prior_weight : float, optional
-        Prior weight for regularization
-    n_permutations : int, optional
-        Number of permutations
-    """
-    
-    def __init__(
-        self,
-        var_name: str,
-        prior_weight: float = DEFAULT_PRIOR_WEIGHT,
-        n_permutations: int = DEFAULT_N_PERMUTATIONS,
-    ):
-        self.var_name = var_name
-        self.prior_weight = prior_weight
-        self.n_permutations = n_permutations
-        self.encoder: Optional[TargetEncoder] = None
-    
-    def fit_transform(
-        self,
-        data,  # DataFrame (Polars or Pandas)
-        target: np.ndarray,
-        seed: Optional[int] = None,
-    ) -> Tuple[np.ndarray, str]:
-        """
-        Fit and transform the column from a DataFrame.
-        
-        Returns
-        -------
-        values : numpy.ndarray
-            Encoded values
-        name : str
-            Column name
-        """
-        # Extract column
-        if hasattr(data, 'to_numpy'):
-            # Polars DataFrame
-            col = data[self.var_name].to_numpy()
-        else:
-            # Pandas DataFrame
-            col = data[self.var_name].values
-        
-        categories = [str(x) for x in col]
-        
-        self.encoder = TargetEncoder(
-            prior_weight=self.prior_weight,
-            n_permutations=self.n_permutations,
-            seed=seed,
-        )
-        encoded = self.encoder.fit_transform(categories, target)
-        
-        return encoded, f"TE({self.var_name})"
-    
-    def transform(self, data) -> Tuple[np.ndarray, str]:
-        """
-        Transform new data using fitted encoder.
-        
-        Returns
-        -------
-        values : numpy.ndarray
-            Encoded values
-        name : str
-            Column name
-        """
-        if self.encoder is None:
-            raise EncodingError("Term not fitted. Call fit_transform() first.")
-        
-        # Extract column
-        if hasattr(data, 'to_numpy'):
-            col = data[self.var_name].to_numpy()
-        else:
-            col = data[self.var_name].values
-        
-        categories = [str(x) for x in col]
-        encoded = self.encoder.transform(categories)
-        
-        return encoded, f"TE({self.var_name})"

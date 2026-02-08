@@ -46,11 +46,15 @@ from rustystats.constants import (
 # Import Rust implementations for heavy computation
 from rustystats._rustystats import (
     encode_categorical_py as _encode_categorical_rust,
+    encode_categorical_indices_py as _encode_categorical_indices_rust,
     build_cat_cat_interaction_py as _build_cat_cat_rust,
     build_cat_cont_interaction_py as _build_cat_cont_rust,
     build_cont_cont_interaction_py as _build_cont_cont_rust,
     multiply_matrix_by_continuous_py as _multiply_matrix_cont_rust,
     target_encode_py as _target_encode_rust,
+    apply_target_encoding_py as _apply_target_encoding_rust,
+    apply_exposure_weighted_target_encoding_py as _apply_exposure_weighted_te_rust,
+    apply_frequency_encoding_py as _apply_frequency_encoding_rust,
 )
 
 if TYPE_CHECKING:
@@ -1526,32 +1530,35 @@ class InteractionBuilder:
         # Stack all columns using pre-allocated helper
         return self._stack_columns(columns, n_new, self.dtype)
     
+    def _map_to_training_indices(
+        self,
+        new_data: "pl.DataFrame",
+        var_name: str,
+    ) -> Tuple[np.ndarray, List[str]]:
+        """Map new data values to training-level integer indices.
+        
+        Returns indices and levels from training. Unknown levels map to 0
+        (reference level), producing all-zero dummy columns.
+        """
+        levels = self._get_categorical_levels(var_name)
+        col = new_data[var_name].to_numpy()
+        level_to_idx = {level: i for i, level in enumerate(levels)}
+        indices = np.array(
+            [level_to_idx.get(str(v), 0) for v in col], dtype=np.int32
+        )
+        return indices, levels
+    
     def _encode_categorical_new(
         self,
         new_data: "pl.DataFrame",
         var_name: str,
     ) -> np.ndarray:
-        """Encode categorical variable using levels from training."""
-        levels = self._get_categorical_levels(var_name)
-        col = new_data[var_name].to_numpy()
-        n = len(col)
-        
-        # Create level to index mapping (reference level is index 0)
-        level_to_idx = {level: i for i, level in enumerate(levels)}
-        
-        # Number of dummy columns (excluding reference level)
-        n_dummies = len(levels) - 1
-        encoding = np.zeros((n, n_dummies), dtype=self.dtype)
-        
-        for i, val in enumerate(col):
-            val_str = str(val)
-            if val_str in level_to_idx:
-                idx = level_to_idx[val_str]
-                if idx > 0:  # Skip reference level
-                    encoding[i, idx - 1] = 1.0
-            # Unknown levels get all zeros (mapped to reference)
-        
-        return encoding
+        """Encode categorical variable using levels from training (Rust)."""
+        indices, levels = self._map_to_training_indices(new_data, var_name)
+        encoding, _ = _encode_categorical_indices_rust(
+            indices, len(levels), list(levels), var_name, True
+        )
+        return np.asarray(encoding)
     
     def _build_interaction_new(
         self,
@@ -1624,28 +1631,57 @@ class InteractionBuilder:
                 all_columns.append(col)
             return np.column_stack(all_columns)
     
+    def _get_categorical_names(self, var_name: str) -> List[str]:
+        """Get cached categorical column names from training."""
+        cache_key = f"{var_name}_True"
+        cached = self._cat_encoding_cache.get(cache_key)
+        if cached is not None:
+            return cached.names
+        return []
+    
     def _build_categorical_interaction_new(
         self,
         new_data: "pl.DataFrame",
         interaction: InteractionTerm,
         n: int,
     ) -> np.ndarray:
-        """Build categorical × categorical interaction for new data."""
-        encodings = []
-        for factor in interaction.factors:
-            enc = self._encode_categorical_new(new_data, factor)
-            encodings.append(enc)
+        """Build categorical × categorical interaction for new data (Rust)."""
+        factors = interaction.factors
         
-        # Build interaction by taking outer product (Kronecker-style)
-        result = encodings[0]
-        for enc in encodings[1:]:
-            n_cols1, n_cols2 = result.shape[1], enc.shape[1]
-            new_result = np.zeros((n, n_cols1 * n_cols2), dtype=self.dtype)
-            for i in range(n_cols1):
-                for j in range(n_cols2):
-                    new_result[:, i * n_cols2 + j] = result[:, i] * enc[:, j]
-            result = new_result
-        return result
+        if len(factors) == 2:
+            # Optimized 2-way: use Rust index-based construction
+            idx1, levels1 = self._map_to_training_indices(new_data, factors[0])
+            idx2, levels2 = self._map_to_training_indices(new_data, factors[1])
+            n1 = len(levels1) - 1
+            n2 = len(levels2) - 1
+            if n1 * n2 == 0:
+                return np.zeros((n, 0), dtype=self.dtype)
+            names1 = self._get_categorical_names(factors[0])
+            names2 = self._get_categorical_names(factors[1])
+            result, _ = _build_cat_cat_rust(
+                idx1, n1, idx2, n2, list(names1), list(names2)
+            )
+            return np.asarray(result)
+        
+        # N-way: start with Rust 2-way, then extend with numpy broadcasting
+        idx1, levels1 = self._map_to_training_indices(new_data, factors[0])
+        idx2, levels2 = self._map_to_training_indices(new_data, factors[1])
+        n1, n2 = len(levels1) - 1, len(levels2) - 1
+        if n1 * n2 == 0:
+            return np.zeros((n, 0), dtype=self.dtype)
+        names1 = self._get_categorical_names(factors[0])
+        names2 = self._get_categorical_names(factors[1])
+        combined, _ = _build_cat_cat_rust(
+            idx1, n1, idx2, n2, list(names1), list(names2)
+        )
+        combined = np.asarray(combined)
+        
+        for factor in factors[2:]:
+            enc = self._encode_categorical_new(new_data, factor)
+            # Outer product via broadcasting: combined[:, :, None] * enc[:, None, :]
+            combined = (combined[:, :, None] * enc[:, None, :]).reshape(n, -1)
+        
+        return combined
     
     def _build_mixed_interaction_new(
         self,
@@ -1653,7 +1689,7 @@ class InteractionBuilder:
         interaction: InteractionTerm,
         n: int,
     ) -> np.ndarray:
-        """Build categorical × continuous interaction for new data (may include splines)."""
+        """Build categorical × continuous interaction for new data (Rust)."""
         cat_factors = []
         cont_factors = []
         spline_factors = []
@@ -1671,16 +1707,21 @@ class InteractionBuilder:
                 else:
                     cont_factors.append(factor)
         
-        # Build categorical encoding (single or multi-factor)
-        cat_enc = self._encode_categorical_new(new_data, cat_factors[0])
-        for factor in cat_factors[1:]:
-            enc = self._encode_categorical_new(new_data, factor)
-            n_cols1, n_cols2 = cat_enc.shape[1], enc.shape[1]
-            new_enc = np.zeros((n, n_cols1 * n_cols2), dtype=self.dtype)
-            for i in range(n_cols1):
-                for j in range(n_cols2):
-                    new_enc[:, i * n_cols2 + j] = cat_enc[:, i] * enc[:, j]
-            cat_enc = new_enc
+        # Build categorical encoding using Rust
+        if len(cat_factors) == 1:
+            cat_enc = self._encode_categorical_new(new_data, cat_factors[0])
+            cat_names = self._get_categorical_names(cat_factors[0])
+        else:
+            # Multi-categorical: build interaction via Rust
+            cat_interaction = InteractionTerm(
+                factors=cat_factors,
+                categorical_flags=[True] * len(cat_factors)
+            )
+            cat_enc = self._build_categorical_interaction_new(new_data, cat_interaction, n)
+            cat_names = []  # Names not needed for further multiplication
+        
+        if cat_enc.shape[1] == 0:
+            return np.zeros((n, 0), dtype=self.dtype)
         
         # Handle spline × categorical interactions
         if spline_factors:
@@ -1691,36 +1732,62 @@ class InteractionBuilder:
                 fitted_spline = self._fitted_splines.get(spline.var_name, spline)
                 spline_basis, _ = fitted_spline.transform(x)
                 
-                # Multiply each spline column by each categorical column
+                # Use Rust to multiply categorical matrix by each spline column
                 for j in range(spline_basis.shape[1]):
-                    for i in range(cat_enc.shape[1]):
-                        col = cat_enc[:, i] * spline_basis[:, j]
-                        all_columns.append(col)
+                    result, _ = _multiply_matrix_cont_rust(
+                        cat_enc.astype(np.float64),
+                        spline_basis[:, j].astype(np.float64),
+                        list(cat_names) if cat_names else [f"c{i}" for i in range(cat_enc.shape[1])],
+                        f"{spline.var_name}[{j}]"
+                    )
+                    all_columns.append(np.asarray(result))
             
-            # Also include any regular continuous factors
             if cont_factors:
                 cont_product = new_data[cont_factors[0]].to_numpy().astype(self.dtype)
                 for factor in cont_factors[1:]:
                     cont_product = cont_product * new_data[factor].to_numpy().astype(self.dtype)
-                all_columns = [col * cont_product for col in all_columns]
+                all_columns = [col * cont_product.reshape(-1, 1) for col in all_columns]
             
             if all_columns:
                 return np.column_stack(all_columns)
             return np.zeros((n, 0), dtype=self.dtype)
         
-        # Standard continuous × categorical (no splines)
+        # Standard continuous × categorical (no splines) — use Rust
         cont_product = new_data[cont_factors[0]].to_numpy().astype(self.dtype)
         for factor in cont_factors[1:]:
             cont_product = cont_product * new_data[factor].to_numpy().astype(self.dtype)
+        cont_name = ':'.join(cont_factors)
         
-        return cat_enc * cont_product.reshape(-1, 1)
+        if len(cat_factors) == 1:
+            # Single categorical: use fast index-based Rust construction
+            cat_indices, levels = self._map_to_training_indices(new_data, cat_factors[0])
+            n_levels = len(levels) - 1
+            if n_levels == 0:
+                return np.zeros((n, 0), dtype=self.dtype)
+            result, _ = _build_cat_cont_rust(
+                cat_indices.astype(np.int32),
+                n_levels,
+                cont_product.astype(np.float64),
+                list(cat_names),
+                cont_name
+            )
+            return np.asarray(result)
+        else:
+            # Multi-categorical: use matrix × continuous Rust
+            result, _ = _multiply_matrix_cont_rust(
+                cat_enc.astype(np.float64),
+                cont_product.astype(np.float64),
+                list(cat_names) if cat_names else [f"c{i}" for i in range(cat_enc.shape[1])],
+                cont_name
+            )
+            return np.asarray(result)
     
     def _encode_target_new(
         self,
         new_data: "pl.DataFrame",
         te_term: TargetEncodingTermSpec,
     ) -> np.ndarray:
-        """Encode using target statistics from training."""
+        """Encode using target statistics from training (Rust)."""
         if te_term.var_name not in self._te_stats:
             raise EncodingError(
                 f"Target encoding for '{te_term.var_name}' was not fitted during training."
@@ -1733,66 +1800,41 @@ class InteractionBuilder:
         used_exposure_weighted = stats.get('used_exposure_weighted', False)
         interaction_vars = stats.get('interaction_vars')
         
-        # Handle TE interactions: combine columns from separate variables
+        # Build category strings for Rust
         if interaction_vars is not None and len(interaction_vars) >= 2:
             cols = [new_data[var].to_numpy() for var in interaction_vars]
-            # Combine into "var1:var2:..." format
-            col = np.array([":".join(str(c[i]) for c in cols) for i in range(len(cols[0]))])
+            categories = [":".join(str(c[i]) for c in cols) for i in range(len(cols[0]))]
         else:
-            col = new_data[te_term.var_name].to_numpy()
-        n = len(col)
-        encoded = np.zeros(n, dtype=self.dtype)
+            categories = [str(v) for v in new_data[te_term.var_name].to_numpy()]
         
         if used_exposure_weighted:
-            # Exposure-weighted: level_stats contains (sum_claims, sum_exposure)
-            for i, val in enumerate(col):
-                val_str = str(val)
-                if val_str in level_stats:
-                    sum_claims, sum_exposure = level_stats[val_str]
-                    # (sum_claims + prior * prior_weight) / (sum_exposure + prior_weight)
-                    encoded[i] = (sum_claims + prior * prior_weight) / (sum_exposure + prior_weight)
-                else:
-                    # Unknown level - use global prior
-                    encoded[i] = prior
+            encoded = _apply_exposure_weighted_te_rust(
+                categories, level_stats, prior, prior_weight
+            )
         else:
-            # Observation-weighted: level_stats contains (sum_target, count)
-            for i, val in enumerate(col):
-                val_str = str(val)
-                if val_str in level_stats:
-                    level_sum, level_count = level_stats[val_str]
-                    # Use full training statistics for prediction
-                    encoded[i] = (level_sum + prior * prior_weight) / (level_count + prior_weight)
-                else:
-                    # Unknown level - use global prior
-                    encoded[i] = prior
+            encoded = _apply_target_encoding_rust(
+                categories, level_stats, prior, prior_weight
+            )
         
-        return encoded
+        return np.asarray(encoded, dtype=self.dtype)
     
     def _encode_frequency_new(
         self,
         new_data: "pl.DataFrame",
         fe_term: FrequencyEncodingTermSpec,
     ) -> np.ndarray:
-        """Encode using frequency statistics from training."""
+        """Encode using frequency statistics from training (Rust)."""
         if fe_term.var_name not in self._fe_stats:
             raise EncodingError(
                 f"Frequency encoding for '{fe_term.var_name}' was not fitted during training."
             )
         
         stats = self._fe_stats[fe_term.var_name]
-        level_counts = stats['level_counts']
-        max_count = stats['max_count']
-        
-        col = new_data[fe_term.var_name].to_numpy()
-        n = len(col)
-        encoded = np.zeros(n, dtype=self.dtype)
-        
-        for i, val in enumerate(col):
-            val_str = str(val)
-            count = level_counts.get(val_str, 0)
-            encoded[i] = count / max_count if max_count > 0 else 0.0
-        
-        return encoded
+        categories = [str(v) for v in new_data[fe_term.var_name].to_numpy()]
+        encoded = _apply_frequency_encoding_rust(
+            categories, stats['level_counts'], stats['max_count']
+        )
+        return np.asarray(encoded, dtype=self.dtype)
     
     def _build_categorical_level_indicators_new(
         self,

@@ -17,7 +17,7 @@ use rayon::prelude::*;
 use rayon::iter::IntoParallelIterator;
 
 use rustystats_core::families::{PoissonFamily, NegativeBinomialFamily};
-use rustystats_core::solvers::{fit_glm_full, fit_glm_warm_start, fit_glm_regularized, fit_glm_regularized_warm, fit_glm_coordinate_descent, IRLSConfig, IRLSResult, fit_smooth_glm_full_matrix, SmoothGLMConfig, Monotonicity, SmoothTermSpec};
+use rustystats_core::solvers::{FitConfig, fit_glm_unified, IRLSConfig, IRLSResult, fit_smooth_glm_full_matrix, SmoothGLMConfig, Monotonicity, SmoothTermSpec};
 use rustystats_core::regularization::RegularizationConfig;
 use rustystats_core::diagnostics::{estimate_theta_profile, estimate_theta_moments};
 
@@ -100,19 +100,19 @@ pub fn fit_glm_py(
     let offset_array: Option<Array1<f64>> = offset.map(|o| o.as_array().to_owned());
     let weights_array: Option<Array1<f64>> = weights.map(|w| w.as_array().to_owned());
 
-    let irls_config = IRLSConfig {
-        max_iterations: max_iter, tolerance: tol, min_weight: 1e-10, verbose: false,
-        nonneg_indices: nonneg_indices.unwrap_or_default(),
-        nonpos_indices: nonpos_indices.unwrap_or_default(),
-    };
-
-    let use_regularization = alpha > 0.0;
-    let use_coordinate_descent = use_regularization && l1_ratio > 0.0;
-    let reg_config = if use_regularization {
+    let reg_config = if alpha > 0.0 {
         if l1_ratio >= 1.0 { RegularizationConfig::lasso(alpha) }
         else if l1_ratio <= 0.0 { RegularizationConfig::ridge(alpha) }
         else { RegularizationConfig::elastic_net(alpha, l1_ratio) }
     } else { RegularizationConfig::none() };
+
+    let config = FitConfig {
+        max_iterations: max_iter, tolerance: tol, min_weight: 1e-10, verbose: false,
+        nonneg_indices: nonneg_indices.unwrap_or_default(),
+        nonpos_indices: nonpos_indices.unwrap_or_default(),
+        regularization: reg_config,
+        skip_covariance: false,
+    };
 
     // Gamma validation
     if family.to_lowercase() == "gamma" {
@@ -128,16 +128,10 @@ pub fn fit_glm_py(
     let fam = family_from_name(family, var_power, theta)?;
     let lnk = link_from_name(link.unwrap_or(default_link_name(family)))?;
 
-    let result: IRLSResult = if use_coordinate_descent {
-        fit_glm_coordinate_descent(&y_array, &x_array, fam.as_ref(), lnk.as_ref(), &irls_config, &reg_config,
-            offset_array.as_ref(), weights_array.as_ref(), None, false)
-    } else if use_regularization {
-        fit_glm_regularized(&y_array, &x_array, fam.as_ref(), lnk.as_ref(), &irls_config, &reg_config,
-            offset_array.as_ref(), weights_array.as_ref())
-    } else {
-        fit_glm_full(&y_array, &x_array, fam.as_ref(), lnk.as_ref(), &irls_config,
-            offset_array.as_ref(), weights_array.as_ref())
-    }.map_err(|e| PyValueError::new_err(format!("GLM fitting failed: {}", e)))?;
+    let result: IRLSResult = fit_glm_unified(
+        &y_array, &x_array, fam.as_ref(), lnk.as_ref(), &config,
+        offset_array.as_ref(), weights_array.as_ref(), None,
+    ).map_err(|e| PyValueError::new_err(format!("GLM fitting failed: {}", e)))?;
 
     let family_name = if result.family_name.to_lowercase().contains("negativebinomial")
         || result.family_name.to_lowercase().contains("negbinomial") {
@@ -176,13 +170,19 @@ pub fn fit_negbinomial_py(
     let offset_array: Option<Array1<f64>> = offset.map(|o| o.as_array().to_owned());
     let weights_array: Option<Array1<f64>> = weights.map(|w| w.as_array().to_owned());
 
-    let irls_config_loose = IRLSConfig {
+    let reg_config = if alpha > 0.0 {
+        if l1_ratio >= 1.0 { RegularizationConfig::lasso(alpha) }
+        else if l1_ratio <= 0.0 { RegularizationConfig::ridge(alpha) }
+        else { RegularizationConfig::elastic_net(alpha, l1_ratio) }
+    } else { RegularizationConfig::none() };
+
+    let config_loose = FitConfig {
         max_iterations: max_iter, tolerance: 1e-4, min_weight: 1e-10, verbose: false,
         nonneg_indices: Vec::new(), nonpos_indices: Vec::new(),
+        regularization: reg_config.clone(), skip_covariance: false,
     };
-    let irls_config_final = IRLSConfig {
-        max_iterations: max_iter, tolerance: tol.max(1e-6), min_weight: 1e-10, verbose: false,
-        nonneg_indices: Vec::new(), nonpos_indices: Vec::new(),
+    let config_final = FitConfig {
+        tolerance: tol.max(1e-6), ..config_loose.clone()
     };
 
     let link_name = link.unwrap_or("log");
@@ -197,8 +197,9 @@ pub fn fit_negbinomial_py(
         Some(t) => t,
         None => {
             let poisson = PoissonFamily;
-            let init_result = fit_glm_full(&y_array, &x_array, &poisson, link_fn.as_ref(),
-                &irls_config_loose, offset_array.as_ref(), weights_array.as_ref(),
+            let init_config = FitConfig { regularization: RegularizationConfig::none(), ..config_loose.clone() };
+            let init_result = fit_glm_unified(&y_array, &x_array, &poisson, link_fn.as_ref(),
+                &init_config, offset_array.as_ref(), weights_array.as_ref(), None,
             ).map_err(|e| PyValueError::new_err(format!("Initial Poisson fit failed: {}", e)))?;
             estimate_theta_moments(&y_array, &init_result.fitted_values)
         }
@@ -207,26 +208,11 @@ pub fn fit_negbinomial_py(
     let mut result: IRLSResult;
     let mut coefficients: Option<Array1<f64>> = None;
 
-    let use_regularization = alpha > 0.0;
-    let reg_config = if use_regularization {
-        if l1_ratio >= 1.0 { RegularizationConfig::lasso(alpha) }
-        else if l1_ratio <= 0.0 { RegularizationConfig::ridge(alpha) }
-        else { RegularizationConfig::elastic_net(alpha, l1_ratio) }
-    } else { RegularizationConfig::none() };
-
     for _iter in 0..max_theta_iter {
         let family = NegativeBinomialFamily::new(theta);
-        result = if use_regularization {
-            fit_glm_regularized(&y_array, &x_array, &family, link_fn.as_ref(),
-                &irls_config_loose, &reg_config, offset_array.as_ref(), weights_array.as_ref())
-        } else {
-            match &coefficients {
-                Some(coef) => fit_glm_warm_start(&y_array, &x_array, &family, link_fn.as_ref(),
-                    &irls_config_loose, offset_array.as_ref(), weights_array.as_ref(), coef),
-                None => fit_glm_full(&y_array, &x_array, &family, link_fn.as_ref(),
-                    &irls_config_loose, offset_array.as_ref(), weights_array.as_ref()),
-            }
-        }.map_err(|e| PyValueError::new_err(format!("GLM fitting failed: {}", e)))?;
+        result = fit_glm_unified(&y_array, &x_array, &family, link_fn.as_ref(),
+            &config_loose, offset_array.as_ref(), weights_array.as_ref(), coefficients.as_ref(),
+        ).map_err(|e| PyValueError::new_err(format!("GLM fitting failed: {}", e)))?;
 
         coefficients = Some(result.coefficients.clone());
         let new_theta = estimate_theta_profile(&y_array, &result.fitted_values,
@@ -236,17 +222,9 @@ pub fn fit_negbinomial_py(
     }
 
     let final_family = NegativeBinomialFamily::new(theta);
-    result = if use_regularization {
-        fit_glm_regularized(&y_array, &x_array, &final_family, link_fn.as_ref(),
-            &irls_config_final, &reg_config, offset_array.as_ref(), weights_array.as_ref())
-    } else {
-        match &coefficients {
-            Some(coef) => fit_glm_warm_start(&y_array, &x_array, &final_family, link_fn.as_ref(),
-                &irls_config_final, offset_array.as_ref(), weights_array.as_ref(), coef),
-            None => fit_glm_full(&y_array, &x_array, &final_family, link_fn.as_ref(),
-                &irls_config_final, offset_array.as_ref(), weights_array.as_ref()),
-        }
-    }.map_err(|e| PyValueError::new_err(format!("Final GLM fit failed: {}", e)))?;
+    result = fit_glm_unified(&y_array, &x_array, &final_family, link_fn.as_ref(),
+        &config_final, offset_array.as_ref(), weights_array.as_ref(), coefficients.as_ref(),
+    ).map_err(|e| PyValueError::new_err(format!("Final GLM fit failed: {}", e)))?;
 
     Ok(PyGLMResults {
         coefficients: result.coefficients, fitted_values: result.fitted_values,
@@ -265,12 +243,10 @@ pub fn fit_negbinomial_py(
 // =============================================================================
 
 #[derive(Clone)]
-#[allow(dead_code)]
-struct CVPathPoint { alpha: f64, cv_deviance_mean: f64, cv_deviance_se: f64, n_nonzero: usize }
+struct CVPathPoint { alpha: f64, cv_deviance_mean: f64, cv_deviance_se: f64 }
 
 #[pyfunction]
 #[pyo3(signature = (y, x, family, link=None, var_power=1.5, theta=1.0, offset=None, weights=None, alphas=None, l1_ratio=0.0, n_folds=5, max_iter=25, tol=1e-8, seed=None))]
-#[allow(unused_variables)]
 pub fn fit_cv_path_py<'py>(
     py: Python<'py>,
     y: PyReadonlyArray1<f64>, x: PyReadonlyArray2<f64>,
@@ -301,11 +277,6 @@ pub fn fit_cv_path_py<'py>(
         }).collect()
     };
 
-    let irls_config = IRLSConfig {
-        max_iterations: max_iter, tolerance: tol, min_weight: 1e-10, verbose: false,
-        nonneg_indices: Vec::new(), nonpos_indices: Vec::new(),
-    };
-
     let _fam = family_from_name(family, var_power, theta)?;
     let default_link = default_link_name(family);
     let _link_fn = link_from_name(link.unwrap_or(default_link))?;
@@ -327,19 +298,22 @@ pub fn fit_cv_path_py<'py>(
         for i in 0..n {
             if train_mask[i] {
                 y_train[ti] = y_array[i]; x_train.row_mut(ti).assign(&x_array.row(i));
-                if let Some(ref o) = offset_array { offset_train.as_mut().unwrap()[ti] = o[i]; }
-                if let Some(ref w) = weights_array { weights_train.as_mut().unwrap()[ti] = w[i]; }
+                if let (Some(ref o), Some(ref mut ot)) = (&offset_array, &mut offset_train) { ot[ti] = o[i]; }
+                if let (Some(ref w), Some(ref mut wt)) = (&weights_array, &mut weights_train) { wt[ti] = w[i]; }
                 ti += 1;
             } else {
                 y_val[vi] = y_array[i]; x_val.row_mut(vi).assign(&x_array.row(i));
-                if let Some(ref o) = offset_array { offset_val.as_mut().unwrap()[vi] = o[i]; }
+                if let (Some(ref o), Some(ref mut ov)) = (&offset_array, &mut offset_val) { ov[vi] = o[i]; }
                 vi += 1;
             }
         }
 
-        let thread_fam = family_from_name(family, var_power, theta).unwrap();
+        // Safe: family/link were validated before entering the parallel loop
+        let thread_fam = family_from_name(family, var_power, theta)
+            .expect("family pre-validated before parallel loop");
         let link_name = link.unwrap_or(default_link);
-        let thread_link = link_from_name(link_name).unwrap();
+        let thread_link = link_from_name(link_name)
+            .expect("link pre-validated before parallel loop");
 
         let mut warm_coefficients: Option<Array1<f64>> = None;
         let mut fold_deviances: Vec<f64> = Vec::with_capacity(alpha_vec.len());
@@ -351,17 +325,16 @@ pub fn fit_cv_path_py<'py>(
                 else { RegularizationConfig::elastic_net(alpha, l1_ratio) }
             } else { RegularizationConfig::none() };
 
-            let result = if l1_ratio > 0.0 {
-                match fit_glm_coordinate_descent(&y_train, &x_train, thread_fam.as_ref(),
-                    thread_link.as_ref(), &irls_config, &reg_config,
-                    offset_train.as_ref(), weights_train.as_ref(), warm_coefficients.as_ref(), true)
-                { Ok(r) => r, Err(_) => { fold_deviances.push(f64::INFINITY); continue; } }
-            } else {
-                match fit_glm_regularized_warm(&y_train, &x_train, thread_fam.as_ref(),
-                    thread_link.as_ref(), &irls_config, &reg_config,
-                    offset_train.as_ref(), weights_train.as_ref(), warm_coefficients.as_ref())
-                { Ok(r) => r, Err(_) => { fold_deviances.push(f64::INFINITY); continue; } }
+            let cv_config = FitConfig {
+                max_iterations: max_iter, tolerance: tol, min_weight: 1e-10, verbose: false,
+                nonneg_indices: Vec::new(), nonpos_indices: Vec::new(),
+                regularization: reg_config, skip_covariance: true,
             };
+
+            let result = match fit_glm_unified(&y_train, &x_train, thread_fam.as_ref(),
+                thread_link.as_ref(), &cv_config,
+                offset_train.as_ref(), weights_train.as_ref(), warm_coefficients.as_ref())
+            { Ok(r) => r, Err(_) => { fold_deviances.push(f64::INFINITY); continue; } };
 
             warm_coefficients = Some(result.coefficients.clone());
             let lp: Array1<f64> = x_val.dot(&result.coefficients);
@@ -382,7 +355,7 @@ pub fn fit_cv_path_py<'py>(
             let var = fds.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / (fds.len() - 1) as f64;
             (var / fds.len() as f64).sqrt()
         } else { 0.0 };
-        path_results.push(CVPathPoint { alpha, cv_deviance_mean: mean, cv_deviance_se: se, n_nonzero: p - 1 });
+        path_results.push(CVPathPoint { alpha, cv_deviance_mean: mean, cv_deviance_se: se });
     }
 
     let dict = pyo3::types::PyDict::new_bound(py);

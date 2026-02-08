@@ -116,6 +116,153 @@ impl Default for IRLSConfig {
 }
 
 // =============================================================================
+// Unified Configuration
+// =============================================================================
+
+/// Unified configuration for GLM fitting.
+///
+/// Combines IRLS algorithm settings, regularization, and optional data inputs
+/// into a single struct. This is the preferred way to configure GLM fitting —
+/// it replaces the need to choose between `fit_glm`, `fit_glm_full`,
+/// `fit_glm_warm_start`, `fit_glm_regularized`, and `fit_glm_regularized_warm`.
+///
+/// # Examples
+/// ```ignore
+/// // Simple unregularized fit:
+/// let config = FitConfig::default();
+///
+/// // Ridge with warm start:
+/// let config = FitConfig::default()
+///     .with_regularization(RegularizationConfig::ridge(0.1))
+///     .with_init_coefficients(prev_result.coefficients.clone());
+///
+/// // Lasso (automatically uses coordinate descent):
+/// let config = FitConfig::default()
+///     .with_regularization(RegularizationConfig::lasso(0.5));
+/// ```
+#[derive(Debug, Clone)]
+pub struct FitConfig {
+    /// Maximum number of IRLS iterations.
+    /// Default: 25
+    pub max_iterations: usize,
+
+    /// Convergence tolerance for relative deviance change.
+    /// Default: 1e-8
+    pub tolerance: f64,
+
+    /// Minimum IRLS weight to avoid numerical instability.
+    /// Default: 1e-10
+    pub min_weight: f64,
+
+    /// Print iteration progress.
+    /// Default: false
+    pub verbose: bool,
+
+    /// Coefficient indices constrained to be non-negative (β ≥ 0).
+    /// Used for monotonic splines, pos() terms.
+    pub nonneg_indices: Vec<usize>,
+
+    /// Coefficient indices constrained to be non-positive (β ≤ 0).
+    /// Used for neg() terms.
+    pub nonpos_indices: Vec<usize>,
+
+    /// Regularization configuration (penalty type + settings).
+    /// Default: no regularization
+    pub regularization: RegularizationConfig,
+
+    /// Skip covariance matrix computation (for CV paths where only
+    /// coefficients are needed). Saves O(n×p²) computation.
+    /// Default: false
+    pub skip_covariance: bool,
+}
+
+impl Default for FitConfig {
+    fn default() -> Self {
+        Self {
+            max_iterations: DEFAULT_MAX_ITER,
+            tolerance: CONVERGENCE_TOL,
+            min_weight: MIN_IRLS_WEIGHT,
+            verbose: false,
+            nonneg_indices: Vec::new(),
+            nonpos_indices: Vec::new(),
+            regularization: RegularizationConfig::default(),
+            skip_covariance: false,
+        }
+    }
+}
+
+impl FitConfig {
+    /// Set regularization configuration.
+    pub fn with_regularization(mut self, reg: RegularizationConfig) -> Self {
+        self.regularization = reg;
+        self
+    }
+
+    /// Set maximum iterations.
+    pub fn with_max_iterations(mut self, max_iter: usize) -> Self {
+        self.max_iterations = max_iter;
+        self
+    }
+
+    /// Set convergence tolerance.
+    pub fn with_tolerance(mut self, tol: f64) -> Self {
+        self.tolerance = tol;
+        self
+    }
+
+    /// Set verbose mode.
+    pub fn with_verbose(mut self, verbose: bool) -> Self {
+        self.verbose = verbose;
+        self
+    }
+
+    /// Set non-negative coefficient constraints.
+    pub fn with_nonneg_indices(mut self, indices: Vec<usize>) -> Self {
+        self.nonneg_indices = indices;
+        self
+    }
+
+    /// Set non-positive coefficient constraints.
+    pub fn with_nonpos_indices(mut self, indices: Vec<usize>) -> Self {
+        self.nonpos_indices = indices;
+        self
+    }
+
+    /// Skip covariance computation (for CV paths).
+    pub fn with_skip_covariance(mut self, skip: bool) -> Self {
+        self.skip_covariance = skip;
+        self
+    }
+
+    /// Extract an IRLSConfig from this FitConfig (for internal use / backward compat).
+    pub fn to_irls_config(&self) -> IRLSConfig {
+        IRLSConfig {
+            max_iterations: self.max_iterations,
+            tolerance: self.tolerance,
+            min_weight: self.min_weight,
+            verbose: self.verbose,
+            nonneg_indices: self.nonneg_indices.clone(),
+            nonpos_indices: self.nonpos_indices.clone(),
+        }
+    }
+}
+
+impl From<&IRLSConfig> for FitConfig {
+    fn from(irls: &IRLSConfig) -> Self {
+        Self {
+            max_iterations: irls.max_iterations,
+            tolerance: irls.tolerance,
+            min_weight: irls.min_weight,
+            verbose: irls.verbose,
+            nonneg_indices: irls.nonneg_indices.clone(),
+            nonpos_indices: irls.nonpos_indices.clone(),
+            regularization: RegularizationConfig::default(),
+            skip_covariance: false,
+        }
+    }
+}
+
+// =============================================================================
 // Result Structure
 // =============================================================================
 
@@ -174,88 +321,74 @@ pub struct IRLSResult {
 }
 
 // =============================================================================
-// Main Fitting Function
+// Unified Fitting Entry Point
 // =============================================================================
 
-/// Fit a GLM using Iteratively Reweighted Least Squares (simple version).
+/// Fit a GLM using the unified configuration.
 ///
-/// This is a convenience wrapper that calls `fit_glm_full` with no offset or weights.
+/// This is the **single entry point** for all GLM fitting. It automatically
+/// dispatches to the appropriate solver based on the regularization config:
+/// - No penalty or Ridge (L2) → IRLS with optional penalty on diagonal
+/// - Lasso (L1) or Elastic Net → coordinate descent
 ///
-/// # Arguments
-/// * `y` - Response variable (n × 1)
-/// * `x` - Design matrix (n × p), should include intercept column if desired
-/// * `family` - Distribution family (Gaussian, Poisson, Binomial, Gamma)
-/// * `link` - Link function (Identity, Log, Logit)
-/// * `config` - Algorithm configuration options
-///
-/// # Returns
-/// * `Ok(IRLSResult)` - Fitted model results
-/// * `Err(RustyStatsError)` - If fitting fails
-pub fn fit_glm(
-    y: &Array1<f64>,
-    x: &Array2<f64>,
-    family: &dyn Family,
-    link: &dyn Link,
-    config: &IRLSConfig,
-) -> Result<IRLSResult> {
-    fit_glm_full(y, x, family, link, config, None, None)
-}
-
-/// Fit a GLM using Iteratively Reweighted Least Squares (full version).
-///
-/// This is the main entry point for GLM fitting with all options.
+/// This replaces the need to choose between `fit_glm`, `fit_glm_full`,
+/// `fit_glm_warm_start`, `fit_glm_regularized`, `fit_glm_regularized_warm`,
+/// and `fit_glm_coordinate_descent`.
 ///
 /// # Arguments
 /// * `y` - Response variable (n × 1)
 /// * `x` - Design matrix (n × p), should include intercept column if desired
-/// * `family` - Distribution family (Gaussian, Poisson, Binomial, Gamma)
-/// * `link` - Link function (Identity, Log, Logit)
-/// * `config` - Algorithm configuration options
+/// * `family` - Distribution family (Gaussian, Poisson, Binomial, Gamma, etc.)
+/// * `link` - Link function (Identity, Log, Logit, etc.)
+/// * `config` - Unified fitting configuration (algorithm settings + regularization)
 /// * `offset` - Optional offset term (e.g., log(exposure) for rate models)
 /// * `weights` - Optional prior weights for each observation
+/// * `init_coefficients` - Optional initial coefficients for warm starting
 ///
 /// # Returns
 /// * `Ok(IRLSResult)` - Fitted model results
 /// * `Err(RustyStatsError)` - If fitting fails
-///
-/// # Offset (for Actuaries)
-/// The offset is added to the linear predictor: η = Xβ + offset
-///
-/// For claim frequency with varying exposure:
-///   log(E[claims]) = Xβ + log(exposure)
-///   
-/// So you pass `log(exposure)` as the offset.
-///
-/// # Weights
-/// Prior weights adjust the contribution of each observation.
-/// Use for:
-/// - Grouped data (weight = count of observations in group)
-/// - Importance weighting
-/// - Handling known variance differences
-///
-/// # Example
-/// ```ignore
-/// let offset = exposure.mapv(|e| e.ln());  // log(exposure)
-/// let weights = Some(Array1::ones(n));     // Equal weights
-/// let result = fit_glm_full(&y, &x, &PoissonFamily, &LogLink, &config, Some(&offset), weights.as_ref())?;
-/// ```
-pub fn fit_glm_full(
+pub fn fit_glm_unified(
     y: &Array1<f64>,
     x: &Array2<f64>,
     family: &dyn Family,
     link: &dyn Link,
-    config: &IRLSConfig,
+    config: &FitConfig,
     offset: Option<&Array1<f64>>,
     weights: Option<&Array1<f64>>,
+    init_coefficients: Option<&Array1<f64>>,
 ) -> Result<IRLSResult> {
-    fit_glm_core(y, x, family, link, config, offset, weights, None, 0.0, false, Penalty::None)
+    if config.regularization.penalty.requires_coordinate_descent() {
+        // L1 or Elastic Net → coordinate descent solver
+        use super::coordinate_descent::fit_glm_coordinate_descent;
+        fit_glm_coordinate_descent(
+            y, x, family, link,
+            &config.to_irls_config(),
+            &config.regularization,
+            offset, weights,
+            init_coefficients,
+            config.skip_covariance,
+        )
+    } else {
+        // No penalty or pure L2 → standard IRLS
+        let l2_penalty = config.regularization.penalty.l2_penalty();
+        let penalize_intercept = !config.regularization.fit_intercept;
+        fit_glm_core(
+            y, x, family, link,
+            &config.to_irls_config(),
+            offset, weights,
+            init_coefficients,
+            l2_penalty, penalize_intercept,
+            config.regularization.penalty.clone(),
+        )
+    }
 }
 
 /// Core IRLS fitting function with optional warm start and optional L2 penalty.
 ///
-/// This is the unified implementation used by `fit_glm_full`, `fit_glm_warm_start`,
-/// and `fit_glm_regularized_warm`. When `init_coefficients` is provided, initialization
-/// starts from those coefficients instead of the family's default. When `l2_penalty > 0`,
+/// This is the internal implementation called by `fit_glm_unified`.
+/// When `init_coefficients` is provided, initialization starts from those
+/// coefficients instead of the family's default. When `l2_penalty > 0`,
 /// Ridge regularization is applied: (X'WX + λI)β = X'Wz.
 fn fit_glm_core(
     y: &Array1<f64>,
@@ -733,123 +866,6 @@ fn fit_glm_core(
     })
 }
 
-/// Fit a GLM with warm start (initial coefficients) for faster convergence.
-///
-/// This version accepts initial coefficients from a previous fit, which is useful for:
-/// - Iterative theta estimation in Negative Binomial
-/// - Sequential model fitting with similar data
-/// - Continuation from a partially converged model
-///
-/// Delegates to `fit_glm_core` with the full IRLS implementation including
-/// true Hessian optimization and step-halving.
-///
-/// # Arguments
-/// * `y` - Response variable (n × 1)
-/// * `x` - Design matrix (n × p)
-/// * `family` - Distribution family
-/// * `link` - Link function
-/// * `config` - Algorithm configuration
-/// * `offset` - Optional offset term
-/// * `weights` - Optional prior weights
-/// * `init_coefficients` - Initial coefficient estimates (p × 1)
-///
-/// # Returns
-/// * `Ok(IRLSResult)` - Fitted model results
-/// * `Err(RustyStatsError)` - If fitting fails
-pub fn fit_glm_warm_start(
-    y: &Array1<f64>,
-    x: &Array2<f64>,
-    family: &dyn Family,
-    link: &dyn Link,
-    config: &IRLSConfig,
-    offset: Option<&Array1<f64>>,
-    weights: Option<&Array1<f64>>,
-    init_coefficients: &Array1<f64>,
-) -> Result<IRLSResult> {
-    fit_glm_core(y, x, family, link, config, offset, weights, Some(init_coefficients), 0.0, false, Penalty::None)
-}
-
-/// Fit a regularized GLM using Iteratively Reweighted Least Squares.
-///
-/// This version supports Ridge (L2) regularization. For Lasso (L1) or Elastic Net,
-/// use `fit_glm_coordinate_descent` (which handles the non-differentiable L1 term).
-///
-/// # Arguments
-/// * `y` - Response variable (n × 1)
-/// * `x` - Design matrix (n × p), should include intercept column if desired
-/// * `family` - Distribution family (Gaussian, Poisson, Binomial, Gamma)
-/// * `link` - Link function (Identity, Log, Logit)
-/// * `irls_config` - IRLS algorithm configuration
-/// * `reg_config` - Regularization configuration
-/// * `offset` - Optional offset term
-/// * `weights` - Optional prior weights
-///
-/// # Returns
-/// * `Ok(IRLSResult)` - Fitted model results
-/// * `Err(RustyStatsError)` - If fitting fails or L1 penalty requested
-///
-/// # Ridge Regularization
-/// For Ridge (L2) regularization, we modify the normal equations:
-///   (X'WX)β = X'Wz  →  (X'WX + λI)β = X'Wz
-///
-/// This shrinks coefficients toward zero, improving stability for
-/// multicollinear data. The intercept is NOT penalized by default.
-///
-/// # Example
-/// ```ignore
-/// use rustystats_core::regularization::RegularizationConfig;
-/// 
-/// let reg_config = RegularizationConfig::ridge(0.1);
-/// let result = fit_glm_regularized(&y, &x, &family, &link, &config, &reg_config, None, None)?;
-/// ```
-pub fn fit_glm_regularized(
-    y: &Array1<f64>,
-    x: &Array2<f64>,
-    family: &dyn Family,
-    link: &dyn Link,
-    irls_config: &IRLSConfig,
-    reg_config: &RegularizationConfig,
-    offset: Option<&Array1<f64>>,
-    weights: Option<&Array1<f64>>,
-) -> Result<IRLSResult> {
-    // Delegate to warm-start version with no initial coefficients
-    fit_glm_regularized_warm(y, x, family, link, irls_config, reg_config, offset, weights, None)
-}
-
-/// Fit a regularized GLM with optional warm start from initial coefficients.
-/// 
-/// Delegates to `fit_glm_core` with Ridge penalty parameters.
-/// This gives the regularized path the same benefits as the core solver
-/// (true Hessian optimization, step-halving, constraint-aware best-solution tracking).
-pub fn fit_glm_regularized_warm(
-    y: &Array1<f64>,
-    x: &Array2<f64>,
-    family: &dyn Family,
-    link: &dyn Link,
-    irls_config: &IRLSConfig,
-    reg_config: &RegularizationConfig,
-    offset: Option<&Array1<f64>>,
-    weights: Option<&Array1<f64>>,
-    init_coefficients: Option<&Array1<f64>>,
-) -> Result<IRLSResult> {
-    // Check if L1 penalty is requested - this requires coordinate descent
-    if reg_config.penalty.requires_coordinate_descent() {
-        return Err(RustyStatsError::InvalidValue(
-            "L1 (Lasso) and Elastic Net penalties require coordinate descent solver. \
-             Use fit_glm_coordinate_descent instead, or use pure Ridge (L2) penalty."
-                .to_string(),
-        ));
-    }
-
-    let l2_penalty = reg_config.penalty.l2_penalty();
-    let penalize_intercept = !reg_config.fit_intercept;
-
-    fit_glm_core(
-        y, x, family, link, irls_config, offset, weights,
-        init_coefficients, l2_penalty, penalize_intercept, reg_config.penalty.clone(),
-    )
-}
-
 // =============================================================================
 // Helper Functions
 // =============================================================================
@@ -1173,60 +1189,32 @@ mod tests {
 
     #[test]
     fn test_gaussian_identity_is_ols() {
-        // For Gaussian with identity link, IRLS should give same result as OLS
-        // y = 2 + 3*x + noise
         let x = Array2::from_shape_vec(
             (5, 2),
-            vec![
-                1.0, 1.0, // intercept, x
-                1.0, 2.0,
-                1.0, 3.0,
-                1.0, 4.0,
-                1.0, 5.0,
-            ],
-        )
-        .unwrap();
-        let y = array![5.1, 7.9, 11.2, 13.8, 17.1]; // approximately 2 + 3*x
+            vec![1.0, 1.0, 1.0, 2.0, 1.0, 3.0, 1.0, 4.0, 1.0, 5.0],
+        ).unwrap();
+        let y = array![5.1, 7.9, 11.2, 13.8, 17.1];
 
-        let family = GaussianFamily;
-        let link = IdentityLink;
-        let config = IRLSConfig::default();
-
-        let result = fit_glm(&y, &x, &family, &link, &config).unwrap();
+        let config = FitConfig::default();
+        let result = fit_glm_unified(&y, &x, &GaussianFamily, &IdentityLink, &config, None, None, None).unwrap();
 
         assert!(result.converged);
-        // Intercept should be close to 2, slope close to 3
         assert!((result.coefficients[0] - 2.0).abs() < 0.5);
         assert!((result.coefficients[1] - 3.0).abs() < 0.2);
     }
 
     #[test]
     fn test_poisson_log_link() {
-        // Simple Poisson regression
-        // True model: log(μ) = 0.5 + 0.3*x
         let x = Array2::from_shape_vec(
             (6, 2),
-            vec![
-                1.0, 0.0,
-                1.0, 1.0,
-                1.0, 2.0,
-                1.0, 3.0,
-                1.0, 4.0,
-                1.0, 5.0,
-            ],
-        )
-        .unwrap();
-        // y values that roughly follow exp(0.5 + 0.3*x)
+            vec![1.0, 0.0, 1.0, 1.0, 1.0, 2.0, 1.0, 3.0, 1.0, 4.0, 1.0, 5.0],
+        ).unwrap();
         let y = array![2.0, 2.0, 3.0, 4.0, 5.0, 7.0];
 
-        let family = PoissonFamily;
-        let link = LogLink;
-        let config = IRLSConfig::default();
-
-        let result = fit_glm(&y, &x, &family, &link, &config).unwrap();
+        let config = FitConfig::default();
+        let result = fit_glm_unified(&y, &x, &PoissonFamily, &LogLink, &config, None, None, None).unwrap();
 
         assert!(result.converged);
-        // Fitted values should be positive
         assert!(result.fitted_values.iter().all(|&x| x > 0.0));
     }
 
@@ -1235,32 +1223,22 @@ mod tests {
         let x = Array2::from_shape_vec((3, 2), vec![1.0, 1.0, 1.0, 2.0, 1.0, 3.0]).unwrap();
         let y = array![1.0, 2.0]; // Wrong length!
 
-        let family = GaussianFamily;
-        let link = IdentityLink;
-
-        let result = fit_glm(&y, &x, &family, &link, &IRLSConfig::default());
+        let config = FitConfig::default();
+        let result = fit_glm_unified(&y, &x, &GaussianFamily, &IdentityLink, &config, None, None, None);
 
         assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            RustyStatsError::DimensionMismatch(_)
-        ));
+        assert!(matches!(result.unwrap_err(), RustyStatsError::DimensionMismatch(_)));
     }
 
     #[test]
-    fn test_convergence_with_verbose() {
-        let x = Array2::from_shape_vec((4, 2), vec![1.0, 1.0, 1.0, 2.0, 1.0, 3.0, 1.0, 4.0])
-            .unwrap();
+    fn test_convergence_with_max_iter() {
+        let x = Array2::from_shape_vec((4, 2), vec![1.0, 1.0, 1.0, 2.0, 1.0, 3.0, 1.0, 4.0]).unwrap();
         let y = array![2.0, 4.0, 6.0, 8.0];
 
-        let mut config = IRLSConfig::default();
-        config.verbose = false; // Set to true to see iteration output
-        config.max_iterations = 50;
-
-        let result = fit_glm(&y, &x, &GaussianFamily, &IdentityLink, &config).unwrap();
+        let config = FitConfig::default().with_max_iterations(50);
+        let result = fit_glm_unified(&y, &x, &GaussianFamily, &IdentityLink, &config, None, None, None).unwrap();
 
         assert!(result.converged);
-        // Perfect linear relationship should converge quickly
         assert!(result.iterations < 10);
     }
 
@@ -1268,73 +1246,45 @@ mod tests {
     // Ridge (L2) Regularization Tests
     // =========================================================================
 
+    fn make_5x2_data() -> (Array2<f64>, Array1<f64>) {
+        let x = Array2::from_shape_vec(
+            (5, 2), vec![1.0, 1.0, 1.0, 2.0, 1.0, 3.0, 1.0, 4.0, 1.0, 5.0],
+        ).unwrap();
+        let y = array![5.0, 8.0, 11.0, 14.0, 17.0];
+        (x, y)
+    }
+
     #[test]
     fn test_ridge_shrinks_coefficients() {
-        // Ridge regression should shrink coefficients toward zero
-        let x = Array2::from_shape_vec(
-            (5, 2),
-            vec![
-                1.0, 1.0,
-                1.0, 2.0,
-                1.0, 3.0,
-                1.0, 4.0,
-                1.0, 5.0,
-            ],
-        )
-        .unwrap();
-        let y = array![5.0, 8.0, 11.0, 14.0, 17.0]; // y = 2 + 3*x
+        let (x, y) = make_5x2_data();
 
-        let family = GaussianFamily;
-        let link = IdentityLink;
-        let irls_config = IRLSConfig::default();
+        let unreg = fit_glm_unified(&y, &x, &GaussianFamily, &IdentityLink,
+            &FitConfig::default(), None, None, None).unwrap();
 
-        // Unregularized fit
-        let unreg = fit_glm(&y, &x, &family, &link, &irls_config).unwrap();
+        let ridge = fit_glm_unified(&y, &x, &GaussianFamily, &IdentityLink,
+            &FitConfig::default().with_regularization(RegularizationConfig::ridge(10.0)),
+            None, None, None).unwrap();
 
-        // Ridge with lambda = 10 (strong regularization)
-        let reg_config = RegularizationConfig::ridge(10.0);
-        let ridge = fit_glm_regularized(&y, &x, &family, &link, &irls_config, &reg_config, None, None).unwrap();
-
-        // Ridge coefficients should be smaller in absolute value (except intercept)
         assert!(ridge.coefficients[1].abs() < unreg.coefficients[1].abs(),
-            "Ridge should shrink slope: ridge={:.4}, unreg={:.4}", 
+            "Ridge should shrink slope: ridge={:.4}, unreg={:.4}",
             ridge.coefficients[1], unreg.coefficients[1]);
-        
-        // Both should converge
         assert!(unreg.converged);
         assert!(ridge.converged);
-        
-        // Penalty should be recorded
         assert!(!ridge.penalty.is_none());
         assert_eq!(ridge.penalty.l2_penalty(), 10.0);
     }
 
     #[test]
     fn test_ridge_no_penalty_equals_ols() {
-        // Ridge with lambda=0 should give same results as OLS
-        let x = Array2::from_shape_vec(
-            (5, 2),
-            vec![
-                1.0, 1.0,
-                1.0, 2.0,
-                1.0, 3.0,
-                1.0, 4.0,
-                1.0, 5.0,
-            ],
-        )
-        .unwrap();
-        let y = array![5.0, 8.0, 11.0, 14.0, 17.0];
+        let (x, y) = make_5x2_data();
 
-        let family = GaussianFamily;
-        let link = IdentityLink;
-        let irls_config = IRLSConfig::default();
+        let unreg = fit_glm_unified(&y, &x, &GaussianFamily, &IdentityLink,
+            &FitConfig::default(), None, None, None).unwrap();
 
-        let unreg = fit_glm(&y, &x, &family, &link, &irls_config).unwrap();
-        
-        let reg_config = RegularizationConfig::ridge(0.0);
-        let ridge_zero = fit_glm_regularized(&y, &x, &family, &link, &irls_config, &reg_config, None, None).unwrap();
+        let ridge_zero = fit_glm_unified(&y, &x, &GaussianFamily, &IdentityLink,
+            &FitConfig::default().with_regularization(RegularizationConfig::ridge(0.0)),
+            None, None, None).unwrap();
 
-        // Coefficients should be essentially equal
         for i in 0..2 {
             assert!((unreg.coefficients[i] - ridge_zero.coefficients[i]).abs() < 1e-6,
                 "Coefficient {} differs: unreg={:.6}, ridge={:.6}",
@@ -1344,83 +1294,32 @@ mod tests {
 
     #[test]
     fn test_ridge_intercept_not_penalized() {
-        // The intercept should not be penalized by default
-        let x = Array2::from_shape_vec(
-            (5, 2),
-            vec![
-                1.0, 1.0,
-                1.0, 2.0,
-                1.0, 3.0,
-                1.0, 4.0,
-                1.0, 5.0,
-            ],
-        )
-        .unwrap();
-        let y = array![5.0, 8.0, 11.0, 14.0, 17.0];
+        let (x, y) = make_5x2_data();
 
-        let family = GaussianFamily;
-        let link = IdentityLink;
-        let irls_config = IRLSConfig::default();
+        let unreg = fit_glm_unified(&y, &x, &GaussianFamily, &IdentityLink,
+            &FitConfig::default(), None, None, None).unwrap();
 
-        // Compare very strong penalty with no penalty
-        let unreg = fit_glm(&y, &x, &family, &link, &irls_config).unwrap();
-        
-        let reg_config = RegularizationConfig::ridge(100.0);
-        let ridge = fit_glm_regularized(&y, &x, &family, &link, &irls_config, &reg_config, None, None).unwrap();
+        let ridge = fit_glm_unified(&y, &x, &GaussianFamily, &IdentityLink,
+            &FitConfig::default().with_regularization(RegularizationConfig::ridge(100.0)),
+            None, None, None).unwrap();
 
-        // Slope should be heavily shrunk
         assert!(ridge.coefficients[1].abs() < unreg.coefficients[1].abs() * 0.5,
             "Slope should be heavily shrunk");
-        
-        // Intercept should still be reasonable (not shrunk to 0)
-        // With y mean around 11, intercept shouldn't be close to 0
         assert!(ridge.coefficients[0].abs() > 1.0,
             "Intercept should not be heavily shrunk: {:.4}", ridge.coefficients[0]);
     }
 
     #[test]
     fn test_ridge_poisson() {
-        // Ridge should work with non-Gaussian families
         let x = Array2::from_shape_vec(
-            (6, 2),
-            vec![
-                1.0, 0.0,
-                1.0, 1.0,
-                1.0, 2.0,
-                1.0, 3.0,
-                1.0, 4.0,
-                1.0, 5.0,
-            ],
-        )
-        .unwrap();
+            (6, 2), vec![1.0, 0.0, 1.0, 1.0, 1.0, 2.0, 1.0, 3.0, 1.0, 4.0, 1.0, 5.0],
+        ).unwrap();
         let y = array![2.0, 3.0, 4.0, 6.0, 8.0, 12.0];
 
-        let family = PoissonFamily;
-        let link = LogLink;
-        let irls_config = IRLSConfig::default();
-
-        let reg_config = RegularizationConfig::ridge(1.0);
-        let result = fit_glm_regularized(&y, &x, &family, &link, &irls_config, &reg_config, None, None).unwrap();
+        let config = FitConfig::default().with_regularization(RegularizationConfig::ridge(1.0));
+        let result = fit_glm_unified(&y, &x, &PoissonFamily, &LogLink, &config, None, None, None).unwrap();
 
         assert!(result.converged);
         assert!(result.fitted_values.iter().all(|&x| x > 0.0));
-    }
-
-    #[test]
-    fn test_lasso_requires_coordinate_descent() {
-        // Lasso should return an error (not yet implemented)
-        let x = Array2::from_shape_vec((3, 2), vec![1.0, 1.0, 1.0, 2.0, 1.0, 3.0]).unwrap();
-        let y = array![2.0, 4.0, 6.0];
-
-        let family = GaussianFamily;
-        let link = IdentityLink;
-        let irls_config = IRLSConfig::default();
-        let reg_config = RegularizationConfig::lasso(1.0);
-
-        let result = fit_glm_regularized(&y, &x, &family, &link, &irls_config, &reg_config, None, None);
-        
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(matches!(err, RustyStatsError::InvalidValue(_)));
     }
 }
