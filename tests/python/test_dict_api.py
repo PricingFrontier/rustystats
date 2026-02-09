@@ -341,7 +341,7 @@ class TestDictRobustSE:
         data = pl.DataFrame({'y': y, 'x': x})
         return rs.glm_dict(
             response='y', terms={'x': {'type': 'linear'}}, data=data,
-        ).fit()
+        ).fit(store_design_matrix=True)
 
     def test_bse_robust_hc1(self, heteroscedastic_result):
         bse_robust = heteroscedastic_result.bse_robust("HC1")

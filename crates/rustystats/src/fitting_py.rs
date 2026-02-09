@@ -32,6 +32,7 @@ use crate::results_py::PyGLMResults;
 fn smooth_result_to_py<'py>(
     py: Python<'py>,
     result: rustystats_core::solvers::SmoothGLMResult,
+    store_design_matrix: bool,
 ) -> PyResult<PyObject> {
     let n_obs = result.y.len();
     let n_params = result.coefficients.len();
@@ -49,7 +50,7 @@ fn smooth_result_to_py<'py>(
         family_name: result.family_name,
         prior_weights: result.prior_weights,
         penalty: result.penalty,
-        design_matrix: result.design_matrix,
+        design_matrix: if store_design_matrix { Some(result.design_matrix) } else { None },
         irls_weights: result.irls_weights,
         offset: result.offset,
     };
@@ -84,7 +85,7 @@ fn build_smooth_config(max_iter: usize, tol: f64, lambda_min: f64, lambda_max: f
 // =============================================================================
 
 #[pyfunction]
-#[pyo3(signature = (y, x, family, link=None, var_power=1.5, theta=1.0, offset=None, weights=None, alpha=0.0, l1_ratio=0.0, max_iter=25, tol=1e-8, nonneg_indices=None, nonpos_indices=None))]
+#[pyo3(signature = (y, x, family, link=None, var_power=1.5, theta=1.0, offset=None, weights=None, alpha=0.0, l1_ratio=0.0, max_iter=25, tol=1e-8, nonneg_indices=None, nonpos_indices=None, store_design_matrix=false))]
 pub fn fit_glm_py(
     y: PyReadonlyArray1<f64>, x: PyReadonlyArray2<f64>,
     family: &str, link: Option<&str>,
@@ -92,6 +93,7 @@ pub fn fit_glm_py(
     offset: Option<PyReadonlyArray1<f64>>, weights: Option<PyReadonlyArray1<f64>>,
     alpha: f64, l1_ratio: f64, max_iter: usize, tol: f64,
     nonneg_indices: Option<Vec<usize>>, nonpos_indices: Option<Vec<usize>>,
+    store_design_matrix: bool,
 ) -> PyResult<PyGLMResults> {
     let y_array: Array1<f64> = y.as_array().to_owned();
     let x_array: Array2<f64> = x.as_array().to_owned();
@@ -144,7 +146,8 @@ pub fn fit_glm_py(
         iterations: result.iterations, converged: result.converged,
         covariance_unscaled: result.covariance_unscaled, n_obs, n_params,
         y: result.y, family_name, prior_weights: result.prior_weights,
-        penalty: result.penalty, design_matrix: x_array,
+        penalty: result.penalty,
+        design_matrix: if store_design_matrix { Some(x_array) } else { None },
         irls_weights: result.irls_weights, offset: offset_array,
     })
 }
@@ -154,7 +157,7 @@ pub fn fit_glm_py(
 // =============================================================================
 
 #[pyfunction]
-#[pyo3(signature = (y, x, link=None, init_theta=None, theta_tol=1e-5, max_theta_iter=10, offset=None, weights=None, max_iter=25, tol=1e-8, alpha=0.0, l1_ratio=0.0))]
+#[pyo3(signature = (y, x, link=None, init_theta=None, theta_tol=1e-5, max_theta_iter=10, offset=None, weights=None, max_iter=25, tol=1e-8, alpha=0.0, l1_ratio=0.0, store_design_matrix=false))]
 pub fn fit_negbinomial_py(
     y: PyReadonlyArray1<f64>, x: PyReadonlyArray2<f64>,
     link: Option<&str>, init_theta: Option<f64>,
@@ -162,6 +165,7 @@ pub fn fit_negbinomial_py(
     offset: Option<PyReadonlyArray1<f64>>, weights: Option<PyReadonlyArray1<f64>>,
     max_iter: usize, tol: f64,
     alpha: f64, l1_ratio: f64,
+    store_design_matrix: bool,
 ) -> PyResult<PyGLMResults> {
     let y_array: Array1<f64> = y.as_array().to_owned();
     let x_array: Array2<f64> = x.as_array().to_owned();
@@ -233,7 +237,8 @@ pub fn fit_negbinomial_py(
         covariance_unscaled: result.covariance_unscaled, n_obs, n_params,
         y: y_array, family_name: format!("NegativeBinomial(theta={:.4})", theta),
         prior_weights: weights_array.unwrap_or_else(|| Array1::ones(n_obs)),
-        penalty: result.penalty, design_matrix: x_array,
+        penalty: result.penalty,
+        design_matrix: if store_design_matrix { Some(x_array) } else { None },
         irls_weights: result.irls_weights, offset: offset_array,
     })
 }
@@ -382,7 +387,7 @@ pub fn fit_cv_path_py<'py>(
 /// * `smooth_penalties` - List of penalty matrices (one per smooth term)
 /// * `smooth_monotonicity` - List of monotonicity constraints: None, "increasing", "decreasing"
 #[pyfunction]
-#[pyo3(signature = (y, x_full, smooth_col_ranges, smooth_penalties, family, link=None, offset=None, weights=None, max_iter=25, tol=1e-8, lambda_min=0.001, lambda_max=1000.0, smooth_monotonicity=None))]
+#[pyo3(signature = (y, x_full, smooth_col_ranges, smooth_penalties, family, link=None, offset=None, weights=None, max_iter=25, tol=1e-8, lambda_min=0.001, lambda_max=1000.0, smooth_monotonicity=None, store_design_matrix=false))]
 pub fn fit_smooth_glm_unified_py<'py>(
     py: Python<'py>,
     y: PyReadonlyArray1<f64>,
@@ -398,6 +403,7 @@ pub fn fit_smooth_glm_unified_py<'py>(
     lambda_min: f64,
     lambda_max: f64,
     smooth_monotonicity: Option<Vec<Option<String>>>,
+    store_design_matrix: bool,
 ) -> PyResult<PyObject> {
     let y_arr = y.as_array().to_owned();
     let x_arr = x_full.as_array().to_owned();
@@ -452,5 +458,5 @@ pub fn fit_smooth_glm_unified_py<'py>(
         offset_arr.as_ref(), weights_arr.as_ref(),
     ).map_err(|e| PyValueError::new_err(format!("Smooth GLM fitting failed: {}", e)))?;
     
-    smooth_result_to_py(py, result)
+    smooth_result_to_py(py, result, store_design_matrix)
 }

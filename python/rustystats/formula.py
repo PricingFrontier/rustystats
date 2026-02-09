@@ -205,6 +205,7 @@ def _fit_with_smooth_penalties(
     n_lambda: int = DEFAULT_N_LAMBDA,
     lambda_min: float = DEFAULT_LAMBDA_MIN,
     lambda_max: float = DEFAULT_LAMBDA_MAX,
+    store_design_matrix: bool = False,
 ) -> tuple:
     """
     Fit GLM with penalized smooth terms using fast GCV optimization.
@@ -257,6 +258,7 @@ def _fit_with_smooth_penalties(
         y, X, smooth_col_indices, penalties, family,
         link, offset, weights, max_iter, tol, lambda_min, lambda_max,
         monotonicity_specs if any(m is not None for m in monotonicity_specs) else None,
+        store_design_matrix,
     )
     
     # Build smooth term results — coefficients are already in original column order
@@ -293,6 +295,7 @@ def _fit_glm_core(
     tol: float,
     feature_names: List[str],
     builder: "InteractionBuilder",
+    store_design_matrix: bool = False,
 ) -> tuple:
     """
     Core GLM fitting logic for FormulaGLMDict.
@@ -322,6 +325,7 @@ def _fit_glm_core(
             y, X, smooth_terms, smooth_col_indices,
             family, link, var_power, theta,
             offset, weights, max_iter, tol,
+            store_design_matrix=store_design_matrix,
         )
         return result, smooth_results, total_edf, gcv
     else:
@@ -334,6 +338,7 @@ def _fit_glm_core(
             offset, weights, alpha, l1_ratio, max_iter, tol,
             nonneg_indices if nonneg_indices else None,
             nonpos_indices if nonpos_indices else None,
+            store_design_matrix,
         )
         return result, None, None, None
 
@@ -345,14 +350,12 @@ def _build_results(
     family: str,
     link: Optional[str],
     builder: "InteractionBuilder",
-    X: np.ndarray,
     offset_spec: Optional[Union[str, np.ndarray]],
     is_exposure_offset: bool,
     path_info: Optional["RegularizationPathInfo"],
     smooth_results: Optional[List["SmoothTermResult"]],
     total_edf: Optional[float],
     gcv: Optional[float],
-    store_design_matrix: bool = True,
     terms_dict: Optional[Dict[str, Dict[str, Any]]] = None,
     interactions_spec: Optional[List[Dict[str, Any]]] = None,
 ) -> "GLMModel":
@@ -368,7 +371,6 @@ def _build_results(
         family=family,
         link=link,
         builder=builder,
-        design_matrix=X if store_design_matrix else None,
         offset_spec=offset_spec,
         offset_is_exposure=is_exposure_offset,
         regularization_path_info=path_info,
@@ -596,7 +598,6 @@ class GLMModel:
         family: str,
         link: Optional[str],
         builder: Optional["InteractionBuilder"] = None,
-        design_matrix: Optional[np.ndarray] = None,
         offset_spec: Optional[Union[str, np.ndarray]] = None,
         offset_is_exposure: bool = False,
         regularization_path_info: Optional["RegularizationPathInfo"] = None,
@@ -617,7 +618,6 @@ class GLMModel:
         self._regularization_path_info = regularization_path_info
         self.link = link or get_default_link(family)
         self._builder = builder
-        self._design_matrix = design_matrix  # Store for VIF calculation
         self._offset_spec = offset_spec
         self._offset_is_exposure = offset_is_exposure
         self._terms_dict = terms_dict
@@ -665,9 +665,15 @@ class GLMModel:
         return self._interactions_spec
     
     def get_design_matrix(self) -> Optional[np.ndarray]:
-        """Get the design matrix X used in fitting."""
+        """Get the design matrix X used in fitting.
+        
+        Returns None if store_design_matrix=False was used (lean mode).
+        """
         try:
-            return np.asarray(self._result.design_matrix)
+            dm = self._result.design_matrix
+            if dm is None:
+                return None
+            return np.asarray(dm)
         except AttributeError:
             return None
     
@@ -1004,10 +1010,16 @@ class GLMModel:
             compute_vif = False
             compute_coefficients = False
         
-        # Get design matrix for VIF calculation
+        # Get design matrix for VIF calculation (fetched from Rust result).
+        # If not stored (lean mode), rebuild from builder + train_data.
         design_matrix = None
-        if compute_vif and self._design_matrix is not None:
-            design_matrix = self._design_matrix
+        if compute_vif:
+            design_matrix = self.get_design_matrix()
+            if design_matrix is None and self._builder is not None:
+                try:
+                    design_matrix = self._builder.transform_new_data(train_data)
+                except Exception:
+                    pass
         
         return compute_diagnostics(
             result=self,
@@ -1358,7 +1370,6 @@ class GLMModel:
             family=state["family"],
             link=state["link"],
             builder=builder,
-            design_matrix=None,
             offset_spec=state["offset_spec"],
             offset_is_exposure=state["offset_is_exposure"],
             regularization_path_info=None,
@@ -1950,7 +1961,7 @@ class FormulaGLMDict(_GLMBase):
         include_unregularized: bool = True,
         verbose: bool = False,
         # Memory optimization
-        store_design_matrix: bool = True,
+        store_design_matrix: bool = False,
     ) -> GLMModel:
         """
         Fit the GLM model, optionally with regularization.
@@ -2014,6 +2025,7 @@ class FormulaGLMDict(_GLMBase):
             self.y, self.X, self.family, self.link, self.var_power, theta,
             self.offset, self.weights, alpha, l1_ratio, max_iter, tol,
             self.feature_names, self._builder,
+            store_design_matrix=store_design_matrix,
         )
         self._smooth_results = smooth_results
         self._total_edf = total_edf
@@ -2025,9 +2037,8 @@ class FormulaGLMDict(_GLMBase):
         is_exposure_offset = self.family in ("poisson", "quasipoisson", "negbinomial", "gamma") and self.link in (None, "log")
         return _build_results(
             result, self.feature_names, self.formula, result_family, self.link,
-            self._builder, self.X, self._offset_spec, is_exposure_offset, path_info,
+            self._builder, self._offset_spec, is_exposure_offset, path_info,
             self._smooth_results, self._total_edf, self._gcv,
-            store_design_matrix=store_design_matrix,
             terms_dict=self.terms,
             interactions_spec=self.interactions_spec,
         )

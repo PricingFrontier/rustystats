@@ -15,14 +15,14 @@
       "n_obs": 8,
       "total_exposure": 8.0,
       "total_actual": 15.0,
-      "total_predicted": 14.11,
-      "loss": 1.6009,
-      "deviance": 12.81,
-      "log_likelihood": -13.61,
-      "aic": 33.23,
-      "gini": -0.125,
-      "auc": 0.4375,
-      "ae_ratio": 1.063,
+      "total_predicted": 15.18,
+      "loss": 1.0609,
+      "deviance": 8.49,
+      "log_likelihood": -11.97,
+      "aic": 29.94,
+      "gini": -0.1083,
+      "auc": 0.4458,
+      "ae_ratio": 0.988,
       "ae_by_decile": [
         {
           "decile": 1,
@@ -101,8 +101,8 @@
           "n": 8,
           "exposure": 8.0,
           "actual": 1.875,
-          "predicted": 1.7639,
-          "ae_ratio": 1.063
+          "predicted": 1.8977,
+          "ae_ratio": 0.988
         }
       ],
       "factor_diagnostics": {},
@@ -118,36 +118,32 @@
     "unstable_factors": []
   },
   "calibration": {
-    "ae_ratio": 1.063,
-    "hl_pvalue": 0.7991,
+    "ae_ratio": 0.988,
+    "hl_pvalue": 0.9154,
     "problem_deciles": []
   },
   "residual_summary": {
     "pearson": {
-      "mean": 0.11,
-      "std": 1.26,
+      "mean": -0.02,
+      "std": 1.03,
       "skewness": 0.4
     },
     "deviance": {
-      "mean": 0.11,
-      "std": 1.26,
+      "mean": -0.02,
+      "std": 1.03,
       "skewness": 0.4
     }
   },
   "factors": [],
   "interaction_candidates": [],
   "model_comparison": {
-    "likelihood_ratio_chi2": 1.252,
+    "likelihood_ratio_chi2": 0.886708,
     "likelihood_ratio_df": 2,
-    "likelihood_ratio_pvalue": 0.534722,
-    "deviance_reduction_pct": 25.6824,
-    "aic_improvement": -2.748
+    "likelihood_ratio_pvalue": 0.64188,
+    "deviance_reduction_pct": 18.1889,
+    "aic_improvement": -3.1133
   },
   "warnings": [
-    {
-      "type": "poor_calibration",
-      "message": "Model under-predicts overall (A/E = 1.063)."
-    },
     {
       "type": "weak_discrimination",
       "message": "Model has weak discrimination in deciles: [8, 9, 10]. Consider adding features or interactions to improve separation."
@@ -156,13 +152,13 @@
   "vif": [
     {
       "feature": "age",
-      "vif": 1.06,
+      "vif": 1.12,
       "severity": "none",
       "collinear_with": null
     },
     {
       "feature": "TE(brand:region)",
-      "vif": 1.06,
+      "vif": 1.12,
       "severity": "none",
       "collinear_with": null
     }
@@ -171,30 +167,30 @@
   "coefficient_summary": [
     {
       "feature": "TE(brand:region)",
-      "estimate": -2.3704,
-      "std_error": 1.8432,
-      "z_value": -1.286,
-      "p_value": 0.1984,
+      "estimate": -1.4551,
+      "std_error": 1.4238,
+      "z_value": -1.022,
+      "p_value": 0.3068,
       "significant": false,
       "relativity": null,
       "relativity_ci": null
     },
     {
       "feature": "age",
-      "estimate": -0.00097,
-      "std_error": 0.027016,
-      "z_value": -0.036,
-      "p_value": 0.9714,
+      "estimate": 0.015155,
+      "std_error": 0.028655,
+      "z_value": 0.529,
+      "p_value": 0.5969,
       "significant": false,
       "relativity": null,
       "relativity_ci": null
     },
     {
       "feature": "Intercept",
-      "estimate": 6.2497,
-      "std_error": 3.817,
-      "z_value": 1.637,
-      "p_value": 0.1016,
+      "estimate": 3.9821,
+      "std_error": 2.6525,
+      "z_value": 1.501,
+      "p_value": 0.1333,
       "significant": false,
       "relativity": null,
       "relativity_ci": null
@@ -316,15 +312,15 @@
         "n": 8,
         "exposure": 8.0,
         "actual": 1.875,
-        "predicted": 1.7639,
-        "ae_ratio": 1.063,
+        "predicted": 1.8977,
+        "ae_ratio": 0.988,
         "cumulative_actual_pct": 100.0,
         "cumulative_predicted_pct": 100.0,
         "lift": 1.0,
         "cumulative_lift": 1.0
       }
     ],
-    "gini": -0.125,
+    "gini": -0.108,
     "ks_statistic": 0,
     "ks_decile": 1,
     "weak_deciles": [

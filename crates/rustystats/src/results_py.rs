@@ -55,8 +55,9 @@ pub struct PyGLMResults {
     pub(crate) prior_weights: Array1<f64>,
     /// Regularization penalty applied (if any)
     pub(crate) penalty: Penalty,
-    /// Design matrix X (for robust standard errors)
-    pub(crate) design_matrix: Array2<f64>,
+    /// Design matrix X (for robust standard errors).
+    /// Optional to allow lean mode — omit to save memory at scale.
+    pub(crate) design_matrix: Option<Array2<f64>>,
     /// IRLS weights (for robust standard errors)
     pub(crate) irls_weights: Array1<f64>,
     /// Offset values (e.g., log(exposure) for count models)
@@ -88,18 +89,26 @@ impl PyGLMResults {
     
     /// Compute robust covariance matrix (internal helper).
     /// Factored out to avoid repeating the same logic in cov_robust, bse_robust, etc.
-    fn compute_robust_cov(&self, hc_type: HCType) -> Array2<f64> {
+    /// Returns Err if design_matrix was not stored (lean mode).
+    fn compute_robust_cov(&self, hc_type: HCType) -> PyResult<Array2<f64>> {
+        let dm = self.design_matrix.as_ref().ok_or_else(|| {
+            PyValueError::new_err(
+                "Design matrix not stored (lean mode). Robust standard errors require \
+                 store_design_matrix=True when fitting, or pass the design matrix via \
+                 the Python diagnostics API."
+            )
+        })?;
         let family = self.get_family();
         let pearson_resid = resid_pearson(&self.y, &self.fitted_values, family.as_ref());
         
-        robust_covariance(
-            &self.design_matrix,
+        Ok(robust_covariance(
+            dm,
             &pearson_resid,
             &self.irls_weights,
             &self.prior_weights,
             &self.covariance_unscaled,
             hc_type,
-        )
+        ))
     }
 }
 
@@ -186,10 +195,11 @@ impl PyGLMResults {
 
     /// Get the design matrix X used in fitting.
     ///
+    /// Returns None if store_design_matrix=False was used (lean mode).
     /// This is useful for computing score tests for unfitted factors.
     #[getter]
-    fn get_design_matrix<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
-        self.design_matrix.clone().into_pyarray_bound(py)
+    fn get_design_matrix<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
+        self.design_matrix.as_ref().map(|dm| dm.clone().into_pyarray_bound(py))
     }
 
     /// Get the IRLS working weights from the final iteration.
@@ -386,7 +396,7 @@ impl PyGLMResults {
             ))
         })?;
         
-        let cov = self.compute_robust_cov(hc_type);
+        let cov = self.compute_robust_cov(hc_type)?;
         Ok(cov.into_pyarray_bound(py))
     }
 
@@ -431,7 +441,7 @@ impl PyGLMResults {
             ))
         })?;
         
-        let cov = self.compute_robust_cov(hc_type);
+        let cov = self.compute_robust_cov(hc_type)?;
         let se = robust_standard_errors(&cov);
         Ok(se.into_pyarray_bound(py))
     }
@@ -455,7 +465,7 @@ impl PyGLMResults {
             ))
         })?;
         
-        let cov = self.compute_robust_cov(hc_type);
+        let cov = self.compute_robust_cov(hc_type)?;
         let se = robust_standard_errors(&cov);
         let t: Array1<f64> = self.coefficients.iter()
             .zip(se.iter())
@@ -484,7 +494,7 @@ impl PyGLMResults {
             ))
         })?;
         
-        let cov = self.compute_robust_cov(hc_type);
+        let cov = self.compute_robust_cov(hc_type)?;
         let se = robust_standard_errors(&cov);
         let pvals: Array1<f64> = self.coefficients.iter()
             .zip(se.iter())
@@ -522,7 +532,7 @@ impl PyGLMResults {
             ))
         })?;
         
-        let cov = self.compute_robust_cov(hc_type);
+        let cov = self.compute_robust_cov(hc_type)?;
         let se = robust_standard_errors(&cov);
         let confidence = 1.0 - alpha;
         
