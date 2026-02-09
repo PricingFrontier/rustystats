@@ -489,6 +489,80 @@ predictions = loaded.predict(new_data)
 
 ---
 
+## Model Export (PMML & ONNX)
+
+Export fitted models to standard formats for deployment — **no extra dependencies required**. PMML uses stdlib XML; ONNX protobuf serialization is implemented from scratch in Rust.
+
+### PMML
+
+```python
+# Export to PMML 4.4 XML
+pmml_xml = result.to_pmml()
+result.to_pmml(path="model.pmml")
+
+# Load & predict (consumer side)
+# pip install pypmml
+from pypmml import Model
+pmml_model = Model.fromFile("model.pmml")
+
+new_data = pl.DataFrame({"VehAge": [3, 5, 1], "Area": ["C", "A", "B"]})
+preds = pmml_model.predict(new_data.to_dict(as_series=False))
+```
+
+### ONNX
+
+Two modes: **scoring** (consumer builds design matrix) and **full** (preprocessing embedded in graph).
+
+```python
+# Scoring mode (default) — input is pre-built design matrix
+onnx_bytes = result.to_onnx(mode="scoring")
+result.to_onnx(path="model.onnx", mode="scoring")
+
+# Full mode — input is raw feature values, preprocessing embedded
+result.to_onnx(path="model_full.onnx", mode="full")
+```
+
+```python
+# Load & predict on a DataFrame with onnxruntime (consumer side)
+# pip install onnxruntime
+import onnxruntime as ort
+import numpy as np
+
+new_data = pl.DataFrame({
+    "VehAge": [3, 5, 1],
+    "Area": ["C", "A", "B"],
+})
+
+# ── Scoring mode: build design matrix from DataFrame ──
+session = ort.InferenceSession("model.onnx")
+# Columns match model.feature_names (excluding Intercept): [VehAge, Area_B, Area_C]
+X = np.column_stack([
+    new_data["VehAge"].to_numpy().astype(np.float64),
+    (new_data["Area"] == "B").cast(pl.Float64).to_numpy(),
+    (new_data["Area"] == "C").cast(pl.Float64).to_numpy(),
+])
+preds = session.run(None, {"X": X})[0]  # shape (3, 1)
+
+# ── Full mode: pass raw values, categoricals as integer codes ──
+session = ort.InferenceSession("model_full.onnx")
+# Map categorical levels to 0-based codes: A=0, B=1, C=2
+level_map = {"A": 0, "B": 1, "C": 2}
+raw = np.column_stack([
+    new_data["VehAge"].to_numpy().astype(np.float64),
+    new_data["Area"].map_elements(lambda v: level_map[v], return_dtype=pl.Int64).to_numpy().astype(np.float64),
+])
+preds = session.run(None, {"input": raw})[0]  # shape (3, 1)
+```
+
+| | **scoring** | **full** |
+|---|---|---|
+| Input | Pre-built design matrix | Raw feature values |
+| Categoricals | One-hot dummies | Integer codes |
+| Preprocessing | Consumer handles it | Embedded in graph |
+| Size | Smaller | Larger |
+
+---
+
 ## Performance Benchmarks
 
 **RustyStats vs Statsmodels** — Synthetic data, 101 features (10 continuous + 10 categorical with 10 levels each).

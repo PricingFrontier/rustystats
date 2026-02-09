@@ -24,6 +24,7 @@ mod splines_py;
 mod design_matrix_py;
 mod target_encoding_py;
 mod results_py;
+mod export_onnx_py;
 
 pub use results_py::PyGLMResults;
 
@@ -119,6 +120,10 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(diagnostics_py::compute_deviance_residuals_py, m)?)?;
     m.add_function(wrap_pyfunction!(diagnostics_py::compute_null_deviance_py, m)?)?;
     m.add_function(wrap_pyfunction!(diagnostics_py::compute_unit_deviance_py, m)?)?;
+    
+    // ONNX export
+    m.add_function(wrap_pyfunction!(export_onnx_py::build_onnx_glm_scoring_py, m)?)?;
+    m.add_function(wrap_pyfunction!(export_onnx_py::serialize_onnx_graph_py, m)?)?;
     
     Ok(())
 }

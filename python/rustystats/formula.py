@@ -1153,6 +1153,69 @@ class GLMModel:
         """Apply inverse link function to linear predictor."""
         return apply_inverse_link(eta, self.link)
     
+    def to_pmml(
+        self,
+        path: Optional[str] = None,
+        n_grid_points: int = 200,
+    ) -> str:
+        """
+        Export the fitted model to PMML 4.4 XML.
+
+        Spline basis functions are collapsed to piecewise-linear
+        ``NormContinuous`` derived fields.  Categorical, target-encoding,
+        frequency-encoding, expression, and interaction terms are all
+        supported.
+
+        Parameters
+        ----------
+        path : str, optional
+            If given, write the PMML XML to this file path.
+        n_grid_points : int, default 200
+            Grid resolution for piecewise-linear spline approximation.
+
+        Returns
+        -------
+        str
+            The PMML XML document as a string.
+        """
+        from rustystats.export_pmml import to_pmml
+        return to_pmml(self, path=path, n_grid_points=n_grid_points)
+
+    def to_onnx(
+        self,
+        path: Optional[str] = None,
+        n_grid_points: int = 200,
+        mode: str = "scoring",
+    ) -> bytes:
+        """
+        Export the fitted model to ONNX format.
+
+        Protobuf serialization is implemented from scratch in Rust —
+        no external dependencies are required.
+
+        Parameters
+        ----------
+        path : str, optional
+            If given, write the ONNX model to this file path.
+        n_grid_points : int, default 200
+            Grid resolution for piecewise-linear spline approximation
+            (only used in ``"full"`` mode).
+        mode : {"scoring", "full"}, default "scoring"
+            * ``"scoring"`` — input is a pre-built design matrix
+              ``X (batch, n_features)`` without intercept column.
+            * ``"full"`` — input is raw feature values; preprocessing
+              (one-hot, splines, TE/FE) is embedded in the graph.
+              Categorical variables are passed as integer codes.
+
+        Returns
+        -------
+        bytes
+            Raw ONNX protobuf bytes.  Load with
+            ``onnxruntime.InferenceSession(onnx_bytes)`` or write to disk.
+        """
+        from rustystats.export_onnx import to_onnx
+        return to_onnx(self, path=path, n_grid_points=n_grid_points, mode=mode)
+
     def to_bytes(self) -> bytes:
         """
         Serialize the fitted model to bytes for storage or transfer.

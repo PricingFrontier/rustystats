@@ -113,6 +113,10 @@ from rustystats.diagnostics import (
     DataExplorer,
 )
 
+# Model export (PMML / ONNX)
+from rustystats.export_pmml import to_pmml
+from rustystats.export_onnx import to_onnx
+
 # Exceptions
 from rustystats.exceptions import (
     RustyStatsError,
@@ -177,6 +181,9 @@ __all__ = [
     "BinomialFamily",
     "GammaFamily",
     "TweedieFamily",
+    # Model export
+    "to_pmml",
+    "to_onnx",
     # Exceptions
     "RustyStatsError",
     "DesignMatrixError",
