@@ -96,9 +96,9 @@ pub fn fit_glm_py(
     store_design_matrix: bool,
 ) -> PyResult<PyGLMResults> {
     let y_array: Array1<f64> = y.as_array().to_owned();
-    let x_array: Array2<f64> = x.as_array().to_owned();
+    let x_view = x.as_array();  // Zero-copy view of numpy array
     let n_obs = y_array.len();
-    let n_params = x_array.ncols();
+    let n_params = x_view.ncols();
     let offset_array: Option<Array1<f64>> = offset.map(|o| o.as_array().to_owned());
     let weights_array: Option<Array1<f64>> = weights.map(|w| w.as_array().to_owned());
 
@@ -131,7 +131,7 @@ pub fn fit_glm_py(
     let lnk = link_from_name(link.unwrap_or(default_link_name(family)))?;
 
     let result: IRLSResult = fit_glm_unified(
-        &y_array, &x_array, fam.as_ref(), lnk.as_ref(), &config,
+        &y_array, x_view, fam.as_ref(), lnk.as_ref(), &config,
         offset_array.as_ref(), weights_array.as_ref(), None,
     ).map_err(|e| PyValueError::new_err(format!("GLM fitting failed: {}", e)))?;
 
@@ -147,7 +147,7 @@ pub fn fit_glm_py(
         covariance_unscaled: result.covariance_unscaled, n_obs, n_params,
         y: result.y, family_name, prior_weights: result.prior_weights,
         penalty: result.penalty,
-        design_matrix: if store_design_matrix { Some(x_array) } else { None },
+        design_matrix: if store_design_matrix { Some(x_view.to_owned()) } else { None },
         irls_weights: result.irls_weights, offset: offset_array,
     })
 }
@@ -168,9 +168,9 @@ pub fn fit_negbinomial_py(
     store_design_matrix: bool,
 ) -> PyResult<PyGLMResults> {
     let y_array: Array1<f64> = y.as_array().to_owned();
-    let x_array: Array2<f64> = x.as_array().to_owned();
+    let x_view = x.as_array();  // Zero-copy view
     let n_obs = y_array.len();
-    let n_params = x_array.ncols();
+    let n_params = x_view.ncols();
     let offset_array: Option<Array1<f64>> = offset.map(|o| o.as_array().to_owned());
     let weights_array: Option<Array1<f64>> = weights.map(|w| w.as_array().to_owned());
 
@@ -202,7 +202,7 @@ pub fn fit_negbinomial_py(
         None => {
             let poisson = PoissonFamily;
             let init_config = FitConfig { regularization: RegularizationConfig::none(), ..config_loose.clone() };
-            let init_result = fit_glm_unified(&y_array, &x_array, &poisson, link_fn.as_ref(),
+            let init_result = fit_glm_unified(&y_array, x_view, &poisson, link_fn.as_ref(),
                 &init_config, offset_array.as_ref(), weights_array.as_ref(), None,
             ).map_err(|e| PyValueError::new_err(format!("Initial Poisson fit failed: {}", e)))?;
             estimate_theta_moments(&y_array, &init_result.fitted_values)
@@ -214,7 +214,7 @@ pub fn fit_negbinomial_py(
 
     for _iter in 0..max_theta_iter {
         let family = NegativeBinomialFamily::new(theta);
-        result = fit_glm_unified(&y_array, &x_array, &family, link_fn.as_ref(),
+        result = fit_glm_unified(&y_array, x_view, &family, link_fn.as_ref(),
             &config_loose, offset_array.as_ref(), weights_array.as_ref(), coefficients.as_ref(),
         ).map_err(|e| PyValueError::new_err(format!("GLM fitting failed: {}", e)))?;
 
@@ -226,7 +226,7 @@ pub fn fit_negbinomial_py(
     }
 
     let final_family = NegativeBinomialFamily::new(theta);
-    result = fit_glm_unified(&y_array, &x_array, &final_family, link_fn.as_ref(),
+    result = fit_glm_unified(&y_array, x_view, &final_family, link_fn.as_ref(),
         &config_final, offset_array.as_ref(), weights_array.as_ref(), coefficients.as_ref(),
     ).map_err(|e| PyValueError::new_err(format!("Final GLM fit failed: {}", e)))?;
 
@@ -238,7 +238,7 @@ pub fn fit_negbinomial_py(
         y: y_array, family_name: format!("NegativeBinomial(theta={:.4})", theta),
         prior_weights: weights_array.unwrap_or_else(|| Array1::ones(n_obs)),
         penalty: result.penalty,
-        design_matrix: if store_design_matrix { Some(x_array) } else { None },
+        design_matrix: if store_design_matrix { Some(x_view.to_owned()) } else { None },
         irls_weights: result.irls_weights, offset: offset_array,
     })
 }
@@ -262,9 +262,9 @@ pub fn fit_cv_path_py<'py>(
     max_iter: usize, tol: f64, seed: Option<u64>,
 ) -> PyResult<PyObject> {
     let y_array: Array1<f64> = y.as_array().to_owned();
-    let x_array: Array2<f64> = x.as_array().to_owned();
+    let x_view = x.as_array();  // Zero-copy view
     let n = y_array.len();
-    let p = x_array.ncols();
+    let p = x_view.ncols();
     let offset_array: Option<Array1<f64>> = offset.map(|o| o.as_array().to_owned());
     let weights_array: Option<Array1<f64>> = weights.map(|w| w.as_array().to_owned());
 
@@ -302,12 +302,12 @@ pub fn fit_cv_path_py<'py>(
         let (mut ti, mut vi) = (0, 0);
         for i in 0..n {
             if train_mask[i] {
-                y_train[ti] = y_array[i]; x_train.row_mut(ti).assign(&x_array.row(i));
+                y_train[ti] = y_array[i]; x_train.row_mut(ti).assign(&x_view.row(i));
                 if let (Some(ref o), Some(ref mut ot)) = (&offset_array, &mut offset_train) { ot[ti] = o[i]; }
                 if let (Some(ref w), Some(ref mut wt)) = (&weights_array, &mut weights_train) { wt[ti] = w[i]; }
                 ti += 1;
             } else {
-                y_val[vi] = y_array[i]; x_val.row_mut(vi).assign(&x_array.row(i));
+                y_val[vi] = y_array[i]; x_val.row_mut(vi).assign(&x_view.row(i));
                 if let (Some(ref o), Some(ref mut ov)) = (&offset_array, &mut offset_val) { ov[vi] = o[i]; }
                 vi += 1;
             }
@@ -336,7 +336,7 @@ pub fn fit_cv_path_py<'py>(
                 regularization: reg_config, skip_covariance: true,
             };
 
-            let result = match fit_glm_unified(&y_train, &x_train, thread_fam.as_ref(),
+            let result = match fit_glm_unified(&y_train, x_train.view(), thread_fam.as_ref(),
                 thread_link.as_ref(), &cv_config,
                 offset_train.as_ref(), weights_train.as_ref(), warm_coefficients.as_ref())
             { Ok(r) => r, Err(_) => { fold_deviances.push(f64::INFINITY); continue; } };
@@ -406,7 +406,7 @@ pub fn fit_smooth_glm_unified_py<'py>(
     store_design_matrix: bool,
 ) -> PyResult<PyObject> {
     let y_arr = y.as_array().to_owned();
-    let x_arr = x_full.as_array().to_owned();
+    let x_view = x_full.as_array();  // Zero-copy view
     let offset_arr = offset.map(|o| o.as_array().to_owned());
     let weights_arr = weights.map(|w| w.as_array().to_owned());
     
@@ -454,7 +454,7 @@ pub fn fit_smooth_glm_unified_py<'py>(
     let config = build_smooth_config(max_iter, tol, lambda_min, lambda_max);
     
     let result = fit_smooth_glm_full_matrix(
-        &y_arr, &x_arr, &specs, fam.as_ref(), lnk.as_ref(), &config,
+        &y_arr, x_view, &specs, fam.as_ref(), lnk.as_ref(), &config,
         offset_arr.as_ref(), weights_arr.as_ref(),
     ).map_err(|e| PyValueError::new_err(format!("Smooth GLM fitting failed: {}", e)))?;
     

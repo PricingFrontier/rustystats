@@ -189,6 +189,71 @@ class SmoothTermResult:
     col_end: int
 
 
+def _fit_with_fixed_spline_penalties(
+    y: np.ndarray,
+    X: np.ndarray,
+    spline_terms: List[Any],
+    spline_col_indices: List[tuple],
+    family: str,
+    link: str,
+    var_power: float,
+    theta: float,
+    offset: Optional[np.ndarray],
+    weights: Optional[np.ndarray],
+    alpha: float,
+    max_iter: int = DEFAULT_MAX_ITER,
+    tol: float = DEFAULT_TOLERANCE,
+    store_design_matrix: bool = False,
+) -> tuple:
+    """
+    Fit GLM with fixed-df splines using D'D penalty scaled by alpha.
+    
+    Instead of scalar ridge (α·I), this applies α·D'D difference penalties
+    to spline basis columns. This gives better convergence because the
+    penalty structure matches the spline basis.
+    
+    Uses the same Rust smooth solver as GCV, but with fixed lambdas.
+    """
+    from rustystats._rustystats import fit_smooth_glm_unified_py as _fit_smooth_unified
+    
+    penalties = []
+    monotonicity_specs = []
+    for i, term in enumerate(spline_terms):
+        start, end = spline_col_indices[i]
+        k = end - start
+        penalties.append(term.compute_penalty_matrix(k)[:k, :k])
+        mono = getattr(term, '_smooth_monotonicity', None) or \
+               getattr(term, 'monotonicity', None)
+        monotonicity_specs.append(mono)
+    
+    # Fixed lambda = alpha for all terms (no GCV search)
+    # Pass lambda_min = lambda_max = alpha so optimizer returns alpha immediately
+    rust_result, smooth_meta = _fit_smooth_unified(
+        y, X, spline_col_indices, penalties, family,
+        link, offset, weights, max_iter, tol,
+        alpha, alpha,  # lambda_min = lambda_max = alpha → fixed lambda
+        monotonicity_specs if any(m is not None for m in monotonicity_specs) else None,
+        store_design_matrix,
+    )
+    
+    smooth_results = []
+    for i, term in enumerate(spline_terms):
+        start, end = spline_col_indices[i]
+        smooth_results.append(SmoothTermResult(
+            variable=term.var_name,
+            k=term.df,
+            edf=smooth_meta['smooth_edfs'][i],
+            lambda_=smooth_meta['lambdas'][i],
+            gcv=smooth_meta['gcv'],
+            col_start=start,
+            col_end=end,
+        ))
+        term._lambda = smooth_meta['lambdas'][i]
+        term._edf = smooth_meta['smooth_edfs'][i]
+    
+    return rust_result, smooth_results, smooth_meta['total_edf'], smooth_meta['gcv']
+
+
 def _fit_with_smooth_penalties(
     y: np.ndarray,
     X: np.ndarray,
@@ -328,19 +393,18 @@ def _fit_glm_core(
             store_design_matrix=store_design_matrix,
         )
         return result, smooth_results, total_edf, gcv
-    else:
-        # Standard fitting (no smooth terms or regularization already applied)
-        # Compute coefficient constraint indices
-        nonneg_indices, nonpos_indices = _get_constraint_indices(feature_names)
-        
-        result = _fit_glm_rust(
-            y, X, family, link, var_power, theta,
-            offset, weights, alpha, l1_ratio, max_iter, tol,
-            nonneg_indices if nonneg_indices else None,
-            nonpos_indices if nonpos_indices else None,
-            store_design_matrix,
-        )
-        return result, None, None, None
+    
+    # Standard fitting (no smooth terms or regularization already applied)
+    nonneg_indices, nonpos_indices = _get_constraint_indices(feature_names)
+    
+    result = _fit_glm_rust(
+        y, X, family, link, var_power, theta,
+        offset, weights, alpha, l1_ratio, max_iter, tol,
+        nonneg_indices if nonneg_indices else None,
+        nonpos_indices if nonpos_indices else None,
+        store_design_matrix,
+    )
+    return result, None, None, None
 
 
 def _build_results(

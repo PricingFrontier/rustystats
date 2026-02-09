@@ -15,14 +15,14 @@
       "n_obs": 8,
       "total_exposure": 8.0,
       "total_actual": 15.0,
-      "total_predicted": 15.18,
-      "loss": 1.0609,
-      "deviance": 8.49,
-      "log_likelihood": -11.97,
-      "aic": 29.94,
+      "total_predicted": 15.27,
+      "loss": 1.3915,
+      "deviance": 11.13,
+      "log_likelihood": -13.05,
+      "aic": 32.11,
       "gini": -0.1083,
       "auc": 0.4458,
-      "ae_ratio": 0.988,
+      "ae_ratio": 0.9824,
       "ae_by_decile": [
         {
           "decile": 1,
@@ -101,8 +101,8 @@
           "n": 8,
           "exposure": 8.0,
           "actual": 1.875,
-          "predicted": 1.8977,
-          "ae_ratio": 0.988
+          "predicted": 1.9085,
+          "ae_ratio": 0.9824
         }
       ],
       "factor_diagnostics": {},
@@ -118,30 +118,30 @@
     "unstable_factors": []
   },
   "calibration": {
-    "ae_ratio": 0.988,
-    "hl_pvalue": 0.9154,
+    "ae_ratio": 0.982,
+    "hl_pvalue": 0.9022,
     "problem_deciles": []
   },
   "residual_summary": {
     "pearson": {
-      "mean": -0.02,
-      "std": 1.03,
+      "mean": -0.03,
+      "std": 1.18,
       "skewness": 0.4
     },
     "deviance": {
-      "mean": -0.02,
-      "std": 1.03,
+      "mean": -0.03,
+      "std": 1.18,
       "skewness": 0.4
     }
   },
   "factors": [],
   "interaction_candidates": [],
   "model_comparison": {
-    "likelihood_ratio_chi2": 0.886708,
+    "likelihood_ratio_chi2": 1.2424,
     "likelihood_ratio_df": 2,
-    "likelihood_ratio_pvalue": 0.64188,
-    "deviance_reduction_pct": 18.1889,
-    "aic_improvement": -3.1133
+    "likelihood_ratio_pvalue": 0.537309,
+    "deviance_reduction_pct": 25.4844,
+    "aic_improvement": -2.7576
   },
   "warnings": [
     {
@@ -167,30 +167,30 @@
   "coefficient_summary": [
     {
       "feature": "TE(brand:region)",
-      "estimate": -1.4551,
-      "std_error": 1.4238,
-      "z_value": -1.022,
-      "p_value": 0.3068,
+      "estimate": -2.1453,
+      "std_error": 1.6771,
+      "z_value": -1.279,
+      "p_value": 0.2008,
       "significant": false,
       "relativity": null,
       "relativity_ci": null
     },
     {
       "feature": "age",
-      "estimate": 0.015155,
-      "std_error": 0.028655,
-      "z_value": 0.529,
-      "p_value": 0.5969,
+      "estimate": 0.013687,
+      "std_error": 0.026798,
+      "z_value": 0.511,
+      "p_value": 0.6095,
       "significant": false,
       "relativity": null,
       "relativity_ci": null
     },
     {
       "feature": "Intercept",
-      "estimate": 3.9821,
-      "std_error": 2.6525,
-      "z_value": 1.501,
-      "p_value": 0.1333,
+      "estimate": 5.3493,
+      "std_error": 3.1722,
+      "z_value": 1.686,
+      "p_value": 0.0917,
       "significant": false,
       "relativity": null,
       "relativity_ci": null
@@ -312,8 +312,8 @@
         "n": 8,
         "exposure": 8.0,
         "actual": 1.875,
-        "predicted": 1.8977,
-        "ae_ratio": 0.988,
+        "predicted": 1.9085,
+        "ae_ratio": 0.982,
         "cumulative_actual_pct": 100.0,
         "cumulative_predicted_pct": 100.0,
         "lift": 1.0,

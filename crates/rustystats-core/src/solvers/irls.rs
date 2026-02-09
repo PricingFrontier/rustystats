@@ -49,7 +49,7 @@ use super::initialize_mu_safe;
 //
 // =============================================================================
 
-use ndarray::{Array1, Array2};
+use ndarray::{Array1, Array2, ArrayView2};
 use rayon::prelude::*;
 use nalgebra::{DMatrix, DVector};
 
@@ -350,7 +350,7 @@ pub struct IRLSResult {
 /// * `Err(RustyStatsError)` - If fitting fails
 pub fn fit_glm_unified(
     y: &Array1<f64>,
-    x: &Array2<f64>,
+    x: ArrayView2<'_, f64>,
     family: &dyn Family,
     link: &dyn Link,
     config: &FitConfig,
@@ -392,7 +392,7 @@ pub fn fit_glm_unified(
 /// Ridge regularization is applied: (X'WX + λI)β = X'Wz.
 fn fit_glm_core(
     y: &Array1<f64>,
-    x: &Array2<f64>,
+    x: ArrayView2<'_, f64>,
     family: &dyn Family,
     link: &dyn Link,
     config: &IRLSConfig,
@@ -885,8 +885,8 @@ fn fit_glm_core(
 /// - row_start + j = k*p + j where k < n and j < p, so max index is (n-1)*p + (p-1) < n*p = x_slice.len()
 /// - i, j range from 0 to p-1, and xtx_local has length p*p, xtz_local has length p
 #[inline]
-fn compute_xtwx_xtwz(
-    x: &Array2<f64>,
+pub fn compute_xtwx_xtwz(
+    x: ArrayView2<'_, f64>,
     z: &Array1<f64>,
     w: &Array1<f64>,
 ) -> Result<(DMatrix<f64>, DVector<f64>)> {
@@ -1046,7 +1046,7 @@ fn cholesky_solve(
 /// * `l2_penalty` - Ridge penalty λ (0.0 = no penalty)
 /// * `penalize_intercept` - If false, first column is assumed to be intercept and not penalized
 fn solve_weighted_least_squares_penalized(
-    x: &Array2<f64>,
+    x: ArrayView2<'_, f64>,
     z: &Array1<f64>,
     w: &Array1<f64>,
     l2_penalty: f64,
@@ -1086,7 +1086,7 @@ fn solve_weighted_least_squares_penalized(
 /// * Coefficients β (p × 1)
 /// * Inverse of penalized normal equations (X'WX + S)⁻¹ (p × p)
 pub fn solve_weighted_least_squares_with_penalty_matrix(
-    x: &Array2<f64>,
+    x: ArrayView2<'_, f64>,
     z: &Array1<f64>,
     w: &Array1<f64>,
     penalty_matrix: &Array2<f64>,
@@ -1114,10 +1114,42 @@ pub fn solve_weighted_least_squares_with_penalty_matrix(
     cholesky_solve(xtx, &xtz)
 }
 
+/// Solve penalized WLS from pre-computed X'WX and X'Wz matrices.
+///
+/// This avoids recomputing the expensive O(n·p²) cross-product when it has
+/// already been computed (e.g. for GCV optimization in the same IRLS iteration).
+///
+/// # Arguments
+/// * `xtx` - Pre-computed X'WX (p × p) as nalgebra DMatrix
+/// * `xtz` - Pre-computed X'Wz (p × 1) as nalgebra DVector
+/// * `penalty_matrix` - Penalty matrix S (p × p) in ndarray format, already scaled
+///
+/// # Returns
+/// * Coefficients β (p × 1)
+/// * Inverse of penalized normal equations (X'WX + S)⁻¹ (p × p)
+pub fn solve_wls_from_precomputed(
+    xtx: &DMatrix<f64>,
+    xtz: &DVector<f64>,
+    penalty_matrix: &Array2<f64>,
+) -> Result<(Array1<f64>, Array2<f64>)> {
+    let p = xtx.nrows();
+    let mut xtx_pen = xtx.clone();
+
+    // Add full penalty matrix S to X'WX
+    for i in 0..p {
+        for j in i..p {
+            xtx_pen[(i, j)] += penalty_matrix[[i, j]];
+            xtx_pen[(j, i)] += penalty_matrix[[j, i]];
+        }
+    }
+
+    cholesky_solve(xtx_pen, xtz)
+}
+
 /// Compute X'WX matrix for EDF calculation.
 ///
 /// This is needed for computing effective degrees of freedom in penalized regression.
-pub fn compute_xtwx(x: &Array2<f64>, w: &Array1<f64>) -> Array2<f64> {
+pub fn compute_xtwx(x: ArrayView2<'_, f64>, w: &Array1<f64>) -> Array2<f64> {
     let n = x.nrows();
     let p = x.ncols();
 
@@ -1196,7 +1228,7 @@ mod tests {
         let y = array![5.1, 7.9, 11.2, 13.8, 17.1];
 
         let config = FitConfig::default();
-        let result = fit_glm_unified(&y, &x, &GaussianFamily, &IdentityLink, &config, None, None, None).unwrap();
+        let result = fit_glm_unified(&y, x.view(), &GaussianFamily, &IdentityLink, &config, None, None, None).unwrap();
 
         assert!(result.converged);
         assert!((result.coefficients[0] - 2.0).abs() < 0.5);
@@ -1212,7 +1244,7 @@ mod tests {
         let y = array![2.0, 2.0, 3.0, 4.0, 5.0, 7.0];
 
         let config = FitConfig::default();
-        let result = fit_glm_unified(&y, &x, &PoissonFamily, &LogLink, &config, None, None, None).unwrap();
+        let result = fit_glm_unified(&y, x.view(), &PoissonFamily, &LogLink, &config, None, None, None).unwrap();
 
         assert!(result.converged);
         assert!(result.fitted_values.iter().all(|&x| x > 0.0));
@@ -1224,7 +1256,7 @@ mod tests {
         let y = array![1.0, 2.0]; // Wrong length!
 
         let config = FitConfig::default();
-        let result = fit_glm_unified(&y, &x, &GaussianFamily, &IdentityLink, &config, None, None, None);
+        let result = fit_glm_unified(&y, x.view(), &GaussianFamily, &IdentityLink, &config, None, None, None);
 
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), RustyStatsError::DimensionMismatch(_)));
@@ -1236,7 +1268,7 @@ mod tests {
         let y = array![2.0, 4.0, 6.0, 8.0];
 
         let config = FitConfig::default().with_max_iterations(50);
-        let result = fit_glm_unified(&y, &x, &GaussianFamily, &IdentityLink, &config, None, None, None).unwrap();
+        let result = fit_glm_unified(&y, x.view(), &GaussianFamily, &IdentityLink, &config, None, None, None).unwrap();
 
         assert!(result.converged);
         assert!(result.iterations < 10);
@@ -1258,10 +1290,10 @@ mod tests {
     fn test_ridge_shrinks_coefficients() {
         let (x, y) = make_5x2_data();
 
-        let unreg = fit_glm_unified(&y, &x, &GaussianFamily, &IdentityLink,
+        let unreg = fit_glm_unified(&y, x.view(), &GaussianFamily, &IdentityLink,
             &FitConfig::default(), None, None, None).unwrap();
 
-        let ridge = fit_glm_unified(&y, &x, &GaussianFamily, &IdentityLink,
+        let ridge = fit_glm_unified(&y, x.view(), &GaussianFamily, &IdentityLink,
             &FitConfig::default().with_regularization(RegularizationConfig::ridge(10.0)),
             None, None, None).unwrap();
 
@@ -1278,10 +1310,10 @@ mod tests {
     fn test_ridge_no_penalty_equals_ols() {
         let (x, y) = make_5x2_data();
 
-        let unreg = fit_glm_unified(&y, &x, &GaussianFamily, &IdentityLink,
+        let unreg = fit_glm_unified(&y, x.view(), &GaussianFamily, &IdentityLink,
             &FitConfig::default(), None, None, None).unwrap();
 
-        let ridge_zero = fit_glm_unified(&y, &x, &GaussianFamily, &IdentityLink,
+        let ridge_zero = fit_glm_unified(&y, x.view(), &GaussianFamily, &IdentityLink,
             &FitConfig::default().with_regularization(RegularizationConfig::ridge(0.0)),
             None, None, None).unwrap();
 
@@ -1296,10 +1328,10 @@ mod tests {
     fn test_ridge_intercept_not_penalized() {
         let (x, y) = make_5x2_data();
 
-        let unreg = fit_glm_unified(&y, &x, &GaussianFamily, &IdentityLink,
+        let unreg = fit_glm_unified(&y, x.view(), &GaussianFamily, &IdentityLink,
             &FitConfig::default(), None, None, None).unwrap();
 
-        let ridge = fit_glm_unified(&y, &x, &GaussianFamily, &IdentityLink,
+        let ridge = fit_glm_unified(&y, x.view(), &GaussianFamily, &IdentityLink,
             &FitConfig::default().with_regularization(RegularizationConfig::ridge(100.0)),
             None, None, None).unwrap();
 
@@ -1317,7 +1349,7 @@ mod tests {
         let y = array![2.0, 3.0, 4.0, 6.0, 8.0, 12.0];
 
         let config = FitConfig::default().with_regularization(RegularizationConfig::ridge(1.0));
-        let result = fit_glm_unified(&y, &x, &PoissonFamily, &LogLink, &config, None, None, None).unwrap();
+        let result = fit_glm_unified(&y, x.view(), &PoissonFamily, &LogLink, &config, None, None, None).unwrap();
 
         assert!(result.converged);
         assert!(result.fitted_values.iter().all(|&x| x > 0.0));

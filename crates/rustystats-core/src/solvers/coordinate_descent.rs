@@ -1,4 +1,5 @@
 use super::initialize_mu_safe;
+use ndarray::ArrayView2;
 
 // =============================================================================
 // Coordinate Descent for Penalized GLMs
@@ -77,7 +78,7 @@ use super::irls::{IRLSConfig, IRLSResult};
 /// * `Err(RustyStatsError)` - If fitting fails
 pub(crate) fn fit_glm_coordinate_descent(
     y: &Array1<f64>,
-    x: &Array2<f64>,
+    x: ArrayView2<'_, f64>,
     family: &dyn Family,
     link: &dyn Link,
     irls_config: &IRLSConfig,
@@ -492,7 +493,7 @@ pub(crate) fn fit_glm_coordinate_descent(
 /// For Lasso/Elastic Net, standard errors are not well-defined in the classical sense.
 /// This computes a naive estimate that can be used for rough inference.
 fn compute_penalized_covariance(
-    x: &Array2<f64>,
+    x: ArrayView2<'_, f64>,
     irls_weights: &Array1<f64>,
     prior_weights: &Array1<f64>,
     _coefficients: &Array1<f64>,
@@ -586,7 +587,7 @@ mod tests {
         
         // Strong Lasso penalty
         let reg_config = RegularizationConfig::lasso(5.0);
-        let result = fit_glm_coordinate_descent(&y, &x, &family, &link, &irls_config, &reg_config, None, None, None, false).unwrap();
+        let result = fit_glm_coordinate_descent(&y, x.view(), &family, &link, &irls_config, &reg_config, None, None, None, false).unwrap();
 
         assert!(result.converged);
         
@@ -623,7 +624,7 @@ mod tests {
         
         // Very small Lasso penalty
         let reg_config = RegularizationConfig::lasso(0.001);
-        let result = fit_glm_coordinate_descent(&y, &x, &family, &link, &irls_config, &reg_config, None, None, None, false).unwrap();
+        let result = fit_glm_coordinate_descent(&y, x.view(), &family, &link, &irls_config, &reg_config, None, None, None, false).unwrap();
 
         // With Gaussian + identity link, should converge quickly or reach good solution
         // Coefficients should be close to OLS (intercept ~2, slope ~3)
@@ -655,7 +656,7 @@ mod tests {
         
         // Elastic Net: 50% L1, 50% L2
         let reg_config = RegularizationConfig::elastic_net(1.0, 0.5);
-        let result = fit_glm_coordinate_descent(&y, &x, &family, &link, &irls_config, &reg_config, None, None, None, false).unwrap();
+        let result = fit_glm_coordinate_descent(&y, x.view(), &family, &link, &irls_config, &reg_config, None, None, None, false).unwrap();
 
         // Should produce reasonable fitted values even if not converged
         assert!(result.fitted_values.iter().all(|&x| x.is_finite()));
@@ -686,7 +687,7 @@ mod tests {
         let irls_config = IRLSConfig::default();
         
         let reg_config = RegularizationConfig::lasso(0.1);
-        let result = fit_glm_coordinate_descent(&y, &x, &family, &link, &irls_config, &reg_config, None, None, None, false).unwrap();
+        let result = fit_glm_coordinate_descent(&y, x.view(), &family, &link, &irls_config, &reg_config, None, None, None, false).unwrap();
 
         assert!(result.converged);
         assert!(result.fitted_values.iter().all(|&x| x > 0.0));
@@ -714,7 +715,7 @@ mod tests {
         
         // Very strong Lasso penalty
         let reg_config = RegularizationConfig::lasso(100.0);
-        let result = fit_glm_coordinate_descent(&y, &x, &family, &link, &irls_config, &reg_config, None, None, None, false).unwrap();
+        let result = fit_glm_coordinate_descent(&y, x.view(), &family, &link, &irls_config, &reg_config, None, None, None, false).unwrap();
 
         assert!(result.converged);
         

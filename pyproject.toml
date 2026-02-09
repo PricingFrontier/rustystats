@@ -89,6 +89,7 @@ addopts = "-v --tb=short"
 
 [dependency-groups]
 dev = [
+    "glum>=3.1.2",
     "ipykernel>=6.31.0",
     "maturin>=1.10.2",
     "mkdocs>=1.6.1",
@@ -96,4 +97,6 @@ dev = [
     "numpy>=2.0.2",
     "pymdown-extensions>=10.19.1",
     "pytest>=8.4.2",
+    "scikit-learn>=1.6.1",
+    "tabmat>=4.1.5",
 ]

@@ -37,7 +37,7 @@ pub mod gcv_optimizer;
 pub mod nnls;
 
 pub use irls::{FitConfig, fit_glm_unified, IRLSConfig, IRLSResult};
-pub use irls::{solve_weighted_least_squares_with_penalty_matrix, compute_xtwx};
+pub use irls::{solve_weighted_least_squares_with_penalty_matrix, solve_wls_from_precomputed, compute_xtwx, compute_xtwx_xtwz};
 pub use smooth_glm::{SmoothGLMResult, SmoothGLMConfig, SmoothTermData, Monotonicity, SmoothTermSpec, fit_smooth_glm_full_matrix};
 pub use gcv_optimizer::{MultiTermGCVOptimizer, brent_minimize};
 pub use nnls::{NNLSResult, NNLSConfig, nnls, nnls_weighted, nnls_penalized, nnls_weighted_penalized};

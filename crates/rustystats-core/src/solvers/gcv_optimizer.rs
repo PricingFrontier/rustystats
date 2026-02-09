@@ -434,6 +434,23 @@ impl GCVCache {
     }
 }
 
+/// Compute weighted RSS from cached matrices without needing raw data.
+///
+/// RSS = z'Wz - 2·β'(X'Wz) + β'(X'WX)β
+///
+/// This is O(p²) instead of O(n·p), eliminating the need to store the
+/// n-dimensional X, z, w arrays.
+fn compute_rss_from_cached(
+    xtwx: &DMatrix<f64>,
+    xtwz: &DVector<f64>,
+    ztwz: f64,
+    beta: &DVector<f64>,
+) -> f64 {
+    let beta_xtwz = beta.dot(xtwz);
+    let beta_xtwx_beta = beta.dot(&(xtwx * beta));
+    ztwz - 2.0 * beta_xtwz + beta_xtwx_beta
+}
+
 /// Fast GCV optimization for multiple smooth terms.
 /// 
 /// Uses coordinate descent: optimize each lambda while holding others fixed.
@@ -445,13 +462,43 @@ pub struct MultiTermGCVOptimizer {
     pub col_ranges: Vec<(usize, usize)>,
     pub n: usize,
     pub n_parametric: usize,
-    pub z: DVector<f64>,
-    pub x: DMatrix<f64>,
-    pub w: DVector<f64>,
+    /// z'Wz scalar for cached RSS computation
+    pub ztwz: f64,
 }
 
 impl MultiTermGCVOptimizer {
-    /// Create optimizer from matrices.
+    /// Create optimizer from pre-computed X'WX, X'Wz, and z'Wz.
+    ///
+    /// This is the fast path — avoids the O(n·p²) X'WX recomputation.
+    /// The caller (smooth_glm IRLS loop) computes X'WX once and passes it here.
+    pub fn new_from_cached(
+        xtwx: DMatrix<f64>,
+        xtwz: DVector<f64>,
+        ztwz: f64,
+        penalties: Vec<Array2<f64>>,
+        col_ranges: Vec<(usize, usize)>,
+        n: usize,
+        n_parametric: usize,
+    ) -> Self {
+        let penalties_nalg: Vec<DMatrix<f64>> = penalties.iter()
+            .map(|pen| {
+                let contig = if pen.is_standard_layout() { pen.clone() } else { pen.as_standard_layout().to_owned() };
+                DMatrix::from_row_slice(pen.nrows(), pen.ncols(), contig.as_slice().unwrap())
+            })
+            .collect();
+
+        Self {
+            xtwx,
+            xtwz,
+            penalties: penalties_nalg,
+            col_ranges,
+            n,
+            n_parametric,
+            ztwz,
+        }
+    }
+
+    /// Create optimizer from raw matrices (legacy path — recomputes X'WX).
     pub fn new(
         x: &Array2<f64>,
         z: &Array1<f64>,
@@ -465,6 +512,11 @@ impl MultiTermGCVOptimizer {
         let (x_nalg, z_nalg, w_nalg) = to_nalgebra(x, z, w);
         let (xtwx, xtwz) = compute_xtwx_xtwz_nalg(&x_nalg, &z_nalg, &w_nalg);
         
+        // Compute z'Wz
+        let ztwz = z_nalg.iter().zip(w_nalg.iter())
+            .map(|(&zi, &wi)| wi * zi * zi)
+            .sum::<f64>();
+        
         let penalties_nalg: Vec<DMatrix<f64>> = penalties.iter()
             .map(|pen| DMatrix::from_row_slice(pen.nrows(), pen.ncols(), pen.as_slice().unwrap()))
             .collect();
@@ -476,9 +528,7 @@ impl MultiTermGCVOptimizer {
             col_ranges,
             n,
             n_parametric,
-            z: z_nalg,
-            x: x_nalg,
-            w: w_nalg,
+            ztwz,
         }
     }
     
@@ -496,7 +546,9 @@ impl MultiTermGCVOptimizer {
         };
         
         let beta = chol.solve(&self.xtwz);
-        let rss = compute_weighted_rss(&self.x, &self.z, &self.w, &beta);
+        
+        // Compute RSS from cached matrices: O(p²) instead of O(n·p)
+        let rss = compute_rss_from_cached(&self.xtwx, &self.xtwz, self.ztwz, &beta);
         
         let identity = DMatrix::identity(p, p);
         let xtwx_pen_inv = chol.solve(&identity);

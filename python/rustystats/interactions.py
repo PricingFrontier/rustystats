@@ -260,6 +260,24 @@ class InteractionBuilder:
             getattr(self, '_smooth_col_indices', [])
         )
     
+    def get_all_spline_terms(self) -> tuple:
+        """
+        Get ALL spline term information (including fixed-df).
+        
+        Used for D'D penalty routing when alpha > 0 on spline models.
+        
+        Returns
+        -------
+        all_spline_terms : list[SplineTerm]
+            All SplineTerm objects (smooth and fixed-df)
+        all_spline_col_indices : list[tuple]
+            List of (start, end) column indices for each spline term
+        """
+        return (
+            getattr(self, '_all_spline_terms', []),
+            getattr(self, '_all_spline_col_indices', [])
+        )
+    
     def clear_caches(self) -> None:
         """
         Clear internal caches to free memory.
@@ -1189,6 +1207,8 @@ class InteractionBuilder:
         # Add spline terms (tracking smooth term column indices for penalized fitting)
         self._smooth_terms = []  # SplineTerm objects marked as smooth
         self._smooth_col_indices = []  # (start, end) column indices
+        self._all_spline_terms = []  # ALL spline terms (including fixed-df)
+        self._all_spline_col_indices = []  # (start, end) for all spline terms
         
         for spline in parsed.spline_terms:
             col_start = sum(c.shape[1] if c.ndim == 2 else 1 for c in columns)
@@ -1199,6 +1219,10 @@ class InteractionBuilder:
             names.extend(spline_names)
             # Store fitted spline for prediction
             self._fitted_splines[spline.var_name] = spline
+            
+            # Track ALL spline terms for D'D penalty routing
+            self._all_spline_terms.append(spline)
+            self._all_spline_col_indices.append((col_start, col_end))
             
             # Track smooth terms (those with _is_smooth flag)
             if getattr(spline, '_is_smooth', False):

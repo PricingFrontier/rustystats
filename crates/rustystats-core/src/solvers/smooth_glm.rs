@@ -22,14 +22,14 @@
 //
 // =============================================================================
 
-use ndarray::{Array1, Array2, s};
+use ndarray::{Array1, Array2, ArrayView2, s};
 
 use crate::error::{RustyStatsError, Result};
 use crate::families::Family;
 use crate::links::Link;
 use crate::regularization::{Penalty, SmoothPenalty};
 use crate::splines::penalized::{gcv_score, compute_edf, penalty_matrix};
-use crate::solvers::irls::{IRLSConfig, FitConfig, fit_glm_unified, solve_weighted_least_squares_with_penalty_matrix, compute_xtwx};
+use crate::solvers::irls::{IRLSConfig, FitConfig, fit_glm_unified, solve_weighted_least_squares_with_penalty_matrix, solve_wls_from_precomputed, compute_xtwx, compute_xtwx_xtwz};
 // MU constants no longer needed here - clamp_mu delegates to Family::clamp_mu
 use crate::convert;
 
@@ -218,7 +218,7 @@ fn assemble_smooth_result_from_specs(
     iterations: usize,
     converged: bool,
     final_weights: &Array1<f64>,
-    x_combined: &Array2<f64>,
+    x_combined: ArrayView2<'_, f64>,
     penalty_specs: &[(&Array2<f64>, usize, usize)],
     lambdas: &[f64],
     p_param: usize,
@@ -278,7 +278,7 @@ fn assemble_smooth_result_from_specs(
         penalty: Penalty::Smooth(smooth_penalty),
         irls_weights: final_weights.clone(),
         prior_weights,
-        design_matrix: x_combined.clone(),
+        design_matrix: x_combined.to_owned(),
         y: y.clone(),
         offset: offset.cloned(),
     }
@@ -307,7 +307,7 @@ use nalgebra::{DMatrix, DVector};
 /// - If monotonic: use NNLS to enforce non-negative coefficients
 /// - If unconstrained: use standard WLS
 fn solve_constrained_wls(
-    x: &Array2<f64>,
+    x: ArrayView2<'_, f64>,
     z: &Array1<f64>,
     w: &Array1<f64>,
     smooth_terms: &[SmoothTermData],
@@ -536,7 +536,7 @@ pub struct SmoothTermSpec {
 /// Handles both unconstrained and monotonic smooth terms in a single call.
 pub fn fit_smooth_glm_full_matrix(
     y: &Array1<f64>,
-    x_full: &Array2<f64>,
+    x_full: ArrayView2<'_, f64>,
     smooth_specs: &[SmoothTermSpec],
     family: &dyn Family,
     link: &dyn Link,
@@ -573,7 +573,7 @@ pub fn fit_smooth_glm_full_matrix(
             penalty: irls.penalty,
             irls_weights: irls.irls_weights,
             prior_weights: irls.prior_weights,
-            design_matrix: irls.design_matrix.unwrap_or_else(|| x_full.clone()),
+            design_matrix: irls.design_matrix.unwrap_or_else(|| x_full.to_owned()),
             y: irls.y,
             offset: if irls.offset.iter().all(|&v| v == 0.0) { None } else { Some(irls.offset) },
         });
@@ -634,6 +634,7 @@ pub fn fit_smooth_glm_full_matrix(
     let log_lambda_min = config.lambda_min.ln();
     let log_lambda_max = config.lambda_max.ln();
     let mut penalty_matrix = Array2::zeros((total_cols, total_cols));
+    let mut lambdas_stable_count = 0u32;  // Track consecutive iterations with stable lambdas
     
     while iteration < config.irls_config.max_iterations {
         iteration += 1;
@@ -656,18 +657,31 @@ pub fn fit_smooth_glm_full_matrix(
         // Working response: (eta - offset) + (y - mu) * link_deriv
         let working_response = (&eta - &offset_vec) + &((y - &mu) * &link_deriv);
         
-        // Optimize lambdas
-        if iteration <= 3 || iteration % 2 == 0 {
+        // Compute X'WX and X'Wz ONCE per iteration — shared by GCV and WLS
+        let (cached_xtwx, cached_xtwz) = compute_xtwx_xtwz(x_combined, &working_response, &combined_weights)?;
+        
+        // Compute z'Wz scalar for GCV RSS computation (O(n), trivial)
+        let ztwz: f64 = working_response.iter().zip(combined_weights.iter())
+            .map(|(&zi, &wi)| wi * zi * zi)
+            .sum();
+        
+        // Optimize lambdas using cached matrices (no X'WX recomputation)
+        // Skip GCV once lambdas have stabilized for 2 consecutive iterations
+        let run_gcv = lambdas_stable_count < 2 && (iteration <= 3 || iteration % 2 == 0);
+        if run_gcv {
+            let old_lambdas = lambdas.clone();
+            
             let penalties: Vec<Array2<f64>> = smooth_specs.iter()
                 .map(|s| s.penalty.clone())
                 .collect();
             
-            let optimizer = MultiTermGCVOptimizer::new(
-                x_combined,
-                &working_response,
-                &combined_weights,
+            let optimizer = MultiTermGCVOptimizer::new_from_cached(
+                cached_xtwx.clone(),
+                cached_xtwz.clone(),
+                ztwz,
                 penalties,
                 term_indices.clone(),
+                n,
                 p_param,
             );
             
@@ -677,6 +691,20 @@ pub fn fit_smooth_glm_full_matrix(
                 config.lambda_tol,
                 3,
             );
+            
+            // Check if lambdas have stabilized (max relative change < 1%)
+            let max_rel_change = old_lambdas.iter().zip(lambdas.iter())
+                .map(|(&old, &new)| {
+                    if old.abs() < 1e-12 { (new - old).abs() }
+                    else { (new - old).abs() / old.abs() }
+                })
+                .fold(0.0f64, f64::max);
+            
+            if max_rel_change < 0.01 {
+                lambdas_stable_count += 1;
+            } else {
+                lambdas_stable_count = 0;
+            }
         }
         
         // Build penalty matrix (reuse allocation, zero and refill)
@@ -685,7 +713,7 @@ pub fn fit_smooth_glm_full_matrix(
             embed_penalty(&mut penalty_matrix, &spec.penalty, spec.col_start, lambdas[i]);
         }
         
-        // Solve WLS — keep new_coef separate so step-halving can blend old ↔ new
+        // Solve WLS from pre-computed X'WX — no redundant O(n·p²) computation
         let new_coef;
         if has_monotonic {
             // Build SmoothTermData for the constrained solver
@@ -710,10 +738,9 @@ pub fn fit_smooth_glm_full_matrix(
                 &nnls_config,
             )?;
         } else {
-            let (coef, xtwinv) = solve_weighted_least_squares_with_penalty_matrix(
-                x_combined,
-                &working_response,
-                &combined_weights,
+            let (coef, xtwinv) = solve_wls_from_precomputed(
+                &cached_xtwx,
+                &cached_xtwz,
                 &penalty_matrix,
             )?;
             new_coef = coef;
@@ -899,7 +926,7 @@ mod tests {
         let config = SmoothGLMConfig::default();
 
         let result = fit_smooth_glm_full_matrix(
-            &y, &x_full, &specs,
+            &y, x_full.view(), &specs,
             &GaussianFamily, &IdentityLink,
             &config, None, None,
         ).unwrap();
@@ -918,7 +945,7 @@ mod tests {
         let config = SmoothGLMConfig::default();
 
         let result = fit_smooth_glm_full_matrix(
-            &y, &x_full, &specs,
+            &y, x_full.view(), &specs,
             &GaussianFamily, &IdentityLink,
             &config, None, None,
         ).unwrap();
@@ -937,7 +964,7 @@ mod tests {
         let config = SmoothGLMConfig::default();
 
         let result = fit_smooth_glm_full_matrix(
-            &y, &x_full, &specs,
+            &y, x_full.view(), &specs,
             &GaussianFamily, &IdentityLink,
             &config, None, None,
         ).unwrap();
@@ -955,7 +982,7 @@ mod tests {
         let config = SmoothGLMConfig::default();
 
         let result = fit_smooth_glm_full_matrix(
-            &y, &x_full, &specs,
+            &y, x_full.view(), &specs,
             &PoissonFamily, &LogLink,
             &config, None, None,
         ).unwrap();
@@ -974,7 +1001,7 @@ mod tests {
         let config = SmoothGLMConfig::default();
 
         let result = fit_smooth_glm_full_matrix(
-            &y, &x_full, &specs,
+            &y, x_full.view(), &specs,
             &GaussianFamily, &IdentityLink,
             &config, None, None,
         ).unwrap();
@@ -994,7 +1021,7 @@ mod tests {
         config.irls_config.max_iterations = 50;
 
         let result = fit_smooth_glm_full_matrix(
-            &y, &x_full, &specs,
+            &y, x_full.view(), &specs,
             &PoissonFamily, &LogLink,
             &config, Some(&offset), None,
         ).unwrap();
@@ -1012,7 +1039,7 @@ mod tests {
         let config = SmoothGLMConfig::default();
 
         let result = fit_smooth_glm_full_matrix(
-            &y, &x_full, &specs,
+            &y, x_full.view(), &specs,
             &GaussianFamily, &IdentityLink,
             &config, None, Some(&weights),
         ).unwrap();
@@ -1040,7 +1067,7 @@ mod tests {
         let config = SmoothGLMConfig::default();
 
         let result = fit_smooth_glm_full_matrix(
-            &y, &x_full, &specs,
+            &y, x_full.view(), &specs,
             &GaussianFamily, &IdentityLink,
             &config, None, None,
         );
@@ -1085,7 +1112,7 @@ mod tests {
         let config = SmoothGLMConfig::default();
 
         let result = fit_smooth_glm_full_matrix(
-            &y, &x_full, &specs,
+            &y, x_full.view(), &specs,
             &GaussianFamily, &IdentityLink,
             &config, None, None,
         ).unwrap();
@@ -1110,7 +1137,7 @@ mod tests {
         let config = SmoothGLMConfig::default();
 
         let result = fit_smooth_glm_full_matrix(
-            &y, &x_full, &specs,
+            &y, x_full.view(), &specs,
             &GaussianFamily, &IdentityLink,
             &config, None, None,
         ).unwrap();
@@ -1134,7 +1161,7 @@ mod tests {
         let config = SmoothGLMConfig::default();
 
         let result = fit_smooth_glm_full_matrix(
-            &y, &x_param, &[],
+            &y, x_param.view(), &[],
             &GaussianFamily, &IdentityLink,
             &config, None, None,
         ).unwrap();
