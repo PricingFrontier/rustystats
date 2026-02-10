@@ -297,9 +297,9 @@ class FactorDiagnostics:
     in_model: bool
     transform: Optional[str]
     coefficients: Optional[List[FactorCoefficient]]
-    univariate: Union[ContinuousFactorStats, CategoricalFactorStats]
     actual_vs_expected: List[ActualExpectedBin]
     residual_pattern: ResidualPattern
+    univariate: Optional[Union[ContinuousFactorStats, CategoricalFactorStats]] = None
     significance: Optional[FactorSignificance] = None
     score_test: Optional[ScoreTestResult] = None
 

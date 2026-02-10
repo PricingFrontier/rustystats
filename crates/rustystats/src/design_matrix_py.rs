@@ -42,6 +42,28 @@ pub fn encode_categorical_py<'py>(
     ))
 }
 
+/// Fast categorical factorization: string values → (sorted unique levels, integer codes).
+///
+/// O(n) HashMap-based encoding, replacing O(n log n) np.unique for diagnostics/exploration.
+///
+/// Parameters
+/// ----------
+/// values : list[str]
+///     String values for each observation
+///
+/// Returns
+/// -------
+/// tuple[list[str], numpy.ndarray[uint32]]
+///     (sorted_unique_levels, integer_codes) matching np.unique(return_inverse=True) output
+#[pyfunction]
+pub fn factorize_strings_py<'py>(
+    py: Python<'py>,
+    values: Vec<String>,
+) -> PyResult<(Vec<String>, Bound<'py, PyArray1<u32>>)> {
+    let (levels, codes) = design_matrix::factorize_strings(&values);
+    Ok((levels, codes.into_pyarray_bound(py)))
+}
+
 /// Encode categorical from pre-computed indices.
 ///
 /// Use when indices are already computed (e.g., from factorization).

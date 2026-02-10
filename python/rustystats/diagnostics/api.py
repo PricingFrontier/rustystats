@@ -17,6 +17,7 @@ from rustystats._rustystats import (
     compute_discrimination_stats_py as _rust_discrimination_stats,
     compute_dataset_metrics_py as _rust_dataset_metrics,
     chi2_cdf_py as _chi2_cdf,
+    factorize_strings_py as _factorize_strings,
 )
 
 from rustystats.diagnostics.types import (
@@ -160,7 +161,7 @@ def compute_diagnostics(
     n_factor_bins: int = DEFAULT_N_FACTOR_BINS,
     rare_threshold_pct: float = DEFAULT_RARE_THRESHOLD_PCT,
     max_categorical_levels: int = DEFAULT_MAX_CATEGORICAL_LEVELS,
-    detect_interactions: bool = True,
+    detect_interactions: bool = False,
     max_interaction_factors: int = DEFAULT_MAX_INTERACTION_FACTORS,
     # Test data for overfitting detection (response/exposure auto-inferred from model)
     test_data: Optional["pl.DataFrame"] = None,
@@ -198,8 +199,9 @@ def compute_diagnostics(
         Threshold (%) below which categorical levels are grouped into "Other".
     max_categorical_levels : int, default=20
         Maximum number of categorical levels to show (rest grouped to "Other").
-    detect_interactions : bool, default=True
-        Whether to detect potential interactions.
+    detect_interactions : bool, default=False
+        Whether to detect residual-based interactions post-fit.
+        Pre-fit interaction detection is handled by explore().
     max_interaction_factors : int, default=10
         Maximum number of factors to consider for interaction detection.
     test_data : pl.DataFrame, optional
@@ -347,6 +349,22 @@ def compute_diagnostics(
     calibration = computer.compute_calibration(n_calibration_bins)
     residual_summary = computer.compute_residual_summary()
     
+    # Pre-extract categorical columns once to avoid repeated .to_numpy().astype(str)
+    # Uses Rust HashMap-based factorize for O(n) encoding instead of O(n log n) np.unique
+    _cat_cache_train = {}
+    _cat_unique_cache_train = {}
+    for name in categorical_factors:
+        if name in train_data.columns:
+            str_list = train_data[name].cast(str).to_list()
+            levels, codes = _factorize_strings(str_list)
+            str_vals = np.array(str_list)
+            _cat_cache_train[name] = str_vals
+            _cat_unique_cache_train[name] = (np.array(levels), codes)
+    _cont_cache_train = {}
+    for name in continuous_factors:
+        if name in train_data.columns:
+            _cont_cache_train[name] = train_data[name].to_numpy().astype(np.float64)
+    
     # Get matrices for score test (for unfitted factors)
     # These are needed for Rao's score test on unfitted variables
     score_test_design_matrix = None
@@ -370,6 +388,9 @@ def compute_diagnostics(
         design_matrix=score_test_design_matrix,
         bread_matrix=score_test_bread_matrix,
         irls_weights=score_test_irls_weights,
+        cat_column_cache=_cat_cache_train,
+        cont_column_cache=_cont_cache_train,
+        cat_unique_cache=_cat_unique_cache_train,
     )
     
     # Interaction detection
@@ -380,6 +401,8 @@ def compute_diagnostics(
             data=train_data,
             factor_names=all_factors,
             max_factors=max_interaction_factors,
+            cat_column_cache=_cat_cache_train,
+            cont_column_cache=_cont_cache_train,
         )
     
     model_comparison = computer.compute_model_comparison()
@@ -388,7 +411,10 @@ def compute_diagnostics(
     exposure_train = computer.exposure
     train_diag = computer.compute_dataset_diagnostics(
         y, mu, exposure_train, train_data,
-        categorical_factors, continuous_factors, "train", result
+        categorical_factors, continuous_factors, "train", result,
+        cat_column_cache=_cat_cache_train,
+        cont_column_cache=_cont_cache_train,
+        cat_unique_cache=_cat_unique_cache_train,
     )
     
     # Generate warnings (use train_diag for fit stats)
@@ -449,6 +475,9 @@ def compute_diagnostics(
             continuous_factors=continuous_factors,
             categorical_factors=categorical_factors,
             link=link,
+            cat_column_cache=_cat_cache_train,
+            cat_unique_cache=_cat_unique_cache_train,
+            cont_column_cache=_cont_cache_train,
         )
         # Add recommendations for non-linear effects
         for pd in partial_dep:
@@ -477,10 +506,28 @@ def compute_diagnostics(
         if exposure_col and exposure_col in test_data.columns:
             exposure_test = test_data[exposure_col].to_numpy().astype(np.float64)
         
+        # Pre-cache test data columns using Rust factorize
+        _cat_cache_test = {}
+        _cat_unique_cache_test = {}
+        for name in categorical_factors:
+            if name in test_data.columns:
+                str_list = test_data[name].cast(str).to_list()
+                levels, codes = _factorize_strings(str_list)
+                str_vals = np.array(str_list)
+                _cat_cache_test[name] = str_vals
+                _cat_unique_cache_test[name] = (np.array(levels), codes)
+        _cont_cache_test = {}
+        for name in continuous_factors:
+            if name in test_data.columns:
+                _cont_cache_test[name] = test_data[name].to_numpy().astype(np.float64)
+        
         # Compute test diagnostics
         test_diag = computer.compute_dataset_diagnostics(
             y_test, mu_test, exposure_test, test_data,
-            categorical_factors, continuous_factors, "test", result
+            categorical_factors, continuous_factors, "test", result,
+            cat_column_cache=_cat_cache_test,
+            cont_column_cache=_cont_cache_test,
+            cat_unique_cache=_cat_unique_cache_test,
         )
         
         # Compute comparison metrics

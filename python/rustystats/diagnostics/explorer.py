@@ -20,6 +20,7 @@ import numpy as np
 
 from rustystats._rustystats import (
     f_cdf_py as _f_cdf,
+    factorize_strings_py as _factorize_strings,
 )
 
 from rustystats.diagnostics.types import (
@@ -110,6 +111,9 @@ class DataExplorer:
         n_bins: int = DEFAULT_N_FACTOR_BINS,
         rare_threshold_pct: float = DEFAULT_RARE_THRESHOLD_PCT,
         max_categorical_levels: int = DEFAULT_MAX_CATEGORICAL_LEVELS,
+        cat_column_cache: Optional[Dict[str, np.ndarray]] = None,
+        cat_unique_cache: Optional[Dict[str, tuple]] = None,
+        cont_column_cache: Optional[Dict[str, np.ndarray]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Compute univariate statistics for each factor.
@@ -122,7 +126,7 @@ class DataExplorer:
         for name in continuous_factors:
             validate_factor_in_data(name, data, "Continuous factor")
             
-            values = data[name].to_numpy().astype(np.float64)
+            values = cont_column_cache[name] if cont_column_cache and name in cont_column_cache else data[name].to_numpy().astype(np.float64)
             valid_mask = ~np.isnan(values) & ~np.isinf(values)
             valid_values = values[valid_mask]
             
@@ -198,53 +202,55 @@ class DataExplorer:
         for name in categorical_factors:
             validate_factor_in_data(name, data, "Categorical factor")
             
-            values = data[name].to_numpy().astype(str)
-            unique_levels = np.unique(values)
+            values = cat_column_cache[name] if cat_column_cache and name in cat_column_cache else data[name].to_numpy().astype(str)
+            if cat_unique_cache and name in cat_unique_cache:
+                unique_levels, inverse = cat_unique_cache[name]
+            else:
+                unique_levels, inverse = np.unique(values, return_inverse=True)
+            k = len(unique_levels)
             
-            # Sort levels by exposure
-            level_exposures = []
-            for level in unique_levels:
-                mask = values == level
-                exp = np.sum(self.exposure[mask])
-                level_exposures.append((level, exp))
-            level_exposures.sort(key=lambda x: -x[1])
-            
+            # Vectorized aggregation with np.bincount
+            counts = np.bincount(inverse, minlength=k)
+            exp_by_level = np.bincount(inverse, weights=self.exposure, minlength=k)
+            y_by_level = np.bincount(inverse, weights=self.y, minlength=k)
             total_exposure = np.sum(self.exposure)
+            
+            # Sort levels by exposure (descending)
+            sort_idx = np.argsort(-exp_by_level)
             
             # Build level stats
             levels_data = []
-            other_mask = np.zeros(len(values), dtype=bool)
+            other_y = 0.0
+            other_exp = 0.0
+            other_count = 0
             
-            for i, (level, exp) in enumerate(level_exposures):
+            for rank, idx in enumerate(sort_idx):
+                exp = float(exp_by_level[idx])
                 pct = 100 * exp / total_exposure
                 
-                if pct < rare_threshold_pct or i >= max_categorical_levels - 1:
-                    other_mask |= (values == level)
+                if pct < rare_threshold_pct or rank >= max_categorical_levels - 1:
+                    other_y += float(y_by_level[idx])
+                    other_exp += exp
+                    other_count += int(counts[idx])
                 else:
-                    mask = values == level
-                    y_level = self.y[mask]
-                    exp_level = self.exposure[mask]
-                    
                     levels_data.append({
-                        "level": level,
-                        "count": int(np.sum(mask)),
-                        "exposure": float(np.sum(exp_level)),
+                        "level": str(unique_levels[idx]),
+                        "count": int(counts[idx]),
+                        "exposure": exp,
                         "exposure_pct": float(pct),
-                        "response_sum": float(np.sum(y_level)),
-                        "response_rate": float(np.sum(y_level) / np.sum(exp_level)) if np.sum(exp_level) > 0 else 0,
+                        "response_sum": float(y_by_level[idx]),
+                        "response_rate": float(y_by_level[idx] / exp) if exp > 0 else 0,
                     })
             
             # Add "Other" if needed
-            if np.any(other_mask):
-                y_other = self.y[other_mask]
-                exp_other = self.exposure[other_mask]
+            if other_count > 0:
                 levels_data.append({
                     "level": "_Other",
-                    "count": int(np.sum(other_mask)),
-                    "exposure": float(np.sum(exp_other)),
-                    "exposure_pct": float(100 * np.sum(exp_other) / total_exposure),
-                    "response_sum": float(np.sum(y_other)),
-                    "response_rate": float(np.sum(y_other) / np.sum(exp_other)) if np.sum(exp_other) > 0 else 0,
+                    "count": other_count,
+                    "exposure": other_exp,
+                    "exposure_pct": float(100 * other_exp / total_exposure),
+                    "response_sum": other_y,
+                    "response_rate": float(other_y / other_exp) if other_exp > 0 else 0,
                 })
             
             # Compute modeling hints for categorical
@@ -357,6 +363,9 @@ class DataExplorer:
         data: "pl.DataFrame",
         categorical_factors: List[str],
         continuous_factors: List[str],
+        cat_column_cache: Optional[Dict[str, np.ndarray]] = None,
+        cat_unique_cache: Optional[Dict[str, tuple]] = None,
+        cont_column_cache: Optional[Dict[str, np.ndarray]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Compute univariate significance tests for each factor vs response.
@@ -370,7 +379,7 @@ class DataExplorer:
         for name in continuous_factors:
             validate_factor_in_data(name, data, "Continuous factor")
             
-            values = data[name].to_numpy().astype(np.float64)
+            values = cont_column_cache[name] if cont_column_cache and name in cont_column_cache else data[name].to_numpy().astype(np.float64)
             valid_mask = ~np.isnan(values) & ~np.isinf(values)
             
             if np.sum(valid_mask) < 10:
@@ -413,12 +422,15 @@ class DataExplorer:
         for name in categorical_factors:
             validate_factor_in_data(name, data, "Categorical factor")
             
-            values = data[name].to_numpy().astype(str)
+            values = cat_column_cache[name] if cat_column_cache and name in cat_column_cache else data[name].to_numpy().astype(str)
             
             # ANOVA: eta-squared and F-test
             eta_sq = self._compute_eta_squared_response(values)
             
-            unique_levels = np.unique(values)
+            if cat_unique_cache and name in cat_unique_cache:
+                unique_levels, _ = cat_unique_cache[name]
+            else:
+                unique_levels = np.unique(values)
             k = len(unique_levels)
             n = len(values)
             
@@ -451,6 +463,7 @@ class DataExplorer:
         self,
         data: "pl.DataFrame",
         continuous_factors: List[str],
+        cont_column_cache: Optional[Dict[str, np.ndarray]] = None,
     ) -> Dict[str, Any]:
         """
         Compute pairwise correlations between continuous factors.
@@ -465,7 +478,7 @@ class DataExplorer:
         # Build matrix of valid values
         arrays = []
         for name in valid_factors:
-            arr = data[name].to_numpy().astype(np.float64)
+            arr = cont_column_cache[name] if cont_column_cache and name in cont_column_cache else data[name].to_numpy().astype(np.float64)
             arrays.append(arr)
         
         X = np.column_stack(arrays)
@@ -512,6 +525,7 @@ class DataExplorer:
         self,
         data: "pl.DataFrame",
         continuous_factors: List[str],
+        cont_column_cache: Optional[Dict[str, np.ndarray]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Compute Variance Inflation Factors for multicollinearity detection.
@@ -527,7 +541,7 @@ class DataExplorer:
         # Build design matrix
         arrays = []
         for name in valid_factors:
-            arr = data[name].to_numpy().astype(np.float64)
+            arr = cont_column_cache[name] if cont_column_cache and name in cont_column_cache else data[name].to_numpy().astype(np.float64)
             arrays.append(arr)
         
         X = np.column_stack(arrays)
@@ -729,6 +743,8 @@ class DataExplorer:
         self,
         data: "pl.DataFrame",
         categorical_factors: List[str],
+        cat_column_cache: Optional[Dict[str, np.ndarray]] = None,
+        cat_unique_cache: Optional[Dict[str, tuple]] = None,
     ) -> Dict[str, Any]:
         """
         Compute Cramér's V matrix for categorical factor pairs.
@@ -740,14 +756,27 @@ class DataExplorer:
         if len(valid_factors) < 2:
             return {"factors": valid_factors, "matrix": [], "high_associations": []}
         
+        # Pre-fetch arrays and unique/inverse for all factors
+        _arrays = {}
+        _uniq_inv = {}
+        for name in valid_factors:
+            if cat_column_cache and name in cat_column_cache:
+                _arrays[name] = cat_column_cache[name]
+            else:
+                _arrays[name] = data[name].to_numpy().astype(str)
+            if cat_unique_cache and name in cat_unique_cache:
+                _uniq_inv[name] = cat_unique_cache[name]
+            else:
+                _uniq_inv[name] = np.unique(_arrays[name], return_inverse=True)
+        
         n_factors = len(valid_factors)
         v_matrix = np.eye(n_factors)
         
         for i in range(n_factors):
             for j in range(i + 1, n_factors):
-                v = self._compute_cramers_v_pair(
-                    data[valid_factors[i]].to_numpy(),
-                    data[valid_factors[j]].to_numpy(),
+                v = self._compute_cramers_v_pair_fast(
+                    _uniq_inv[valid_factors[i]],
+                    _uniq_inv[valid_factors[j]],
                 )
                 v_matrix[i, j] = v
                 v_matrix[j, i] = v
@@ -773,24 +802,69 @@ class DataExplorer:
             "high_associations": high_assoc,
         }
     
-    def _compute_cramers_v_pair(self, x: np.ndarray, y: np.ndarray) -> float:
-        """Compute Cramér's V for a pair of categorical variables."""
-        # Build contingency table
-        x_str = x.astype(str)
-        y_str = y.astype(str)
+    def _compute_cramers_v_pair_fast(self, x_uniq_inv: tuple, y_uniq_inv: tuple) -> float:
+        """Compute Cramér's V from pre-computed (unique, inverse) tuples.
         
-        x_cats = np.unique(x_str)
-        y_cats = np.unique(y_str)
+        Uses vectorized contingency table via combined integer encoding.
+        """
+        x_cats, x_inv = x_uniq_inv
+        y_cats, y_inv = y_uniq_inv
         
         r, k = len(x_cats), len(y_cats)
         if r < 2 or k < 2:
             return 0.0
         
-        # Count frequencies
-        contingency = np.zeros((r, k))
-        for i, xc in enumerate(x_cats):
-            for j, yc in enumerate(y_cats):
-                contingency[i, j] = np.sum((x_str == xc) & (y_str == yc))
+        # Build contingency table vectorized: encode (x_inv, y_inv) as single int
+        combined = x_inv * k + y_inv
+        flat_counts = np.bincount(combined, minlength=r * k)
+        contingency = flat_counts.reshape(r, k).astype(np.float64)
+        
+        n = contingency.sum()
+        if n == 0:
+            return 0.0
+        
+        # Chi-squared statistic
+        row_sums = contingency.sum(axis=1, keepdims=True)
+        col_sums = contingency.sum(axis=0, keepdims=True)
+        expected = row_sums * col_sums / n
+        
+        # Handle zero expected values explicitly (don't suppress warnings)
+        if np.any(expected == 0):
+            # Zero expected values indicate empty cells - raise error for actuarial transparency
+            raise ValidationError(
+                f"Cramér's V calculation has zero expected frequencies. "
+                f"This indicates empty cells in the contingency table between factors. "
+                f"Check data quality or reduce number of factor levels."
+            )
+        chi2 = np.sum((contingency - expected) ** 2 / expected)
+        
+        # Cramér's V
+        min_dim = min(r - 1, k - 1)
+        if min_dim == 0 or n == 0:
+            return 0.0
+        
+        v = np.sqrt(chi2 / (n * min_dim))
+        return float(v)
+
+    def _compute_cramers_v_pair(self, x: np.ndarray, y: np.ndarray) -> float:
+        """Compute Cramér's V for a pair of categorical variables (fallback).
+        
+        Uses vectorized contingency table via combined integer encoding.
+        """
+        x_str = x.astype(str)
+        y_str = y.astype(str)
+        
+        x_cats, x_inv = np.unique(x_str, return_inverse=True)
+        y_cats, y_inv = np.unique(y_str, return_inverse=True)
+        
+        r, k = len(x_cats), len(y_cats)
+        if r < 2 or k < 2:
+            return 0.0
+        
+        # Build contingency table vectorized: encode (x_inv, y_inv) as single int
+        combined = x_inv * k + y_inv
+        flat_counts = np.bincount(combined, minlength=r * k)
+        contingency = flat_counts.reshape(r, k).astype(np.float64)
         
         n = contingency.sum()
         if n == 0:
@@ -827,6 +901,8 @@ class DataExplorer:
         min_effect_size: float = 0.01,
         max_candidates: int = 5,
         min_cell_count: int = 30,
+        cat_column_cache: Optional[Dict[str, np.ndarray]] = None,
+        cont_column_cache: Optional[Dict[str, np.ndarray]] = None,
     ) -> List[InteractionCandidate]:
         """
         Detect potential interactions using response-based analysis.
@@ -840,19 +916,27 @@ class DataExplorer:
         for name in factor_names:
             validate_factor_in_data(name, data)
             
-            values = data[name].to_numpy()
-            
-            # Compute eta-squared (variance explained)
-            if values.dtype == object or str(values.dtype).startswith('str'):
-                score = self._compute_eta_squared_response(values.astype(str))
-            else:
-                values = values.astype(np.float64)
+            # Use cached arrays when available
+            if cat_column_cache and name in cat_column_cache:
+                score = self._compute_eta_squared_response(cat_column_cache[name])
+            elif cont_column_cache and name in cont_column_cache:
+                values = cont_column_cache[name]
                 valid_mask = ~np.isnan(values) & ~np.isinf(values)
                 if np.sum(valid_mask) < 10:
                     continue
-                # Bin continuous variables
                 bins = self._discretize(values, 5)
                 score = self._compute_eta_squared_response(bins.astype(str))
+            else:
+                values = data[name].to_numpy()
+                if values.dtype == object or str(values.dtype).startswith('str'):
+                    score = self._compute_eta_squared_response(values.astype(str))
+                else:
+                    values = values.astype(np.float64)
+                    valid_mask = ~np.isnan(values) & ~np.isinf(values)
+                    if np.sum(valid_mask) < 10:
+                        continue
+                    bins = self._discretize(values, 5)
+                    score = self._compute_eta_squared_response(bins.astype(str))
             
             if score >= min_effect_size:
                 factor_scores.append((name, score))
@@ -891,9 +975,13 @@ class DataExplorer:
         return candidates[:max_candidates]
     
     def _compute_eta_squared_response(self, categories: np.ndarray) -> float:
-        """Compute eta-squared for categorical association with response."""
+        """Compute eta-squared for categorical association with response.
+        
+        Uses np.bincount for O(n) aggregation instead of per-level masking.
+        """
         y_rate = self.y / self.exposure
-        unique_levels = np.unique(categories)
+        _unique_levels, inverse = np.unique(categories, return_inverse=True)
+        k = len(_unique_levels)
         overall_mean = np.average(y_rate, weights=self.exposure)
         
         ss_total = np.sum(self.exposure * (y_rate - overall_mean) ** 2)
@@ -901,13 +989,11 @@ class DataExplorer:
         if ss_total == 0:
             return 0.0
         
-        ss_between = 0.0
-        for level in unique_levels:
-            mask = categories == level
-            level_rate = y_rate[mask]
-            level_exp = self.exposure[mask]
-            level_mean = np.average(level_rate, weights=level_exp)
-            ss_between += np.sum(level_exp) * (level_mean - overall_mean) ** 2
+        # Weighted mean per level: sum(exposure * rate) / sum(exposure) = sum(y) / sum(exposure)
+        level_y = np.bincount(inverse, weights=self.y, minlength=k)
+        level_exp = np.bincount(inverse, weights=self.exposure, minlength=k)
+        level_means = np.divide(level_y, level_exp, out=np.zeros(k), where=level_exp > 0)
+        ss_between = float(np.sum(level_exp * (level_means - overall_mean) ** 2))
         
         return ss_between / ss_total
     
@@ -923,53 +1009,53 @@ class DataExplorer:
         bins2: np.ndarray,
         min_cell_count: int,
     ) -> Optional[InteractionCandidate]:
-        """Compute interaction strength based on response variance."""
+        """Compute interaction strength based on response variance.
+        
+        Uses np.bincount for O(n) aggregation instead of per-cell masking.
+        """
         y_rate = self.y / self.exposure
         
         # Create interaction cells
         cell_ids = bins1 * 1000 + bins2
-        unique_cells = np.unique(cell_ids)
+        unique_cells, inverse = np.unique(cell_ids, return_inverse=True)
+        k = len(unique_cells)
+        
+        # Vectorized aggregation
+        cell_counts = np.bincount(inverse, minlength=k)
+        cell_y_sums = np.bincount(inverse, weights=self.y, minlength=k)
+        cell_exp_sums = np.bincount(inverse, weights=self.exposure, minlength=k)
         
         # Filter cells with sufficient data
-        valid_cells = []
-        cell_rates = []
-        cell_weights = []
-        
-        for cell_id in unique_cells:
-            mask = cell_ids == cell_id
-            if np.sum(mask) >= min_cell_count:
-                valid_cells.append(cell_id)
-                cell_rates.append(y_rate[mask])
-                cell_weights.append(self.exposure[mask])
-        
-        if len(valid_cells) < 4:
+        valid_mask = cell_counts >= min_cell_count
+        n_valid_cells = int(np.sum(valid_mask))
+        if n_valid_cells < 4:
             return None
         
-        # Compute variance explained by cells
-        all_rates = np.concatenate(cell_rates)
-        all_weights = np.concatenate(cell_weights)
-        overall_mean = np.average(all_rates, weights=all_weights)
+        valid_counts = cell_counts[valid_mask]
+        valid_y = cell_y_sums[valid_mask]
+        valid_exp = cell_exp_sums[valid_mask]
+        valid_means = np.divide(valid_y, valid_exp, out=np.zeros_like(valid_y), where=valid_exp > 0)
         
+        # Build combined index for valid observations (vectorized)
+        obs_valid = valid_mask[inverse]
+        all_rates = y_rate[obs_valid]
+        all_weights = self.exposure[obs_valid]
+        
+        overall_mean = np.average(all_rates, weights=all_weights)
         ss_total = np.sum(all_weights * (all_rates - overall_mean) ** 2)
         
         if ss_total == 0:
             return None
         
-        ss_model = sum(
-            np.sum(w) * (np.average(r, weights=w) - overall_mean) ** 2
-            for r, w in zip(cell_rates, cell_weights)
-        )
-        
+        ss_model = float(np.sum(valid_exp * (valid_means - overall_mean) ** 2))
         r_squared = ss_model / ss_total
         
         # F-test p-value
-        df_model = len(valid_cells) - 1
-        df_resid = len(all_rates) - len(valid_cells)
+        df_model = n_valid_cells - 1
+        df_resid = len(all_rates) - n_valid_cells
         
         if df_model > 0 and df_resid > 0:
             f_stat = (ss_model / df_model) / ((ss_total - ss_model) / df_resid)
-            
-            # P-value from F-distribution (using Rust CDF)
             pvalue = 1 - _f_cdf(f_stat, float(df_model), float(df_resid))
         else:
             pvalue = float('nan')
@@ -979,7 +1065,7 @@ class DataExplorer:
             factor2=name2,
             interaction_strength=float(r_squared),
             pvalue=float(pvalue),
-            n_cells=len(valid_cells),
+            n_cells=n_valid_cells,
         )
 
 
@@ -1065,6 +1151,22 @@ def explore_data(
     # Create explorer
     explorer = DataExplorer(y=y, exposure=exp, family=family)
     
+    # Pre-extract columns once to avoid repeated .to_numpy().astype() calls
+    # Uses Rust HashMap-based factorize for O(n) encoding instead of O(n log n) np.unique
+    _cat_cache = {}
+    _cat_unique_cache = {}
+    for name in categorical_factors:
+        if name in data.columns:
+            str_list = data[name].cast(str).to_list()
+            levels, codes = _factorize_strings(str_list)
+            str_vals = np.array(str_list)
+            _cat_cache[name] = str_vals
+            _cat_unique_cache[name] = (np.array(levels), codes)
+    _cont_cache = {}
+    for name in continuous_factors:
+        if name in data.columns:
+            _cont_cache[name] = data[name].to_numpy().astype(np.float64)
+    
     # Compute statistics
     response_stats = explorer.compute_response_stats()
     
@@ -1075,6 +1177,9 @@ def explore_data(
         n_bins=n_bins,
         rare_threshold_pct=rare_threshold_pct,
         max_categorical_levels=max_categorical_levels,
+        cat_column_cache=_cat_cache,
+        cat_unique_cache=_cat_unique_cache,
+        cont_column_cache=_cont_cache,
     )
     
     # Univariate significance tests
@@ -1082,18 +1187,23 @@ def explore_data(
         data=data,
         categorical_factors=categorical_factors,
         continuous_factors=continuous_factors,
+        cat_column_cache=_cat_cache,
+        cat_unique_cache=_cat_unique_cache,
+        cont_column_cache=_cont_cache,
     )
     
     # Correlations between continuous factors
     correlations = explorer.compute_correlations(
         data=data,
         continuous_factors=continuous_factors,
+        cont_column_cache=_cont_cache,
     )
     
     # VIF for multicollinearity
     vif = explorer.compute_vif(
         data=data,
         continuous_factors=continuous_factors,
+        cont_column_cache=_cont_cache,
     )
     
     # Missing value analysis
@@ -1107,6 +1217,8 @@ def explore_data(
     cramers_v = explorer.compute_cramers_v(
         data=data,
         categorical_factors=categorical_factors,
+        cat_column_cache=_cat_cache,
+        cat_unique_cache=_cat_unique_cache,
     )
     
     # Zero inflation check (for count data)
@@ -1124,6 +1236,8 @@ def explore_data(
             factor_names=all_factors,
             max_factors=max_interaction_factors,
             min_effect_size=0.001,  # Lower threshold to catch more interactions
+            cat_column_cache=_cat_cache,
+            cont_column_cache=_cont_cache,
         )
     
     # Data summary

@@ -188,6 +188,9 @@ class DiagnosticsComputer:
         design_matrix: Optional[np.ndarray] = None,
         bread_matrix: Optional[np.ndarray] = None,
         irls_weights: Optional[np.ndarray] = None,
+        cat_column_cache: Optional[Dict[str, np.ndarray]] = None,
+        cont_column_cache: Optional[Dict[str, np.ndarray]] = None,
+        cat_unique_cache: Optional[Dict[str, tuple]] = None,
     ) -> List[FactorDiagnostics]:
         """Compute diagnostics for each specified factor.
         
@@ -204,6 +207,9 @@ class DiagnosticsComputer:
             design_matrix=design_matrix,
             bread_matrix=bread_matrix,
             irls_weights=irls_weights,
+            cat_column_cache=cat_column_cache,
+            cont_column_cache=cont_column_cache,
+            cat_unique_cache=cat_unique_cache,
         )
     
     def detect_interactions(
@@ -214,6 +220,8 @@ class DiagnosticsComputer:
         min_correlation: float = 0.01,
         max_candidates: int = 5,
         min_cell_count: int = 30,
+        cat_column_cache: Optional[Dict[str, np.ndarray]] = None,
+        cont_column_cache: Optional[Dict[str, np.ndarray]] = None,
     ) -> List[InteractionCandidate]:
         """Detect potential interactions. Delegates to _InteractionDetector."""
         return self._interactions.detect_interactions(
@@ -223,6 +231,8 @@ class DiagnosticsComputer:
             min_correlation=min_correlation,
             max_candidates=max_candidates,
             min_cell_count=min_cell_count,
+            cat_column_cache=cat_column_cache,
+            cont_column_cache=cont_column_cache,
         )
     
     def compute_model_comparison(self) -> Dict[str, float]:
@@ -534,7 +544,7 @@ class DiagnosticsComputer:
             if factor_name not in data.columns:
                 continue
             
-            values = [str(v) for v in data[factor_name].to_list()]
+            values = list(data[factor_name].cast(str).to_list())
             
             # Call Rust for fast computation
             rust_result = _rust_factor_deviance(
@@ -679,6 +689,9 @@ class DiagnosticsComputer:
         categorical_factors: List[str],
         link: str = "log",
         n_grid: int = 20,
+        cat_column_cache: Optional[Dict[str, np.ndarray]] = None,
+        cat_unique_cache: Optional[Dict[str, tuple]] = None,
+        cont_column_cache: Optional[Dict[str, np.ndarray]] = None,
     ) -> List[PartialDependence]:
         """
         Compute partial dependence for each variable.
@@ -698,7 +711,7 @@ class DiagnosticsComputer:
             if var not in data.columns:
                 continue
             
-            values = data[var].to_numpy().astype(np.float64)
+            values = cont_column_cache[var] if cont_column_cache and var in cont_column_cache else data[var].to_numpy().astype(np.float64)
             valid_mask = ~np.isnan(values) & ~np.isinf(values)
             valid_values = values[valid_mask]
             
@@ -756,16 +769,21 @@ class DiagnosticsComputer:
             if var not in data.columns:
                 continue
             
-            values = data[var].to_numpy().astype(str)
-            unique_levels = np.unique(values)
+            values = cat_column_cache[var] if cat_column_cache and var in cat_column_cache else data[var].to_numpy().astype(str)
+            if cat_unique_cache and var in cat_unique_cache:
+                unique_levels, inverse = cat_unique_cache[var]
+            else:
+                unique_levels, inverse = np.unique(values, return_inverse=True)
             
             grid_values = list(unique_levels)
+            k = len(unique_levels)
+            # Vectorized mean prediction per level using bincount
+            counts = np.bincount(inverse, minlength=k)
+            mu_sums = np.bincount(inverse, weights=self.mu, minlength=k)
             predictions = []
-            
-            for level in unique_levels:
-                mask = values == level
-                if np.any(mask):
-                    predictions.append(float(np.mean(self.mu[mask])))
+            for j in range(k):
+                if counts[j] > 0:
+                    predictions.append(float(mu_sums[j] / counts[j]))
                 else:
                     predictions.append(float(np.mean(self.mu)))
             
@@ -878,35 +896,11 @@ class DiagnosticsComputer:
         dataset_name: str,
         result=None,
         n_bands: int = 10,
+        cat_column_cache: Optional[Dict[str, np.ndarray]] = None,
+        cont_column_cache: Optional[Dict[str, np.ndarray]] = None,
+        cat_unique_cache: Optional[Dict[str, tuple]] = None,
     ) -> DatasetDiagnostics:
-        """
-        Compute comprehensive diagnostics for a single dataset.
-        
-        Parameters
-        ----------
-        y : np.ndarray
-            Actual response values
-        mu : np.ndarray
-            Predicted values
-        exposure : np.ndarray
-            Exposure weights
-        data : pl.DataFrame
-            DataFrame with factor columns
-        categorical_factors : list of str
-            Names of categorical factors
-        continuous_factors : list of str
-            Names of continuous factors
-        dataset_name : str
-            "train" or "test"
-        result : GLMResults, optional
-            Model results for partial dependence
-        n_bands : int
-            Number of bands for continuous variables
-            
-        Returns
-        -------
-        DatasetDiagnostics
-        """
+        """Compute comprehensive diagnostics for a single dataset."""
         n_obs = len(y)
         total_exposure = float(np.sum(exposure))
         total_actual = float(np.sum(y))
@@ -930,21 +924,29 @@ class DiagnosticsComputer:
         # A/E by decile (sorted by predicted value)
         ae_by_decile = self._compute_ae_by_decile(y, mu, exposure, n_deciles=10)
         
-        # Factor-level diagnostics
+        # Compute deviance residuals once for all factor/continuous diagnostics
+        dev_resids = np.asarray(_rust_deviance_residuals(y, mu, self.family)) if (categorical_factors or continuous_factors) else None
+        
+        # Factor-level diagnostics — pre-encode columns once
         factor_diag = {}
         for factor in categorical_factors:
             if factor in data.columns:
+                str_vals = cat_column_cache[factor] if cat_column_cache and factor in cat_column_cache else data[factor].to_numpy().astype(str)
+                unique_inv = cat_unique_cache[factor] if cat_unique_cache and factor in cat_unique_cache else np.unique(str_vals, return_inverse=True)
                 factor_diag[factor] = self._compute_factor_level_metrics(
-                    y, mu, exposure, data[factor].to_numpy().astype(str)
+                    y, mu, exposure, str_vals,
+                    deviance_residuals=dev_resids,
+                    precomputed_unique_inverse=unique_inv,
                 )
         
         # Continuous variable diagnostics
         continuous_diag = {}
         for var in continuous_factors:
             if var in data.columns:
-                values = data[var].to_numpy().astype(np.float64)
+                values = cont_column_cache[var] if cont_column_cache and var in cont_column_cache else data[var].to_numpy().astype(np.float64)
                 continuous_diag[var] = self._compute_continuous_band_metrics(
-                    y, mu, exposure, values, result, var, n_bands
+                    y, mu, exposure, values, result, var, n_bands,
+                    deviance_residuals=dev_resids,
                 )
         
         return DatasetDiagnostics(
@@ -1015,30 +1017,44 @@ class DiagnosticsComputer:
         mu: np.ndarray,
         exposure: np.ndarray,
         factor_values: np.ndarray,
+        deviance_residuals: Optional[np.ndarray] = None,
+        precomputed_unique_inverse: Optional[tuple] = None,
     ) -> List[FactorLevelMetrics]:
-        """Compute metrics for each level of a categorical factor."""
-        unique_levels = np.unique(factor_values)
-        # Use deviance residuals for consistency with continuous band metrics
-        residuals = np.asarray(_rust_deviance_residuals(y, mu, self.family))
+        """Compute metrics for each level of a categorical factor.
+        
+        Uses np.bincount for O(n) aggregation instead of per-level masking.
+        """
+        if precomputed_unique_inverse is not None:
+            unique_levels, inverse = precomputed_unique_inverse
+        else:
+            unique_levels, inverse = np.unique(factor_values, return_inverse=True)
+        k = len(unique_levels)
+        
+        if deviance_residuals is None:
+            deviance_residuals = np.asarray(_rust_deviance_residuals(y, mu, self.family))
+        
+        counts = np.bincount(inverse, minlength=k)
+        actual_by_level = np.bincount(inverse, weights=y, minlength=k)
+        predicted_by_level = np.bincount(inverse, weights=mu, minlength=k)
+        exposure_by_level = np.bincount(inverse, weights=exposure, minlength=k)
+        resid_sum_by_level = np.bincount(inverse, weights=deviance_residuals, minlength=k)
         
         metrics = []
-        for level in unique_levels:
-            mask = factor_values == level
-            n = int(np.sum(mask))
-            
+        for i in range(k):
+            n = int(counts[i])
             if n == 0:
                 continue
             
-            actual = float(np.sum(y[mask]))
-            predicted = float(np.sum(mu[mask]))
-            exp_sum = float(np.sum(exposure[mask]))
+            actual = float(actual_by_level[i])
+            predicted = float(predicted_by_level[i])
+            exp_sum = float(exposure_by_level[i])
             ae = actual / predicted if predicted > 0 else float('nan')
-            resid_mean = float(np.mean(residuals[mask]))
+            resid_mean = float(resid_sum_by_level[i] / n)
             
             actual_freq = actual / exp_sum if exp_sum > 0 else 0.0
             predicted_freq = predicted / exp_sum if exp_sum > 0 else 0.0
             metrics.append(FactorLevelMetrics(
-                level=str(level),
+                level=str(unique_levels[i]),
                 n=n,
                 exposure=round(exp_sum, 2),
                 actual=round(actual_freq, 6),
@@ -1060,6 +1076,7 @@ class DiagnosticsComputer:
         result,
         var_name: str,
         n_bands: int = 10,
+        deviance_residuals: Optional[np.ndarray] = None,
     ) -> List[ContinuousBandMetrics]:
         """Compute metrics for bands of a continuous variable."""
         # Remove NaN/Inf
@@ -1077,32 +1094,42 @@ class DiagnosticsComputer:
             return []
         
         metrics = []
-        # Compute deviance residuals for consistency with categorical diagnostics
-        deviance_resids = np.asarray(_rust_deviance_residuals(y, mu, self.family))
+        if deviance_residuals is None:
+            deviance_residuals = np.asarray(_rust_deviance_residuals(y, mu, self.family))
+        deviance_resids = deviance_residuals
         
-        for i in range(len(edges) - 1):
-            lower, upper = edges[i], edges[i + 1]
-            
-            if i == len(edges) - 2:
-                mask = valid_mask & (values >= lower) & (values <= upper)
-            else:
-                mask = valid_mask & (values >= lower) & (values < upper)
-            
-            n = int(np.sum(mask))
+        n_edges = len(edges)
+        n_bins = n_edges - 1
+        
+        # Vectorized band assignment using np.digitize (O(n log b) instead of O(n*b))
+        # digitize returns 1-indexed bins; clip to [1, n_bins] for right-edge inclusion
+        bin_idx = np.digitize(values, edges, right=False)
+        # Last bin should include the right edge
+        bin_idx = np.clip(bin_idx, 1, n_bins)
+        # Zero out invalid entries so they don't contribute
+        bin_idx[~valid_mask] = 0
+        
+        # Vectorized aggregation with bincount (bins 0..n_bins, 0 = invalid)
+        counts = np.bincount(bin_idx, minlength=n_bins + 1)
+        y_sums = np.bincount(bin_idx, weights=y, minlength=n_bins + 1)
+        mu_sums = np.bincount(bin_idx, weights=mu, minlength=n_bins + 1)
+        exp_sums = np.bincount(bin_idx, weights=exposure, minlength=n_bins + 1)
+        resid_sums = np.bincount(bin_idx, weights=deviance_resids, minlength=n_bins + 1)
+        
+        for i in range(n_bins):
+            b = i + 1  # 1-indexed bin
+            n = int(counts[b])
             if n == 0:
                 continue
             
-            actual = float(np.sum(y[mask]))
-            predicted = float(np.sum(mu[mask]))
-            exp_sum = float(np.sum(exposure[mask]))
+            lower, upper = edges[i], edges[i + 1]
+            actual = float(y_sums[b])
+            predicted = float(mu_sums[b])
+            exp_sum = float(exp_sums[b])
             ae = actual / predicted if predicted > 0 else float('nan')
             midpoint = (lower + upper) / 2
-            
-            # Partial dependence at midpoint
-            partial_dep = float(np.mean(mu[mask]))
-            
-            # Mean deviance residual for this band
-            resid_mean = float(np.mean(deviance_resids[mask]))
+            partial_dep = predicted / n
+            resid_mean = float(resid_sums[b]) / n
             
             actual_freq = actual / exp_sum if exp_sum > 0 else 0.0
             predicted_freq = predicted / exp_sum if exp_sum > 0 else 0.0

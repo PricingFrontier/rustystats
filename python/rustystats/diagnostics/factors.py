@@ -29,8 +29,6 @@ from rustystats._rustystats import (
 from rustystats.diagnostics.types import (
     ActualExpectedBin,
     ResidualPattern,
-    ContinuousFactorStats,
-    CategoricalFactorStats,
     FactorSignificance,
     ScoreTestResult,
     FactorCoefficient,
@@ -85,6 +83,9 @@ class _FactorDiagnosticsComputer:
         design_matrix: Optional[np.ndarray] = None,
         bread_matrix: Optional[np.ndarray] = None,
         irls_weights: Optional[np.ndarray] = None,
+        cat_column_cache: Optional[dict] = None,
+        cont_column_cache: Optional[dict] = None,
+        cat_unique_cache: Optional[dict] = None,
     ) -> List[FactorDiagnostics]:
         """Compute diagnostics for each specified factor.
         
@@ -103,27 +104,19 @@ class _FactorDiagnosticsComputer:
         for name in categorical_factors:
             validate_factor_in_data(name, data, "Categorical factor")
             
-            values = data[name].to_numpy().astype(str)
+            values = cat_column_cache[name] if cat_column_cache and name in cat_column_cache else data[name].to_numpy().astype(str)
             in_model = any(name in fn for fn in self.feature_names)
             
-            # Univariate stats (compressed: no levels array, info is in actual_vs_expected)
-            unique, counts = np.unique(values, return_counts=True)
-            total = len(values)
-            percentages = [100.0 * c / total for c in counts]
-            
-            n_rare = sum(1 for pct in percentages if pct < rare_threshold_pct)
-            rare_pct = sum(pct for pct in percentages if pct < rare_threshold_pct)
-            
-            univariate = CategoricalFactorStats(
-                n_levels=len(unique),
-                n_rare_levels=n_rare,
-                rare_level_total_pct=round(rare_pct, 2),
-            )
+            # Use pre-computed unique/inverse from cache or compute
+            if cat_unique_cache and name in cat_unique_cache:
+                unique, inverse = cat_unique_cache[name]
+            else:
+                unique, inverse = np.unique(values, return_inverse=True)
             
             ae_bins = self._compute_ae_categorical(
                 values, rare_threshold_pct, max_categorical_levels
             )
-            resid_pattern = self._compute_residual_pattern_categorical(values)
+            resid_pattern = self._compute_residual_pattern_categorical(values, precomputed_unique_inverse=(unique, inverse))
             significance = self.compute_factor_significance(name, result) if in_model and result else None
             coefficients = self._get_factor_coefficients(name, result) if in_model and result else None
             
@@ -139,7 +132,6 @@ class _FactorDiagnosticsComputer:
                 in_model=in_model,
                 transform=self._get_transformation(name),
                 coefficients=coefficients,
-                univariate=univariate,
                 actual_vs_expected=ae_bins,
                 residual_pattern=resid_pattern,
                 significance=significance,
@@ -150,28 +142,8 @@ class _FactorDiagnosticsComputer:
         for name in continuous_factors:
             validate_factor_in_data(name, data, "Continuous factor")
             
-            values = data[name].to_numpy().astype(np.float64)
+            values = cont_column_cache[name] if cont_column_cache and name in cont_column_cache else data[name].to_numpy().astype(np.float64)
             in_model = any(name in fn for fn in self.feature_names)
-            
-            # Univariate stats - batch percentile calculation
-            valid_mask = ~np.isnan(values) & ~np.isinf(values)
-            valid = values[valid_mask]
-            
-            if len(valid) > 0:
-                pcts = np.percentile(valid, [1, 5, 10, 25, 50, 75, 90, 95, 99])
-                univariate = ContinuousFactorStats(
-                    mean=float(np.mean(valid)),
-                    std=float(np.std(valid)),
-                    min=float(np.min(valid)),
-                    max=float(np.max(valid)),
-                    missing_count=int(np.sum(~valid_mask)),
-                    percentiles=[round(float(p), 2) for p in pcts],
-                )
-            else:
-                univariate = ContinuousFactorStats(
-                    mean=float('nan'), std=float('nan'), min=float('nan'), max=float('nan'),
-                    missing_count=len(values), percentiles=[]
-                )
             
             ae_bins = self._compute_ae_continuous(values, n_bins)
             resid_pattern = self._compute_residual_pattern_continuous(values, n_bins)
@@ -190,7 +162,6 @@ class _FactorDiagnosticsComputer:
                 in_model=in_model,
                 transform=self._get_transformation(name),
                 coefficients=coefficients,
-                univariate=univariate,
                 actual_vs_expected=ae_bins,
                 residual_pattern=resid_pattern,
                 significance=significance,
@@ -360,7 +331,7 @@ class _FactorDiagnosticsComputer:
         max_levels: int,
     ) -> List[ActualExpectedBin]:
         """Compute A/E for categorical factor using Rust backend (compact format)."""
-        levels = [str(v) for v in values]
+        levels = values.tolist()
         rust_bins = _rust_ae_categorical(levels, self.y, self.mu, self.exposure, 
                                           rare_threshold_pct, max_levels, self.family)
         return [
@@ -396,15 +367,20 @@ class _FactorDiagnosticsComputer:
             var_explained=round(corr_val ** 2, 6),
         )
     
-    def _compute_residual_pattern_categorical(self, values: np.ndarray) -> ResidualPattern:
-        """Compute residual pattern for categorical factor (compressed)."""
-        unique_levels = np.unique(values)
-        level_means = np.empty(len(unique_levels))
-        level_counts = np.empty(len(unique_levels))
-        for i, level in enumerate(unique_levels):
-            mask = values == level
-            level_counts[i] = np.sum(mask)
-            level_means[i] = np.mean(self.pearson_residuals[mask])
+    def _compute_residual_pattern_categorical(self, values: np.ndarray, precomputed_unique_inverse=None) -> ResidualPattern:
+        """Compute residual pattern for categorical factor (compressed).
+        
+        Uses np.bincount for O(n) aggregation instead of per-level masking.
+        """
+        if precomputed_unique_inverse is not None:
+            _unique_levels, inverse = precomputed_unique_inverse
+        else:
+            _unique_levels, inverse = np.unique(values, return_inverse=True)
+        k = len(_unique_levels)
+        
+        level_counts = np.bincount(inverse, minlength=k).astype(np.float64)
+        resid_sums = np.bincount(inverse, weights=self.pearson_residuals, minlength=k)
+        level_means = np.divide(resid_sums, level_counts, out=np.zeros(k), where=level_counts > 0)
         
         overall_mean = np.mean(self.pearson_residuals)
         ss_total = np.sum((self.pearson_residuals - overall_mean) ** 2)

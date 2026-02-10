@@ -86,6 +86,7 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
     
     // Design matrix functions
     m.add_function(wrap_pyfunction!(design_matrix_py::encode_categorical_py, m)?)?;
+    m.add_function(wrap_pyfunction!(design_matrix_py::factorize_strings_py, m)?)?;
     m.add_function(wrap_pyfunction!(design_matrix_py::encode_categorical_indices_py, m)?)?;
     m.add_function(wrap_pyfunction!(design_matrix_py::build_cat_cat_interaction_py, m)?)?;
     m.add_function(wrap_pyfunction!(design_matrix_py::build_cat_cont_interaction_py, m)?)?;

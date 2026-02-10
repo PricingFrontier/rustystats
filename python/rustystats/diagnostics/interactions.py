@@ -47,6 +47,8 @@ class _InteractionDetector:
         min_correlation: float = 0.01,
         max_candidates: int = 5,
         min_cell_count: int = 30,
+        cat_column_cache: Optional[dict] = None,
+        cont_column_cache: Optional[dict] = None,
     ) -> List[InteractionCandidate]:
         """Detect potential interactions using greedy residual-based approach."""
         # First, rank factors by residual association
@@ -55,17 +57,27 @@ class _InteractionDetector:
         for name in factor_names:
             validate_factor_in_data(name, data)
             
-            values = data[name].to_numpy()
-            
-            # Check if categorical or continuous
-            if values.dtype == object or str(values.dtype).startswith('str'):
-                score = self._compute_eta_squared(values.astype(str))
-            else:
-                values = values.astype(np.float64)
+            # Use cached arrays when available
+            if cat_column_cache and name in cat_column_cache:
+                values = cat_column_cache[name]
+                score = self._compute_eta_squared(values)
+            elif cont_column_cache and name in cont_column_cache:
+                values = cont_column_cache[name]
                 valid_mask = ~np.isnan(values) & ~np.isinf(values)
                 if np.sum(valid_mask) < 10:
                     continue
                 score = abs(np.corrcoef(values[valid_mask], self.pearson_residuals[valid_mask])[0, 1])
+            else:
+                values = data[name].to_numpy()
+                # Check if categorical or continuous
+                if values.dtype == object or str(values.dtype).startswith('str'):
+                    score = self._compute_eta_squared(values.astype(str))
+                else:
+                    values = values.astype(np.float64)
+                    valid_mask = ~np.isnan(values) & ~np.isinf(values)
+                    if np.sum(valid_mask) < 10:
+                        continue
+                    score = abs(np.corrcoef(values[valid_mask], self.pearson_residuals[valid_mask])[0, 1])
             
             if score >= min_correlation:
                 factor_scores.append((name, score))
@@ -152,20 +164,22 @@ class _InteractionDetector:
                 return f"Consider {name1}:{name2} interaction or joint spline"
     
     def _compute_eta_squared(self, categories: np.ndarray) -> float:
-        """Compute eta-squared for categorical association with residuals."""
-        unique_levels = np.unique(categories)
+        """Compute eta-squared for categorical association with residuals.
+        
+        Uses np.bincount for O(n) aggregation instead of per-level masking.
+        """
+        _unique_levels, inverse = np.unique(categories, return_inverse=True)
+        k = len(_unique_levels)
         overall_mean = np.mean(self.pearson_residuals)
         ss_total = np.sum((self.pearson_residuals - overall_mean) ** 2)
         
         if ss_total == 0:
             return 0.0
         
-        ss_between = 0.0
-        for level in unique_levels:
-            mask = categories == level
-            level_resid = self.pearson_residuals[mask]
-            level_mean = np.mean(level_resid)
-            ss_between += len(level_resid) * (level_mean - overall_mean) ** 2
+        level_counts = np.bincount(inverse, minlength=k).astype(np.float64)
+        resid_sums = np.bincount(inverse, weights=self.pearson_residuals, minlength=k)
+        level_means = np.divide(resid_sums, level_counts, out=np.zeros(k), where=level_counts > 0)
+        ss_between = float(np.sum(level_counts * (level_means - overall_mean) ** 2))
         
         return ss_between / ss_total
     
@@ -177,42 +191,46 @@ class _InteractionDetector:
         bins2: np.ndarray,
         min_cell_count: int,
     ) -> Optional[InteractionCandidate]:
-        """Compute interaction strength between two discretized factors."""
+        """Compute interaction strength between two discretized factors.
+        
+        Uses np.bincount for O(n) aggregation instead of per-cell masking.
+        """
         # Create interaction cells
         cell_ids = bins1 * 1000 + bins2
-        unique_cells = np.unique(cell_ids)
+        unique_cells, inverse = np.unique(cell_ids, return_inverse=True)
+        k = len(unique_cells)
+        
+        # Vectorized aggregation
+        cell_counts = np.bincount(inverse, minlength=k)
+        cell_resid_sums = np.bincount(inverse, weights=self.pearson_residuals, minlength=k)
         
         # Filter cells with sufficient data
-        valid_cells = []
-        cell_residuals = []
-        
-        for cell_id in unique_cells:
-            mask = cell_ids == cell_id
-            if np.sum(mask) >= min_cell_count:
-                valid_cells.append(cell_id)
-                cell_residuals.append(self.pearson_residuals[mask])
-        
-        if len(valid_cells) < 4:
+        valid_mask = cell_counts >= min_cell_count
+        if np.sum(valid_mask) < 4:
             return None
         
-        # Compute variance explained by cells
-        all_resid = np.concatenate(cell_residuals)
+        valid_counts = cell_counts[valid_mask]
+        valid_resid_sums = cell_resid_sums[valid_mask]
+        valid_means = valid_resid_sums / valid_counts
+        
+        # Build combined index for valid observations (vectorized)
+        obs_valid = valid_mask[inverse]
+        all_resid = self.pearson_residuals[obs_valid]
+        
         overall_mean = np.mean(all_resid)
         ss_total = np.sum((all_resid - overall_mean) ** 2)
         
         if ss_total == 0:
             return None
         
-        ss_model = sum(
-            len(r) * (np.mean(r) - overall_mean) ** 2
-            for r in cell_residuals
-        )
+        ss_model = float(np.sum(valid_counts * (valid_means - overall_mean) ** 2))
         
         r_squared = ss_model / ss_total
         
         # F-test p-value
-        df_model = len(valid_cells) - 1
-        df_resid = len(all_resid) - len(valid_cells)
+        n_valid_cells = int(np.sum(valid_mask))
+        df_model = n_valid_cells - 1
+        df_resid = len(all_resid) - n_valid_cells
         
         if df_model > 0 and df_resid > 0:
             f_stat = (ss_model / df_model) / ((ss_total - ss_model) / df_resid)
@@ -225,5 +243,5 @@ class _InteractionDetector:
             factor2=name2,
             interaction_strength=float(r_squared),
             pvalue=float(pvalue),
-            n_cells=len(valid_cells),
+            n_cells=n_valid_cells,
         )

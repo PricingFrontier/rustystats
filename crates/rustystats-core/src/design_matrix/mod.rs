@@ -137,6 +137,61 @@ pub fn encode_categorical(
     }
 }
 
+/// Fast categorical factorization: string values → (sorted_unique_levels, integer_codes).
+///
+/// Uses HashMap for O(n) encoding instead of O(n log n) sort-based np.unique.
+/// Returns sorted unique levels and 0-indexed integer codes.
+///
+/// # Arguments
+/// * `values` - String values for each observation
+///
+/// # Returns
+/// (sorted_unique_levels, integer_codes) where codes[i] is the index of values[i] in levels
+pub fn factorize_strings(values: &[String]) -> (Vec<String>, Vec<u32>) {
+    let n = values.len();
+    
+    // First pass: build HashMap to assign temporary codes
+    let mut level_map: HashMap<&str, u32> = HashMap::new();
+    let mut levels_order: Vec<&str> = Vec::new();
+    let mut temp_codes: Vec<u32> = Vec::with_capacity(n);
+    
+    for v in values.iter() {
+        let s = v.as_str();
+        let code = match level_map.get(s) {
+            Some(&c) => c,
+            None => {
+                let c = levels_order.len() as u32;
+                level_map.insert(s, c);
+                levels_order.push(s);
+                c
+            }
+        };
+        temp_codes.push(code);
+    }
+    
+    // Sort levels alphabetically (to match np.unique behavior)
+    let mut sorted_levels: Vec<String> = levels_order.iter().map(|s| s.to_string()).collect();
+    let mut sort_indices: Vec<usize> = (0..sorted_levels.len()).collect();
+    sort_indices.sort_by(|&a, &b| sorted_levels[a].cmp(&sorted_levels[b]));
+    sorted_levels.sort();
+    
+    // Build old→new code mapping
+    let k = sort_indices.len();
+    let mut remap = vec![0u32; k];
+    for (new_idx, &old_idx) in sort_indices.iter().enumerate() {
+        remap[old_idx] = new_idx as u32;
+    }
+    
+    // Remap codes (parallel for large data)
+    let codes: Vec<u32> = if n > 50000 {
+        temp_codes.par_iter().map(|&c| remap[c as usize]).collect()
+    } else {
+        temp_codes.iter().map(|&c| remap[c as usize]).collect()
+    };
+    
+    (sorted_levels, codes)
+}
+
 /// Encode categorical from pre-computed indices.
 ///
 /// Use this when indices are already computed (e.g., from factorization).

@@ -969,7 +969,7 @@ class GLMModel:
         n_factor_bins: int = 10,
         rare_threshold_pct: float = 1.0,
         max_categorical_levels: int = 20,
-        detect_interactions: bool = True,
+        detect_interactions: bool = False,
         max_interaction_factors: int = 10,
         # Test data for overfitting detection (response/exposure auto-inferred)
         test_data: Optional["pl.DataFrame"] = None,
@@ -1115,7 +1115,7 @@ class GLMModel:
         n_factor_bins: int = 10,
         rare_threshold_pct: float = 1.0,
         max_categorical_levels: int = 20,
-        detect_interactions: bool = True,
+        detect_interactions: bool = False,
         max_interaction_factors: int = 10,
         test_data: Optional["pl.DataFrame"] = None,
         indent: Optional[int] = None,
