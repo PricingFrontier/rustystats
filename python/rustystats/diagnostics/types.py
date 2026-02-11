@@ -302,6 +302,7 @@ class FactorDiagnostics:
     univariate: Optional[Union[ContinuousFactorStats, CategoricalFactorStats]] = None
     significance: Optional[FactorSignificance] = None
     score_test: Optional[ScoreTestResult] = None
+    relative_importance: Optional[float] = None
 
 
 # =============================================================================

@@ -729,6 +729,14 @@ def compute_diagnostics(
                           f"better A/E in only {base_predictions_comparison.model_better_deciles}/10 deciles"
             })
     
+    # Compute relative importance: normalise Type III deviance contributions to sum to 100%
+    fitted_with_sig = [f for f in factors if f.in_model and f.significance and f.significance.dev_contrib]
+    if fitted_with_sig:
+        total_dev = sum(f.significance.dev_contrib for f in fitted_with_sig)
+        if total_dev > 0:
+            for f in fitted_with_sig:
+                f.relative_importance = round(f.significance.dev_contrib / total_dev * 100, 2)
+    
     diagnostics = ModelDiagnostics(
         model_summary=model_summary,
         train_test=train_test,
