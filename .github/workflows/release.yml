@@ -1,0 +1,224 @@
+# One-click release: bump version, build wheels for all platforms, publish to PyPI.
+#
+# Usage: Actions tab → Release → Run workflow → type version (e.g. 0.4.7)
+#
+# What happens:
+#   1. Bumps version in pyproject.toml
+#   2. Commits + tags (v0.4.7)
+#   3. Builds wheels for Linux/Windows/macOS × Python 3.9-3.13
+#   4. Creates a GitHub Release
+#   5. Publishes to PyPI via trusted publishing
+
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 0.4.7)"
+        required: true
+        type: string
+      dry_run:
+        description: "Dry run (build only, no publish)"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write  # Needed to push version bump commit + create release
+
+jobs:
+  # ── Bump version, commit, and tag ───────────────────────────────────────
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+      tag: ${{ steps.bump.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate version format
+        run: |
+          if ! echo "${{ inputs.version }}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "❌ Invalid version format: ${{ inputs.version }}"
+            echo "   Expected: X.Y.Z (e.g. 0.4.7)"
+            exit 1
+          fi
+
+      - name: Check version is not already tagged
+        run: |
+          if git rev-parse "v${{ inputs.version }}" >/dev/null 2>&1; then
+            echo "❌ Tag v${{ inputs.version }} already exists"
+            exit 1
+          fi
+
+      - name: Bump version in pyproject.toml
+        id: bump
+        run: |
+          sed -i 's/^version = ".*"/version = "${{ inputs.version }}"/' pyproject.toml
+          echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          echo "✅ Version bumped to ${{ inputs.version }}"
+          grep '^version' pyproject.toml
+
+      - name: Commit and tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml
+          git commit -m "release: v${{ inputs.version }}"
+          git tag "v${{ inputs.version }}"
+          git push origin HEAD --tags
+
+  # ── Linux wheels (x86_64 + aarch64) ──────────────────────────────────────
+  linux:
+    needs: [version]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [x86_64, aarch64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v${{ inputs.version }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist --interpreter 3.9 3.10 3.11 3.12 3.13
+          sccache: "true"
+          manylinux: auto
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux-${{ matrix.target }}
+          path: dist
+
+  # ── Windows wheels (x86_64) ──────────────────────────────────────────────
+  windows:
+    needs: [version]
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        target: [x64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v${{ inputs.version }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: ${{ matrix.target }}
+
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: x86_64
+          args: --release --out dist --interpreter 3.9 3.10 3.11 3.12 3.13
+          sccache: "true"
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-windows-${{ matrix.target }}
+          path: dist
+
+  # ── macOS wheels (x86_64 + aarch64) ─────────────────────────────────────
+  macos:
+    needs: [version]
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        target: [x86_64, aarch64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v${{ inputs.version }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist --interpreter 3.9 3.10 3.11 3.12 3.13
+          sccache: "true"
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-macos-${{ matrix.target }}
+          path: dist
+
+  # ── Source distribution ──────────────────────────────────────────────────
+  sdist:
+    needs: [version]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v${{ inputs.version }}
+
+      - name: Build sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+
+      - name: Upload sdist
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-sdist
+          path: dist
+
+  # ── Create GitHub Release ────────────────────────────────────────────────
+  github-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [linux, windows, macos, sdist]
+    steps:
+      - name: Download all wheels
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ inputs.version }}
+          name: v${{ inputs.version }}
+          generate_release_notes: true
+          files: dist/*
+
+  # ── Publish to PyPI ──────────────────────────────────────────────────────
+  publish:
+    name: Publish to PyPI
+    runs-on: ubuntu-latest
+    needs: [linux, windows, macos, sdist]
+    if: ${{ !inputs.dry_run }}
+    environment:
+      name: pypi
+      url: https://pypi.org/p/rustystats
+    permissions:
+      id-token: write  # Required for trusted publishing
+    steps:
+      - name: Download all wheels
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

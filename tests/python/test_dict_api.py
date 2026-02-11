@@ -1491,6 +1491,34 @@ class TestDictMonotonicSplineFormula:
         assert len(result.params) >= 2
         assert result.converged
 
+    def test_dict_monotonic_bs_decreasing_direction(self):
+        """Verify that a decreasing monotonic spline actually produces
+        decreasing predictions as x increases (regression test for
+        double-negation bug in I-spline basis)."""
+        np.random.seed(42)
+        n = 500
+        x = np.random.uniform(0, 20, n)
+        rate = np.exp(2.0 - 0.1 * x)
+        y = np.random.poisson(rate)
+        data = pl.DataFrame({"y": y, "x": x})
+
+        result = rs.glm_dict(
+            response="y",
+            terms={"x": {"type": "bs", "df": 5, "monotonicity": "decreasing"}},
+            data=data, family="poisson",
+        ).fit(max_iter=100)
+
+        assert result.converged
+        # Predict on a grid from low to high
+        grid = pl.DataFrame({"x": np.linspace(1, 19, 20).tolist()})
+        preds = result.predict(grid)
+        # Predictions should be non-increasing (decreasing or flat)
+        diffs = np.diff(preds)
+        assert np.all(diffs <= 1e-10), (
+            f"Decreasing monotonic spline produced increasing predictions: "
+            f"max positive diff = {diffs.max():.6f}"
+        )
+
     def test_dict_monotonic_bs_with_other_terms(self):
         np.random.seed(42)
         n = 200

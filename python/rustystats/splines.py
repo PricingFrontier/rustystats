@@ -194,11 +194,13 @@ def bs(
             raise ValidationError(
                 f"monotonicity must be 'increasing' or 'decreasing', got '{monotonicity}'"
             )
-        increasing = monotonicity == "increasing"
-        # Use explicit knots if provided for consistent prediction on new data
+        # Always build an increasing I-spline basis; the solver enforces
+        # direction via NNLS (β≥0 for increasing, negated basis → β≤0 for
+        # decreasing).  Passing increasing=False here would flip the basis
+        # a second time, producing the wrong sign.
         if knots is not None and boundary_knots is not None:
-            return _ms_with_knots_rust(x, knots, degree, boundary_knots, effective_df, increasing)
-        return _ms_rust(x, effective_df, degree, boundary_knots, increasing)
+            return _ms_with_knots_rust(x, knots, degree, boundary_knots, effective_df, True)
+        return _ms_rust(x, effective_df, degree, boundary_knots, True)
     
     if knots is not None:
         # Use explicit knots
