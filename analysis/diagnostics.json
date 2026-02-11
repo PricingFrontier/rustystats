@@ -1,1387 +1,1104 @@
 {
   "model_summary": {
-    "formula": "y ~ bs(age, df=10) + bs(income, df=10)",
+    "formula": "ClaimCount ~ ns(Density, df=10)",
     "family": "poisson",
     "link": "log",
-    "n_obs": 500,
-    "n_params": 21,
-    "df_resid": 479,
+    "n_obs": 406439,
+    "n_params": 10,
+    "df_resid": 406429,
     "converged": false,
     "iterations": 25
   },
   "train_test": {
     "train": {
       "dataset": "train",
-      "n_obs": 500,
-      "total_exposure": 500.0,
-      "total_actual": 46.0,
-      "total_predicted": 53.14,
-      "loss": 0.440344,
-      "deviance": 220.17,
-      "log_likelihood": -153.31,
-      "aic": 348.63,
-      "gini": 0.3622,
-      "auc": 0.6811,
-      "ae_ratio": 0.8656,
+      "n_obs": 406439,
+      "total_exposure": 214930.9,
+      "total_actual": 21408.0,
+      "total_predicted": 21316.63,
+      "loss": 0.324327,
+      "deviance": 131819.27,
+      "log_likelihood": -86683.46,
+      "aic": 173386.92,
+      "gini": 0.0881,
+      "auc": 0.544,
+      "ae_ratio": 1.0043,
       "ae_by_decile": [
         {
           "decile": 1,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.0,
-          "predicted": 0.050934,
-          "ae_ratio": 0.0
+          "n": 40643,
+          "exposure": 1602.73,
+          "actual": 0.727509,
+          "predicted": 0.09529,
+          "ae_ratio": 7.6347
         },
         {
           "decile": 2,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.04,
-          "predicted": 0.084118,
-          "ae_ratio": 0.4755
+          "n": 40643,
+          "exposure": 3522.09,
+          "actual": 0.281367,
+          "predicted": 0.103251,
+          "ae_ratio": 2.7251
         },
         {
           "decile": 3,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.02,
-          "predicted": 0.09641,
-          "ae_ratio": 0.2074
+          "n": 40643,
+          "exposure": 7260.48,
+          "actual": 0.20949,
+          "predicted": 0.096344,
+          "ae_ratio": 2.1744
         },
         {
           "decile": 4,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.02,
-          "predicted": 0.101397,
-          "ae_ratio": 0.1972
+          "n": 40643,
+          "exposure": 11752.65,
+          "actual": 0.145074,
+          "predicted": 0.098632,
+          "ae_ratio": 1.4709
         },
         {
           "decile": 5,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.14,
-          "predicted": 0.105375,
-          "ae_ratio": 1.3286
+          "n": 40643,
+          "exposure": 17874.54,
+          "actual": 0.11245,
+          "predicted": 0.096076,
+          "ae_ratio": 1.1704
         },
         {
           "decile": 6,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.08,
-          "predicted": 0.110852,
-          "ae_ratio": 0.7217
+          "n": 40643,
+          "exposure": 23035.87,
+          "actual": 0.103143,
+          "predicted": 0.099975,
+          "ae_ratio": 1.0317
         },
         {
           "decile": 7,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.14,
-          "predicted": 0.115721,
-          "ae_ratio": 1.2098
+          "n": 40643,
+          "exposure": 32532.94,
+          "actual": 0.084345,
+          "predicted": 0.091358,
+          "ae_ratio": 0.9232
         },
         {
           "decile": 8,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.2,
-          "predicted": 0.120373,
-          "ae_ratio": 1.6615
+          "n": 40643,
+          "exposure": 37879.94,
+          "actual": 0.071727,
+          "predicted": 0.091138,
+          "ae_ratio": 0.787
         },
         {
           "decile": 9,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.1,
-          "predicted": 0.127663,
-          "ae_ratio": 0.7833
+          "n": 40643,
+          "exposure": 39329.22,
+          "actual": 0.074092,
+          "predicted": 0.097519,
+          "ae_ratio": 0.7598
         },
         {
           "decile": 10,
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.18,
-          "predicted": 0.149985,
-          "ae_ratio": 1.2001
+          "n": 40652,
+          "exposure": 40140.44,
+          "actual": 0.081315,
+          "predicted": 0.116128,
+          "ae_ratio": 0.7002
         }
       ],
       "factor_diagnostics": {},
       "continuous_diagnostics": {
-        "age": [
+        "Density": [
           {
             "band": 1,
-            "range_min": 18.2632,
-            "range_max": 22.3704,
-            "midpoint": 20.3168,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.02,
-            "predicted": 0.062003,
-            "ae_ratio": 0.3226,
-            "partial_dep": 0.062003,
-            "residual_mean": -0.302683
+            "range_min": 1.0,
+            "range_max": 33.0,
+            "midpoint": 17.0,
+            "n": 40450,
+            "exposure": 24407.15,
+            "actual": 0.076043,
+            "predicted": 0.078247,
+            "ae_ratio": 0.9718,
+            "partial_dep": 0.047213,
+            "residual_mean": -0.177441
           },
           {
             "band": 2,
-            "range_min": 22.3704,
-            "range_max": 27.0559,
-            "midpoint": 24.7132,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.1,
-            "predicted": 0.103782,
-            "ae_ratio": 0.9636,
-            "partial_dep": 0.103782,
-            "residual_mean": -0.245748
+            "range_min": 33.0,
+            "range_max": 67.0,
+            "midpoint": 50.0,
+            "n": 40707,
+            "exposure": 23655.25,
+            "actual": 0.085097,
+            "predicted": 0.083654,
+            "ae_ratio": 1.0173,
+            "partial_dep": 0.048612,
+            "residual_mean": -0.173555
           },
           {
             "band": 3,
-            "range_min": 27.0559,
-            "range_max": 33.1772,
-            "midpoint": 30.1166,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.1,
-            "predicted": 0.108891,
-            "ae_ratio": 0.9183,
-            "partial_dep": 0.108891,
-            "residual_mean": -0.257839
+            "range_min": 67.0,
+            "range_max": 122.0,
+            "midpoint": 94.5,
+            "n": 40673,
+            "exposure": 22806.04,
+            "actual": 0.087959,
+            "predicted": 0.089064,
+            "ae_ratio": 0.9876,
+            "partial_dep": 0.04994,
+            "residual_mean": -0.176369
           },
           {
             "band": 4,
-            "range_min": 33.1772,
-            "range_max": 38.0564,
-            "midpoint": 35.6168,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.06,
-            "predicted": 0.104091,
-            "ae_ratio": 0.5764,
-            "partial_dep": 0.104091,
-            "residual_mean": -0.33144
+            "range_min": 122.0,
+            "range_max": 214.0,
+            "midpoint": 168.0,
+            "n": 39466,
+            "exposure": 21488.73,
+            "actual": 0.094794,
+            "predicted": 0.091595,
+            "ae_ratio": 1.0349,
+            "partial_dep": 0.049872,
+            "residual_mean": -0.171099
           },
           {
             "band": 5,
-            "range_min": 38.0564,
-            "range_max": 44.6845,
-            "midpoint": 41.3705,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.1,
-            "predicted": 0.111513,
-            "ae_ratio": 0.8968,
-            "partial_dep": 0.111513,
-            "residual_mean": -0.280258
+            "range_min": 214.0,
+            "range_max": 393.0,
+            "midpoint": 303.5,
+            "n": 41891,
+            "exposure": 22350.28,
+            "actual": 0.093332,
+            "predicted": 0.093679,
+            "ae_ratio": 0.9963,
+            "partial_dep": 0.049981,
+            "residual_mean": -0.174532
           },
           {
             "band": 6,
-            "range_min": 44.6845,
-            "range_max": 49.9979,
-            "midpoint": 47.3412,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.16,
-            "predicted": 0.121858,
-            "ae_ratio": 1.313,
-            "partial_dep": 0.121858,
-            "residual_mean": -0.182479
+            "range_min": 393.0,
+            "range_max": 713.0,
+            "midpoint": 553.0,
+            "n": 40284,
+            "exposure": 21448.45,
+            "actual": 0.102292,
+            "predicted": 0.099574,
+            "ae_ratio": 1.0273,
+            "partial_dep": 0.053016,
+            "residual_mean": -0.174493
           },
           {
             "band": 7,
-            "range_min": 49.9979,
-            "range_max": 54.567,
-            "midpoint": 52.2824,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.08,
-            "predicted": 0.113173,
-            "ae_ratio": 0.7069,
-            "partial_dep": 0.113173,
-            "residual_mean": -0.328743
+            "range_min": 713.0,
+            "range_max": 1313.0,
+            "midpoint": 1013.0,
+            "n": 38329,
+            "exposure": 19616.5,
+            "actual": 0.10899,
+            "predicted": 0.10778,
+            "ae_ratio": 1.0112,
+            "partial_dep": 0.055161,
+            "residual_mean": -0.178455
           },
           {
             "band": 8,
-            "range_min": 54.567,
-            "range_max": 60.0251,
-            "midpoint": 57.296,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.08,
-            "predicted": 0.099686,
-            "ae_ratio": 0.8025,
-            "partial_dep": 0.099686,
-            "residual_mean": -0.2765
+            "range_min": 1313.0,
+            "range_max": 2703.0,
+            "midpoint": 2008.0,
+            "n": 43324,
+            "exposure": 21571.76,
+            "actual": 0.111859,
+            "predicted": 0.11335,
+            "ae_ratio": 0.9869,
+            "partial_dep": 0.056439,
+            "residual_mean": -0.180388
           },
           {
             "band": 9,
-            "range_min": 60.0251,
-            "range_max": 65.0849,
-            "midpoint": 62.555,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.08,
-            "predicted": 0.101605,
-            "ae_ratio": 0.7874,
-            "partial_dep": 0.101605,
-            "residual_mean": -0.281717
+            "range_min": 2703.0,
+            "range_max": 4128.0,
+            "midpoint": 3415.5,
+            "n": 39091,
+            "exposure": 18251.37,
+            "actual": 0.12032,
+            "predicted": 0.119392,
+            "ae_ratio": 1.0078,
+            "partial_dep": 0.055743,
+            "residual_mean": -0.176467
           },
           {
             "band": 10,
-            "range_min": 65.0849,
-            "range_max": 69.6342,
-            "midpoint": 67.3595,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.14,
-            "predicted": 0.136223,
-            "ae_ratio": 1.0277,
-            "partial_dep": 0.136223,
-            "residual_mean": -0.253772
-          }
-        ],
-        "income": [
-          {
-            "band": 1,
-            "range_min": 20370.56,
-            "range_max": 29082.05,
-            "midpoint": 24726.31,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.04,
-            "predicted": 0.081936,
-            "ae_ratio": 0.4882,
-            "partial_dep": 0.081936,
-            "residual_mean": -0.314326
-          },
-          {
-            "band": 2,
-            "range_min": 29082.05,
-            "range_max": 34275.43,
-            "midpoint": 31678.74,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.12,
-            "predicted": 0.112559,
-            "ae_ratio": 1.0661,
-            "partial_dep": 0.112559,
-            "residual_mean": -0.22132
-          },
-          {
-            "band": 3,
-            "range_min": 34275.43,
-            "range_max": 41623.54,
-            "midpoint": 37949.49,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.1,
-            "predicted": 0.099283,
-            "ae_ratio": 1.0072,
-            "partial_dep": 0.099283,
-            "residual_mean": -0.231806
-          },
-          {
-            "band": 4,
-            "range_min": 41623.54,
-            "range_max": 50171.86,
-            "midpoint": 45897.7,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.02,
-            "predicted": 0.105844,
-            "ae_ratio": 0.189,
-            "partial_dep": 0.105844,
-            "residual_mean": -0.415565
-          },
-          {
-            "band": 5,
-            "range_min": 50171.86,
-            "range_max": 57745.73,
-            "midpoint": 53958.79,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.16,
-            "predicted": 0.125182,
-            "ae_ratio": 1.2781,
-            "partial_dep": 0.125182,
-            "residual_mean": -0.209204
-          },
-          {
-            "band": 6,
-            "range_min": 57745.73,
-            "range_max": 65820.55,
-            "midpoint": 61783.14,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.14,
-            "predicted": 0.132113,
-            "ae_ratio": 1.0597,
-            "partial_dep": 0.132113,
-            "residual_mean": -0.226884
-          },
-          {
-            "band": 7,
-            "range_min": 65820.55,
-            "range_max": 73206.79,
-            "midpoint": 69513.67,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.1,
-            "predicted": 0.10687,
-            "ae_ratio": 0.9357,
-            "partial_dep": 0.10687,
-            "residual_mean": -0.289704
-          },
-          {
-            "band": 8,
-            "range_min": 73206.79,
-            "range_max": 83211.36,
-            "midpoint": 78209.07,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.06,
-            "predicted": 0.098963,
-            "ae_ratio": 0.6063,
-            "partial_dep": 0.098963,
-            "residual_mean": -0.319412
-          },
-          {
-            "band": 9,
-            "range_min": 83211.36,
-            "range_max": 91625.58,
-            "midpoint": 87418.47,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.12,
-            "predicted": 0.108872,
-            "ae_ratio": 1.1022,
-            "partial_dep": 0.108872,
-            "residual_mean": -0.217311
-          },
-          {
-            "band": 10,
-            "range_min": 91625.58,
-            "range_max": 99977.41,
-            "midpoint": 95801.5,
-            "n": 50,
-            "exposure": 50.0,
-            "actual": 0.06,
-            "predicted": 0.091206,
-            "ae_ratio": 0.6579,
-            "partial_dep": 0.091206,
-            "residual_mean": -0.295646
+            "range_min": 4128.0,
+            "range_max": 27000.0,
+            "midpoint": 15564.0,
+            "n": 42224,
+            "exposure": 19335.36,
+            "actual": 0.127693,
+            "predicted": 0.12726,
+            "ae_ratio": 1.0034,
+            "partial_dep": 0.058275,
+            "residual_mean": -0.178847
           }
         ]
       }
     },
-    "test": null,
-    "gini_gap": null,
-    "ae_ratio_diff": null,
-    "decile_comparison": null,
-    "factor_divergence": null,
+    "test": {
+      "dataset": "test",
+      "n_obs": 135616,
+      "total_exposure": 71711.83,
+      "total_actual": 7001.0,
+      "total_predicted": 7112.29,
+      "loss": 0.3189,
+      "deviance": 43248.0,
+      "log_likelihood": -28434.11,
+      "aic": 56888.22,
+      "gini": 0.0836,
+      "auc": 0.5418,
+      "ae_ratio": 0.9844,
+      "ae_by_decile": [
+        {
+          "decile": 1,
+          "n": 13561,
+          "exposure": 527.68,
+          "actual": 0.684126,
+          "predicted": 0.095319,
+          "ae_ratio": 7.1772
+        },
+        {
+          "decile": 2,
+          "n": 13561,
+          "exposure": 1163.88,
+          "actual": 0.252603,
+          "predicted": 0.103196,
+          "ae_ratio": 2.4478
+        },
+        {
+          "decile": 3,
+          "n": 13561,
+          "exposure": 2404.36,
+          "actual": 0.21461,
+          "predicted": 0.096409,
+          "ae_ratio": 2.226
+        },
+        {
+          "decile": 4,
+          "n": 13561,
+          "exposure": 3914.09,
+          "actual": 0.152526,
+          "predicted": 0.098671,
+          "ae_ratio": 1.5458
+        },
+        {
+          "decile": 5,
+          "n": 13561,
+          "exposure": 5958.34,
+          "actual": 0.11614,
+          "predicted": 0.096325,
+          "ae_ratio": 1.2057
+        },
+        {
+          "decile": 6,
+          "n": 13561,
+          "exposure": 7690.47,
+          "actual": 0.097263,
+          "predicted": 0.100086,
+          "ae_ratio": 0.9718
+        },
+        {
+          "decile": 7,
+          "n": 13561,
+          "exposure": 10883.8,
+          "actual": 0.08113,
+          "predicted": 0.091148,
+          "ae_ratio": 0.8901
+        },
+        {
+          "decile": 8,
+          "n": 13561,
+          "exposure": 12640.35,
+          "actual": 0.071833,
+          "predicted": 0.091221,
+          "ae_ratio": 0.7875
+        },
+        {
+          "decile": 9,
+          "n": 13561,
+          "exposure": 13129.44,
+          "actual": 0.071214,
+          "predicted": 0.097496,
+          "ae_ratio": 0.7304
+        },
+        {
+          "decile": 10,
+          "n": 13567,
+          "exposure": 13399.42,
+          "actual": 0.07963,
+          "predicted": 0.116054,
+          "ae_ratio": 0.6861
+        }
+      ],
+      "factor_diagnostics": {},
+      "continuous_diagnostics": {
+        "Density": [
+          {
+            "band": 1,
+            "range_min": 1.0,
+            "range_max": 33.0,
+            "midpoint": 17.0,
+            "n": 13218,
+            "exposure": 8048.65,
+            "actual": 0.078274,
+            "predicted": 0.078219,
+            "ae_ratio": 1.0007,
+            "partial_dep": 0.047629,
+            "residual_mean": -0.176119
+          },
+          {
+            "band": 2,
+            "range_min": 33.0,
+            "range_max": 67.0,
+            "midpoint": 50.0,
+            "n": 13699,
+            "exposure": 7978.51,
+            "actual": 0.084853,
+            "predicted": 0.083651,
+            "ae_ratio": 1.0144,
+            "partial_dep": 0.04872,
+            "residual_mean": -0.173512
+          },
+          {
+            "band": 3,
+            "range_min": 67.0,
+            "range_max": 122.0,
+            "midpoint": 94.5,
+            "n": 13659,
+            "exposure": 7557.0,
+            "actual": 0.088527,
+            "predicted": 0.089077,
+            "ae_ratio": 0.9938,
+            "partial_dep": 0.049283,
+            "residual_mean": -0.174471
+          },
+          {
+            "band": 4,
+            "range_min": 122.0,
+            "range_max": 214.0,
+            "midpoint": 168.0,
+            "n": 13118,
+            "exposure": 7139.85,
+            "actual": 0.084876,
+            "predicted": 0.091591,
+            "ae_ratio": 0.9267,
+            "partial_dep": 0.049851,
+            "residual_mean": -0.182257
+          },
+          {
+            "band": 5,
+            "range_min": 214.0,
+            "range_max": 388.0,
+            "midpoint": 301.0,
+            "n": 13847,
+            "exposure": 7427.39,
+            "actual": 0.093573,
+            "predicted": 0.093633,
+            "ae_ratio": 0.9994,
+            "partial_dep": 0.050224,
+            "residual_mean": -0.174587
+          },
+          {
+            "band": 6,
+            "range_min": 388.0,
+            "range_max": 713.0,
+            "midpoint": 550.5,
+            "n": 13703,
+            "exposure": 7303.48,
+            "actual": 0.093106,
+            "predicted": 0.099453,
+            "ae_ratio": 0.9362,
+            "partial_dep": 0.053007,
+            "residual_mean": -0.185183
+          },
+          {
+            "band": 7,
+            "range_min": 713.0,
+            "range_max": 1313.0,
+            "midpoint": 1013.0,
+            "n": 12596,
+            "exposure": 6433.24,
+            "actual": 0.112385,
+            "predicted": 0.107737,
+            "ae_ratio": 1.0431,
+            "partial_dep": 0.055025,
+            "residual_mean": -0.172437
+          },
+          {
+            "band": 8,
+            "range_min": 1313.0,
+            "range_max": 2694.0,
+            "midpoint": 2003.5,
+            "n": 14607,
+            "exposure": 7291.1,
+            "actual": 0.110957,
+            "predicted": 0.11333,
+            "ae_ratio": 0.9791,
+            "partial_dep": 0.056569,
+            "residual_mean": -0.181132
+          },
+          {
+            "band": 9,
+            "range_min": 2694.0,
+            "range_max": 4128.0,
+            "midpoint": 3411.0,
+            "n": 13006,
+            "exposure": 6053.08,
+            "actual": 0.1168,
+            "predicted": 0.119375,
+            "ae_ratio": 0.9784,
+            "partial_dep": 0.055558,
+            "residual_mean": -0.180389
+          },
+          {
+            "band": 10,
+            "range_min": 4128.0,
+            "range_max": 27000.0,
+            "midpoint": 15564.0,
+            "n": 14163,
+            "exposure": 6479.54,
+            "actual": 0.124237,
+            "predicted": 0.127236,
+            "ae_ratio": 0.9764,
+            "partial_dep": 0.05821,
+            "residual_mean": -0.182848
+          }
+        ]
+      }
+    },
+    "gini_gap": 0.0045,
+    "ae_ratio_diff": 0.0199,
+    "decile_comparison": [
+      {
+        "decile": 1,
+        "train_ae": 7.6347,
+        "test_ae": 7.1772,
+        "ae_diff": 0.4575
+      },
+      {
+        "decile": 2,
+        "train_ae": 2.7251,
+        "test_ae": 2.4478,
+        "ae_diff": 0.2773
+      },
+      {
+        "decile": 3,
+        "train_ae": 2.1744,
+        "test_ae": 2.226,
+        "ae_diff": 0.0516
+      },
+      {
+        "decile": 4,
+        "train_ae": 1.4709,
+        "test_ae": 1.5458,
+        "ae_diff": 0.0749
+      },
+      {
+        "decile": 5,
+        "train_ae": 1.1704,
+        "test_ae": 1.2057,
+        "ae_diff": 0.0353
+      },
+      {
+        "decile": 6,
+        "train_ae": 1.0317,
+        "test_ae": 0.9718,
+        "ae_diff": 0.0599
+      },
+      {
+        "decile": 7,
+        "train_ae": 0.9232,
+        "test_ae": 0.8901,
+        "ae_diff": 0.0331
+      },
+      {
+        "decile": 8,
+        "train_ae": 0.787,
+        "test_ae": 0.7875,
+        "ae_diff": 0.0005
+      },
+      {
+        "decile": 9,
+        "train_ae": 0.7598,
+        "test_ae": 0.7304,
+        "ae_diff": 0.0294
+      },
+      {
+        "decile": 10,
+        "train_ae": 0.7002,
+        "test_ae": 0.6861,
+        "ae_diff": 0.0141
+      }
+    ],
+    "factor_divergence": {},
     "overfitting_risk": false,
     "calibration_drift": false,
     "unstable_factors": []
   },
   "calibration": {
-    "ae_ratio": 0.866,
-    "hl_pvalue": 0.0695,
+    "ae_ratio": 1.004,
+    "hl_pvalue": 0.0,
     "problem_deciles": [
       {
         "decile": 0,
-        "ae": 0.0,
-        "n": 50,
+        "ae": 2.38,
+        "n": 154251,
         "ae_ci": [
-          0.0,
-          0.77
+          2.32,
+          2.45
         ]
       },
       {
         "decile": 1,
-        "ae": 0.48,
-        "n": 50,
+        "ae": 1.2,
+        "n": 50061,
         "ae_ci": [
-          0.0,
-          1.13
-        ]
-      },
-      {
-        "decile": 2,
-        "ae": 0.21,
-        "n": 50,
-        "ae_ci": [
-          0.0,
-          0.61
-        ]
-      },
-      {
-        "decile": 3,
-        "ae": 0.2,
-        "n": 50,
-        "ae_ci": [
-          0.0,
-          0.58
+          1.15,
+          1.25
         ]
       },
       {
         "decile": 4,
-        "ae": 1.33,
-        "n": 50,
+        "ae": 0.82,
+        "n": 23123,
         "ae_ci": [
-          0.34,
-          2.31
+          0.78,
+          0.86
         ]
       },
       {
         "decile": 5,
-        "ae": 0.72,
-        "n": 50,
+        "ae": 0.79,
+        "n": 22906,
         "ae_ci": [
-          0.01,
-          1.43
+          0.75,
+          0.83
         ]
       },
       {
         "decile": 6,
-        "ae": 1.21,
-        "n": 50,
+        "ae": 0.77,
+        "n": 21917,
         "ae_ci": [
-          0.31,
-          2.11
+          0.73,
+          0.8
         ]
       },
       {
         "decile": 7,
-        "ae": 1.66,
-        "n": 50,
+        "ae": 0.78,
+        "n": 22061,
         "ae_ci": [
-          0.63,
-          2.69
+          0.74,
+          0.81
         ]
       },
       {
         "decile": 8,
-        "ae": 0.78,
-        "n": 50,
+        "ae": 0.7,
+        "n": 21927,
         "ae_ci": [
-          0.1,
-          1.47
+          0.67,
+          0.74
         ]
       },
       {
         "decile": 9,
-        "ae": 1.2,
-        "n": 50,
+        "ae": 0.69,
+        "n": 23534,
         "ae_ci": [
-          0.42,
-          1.98
+          0.66,
+          0.72
         ]
       }
     ]
   },
   "residual_summary": {
     "pearson": {
-      "mean": -0.06,
-      "std": 0.9,
-      "skewness": 3.5
+      "mean": 0.07,
+      "std": 1.64,
+      "skewness": 14.8
     },
     "deviance": {
-      "mean": -0.27,
-      "std": 0.6,
-      "skewness": 3.1
+      "mean": -0.18,
+      "std": 0.54,
+      "skewness": 4.1
     }
   },
   "factors": [
     {
-      "name": "age",
+      "name": "Density",
       "factor_type": "continuous",
       "in_model": true,
-      "transform": "bs(age, 1/10, k)",
+      "transform": "ns(Density, 1/9)",
       "coefficients": [
         {
-          "term": "bs(age, 1/10, k)",
-          "estimate": -1.1571,
-          "std_error": 0.025094,
-          "z_value": -46.111,
+          "term": "ns(Density, 1/9)",
+          "estimate": 0.002397,
+          "std_error": 0.000585,
+          "z_value": 4.094,
           "p_value": 0.0,
-          "relativity": 0.3144
+          "relativity": 1.0024
         },
         {
-          "term": "bs(age, 2/10, k)",
-          "estimate": -0.25836,
-          "std_error": 0.011779,
-          "z_value": -21.933,
-          "p_value": 0.0,
-          "relativity": 0.7723
+          "term": "ns(Density, 2/9)",
+          "estimate": -0.000482,
+          "std_error": 0.00226,
+          "z_value": -0.213,
+          "p_value": 0.8311,
+          "relativity": 0.9995
         },
         {
-          "term": "bs(age, 3/10, k)",
-          "estimate": 0.20454,
-          "std_error": 0.010396,
-          "z_value": 19.675,
-          "p_value": 0.0,
-          "relativity": 1.227
+          "term": "ns(Density, 3/9)",
+          "estimate": -0.004248,
+          "std_error": 0.006734,
+          "z_value": -0.631,
+          "p_value": 0.5282,
+          "relativity": 0.9958
         },
         {
-          "term": "bs(age, 4/10, k)",
-          "estimate": -0.055437,
-          "std_error": 0.010274,
-          "z_value": -5.396,
-          "p_value": 0.0,
-          "relativity": 0.9461
+          "term": "ns(Density, 4/9)",
+          "estimate": 0.007387,
+          "std_error": 0.007677,
+          "z_value": 0.962,
+          "p_value": 0.3359,
+          "relativity": 1.0074
         },
         {
-          "term": "bs(age, 5/10, k)",
-          "estimate": 0.010778,
-          "std_error": 0.010255,
-          "z_value": 1.051,
-          "p_value": 0.2932,
-          "relativity": 1.0108
+          "term": "ns(Density, 5/9)",
+          "estimate": -0.002254,
+          "std_error": 0.003789,
+          "z_value": -0.595,
+          "p_value": 0.552,
+          "relativity": 0.9977
         },
         {
-          "term": "bs(age, 6/10, k)",
-          "estimate": 0.303314,
-          "std_error": 0.010255,
-          "z_value": 29.578,
-          "p_value": 0.0,
-          "relativity": 1.3543
+          "term": "ns(Density, 6/9)",
+          "estimate": -0.000448,
+          "std_error": 0.000968,
+          "z_value": -0.463,
+          "p_value": 0.6432,
+          "relativity": 0.9996
         },
         {
-          "term": "bs(age, 7/10, k)",
-          "estimate": -0.08515,
-          "std_error": 0.010274,
-          "z_value": -8.288,
-          "p_value": 0.0,
-          "relativity": 0.9184
+          "term": "ns(Density, 7/9)",
+          "estimate": 4e-05,
+          "std_error": 0.00017,
+          "z_value": 0.236,
+          "p_value": 0.8131,
+          "relativity": 1.0
         },
         {
-          "term": "bs(age, 8/10, k)",
-          "estimate": -0.104342,
-          "std_error": 0.010396,
-          "z_value": -10.037,
-          "p_value": 0.0,
-          "relativity": 0.9009
+          "term": "ns(Density, 8/9)",
+          "estimate": 8e-06,
+          "std_error": 2.6e-05,
+          "z_value": 0.308,
+          "p_value": 0.7581,
+          "relativity": 1.0
         },
         {
-          "term": "bs(age, 9/10, k)",
-          "estimate": 0.106878,
-          "std_error": 0.011778,
-          "z_value": 9.075,
-          "p_value": 0.0,
-          "relativity": 1.1128
-        },
-        {
-          "term": "bs(age, 10/10, k)",
-          "estimate": 0.550794,
-          "std_error": 0.025084,
-          "z_value": 21.958,
-          "p_value": 0.0,
-          "relativity": 1.7346
+          "term": "ns(Density, 9/9)",
+          "estimate": -3e-06,
+          "std_error": 2e-06,
+          "z_value": -1.247,
+          "p_value": 0.2126,
+          "relativity": 1.0
         }
       ],
       "actual_vs_expected": [
         {
-          "bin": "18.26-22.37",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.02,
-          "expected": 0.062003,
-          "ae_ratio": 0.32,
+          "bin": "1.00-33.00",
+          "n": 40450,
+          "exposure": 24407.15,
+          "actual": 0.076043,
+          "expected": 0.078247,
+          "ae_ratio": 0.97,
           "ae_ci": [
-            0.0,
-            0.95
+            0.93,
+            1.02
           ]
         },
         {
-          "bin": "22.37-27.07",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.1,
-          "expected": 0.103782,
-          "ae_ratio": 0.96,
+          "bin": "33.00-67.00",
+          "n": 40707,
+          "exposure": 23655.25,
+          "actual": 0.085097,
+          "expected": 0.083654,
+          "ae_ratio": 1.02,
           "ae_ci": [
-            0.12,
-            1.81
+            0.97,
+            1.06
           ]
         },
         {
-          "bin": "27.07-33.19",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.1,
-          "expected": 0.108891,
-          "ae_ratio": 0.92,
+          "bin": "67.00-122.00",
+          "n": 40673,
+          "exposure": 22806.04,
+          "actual": 0.087959,
+          "expected": 0.089064,
+          "ae_ratio": 0.99,
           "ae_ci": [
-            0.11,
-            1.72
+            0.94,
+            1.03
           ]
         },
         {
-          "bin": "33.19-38.08",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.06,
-          "expected": 0.104091,
-          "ae_ratio": 0.58,
+          "bin": "122.00-214.00",
+          "n": 39466,
+          "exposure": 21488.73,
+          "actual": 0.094794,
+          "expected": 0.091595,
+          "ae_ratio": 1.03,
           "ae_ci": [
-            0.0,
-            1.23
+            0.99,
+            1.08
           ]
         },
         {
-          "bin": "38.08-44.74",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.1,
-          "expected": 0.111513,
-          "ae_ratio": 0.9,
+          "bin": "214.00-393.00",
+          "n": 41891,
+          "exposure": 22350.28,
+          "actual": 0.093332,
+          "expected": 0.093679,
+          "ae_ratio": 1.0,
           "ae_ci": [
-            0.11,
-            1.68
+            0.95,
+            1.04
           ]
         },
         {
-          "bin": "44.74-49.98",
-          "n": 49,
-          "exposure": 49.0,
-          "actual": 0.163265,
-          "expected": 0.121648,
-          "ae_ratio": 1.34,
+          "bin": "393.00-713.00",
+          "n": 40284,
+          "exposure": 21448.45,
+          "actual": 0.102292,
+          "expected": 0.099574,
+          "ae_ratio": 1.03,
           "ae_ci": [
-            0.41,
-            2.27
+            0.98,
+            1.07
           ]
         },
         {
-          "bin": "49.98-54.56",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.08,
-          "expected": 0.113849,
-          "ae_ratio": 0.7,
-          "ae_ci": [
-            0.01,
-            1.39
-          ]
-        },
-        {
-          "bin": "54.56-60.02",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.08,
-          "expected": 0.099792,
-          "ae_ratio": 0.8,
-          "ae_ci": [
-            0.02,
-            1.59
-          ]
-        },
-        {
-          "bin": "60.02-65.08",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.08,
-          "expected": 0.101493,
-          "ae_ratio": 0.79,
-          "ae_ci": [
-            0.02,
-            1.56
-          ]
-        },
-        {
-          "bin": "65.08-69.63",
-          "n": 51,
-          "exposure": 51.0,
-          "actual": 0.137255,
-          "expected": 0.135487,
+          "bin": "713.00-1313.00",
+          "n": 38329,
+          "exposure": 19616.5,
+          "actual": 0.10899,
+          "expected": 0.10778,
           "ae_ratio": 1.01,
           "ae_ci": [
-            0.26,
-            1.76
+            0.97,
+            1.05
+          ]
+        },
+        {
+          "bin": "1313.00-2703.00",
+          "n": 43324,
+          "exposure": 21571.76,
+          "actual": 0.111859,
+          "expected": 0.11335,
+          "ae_ratio": 0.99,
+          "ae_ci": [
+            0.95,
+            1.03
+          ]
+        },
+        {
+          "bin": "2703.00-4128.00",
+          "n": 39091,
+          "exposure": 18251.37,
+          "actual": 0.12032,
+          "expected": 0.119392,
+          "ae_ratio": 1.01,
+          "ae_ci": [
+            0.97,
+            1.05
+          ]
+        },
+        {
+          "bin": "4128.00-27000.00",
+          "n": 42224,
+          "exposure": 19335.36,
+          "actual": 0.127693,
+          "expected": 0.12726,
+          "ae_ratio": 1.0,
+          "ae_ci": [
+            0.96,
+            1.04
           ]
         }
       ],
       "residual_pattern": {
-        "resid_corr": 0.0193,
-        "var_explained": 0.000374
+        "resid_corr": 0.002,
+        "var_explained": 4e-06
       },
       "univariate": null,
       "significance": {
-        "chi2": 4633.4,
+        "chi2": 831.85,
         "p": 0.0,
-        "dev_contrib": 4633.4
+        "dev_contrib": 831.85,
+        "dev_pct": 0.63
       },
       "score_test": null,
-      "relative_importance": 93.25
-    },
-    {
-      "name": "income",
-      "factor_type": "continuous",
-      "in_model": true,
-      "transform": "bs(income, 1/10, k)",
-      "coefficients": [
-        {
-          "term": "bs(income, 1/10, k)",
-          "estimate": -0.992682,
-          "std_error": 0.101199,
-          "z_value": -9.809,
-          "p_value": 0.0,
-          "relativity": 0.3706
-        },
-        {
-          "term": "bs(income, 2/10, k)",
-          "estimate": -0.037117,
-          "std_error": 0.047529,
-          "z_value": -0.781,
-          "p_value": 0.4348,
-          "relativity": 0.9636
-        },
-        {
-          "term": "bs(income, 3/10, k)",
-          "estimate": 0.225674,
-          "std_error": 0.041929,
-          "z_value": 5.382,
-          "p_value": 0.0,
-          "relativity": 1.2532
-        },
-        {
-          "term": "bs(income, 4/10, k)",
-          "estimate": -0.198837,
-          "std_error": 0.041444,
-          "z_value": -4.798,
-          "p_value": 0.0,
-          "relativity": 0.8197
-        },
-        {
-          "term": "bs(income, 5/10, k)",
-          "estimate": 0.13617,
-          "std_error": 0.041363,
-          "z_value": 3.292,
-          "p_value": 0.001,
-          "relativity": 1.1459
-        },
-        {
-          "term": "bs(income, 6/10, k)",
-          "estimate": 0.283688,
-          "std_error": 0.041343,
-          "z_value": 6.862,
-          "p_value": 0.0,
-          "relativity": 1.328
-        },
-        {
-          "term": "bs(income, 7/10, k)",
-          "estimate": -0.238379,
-          "std_error": 0.041448,
-          "z_value": -5.751,
-          "p_value": 0.0,
-          "relativity": 0.7879
-        },
-        {
-          "term": "bs(income, 8/10, k)",
-          "estimate": 0.046427,
-          "std_error": 0.041951,
-          "z_value": 1.107,
-          "p_value": 0.2684,
-          "relativity": 1.0475
-        },
-        {
-          "term": "bs(income, 9/10, k)",
-          "estimate": 0.199843,
-          "std_error": 0.047492,
-          "z_value": 4.208,
-          "p_value": 0.0,
-          "relativity": 1.2212
-        },
-        {
-          "term": "bs(income, 10/10, k)",
-          "estimate": -0.886805,
-          "std_error": 0.101205,
-          "z_value": -8.762,
-          "p_value": 0.0,
-          "relativity": 0.412
-        }
-      ],
-      "actual_vs_expected": [
-        {
-          "bin": "20370.56-29084.61",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.04,
-          "expected": 0.081936,
-          "ae_ratio": 0.49,
-          "ae_ci": [
-            0.0,
-            1.16
-          ]
-        },
-        {
-          "bin": "29084.61-34283.57",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.12,
-          "expected": 0.112559,
-          "ae_ratio": 1.07,
-          "ae_ci": [
-            0.21,
-            1.92
-          ]
-        },
-        {
-          "bin": "34283.57-41659.57",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.1,
-          "expected": 0.099283,
-          "ae_ratio": 1.01,
-          "ae_ci": [
-            0.12,
-            1.89
-          ]
-        },
-        {
-          "bin": "41659.57-50182.73",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.02,
-          "expected": 0.105844,
-          "ae_ratio": 0.19,
-          "ae_ci": [
-            0.0,
-            0.56
-          ]
-        },
-        {
-          "bin": "50182.73-57765.36",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.16,
-          "expected": 0.125182,
-          "ae_ratio": 1.28,
-          "ae_ci": [
-            0.39,
-            2.16
-          ]
-        },
-        {
-          "bin": "57765.36-65729.02",
-          "n": 49,
-          "exposure": 49.0,
-          "actual": 0.142857,
-          "expected": 0.132594,
-          "ae_ratio": 1.08,
-          "ae_ci": [
-            0.28,
-            1.88
-          ]
-        },
-        {
-          "bin": "65729.02-73202.93",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.1,
-          "expected": 0.106724,
-          "ae_ratio": 0.94,
-          "ae_ci": [
-            0.12,
-            1.76
-          ]
-        },
-        {
-          "bin": "73202.93-83133.70",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.06,
-          "expected": 0.099866,
-          "ae_ratio": 0.6,
-          "ae_ci": [
-            0.0,
-            1.28
-          ]
-        },
-        {
-          "bin": "83133.70-91616.55",
-          "n": 50,
-          "exposure": 50.0,
-          "actual": 0.12,
-          "expected": 0.107931,
-          "ae_ratio": 1.11,
-          "ae_ci": [
-            0.22,
-            2.0
-          ]
-        },
-        {
-          "bin": "91616.55-99977.41",
-          "n": 51,
-          "exposure": 51.0,
-          "actual": 0.058824,
-          "expected": 0.091725,
-          "ae_ratio": 0.64,
-          "ae_ci": [
-            0.0,
-            1.37
-          ]
-        }
-      ],
-      "residual_pattern": {
-        "resid_corr": 0.0018,
-        "var_explained": 3e-06
-      },
-      "univariate": null,
-      "significance": {
-        "chi2": 335.53,
-        "p": 0.0,
-        "dev_contrib": 335.53
-      },
-      "score_test": null,
-      "relative_importance": 6.75
+      "relative_importance": 100.0
     }
   ],
   "interaction_candidates": [],
   "model_comparison": {
-    "likelihood_ratio_chi2": 10.4273,
-    "likelihood_ratio_df": 20,
-    "likelihood_ratio_pvalue": 0.959745,
-    "deviance_reduction_pct": 4.5218,
-    "aic_improvement": -29.5727
+    "likelihood_ratio_chi2": 833.09,
+    "likelihood_ratio_df": 9,
+    "likelihood_ratio_pvalue": 0.0,
+    "deviance_reduction_pct": 0.378259,
+    "aic_improvement": 815.09
   },
   "warnings": [
     {
-      "type": "poor_calibration",
-      "message": "Model over-predicts overall (A/E = 0.866)."
-    },
-    {
       "type": "weak_discrimination",
-      "message": "Model has weak discrimination in deciles: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]. Consider adding features or interactions to improve separation."
+      "message": "Model has weak discrimination in deciles: [1, 2, 3, 4, 8, 9, 10]. Consider adding features or interactions to improve separation."
     },
     {
-      "type": "nonlinear_effect",
-      "message": "Variable 'income' shows complex pattern. Use spline (df=5+) to capture non-linearity"
+      "type": "overdispersion",
+      "message": "Overdispersion detected (\u03c6=4.47). Consider Negative Binomial or QuasiPoisson"
     }
   ],
   "vif": [
     {
-      "feature": "bs(income, 6/10, k)",
-      "vif": 28.57,
-      "severity": "severe",
-      "collinear_with": null
-    },
-    {
-      "feature": "bs(age, 6/10, k)",
-      "vif": 28.01,
-      "severity": "severe",
-      "collinear_with": null
-    },
-    {
-      "feature": "bs(age, 7/10, k)",
-      "vif": 25.92,
-      "severity": "severe",
-      "collinear_with": null
-    },
-    {
-      "feature": "bs(income, 4/10, k)",
-      "vif": 25.59,
-      "severity": "severe",
-      "collinear_with": null
-    },
-    {
-      "feature": "bs(age, 4/10, k)",
-      "vif": 25.5,
-      "severity": "severe",
-      "collinear_with": null
-    },
-    {
-      "feature": "bs(income, 5/10, k)",
-      "vif": 25.36,
-      "severity": "severe",
-      "collinear_with": null
-    },
-    {
-      "feature": "bs(income, 7/10, k)",
-      "vif": 25.09,
-      "severity": "severe",
-      "collinear_with": null
-    },
-    {
-      "feature": "bs(age, 5/10, k)",
-      "vif": 24.34,
-      "severity": "severe",
-      "collinear_with": null
-    },
-    {
-      "feature": "bs(income, 3/10, k)",
-      "vif": 23.96,
-      "severity": "severe",
-      "collinear_with": null
-    },
-    {
-      "feature": "bs(income, 8/10, k)",
-      "vif": 19.81,
+      "feature": "ns(Density, 5/9)",
+      "vif": 8146884662.02,
       "severity": "expected",
       "collinear_with": [
-        "bs(income, 9/10, k)"
+        "ns(Density, 4/9)",
+        "ns(Density, 3/9)",
+        "ns(Density, 6/9)"
       ]
     },
     {
-      "feature": "bs(age, 2/10, k)",
-      "vif": 19.52,
+      "feature": "ns(Density, 4/9)",
+      "vif": 7874760974.03,
       "severity": "expected",
       "collinear_with": [
-        "bs(age, 3/10, k)"
+        "ns(Density, 3/9)",
+        "ns(Density, 5/9)",
+        "ns(Density, 2/9)"
       ]
     },
     {
-      "feature": "bs(age, 3/10, k)",
-      "vif": 19.32,
+      "feature": "ns(Density, 3/9)",
+      "vif": 7252016318.56,
       "severity": "expected",
       "collinear_with": [
-        "bs(age, 2/10, k)"
+        "ns(Density, 2/9)",
+        "ns(Density, 4/9)",
+        "ns(Density, 5/9)"
       ]
     },
     {
-      "feature": "bs(age, 8/10, k)",
-      "vif": 19.3,
-      "severity": "severe",
-      "collinear_with": null
-    },
-    {
-      "feature": "bs(income, 9/10, k)",
-      "vif": 17.88,
+      "feature": "ns(Density, 6/9)",
+      "vif": 7156099879.3,
       "severity": "expected",
       "collinear_with": [
-        "bs(income, 8/10, k)"
+        "ns(Density, 5/9)",
+        "ns(Density, 4/9)",
+        "ns(Density, 7/9)"
       ]
     },
     {
-      "feature": "bs(age, 9/10, k)",
-      "vif": 17.76,
-      "severity": "severe",
-      "collinear_with": null
+      "feature": "ns(Density, 2/9)",
+      "vif": 6342899411.27,
+      "severity": "expected",
+      "collinear_with": [
+        "ns(Density, 3/9)",
+        "ns(Density, 4/9)",
+        "ns(Density, 5/9)"
+      ]
     },
     {
-      "feature": "bs(income, 2/10, k)",
-      "vif": 13.33,
-      "severity": "severe",
-      "collinear_with": null
+      "feature": "ns(Density, 7/9)",
+      "vif": 4748655166.15,
+      "severity": "expected",
+      "collinear_with": [
+        "ns(Density, 6/9)",
+        "ns(Density, 5/9)",
+        "ns(Density, 8/9)"
+      ]
     },
     {
-      "feature": "bs(age, 1/10, k)",
-      "vif": 11.88,
-      "severity": "severe",
-      "collinear_with": null
+      "feature": "ns(Density, 8/9)",
+      "vif": 1105526541.02,
+      "severity": "expected",
+      "collinear_with": [
+        "ns(Density, 7/9)",
+        "ns(Density, 6/9)",
+        "ns(Density, 9/9)"
+      ]
     },
     {
-      "feature": "bs(age, 10/10, k)",
-      "vif": 11.25,
-      "severity": "severe",
-      "collinear_with": null
+      "feature": "ns(Density, 9/9)",
+      "vif": 22743659.61,
+      "severity": "expected",
+      "collinear_with": [
+        "ns(Density, 8/9)",
+        "ns(Density, 7/9)",
+        "ns(Density, 6/9)"
+      ]
     },
     {
-      "feature": "bs(income, 1/10, k)",
-      "vif": 10.95,
-      "severity": "severe",
-      "collinear_with": null
-    },
-    {
-      "feature": "bs(income, 10/10, k)",
-      "vif": 9.06,
-      "severity": "moderate",
-      "collinear_with": null
+      "feature": "ns(Density, 1/9)",
+      "vif": 3452.98,
+      "severity": "expected",
+      "collinear_with": [
+        "ns(Density, 2/9)",
+        "ns(Density, 3/9)",
+        "ns(Density, 4/9)"
+      ]
     }
   ],
   "smooth_terms": [
     {
-      "variable": "age",
+      "variable": "Density",
       "k": 10,
-      "edf": 2.06,
+      "edf": 0.59,
       "lambda": 999.097,
-      "gcv": 0.4504,
-      "ref_df": 2.06,
-      "chi2": 4539.21,
-      "p_value": 0.0
-    },
-    {
-      "variable": "income",
-      "k": 10,
-      "edf": 2.55,
-      "lambda": 61.0264,
-      "gcv": 0.4504,
-      "ref_df": 2.55,
-      "chi2": 470.41,
+      "gcv": 0.3236,
+      "ref_df": 0.59,
+      "chi2": 715.35,
       "p_value": 0.0
     }
   ],
   "coefficient_summary": [
     {
-      "feature": "bs(age, 1/10, k)",
-      "estimate": -1.1571,
-      "std_error": 0.025094,
-      "z_value": -46.111,
+      "feature": "ns(Density, 1/9)",
+      "estimate": 0.002397,
+      "std_error": 0.000585,
+      "z_value": 4.094,
       "p_value": 0.0,
       "significant": true,
-      "relativity": 0.3144,
+      "relativity": 1.0024,
       "relativity_ci": [
-        0.2993,
-        0.3302
+        1.0013,
+        1.0036
       ]
     },
     {
-      "feature": "bs(age, 6/10, k)",
-      "estimate": 0.303314,
-      "std_error": 0.010255,
-      "z_value": 29.578,
-      "p_value": 0.0,
-      "significant": true,
-      "relativity": 1.3543,
-      "relativity_ci": [
-        1.3274,
-        1.3818
-      ]
-    },
-    {
-      "feature": "bs(age, 10/10, k)",
-      "estimate": 0.550794,
-      "std_error": 0.025084,
-      "z_value": 21.958,
-      "p_value": 0.0,
-      "significant": true,
-      "relativity": 1.7346,
-      "relativity_ci": [
-        1.6514,
-        1.822
-      ]
-    },
-    {
-      "feature": "bs(age, 2/10, k)",
-      "estimate": -0.25836,
-      "std_error": 0.011779,
-      "z_value": -21.933,
-      "p_value": 0.0,
-      "significant": true,
-      "relativity": 0.7723,
-      "relativity_ci": [
-        0.7547,
-        0.7904
-      ]
-    },
-    {
-      "feature": "bs(age, 3/10, k)",
-      "estimate": 0.20454,
-      "std_error": 0.010396,
-      "z_value": 19.675,
-      "p_value": 0.0,
-      "significant": true,
-      "relativity": 1.227,
-      "relativity_ci": [
-        1.2022,
-        1.2522
-      ]
-    },
-    {
-      "feature": "bs(age, 8/10, k)",
-      "estimate": -0.104342,
-      "std_error": 0.010396,
-      "z_value": -10.037,
-      "p_value": 0.0,
-      "significant": true,
-      "relativity": 0.9009,
-      "relativity_ci": [
-        0.8827,
-        0.9195
-      ]
-    },
-    {
-      "feature": "bs(income, 1/10, k)",
-      "estimate": -0.992682,
-      "std_error": 0.101199,
-      "z_value": -9.809,
-      "p_value": 0.0,
-      "significant": true,
-      "relativity": 0.3706,
-      "relativity_ci": [
-        0.3039,
-        0.4519
-      ]
-    },
-    {
-      "feature": "bs(age, 9/10, k)",
-      "estimate": 0.106878,
-      "std_error": 0.011778,
-      "z_value": 9.075,
-      "p_value": 0.0,
-      "significant": true,
-      "relativity": 1.1128,
-      "relativity_ci": [
-        1.0874,
-        1.1388
-      ]
-    },
-    {
-      "feature": "bs(income, 10/10, k)",
-      "estimate": -0.886805,
-      "std_error": 0.101205,
-      "z_value": -8.762,
-      "p_value": 0.0,
-      "significant": true,
-      "relativity": 0.412,
-      "relativity_ci": [
-        0.3378,
-        0.5024
-      ]
-    },
-    {
-      "feature": "bs(age, 7/10, k)",
-      "estimate": -0.08515,
-      "std_error": 0.010274,
-      "z_value": -8.288,
-      "p_value": 0.0,
-      "significant": true,
-      "relativity": 0.9184,
-      "relativity_ci": [
-        0.9001,
-        0.9371
-      ]
-    },
-    {
-      "feature": "bs(income, 6/10, k)",
-      "estimate": 0.283688,
-      "std_error": 0.041343,
-      "z_value": 6.862,
-      "p_value": 0.0,
-      "significant": true,
-      "relativity": 1.328,
-      "relativity_ci": [
-        1.2247,
-        1.4401
-      ]
-    },
-    {
-      "feature": "bs(income, 7/10, k)",
-      "estimate": -0.238379,
-      "std_error": 0.041448,
-      "z_value": -5.751,
-      "p_value": 0.0,
-      "significant": true,
-      "relativity": 0.7879,
-      "relativity_ci": [
-        0.7264,
-        0.8546
-      ]
-    },
-    {
-      "feature": "bs(age, 4/10, k)",
-      "estimate": -0.055437,
-      "std_error": 0.010274,
-      "z_value": -5.396,
-      "p_value": 0.0,
-      "significant": true,
-      "relativity": 0.9461,
-      "relativity_ci": [
-        0.9272,
-        0.9653
-      ]
-    },
-    {
-      "feature": "bs(income, 3/10, k)",
-      "estimate": 0.225674,
-      "std_error": 0.041929,
-      "z_value": 5.382,
-      "p_value": 0.0,
-      "significant": true,
-      "relativity": 1.2532,
-      "relativity_ci": [
-        1.1543,
-        1.3605
-      ]
-    },
-    {
-      "feature": "bs(income, 4/10, k)",
-      "estimate": -0.198837,
-      "std_error": 0.041444,
-      "z_value": -4.798,
-      "p_value": 0.0,
-      "significant": true,
-      "relativity": 0.8197,
-      "relativity_ci": [
-        0.7557,
-        0.889
-      ]
-    },
-    {
-      "feature": "bs(income, 9/10, k)",
-      "estimate": 0.199843,
-      "std_error": 0.047492,
-      "z_value": 4.208,
-      "p_value": 0.0,
-      "significant": true,
-      "relativity": 1.2212,
-      "relativity_ci": [
-        1.1127,
-        1.3403
-      ]
-    },
-    {
-      "feature": "bs(income, 5/10, k)",
-      "estimate": 0.13617,
-      "std_error": 0.041363,
-      "z_value": 3.292,
-      "p_value": 0.001,
-      "significant": true,
-      "relativity": 1.1459,
-      "relativity_ci": [
-        1.0566,
-        1.2426
-      ]
-    },
-    {
-      "feature": "bs(income, 8/10, k)",
-      "estimate": 0.046427,
-      "std_error": 0.041951,
-      "z_value": 1.107,
-      "p_value": 0.2684,
+      "feature": "ns(Density, 9/9)",
+      "estimate": -3e-06,
+      "std_error": 2e-06,
+      "z_value": -1.247,
+      "p_value": 0.2126,
       "significant": false,
-      "relativity": 1.0475,
+      "relativity": 1.0,
       "relativity_ci": [
-        0.9648,
-        1.1373
+        1.0,
+        1.0
       ]
     },
     {
-      "feature": "bs(age, 5/10, k)",
-      "estimate": 0.010778,
-      "std_error": 0.010255,
-      "z_value": 1.051,
-      "p_value": 0.2932,
+      "feature": "ns(Density, 4/9)",
+      "estimate": 0.007387,
+      "std_error": 0.007677,
+      "z_value": 0.962,
+      "p_value": 0.3359,
       "significant": false,
-      "relativity": 1.0108,
+      "relativity": 1.0074,
       "relativity_ci": [
-        0.9907,
-        1.0314
+        0.9924,
+        1.0227
       ]
     },
     {
-      "feature": "bs(income, 2/10, k)",
-      "estimate": -0.037117,
-      "std_error": 0.047529,
-      "z_value": -0.781,
-      "p_value": 0.4348,
+      "feature": "ns(Density, 3/9)",
+      "estimate": -0.004248,
+      "std_error": 0.006734,
+      "z_value": -0.631,
+      "p_value": 0.5282,
       "significant": false,
-      "relativity": 0.9636,
+      "relativity": 0.9958,
       "relativity_ci": [
-        0.8779,
-        1.0576
+        0.9827,
+        1.009
+      ]
+    },
+    {
+      "feature": "ns(Density, 5/9)",
+      "estimate": -0.002254,
+      "std_error": 0.003789,
+      "z_value": -0.595,
+      "p_value": 0.552,
+      "significant": false,
+      "relativity": 0.9977,
+      "relativity_ci": [
+        0.9904,
+        1.0052
+      ]
+    },
+    {
+      "feature": "ns(Density, 6/9)",
+      "estimate": -0.000448,
+      "std_error": 0.000968,
+      "z_value": -0.463,
+      "p_value": 0.6432,
+      "significant": false,
+      "relativity": 0.9996,
+      "relativity_ci": [
+        0.9977,
+        1.0015
+      ]
+    },
+    {
+      "feature": "ns(Density, 8/9)",
+      "estimate": 8e-06,
+      "std_error": 2.6e-05,
+      "z_value": 0.308,
+      "p_value": 0.7581,
+      "significant": false,
+      "relativity": 1.0,
+      "relativity_ci": [
+        1.0,
+        1.0001
+      ]
+    },
+    {
+      "feature": "ns(Density, 7/9)",
+      "estimate": 4e-05,
+      "std_error": 0.00017,
+      "z_value": 0.236,
+      "p_value": 0.8131,
+      "significant": false,
+      "relativity": 1.0,
+      "relativity_ci": [
+        0.9997,
+        1.0004
+      ]
+    },
+    {
+      "feature": "ns(Density, 2/9)",
+      "estimate": -0.000482,
+      "std_error": 0.00226,
+      "z_value": -0.213,
+      "p_value": 0.8311,
+      "significant": false,
+      "relativity": 0.9995,
+      "relativity_ci": [
+        0.9951,
+        1.004
       ]
     },
     {
       "feature": "Intercept",
-      "estimate": -2.2667,
-      "std_error": 0.138263,
-      "z_value": -16.394,
+      "estimate": -2.5928,
+      "std_error": 0.024432,
+      "z_value": -106.12,
       "p_value": 0.0,
       "significant": true,
-      "relativity": 0.1036,
+      "relativity": 0.0748,
       "relativity_ci": [
-        0.079,
-        0.1359
+        0.0713,
+        0.0785
       ]
     }
   ],
@@ -1390,136 +1107,133 @@
     "deciles": [
       {
         "decile": 1,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 0.0,
-        "predicted": 0.050934,
-        "ae_ratio": 0.0,
-        "cumulative_actual_pct": 0.0,
-        "cumulative_predicted_pct": 4.79,
-        "lift": 0.0,
-        "cumulative_lift": 0.0
+        "n": 40643,
+        "exposure": 1602.73,
+        "actual": 0.727509,
+        "predicted": 0.09529,
+        "ae_ratio": 7.635,
+        "cumulative_actual_pct": 5.45,
+        "cumulative_predicted_pct": 0.72,
+        "lift": 7.304,
+        "cumulative_lift": 7.304
       },
       {
         "decile": 2,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 0.04,
-        "predicted": 0.084118,
-        "ae_ratio": 0.476,
-        "cumulative_actual_pct": 4.35,
-        "cumulative_predicted_pct": 12.71,
-        "lift": 0.435,
-        "cumulative_lift": 0.217
+        "n": 40643,
+        "exposure": 3522.09,
+        "actual": 0.281367,
+        "predicted": 0.103251,
+        "ae_ratio": 2.725,
+        "cumulative_actual_pct": 10.08,
+        "cumulative_predicted_pct": 2.42,
+        "lift": 2.825,
+        "cumulative_lift": 4.226
       },
       {
         "decile": 3,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 0.02,
-        "predicted": 0.09641,
-        "ae_ratio": 0.207,
-        "cumulative_actual_pct": 6.52,
-        "cumulative_predicted_pct": 21.78,
-        "lift": 0.217,
-        "cumulative_lift": 0.217
+        "n": 40643,
+        "exposure": 7260.48,
+        "actual": 0.20949,
+        "predicted": 0.096344,
+        "ae_ratio": 2.174,
+        "cumulative_actual_pct": 17.18,
+        "cumulative_predicted_pct": 5.7,
+        "lift": 2.103,
+        "cumulative_lift": 2.981
       },
       {
         "decile": 4,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 0.02,
-        "predicted": 0.101397,
-        "ae_ratio": 0.197,
-        "cumulative_actual_pct": 8.7,
-        "cumulative_predicted_pct": 31.32,
-        "lift": 0.217,
-        "cumulative_lift": 0.217
+        "n": 40643,
+        "exposure": 11752.65,
+        "actual": 0.145074,
+        "predicted": 0.098632,
+        "ae_ratio": 1.471,
+        "cumulative_actual_pct": 25.14,
+        "cumulative_predicted_pct": 11.14,
+        "lift": 1.457,
+        "cumulative_lift": 2.239
       },
       {
         "decile": 5,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 0.14,
-        "predicted": 0.105375,
-        "ae_ratio": 1.329,
-        "cumulative_actual_pct": 23.91,
-        "cumulative_predicted_pct": 41.23,
-        "lift": 1.522,
-        "cumulative_lift": 0.478
+        "n": 40643,
+        "exposure": 17874.54,
+        "actual": 0.11245,
+        "predicted": 0.096076,
+        "ae_ratio": 1.17,
+        "cumulative_actual_pct": 34.53,
+        "cumulative_predicted_pct": 19.2,
+        "lift": 1.129,
+        "cumulative_lift": 1.767
       },
       {
         "decile": 6,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 0.08,
-        "predicted": 0.110852,
-        "ae_ratio": 0.722,
-        "cumulative_actual_pct": 32.61,
-        "cumulative_predicted_pct": 51.66,
-        "lift": 0.87,
-        "cumulative_lift": 0.543
+        "n": 40643,
+        "exposure": 23035.87,
+        "actual": 0.103143,
+        "predicted": 0.099975,
+        "ae_ratio": 1.032,
+        "cumulative_actual_pct": 45.63,
+        "cumulative_predicted_pct": 30.0,
+        "lift": 1.036,
+        "cumulative_lift": 1.508
       },
       {
         "decile": 7,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 0.14,
-        "predicted": 0.115721,
-        "ae_ratio": 1.21,
-        "cumulative_actual_pct": 47.83,
-        "cumulative_predicted_pct": 62.55,
-        "lift": 1.522,
-        "cumulative_lift": 0.683
+        "n": 40643,
+        "exposure": 32532.94,
+        "actual": 0.084345,
+        "predicted": 0.091358,
+        "ae_ratio": 0.923,
+        "cumulative_actual_pct": 58.45,
+        "cumulative_predicted_pct": 43.94,
+        "lift": 0.847,
+        "cumulative_lift": 1.287
       },
       {
         "decile": 8,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 0.2,
-        "predicted": 0.120373,
-        "ae_ratio": 1.661,
-        "cumulative_actual_pct": 69.57,
-        "cumulative_predicted_pct": 73.88,
-        "lift": 2.174,
-        "cumulative_lift": 0.87
+        "n": 40643,
+        "exposure": 37879.94,
+        "actual": 0.071727,
+        "predicted": 0.091138,
+        "ae_ratio": 0.787,
+        "cumulative_actual_pct": 71.14,
+        "cumulative_predicted_pct": 60.14,
+        "lift": 0.72,
+        "cumulative_lift": 1.129
       },
       {
         "decile": 9,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 0.1,
-        "predicted": 0.127663,
-        "ae_ratio": 0.783,
-        "cumulative_actual_pct": 80.43,
-        "cumulative_predicted_pct": 85.89,
-        "lift": 1.087,
-        "cumulative_lift": 0.894
+        "n": 40643,
+        "exposure": 39329.22,
+        "actual": 0.074092,
+        "predicted": 0.097519,
+        "ae_ratio": 0.76,
+        "cumulative_actual_pct": 84.75,
+        "cumulative_predicted_pct": 78.13,
+        "lift": 0.744,
+        "cumulative_lift": 1.042
       },
       {
         "decile": 10,
-        "n": 50,
-        "exposure": 50.0,
-        "actual": 0.18,
-        "predicted": 0.149985,
-        "ae_ratio": 1.2,
+        "n": 40652,
+        "exposure": 40140.44,
+        "actual": 0.081315,
+        "predicted": 0.116128,
+        "ae_ratio": 0.7,
         "cumulative_actual_pct": 100.0,
         "cumulative_predicted_pct": 100.0,
-        "lift": 1.957,
+        "lift": 0.816,
         "cumulative_lift": 1.0
       }
     ],
-    "gini": 0.362,
-    "ks_statistic": 22.62,
-    "ks_decile": 4,
+    "gini": 0.088,
+    "ks_statistic": 15.63,
+    "ks_decile": 6,
     "weak_deciles": [
       1,
       2,
       3,
       4,
-      5,
-      6,
-      7,
       8,
       9,
       10
@@ -1527,200 +1241,110 @@
   },
   "partial_dependence": [
     {
-      "variable": "age",
+      "variable": "Density",
       "variable_type": "continuous",
       "grid_values": [
-        18.5901,
-        21.2582,
-        23.9262,
-        26.5943,
-        29.2623,
-        31.9304,
-        34.5985,
-        37.2665,
-        39.9346,
-        42.6026,
-        45.2707,
-        47.9387,
-        50.6068,
-        53.2748,
-        55.9429,
-        58.611,
-        61.279,
-        63.9471,
-        66.6151,
-        69.2832
+        10.0,
+        1430.53,
+        2851.05,
+        4271.58,
+        5692.11,
+        7112.63,
+        8533.16,
+        9953.68,
+        11374.21,
+        12794.74,
+        14215.26,
+        15635.79,
+        17056.32,
+        18476.84,
+        19897.37,
+        21317.89,
+        22738.42,
+        24158.95,
+        25579.47,
+        27000.0
       ],
       "predictions": [
-        572779333633.59,
-        26134945026.99,
-        1192493009.88,
-        54411424.14,
-        2482700.57,
-        113281.4,
-        5168.84,
-        235.85,
-        10.7612,
-        0.491016,
-        0.022404,
-        0.001022,
-        4.7e-05,
-        2e-06,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0
+        0.000737,
+        0.022199,
+        0.668602,
+        20.1373,
+        606.51,
+        18267.09,
+        550178.12,
+        16570561.55,
+        499081112.14,
+        15031594171.88,
+        452729662277.7,
+        13635556199987.77,
+        410683037527549.06,
+        1.2369173273108166e+16,
+        3.7254143336735744e+17,
+        1.1220403862976233e+19,
+        3.379421765528756e+20,
+        1.0178324781172456e+22,
+        3.065562766026039e+23,
+        9.233027314896396e+24
       ],
       "relativities": [
-        25565688285897.23,
-        1166518794751.98,
-        53226264956.86,
-        2428623777.0,
-        110813964.78,
-        5056252.4,
-        230708.18,
-        10526.82,
-        480.32,
-        21.9162,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0011,
+        0.0332,
         1.0,
-        0.0456,
-        0.0021,
-        0.0001,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0
+        30.1185,
+        907.13,
+        27321.32,
+        822878.34,
+        24783893.78,
+        746454683.03,
+        22482124829.12,
+        677128763908.05,
+        20394129398203.72
       ],
-      "shape": "linear_decreasing",
+      "shape": "linear_increasing",
       "recommendation": "Linear effect adequate"
-    },
-    {
-      "variable": "income",
-      "variable_type": "continuous",
-      "grid_values": [
-        21445.96,
-        25523.64,
-        29601.32,
-        33678.99,
-        37756.67,
-        41834.35,
-        45912.03,
-        49989.7,
-        54067.38,
-        58145.06,
-        62222.73,
-        66300.41,
-        70378.09,
-        74455.77,
-        78533.44,
-        82611.12,
-        86688.8,
-        90766.47,
-        94844.15,
-        98921.83
-      ],
-      "predictions": [
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        1.7332592839929144e+176,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0
-      ],
-      "relativities": [
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.0
-      ],
-      "shape": "complex",
-      "recommendation": "Use spline (df=5+) to capture non-linearity"
     }
   ],
   "overdispersion": {
-    "pearson_dispersion": 0.8532,
-    "pearson_chi2": 408.67,
-    "df_resid": 479,
-    "raw_dispersion": 1.0841,
-    "mean_count": 0.092,
-    "var_count": 0.0997,
-    "severity": "none",
-    "recommendation": "Poisson assumption appears reasonable"
+    "pearson_dispersion": 4.4745,
+    "pearson_chi2": 1818558.88,
+    "df_resid": 406429,
+    "raw_dispersion": 1.0471,
+    "mean_count": 0.0527,
+    "var_count": 0.0552,
+    "severity": "moderate",
+    "recommendation": "Consider Negative Binomial or QuasiPoisson"
   },
   "spline_info": {
-    "age": {
-      "type": "bs",
+    "Density": {
+      "type": "ns",
       "df": 10,
-      "degree": 3,
       "knots": [
-        23.7823,
-        32.6101,
-        40.2096,
-        48.3501,
-        55.159,
-        63.316
+        33.0,
+        67.0,
+        122.0,
+        214.0,
+        393.0,
+        716.0,
+        1313.0,
+        2715.0,
+        4128.0
       ],
       "boundary_knots": [
-        18.2632,
-        69.6342
+        1.0,
+        27000.0
       ],
       "is_smooth": true,
       "lambda": 999.1,
-      "edf": 2.0633
-    },
-    "income": {
-      "type": "bs",
-      "df": 10,
-      "degree": 3,
-      "knots": [
-        31181.79,
-        40631.01,
-        51920.22,
-        63417.96,
-        73751.42,
-        87369.51
-      ],
-      "boundary_knots": [
-        20370.56,
-        99977.41
-      ],
-      "is_smooth": true,
-      "lambda": 61.0264,
-      "edf": 2.5542
+      "edf": 0.592617
     }
   },
   "base_predictions_comparison": null

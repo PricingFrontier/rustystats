@@ -737,6 +737,15 @@ def compute_diagnostics(
             for f in fitted_with_sig:
                 f.relative_importance = round(f.significance.dev_contrib / total_dev * 100, 2)
     
+    # Compute dev_pct / expected_dev_pct: normalise by train deviance
+    model_deviance = train_diag.deviance
+    if model_deviance and model_deviance > 0:
+        for f in factors:
+            if f.significance and f.significance.dev_contrib:
+                f.significance.dev_pct = round(f.significance.dev_contrib / model_deviance * 100, 2)
+            if f.score_test and f.score_test.statistic:
+                f.score_test.expected_dev_pct = round(f.score_test.statistic / model_deviance * 100, 2)
+    
     diagnostics = ModelDiagnostics(
         model_summary=model_summary,
         train_test=train_test,

@@ -202,7 +202,11 @@ def bs(
     
     if knots is not None:
         # Use explicit knots
-        return _bs_knots_rust(x, knots, degree, boundary_knots)
+        result = _bs_knots_rust(x, knots, degree, boundary_knots)
+        # Drop first column for identifiability (B-spline partition of unity)
+        if not include_intercept and result.shape[1] > 1:
+            result = result[:, 1:]
+        return result
     else:
         # Compute knots automatically based on df
         return _bs_rust(x, effective_df, degree, boundary_knots, include_intercept)

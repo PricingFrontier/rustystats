@@ -1,13 +1,13 @@
 {
   "model_summary": {
-    "formula": "ClaimCount ~ DrivAge + VehPower",
+    "formula": "ClaimCount ~ ns(Density, df=10)",
     "family": "poisson",
     "link": "log",
     "n_obs": 406439,
-    "n_params": 4,
-    "df_resid": 406435,
-    "converged": true,
-    "iterations": 6
+    "n_params": 10,
+    "df_resid": 406429,
+    "converged": false,
+    "iterations": 25
   },
   "train_test": {
     "train": {
@@ -15,94 +15,94 @@
       "n_obs": 406439,
       "total_exposure": 214930.9,
       "total_actual": 21408.0,
-      "total_predicted": 21259.76,
-      "loss": 0.324012,
-      "deviance": 131691.0,
-      "log_likelihood": -86619.32,
-      "aic": 173246.65,
-      "gini": 0.0948,
-      "auc": 0.5474,
-      "ae_ratio": 1.007,
+      "total_predicted": 21316.63,
+      "loss": 0.324327,
+      "deviance": 131819.27,
+      "log_likelihood": -86683.46,
+      "aic": 173386.92,
+      "gini": 0.0881,
+      "auc": 0.544,
+      "ae_ratio": 1.0043,
       "ae_by_decile": [
         {
           "decile": 1,
           "n": 40643,
-          "exposure": 1590.4,
-          "actual": 0.718059,
-          "predicted": 0.097673,
-          "ae_ratio": 7.3516
+          "exposure": 1602.73,
+          "actual": 0.727509,
+          "predicted": 0.09529,
+          "ae_ratio": 7.6347
         },
         {
           "decile": 2,
           "n": 40643,
-          "exposure": 3518.67,
-          "actual": 0.293008,
-          "predicted": 0.102444,
-          "ae_ratio": 2.8602
+          "exposure": 3522.09,
+          "actual": 0.281367,
+          "predicted": 0.103251,
+          "ae_ratio": 2.7251
         },
         {
           "decile": 3,
           "n": 40643,
-          "exposure": 7190.7,
-          "actual": 0.210411,
-          "predicted": 0.098924,
-          "ae_ratio": 2.127
+          "exposure": 7260.48,
+          "actual": 0.20949,
+          "predicted": 0.096344,
+          "ae_ratio": 2.1744
         },
         {
           "decile": 4,
           "n": 40643,
-          "exposure": 11705.47,
-          "actual": 0.144377,
-          "predicted": 0.100187,
-          "ae_ratio": 1.4411
+          "exposure": 11752.65,
+          "actual": 0.145074,
+          "predicted": 0.098632,
+          "ae_ratio": 1.4709
         },
         {
           "decile": 5,
           "n": 40643,
-          "exposure": 17734.46,
-          "actual": 0.116722,
-          "predicted": 0.098427,
-          "ae_ratio": 1.1859
+          "exposure": 17874.54,
+          "actual": 0.11245,
+          "predicted": 0.096076,
+          "ae_ratio": 1.1704
         },
         {
           "decile": 6,
           "n": 40643,
-          "exposure": 22933.36,
-          "actual": 0.101555,
-          "predicted": 0.100489,
-          "ae_ratio": 1.0106
+          "exposure": 23035.87,
+          "actual": 0.103143,
+          "predicted": 0.099975,
+          "ae_ratio": 1.0317
         },
         {
           "decile": 7,
           "n": 40643,
-          "exposure": 31798.34,
-          "actual": 0.091231,
-          "predicted": 0.094969,
-          "ae_ratio": 0.9606
+          "exposure": 32532.94,
+          "actual": 0.084345,
+          "predicted": 0.091358,
+          "ae_ratio": 0.9232
         },
         {
           "decile": 8,
           "n": 40643,
-          "exposure": 38546.5,
-          "actual": 0.074922,
-          "predicted": 0.091607,
-          "ae_ratio": 0.8179
+          "exposure": 37879.94,
+          "actual": 0.071727,
+          "predicted": 0.091138,
+          "ae_ratio": 0.787
         },
         {
           "decile": 9,
           "n": 40643,
-          "exposure": 39793.85,
-          "actual": 0.071594,
-          "predicted": 0.097032,
-          "ae_ratio": 0.7378
+          "exposure": 39329.22,
+          "actual": 0.074092,
+          "predicted": 0.097519,
+          "ae_ratio": 0.7598
         },
         {
           "decile": 10,
           "n": 40652,
-          "exposure": 40119.15,
-          "actual": 0.074653,
-          "predicted": 0.10961,
-          "ae_ratio": 0.6811
+          "exposure": 40140.44,
+          "actual": 0.081315,
+          "predicted": 0.116128,
+          "ae_ratio": 0.7002
         }
       ],
       "factor_diagnostics": {
@@ -112,189 +112,189 @@
             "n": 96404,
             "exposure": 61624.29,
             "actual": 0.087952,
-            "predicted": 0.092016,
-            "ae_ratio": 0.9558,
-            "residual_mean": -0.193633
+            "predicted": 0.090403,
+            "ae_ratio": 0.9729,
+            "residual_mean": -0.190253
           },
           {
             "level": "Rhone-Alpes",
             "n": 50754,
             "exposure": 27166.77,
             "actual": 0.110724,
-            "predicted": 0.104948,
-            "ae_ratio": 1.055,
-            "residual_mean": -0.174115
+            "predicted": 0.105194,
+            "ae_ratio": 1.0526,
+            "residual_mean": -0.173648
           },
           {
             "level": "Provence-Alpes-Cotes-D'Azur",
             "n": 47362,
             "exposure": 21355.34,
             "actual": 0.108497,
-            "predicted": 0.102898,
-            "ae_ratio": 1.0544,
-            "residual_mean": -0.164502
+            "predicted": 0.105894,
+            "ae_ratio": 1.0246,
+            "residual_mean": -0.167974
           },
           {
             "level": "Ile-de-France",
             "n": 41804,
             "exposure": 18109.61,
             "actual": 0.130152,
-            "predicted": 0.117711,
-            "ae_ratio": 1.1057,
-            "residual_mean": -0.158561
+            "predicted": 0.119017,
+            "ae_ratio": 1.0936,
+            "residual_mean": -0.15977
           },
           {
             "level": "Bretagne",
             "n": 25444,
             "exposure": 16746.97,
             "actual": 0.09554,
-            "predicted": 0.09623,
+            "predicted": 0.096231,
             "ae_ratio": 0.9928,
-            "residual_mean": -0.19366
+            "residual_mean": -0.193267
           },
           {
             "level": "Pays-de-la-Loire",
             "n": 23339,
             "exposure": 13243.3,
             "actual": 0.093632,
-            "predicted": 0.094632,
-            "ae_ratio": 0.9894,
-            "residual_mean": -0.180348
+            "predicted": 0.099043,
+            "ae_ratio": 0.9454,
+            "residual_mean": -0.187673
           },
           {
             "level": "Nord-Pas-de-Calais",
             "n": 24081,
             "exposure": 11774.8,
             "actual": 0.089174,
-            "predicted": 0.094311,
-            "ae_ratio": 0.9455,
-            "residual_mean": -0.175441
+            "predicted": 0.103987,
+            "ae_ratio": 0.8575,
+            "residual_mean": -0.18987
           },
           {
             "level": "Languedoc-Roussillon",
             "n": 21388,
             "exposure": 8781.25,
             "actual": 0.102719,
-            "predicted": 0.100881,
-            "ae_ratio": 1.0182,
-            "residual_mean": -0.161183
+            "predicted": 0.097301,
+            "ae_ratio": 1.0557,
+            "residual_mean": -0.155505
           },
           {
             "level": "Aquitaine",
             "n": 18645,
             "exposure": 8481.56,
             "actual": 0.094558,
-            "predicted": 0.095246,
-            "ae_ratio": 0.9928,
-            "residual_mean": -0.166164
+            "predicted": 0.098663,
+            "ae_ratio": 0.9584,
+            "residual_mean": -0.170871
           },
           {
             "level": "Poitou-Charentes",
             "n": 11400,
             "exposure": 6697.88,
             "actual": 0.086147,
-            "predicted": 0.091498,
-            "ae_ratio": 0.9415,
-            "residual_mean": -0.188187
+            "predicted": 0.093763,
+            "ae_ratio": 0.9188,
+            "residual_mean": -0.19185
           },
           {
             "level": "Midi-Pyrenees",
             "n": 10356,
             "exposure": 4255.99,
             "actual": 0.091166,
-            "predicted": 0.09677,
-            "ae_ratio": 0.9421,
-            "residual_mean": -0.164486
+            "predicted": 0.097847,
+            "ae_ratio": 0.9317,
+            "residual_mean": -0.165614
           },
           {
             "level": "Basse-Normandie",
             "n": 6581,
             "exposure": 3999.39,
             "actual": 0.089014,
-            "predicted": 0.095918,
-            "ae_ratio": 0.928,
-            "residual_mean": -0.196154
+            "predicted": 0.096574,
+            "ae_ratio": 0.9217,
+            "residual_mean": -0.196642
           },
           {
             "level": "Bourgogne",
             "n": 6251,
             "exposure": 2989.63,
             "actual": 0.095664,
-            "predicted": 0.099624,
-            "ae_ratio": 0.9602,
-            "residual_mean": -0.173604
+            "predicted": 0.091028,
+            "ae_ratio": 1.0509,
+            "residual_mean": -0.160062
           },
           {
             "level": "Picardie",
             "n": 4817,
             "exposure": 2139.94,
             "actual": 0.125705,
-            "predicted": 0.113966,
-            "ae_ratio": 1.103,
-            "residual_mean": -0.158011
+            "predicted": 0.099022,
+            "ae_ratio": 1.2695,
+            "residual_mean": -0.135387
           },
           {
             "level": "Haute-Normandie",
             "n": 5279,
             "exposure": 1889.46,
             "actual": 0.089973,
-            "predicted": 0.096404,
-            "ae_ratio": 0.9333,
-            "residual_mean": -0.153394
+            "predicted": 0.098681,
+            "ae_ratio": 0.9118,
+            "residual_mean": -0.157709
           },
           {
             "level": "Auvergne",
             "n": 3184,
             "exposure": 1406.19,
             "actual": 0.088182,
-            "predicted": 0.089727,
-            "ae_ratio": 0.9828,
-            "residual_mean": -0.16486
+            "predicted": 0.093301,
+            "ae_ratio": 0.9451,
+            "residual_mean": -0.170212
           },
           {
             "level": "Limousin",
             "n": 2668,
             "exposure": 1404.74,
             "actual": 0.113188,
-            "predicted": 0.104108,
-            "ae_ratio": 1.0872,
-            "residual_mean": -0.17125
+            "predicted": 0.08747,
+            "ae_ratio": 1.294,
+            "residual_mean": -0.143627
           },
           {
             "level": "Corse",
             "n": 2739,
             "exposure": 1070.76,
             "actual": 0.141021,
-            "predicted": 0.125423,
-            "ae_ratio": 1.1244,
-            "residual_mean": -0.160069
+            "predicted": 0.093526,
+            "ae_ratio": 1.5078,
+            "residual_mean": -0.116533
           },
           {
             "level": "Alsace",
             "n": 1311,
             "exposure": 730.35,
             "actual": 0.119122,
-            "predicted": 0.108355,
-            "ae_ratio": 1.0994,
-            "residual_mean": -0.170997
+            "predicted": 0.106335,
+            "ae_ratio": 1.1202,
+            "residual_mean": -0.166593
           },
           {
             "level": "Champagne-Ardenne",
             "n": 1827,
             "exposure": 722.1,
             "actual": 0.145408,
-            "predicted": 0.119879,
-            "ae_ratio": 1.213,
-            "residual_mean": -0.141481
+            "predicted": 0.093307,
+            "ae_ratio": 1.5584,
+            "residual_mean": -0.10507
           },
           {
             "level": "Franche-Comte",
             "n": 805,
             "exposure": 340.59,
             "actual": 0.117443,
-            "predicted": 0.104347,
-            "ae_ratio": 1.1255,
-            "residual_mean": -0.149674
+            "predicted": 0.093262,
+            "ae_ratio": 1.2593,
+            "residual_mean": -0.132946
           }
         ],
         "Area": [
@@ -303,54 +303,54 @@
             "n": 115158,
             "exposure": 62693.52,
             "actual": 0.094699,
-            "predicted": 0.097536,
-            "ae_ratio": 0.9709,
-            "residual_mean": -0.181803
+            "predicted": 0.093198,
+            "ae_ratio": 1.0161,
+            "residual_mean": -0.173818
           },
           {
             "level": "D",
             "n": 90936,
             "exposure": 46259.62,
             "actual": 0.107675,
-            "predicted": 0.099468,
-            "ae_ratio": 1.0825,
-            "residual_mean": -0.165848
+            "predicted": 0.107989,
+            "ae_ratio": 0.9971,
+            "residual_mean": -0.178874
           },
           {
             "level": "E",
             "n": 82103,
             "exposure": 38213.29,
             "actual": 0.121738,
-            "predicted": 0.104009,
-            "ae_ratio": 1.1704,
-            "residual_mean": -0.152714
+            "predicted": 0.120786,
+            "ae_ratio": 1.0079,
+            "residual_mean": -0.177018
           },
           {
             "level": "A",
             "n": 62417,
             "exposure": 37146.86,
             "actual": 0.078526,
-            "predicted": 0.094762,
-            "ae_ratio": 0.8287,
-            "residual_mean": -0.204838
+            "predicted": 0.079658,
+            "ae_ratio": 0.9858,
+            "residual_mean": -0.175971
           },
           {
             "level": "B",
             "n": 45118,
             "exposure": 25768.6,
             "actual": 0.087471,
-            "predicted": 0.096266,
-            "ae_ratio": 0.9086,
-            "residual_mean": -0.19208
+            "predicted": 0.08704,
+            "ae_ratio": 1.0049,
+            "residual_mean": -0.174971
           },
           {
             "level": "F",
             "n": 10707,
             "exposure": 4849.01,
             "actual": 0.137554,
-            "predicted": 0.117186,
-            "ae_ratio": 1.1738,
-            "residual_mean": -0.153369
+            "predicted": 0.136229,
+            "ae_ratio": 1.0097,
+            "residual_mean": -0.179299
           }
         ],
         "VehBrand": [
@@ -359,99 +359,99 @@
             "n": 97668,
             "exposure": 57234.42,
             "actual": 0.089859,
-            "predicted": 0.097415,
-            "ae_ratio": 0.9224,
-            "residual_mean": -0.19507
+            "predicted": 0.097741,
+            "ae_ratio": 0.9194,
+            "residual_mean": -0.195038
           },
           {
             "level": "B2",
             "n": 95912,
             "exposure": 56844.23,
             "actual": 0.090335,
-            "predicted": 0.096878,
-            "ae_ratio": 0.9325,
-            "residual_mean": -0.194047
+            "predicted": 0.096741,
+            "ae_ratio": 0.9338,
+            "residual_mean": -0.19324
           },
           {
             "level": "B12",
             "n": 99403,
             "exposure": 38883.59,
             "actual": 0.132987,
-            "predicted": 0.102849,
-            "ae_ratio": 1.293,
-            "residual_mean": -0.130475
+            "predicted": 0.103321,
+            "ae_ratio": 1.2871,
+            "residual_mean": -0.130698
           },
           {
             "level": "B3",
             "n": 32061,
             "exposure": 17150.42,
             "actual": 0.101863,
-            "predicted": 0.101405,
-            "ae_ratio": 1.0045,
-            "residual_mean": -0.179704
+            "predicted": 0.100268,
+            "ae_ratio": 1.0159,
+            "residual_mean": -0.17727
           },
           {
             "level": "B5",
             "n": 20895,
             "exposure": 12017.6,
             "actual": 0.100519,
-            "predicted": 0.099094,
-            "ae_ratio": 1.0144,
-            "residual_mean": -0.182558
+            "predicted": 0.09917,
+            "ae_ratio": 1.0136,
+            "residual_mean": -0.182142
           },
           {
             "level": "B6",
             "n": 17027,
             "exposure": 9393.85,
             "actual": 0.091443,
-            "predicted": 0.098357,
-            "ae_ratio": 0.9297,
-            "residual_mean": -0.188798
+            "predicted": 0.100618,
+            "ae_ratio": 0.9088,
+            "residual_mean": -0.191767
           },
           {
             "level": "B4",
             "n": 15088,
             "exposure": 8239.36,
             "actual": 0.090056,
-            "predicted": 0.099713,
-            "ae_ratio": 0.9031,
-            "residual_mean": -0.19134
+            "predicted": 0.100462,
+            "ae_ratio": 0.8964,
+            "residual_mean": -0.191971
           },
           {
             "level": "B10",
             "n": 10638,
             "exposure": 5718.14,
             "actual": 0.08919,
-            "predicted": 0.098516,
-            "ae_ratio": 0.9053,
-            "residual_mean": -0.19148
+            "predicted": 0.099971,
+            "ae_ratio": 0.8922,
+            "residual_mean": -0.19402
           },
           {
             "level": "B11",
             "n": 8061,
             "exposure": 4064.79,
             "actual": 0.102342,
-            "predicted": 0.099379,
-            "ae_ratio": 1.0298,
-            "residual_mean": -0.172934
+            "predicted": 0.101519,
+            "ae_ratio": 1.0081,
+            "residual_mean": -0.175845
           },
           {
             "level": "B13",
             "n": 7275,
             "exposure": 4027.57,
             "actual": 0.093853,
-            "predicted": 0.099861,
-            "ae_ratio": 0.9398,
-            "residual_mean": -0.191112
+            "predicted": 0.099624,
+            "ae_ratio": 0.9421,
+            "residual_mean": -0.190126
           },
           {
             "level": "B14",
             "n": 2411,
             "exposure": 1356.92,
             "actual": 0.072959,
-            "predicted": 0.09811,
-            "ae_ratio": 0.7437,
-            "residual_mean": -0.214692
+            "predicted": 0.100169,
+            "ae_ratio": 0.7284,
+            "residual_mean": -0.217181
           }
         ],
         "VehGas": [
@@ -460,18 +460,18 @@
             "n": 207225,
             "exposure": 112390.29,
             "actual": 0.102073,
-            "predicted": 0.098864,
-            "ae_ratio": 1.0325,
-            "residual_mean": -0.173548
+            "predicted": 0.101158,
+            "ae_ratio": 1.009,
+            "residual_mean": -0.176648
           },
           {
             "level": "Diesel",
             "n": 199214,
             "exposure": 102540.61,
             "actual": 0.096898,
-            "predicted": 0.09897,
-            "ae_ratio": 0.9791,
-            "residual_mean": -0.179135
+            "predicted": 0.09701,
+            "ae_ratio": 0.9989,
+            "residual_mean": -0.175731
           }
         ]
       },
@@ -485,10 +485,10 @@
             "n": 68989,
             "exposure": 35931.94,
             "actual": 0.091952,
-            "predicted": 0.095034,
-            "ae_ratio": 0.9676,
-            "partial_dep": 0.049497,
-            "residual_mean": -0.177813
+            "predicted": 0.100255,
+            "ae_ratio": 0.9172,
+            "partial_dep": 0.052216,
+            "residual_mean": -0.185693
           },
           {
             "band": 2,
@@ -498,10 +498,10 @@
             "n": 75071,
             "exposure": 40959.99,
             "actual": 0.103564,
-            "predicted": 0.101963,
-            "ae_ratio": 1.0157,
-            "partial_dep": 0.055633,
-            "residual_mean": -0.177499
+            "predicted": 0.099492,
+            "ae_ratio": 1.0409,
+            "partial_dep": 0.054285,
+            "residual_mean": -0.172506
           },
           {
             "band": 3,
@@ -511,10 +511,10 @@
             "n": 89117,
             "exposure": 49438.09,
             "actual": 0.101582,
-            "predicted": 0.099276,
-            "ae_ratio": 1.0232,
-            "partial_dep": 0.055074,
-            "residual_mean": -0.178005
+            "predicted": 0.097755,
+            "ae_ratio": 1.0391,
+            "partial_dep": 0.05423,
+            "residual_mean": -0.17486
           },
           {
             "band": 4,
@@ -524,10 +524,10 @@
             "n": 87004,
             "exposure": 46661.67,
             "actual": 0.097339,
-            "predicted": 0.096895,
-            "ae_ratio": 1.0046,
-            "partial_dep": 0.051966,
-            "residual_mean": -0.177004
+            "predicted": 0.098797,
+            "ae_ratio": 0.9852,
+            "partial_dep": 0.052986,
+            "residual_mean": -0.179716
           },
           {
             "band": 5,
@@ -537,10 +537,10 @@
             "n": 28230,
             "exposure": 13672.92,
             "actual": 0.084912,
-            "predicted": 0.090966,
-            "ae_ratio": 0.9335,
-            "partial_dep": 0.044058,
-            "residual_mean": -0.176195
+            "predicted": 0.099166,
+            "ae_ratio": 0.8563,
+            "partial_dep": 0.04803,
+            "residual_mean": -0.189031
           },
           {
             "band": 6,
@@ -550,10 +550,10 @@
             "n": 58028,
             "exposure": 28266.28,
             "actual": 0.11098,
-            "predicted": 0.105976,
-            "ae_ratio": 1.0472,
-            "partial_dep": 0.051623,
-            "residual_mean": -0.169234
+            "predicted": 0.100485,
+            "ae_ratio": 1.1045,
+            "partial_dep": 0.048947,
+            "residual_mean": -0.160226
           }
         ],
         "VehAge": [
@@ -565,10 +565,10 @@
             "n": 34724,
             "exposure": 10049.44,
             "actual": 0.29932,
-            "predicted": 0.10112,
-            "ae_ratio": 2.96,
-            "partial_dep": 0.029265,
-            "residual_mean": 0.010636
+            "predicted": 0.102882,
+            "ae_ratio": 2.9094,
+            "partial_dep": 0.029775,
+            "residual_mean": 0.009442
           },
           {
             "band": 2,
@@ -578,10 +578,10 @@
             "n": 42680,
             "exposure": 19679.24,
             "actual": 0.08791,
-            "predicted": 0.100525,
-            "ae_ratio": 0.8745,
-            "partial_dep": 0.046351,
-            "residual_mean": -0.186826
+            "predicted": 0.102072,
+            "ae_ratio": 0.8613,
+            "partial_dep": 0.047064,
+            "residual_mean": -0.188753
           },
           {
             "band": 3,
@@ -591,10 +591,10 @@
             "n": 35401,
             "exposure": 17807.23,
             "actual": 0.091873,
-            "predicted": 0.099946,
-            "ae_ratio": 0.9192,
-            "partial_dep": 0.050274,
-            "residual_mean": -0.188538
+            "predicted": 0.101034,
+            "ae_ratio": 0.9093,
+            "partial_dep": 0.050822,
+            "residual_mean": -0.189772
           },
           {
             "band": 4,
@@ -604,10 +604,10 @@
             "n": 30085,
             "exposure": 15579.53,
             "actual": 0.090439,
-            "predicted": 0.099553,
-            "ae_ratio": 0.9085,
-            "partial_dep": 0.051554,
-            "residual_mean": -0.190598
+            "predicted": 0.10029,
+            "ae_ratio": 0.9018,
+            "partial_dep": 0.051935,
+            "residual_mean": -0.19119
           },
           {
             "band": 5,
@@ -617,10 +617,10 @@
             "n": 49076,
             "exposure": 27364.27,
             "actual": 0.094612,
-            "predicted": 0.099303,
-            "ae_ratio": 0.9528,
-            "partial_dep": 0.05537,
-            "residual_mean": -0.189752
+            "predicted": 0.099403,
+            "ae_ratio": 0.9518,
+            "partial_dep": 0.055426,
+            "residual_mean": -0.189348
           },
           {
             "band": 6,
@@ -630,10 +630,10 @@
             "n": 41009,
             "exposure": 23930.87,
             "actual": 0.103715,
-            "predicted": 0.098869,
-            "ae_ratio": 1.049,
-            "partial_dep": 0.057695,
-            "residual_mean": -0.180644
+            "predicted": 0.09859,
+            "ae_ratio": 1.052,
+            "partial_dep": 0.057532,
+            "residual_mean": -0.179523
           },
           {
             "band": 7,
@@ -643,10 +643,10 @@
             "n": 38964,
             "exposure": 22975.65,
             "actual": 0.096972,
-            "predicted": 0.098803,
-            "ae_ratio": 0.9815,
-            "partial_dep": 0.058261,
-            "residual_mean": -0.18841
+            "predicted": 0.098384,
+            "ae_ratio": 0.9856,
+            "partial_dep": 0.058014,
+            "residual_mean": -0.186995
           },
           {
             "band": 8,
@@ -656,10 +656,10 @@
             "n": 40550,
             "exposure": 23007.97,
             "actual": 0.096445,
-            "predicted": 0.098913,
-            "ae_ratio": 0.975,
-            "partial_dep": 0.056123,
-            "residual_mean": -0.186303
+            "predicted": 0.09837,
+            "ae_ratio": 0.9804,
+            "partial_dep": 0.055815,
+            "residual_mean": -0.184751
           },
           {
             "band": 9,
@@ -669,10 +669,10 @@
             "n": 48526,
             "exposure": 28503.08,
             "actual": 0.083815,
-            "predicted": 0.097704,
-            "ae_ratio": 0.8579,
-            "partial_dep": 0.057389,
-            "residual_mean": -0.20453
+            "predicted": 0.097746,
+            "ae_ratio": 0.8575,
+            "partial_dep": 0.057414,
+            "residual_mean": -0.204131
           },
           {
             "band": 10,
@@ -682,10 +682,10 @@
             "n": 45424,
             "exposure": 26033.61,
             "actual": 0.065992,
-            "predicted": 0.096816,
-            "ae_ratio": 0.6816,
-            "partial_dep": 0.055488,
-            "residual_mean": -0.222254
+            "predicted": 0.096919,
+            "ae_ratio": 0.6809,
+            "partial_dep": 0.055547,
+            "residual_mean": -0.221866
           }
         ],
         "DrivAge": [
@@ -697,10 +697,10 @@
             "n": 36680,
             "exposure": 15575.17,
             "actual": 0.151716,
-            "predicted": 0.109278,
-            "ae_ratio": 1.3884,
-            "partial_dep": 0.046402,
-            "residual_mean": -0.127663
+            "predicted": 0.100319,
+            "ae_ratio": 1.5123,
+            "partial_dep": 0.042598,
+            "residual_mean": -0.11425
           },
           {
             "band": 2,
@@ -710,10 +710,10 @@
             "n": 35675,
             "exposure": 16254.71,
             "actual": 0.096095,
-            "predicted": 0.10761,
-            "ae_ratio": 0.893,
-            "partial_dep": 0.049031,
-            "residual_mean": -0.183511
+            "predicted": 0.10039,
+            "ae_ratio": 0.9572,
+            "partial_dep": 0.045741,
+            "residual_mean": -0.172864
           },
           {
             "band": 3,
@@ -723,10 +723,10 @@
             "n": 40504,
             "exposure": 19536.38,
             "actual": 0.08799,
-            "predicted": 0.105432,
-            "ae_ratio": 0.8346,
-            "partial_dep": 0.050853,
-            "residual_mean": -0.191869
+            "predicted": 0.099596,
+            "ae_ratio": 0.8835,
+            "partial_dep": 0.048038,
+            "residual_mean": -0.182903
           },
           {
             "band": 4,
@@ -736,10 +736,10 @@
             "n": 41500,
             "exposure": 20940.44,
             "actual": 0.087868,
-            "predicted": 0.103504,
-            "ae_ratio": 0.8489,
-            "partial_dep": 0.052227,
-            "residual_mean": -0.193146
+            "predicted": 0.099603,
+            "ae_ratio": 0.8822,
+            "partial_dep": 0.050258,
+            "residual_mean": -0.186876
           },
           {
             "band": 5,
@@ -749,10 +749,10 @@
             "n": 40523,
             "exposure": 21032.82,
             "actual": 0.095898,
-            "predicted": 0.10159,
-            "ae_ratio": 0.944,
-            "partial_dep": 0.052729,
-            "residual_mean": -0.183441
+            "predicted": 0.099418,
+            "ae_ratio": 0.9646,
+            "partial_dep": 0.051601,
+            "residual_mean": -0.179716
           },
           {
             "band": 6,
@@ -762,10 +762,10 @@
             "n": 39478,
             "exposure": 20969.72,
             "actual": 0.103483,
-            "predicted": 0.099659,
-            "ae_ratio": 1.0384,
-            "partial_dep": 0.052936,
-            "residual_mean": -0.173274
+            "predicted": 0.099047,
+            "ae_ratio": 1.0448,
+            "partial_dep": 0.052611,
+            "residual_mean": -0.17211
           },
           {
             "band": 7,
@@ -775,10 +775,10 @@
             "n": 49851,
             "exposure": 27605.19,
             "actual": 0.105161,
-            "predicted": 0.097354,
-            "ae_ratio": 1.0802,
-            "partial_dep": 0.05391,
-            "residual_mean": -0.169418
+            "predicted": 0.09888,
+            "ae_ratio": 1.0635,
+            "partial_dep": 0.054755,
+            "residual_mean": -0.171634
           },
           {
             "band": 8,
@@ -788,10 +788,10 @@
             "n": 35703,
             "exposure": 19998.78,
             "actual": 0.096806,
-            "predicted": 0.095492,
-            "ae_ratio": 1.0138,
-            "partial_dep": 0.053489,
-            "residual_mean": -0.178322
+            "predicted": 0.099028,
+            "ae_ratio": 0.9776,
+            "partial_dep": 0.05547,
+            "residual_mean": -0.184083
           },
           {
             "band": 9,
@@ -801,10 +801,10 @@
             "n": 42653,
             "exposure": 24157.29,
             "actual": 0.092312,
-            "predicted": 0.093179,
-            "ae_ratio": 0.9907,
-            "partial_dep": 0.052773,
-            "residual_mean": -0.180396
+            "predicted": 0.098986,
+            "ae_ratio": 0.9326,
+            "partial_dep": 0.056063,
+            "residual_mean": -0.190206
           },
           {
             "band": 10,
@@ -814,10 +814,10 @@
             "n": 43872,
             "exposure": 28860.39,
             "actual": 0.092445,
-            "predicted": 0.086857,
-            "ae_ratio": 1.0643,
-            "partial_dep": 0.057137,
-            "residual_mean": -0.178986
+            "predicted": 0.097766,
+            "ae_ratio": 0.9456,
+            "partial_dep": 0.064314,
+            "residual_mean": -0.199996
           }
         ],
         "BonusMalus": [
@@ -829,10 +829,10 @@
             "n": 242659,
             "exposure": 141710.21,
             "actual": 0.07914,
-            "predicted": 0.096144,
-            "ae_ratio": 0.8231,
-            "partial_dep": 0.056147,
-            "residual_mean": -0.203964
+            "predicted": 0.097697,
+            "ae_ratio": 0.8101,
+            "partial_dep": 0.057054,
+            "residual_mean": -0.206291
           },
           {
             "band": 2,
@@ -842,10 +842,10 @@
             "n": 33885,
             "exposure": 17228.35,
             "actual": 0.099835,
-            "predicted": 0.101836,
-            "ae_ratio": 0.9804,
-            "partial_dep": 0.051777,
-            "residual_mean": -0.178644
+            "predicted": 0.100508,
+            "ae_ratio": 0.9933,
+            "partial_dep": 0.051102,
+            "residual_mean": -0.17625
           },
           {
             "band": 3,
@@ -855,10 +855,10 @@
             "n": 45909,
             "exposure": 21369.57,
             "actual": 0.128922,
-            "predicted": 0.103459,
-            "ae_ratio": 1.2461,
-            "partial_dep": 0.048158,
-            "residual_mean": -0.146399
+            "predicted": 0.101396,
+            "ae_ratio": 1.2715,
+            "partial_dep": 0.047197,
+            "residual_mean": -0.143216
           },
           {
             "band": 4,
@@ -868,10 +868,10 @@
             "n": 36482,
             "exposure": 15658.45,
             "actual": 0.128748,
-            "predicted": 0.105155,
-            "ae_ratio": 1.2244,
-            "partial_dep": 0.045133,
-            "residual_mean": -0.14516
+            "predicted": 0.102616,
+            "ae_ratio": 1.2547,
+            "partial_dep": 0.044044,
+            "residual_mean": -0.141113
           },
           {
             "band": 5,
@@ -881,10 +881,10 @@
             "n": 47504,
             "exposure": 18964.33,
             "actual": 0.195209,
-            "predicted": 0.106687,
-            "ae_ratio": 1.8297,
-            "partial_dep": 0.042591,
-            "residual_mean": -0.086014
+            "predicted": 0.103714,
+            "ae_ratio": 1.8822,
+            "partial_dep": 0.041404,
+            "residual_mean": -0.081265
           }
         ]
       }
@@ -894,94 +894,94 @@
       "n_obs": 135616,
       "total_exposure": 71711.83,
       "total_actual": 7001.0,
-      "total_predicted": 7091.75,
-      "loss": 0.318674,
-      "deviance": 43217.28,
-      "log_likelihood": -28418.75,
-      "aic": 56845.49,
-      "gini": 0.0911,
-      "auc": 0.5455,
-      "ae_ratio": 0.9872,
+      "total_predicted": 7112.29,
+      "loss": 0.3189,
+      "deviance": 43248.0,
+      "log_likelihood": -28434.11,
+      "aic": 56888.22,
+      "gini": 0.0836,
+      "auc": 0.5418,
+      "ae_ratio": 0.9844,
       "ae_by_decile": [
         {
           "decile": 1,
           "n": 13561,
-          "exposure": 523.43,
-          "actual": 0.699233,
-          "predicted": 0.097798,
-          "ae_ratio": 7.1497
+          "exposure": 527.68,
+          "actual": 0.684126,
+          "predicted": 0.095319,
+          "ae_ratio": 7.1772
         },
         {
           "decile": 2,
           "n": 13561,
-          "exposure": 1164.26,
-          "actual": 0.261969,
-          "predicted": 0.102194,
-          "ae_ratio": 2.5635
+          "exposure": 1163.88,
+          "actual": 0.252603,
+          "predicted": 0.103196,
+          "ae_ratio": 2.4478
         },
         {
           "decile": 3,
           "n": 13561,
-          "exposure": 2384.29,
-          "actual": 0.20719,
-          "predicted": 0.098944,
-          "ae_ratio": 2.094
+          "exposure": 2404.36,
+          "actual": 0.21461,
+          "predicted": 0.096409,
+          "ae_ratio": 2.226
         },
         {
           "decile": 4,
           "n": 13561,
-          "exposure": 3891.48,
-          "actual": 0.152641,
-          "predicted": 0.100261,
-          "ae_ratio": 1.5224
+          "exposure": 3914.09,
+          "actual": 0.152526,
+          "predicted": 0.098671,
+          "ae_ratio": 1.5458
         },
         {
           "decile": 5,
           "n": 13561,
-          "exposure": 5902.04,
-          "actual": 0.118095,
-          "predicted": 0.098634,
-          "ae_ratio": 1.1973
+          "exposure": 5958.34,
+          "actual": 0.11614,
+          "predicted": 0.096325,
+          "ae_ratio": 1.2057
         },
         {
           "decile": 6,
           "n": 13561,
-          "exposure": 7662.74,
-          "actual": 0.100095,
-          "predicted": 0.100437,
-          "ae_ratio": 0.9966
+          "exposure": 7690.47,
+          "actual": 0.097263,
+          "predicted": 0.100086,
+          "ae_ratio": 0.9718
         },
         {
           "decile": 7,
           "n": 13561,
-          "exposure": 10625.86,
-          "actual": 0.086393,
-          "predicted": 0.094974,
-          "ae_ratio": 0.9096
+          "exposure": 10883.8,
+          "actual": 0.08113,
+          "predicted": 0.091148,
+          "ae_ratio": 0.8901
         },
         {
           "decile": 8,
           "n": 13561,
-          "exposure": 12873.19,
-          "actual": 0.074108,
-          "predicted": 0.09161,
-          "ae_ratio": 0.8089
+          "exposure": 12640.35,
+          "actual": 0.071833,
+          "predicted": 0.091221,
+          "ae_ratio": 0.7875
         },
         {
           "decile": 9,
           "n": 13561,
-          "exposure": 13287.46,
-          "actual": 0.068335,
-          "predicted": 0.096973,
-          "ae_ratio": 0.7047
+          "exposure": 13129.44,
+          "actual": 0.071214,
+          "predicted": 0.097496,
+          "ae_ratio": 0.7304
         },
         {
           "decile": 10,
           "n": 13567,
-          "exposure": 13397.08,
-          "actual": 0.074494,
-          "predicted": 0.109481,
-          "ae_ratio": 0.6804
+          "exposure": 13399.42,
+          "actual": 0.07963,
+          "predicted": 0.116054,
+          "ae_ratio": 0.6861
         }
       ],
       "factor_diagnostics": {
@@ -991,189 +991,189 @@
             "n": 32155,
             "exposure": 20552.35,
             "actual": 0.089479,
-            "predicted": 0.092046,
-            "ae_ratio": 0.9721,
-            "residual_mean": -0.191151
+            "predicted": 0.090378,
+            "ae_ratio": 0.9901,
+            "residual_mean": -0.187612
           },
           {
             "level": "Rhone-Alpes",
             "n": 16989,
             "exposure": 9131.12,
             "actual": 0.111377,
-            "predicted": 0.104862,
-            "ae_ratio": 1.0621,
-            "residual_mean": -0.172576
+            "predicted": 0.105109,
+            "ae_ratio": 1.0596,
+            "residual_mean": -0.171966
           },
           {
             "level": "Provence-Alpes-Cotes-D'Azur",
             "n": 15754,
             "exposure": 7108.97,
             "actual": 0.104375,
-            "predicted": 0.10286,
-            "ae_ratio": 1.0147,
-            "residual_mean": -0.168034
+            "predicted": 0.10582,
+            "ae_ratio": 0.9863,
+            "residual_mean": -0.171562
           },
           {
             "level": "Ile-de-France",
             "n": 14085,
             "exposure": 6100.8,
             "actual": 0.125393,
-            "predicted": 0.117406,
-            "ae_ratio": 1.068,
-            "residual_mean": -0.163152
+            "predicted": 0.118943,
+            "ae_ratio": 1.0542,
+            "residual_mean": -0.164821
           },
           {
             "level": "Bretagne",
             "n": 8325,
             "exposure": 5487.79,
             "actual": 0.094756,
-            "predicted": 0.096183,
-            "ae_ratio": 0.9852,
-            "residual_mean": -0.195693
+            "predicted": 0.096253,
+            "ae_ratio": 0.9844,
+            "residual_mean": -0.195362
           },
           {
             "level": "Pays-de-la-Loire",
             "n": 7654,
             "exposure": 4329.82,
             "actual": 0.083144,
-            "predicted": 0.0944,
-            "ae_ratio": 0.8808,
-            "residual_mean": -0.193996
+            "predicted": 0.099192,
+            "ae_ratio": 0.8382,
+            "residual_mean": -0.20165
           },
           {
             "level": "Nord-Pas-de-Calais",
             "n": 8042,
             "exposure": 3867.21,
             "actual": 0.09128,
-            "predicted": 0.094353,
-            "ae_ratio": 0.9674,
-            "residual_mean": -0.170486
+            "predicted": 0.103959,
+            "ae_ratio": 0.878,
+            "residual_mean": -0.184929
           },
           {
             "level": "Languedoc-Roussillon",
             "n": 7166,
             "exposure": 2972.57,
             "actual": 0.094531,
-            "predicted": 0.101015,
-            "ae_ratio": 0.9358,
-            "residual_mean": -0.170999
+            "predicted": 0.097254,
+            "ae_ratio": 0.972,
+            "residual_mean": -0.165252
           },
           {
             "level": "Aquitaine",
             "n": 6415,
             "exposure": 2953.12,
             "actual": 0.094476,
-            "predicted": 0.095199,
-            "ae_ratio": 0.9924,
-            "residual_mean": -0.168115
+            "predicted": 0.098975,
+            "ae_ratio": 0.9546,
+            "residual_mean": -0.173579
           },
           {
             "level": "Poitou-Charentes",
             "n": 3803,
             "exposure": 2197.22,
             "actual": 0.081467,
-            "predicted": 0.091581,
-            "ae_ratio": 0.8896,
-            "residual_mean": -0.191243
+            "predicted": 0.093842,
+            "ae_ratio": 0.8681,
+            "residual_mean": -0.194484
           },
           {
             "level": "Midi-Pyrenees",
             "n": 3368,
             "exposure": 1382.26,
             "actual": 0.101284,
-            "predicted": 0.096801,
-            "ae_ratio": 1.0463,
-            "residual_mean": -0.155056
+            "predicted": 0.09764,
+            "ae_ratio": 1.0373,
+            "residual_mean": -0.155719
           },
           {
             "level": "Basse-Normandie",
             "n": 2159,
             "exposure": 1345.19,
             "actual": 0.090693,
-            "predicted": 0.095734,
-            "ae_ratio": 0.9474,
-            "residual_mean": -0.193289
+            "predicted": 0.096233,
+            "ae_ratio": 0.9424,
+            "residual_mean": -0.193052
           },
           {
             "level": "Bourgogne",
             "n": 2128,
             "exposure": 1025.13,
             "actual": 0.100475,
-            "predicted": 0.099769,
-            "ae_ratio": 1.0071,
-            "residual_mean": -0.169077
+            "predicted": 0.090877,
+            "ae_ratio": 1.1056,
+            "residual_mean": -0.154897
           },
           {
             "level": "Picardie",
             "n": 1626,
             "exposure": 732.95,
             "actual": 0.085954,
-            "predicted": 0.11372,
-            "ae_ratio": 0.7558,
-            "residual_mean": -0.199086
+            "predicted": 0.0986,
+            "ae_ratio": 0.8717,
+            "residual_mean": -0.176602
           },
           {
             "level": "Haute-Normandie",
             "n": 1724,
             "exposure": 630.09,
             "actual": 0.085702,
-            "predicted": 0.096417,
-            "ae_ratio": 0.8889,
-            "residual_mean": -0.159807
+            "predicted": 0.098628,
+            "ae_ratio": 0.8689,
+            "residual_mean": -0.163738
           },
           {
             "level": "Limousin",
             "n": 999,
             "exposure": 518.25,
             "actual": 0.082971,
-            "predicted": 0.103739,
-            "ae_ratio": 0.7998,
-            "residual_mean": -0.199794
+            "predicted": 0.087142,
+            "ae_ratio": 0.9521,
+            "residual_mean": -0.172738
           },
           {
             "level": "Auvergne",
             "n": 1049,
             "exposure": 458.31,
             "actual": 0.061093,
-            "predicted": 0.090236,
-            "ae_ratio": 0.677,
-            "residual_mean": -0.192045
+            "predicted": 0.094212,
+            "ae_ratio": 0.6485,
+            "residual_mean": -0.197809
           },
           {
             "level": "Corse",
             "n": 881,
             "exposure": 338.34,
             "actual": 0.156649,
-            "predicted": 0.12574,
-            "ae_ratio": 1.2458,
-            "residual_mean": -0.144348
+            "predicted": 0.094443,
+            "ae_ratio": 1.6587,
+            "residual_mean": -0.101958
           },
           {
             "level": "Champagne-Ardenne",
             "n": 587,
             "exposure": 233.26,
             "actual": 0.128614,
-            "predicted": 0.117612,
-            "ae_ratio": 1.0935,
-            "residual_mean": -0.154799
+            "predicted": 0.094476,
+            "ae_ratio": 1.3613,
+            "residual_mean": -0.123376
           },
           {
             "level": "Alsace",
             "n": 418,
             "exposure": 221.68,
             "actual": 0.099242,
-            "predicted": 0.107375,
-            "ae_ratio": 0.9243,
-            "residual_mean": -0.184979
+            "predicted": 0.107988,
+            "ae_ratio": 0.919,
+            "residual_mean": -0.187513
           },
           {
             "level": "Franche-Comte",
             "n": 289,
             "exposure": 125.42,
             "actual": 0.063786,
-            "predicted": 0.104021,
-            "ae_ratio": 0.6132,
-            "residual_mean": -0.20097
+            "predicted": 0.092311,
+            "ae_ratio": 0.691,
+            "residual_mean": -0.185664
           }
         ],
         "Area": [
@@ -1182,54 +1182,54 @@
             "n": 38749,
             "exposure": 21095.66,
             "actual": 0.089165,
-            "predicted": 0.097616,
-            "ae_ratio": 0.9134,
-            "residual_mean": -0.188372
+            "predicted": 0.093223,
+            "ae_ratio": 0.9565,
+            "residual_mean": -0.180343
           },
           {
             "level": "D",
             "n": 30087,
             "exposure": 15330.56,
             "actual": 0.10665,
-            "predicted": 0.099406,
-            "ae_ratio": 1.0729,
-            "residual_mean": -0.165501
+            "predicted": 0.108036,
+            "ae_ratio": 0.9872,
+            "residual_mean": -0.178643
           },
           {
             "level": "E",
             "n": 27433,
             "exposure": 12718.74,
             "actual": 0.118565,
-            "predicted": 0.103806,
-            "ae_ratio": 1.1422,
-            "residual_mean": -0.156314
+            "predicted": 0.120752,
+            "ae_ratio": 0.9819,
+            "residual_mean": -0.180847
           },
           {
             "level": "A",
             "n": 20639,
             "exposure": 12358.26,
             "actual": 0.082212,
-            "predicted": 0.094793,
-            "ae_ratio": 0.8673,
-            "residual_mean": -0.200896
+            "predicted": 0.07967,
+            "ae_ratio": 1.0319,
+            "residual_mean": -0.171778
           },
           {
             "level": "B",
             "n": 15121,
             "exposure": 8569.86,
             "actual": 0.086232,
-            "predicted": 0.09631,
-            "ae_ratio": 0.8954,
-            "residual_mean": -0.193218
+            "predicted": 0.087023,
+            "ae_ratio": 0.9909,
+            "residual_mean": -0.176206
           },
           {
             "level": "F",
             "n": 3587,
             "exposure": 1638.76,
             "actual": 0.135468,
-            "predicted": 0.1168,
-            "ae_ratio": 1.1598,
-            "residual_mean": -0.155566
+            "predicted": 0.136251,
+            "ae_ratio": 0.9943,
+            "residual_mean": -0.182231
           }
         ],
         "VehBrand": [
@@ -1238,99 +1238,99 @@
             "n": 32619,
             "exposure": 19132.28,
             "actual": 0.088176,
-            "predicted": 0.097332,
-            "ae_ratio": 0.9059,
-            "residual_mean": -0.197304
+            "predicted": 0.097625,
+            "ae_ratio": 0.9032,
+            "residual_mean": -0.197202
           },
           {
             "level": "B2",
             "n": 31790,
             "exposure": 18940.45,
             "actual": 0.087696,
-            "predicted": 0.09687,
-            "ae_ratio": 0.9053,
-            "residual_mean": -0.198025
+            "predicted": 0.096769,
+            "ae_ratio": 0.9062,
+            "residual_mean": -0.197261
           },
           {
             "level": "B12",
             "n": 33113,
             "exposure": 12842.98,
             "actual": 0.129954,
-            "predicted": 0.102722,
-            "ae_ratio": 1.2651,
-            "residual_mean": -0.132834
+            "predicted": 0.103596,
+            "ae_ratio": 1.2544,
+            "residual_mean": -0.133505
           },
           {
             "level": "B3",
             "n": 10573,
             "exposure": 5655.75,
             "actual": 0.091411,
-            "predicted": 0.101436,
-            "ae_ratio": 0.9012,
-            "residual_mean": -0.192095
+            "predicted": 0.100184,
+            "ae_ratio": 0.9124,
+            "residual_mean": -0.189489
           },
           {
             "level": "B5",
             "n": 6989,
             "exposure": 4032.29,
             "actual": 0.104407,
-            "predicted": 0.099165,
-            "ae_ratio": 1.0529,
-            "residual_mean": -0.176659
+            "predicted": 0.099253,
+            "ae_ratio": 1.0519,
+            "residual_mean": -0.176364
           },
           {
             "level": "B6",
             "n": 5797,
             "exposure": 3145.38,
             "actual": 0.091881,
-            "predicted": 0.09858,
-            "ae_ratio": 0.932,
-            "residual_mean": -0.186247
+            "predicted": 0.100522,
+            "ae_ratio": 0.914,
+            "residual_mean": -0.188784
           },
           {
             "level": "B4",
             "n": 5066,
             "exposure": 2768.71,
             "actual": 0.102214,
-            "predicted": 0.100061,
-            "ae_ratio": 1.0215,
-            "residual_mean": -0.176361
+            "predicted": 0.100175,
+            "ae_ratio": 1.0204,
+            "residual_mean": -0.176247
           },
           {
             "level": "B10",
             "n": 3611,
             "exposure": 1915.35,
             "actual": 0.08458,
-            "predicted": 0.097981,
-            "ae_ratio": 0.8632,
-            "residual_mean": -0.19563
+            "predicted": 0.09995,
+            "ae_ratio": 0.8462,
+            "residual_mean": -0.198856
           },
           {
             "level": "B11",
             "n": 2745,
             "exposure": 1416.33,
             "actual": 0.105908,
-            "predicted": 0.100165,
-            "ae_ratio": 1.0573,
-            "residual_mean": -0.17126
+            "predicted": 0.101077,
+            "ae_ratio": 1.0478,
+            "residual_mean": -0.172146
           },
           {
             "level": "B13",
             "n": 2462,
             "exposure": 1393.1,
             "actual": 0.096906,
-            "predicted": 0.09961,
-            "ae_ratio": 0.9729,
-            "residual_mean": -0.183373
+            "predicted": 0.099772,
+            "ae_ratio": 0.9713,
+            "residual_mean": -0.182979
           },
           {
             "level": "B14",
             "n": 851,
             "exposure": 469.21,
             "actual": 0.057543,
-            "predicted": 0.099277,
-            "ae_ratio": 0.5796,
-            "residual_mean": -0.230746
+            "predicted": 0.100621,
+            "ae_ratio": 0.5719,
+            "residual_mean": -0.233712
           }
         ],
         "VehGas": [
@@ -1339,18 +1339,18 @@
             "n": 69435,
             "exposure": 37810.2,
             "actual": 0.10201,
-            "predicted": 0.098872,
-            "ae_ratio": 1.0317,
-            "residual_mean": -0.173728
+            "predicted": 0.101203,
+            "ae_ratio": 1.008,
+            "residual_mean": -0.176921
           },
           {
             "level": "Diesel",
             "n": 66181,
             "exposure": 33901.63,
             "actual": 0.092739,
-            "predicted": 0.098915,
-            "ae_ratio": 0.9376,
-            "residual_mean": -0.183285
+            "predicted": 0.096922,
+            "ae_ratio": 0.9568,
+            "residual_mean": -0.179856
           }
         ]
       },
@@ -1364,10 +1364,10 @@
             "n": 23015,
             "exposure": 11958.05,
             "actual": 0.092825,
-            "predicted": 0.094921,
-            "ae_ratio": 0.9779,
-            "partial_dep": 0.049319,
-            "residual_mean": -0.176361
+            "predicted": 0.100217,
+            "ae_ratio": 0.9262,
+            "partial_dep": 0.05207,
+            "residual_mean": -0.184466
           },
           {
             "band": 2,
@@ -1377,10 +1377,10 @@
             "n": 24771,
             "exposure": 13531.89,
             "actual": 0.106046,
-            "predicted": 0.101937,
-            "ae_ratio": 1.0403,
-            "partial_dep": 0.055686,
-            "residual_mean": -0.174369
+            "predicted": 0.099355,
+            "ae_ratio": 1.0673,
+            "partial_dep": 0.054276,
+            "residual_mean": -0.169229
           },
           {
             "band": 3,
@@ -1390,10 +1390,10 @@
             "n": 29977,
             "exposure": 16576.21,
             "actual": 0.097127,
-            "predicted": 0.099324,
-            "ae_ratio": 0.9779,
-            "partial_dep": 0.054923,
-            "residual_mean": -0.183203
+            "predicted": 0.097784,
+            "ae_ratio": 0.9933,
+            "partial_dep": 0.054071,
+            "residual_mean": -0.180025
           },
           {
             "band": 4,
@@ -1403,10 +1403,10 @@
             "n": 29100,
             "exposure": 15600.63,
             "actual": 0.095317,
-            "predicted": 0.097002,
-            "ae_ratio": 0.9826,
-            "partial_dep": 0.052003,
-            "residual_mean": -0.178773
+            "predicted": 0.098843,
+            "ae_ratio": 0.9643,
+            "partial_dep": 0.05299,
+            "residual_mean": -0.181373
           },
           {
             "band": 5,
@@ -1416,10 +1416,10 @@
             "n": 9441,
             "exposure": 4556.81,
             "actual": 0.082733,
-            "predicted": 0.090998,
-            "ae_ratio": 0.9092,
-            "partial_dep": 0.043921,
-            "residual_mean": -0.178343
+            "predicted": 0.099423,
+            "ae_ratio": 0.8321,
+            "partial_dep": 0.047988,
+            "residual_mean": -0.191476
           },
           {
             "band": 6,
@@ -1429,10 +1429,10 @@
             "n": 19312,
             "exposure": 9488.25,
             "actual": 0.103496,
-            "predicted": 0.1057,
-            "ae_ratio": 0.9792,
-            "partial_dep": 0.051932,
-            "residual_mean": -0.177952
+            "predicted": 0.100489,
+            "ae_ratio": 1.0299,
+            "partial_dep": 0.049372,
+            "residual_mean": -0.169209
           }
         ],
         "VehAge": [
@@ -1444,10 +1444,10 @@
             "n": 11550,
             "exposure": 3335.96,
             "actual": 0.282078,
-            "predicted": 0.101237,
-            "ae_ratio": 2.7863,
-            "partial_dep": 0.02924,
-            "residual_mean": -0.001762
+            "predicted": 0.102636,
+            "ae_ratio": 2.7483,
+            "partial_dep": 0.029644,
+            "residual_mean": -0.002546
           },
           {
             "band": 2,
@@ -1457,10 +1457,10 @@
             "n": 14345,
             "exposure": 6534.94,
             "actual": 0.088142,
-            "predicted": 0.100516,
-            "ae_ratio": 0.8769,
-            "partial_dep": 0.045791,
-            "residual_mean": -0.184999
+            "predicted": 0.102018,
+            "ae_ratio": 0.864,
+            "partial_dep": 0.046475,
+            "residual_mean": -0.18704
           },
           {
             "band": 3,
@@ -1470,10 +1470,10 @@
             "n": 11780,
             "exposure": 5905.71,
             "actual": 0.0933,
-            "predicted": 0.099667,
-            "ae_ratio": 0.9361,
-            "partial_dep": 0.049966,
-            "residual_mean": -0.186172
+            "predicted": 0.100887,
+            "ae_ratio": 0.9248,
+            "partial_dep": 0.050578,
+            "residual_mean": -0.18755
           },
           {
             "band": 4,
@@ -1483,10 +1483,10 @@
             "n": 10062,
             "exposure": 5258.89,
             "actual": 0.080435,
-            "predicted": 0.09954,
-            "ae_ratio": 0.8081,
-            "partial_dep": 0.052025,
-            "residual_mean": -0.202358
+            "predicted": 0.100425,
+            "ae_ratio": 0.801,
+            "partial_dep": 0.052487,
+            "residual_mean": -0.203164
           },
           {
             "band": 5,
@@ -1496,10 +1496,10 @@
             "n": 16526,
             "exposure": 9279.62,
             "actual": 0.094831,
-            "predicted": 0.099122,
-            "ae_ratio": 0.9567,
-            "partial_dep": 0.055659,
-            "residual_mean": -0.190341
+            "predicted": 0.099459,
+            "ae_ratio": 0.9535,
+            "partial_dep": 0.055848,
+            "residual_mean": -0.190244
           },
           {
             "band": 6,
@@ -1509,10 +1509,10 @@
             "n": 13818,
             "exposure": 8113.16,
             "actual": 0.097373,
-            "predicted": 0.098802,
-            "ae_ratio": 0.9855,
-            "partial_dep": 0.058011,
-            "residual_mean": -0.189121
+            "predicted": 0.098705,
+            "ae_ratio": 0.9865,
+            "partial_dep": 0.057954,
+            "residual_mean": -0.188433
           },
           {
             "band": 7,
@@ -1522,10 +1522,10 @@
             "n": 12717,
             "exposure": 7462.77,
             "actual": 0.094335,
-            "predicted": 0.098848,
-            "ae_ratio": 0.9543,
-            "partial_dep": 0.058008,
-            "residual_mean": -0.190817
+            "predicted": 0.098633,
+            "ae_ratio": 0.9564,
+            "partial_dep": 0.057881,
+            "residual_mean": -0.189816
           },
           {
             "band": 8,
@@ -1535,10 +1535,10 @@
             "n": 13523,
             "exposure": 7718.67,
             "actual": 0.096908,
-            "predicted": 0.099197,
-            "ae_ratio": 0.9769,
-            "partial_dep": 0.05662,
-            "residual_mean": -0.186907
+            "predicted": 0.098762,
+            "ae_ratio": 0.9812,
+            "partial_dep": 0.056371,
+            "residual_mean": -0.185521
           },
           {
             "band": 9,
@@ -1548,10 +1548,10 @@
             "n": 16274,
             "exposure": 9556.79,
             "actual": 0.082768,
-            "predicted": 0.097664,
-            "ae_ratio": 0.8475,
-            "partial_dep": 0.057353,
-            "residual_mean": -0.204861
+            "predicted": 0.097462,
+            "ae_ratio": 0.8492,
+            "partial_dep": 0.057234,
+            "residual_mean": -0.204104
           },
           {
             "band": 10,
@@ -1561,10 +1561,10 @@
             "n": 15021,
             "exposure": 8545.33,
             "actual": 0.069863,
-            "predicted": 0.096774,
-            "ae_ratio": 0.7219,
-            "partial_dep": 0.055054,
-            "residual_mean": -0.215862
+            "predicted": 0.09663,
+            "ae_ratio": 0.723,
+            "partial_dep": 0.054972,
+            "residual_mean": -0.214992
           }
         ],
         "DrivAge": [
@@ -1576,10 +1576,10 @@
             "n": 12091,
             "exposure": 5075.99,
             "actual": 0.153074,
-            "predicted": 0.109327,
-            "ae_ratio": 1.4001,
-            "partial_dep": 0.045897,
-            "residual_mean": -0.12459
+            "predicted": 0.100188,
+            "ae_ratio": 1.5279,
+            "partial_dep": 0.04206,
+            "residual_mean": -0.110984
           },
           {
             "band": 2,
@@ -1589,10 +1589,10 @@
             "n": 11858,
             "exposure": 5370.93,
             "actual": 0.098307,
-            "predicted": 0.107599,
-            "ae_ratio": 0.9136,
-            "partial_dep": 0.048736,
-            "residual_mean": -0.179855
+            "predicted": 0.100091,
+            "ae_ratio": 0.9822,
+            "partial_dep": 0.045335,
+            "residual_mean": -0.168706
           },
           {
             "band": 3,
@@ -1602,10 +1602,10 @@
             "n": 13476,
             "exposure": 6461.59,
             "actual": 0.090071,
-            "predicted": 0.105499,
-            "ae_ratio": 0.8538,
-            "partial_dep": 0.050585,
-            "residual_mean": -0.189247
+            "predicted": 0.099518,
+            "ae_ratio": 0.9051,
+            "partial_dep": 0.047718,
+            "residual_mean": -0.180163
           },
           {
             "band": 4,
@@ -1615,10 +1615,10 @@
             "n": 14005,
             "exposure": 7144.77,
             "actual": 0.087477,
-            "predicted": 0.10349,
-            "ae_ratio": 0.8453,
-            "partial_dep": 0.052796,
-            "residual_mean": -0.194199
+            "predicted": 0.099427,
+            "ae_ratio": 0.8798,
+            "partial_dep": 0.050723,
+            "residual_mean": -0.187839
           },
           {
             "band": 5,
@@ -1628,10 +1628,10 @@
             "n": 13644,
             "exposure": 7071.81,
             "actual": 0.092904,
-            "predicted": 0.101699,
-            "ae_ratio": 0.9135,
-            "partial_dep": 0.052711,
-            "residual_mean": -0.186595
+            "predicted": 0.099585,
+            "ae_ratio": 0.9329,
+            "partial_dep": 0.051616,
+            "residual_mean": -0.183126
           },
           {
             "band": 6,
@@ -1641,10 +1641,10 @@
             "n": 16154,
             "exposure": 8632.53,
             "actual": 0.107037,
-            "predicted": 0.099303,
-            "ae_ratio": 1.0779,
-            "partial_dep": 0.053067,
-            "residual_mean": -0.169026
+            "predicted": 0.098992,
+            "ae_ratio": 1.0813,
+            "partial_dep": 0.052901,
+            "residual_mean": -0.168234
           },
           {
             "band": 7,
@@ -1654,10 +1654,10 @@
             "n": 13459,
             "exposure": 7537.03,
             "actual": 0.097386,
-            "predicted": 0.097041,
-            "ae_ratio": 1.0036,
-            "partial_dep": 0.054343,
-            "residual_mean": -0.180026
+            "predicted": 0.099002,
+            "ae_ratio": 0.9837,
+            "partial_dep": 0.055441,
+            "residual_mean": -0.183189
           },
           {
             "band": 8,
@@ -1667,10 +1667,10 @@
             "n": 11965,
             "exposure": 6642.9,
             "actual": 0.090021,
-            "predicted": 0.095467,
-            "ae_ratio": 0.943,
-            "partial_dep": 0.053003,
-            "residual_mean": -0.185087
+            "predicted": 0.099121,
+            "ae_ratio": 0.9082,
+            "partial_dep": 0.055031,
+            "residual_mean": -0.191055
           },
           {
             "band": 9,
@@ -1680,10 +1680,10 @@
             "n": 14311,
             "exposure": 8243.38,
             "actual": 0.080186,
-            "predicted": 0.093214,
-            "ae_ratio": 0.8602,
-            "partial_dep": 0.053693,
-            "residual_mean": -0.198147
+            "predicted": 0.099074,
+            "ae_ratio": 0.8094,
+            "partial_dep": 0.057068,
+            "residual_mean": -0.207909
           },
           {
             "band": 10,
@@ -1693,10 +1693,10 @@
             "n": 14653,
             "exposure": 9530.9,
             "actual": 0.096004,
-            "predicted": 0.086811,
-            "ae_ratio": 1.1059,
-            "partial_dep": 0.056465,
-            "residual_mean": -0.172934
+            "predicted": 0.09785,
+            "ae_ratio": 0.9811,
+            "partial_dep": 0.063645,
+            "residual_mean": -0.19405
           }
         ],
         "BonusMalus": [
@@ -1708,10 +1708,10 @@
             "n": 81112,
             "exposure": 47435.97,
             "actual": 0.075386,
-            "predicted": 0.096116,
-            "ae_ratio": 0.7843,
-            "partial_dep": 0.056211,
-            "residual_mean": -0.208961
+            "predicted": 0.097758,
+            "ae_ratio": 0.7711,
+            "partial_dep": 0.057171,
+            "residual_mean": -0.21146
           },
           {
             "band": 2,
@@ -1721,10 +1721,10 @@
             "n": 11302,
             "exposure": 5738.06,
             "actual": 0.101428,
-            "predicted": 0.101997,
-            "ae_ratio": 0.9944,
-            "partial_dep": 0.051784,
-            "residual_mean": -0.178354
+            "predicted": 0.100543,
+            "ae_ratio": 1.0088,
+            "partial_dep": 0.051046,
+            "residual_mean": -0.175929
           },
           {
             "band": 3,
@@ -1734,10 +1734,10 @@
             "n": 15234,
             "exposure": 7138.29,
             "actual": 0.132945,
-            "predicted": 0.103482,
-            "ae_ratio": 1.2847,
-            "partial_dep": 0.048489,
-            "residual_mean": -0.141818
+            "predicted": 0.101314,
+            "ae_ratio": 1.3122,
+            "partial_dep": 0.047473,
+            "residual_mean": -0.138486
           },
           {
             "band": 4,
@@ -1747,10 +1747,10 @@
             "n": 12164,
             "exposure": 5170.69,
             "actual": 0.118553,
-            "predicted": 0.105064,
-            "ae_ratio": 1.1284,
-            "partial_dep": 0.044661,
-            "residual_mean": -0.153191
+            "predicted": 0.102364,
+            "ae_ratio": 1.1581,
+            "partial_dep": 0.043513,
+            "residual_mean": -0.148936
           },
           {
             "band": 5,
@@ -1760,244 +1760,244 @@
             "n": 15804,
             "exposure": 6228.82,
             "actual": 0.205657,
-            "predicted": 0.106793,
-            "ae_ratio": 1.9257,
-            "partial_dep": 0.04209,
-            "residual_mean": -0.076178
+            "predicted": 0.103653,
+            "ae_ratio": 1.9841,
+            "partial_dep": 0.040853,
+            "residual_mean": -0.071238
           }
         ]
       }
     },
-    "gini_gap": 0.0037,
-    "ae_ratio_diff": 0.0198,
+    "gini_gap": 0.0045,
+    "ae_ratio_diff": 0.0199,
     "decile_comparison": [
       {
         "decile": 1,
-        "train_ae": 7.3516,
-        "test_ae": 7.1497,
-        "ae_diff": 0.2019
+        "train_ae": 7.6347,
+        "test_ae": 7.1772,
+        "ae_diff": 0.4575
       },
       {
         "decile": 2,
-        "train_ae": 2.8602,
-        "test_ae": 2.5635,
-        "ae_diff": 0.2967
+        "train_ae": 2.7251,
+        "test_ae": 2.4478,
+        "ae_diff": 0.2773
       },
       {
         "decile": 3,
-        "train_ae": 2.127,
-        "test_ae": 2.094,
-        "ae_diff": 0.033
+        "train_ae": 2.1744,
+        "test_ae": 2.226,
+        "ae_diff": 0.0516
       },
       {
         "decile": 4,
-        "train_ae": 1.4411,
-        "test_ae": 1.5224,
-        "ae_diff": 0.0813
+        "train_ae": 1.4709,
+        "test_ae": 1.5458,
+        "ae_diff": 0.0749
       },
       {
         "decile": 5,
-        "train_ae": 1.1859,
-        "test_ae": 1.1973,
-        "ae_diff": 0.0114
+        "train_ae": 1.1704,
+        "test_ae": 1.2057,
+        "ae_diff": 0.0353
       },
       {
         "decile": 6,
-        "train_ae": 1.0106,
-        "test_ae": 0.9966,
-        "ae_diff": 0.014
+        "train_ae": 1.0317,
+        "test_ae": 0.9718,
+        "ae_diff": 0.0599
       },
       {
         "decile": 7,
-        "train_ae": 0.9606,
-        "test_ae": 0.9096,
-        "ae_diff": 0.051
-      },
-      {
-        "decile": 8,
-        "train_ae": 0.8179,
-        "test_ae": 0.8089,
-        "ae_diff": 0.009
-      },
-      {
-        "decile": 9,
-        "train_ae": 0.7378,
-        "test_ae": 0.7047,
+        "train_ae": 0.9232,
+        "test_ae": 0.8901,
         "ae_diff": 0.0331
       },
       {
+        "decile": 8,
+        "train_ae": 0.787,
+        "test_ae": 0.7875,
+        "ae_diff": 0.0005
+      },
+      {
+        "decile": 9,
+        "train_ae": 0.7598,
+        "test_ae": 0.7304,
+        "ae_diff": 0.0294
+      },
+      {
         "decile": 10,
-        "train_ae": 0.6811,
-        "test_ae": 0.6804,
-        "ae_diff": 0.0007
+        "train_ae": 0.7002,
+        "test_ae": 0.6861,
+        "ae_diff": 0.0141
       }
     ],
     "factor_divergence": {
       "Region": [
         {
-          "level": "Champagne-Ardenne",
-          "train_ae": 1.213,
-          "test_ae": 1.0935,
-          "ae_diff": 0.1195
-        },
-        {
-          "level": "Auvergne",
-          "train_ae": 0.9828,
-          "test_ae": 0.677,
-          "ae_diff": 0.3058
+          "level": "Midi-Pyrenees",
+          "train_ae": 0.9317,
+          "test_ae": 1.0373,
+          "ae_diff": 0.1056
         },
         {
           "level": "Pays-de-la-Loire",
-          "train_ae": 0.9894,
-          "test_ae": 0.8808,
-          "ae_diff": 0.1086
-        },
-        {
-          "level": "Picardie",
-          "train_ae": 1.103,
-          "test_ae": 0.7558,
-          "ae_diff": 0.3472
-        },
-        {
-          "level": "Alsace",
-          "train_ae": 1.0994,
-          "test_ae": 0.9243,
-          "ae_diff": 0.1751
-        },
-        {
-          "level": "Franche-Comte",
-          "train_ae": 1.1255,
-          "test_ae": 0.6132,
-          "ae_diff": 0.5123
-        },
-        {
-          "level": "Midi-Pyrenees",
-          "train_ae": 0.9421,
-          "test_ae": 1.0463,
-          "ae_diff": 0.1042
-        },
-        {
-          "level": "Corse",
-          "train_ae": 1.1244,
-          "test_ae": 1.2458,
-          "ae_diff": 0.1214
+          "train_ae": 0.9454,
+          "test_ae": 0.8382,
+          "ae_diff": 0.1072
         },
         {
           "level": "Limousin",
-          "train_ae": 1.0872,
-          "test_ae": 0.7998,
-          "ae_diff": 0.2874
+          "train_ae": 1.294,
+          "test_ae": 0.9521,
+          "ae_diff": 0.3419
+        },
+        {
+          "level": "Champagne-Ardenne",
+          "train_ae": 1.5584,
+          "test_ae": 1.3613,
+          "ae_diff": 0.1971
+        },
+        {
+          "level": "Alsace",
+          "train_ae": 1.1202,
+          "test_ae": 0.919,
+          "ae_diff": 0.2012
+        },
+        {
+          "level": "Auvergne",
+          "train_ae": 0.9451,
+          "test_ae": 0.6485,
+          "ae_diff": 0.2966
+        },
+        {
+          "level": "Picardie",
+          "train_ae": 1.2695,
+          "test_ae": 0.8717,
+          "ae_diff": 0.3978
+        },
+        {
+          "level": "Franche-Comte",
+          "train_ae": 1.2593,
+          "test_ae": 0.691,
+          "ae_diff": 0.5683
+        },
+        {
+          "level": "Corse",
+          "train_ae": 1.5078,
+          "test_ae": 1.6587,
+          "ae_diff": 0.1509
         }
       ],
       "VehBrand": [
         {
-          "level": "B3",
-          "train_ae": 1.0045,
-          "test_ae": 0.9012,
-          "ae_diff": 0.1033
-        },
-        {
           "level": "B14",
-          "train_ae": 0.7437,
-          "test_ae": 0.5796,
-          "ae_diff": 0.1641
+          "train_ae": 0.7284,
+          "test_ae": 0.5719,
+          "ae_diff": 0.1565
         },
         {
           "level": "B4",
-          "train_ae": 0.9031,
-          "test_ae": 1.0215,
-          "ae_diff": 0.1184
+          "train_ae": 0.8964,
+          "test_ae": 1.0204,
+          "ae_diff": 0.124
+        },
+        {
+          "level": "B3",
+          "train_ae": 1.0159,
+          "test_ae": 0.9124,
+          "ae_diff": 0.1035
         }
       ]
     },
     "overfitting_risk": false,
     "calibration_drift": false,
     "unstable_factors": [
-      "Region[Champagne-Ardenne]",
-      "Region[Auvergne]",
-      "Region[Pays-de-la-Loire]",
-      "Region[Picardie]",
-      "Region[Alsace]",
-      "Region[Franche-Comte]",
       "Region[Midi-Pyrenees]",
-      "Region[Corse]",
+      "Region[Pays-de-la-Loire]",
       "Region[Limousin]",
-      "VehBrand[B3]",
+      "Region[Champagne-Ardenne]",
+      "Region[Alsace]",
+      "Region[Auvergne]",
+      "Region[Picardie]",
+      "Region[Franche-Comte]",
+      "Region[Corse]",
       "VehBrand[B14]",
-      "VehBrand[B4]"
+      "VehBrand[B4]",
+      "VehBrand[B3]"
     ]
   },
   "calibration": {
-    "ae_ratio": 1.007,
+    "ae_ratio": 1.004,
     "hl_pvalue": 0.0,
     "problem_deciles": [
       {
         "decile": 0,
-        "ae": 2.36,
-        "n": 154628,
+        "ae": 2.38,
+        "n": 154251,
         "ae_ci": [
-          2.29,
-          2.42
+          2.32,
+          2.45
         ]
       },
       {
         "decile": 1,
-        "ae": 1.19,
-        "n": 50218,
+        "ae": 1.2,
+        "n": 50061,
         "ae_ci": [
           1.15,
-          1.24
+          1.25
         ]
       },
       {
         "decile": 4,
-        "ae": 0.89,
-        "n": 23709,
+        "ae": 0.82,
+        "n": 23123,
         "ae_ci": [
-          0.85,
-          0.93
+          0.78,
+          0.86
         ]
       },
       {
         "decile": 5,
-        "ae": 0.81,
-        "n": 22318,
+        "ae": 0.79,
+        "n": 22906,
         "ae_ci": [
-          0.77,
-          0.85
+          0.75,
+          0.83
         ]
       },
       {
         "decile": 6,
-        "ae": 0.74,
-        "n": 21877,
+        "ae": 0.77,
+        "n": 21917,
         "ae_ci": [
-          0.7,
-          0.78
+          0.73,
+          0.8
         ]
       },
       {
         "decile": 7,
-        "ae": 0.75,
-        "n": 21694,
+        "ae": 0.78,
+        "n": 22061,
         "ae_ci": [
-          0.71,
-          0.78
+          0.74,
+          0.81
         ]
       },
       {
         "decile": 8,
-        "ae": 0.67,
-        "n": 21602,
+        "ae": 0.7,
+        "n": 21927,
         "ae_ci": [
-          0.64,
-          0.71
+          0.67,
+          0.74
         ]
       },
       {
         "decile": 9,
         "ae": 0.69,
-        "n": 23705,
+        "n": 23534,
         "ae_ci": [
           0.66,
           0.72
@@ -2008,8 +2008,8 @@
   "residual_summary": {
     "pearson": {
       "mean": 0.07,
-      "std": 1.63,
-      "skewness": 14.7
+      "std": 1.64,
+      "skewness": 14.8
     },
     "deviance": {
       "mean": -0.18,
@@ -2021,8 +2021,8 @@
     {
       "name": "Region",
       "factor_type": "categorical",
-      "in_model": true,
-      "transform": "TE(VehPower:Region)",
+      "in_model": false,
+      "transform": null,
       "coefficients": null,
       "actual_vs_expected": [
         {
@@ -2030,11 +2030,11 @@
           "n": 96404,
           "exposure": 61624.29,
           "actual": 0.087952,
-          "expected": 0.092016,
-          "ae_ratio": 0.96,
+          "expected": 0.090403,
+          "ae_ratio": 0.97,
           "ae_ci": [
-            0.93,
-            0.98
+            0.95,
+            1.0
           ]
         },
         {
@@ -2042,10 +2042,10 @@
           "n": 50754,
           "exposure": 27166.77,
           "actual": 0.110724,
-          "expected": 0.104948,
-          "ae_ratio": 1.06,
+          "expected": 0.105194,
+          "ae_ratio": 1.05,
           "ae_ci": [
-            1.02,
+            1.01,
             1.09
           ]
         },
@@ -2054,11 +2054,11 @@
           "n": 47362,
           "exposure": 21355.34,
           "actual": 0.108497,
-          "expected": 0.102898,
-          "ae_ratio": 1.05,
+          "expected": 0.105894,
+          "ae_ratio": 1.02,
           "ae_ci": [
-            1.01,
-            1.1
+            0.98,
+            1.07
           ]
         },
         {
@@ -2066,11 +2066,11 @@
           "n": 41804,
           "exposure": 18109.61,
           "actual": 0.130152,
-          "expected": 0.117711,
-          "ae_ratio": 1.11,
+          "expected": 0.119017,
+          "ae_ratio": 1.09,
           "ae_ci": [
-            1.06,
-            1.15
+            1.05,
+            1.14
           ]
         },
         {
@@ -2078,7 +2078,7 @@
           "n": 25444,
           "exposure": 16746.97,
           "actual": 0.09554,
-          "expected": 0.09623,
+          "expected": 0.096231,
           "ae_ratio": 0.99,
           "ae_ci": [
             0.94,
@@ -2090,19 +2090,7 @@
           "n": 23339,
           "exposure": 13243.3,
           "actual": 0.093632,
-          "expected": 0.094632,
-          "ae_ratio": 0.99,
-          "ae_ci": [
-            0.93,
-            1.04
-          ]
-        },
-        {
-          "bin": "Nord-Pas-de-Calais",
-          "n": 24081,
-          "exposure": 11774.8,
-          "actual": 0.089174,
-          "expected": 0.094311,
+          "expected": 0.099043,
           "ae_ratio": 0.95,
           "ae_ci": [
             0.89,
@@ -2110,15 +2098,27 @@
           ]
         },
         {
+          "bin": "Nord-Pas-de-Calais",
+          "n": 24081,
+          "exposure": 11774.8,
+          "actual": 0.089174,
+          "expected": 0.103987,
+          "ae_ratio": 0.86,
+          "ae_ci": [
+            0.81,
+            0.91
+          ]
+        },
+        {
           "bin": "Languedoc-Roussillon",
           "n": 21388,
           "exposure": 8781.25,
           "actual": 0.102719,
-          "expected": 0.100881,
-          "ae_ratio": 1.02,
+          "expected": 0.097301,
+          "ae_ratio": 1.06,
           "ae_ci": [
-            0.95,
-            1.08
+            0.99,
+            1.12
           ]
         },
         {
@@ -2126,11 +2126,11 @@
           "n": 18645,
           "exposure": 8481.56,
           "actual": 0.094558,
-          "expected": 0.095246,
-          "ae_ratio": 0.99,
+          "expected": 0.098663,
+          "ae_ratio": 0.96,
           "ae_ci": [
-            0.92,
-            1.06
+            0.89,
+            1.02
           ]
         },
         {
@@ -2138,11 +2138,11 @@
           "n": 11400,
           "exposure": 6697.88,
           "actual": 0.086147,
-          "expected": 0.091498,
-          "ae_ratio": 0.94,
+          "expected": 0.093763,
+          "ae_ratio": 0.92,
           "ae_ci": [
-            0.86,
-            1.02
+            0.84,
+            0.99
           ]
         },
         {
@@ -2150,11 +2150,11 @@
           "n": 10356,
           "exposure": 4255.99,
           "actual": 0.091166,
-          "expected": 0.09677,
-          "ae_ratio": 0.94,
+          "expected": 0.097847,
+          "ae_ratio": 0.93,
           "ae_ci": [
-            0.85,
-            1.04
+            0.84,
+            1.02
           ]
         },
         {
@@ -2162,8 +2162,8 @@
           "n": 6581,
           "exposure": 3999.39,
           "actual": 0.089014,
-          "expected": 0.095918,
-          "ae_ratio": 0.93,
+          "expected": 0.096574,
+          "ae_ratio": 0.92,
           "ae_ci": [
             0.83,
             1.02
@@ -2174,11 +2174,11 @@
           "n": 6251,
           "exposure": 2989.63,
           "actual": 0.095664,
-          "expected": 0.099624,
-          "ae_ratio": 0.96,
+          "expected": 0.091028,
+          "ae_ratio": 1.05,
           "ae_ci": [
-            0.85,
-            1.07
+            0.93,
+            1.17
           ]
         },
         {
@@ -2186,26 +2186,28 @@
           "n": 22630,
           "exposure": 9704.13,
           "actual": 0.113869,
-          "expected": 0.106551,
-          "ae_ratio": 1.07,
+          "expected": 0.095771,
+          "ae_ratio": 1.19,
           "ae_ci": [
-            1.01,
-            1.13
+            1.12,
+            1.26
           ]
         }
       ],
       "residual_pattern": {
-        "resid_corr": 0.0783,
-        "var_explained": 0.000288
+        "resid_corr": 0.0934,
+        "var_explained": 0.000463
       },
       "univariate": null,
-      "significance": {
-        "chi2": 519.94,
-        "p": 0.0,
-        "dev_contrib": 519.94
+      "significance": null,
+      "score_test": {
+        "statistic": 16.7,
+        "df": 1,
+        "pvalue": 0.0,
+        "significant": true,
+        "expected_dev_pct": 0.01
       },
-      "score_test": null,
-      "relative_importance": 43.67
+      "relative_importance": null
     },
     {
       "name": "Area",
@@ -2219,11 +2221,11 @@
           "n": 115158,
           "exposure": 62693.52,
           "actual": 0.094699,
-          "expected": 0.097536,
-          "ae_ratio": 0.97,
+          "expected": 0.093198,
+          "ae_ratio": 1.02,
           "ae_ci": [
-            0.95,
-            1.0
+            0.99,
+            1.04
           ]
         },
         {
@@ -2231,11 +2233,11 @@
           "n": 90936,
           "exposure": 46259.62,
           "actual": 0.107675,
-          "expected": 0.099468,
-          "ae_ratio": 1.08,
+          "expected": 0.107989,
+          "ae_ratio": 1.0,
           "ae_ci": [
-            1.05,
-            1.11
+            0.97,
+            1.02
           ]
         },
         {
@@ -2243,11 +2245,11 @@
           "n": 82103,
           "exposure": 38213.29,
           "actual": 0.121738,
-          "expected": 0.104009,
-          "ae_ratio": 1.17,
+          "expected": 0.120786,
+          "ae_ratio": 1.01,
           "ae_ci": [
-            1.14,
-            1.2
+            0.98,
+            1.04
           ]
         },
         {
@@ -2255,11 +2257,11 @@
           "n": 62417,
           "exposure": 37146.86,
           "actual": 0.078526,
-          "expected": 0.094762,
-          "ae_ratio": 0.83,
+          "expected": 0.079658,
+          "ae_ratio": 0.99,
           "ae_ci": [
-            0.8,
-            0.86
+            0.95,
+            1.02
           ]
         },
         {
@@ -2267,11 +2269,11 @@
           "n": 45118,
           "exposure": 25768.6,
           "actual": 0.087471,
-          "expected": 0.096266,
-          "ae_ratio": 0.91,
+          "expected": 0.08704,
+          "ae_ratio": 1.0,
           "ae_ci": [
-            0.87,
-            0.95
+            0.96,
+            1.05
           ]
         },
         {
@@ -2279,25 +2281,26 @@
           "n": 10707,
           "exposure": 4849.01,
           "actual": 0.137554,
-          "expected": 0.117186,
-          "ae_ratio": 1.17,
+          "expected": 0.136229,
+          "ae_ratio": 1.01,
           "ae_ci": [
-            1.08,
-            1.26
+            0.93,
+            1.09
           ]
         }
       ],
       "residual_pattern": {
-        "resid_corr": 0.0737,
-        "var_explained": 0.000341
+        "resid_corr": 0.0724,
+        "var_explained": 7e-06
       },
       "univariate": null,
       "significance": null,
       "score_test": {
-        "statistic": 17.61,
+        "statistic": 0.98,
         "df": 1,
-        "pvalue": 0.0,
-        "significant": true
+        "pvalue": 0.3222,
+        "significant": false,
+        "expected_dev_pct": 0.0
       },
       "relative_importance": null
     },
@@ -2313,11 +2316,11 @@
           "n": 97668,
           "exposure": 57234.42,
           "actual": 0.089859,
-          "expected": 0.097415,
+          "expected": 0.097741,
           "ae_ratio": 0.92,
           "ae_ci": [
-            0.9,
-            0.95
+            0.89,
+            0.94
           ]
         },
         {
@@ -2325,7 +2328,7 @@
           "n": 95912,
           "exposure": 56844.23,
           "actual": 0.090335,
-          "expected": 0.096878,
+          "expected": 0.096741,
           "ae_ratio": 0.93,
           "ae_ci": [
             0.91,
@@ -2337,11 +2340,11 @@
           "n": 99403,
           "exposure": 38883.59,
           "actual": 0.132987,
-          "expected": 0.102849,
+          "expected": 0.103321,
           "ae_ratio": 1.29,
           "ae_ci": [
-            1.26,
-            1.33
+            1.25,
+            1.32
           ]
         },
         {
@@ -2349,11 +2352,11 @@
           "n": 32061,
           "exposure": 17150.42,
           "actual": 0.101863,
-          "expected": 0.101405,
-          "ae_ratio": 1.0,
+          "expected": 0.100268,
+          "ae_ratio": 1.02,
           "ae_ci": [
-            0.96,
-            1.05
+            0.97,
+            1.06
           ]
         },
         {
@@ -2361,7 +2364,7 @@
           "n": 20895,
           "exposure": 12017.6,
           "actual": 0.100519,
-          "expected": 0.099094,
+          "expected": 0.09917,
           "ae_ratio": 1.01,
           "ae_ci": [
             0.96,
@@ -2373,11 +2376,11 @@
           "n": 17027,
           "exposure": 9393.85,
           "actual": 0.091443,
-          "expected": 0.098357,
-          "ae_ratio": 0.93,
+          "expected": 0.100618,
+          "ae_ratio": 0.91,
           "ae_ci": [
-            0.87,
-            0.99
+            0.85,
+            0.97
           ]
         },
         {
@@ -2385,11 +2388,11 @@
           "n": 15088,
           "exposure": 8239.36,
           "actual": 0.090056,
-          "expected": 0.099713,
+          "expected": 0.100462,
           "ae_ratio": 0.9,
           "ae_ci": [
-            0.84,
-            0.97
+            0.83,
+            0.96
           ]
         },
         {
@@ -2397,11 +2400,11 @@
           "n": 10638,
           "exposure": 5718.14,
           "actual": 0.08919,
-          "expected": 0.098516,
-          "ae_ratio": 0.91,
+          "expected": 0.099971,
+          "ae_ratio": 0.89,
           "ae_ci": [
-            0.83,
-            0.98
+            0.81,
+            0.97
           ]
         },
         {
@@ -2409,11 +2412,11 @@
           "n": 8061,
           "exposure": 4064.79,
           "actual": 0.102342,
-          "expected": 0.099379,
-          "ae_ratio": 1.03,
+          "expected": 0.101519,
+          "ae_ratio": 1.01,
           "ae_ci": [
-            0.93,
-            1.13
+            0.91,
+            1.1
           ]
         },
         {
@@ -2421,11 +2424,11 @@
           "n": 7275,
           "exposure": 4027.57,
           "actual": 0.093853,
-          "expected": 0.099861,
+          "expected": 0.099624,
           "ae_ratio": 0.94,
           "ae_ci": [
             0.85,
-            1.03
+            1.04
           ]
         },
         {
@@ -2433,25 +2436,26 @@
           "n": 2411,
           "exposure": 1356.92,
           "actual": 0.072959,
-          "expected": 0.09811,
-          "ae_ratio": 0.74,
+          "expected": 0.100169,
+          "ae_ratio": 0.73,
           "ae_ci": [
-            0.6,
-            0.89
+            0.58,
+            0.87
           ]
         }
       ],
       "residual_pattern": {
-        "resid_corr": 0.0449,
-        "var_explained": 0.00165
+        "resid_corr": 0.0451,
+        "var_explained": 0.001691
       },
       "univariate": null,
       "significance": null,
       "score_test": {
-        "statistic": 144.37,
+        "statistic": 131.28,
         "df": 1,
         "pvalue": 0.0,
-        "significant": true
+        "significant": true,
+        "expected_dev_pct": 0.1
       },
       "relative_importance": null
     },
@@ -2467,11 +2471,11 @@
           "n": 207225,
           "exposure": 112390.29,
           "actual": 0.102073,
-          "expected": 0.098864,
-          "ae_ratio": 1.03,
+          "expected": 0.101158,
+          "ae_ratio": 1.01,
           "ae_ci": [
-            1.01,
-            1.05
+            0.99,
+            1.03
           ]
         },
         {
@@ -2479,54 +2483,46 @@
           "n": 199214,
           "exposure": 102540.61,
           "actual": 0.096898,
-          "expected": 0.09897,
-          "ae_ratio": 0.98,
+          "expected": 0.09701,
+          "ae_ratio": 1.0,
           "ae_ci": [
-            0.96,
-            1.0
+            0.98,
+            1.02
           ]
         }
       ],
       "residual_pattern": {
-        "resid_corr": 0.0672,
-        "var_explained": 0.000264
+        "resid_corr": 0.0687,
+        "var_explained": 0.000185
       },
       "univariate": null,
       "significance": null,
       "score_test": {
-        "statistic": 7.72,
+        "statistic": 1.39,
         "df": 1,
-        "pvalue": 0.0055,
-        "significant": true
+        "pvalue": 0.2388,
+        "significant": false,
+        "expected_dev_pct": 0.0
       },
       "relative_importance": null
     },
     {
       "name": "VehPower",
       "factor_type": "continuous",
-      "in_model": true,
-      "transform": "TE(VehPower:Region)",
-      "coefficients": [
-        {
-          "term": "VehPower",
-          "estimate": 0.002685,
-          "std_error": 0.00266,
-          "z_value": 1.009,
-          "p_value": 0.3129,
-          "relativity": 1.0027
-        }
-      ],
+      "in_model": false,
+      "transform": null,
+      "coefficients": null,
       "actual_vs_expected": [
         {
           "bin": "4.00-5.00",
           "n": 68989,
           "exposure": 35931.94,
           "actual": 0.091952,
-          "expected": 0.095034,
-          "ae_ratio": 0.97,
+          "expected": 0.100255,
+          "ae_ratio": 0.92,
           "ae_ci": [
-            0.93,
-            1.0
+            0.89,
+            0.95
           ]
         },
         {
@@ -2534,11 +2530,11 @@
           "n": 75071,
           "exposure": 40959.99,
           "actual": 0.103564,
-          "expected": 0.101963,
-          "ae_ratio": 1.02,
+          "expected": 0.099492,
+          "ae_ratio": 1.04,
           "ae_ci": [
-            0.99,
-            1.05
+            1.01,
+            1.07
           ]
         },
         {
@@ -2546,11 +2542,11 @@
           "n": 89117,
           "exposure": 49438.09,
           "actual": 0.101582,
-          "expected": 0.099276,
-          "ae_ratio": 1.02,
+          "expected": 0.097755,
+          "ae_ratio": 1.04,
           "ae_ci": [
-            0.99,
-            1.05
+            1.01,
+            1.07
           ]
         },
         {
@@ -2558,11 +2554,11 @@
           "n": 87004,
           "exposure": 46661.67,
           "actual": 0.097339,
-          "expected": 0.096895,
-          "ae_ratio": 1.0,
+          "expected": 0.098797,
+          "ae_ratio": 0.99,
           "ae_ci": [
-            0.98,
-            1.03
+            0.96,
+            1.01
           ]
         },
         {
@@ -2570,11 +2566,11 @@
           "n": 28230,
           "exposure": 13672.92,
           "actual": 0.084912,
-          "expected": 0.090966,
-          "ae_ratio": 0.93,
+          "expected": 0.099166,
+          "ae_ratio": 0.86,
           "ae_ci": [
-            0.88,
-            0.99
+            0.81,
+            0.91
           ]
         },
         {
@@ -2582,26 +2578,28 @@
           "n": 58028,
           "exposure": 28266.28,
           "actual": 0.11098,
-          "expected": 0.105976,
-          "ae_ratio": 1.05,
+          "expected": 0.100485,
+          "ae_ratio": 1.1,
           "ae_ci": [
-            1.01,
-            1.08
+            1.07,
+            1.14
           ]
         }
       ],
       "residual_pattern": {
-        "resid_corr": -0.0022,
-        "var_explained": 5e-06
+        "resid_corr": 0.0,
+        "var_explained": 0.0
       },
       "univariate": null,
-      "significance": {
-        "chi2": 520.96,
-        "p": 0.0,
-        "dev_contrib": 520.96
+      "significance": null,
+      "score_test": {
+        "statistic": 5.2,
+        "df": 1,
+        "pvalue": 0.0226,
+        "significant": true,
+        "expected_dev_pct": 0.0
       },
-      "score_test": null,
-      "relative_importance": 43.75
+      "relative_importance": null
     },
     {
       "name": "VehAge",
@@ -2615,11 +2613,11 @@
           "n": 34724,
           "exposure": 10049.44,
           "actual": 0.29932,
-          "expected": 0.10112,
-          "ae_ratio": 2.96,
+          "expected": 0.102882,
+          "ae_ratio": 2.91,
           "ae_ci": [
-            2.85,
-            3.07
+            2.81,
+            3.01
           ]
         },
         {
@@ -2627,11 +2625,11 @@
           "n": 42680,
           "exposure": 19679.24,
           "actual": 0.08791,
-          "expected": 0.100525,
-          "ae_ratio": 0.87,
+          "expected": 0.102072,
+          "ae_ratio": 0.86,
           "ae_ci": [
-            0.83,
-            0.92
+            0.82,
+            0.9
           ]
         },
         {
@@ -2639,11 +2637,11 @@
           "n": 35401,
           "exposure": 17807.23,
           "actual": 0.091873,
-          "expected": 0.099946,
-          "ae_ratio": 0.92,
+          "expected": 0.101034,
+          "ae_ratio": 0.91,
           "ae_ci": [
             0.87,
-            0.96
+            0.95
           ]
         },
         {
@@ -2651,11 +2649,11 @@
           "n": 30085,
           "exposure": 15579.53,
           "actual": 0.090439,
-          "expected": 0.099553,
-          "ae_ratio": 0.91,
+          "expected": 0.10029,
+          "ae_ratio": 0.9,
           "ae_ci": [
-            0.86,
-            0.96
+            0.85,
+            0.95
           ]
         },
         {
@@ -2663,7 +2661,7 @@
           "n": 49076,
           "exposure": 27364.27,
           "actual": 0.094612,
-          "expected": 0.099303,
+          "expected": 0.099403,
           "ae_ratio": 0.95,
           "ae_ci": [
             0.92,
@@ -2675,7 +2673,7 @@
           "n": 41009,
           "exposure": 23930.87,
           "actual": 0.103715,
-          "expected": 0.098869,
+          "expected": 0.09859,
           "ae_ratio": 1.05,
           "ae_ci": [
             1.01,
@@ -2687,11 +2685,11 @@
           "n": 38964,
           "exposure": 22975.65,
           "actual": 0.096972,
-          "expected": 0.098803,
-          "ae_ratio": 0.98,
+          "expected": 0.098384,
+          "ae_ratio": 0.99,
           "ae_ci": [
             0.94,
-            1.02
+            1.03
           ]
         },
         {
@@ -2699,10 +2697,10 @@
           "n": 40550,
           "exposure": 23007.97,
           "actual": 0.096445,
-          "expected": 0.098913,
+          "expected": 0.09837,
           "ae_ratio": 0.98,
           "ae_ci": [
-            0.93,
+            0.94,
             1.02
           ]
         },
@@ -2711,7 +2709,7 @@
           "n": 48526,
           "exposure": 28503.08,
           "actual": 0.083815,
-          "expected": 0.097704,
+          "expected": 0.097746,
           "ae_ratio": 0.86,
           "ae_ci": [
             0.82,
@@ -2723,7 +2721,7 @@
           "n": 45424,
           "exposure": 26033.61,
           "actual": 0.065992,
-          "expected": 0.096816,
+          "expected": 0.096919,
           "ae_ratio": 0.68,
           "ae_ci": [
             0.65,
@@ -2732,45 +2730,37 @@
         }
       ],
       "residual_pattern": {
-        "resid_corr": -0.0422,
-        "var_explained": 0.001784
+        "resid_corr": -0.042,
+        "var_explained": 0.001765
       },
       "univariate": null,
       "significance": null,
       "score_test": {
-        "statistic": 427.7,
+        "statistic": 419.97,
         "df": 1,
         "pvalue": 0.0,
-        "significant": true
+        "significant": true,
+        "expected_dev_pct": 0.32
       },
       "relative_importance": null
     },
     {
       "name": "DrivAge",
       "factor_type": "continuous",
-      "in_model": true,
+      "in_model": false,
       "transform": null,
-      "coefficients": [
-        {
-          "term": "DrivAge",
-          "estimate": -0.004578,
-          "std_error": 0.000374,
-          "z_value": -12.238,
-          "p_value": 0.0,
-          "relativity": 0.9954
-        }
-      ],
+      "coefficients": null,
       "actual_vs_expected": [
         {
           "bin": "18.00-28.00",
           "n": 36680,
           "exposure": 15575.17,
           "actual": 0.151716,
-          "expected": 0.109278,
-          "ae_ratio": 1.39,
+          "expected": 0.100319,
+          "ae_ratio": 1.51,
           "ae_ci": [
-            1.33,
-            1.44
+            1.45,
+            1.57
           ]
         },
         {
@@ -2778,11 +2768,11 @@
           "n": 35675,
           "exposure": 16254.71,
           "actual": 0.096095,
-          "expected": 0.10761,
-          "ae_ratio": 0.89,
+          "expected": 0.10039,
+          "ae_ratio": 0.96,
           "ae_ci": [
-            0.85,
-            0.94
+            0.91,
+            1.0
           ]
         },
         {
@@ -2790,11 +2780,11 @@
           "n": 40504,
           "exposure": 19536.38,
           "actual": 0.08799,
-          "expected": 0.105432,
-          "ae_ratio": 0.83,
+          "expected": 0.099596,
+          "ae_ratio": 0.88,
           "ae_ci": [
-            0.8,
-            0.87
+            0.84,
+            0.93
           ]
         },
         {
@@ -2802,11 +2792,11 @@
           "n": 41500,
           "exposure": 20940.44,
           "actual": 0.087868,
-          "expected": 0.103504,
-          "ae_ratio": 0.85,
+          "expected": 0.099603,
+          "ae_ratio": 0.88,
           "ae_ci": [
-            0.81,
-            0.89
+            0.84,
+            0.92
           ]
         },
         {
@@ -2814,11 +2804,11 @@
           "n": 40523,
           "exposure": 21032.82,
           "actual": 0.095898,
-          "expected": 0.10159,
-          "ae_ratio": 0.94,
+          "expected": 0.099418,
+          "ae_ratio": 0.96,
           "ae_ci": [
-            0.9,
-            0.99
+            0.92,
+            1.01
           ]
         },
         {
@@ -2826,11 +2816,11 @@
           "n": 39478,
           "exposure": 20969.72,
           "actual": 0.103483,
-          "expected": 0.099659,
+          "expected": 0.099047,
           "ae_ratio": 1.04,
           "ae_ci": [
-            0.99,
-            1.08
+            1.0,
+            1.09
           ]
         },
         {
@@ -2838,11 +2828,11 @@
           "n": 49851,
           "exposure": 27605.19,
           "actual": 0.105161,
-          "expected": 0.097354,
-          "ae_ratio": 1.08,
+          "expected": 0.09888,
+          "ae_ratio": 1.06,
           "ae_ci": [
-            1.04,
-            1.12
+            1.02,
+            1.1
           ]
         },
         {
@@ -2850,11 +2840,11 @@
           "n": 35703,
           "exposure": 19998.78,
           "actual": 0.096806,
-          "expected": 0.095492,
-          "ae_ratio": 1.01,
+          "expected": 0.099028,
+          "ae_ratio": 0.98,
           "ae_ci": [
-            0.97,
-            1.06
+            0.93,
+            1.02
           ]
         },
         {
@@ -2862,11 +2852,11 @@
           "n": 42653,
           "exposure": 24157.29,
           "actual": 0.092312,
-          "expected": 0.093179,
-          "ae_ratio": 0.99,
+          "expected": 0.098986,
+          "ae_ratio": 0.93,
           "ae_ci": [
-            0.95,
-            1.03
+            0.89,
+            0.97
           ]
         },
         {
@@ -2874,26 +2864,28 @@
           "n": 43872,
           "exposure": 28860.39,
           "actual": 0.092445,
-          "expected": 0.086857,
-          "ae_ratio": 1.06,
+          "expected": 0.097766,
+          "ae_ratio": 0.95,
           "ae_ci": [
-            1.02,
-            1.1
+            0.91,
+            0.98
           ]
         }
       ],
       "residual_pattern": {
-        "resid_corr": -0.0006,
-        "var_explained": 0.0
+        "resid_corr": -0.01,
+        "var_explained": 0.000101
       },
       "univariate": null,
-      "significance": {
-        "chi2": 149.77,
-        "p": 0.0,
-        "dev_contrib": 149.77
+      "significance": null,
+      "score_test": {
+        "statistic": 8.88,
+        "df": 1,
+        "pvalue": 0.0029,
+        "significant": true,
+        "expected_dev_pct": 0.01
       },
-      "score_test": null,
-      "relative_importance": 12.58
+      "relative_importance": null
     },
     {
       "name": "BonusMalus",
@@ -2907,11 +2899,11 @@
           "n": 242659,
           "exposure": 141710.21,
           "actual": 0.07914,
-          "expected": 0.096144,
-          "ae_ratio": 0.82,
+          "expected": 0.097697,
+          "ae_ratio": 0.81,
           "ae_ci": [
-            0.81,
-            0.84
+            0.8,
+            0.83
           ]
         },
         {
@@ -2919,11 +2911,11 @@
           "n": 33885,
           "exposure": 17228.35,
           "actual": 0.099835,
-          "expected": 0.101836,
-          "ae_ratio": 0.98,
+          "expected": 0.100508,
+          "ae_ratio": 0.99,
           "ae_ci": [
-            0.93,
-            1.03
+            0.95,
+            1.04
           ]
         },
         {
@@ -2931,11 +2923,11 @@
           "n": 45909,
           "exposure": 21369.57,
           "actual": 0.128922,
-          "expected": 0.103459,
-          "ae_ratio": 1.25,
+          "expected": 0.101396,
+          "ae_ratio": 1.27,
           "ae_ci": [
-            1.2,
-            1.29
+            1.22,
+            1.32
           ]
         },
         {
@@ -2943,11 +2935,11 @@
           "n": 36482,
           "exposure": 15658.45,
           "actual": 0.128748,
-          "expected": 0.105155,
-          "ae_ratio": 1.22,
+          "expected": 0.102616,
+          "ae_ratio": 1.25,
           "ae_ci": [
-            1.17,
-            1.28
+            1.2,
+            1.31
           ]
         },
         {
@@ -2955,45 +2947,42 @@
           "n": 47504,
           "exposure": 18964.33,
           "actual": 0.195209,
-          "expected": 0.106687,
-          "ae_ratio": 1.83,
+          "expected": 0.103714,
+          "ae_ratio": 1.88,
           "ae_ci": [
-            1.77,
-            1.89
+            1.82,
+            1.94
           ]
         }
       ],
       "residual_pattern": {
-        "resid_corr": 0.0459,
-        "var_explained": 0.00211
+        "resid_corr": 0.0482,
+        "var_explained": 0.002326
       },
       "univariate": null,
       "significance": null,
       "score_test": {
-        "statistic": 389.45,
+        "statistic": 378.51,
         "df": 1,
         "pvalue": 0.0,
-        "significant": true
+        "significant": true,
+        "expected_dev_pct": 0.29
       },
       "relative_importance": null
     }
   ],
   "interaction_candidates": [],
   "model_comparison": {
-    "likelihood_ratio_chi2": 649.17,
-    "likelihood_ratio_df": 3,
+    "likelihood_ratio_chi2": 833.09,
+    "likelihood_ratio_df": 9,
     "likelihood_ratio_pvalue": 0.0,
-    "deviance_reduction_pct": 0.29475,
-    "aic_improvement": 643.17
+    "deviance_reduction_pct": 0.378259,
+    "aic_improvement": 815.09
   },
   "warnings": [
     {
       "type": "problem_factor_levels",
-      "message": "Factor 'Region' has problem levels with poor fit: Champagne-Ardenne"
-    },
-    {
-      "type": "problem_factor_levels",
-      "message": "Factor 'Area' has problem levels with poor fit: E, F, A"
+      "message": "Factor 'Region' has problem levels with poor fit: Champagne-Ardenne, Limousin, Franche-Comte, Corse, Picardie"
     },
     {
       "type": "problem_factor_levels",
@@ -3005,453 +2994,614 @@
     },
     {
       "type": "unstable_factors",
-      "message": "Unstable factor levels (train/test A/E differ by >0.1): Region[Champagne-Ardenne], Region[Auvergne], Region[Pays-de-la-Loire], Region[Picardie], Region[Alsace], Region[Franche-Comte], Region[Midi-Pyrenees], Region[Corse], Region[Limousin], VehBrand[B3]..."
+      "message": "Unstable factor levels (train/test A/E differ by >0.1): Region[Midi-Pyrenees], Region[Pays-de-la-Loire], Region[Limousin], Region[Champagne-Ardenne], Region[Alsace], Region[Auvergne], Region[Picardie], Region[Franche-Comte], Region[Corse], VehBrand[B14]..."
     },
     {
       "type": "overdispersion",
-      "message": "Overdispersion detected (\u03c6=4.40). Consider Negative Binomial or QuasiPoisson"
+      "message": "Overdispersion detected (\u03c6=4.47). Consider Negative Binomial or QuasiPoisson"
     }
   ],
   "vif": [
     {
-      "feature": "VehPower",
-      "vif": 1.01,
-      "severity": "none",
-      "collinear_with": null
+      "feature": "ns(Density, 5/9)",
+      "vif": 8146884662.02,
+      "severity": "expected",
+      "collinear_with": [
+        "ns(Density, 4/9)",
+        "ns(Density, 3/9)",
+        "ns(Density, 6/9)"
+      ]
     },
     {
-      "feature": "DrivAge",
-      "vif": 1.0,
-      "severity": "none",
-      "collinear_with": null
+      "feature": "ns(Density, 4/9)",
+      "vif": 7874760974.03,
+      "severity": "expected",
+      "collinear_with": [
+        "ns(Density, 3/9)",
+        "ns(Density, 5/9)",
+        "ns(Density, 2/9)"
+      ]
     },
     {
-      "feature": "TE(VehPower:Region)",
-      "vif": 1.0,
-      "severity": "none",
-      "collinear_with": null
+      "feature": "ns(Density, 3/9)",
+      "vif": 7252016318.56,
+      "severity": "expected",
+      "collinear_with": [
+        "ns(Density, 2/9)",
+        "ns(Density, 4/9)",
+        "ns(Density, 5/9)"
+      ]
+    },
+    {
+      "feature": "ns(Density, 6/9)",
+      "vif": 7156099879.3,
+      "severity": "expected",
+      "collinear_with": [
+        "ns(Density, 5/9)",
+        "ns(Density, 4/9)",
+        "ns(Density, 7/9)"
+      ]
+    },
+    {
+      "feature": "ns(Density, 2/9)",
+      "vif": 6342899411.27,
+      "severity": "expected",
+      "collinear_with": [
+        "ns(Density, 3/9)",
+        "ns(Density, 4/9)",
+        "ns(Density, 5/9)"
+      ]
+    },
+    {
+      "feature": "ns(Density, 7/9)",
+      "vif": 4748655166.15,
+      "severity": "expected",
+      "collinear_with": [
+        "ns(Density, 6/9)",
+        "ns(Density, 5/9)",
+        "ns(Density, 8/9)"
+      ]
+    },
+    {
+      "feature": "ns(Density, 8/9)",
+      "vif": 1105526541.02,
+      "severity": "expected",
+      "collinear_with": [
+        "ns(Density, 7/9)",
+        "ns(Density, 6/9)",
+        "ns(Density, 9/9)"
+      ]
+    },
+    {
+      "feature": "ns(Density, 9/9)",
+      "vif": 22743659.61,
+      "severity": "expected",
+      "collinear_with": [
+        "ns(Density, 8/9)",
+        "ns(Density, 7/9)",
+        "ns(Density, 6/9)"
+      ]
+    },
+    {
+      "feature": "ns(Density, 1/9)",
+      "vif": 3452.98,
+      "severity": "expected",
+      "collinear_with": [
+        "ns(Density, 2/9)",
+        "ns(Density, 3/9)",
+        "ns(Density, 4/9)"
+      ]
     }
   ],
-  "smooth_terms": null,
+  "smooth_terms": [
+    {
+      "variable": "Density",
+      "k": 10,
+      "edf": 6.85,
+      "lambda": 999.097,
+      "gcv": 0.3236,
+      "ref_df": 6.85,
+      "chi2": 715.35,
+      "p_value": 0.0
+    }
+  ],
   "coefficient_summary": [
     {
-      "feature": "TE(VehPower:Region)",
-      "estimate": 5.5159,
-      "std_error": 0.241902,
-      "z_value": 22.802,
+      "feature": "ns(Density, 1/9)",
+      "estimate": 0.002397,
+      "std_error": 0.000585,
+      "z_value": 4.094,
       "p_value": 0.0,
       "significant": true,
-      "relativity": 248.62,
+      "relativity": 1.0024,
       "relativity_ci": [
-        154.75,
-        399.42
+        1.0013,
+        1.0036
       ]
     },
     {
-      "feature": "DrivAge",
-      "estimate": -0.004578,
-      "std_error": 0.000374,
-      "z_value": -12.238,
-      "p_value": 0.0,
-      "significant": true,
-      "relativity": 0.9954,
-      "relativity_ci": [
-        0.9947,
-        0.9962
-      ]
-    },
-    {
-      "feature": "VehPower",
-      "estimate": 0.002685,
-      "std_error": 0.00266,
-      "z_value": 1.009,
-      "p_value": 0.3129,
+      "feature": "ns(Density, 9/9)",
+      "estimate": -3e-06,
+      "std_error": 2e-06,
+      "z_value": -1.247,
+      "p_value": 0.2126,
       "significant": false,
-      "relativity": 1.0027,
+      "relativity": 1.0,
       "relativity_ci": [
-        0.9975,
-        1.0079
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "feature": "ns(Density, 4/9)",
+      "estimate": 0.007387,
+      "std_error": 0.007677,
+      "z_value": 0.962,
+      "p_value": 0.3359,
+      "significant": false,
+      "relativity": 1.0074,
+      "relativity_ci": [
+        0.9924,
+        1.0227
+      ]
+    },
+    {
+      "feature": "ns(Density, 3/9)",
+      "estimate": -0.004248,
+      "std_error": 0.006734,
+      "z_value": -0.631,
+      "p_value": 0.5282,
+      "significant": false,
+      "relativity": 0.9958,
+      "relativity_ci": [
+        0.9827,
+        1.009
+      ]
+    },
+    {
+      "feature": "ns(Density, 5/9)",
+      "estimate": -0.002254,
+      "std_error": 0.003789,
+      "z_value": -0.595,
+      "p_value": 0.552,
+      "significant": false,
+      "relativity": 0.9977,
+      "relativity_ci": [
+        0.9904,
+        1.0052
+      ]
+    },
+    {
+      "feature": "ns(Density, 6/9)",
+      "estimate": -0.000448,
+      "std_error": 0.000968,
+      "z_value": -0.463,
+      "p_value": 0.6432,
+      "significant": false,
+      "relativity": 0.9996,
+      "relativity_ci": [
+        0.9977,
+        1.0015
+      ]
+    },
+    {
+      "feature": "ns(Density, 8/9)",
+      "estimate": 8e-06,
+      "std_error": 2.6e-05,
+      "z_value": 0.308,
+      "p_value": 0.7581,
+      "significant": false,
+      "relativity": 1.0,
+      "relativity_ci": [
+        1.0,
+        1.0001
+      ]
+    },
+    {
+      "feature": "ns(Density, 7/9)",
+      "estimate": 4e-05,
+      "std_error": 0.00017,
+      "z_value": 0.236,
+      "p_value": 0.8131,
+      "significant": false,
+      "relativity": 1.0,
+      "relativity_ci": [
+        0.9997,
+        1.0004
+      ]
+    },
+    {
+      "feature": "ns(Density, 2/9)",
+      "estimate": -0.000482,
+      "std_error": 0.00226,
+      "z_value": -0.213,
+      "p_value": 0.8311,
+      "significant": false,
+      "relativity": 0.9995,
+      "relativity_ci": [
+        0.9951,
+        1.004
       ]
     },
     {
       "feature": "Intercept",
-      "estimate": -2.6692,
-      "std_error": 0.033797,
-      "z_value": -78.975,
+      "estimate": -2.5928,
+      "std_error": 0.024432,
+      "z_value": -106.12,
       "p_value": 0.0,
       "significant": true,
-      "relativity": 0.0693,
+      "relativity": 0.0748,
       "relativity_ci": [
-        0.0649,
-        0.0741
+        0.0713,
+        0.0785
       ]
     }
   ],
   "factor_deviance": [
     {
       "factor": "Region",
-      "total_deviance": 131691.0,
+      "total_deviance": 131819.27,
       "levels": [
         {
           "level": "Centre",
           "n": 96404,
-          "deviance": 32183.54,
-          "deviance_pct": 24.44,
-          "mean_deviance": 0.3338,
-          "ae_ratio": 0.956,
+          "deviance": 32019.24,
+          "deviance_pct": 24.29,
+          "mean_deviance": 0.3321,
+          "ae_ratio": 0.973,
           "problem": false
         },
         {
           "level": "Rhone-Alpes",
           "n": 50754,
-          "deviance": 17694.35,
-          "deviance_pct": 13.44,
-          "mean_deviance": 0.3486,
-          "ae_ratio": 1.055,
+          "deviance": 17662.9,
+          "deviance_pct": 13.4,
+          "mean_deviance": 0.348,
+          "ae_ratio": 1.053,
           "problem": false
         },
         {
           "level": "Ile-de-France",
           "n": 41804,
-          "deviance": 14711.27,
-          "deviance_pct": 11.17,
-          "mean_deviance": 0.3519,
-          "ae_ratio": 1.106,
+          "deviance": 14788.21,
+          "deviance_pct": 11.22,
+          "mean_deviance": 0.3538,
+          "ae_ratio": 1.094,
           "problem": false
         },
         {
           "level": "Provence-Alpes-Cotes-D'Azur",
           "n": 47362,
-          "deviance": 14570.92,
-          "deviance_pct": 11.06,
-          "mean_deviance": 0.3076,
-          "ae_ratio": 1.054,
+          "deviance": 14595.07,
+          "deviance_pct": 11.07,
+          "mean_deviance": 0.3082,
+          "ae_ratio": 1.025,
           "problem": false
         },
         {
           "level": "Bretagne",
           "n": 25444,
-          "deviance": 9070.3,
-          "deviance_pct": 6.89,
-          "mean_deviance": 0.3565,
+          "deviance": 9059.31,
+          "deviance_pct": 6.87,
+          "mean_deviance": 0.356,
           "ae_ratio": 0.993,
           "problem": false
         },
         {
           "level": "Pays-de-la-Loire",
           "n": 23339,
-          "deviance": 7610.49,
-          "deviance_pct": 5.78,
-          "mean_deviance": 0.3261,
-          "ae_ratio": 0.989,
+          "deviance": 7608.78,
+          "deviance_pct": 5.77,
+          "mean_deviance": 0.326,
+          "ae_ratio": 0.945,
           "problem": false
         },
         {
           "level": "Nord-Pas-de-Calais",
           "n": 24081,
-          "deviance": 6857.92,
-          "deviance_pct": 5.21,
-          "mean_deviance": 0.2848,
-          "ae_ratio": 0.946,
+          "deviance": 6920.99,
+          "deviance_pct": 5.25,
+          "mean_deviance": 0.2874,
+          "ae_ratio": 0.858,
           "problem": false
         },
         {
           "level": "Languedoc-Roussillon",
           "n": 21388,
-          "deviance": 6392.48,
-          "deviance_pct": 4.85,
-          "mean_deviance": 0.2989,
-          "ae_ratio": 1.018,
+          "deviance": 6402.97,
+          "deviance_pct": 4.86,
+          "mean_deviance": 0.2994,
+          "ae_ratio": 1.056,
           "problem": false
         },
         {
           "level": "Aquitaine",
           "n": 18645,
-          "deviance": 5228.13,
+          "deviance": 5236.23,
           "deviance_pct": 3.97,
-          "mean_deviance": 0.2804,
-          "ae_ratio": 0.993,
+          "mean_deviance": 0.2808,
+          "ae_ratio": 0.958,
           "problem": false
         },
         {
           "level": "Poitou-Charentes",
           "n": 11400,
-          "deviance": 3598.85,
-          "deviance_pct": 2.73,
-          "mean_deviance": 0.3157,
-          "ae_ratio": 0.942,
+          "deviance": 3591.96,
+          "deviance_pct": 2.72,
+          "mean_deviance": 0.3151,
+          "ae_ratio": 0.919,
           "problem": false
         },
         {
           "level": "Midi-Pyrenees",
           "n": 10356,
-          "deviance": 2770.14,
-          "deviance_pct": 2.1,
-          "mean_deviance": 0.2675,
-          "ae_ratio": 0.942,
+          "deviance": 2779.12,
+          "deviance_pct": 2.11,
+          "mean_deviance": 0.2684,
+          "ae_ratio": 0.932,
           "problem": false
         },
         {
           "level": "Basse-Normandie",
           "n": 6581,
-          "deviance": 2143.01,
+          "deviance": 2145.5,
           "deviance_pct": 1.63,
-          "mean_deviance": 0.3256,
-          "ae_ratio": 0.928,
+          "mean_deviance": 0.326,
+          "ae_ratio": 0.922,
           "problem": false
         },
         {
           "level": "Bourgogne",
           "n": 6251,
-          "deviance": 1849.26,
+          "deviance": 1849.3,
           "deviance_pct": 1.4,
           "mean_deviance": 0.2958,
-          "ae_ratio": 0.96,
+          "ae_ratio": 1.051,
           "problem": false
         },
         {
           "level": "Picardie",
           "n": 4817,
-          "deviance": 1681.33,
-          "deviance_pct": 1.28,
-          "mean_deviance": 0.349,
-          "ae_ratio": 1.103,
-          "problem": false
+          "deviance": 1704.47,
+          "deviance_pct": 1.29,
+          "mean_deviance": 0.3538,
+          "ae_ratio": 1.269,
+          "problem": true
         },
         {
           "level": "Haute-Normandie",
           "n": 5279,
-          "deviance": 1202.35,
+          "deviance": 1206.14,
           "deviance_pct": 0.91,
-          "mean_deviance": 0.2278,
-          "ae_ratio": 0.933,
+          "mean_deviance": 0.2285,
+          "ae_ratio": 0.912,
           "problem": false
         },
         {
           "level": "Corse",
           "n": 2739,
-          "deviance": 978.35,
-          "deviance_pct": 0.74,
-          "mean_deviance": 0.3572,
-          "ae_ratio": 1.124,
-          "problem": false
+          "deviance": 1017.6,
+          "deviance_pct": 0.77,
+          "mean_deviance": 0.3715,
+          "ae_ratio": 1.508,
+          "problem": true
         },
         {
           "level": "Limousin",
           "n": 2668,
-          "deviance": 922.08,
-          "deviance_pct": 0.7,
-          "mean_deviance": 0.3456,
-          "ae_ratio": 1.087,
-          "problem": false
+          "deviance": 939.65,
+          "deviance_pct": 0.71,
+          "mean_deviance": 0.3522,
+          "ae_ratio": 1.294,
+          "problem": true
         },
         {
           "level": "Auvergne",
           "n": 3184,
-          "deviance": 795.28,
-          "deviance_pct": 0.6,
-          "mean_deviance": 0.2498,
-          "ae_ratio": 0.983,
+          "deviance": 802.67,
+          "deviance_pct": 0.61,
+          "mean_deviance": 0.2521,
+          "ae_ratio": 0.945,
           "problem": false
         },
         {
           "level": "Champagne-Ardenne",
           "n": 1827,
-          "deviance": 678.13,
-          "deviance_pct": 0.51,
-          "mean_deviance": 0.3712,
-          "ae_ratio": 1.213,
+          "deviance": 701.54,
+          "deviance_pct": 0.53,
+          "mean_deviance": 0.384,
+          "ae_ratio": 1.558,
           "problem": true
         },
         {
           "level": "Alsace",
           "n": 1311,
-          "deviance": 493.62,
-          "deviance_pct": 0.37,
-          "mean_deviance": 0.3765,
-          "ae_ratio": 1.099,
+          "deviance": 521.17,
+          "deviance_pct": 0.4,
+          "mean_deviance": 0.3975,
+          "ae_ratio": 1.12,
           "problem": false
         },
         {
           "level": "Franche-Comte",
           "n": 805,
-          "deviance": 259.19,
+          "deviance": 266.43,
           "deviance_pct": 0.2,
-          "mean_deviance": 0.322,
-          "ae_ratio": 1.126,
-          "problem": false
+          "mean_deviance": 0.331,
+          "ae_ratio": 1.259,
+          "problem": true
         }
       ],
       "problem_levels": [
-        "Champagne-Ardenne"
+        "Champagne-Ardenne",
+        "Limousin",
+        "Franche-Comte",
+        "Corse",
+        "Picardie"
       ]
     },
     {
       "factor": "Area",
-      "total_deviance": 131691.0,
+      "total_deviance": 131819.27,
       "levels": [
         {
           "level": "C",
           "n": 115158,
-          "deviance": 36565.89,
-          "deviance_pct": 27.77,
-          "mean_deviance": 0.3175,
-          "ae_ratio": 0.971,
+          "deviance": 36671.85,
+          "deviance_pct": 27.82,
+          "mean_deviance": 0.3184,
+          "ae_ratio": 1.016,
           "problem": false
         },
         {
           "level": "D",
           "n": 90936,
-          "deviance": 30476.05,
-          "deviance_pct": 23.14,
-          "mean_deviance": 0.3351,
-          "ae_ratio": 1.083,
+          "deviance": 30556.14,
+          "deviance_pct": 23.18,
+          "mean_deviance": 0.336,
+          "ae_ratio": 0.997,
           "problem": false
         },
         {
           "level": "E",
           "n": 82103,
-          "deviance": 27738.83,
-          "deviance_pct": 21.06,
-          "mean_deviance": 0.3379,
-          "ae_ratio": 1.17,
-          "problem": true
+          "deviance": 27733.16,
+          "deviance_pct": 21.04,
+          "mean_deviance": 0.3378,
+          "ae_ratio": 1.008,
+          "problem": false
         },
         {
           "level": "A",
           "n": 62417,
-          "deviance": 18800.84,
-          "deviance_pct": 14.28,
-          "mean_deviance": 0.3012,
-          "ae_ratio": 0.829,
-          "problem": true
+          "deviance": 18721.05,
+          "deviance_pct": 14.2,
+          "mean_deviance": 0.2999,
+          "ae_ratio": 0.986,
+          "problem": false
         },
         {
           "level": "B",
           "n": 45118,
-          "deviance": 14064.8,
-          "deviance_pct": 10.68,
-          "mean_deviance": 0.3117,
-          "ae_ratio": 0.909,
+          "deviance": 14094.16,
+          "deviance_pct": 10.69,
+          "mean_deviance": 0.3124,
+          "ae_ratio": 1.005,
           "problem": false
         },
         {
           "level": "F",
           "n": 10707,
-          "deviance": 4044.59,
+          "deviance": 4042.91,
           "deviance_pct": 3.07,
-          "mean_deviance": 0.3778,
-          "ae_ratio": 1.174,
-          "problem": true
+          "mean_deviance": 0.3776,
+          "ae_ratio": 1.01,
+          "problem": false
         }
       ],
-      "problem_levels": [
-        "E",
-        "F",
-        "A"
-      ]
+      "problem_levels": []
     },
     {
       "factor": "VehBrand",
-      "total_deviance": 131691.0,
+      "total_deviance": 131819.27,
       "levels": [
         {
           "level": "B12",
           "n": 99403,
-          "deviance": 34536.57,
-          "deviance_pct": 26.23,
-          "mean_deviance": 0.3474,
-          "ae_ratio": 1.293,
+          "deviance": 34723.75,
+          "deviance_pct": 26.34,
+          "mean_deviance": 0.3493,
+          "ae_ratio": 1.287,
           "problem": true
         },
         {
           "level": "B1",
           "n": 97668,
-          "deviance": 31029.5,
-          "deviance_pct": 23.56,
+          "deviance": 31032.75,
+          "deviance_pct": 23.54,
           "mean_deviance": 0.3177,
-          "ae_ratio": 0.922,
+          "ae_ratio": 0.919,
           "problem": false
         },
         {
           "level": "B2",
           "n": 95912,
-          "deviance": 30554.09,
-          "deviance_pct": 23.2,
-          "mean_deviance": 0.3186,
-          "ae_ratio": 0.932,
+          "deviance": 30494.59,
+          "deviance_pct": 23.13,
+          "mean_deviance": 0.3179,
+          "ae_ratio": 0.934,
           "problem": false
         },
         {
           "level": "B3",
           "n": 32061,
-          "deviance": 10421.57,
-          "deviance_pct": 7.91,
-          "mean_deviance": 0.3251,
-          "ae_ratio": 1.005,
+          "deviance": 10437.25,
+          "deviance_pct": 7.92,
+          "mean_deviance": 0.3255,
+          "ae_ratio": 1.016,
           "problem": false
         },
         {
           "level": "B5",
           "n": 20895,
-          "deviance": 7074.02,
-          "deviance_pct": 5.37,
-          "mean_deviance": 0.3386,
+          "deviance": 7049.84,
+          "deviance_pct": 5.35,
+          "mean_deviance": 0.3374,
           "ae_ratio": 1.014,
           "problem": false
         },
         {
           "level": "B6",
           "n": 17027,
-          "deviance": 5217.23,
-          "deviance_pct": 3.96,
-          "mean_deviance": 0.3064,
-          "ae_ratio": 0.93,
+          "deviance": 5242.39,
+          "deviance_pct": 3.98,
+          "mean_deviance": 0.3079,
+          "ae_ratio": 0.909,
           "problem": false
         },
         {
           "level": "B4",
           "n": 15088,
-          "deviance": 4503.65,
-          "deviance_pct": 3.42,
-          "mean_deviance": 0.2985,
-          "ae_ratio": 0.903,
+          "deviance": 4494.6,
+          "deviance_pct": 3.41,
+          "mean_deviance": 0.2979,
+          "ae_ratio": 0.896,
           "problem": false
         },
         {
           "level": "B10",
           "n": 10638,
-          "deviance": 3100.41,
-          "deviance_pct": 2.35,
-          "mean_deviance": 0.2914,
-          "ae_ratio": 0.905,
+          "deviance": 3083.06,
+          "deviance_pct": 2.34,
+          "mean_deviance": 0.2898,
+          "ae_ratio": 0.892,
           "problem": false
         },
         {
           "level": "B11",
           "n": 8061,
-          "deviance": 2409.59,
+          "deviance": 2412.38,
           "deviance_pct": 1.83,
-          "mean_deviance": 0.2989,
-          "ae_ratio": 1.03,
+          "mean_deviance": 0.2993,
+          "ae_ratio": 1.008,
           "problem": false
         },
         {
           "level": "B13",
           "n": 7275,
-          "deviance": 2204.7,
+          "deviance": 2205.3,
           "deviance_pct": 1.67,
           "mean_deviance": 0.3031,
-          "ae_ratio": 0.94,
+          "ae_ratio": 0.942,
           "problem": false
         },
         {
           "level": "B14",
           "n": 2411,
-          "deviance": 639.68,
+          "deviance": 643.36,
           "deviance_pct": 0.49,
-          "mean_deviance": 0.2653,
-          "ae_ratio": 0.744,
+          "mean_deviance": 0.2668,
+          "ae_ratio": 0.728,
           "problem": true
         }
       ],
@@ -3462,24 +3612,24 @@
     },
     {
       "factor": "VehGas",
-      "total_deviance": 131691.0,
+      "total_deviance": 131819.27,
       "levels": [
         {
           "level": "Regular",
           "n": 207225,
-          "deviance": 71459.32,
-          "deviance_pct": 54.26,
-          "mean_deviance": 0.3448,
-          "ae_ratio": 1.032,
+          "deviance": 71602.51,
+          "deviance_pct": 54.32,
+          "mean_deviance": 0.3455,
+          "ae_ratio": 1.009,
           "problem": false
         },
         {
           "level": "Diesel",
           "n": 199214,
-          "deviance": 60231.68,
-          "deviance_pct": 45.74,
+          "deviance": 60216.76,
+          "deviance_pct": 45.68,
           "mean_deviance": 0.3023,
-          "ae_ratio": 0.979,
+          "ae_ratio": 0.999,
           "problem": false
         }
       ],
@@ -3491,126 +3641,126 @@
       {
         "decile": 1,
         "n": 40643,
-        "exposure": 1590.4,
-        "actual": 0.718059,
-        "predicted": 0.097673,
-        "ae_ratio": 7.352,
-        "cumulative_actual_pct": 5.33,
-        "cumulative_predicted_pct": 0.73,
-        "lift": 7.209,
-        "cumulative_lift": 7.209
+        "exposure": 1602.73,
+        "actual": 0.727509,
+        "predicted": 0.09529,
+        "ae_ratio": 7.635,
+        "cumulative_actual_pct": 5.45,
+        "cumulative_predicted_pct": 0.72,
+        "lift": 7.304,
+        "cumulative_lift": 7.304
       },
       {
         "decile": 2,
         "n": 40643,
-        "exposure": 3518.67,
-        "actual": 0.293008,
-        "predicted": 0.102444,
-        "ae_ratio": 2.86,
-        "cumulative_actual_pct": 10.15,
-        "cumulative_predicted_pct": 2.43,
-        "lift": 2.942,
-        "cumulative_lift": 4.27
+        "exposure": 3522.09,
+        "actual": 0.281367,
+        "predicted": 0.103251,
+        "ae_ratio": 2.725,
+        "cumulative_actual_pct": 10.08,
+        "cumulative_predicted_pct": 2.42,
+        "lift": 2.825,
+        "cumulative_lift": 4.226
       },
       {
         "decile": 3,
         "n": 40643,
-        "exposure": 7190.7,
-        "actual": 0.210411,
-        "predicted": 0.098924,
-        "ae_ratio": 2.127,
-        "cumulative_actual_pct": 17.22,
-        "cumulative_predicted_pct": 5.77,
-        "lift": 2.112,
-        "cumulative_lift": 3.009
+        "exposure": 7260.48,
+        "actual": 0.20949,
+        "predicted": 0.096344,
+        "ae_ratio": 2.174,
+        "cumulative_actual_pct": 17.18,
+        "cumulative_predicted_pct": 5.7,
+        "lift": 2.103,
+        "cumulative_lift": 2.981
       },
       {
         "decile": 4,
         "n": 40643,
-        "exposure": 11705.47,
-        "actual": 0.144377,
-        "predicted": 0.100187,
-        "ae_ratio": 1.441,
-        "cumulative_actual_pct": 25.11,
-        "cumulative_predicted_pct": 11.29,
-        "lift": 1.45,
-        "cumulative_lift": 2.248
+        "exposure": 11752.65,
+        "actual": 0.145074,
+        "predicted": 0.098632,
+        "ae_ratio": 1.471,
+        "cumulative_actual_pct": 25.14,
+        "cumulative_predicted_pct": 11.14,
+        "lift": 1.457,
+        "cumulative_lift": 2.239
       },
       {
         "decile": 5,
         "n": 40643,
-        "exposure": 17734.46,
-        "actual": 0.116722,
-        "predicted": 0.098427,
-        "ae_ratio": 1.186,
-        "cumulative_actual_pct": 34.78,
-        "cumulative_predicted_pct": 19.5,
-        "lift": 1.172,
-        "cumulative_lift": 1.791
+        "exposure": 17874.54,
+        "actual": 0.11245,
+        "predicted": 0.096076,
+        "ae_ratio": 1.17,
+        "cumulative_actual_pct": 34.53,
+        "cumulative_predicted_pct": 19.2,
+        "lift": 1.129,
+        "cumulative_lift": 1.767
       },
       {
         "decile": 6,
         "n": 40643,
-        "exposure": 22933.36,
-        "actual": 0.101555,
-        "predicted": 0.100489,
-        "ae_ratio": 1.011,
-        "cumulative_actual_pct": 45.66,
-        "cumulative_predicted_pct": 30.34,
-        "lift": 1.02,
-        "cumulative_lift": 1.517
+        "exposure": 23035.87,
+        "actual": 0.103143,
+        "predicted": 0.099975,
+        "ae_ratio": 1.032,
+        "cumulative_actual_pct": 45.63,
+        "cumulative_predicted_pct": 30.0,
+        "lift": 1.036,
+        "cumulative_lift": 1.508
       },
       {
         "decile": 7,
         "n": 40643,
-        "exposure": 31798.34,
-        "actual": 0.091231,
-        "predicted": 0.094969,
-        "ae_ratio": 0.961,
-        "cumulative_actual_pct": 59.21,
-        "cumulative_predicted_pct": 44.54,
-        "lift": 0.916,
-        "cumulative_lift": 1.319
+        "exposure": 32532.94,
+        "actual": 0.084345,
+        "predicted": 0.091358,
+        "ae_ratio": 0.923,
+        "cumulative_actual_pct": 58.45,
+        "cumulative_predicted_pct": 43.94,
+        "lift": 0.847,
+        "cumulative_lift": 1.287
       },
       {
         "decile": 8,
         "n": 40643,
-        "exposure": 38546.5,
-        "actual": 0.074922,
-        "predicted": 0.091607,
-        "ae_ratio": 0.818,
-        "cumulative_actual_pct": 72.7,
-        "cumulative_predicted_pct": 61.15,
-        "lift": 0.752,
-        "cumulative_lift": 1.157
+        "exposure": 37879.94,
+        "actual": 0.071727,
+        "predicted": 0.091138,
+        "ae_ratio": 0.787,
+        "cumulative_actual_pct": 71.14,
+        "cumulative_predicted_pct": 60.14,
+        "lift": 0.72,
+        "cumulative_lift": 1.129
       },
       {
         "decile": 9,
         "n": 40643,
-        "exposure": 39793.85,
-        "actual": 0.071594,
-        "predicted": 0.097032,
-        "ae_ratio": 0.738,
-        "cumulative_actual_pct": 86.01,
-        "cumulative_predicted_pct": 79.32,
-        "lift": 0.719,
-        "cumulative_lift": 1.057
+        "exposure": 39329.22,
+        "actual": 0.074092,
+        "predicted": 0.097519,
+        "ae_ratio": 0.76,
+        "cumulative_actual_pct": 84.75,
+        "cumulative_predicted_pct": 78.13,
+        "lift": 0.744,
+        "cumulative_lift": 1.042
       },
       {
         "decile": 10,
         "n": 40652,
-        "exposure": 40119.15,
-        "actual": 0.074653,
-        "predicted": 0.10961,
-        "ae_ratio": 0.681,
+        "exposure": 40140.44,
+        "actual": 0.081315,
+        "predicted": 0.116128,
+        "ae_ratio": 0.7,
         "cumulative_actual_pct": 100.0,
         "cumulative_predicted_pct": 100.0,
-        "lift": 0.749,
+        "lift": 0.816,
         "cumulative_lift": 1.0
       }
     ],
-    "gini": 0.095,
-    "ks_statistic": 15.32,
+    "gini": 0.088,
+    "ks_statistic": 15.63,
     "ks_decile": 6,
     "weak_deciles": [
       1,
@@ -3649,48 +3799,48 @@
         13.0
       ],
       "predictions": [
-        0.051964,
-        0.05203,
-        0.052096,
-        0.052162,
-        0.052229,
-        0.052295,
-        0.052362,
-        0.052428,
-        0.052495,
-        0.052562,
-        0.052629,
-        0.052696,
-        0.052763,
-        0.05283,
-        0.052897,
-        0.052964,
-        0.053032,
-        0.053099,
-        0.053167,
-        0.053234
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447
       ],
       "relativities": [
-        0.9874,
-        0.9886,
-        0.9899,
-        0.9911,
-        0.9924,
-        0.9937,
-        0.9949,
-        0.9962,
-        0.9975,
-        0.9987,
         1.0,
-        1.0013,
-        1.0025,
-        1.0038,
-        1.0051,
-        1.0064,
-        1.0077,
-        1.0089,
-        1.0102,
-        1.0115
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0
       ],
       "shape": "flat",
       "recommendation": "May not need in model - negligible effect"
@@ -3721,26 +3871,26 @@
         21.0
       ],
       "predictions": [
-        0.052307,
-        0.052307,
-        0.052307,
-        0.052307,
-        0.052307,
-        0.052307,
-        0.052307,
-        0.052307,
-        0.052307,
-        0.052307,
-        0.052307,
-        0.052307,
-        0.052307,
-        0.052307,
-        0.052307,
-        0.052307,
-        0.052307,
-        0.052307,
-        0.052307,
-        0.052307
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447
       ],
       "relativities": [
         1.0,
@@ -3793,51 +3943,51 @@
         80.0
       ],
       "predictions": [
-        0.058784,
-        0.057941,
-        0.057109,
-        0.056289,
-        0.055481,
-        0.054685,
-        0.0539,
-        0.053126,
-        0.052364,
-        0.051612,
-        0.050871,
-        0.050141,
-        0.049421,
-        0.048712,
-        0.048013,
-        0.047323,
-        0.046644,
-        0.045975,
-        0.045315,
-        0.044664
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447
       ],
       "relativities": [
-        1.1556,
-        1.139,
-        1.1226,
-        1.1065,
-        1.0906,
-        1.075,
-        1.0595,
-        1.0443,
-        1.0293,
-        1.0146,
         1.0,
-        0.9856,
-        0.9715,
-        0.9576,
-        0.9438,
-        0.9303,
-        0.9169,
-        0.9037,
-        0.8908,
-        0.878
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0
       ],
-      "shape": "linear_decreasing",
-      "recommendation": "Linear effect adequate"
+      "shape": "flat",
+      "recommendation": "May not need in model - negligible effect"
     },
     {
       "variable": "BonusMalus",
@@ -3865,26 +4015,26 @@
         106.0
       ],
       "predictions": [
-        0.052307,
-        0.052307,
-        0.052307,
-        0.052307,
-        0.052307,
-        0.052307,
-        0.052307,
-        0.052307,
-        0.052307,
-        0.052307,
-        0.052307,
-        0.052307,
-        0.052307,
-        0.052307,
-        0.052307,
-        0.052307,
-        0.052307,
-        0.052307,
-        0.052307,
-        0.052307
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447,
+        0.052447
       ],
       "relativities": [
         1.0,
@@ -3938,50 +4088,50 @@
         "Rhone-Alpes"
       ],
       "predictions": [
-        0.060364,
-        0.043327,
-        0.039627,
-        0.058291,
-        0.047647,
+        0.059238,
+        0.044882,
+        0.041206,
+        0.05869,
+        0.043535,
         0.063338,
-        0.058819,
-        0.047381,
-        0.049032,
-        0.044148,
-        0.034505,
-        0.050993,
-        0.041419,
-        0.054815,
-        0.03977,
-        0.046115,
-        0.053697,
-        0.050629,
-        0.053758,
-        0.046396,
-        0.056175
+        0.057788,
+        0.036879,
+        0.036562,
+        0.039459,
+        0.03532,
+        0.051558,
+        0.039949,
+        0.046054,
+        0.040212,
+        0.050846,
+        0.0562,
+        0.04399,
+        0.055089,
+        0.047747,
+        0.056306
       ],
       "relativities": [
         1.0,
-        0.7178,
-        0.6565,
-        0.9657,
-        0.7893,
-        1.0493,
-        0.9744,
-        0.7849,
-        0.8123,
-        0.7314,
-        0.5716,
-        0.8448,
-        0.6862,
-        0.9081,
-        0.6588,
-        0.764,
-        0.8896,
-        0.8387,
-        0.8906,
-        0.7686,
-        0.9306
+        0.7576,
+        0.6956,
+        0.9907,
+        0.7349,
+        1.0692,
+        0.9755,
+        0.6225,
+        0.6172,
+        0.6661,
+        0.5962,
+        0.8704,
+        0.6744,
+        0.7774,
+        0.6788,
+        0.8583,
+        0.9487,
+        0.7426,
+        0.93,
+        0.806,
+        0.9505
       ],
       "shape": "moderate_variation",
       "recommendation": "Categorical appropriate, consider grouping similar levels"
@@ -3998,23 +4148,23 @@
         "F"
       ],
       "predictions": [
-        0.056396,
-        0.054981,
-        0.0531,
-        0.0506,
-        0.048409,
-        0.053071
+        0.047408,
+        0.049712,
+        0.050738,
+        0.054935,
+        0.056217,
+        0.061696
       ],
       "relativities": [
         1.0,
-        0.9749,
-        0.9415,
-        0.8972,
-        0.8584,
-        0.941
+        1.0486,
+        1.0703,
+        1.1588,
+        1.1858,
+        1.3014
       ],
-      "shape": "low_variation",
-      "recommendation": "Consider removing - little variation across levels"
+      "shape": "moderate_variation",
+      "recommendation": "Categorical appropriate, consider grouping similar levels"
     },
     {
       "variable": "VehBrand",
@@ -4033,30 +4183,30 @@
         "B6"
       ],
       "predictions": [
-        0.057086,
-        0.052954,
-        0.050112,
-        0.040232,
-        0.055285,
-        0.055217,
-        0.057417,
-        0.054245,
-        0.054452,
-        0.056993,
-        0.054264
+        0.057277,
+        0.053736,
+        0.051191,
+        0.040416,
+        0.055154,
+        0.056376,
+        0.057335,
+        0.053636,
+        0.054861,
+        0.057037,
+        0.055511
       ],
       "relativities": [
         1.0,
-        0.9276,
-        0.8778,
-        0.7047,
-        0.9684,
-        0.9672,
-        1.0058,
-        0.9502,
-        0.9539,
-        0.9984,
-        0.9506
+        0.9382,
+        0.8937,
+        0.7056,
+        0.9629,
+        0.9843,
+        1.001,
+        0.9364,
+        0.9578,
+        0.9958,
+        0.9692
       ],
       "shape": "moderate_variation",
       "recommendation": "Categorical appropriate, consider grouping similar levels"
@@ -4069,27 +4219,50 @@
         "Regular"
       ],
       "predictions": [
-        0.050942,
-        0.05362
+        0.049933,
+        0.054864
       ],
       "relativities": [
         1.0,
-        1.0526
+        1.0987
       ],
       "shape": "low_variation",
       "recommendation": "Consider removing - little variation across levels"
     }
   ],
   "overdispersion": {
-    "pearson_dispersion": 4.3999,
-    "pearson_chi2": 1788280.62,
-    "df_resid": 406435,
+    "pearson_dispersion": 4.4745,
+    "pearson_chi2": 1818558.88,
+    "df_resid": 406429,
     "raw_dispersion": 1.0471,
     "mean_count": 0.0527,
     "var_count": 0.0552,
     "severity": "moderate",
     "recommendation": "Consider Negative Binomial or QuasiPoisson"
   },
-  "spline_info": null,
+  "spline_info": {
+    "Density": {
+      "type": "ns",
+      "df": 10,
+      "knots": [
+        33.0,
+        67.0,
+        122.0,
+        214.0,
+        393.0,
+        716.0,
+        1313.0,
+        2715.0,
+        4128.0
+      ],
+      "boundary_knots": [
+        1.0,
+        27000.0
+      ],
+      "is_smooth": true,
+      "lambda": 999.1,
+      "edf": 6.8549
+    }
+  },
   "base_predictions_comparison": null
 }

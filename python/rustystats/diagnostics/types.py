@@ -267,6 +267,7 @@ class FactorSignificance:
     chi2: Optional[float]
     p: Optional[float]
     dev_contrib: Optional[float]
+    dev_pct: Optional[float] = None
 
 
 @dataclass
@@ -276,6 +277,7 @@ class ScoreTestResult:
     df: int
     pvalue: float
     significant: bool
+    expected_dev_pct: Optional[float] = None
 
 
 @dataclass

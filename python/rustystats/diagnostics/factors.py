@@ -117,7 +117,7 @@ class _FactorDiagnosticsComputer:
                 values, rare_threshold_pct, max_categorical_levels
             )
             resid_pattern = self._compute_residual_pattern_categorical(values, precomputed_unique_inverse=(unique, inverse))
-            significance = self.compute_factor_significance(name, result) if in_model and result else None
+            significance = self.compute_factor_significance(name, result, bread_matrix) if in_model and result else None
             coefficients = self._get_factor_coefficients(name, result) if in_model and result else None
             
             score_test = None
@@ -147,7 +147,7 @@ class _FactorDiagnosticsComputer:
             
             ae_bins = self._compute_ae_continuous(values, n_bins)
             resid_pattern = self._compute_residual_pattern_continuous(values, n_bins)
-            significance = self.compute_factor_significance(name, result) if in_model and result else None
+            significance = self.compute_factor_significance(name, result, bread_matrix) if in_model and result else None
             coefficients = self._get_factor_coefficients(name, result) if in_model and result else None
             
             score_test = None
@@ -269,11 +269,14 @@ class _FactorDiagnosticsComputer:
         self,
         name: str,
         result,
+        bread_matrix: Optional[np.ndarray] = None,
     ) -> Optional[FactorSignificance]:
         """
         Compute significance tests for a factor in the model.
         
-        Returns Wald chi-square test and deviance contribution.
+        Uses the joint Wald test β_S' @ Cov_SS⁻¹ @ β_S when the covariance
+        matrix is available (essential for multi-parameter terms like splines).
+        Falls back to sum of individual z² when covariance is unavailable.
         """
         if not hasattr(result, 'params') or not hasattr(result, 'bse'):
             return None
@@ -289,11 +292,28 @@ class _FactorDiagnosticsComputer:
         try:
             params = np.asarray(result.params)
             bse = np.asarray(result.bse())
+            idx = np.array(param_indices)
+            beta_s = params[idx]
             
-            wald_chi2 = 0.0
-            for idx in param_indices:
-                if bse[idx] > 0:
-                    wald_chi2 += (params[idx] / bse[idx]) ** 2
+            if bread_matrix is not None and len(idx) > 1:
+                # Joint Wald test: χ² = β_S' @ Cov_SS⁻¹ @ β_S
+                # Cov = scale * bread_matrix; infer scale from bse
+                bread_sub = bread_matrix[np.ix_(idx, idx)]
+                # scale = bse[i]² / bread[i,i] (use first valid diagonal)
+                scale = 1.0
+                for i in idx:
+                    if bread_matrix[i, i] > 0 and bse[i] > 0:
+                        scale = (bse[i] ** 2) / bread_matrix[i, i]
+                        break
+                cov_sub = scale * bread_sub
+                cov_inv = np.linalg.inv(cov_sub)
+                wald_chi2 = float(beta_s @ cov_inv @ beta_s)
+            else:
+                # Single parameter or no covariance: sum of individual z²
+                wald_chi2 = 0.0
+                for i in idx:
+                    if bse[i] > 0:
+                        wald_chi2 += (params[i] / bse[i]) ** 2
             
             df = len(param_indices)
             wald_pvalue = 1 - _chi2_cdf(wald_chi2, float(df)) if df > 0 else 1.0
