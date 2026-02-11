@@ -32,7 +32,7 @@ crate-type = ["cdylib"]
 rustystats-core = { path = "../rustystats-core" }
 
 # Python bindings framework
-pyo3 = { workspace = true }
+pyo3 = { workspace = true, features = ["generate-import-lib"] }
 
 # NumPy support - converts between NumPy arrays and Rust arrays
 numpy = { workspace = true }
