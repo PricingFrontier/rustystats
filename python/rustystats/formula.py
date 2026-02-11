@@ -1074,17 +1074,6 @@ class GLMModel:
             compute_vif = False
             compute_coefficients = False
         
-        # Get design matrix for VIF calculation (fetched from Rust result).
-        # If not stored (lean mode), rebuild from builder + train_data.
-        design_matrix = None
-        if compute_vif:
-            design_matrix = self.get_design_matrix()
-            if design_matrix is None and self._builder is not None:
-                try:
-                    design_matrix = self._builder.transform_new_data(train_data)
-                except Exception:
-                    pass
-        
         return compute_diagnostics(
             result=self,
             train_data=train_data,
@@ -1097,7 +1086,6 @@ class GLMModel:
             detect_interactions=detect_interactions,
             max_interaction_factors=max_interaction_factors,
             test_data=test_data,
-            design_matrix=design_matrix,
             compute_vif=compute_vif,
             compute_coefficients=compute_coefficients,
             compute_deviance_by_level=compute_deviance_by_level,

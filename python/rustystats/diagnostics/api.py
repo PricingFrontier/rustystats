@@ -165,8 +165,6 @@ def compute_diagnostics(
     max_interaction_factors: int = DEFAULT_MAX_INTERACTION_FACTORS,
     # Test data for overfitting detection (response/exposure auto-inferred from model)
     test_data: Optional["pl.DataFrame"] = None,
-    # Design matrix for VIF calculation
-    design_matrix: Optional[np.ndarray] = None,
     # Control which enhanced diagnostics to compute
     compute_vif: bool = True,
     compute_coefficients: bool = True,
@@ -207,10 +205,9 @@ def compute_diagnostics(
     test_data : pl.DataFrame, optional
         Test/holdout data for overfitting detection. Response and exposure
         columns are automatically inferred from the model's formula.
-    design_matrix : np.ndarray, optional
-        Design matrix X for VIF calculation. If not provided, VIF is skipped.
     compute_vif : bool, default=True
         Whether to compute VIF/multicollinearity scores (train-only).
+        Uses the stored design matrix or rebuilds it from train_data.
     compute_coefficients : bool, default=True
         Whether to compute coefficient summary with interpretations (train-only).
     compute_deviance_by_level : bool, default=True
@@ -372,6 +369,9 @@ def compute_diagnostics(
     score_test_irls_weights = None
     if hasattr(result, 'get_design_matrix'):
         score_test_design_matrix = result.get_design_matrix()
+    # Fallback: rebuild design matrix from train_data when not stored (lean mode)
+    if score_test_design_matrix is None and hasattr(result, '_builder') and result._builder is not None:
+        score_test_design_matrix = result._builder.transform_new_data(train_data)
     if hasattr(result, 'get_bread_matrix'):
         score_test_bread_matrix = result.get_bread_matrix()
     if hasattr(result, 'get_irls_weights'):
@@ -432,8 +432,8 @@ def compute_diagnostics(
     # VIF / Multicollinearity
     # Token optimization: VIF array already contains all info, no separate warnings needed
     vif_results = None
-    if compute_vif and design_matrix is not None:
-        vif_results = computer.compute_vif(design_matrix, feature_names)
+    if compute_vif and score_test_design_matrix is not None:
+        vif_results = computer.compute_vif(score_test_design_matrix, feature_names)
     
     # Coefficient summary
     coef_summary = None

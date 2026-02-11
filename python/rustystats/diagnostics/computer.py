@@ -759,7 +759,6 @@ class DiagnosticsComputer:
                 grid_values=[round(float(g), 4) for g in grid],
                 predictions=[round(p, 6) for p in predictions],
                 relativities=[round(r, 4) for r in relativities] if relativities else None,
-                std_errors=None,  # Would need bootstrap for this
                 shape=shape,
                 recommendation=recommendation,
             ))
@@ -817,7 +816,6 @@ class DiagnosticsComputer:
                 grid_values=grid_values,
                 predictions=[round(p, 6) for p in predictions],
                 relativities=[round(r, 4) for r in relativities] if relativities else None,
-                std_errors=None,
                 shape=shape,
                 recommendation=recommendation,
             ))

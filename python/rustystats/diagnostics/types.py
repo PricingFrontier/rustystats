@@ -404,7 +404,6 @@ class PartialDependence:
     grid_values: List[Any]
     predictions: List[float]
     relativities: Optional[List[float]]
-    std_errors: Optional[List[float]]
     shape: str
     recommendation: str
 
