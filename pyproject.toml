@@ -24,15 +24,15 @@ version = "0.4.7"
 description = "Fast Generalized Linear Models with a Rust backend - statsmodels compatible"
 readme = "README.md"
 license = { text = "Elastic-2.0" }
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Mathematics",
     "Intended Audience :: Financial and Insurance Industry",
     "Intended Audience :: Science/Research",

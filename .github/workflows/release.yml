@@ -5,7 +5,7 @@
 # What happens:
 #   1. Bumps version in pyproject.toml
 #   2. Commits + tags (v0.4.7)
-#   3. Builds wheels for Linux/Windows/macOS × Python 3.9-3.13
+#   3. Builds wheels for Linux/Windows/macOS × Python 3.10-3.13
 #   4. Creates a GitHub Release
 #   5. Publishes to PyPI via trusted publishing
 
@@ -90,7 +90,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist --interpreter 3.9 3.10 3.11 3.12 3.13
+          args: --release --out dist --interpreter 3.10 3.11 3.12 3.13
           sccache: "true"
           manylinux: auto
 
@@ -121,7 +121,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: x86_64
-          args: --release --out dist --interpreter 3.9 3.10 3.11 3.12 3.13
+          args: --release --out dist --interpreter 3.10 3.11 3.12 3.13
           sccache: "true"
 
       - name: Upload wheels
@@ -150,7 +150,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist --interpreter 3.9 3.10 3.11 3.12 3.13
+          args: --release --out dist --interpreter 3.10 3.11 3.12 3.13
           sccache: "true"
 
       - name: Upload wheels
