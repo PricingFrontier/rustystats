@@ -188,25 +188,16 @@ def bs(
     # Default to penalized smooth (k=10) if neither df nor k specified
     effective_df = df if df is not None else (k if k is not None else 10)
     
-    # Handle monotonicity - use I-spline basis
+    # Handle monotonicity — use regular B-spline basis.
+    # The solver enforces monotonicity via PAVA projection on B-spline
+    # coefficients (non-decreasing for increasing, non-increasing for
+    # decreasing).  No I-spline basis needed.
     if monotonicity is not None:
         if monotonicity not in ("increasing", "decreasing"):
             raise ValidationError(
                 f"monotonicity must be 'increasing' or 'decreasing', got '{monotonicity}'"
             )
-        # Always build an increasing I-spline basis; the solver enforces
-        # direction via NNLS (β≥0 for increasing, negated basis → β≤0 for
-        # decreasing).  Passing increasing=False here would flip the basis
-        # a second time, producing the wrong sign.
-        if knots is not None and boundary_knots is not None:
-            result = _ms_with_knots_rust(x, knots, degree, boundary_knots, effective_df, True)
-        else:
-            result = _ms_rust(x, effective_df, degree, boundary_knots, True)
-        # Drop first column (constant 1.0 due to partition of unity) for
-        # identifiability — same reason B-splines drop the first column.
-        if not include_intercept and result.shape[1] > 1:
-            result = result[:, 1:]
-        return result
+        # Fall through to the standard B-spline path below
     
     if knots is not None:
         # Use explicit knots
@@ -538,7 +529,7 @@ class SplineTerm:
         n_cols : int
             Number of columns in the basis (after transform)
         penalty_order : int
-            Order of the difference penalty (default: 2 for smoothness)
+            Order of the difference penalty (default: 2 for smoothness).
         
         Returns
         -------

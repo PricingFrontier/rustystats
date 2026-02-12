@@ -41,6 +41,65 @@ fn embed_penalty(target: &mut Array2<f64>, source: &Array2<f64>, offset: usize, 
     slice.scaled_add(scale, source);
 }
 
+/// Pool Adjacent Violators Algorithm (PAVA) for isotonic (non-decreasing) regression.
+///
+/// Projects `x` onto the closest non-decreasing sequence in the L2 sense.
+/// Used to enforce monotonicity on B-spline coefficients: non-decreasing
+/// coefficients guarantee a monotonically increasing spline curve.
+///
+/// Complexity: O(n) time, O(n) space.
+fn pava_increasing(x: &mut [f64]) {
+    let n = x.len();
+    if n <= 1 { return; }
+
+    // Each block: (start_index, running_sum, count)
+    let mut blocks: Vec<(usize, f64, usize)> = Vec::with_capacity(n);
+
+    for i in 0..n {
+        let mut sum = x[i];
+        let mut count = 1usize;
+        let mut start = i;
+
+        // Pool with previous blocks while monotonicity is violated
+        while let Some(&(prev_start, prev_sum, prev_count)) = blocks.last() {
+            if prev_sum / prev_count as f64 > sum / count as f64 {
+                sum += prev_sum;
+                count += prev_count;
+                start = prev_start;
+                blocks.pop();
+            } else {
+                break;
+            }
+        }
+        blocks.push((start, sum, count));
+    }
+
+    // Write back averaged values
+    for (start, sum, count) in blocks {
+        let mean = sum / count as f64;
+        for j in start..start + count {
+            x[j] = mean;
+        }
+    }
+}
+
+/// Apply PAVA to enforce monotonicity on a coefficient slice.
+///
+/// - `Increasing`: coefficients become non-decreasing
+/// - `Decreasing`: coefficients become non-increasing (reverse + PAVA + reverse)
+fn apply_monotone_projection(coefs: &mut [f64], monotonicity: Monotonicity) {
+    match monotonicity {
+        Monotonicity::Increasing => pava_increasing(coefs),
+        Monotonicity::Decreasing => {
+            // Negate, apply increasing PAVA, negate back
+            for v in coefs.iter_mut() { *v = -*v; }
+            pava_increasing(coefs);
+            for v in coefs.iter_mut() { *v = -*v; }
+        },
+        Monotonicity::None => {},
+    }
+}
+
 /// Result from fitting a smooth GLM (GAM).
 #[derive(Debug, Clone)]
 pub struct SmoothGLMResult {
@@ -298,13 +357,11 @@ fn assemble_smooth_result_from_specs(
 // =============================================================================
 
 use super::gcv_optimizer::MultiTermGCVOptimizer;
-use super::nnls::{nnls_weighted_penalized, NNLSConfig};
-use nalgebra::{DMatrix, DVector};
 
 /// Solve constrained weighted least squares for monotonic smooth terms.
 /// 
 /// For each smooth term:
-/// - If monotonic: use NNLS to enforce non-negative coefficients
+/// - If monotonic: solve unconstrained WLS then project via PAVA
 /// - If unconstrained: use standard WLS
 fn solve_constrained_wls(
     x: ArrayView2<'_, f64>,
@@ -313,17 +370,11 @@ fn solve_constrained_wls(
     smooth_terms: &[SmoothTermData],
     term_indices: &[(usize, usize)],
     lambdas: &[f64],
-    p_param: usize,
-    nnls_config: &NNLSConfig,
+    _p_param: usize,
 ) -> Result<Array1<f64>> {
-    let n = x.nrows();
+    let _n = x.nrows();
     let p = x.ncols();
     
-    // For simplicity, we solve each monotonic term separately using NNLS,
-    // then combine. This is a block coordinate descent approach.
-    
-    // First, check if ALL smooth terms are monotonic
-    let all_monotonic = smooth_terms.iter().all(|t| t.is_monotonic());
     let any_monotonic = smooth_terms.iter().any(|t| t.is_monotonic());
     
     if !any_monotonic {
@@ -336,156 +387,29 @@ fn solve_constrained_wls(
         return Ok(coef);
     }
     
-    // For monotonic terms, we use a hybrid approach:
-    // 1. Solve for parametric coefficients using standard WLS with smooth terms fixed
-    // 2. Solve for smooth coefficients using NNLS with parametric fixed
-    // Iterate until convergence (usually 1-2 iterations)
+    // For monotonic terms, we use penalized WLS + PAVA projection:
+    // 1. Solve full penalized WLS (unconstrained)
+    // 2. Project monotonic smooth coefficients via PAVA onto the monotone cone
+    //
+    // PAVA on B-spline coefficients enforces non-decreasing (increasing) or
+    // non-increasing (decreasing) coefficients, which guarantees a monotone
+    // spline curve.  Unlike NNLS, PAVA averages adjacent coefficients rather
+    // than forcing them to zero — eliminating the flat-region artefact.
     
-    let mut coefficients = Array1::zeros(p);
-    
-    // Simple approach for single monotonic term (most common case)
-    if smooth_terms.len() == 1 && all_monotonic {
-        let term = &smooth_terms[0];
-        let (start, end) = term_indices[0];
-        let lambda = lambdas[0];
-        let k = term.k();
-        
-        // Extract parametric part
-        let x_param = x.slice(ndarray::s![.., 0..p_param]).to_owned();
-        let x_smooth = x.slice(ndarray::s![.., start..end]).to_owned();
-        
-        // Solve jointly using augmented system with NNLS for smooth part
-        // For now, use iterative approach: fix parametric, solve smooth; fix smooth, solve parametric
-        
-        let sqrt_w: Array1<f64> = w.iter().map(|&wi| wi.sqrt()).collect();
-        
-        // Apply weights
-        let mut x_param_w = x_param.clone();
-        let mut x_smooth_w = x_smooth.clone();
-        let mut z_w = z.clone();
-        
-        for i in 0..n {
-            let sw = sqrt_w[i];
-            for j in 0..p_param {
-                x_param_w[[i, j]] *= sw;
-            }
-            for j in 0..k {
-                x_smooth_w[[i, j]] *= sw;
-            }
-            z_w[i] *= sw;
-        }
-        
-        // Iterate between parametric and smooth (2 iterations is usually enough)
-        let mut coef_param = Array1::zeros(p_param);
-        let mut coef_smooth = Array1::zeros(k);
-        
-        // Pre-compute penalty matrix in nalgebra format once
-        let penalty_contig = if term.penalty.is_standard_layout() {
-            term.penalty.clone()
-        } else {
-            term.penalty.as_standard_layout().to_owned()
-        };
-        let penalty_nalg = DMatrix::from_row_slice(k, k, penalty_contig.as_slice().unwrap());
-        
-        // Pre-compute weighted smooth basis once
-        let x_smooth_contig = if x_smooth_w.is_standard_layout() { 
-            x_smooth_w.clone() 
-        } else { 
-            x_smooth_w.as_standard_layout().to_owned() 
-        };
-        let x_smooth_nalg = DMatrix::from_row_slice(n, k, x_smooth_contig.as_slice().unwrap());
-        let w_ones = DVector::from_element(n, 1.0);  // Already weighted
-        
-        for _iter in 0..2 {
-            // Fix smooth, solve for parametric
-            let residual_param: Array1<f64> = z_w.iter()
-                .zip(x_smooth_w.rows())
-                .map(|(&zi, row)| {
-                    let smooth_contrib: f64 = row.iter().zip(coef_smooth.iter()).map(|(&x, &c)| x * c).sum();
-                    zi - smooth_contrib
-                })
-                .collect();
-            
-            // Standard least squares for parametric
-            let xtx_param = x_param_w.t().dot(&x_param_w);
-            let xtz_param = x_param_w.t().dot(&residual_param);
-            coef_param = solve_symmetric(&xtx_param, &xtz_param)?;
-            
-            // Fix parametric, solve for smooth with NNLS
-            let residual_smooth: Array1<f64> = z_w.iter()
-                .zip(x_param_w.rows())
-                .map(|(&zi, row)| {
-                    let param_contrib: f64 = row.iter().zip(coef_param.iter()).map(|(&x, &c)| x * c).sum();
-                    zi - param_contrib
-                })
-                .collect();
-            
-            // Convert residual to nalgebra (matrices already pre-computed above)
-            let z_nalg = DVector::from_row_slice(residual_smooth.as_slice().unwrap());
-            
-            // Solve with NNLS (or negative NNLS for decreasing)
-            let nnls_result = match term.monotonicity {
-                Monotonicity::Increasing => {
-                    nnls_weighted_penalized(&x_smooth_nalg, &z_nalg, &w_ones, &penalty_nalg, lambda, nnls_config)
-                },
-                Monotonicity::Decreasing => {
-                    // For decreasing, negate the basis and result
-                    let x_neg = -&x_smooth_nalg;
-                    let result = nnls_weighted_penalized(&x_neg, &z_nalg, &w_ones, &penalty_nalg, lambda, nnls_config);
-                    super::nnls::NNLSResult {
-                        x: -result.x,
-                        residual_norm: result.residual_norm,
-                        iterations: result.iterations,
-                        converged: result.converged,
-                    }
-                },
-                Monotonicity::None => unreachable!(),
-            };
-            
-            for j in 0..k {
-                coef_smooth[j] = nnls_result.x[j];
-            }
-        }
-        
-        // Combine coefficients
-        for j in 0..p_param {
-            coefficients[j] = coef_param[j];
-        }
-        for j in 0..k {
-            coefficients[start + j] = coef_smooth[j];
-        }
-        
-        return Ok(coefficients);
-    }
-    
-    // For multiple terms or mixed monotonic/unconstrained, use coordinate descent
-    // Initialize with unconstrained solution
-    let mut penalty_matrix = Array2::zeros((p, p));
+    let mut penalty_mat = Array2::zeros((p, p));
     for (i, term) in smooth_terms.iter().enumerate() {
-        embed_penalty(&mut penalty_matrix, &term.penalty, term_indices[i].0, lambdas[i]);
+        embed_penalty(&mut penalty_mat, &term.penalty, term_indices[i].0, lambdas[i]);
     }
-    let (init_coef, _) = solve_weighted_least_squares_with_penalty_matrix(x, z, w, &penalty_matrix)?;
-    coefficients = init_coef;
+    let (mut coefficients, _) = solve_weighted_least_squares_with_penalty_matrix(x, z, w, &penalty_mat)?;
     
-    // Project monotonic term coefficients to satisfy constraints
+    // Project monotonic term coefficients via PAVA
     for (i, term) in smooth_terms.iter().enumerate() {
         if term.is_monotonic() {
             let (start, end) = term_indices[i];
-            for j in start..end {
-                match term.monotonicity {
-                    Monotonicity::Increasing => {
-                        if coefficients[j] < 0.0 {
-                            coefficients[j] = 0.0;
-                        }
-                    },
-                    Monotonicity::Decreasing => {
-                        if coefficients[j] > 0.0 {
-                            coefficients[j] = 0.0;
-                        }
-                    },
-                    Monotonicity::None => {},
-                }
-            }
+            apply_monotone_projection(
+                &mut coefficients.as_slice_mut().unwrap()[start..end],
+                term.monotonicity,
+            );
         }
     }
     
@@ -726,7 +650,6 @@ pub fn fit_smooth_glm_full_matrix(
                     initial_lambda: s.initial_lambda,
                 })
                 .collect();
-            let nnls_config = super::nnls::NNLSConfig::default();
             new_coef = solve_constrained_wls(
                 x_combined,
                 &working_response,
@@ -735,7 +658,6 @@ pub fn fit_smooth_glm_full_matrix(
                 &term_indices,
                 &lambdas,
                 p_param,
-                &nnls_config,
             )?;
         } else {
             let (coef, xtwinv) = solve_wls_from_precomputed(

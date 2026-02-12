@@ -319,10 +319,11 @@ def _fit_with_smooth_penalties(
         monotonicity_specs.append(mono)
     
     # Call unified Rust solver — full design matrix, no splitting needed
+    has_monotonic = any(m is not None for m in monotonicity_specs)
     rust_result, smooth_meta = _fit_smooth_unified(
         y, X, smooth_col_indices, penalties, family,
         link, offset, weights, max_iter, tol, lambda_min, lambda_max,
-        monotonicity_specs if any(m is not None for m in monotonicity_specs) else None,
+        monotonicity_specs if has_monotonic else None,
         store_design_matrix,
     )
     
