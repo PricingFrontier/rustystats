@@ -199,8 +199,14 @@ def bs(
         # decreasing).  Passing increasing=False here would flip the basis
         # a second time, producing the wrong sign.
         if knots is not None and boundary_knots is not None:
-            return _ms_with_knots_rust(x, knots, degree, boundary_knots, effective_df, True)
-        return _ms_rust(x, effective_df, degree, boundary_knots, True)
+            result = _ms_with_knots_rust(x, knots, degree, boundary_knots, effective_df, True)
+        else:
+            result = _ms_rust(x, effective_df, degree, boundary_knots, True)
+        # Drop first column (constant 1.0 due to partition of unity) for
+        # identifiability — same reason B-splines drop the first column.
+        if not include_intercept and result.shape[1] > 1:
+            result = result[:, 1:]
+        return result
     
     if knots is not None:
         # Use explicit knots
@@ -473,15 +479,16 @@ class SplineTerm:
                       monotonicity=effective_monotonicity)
             
             # Generate appropriate names
+            n_cols = basis.shape[1]
             if self._is_smooth:
                 if effective_monotonicity:
                     sign = "+" if effective_monotonicity == "increasing" else "-"
-                    names = [f"bs({self.var_name}, {i+1}/{self.df}, k, {sign})" for i in range(self.df)]
+                    names = [f"bs({self.var_name}, {i+1}/{n_cols}, k, {sign})" for i in range(n_cols)]
                 else:
-                    names = [f"bs({self.var_name}, {i+1}/{self.df}, k)" for i in range(self.df)]
+                    names = [f"bs({self.var_name}, {i+1}/{n_cols}, k)" for i in range(n_cols)]
             elif effective_monotonicity:
                 sign = "+" if effective_monotonicity == "increasing" else "-"
-                names = [f"bs({self.var_name}, {i+1}/{self.df}, {sign})" for i in range(self.df)]
+                names = [f"bs({self.var_name}, {i+1}/{n_cols}, {sign})" for i in range(n_cols)]
             else:
                 names = bs_names(self.var_name, self.df, include_intercept=False)
         elif self.spline_type == "ns":
