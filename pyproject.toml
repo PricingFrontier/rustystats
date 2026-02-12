@@ -23,7 +23,7 @@ name = "rustystats"
 version = "0.4.8"
 description = "Fast Generalized Linear Models with a Rust backend - statsmodels compatible"
 readme = "README.md"
-license = { text = "Elastic-2.0" }
+license = { file = "LICENSE" }
 requires-python = ">=3.10"
 classifiers = [
     "Programming Language :: Rust",
