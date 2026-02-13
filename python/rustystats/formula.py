@@ -384,9 +384,10 @@ def _fit_glm_core(
     from rustystats.validation import validate_glm_inputs
     
     # Validate inputs before fitting - catches NaN, Inf, invalid response values, etc.
-    is_exposure = family.lower() in ("poisson", "quasipoisson", "gamma", "negbinomial") and link in (None, "log")
+    # Note: is_exposure_offset=False because offset is already log-transformed by _process_offset
+    # (raw exposure validation happens there before log-transform)
     y, X, weights, offset = validate_glm_inputs(
-        y, X, family, weights, offset, feature_names, is_exposure_offset=is_exposure
+        y, X, family, weights, offset, feature_names, is_exposure_offset=False
     )
     
     # Check for smooth terms (s() terms with automatic lambda selection)
@@ -485,15 +486,28 @@ class _GLMBase:
         self,
         offset: Optional[Union[str, np.ndarray]],
     ) -> Optional[np.ndarray]:
-        """Process offset specification, applying log for log-link families."""
+        """Process offset specification, applying log for log-link families.
+        
+        For log-link families (Poisson, Gamma, etc.), exposure must be strictly
+        positive before log-transform. Validation is done here on raw values.
+        """
+        from rustystats.exceptions import ValidationError
+        
         if offset is None:
             return None
         
         if isinstance(offset, str):
             offset_values = _get_column(self.data, offset)
             if self._uses_log_link():
-                if np.all(offset_values > 0) and np.mean(offset_values) > 0.01:
-                    offset_values = np.log(offset_values)
+                # Validate raw exposure before log-transform
+                n_invalid = np.sum(offset_values <= 0)
+                if n_invalid > 0:
+                    raise ValidationError(
+                        f"Exposure '{offset}' must be strictly positive for {self.family} family with log link. "
+                        f"Found {n_invalid} values <= 0. "
+                        "Exposure represents the denominator (e.g., time, population) and cannot be zero or negative."
+                    )
+                offset_values = np.log(offset_values)
             return offset_values.astype(np.float64)
         else:
             return np.asarray(offset, dtype=np.float64)
