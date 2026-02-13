@@ -381,6 +381,13 @@ def _fit_glm_core(
         GCV score for smooth models
     """
     from rustystats._rustystats import fit_glm_py as _fit_glm_rust
+    from rustystats.validation import validate_glm_inputs
+    
+    # Validate inputs before fitting - catches NaN, Inf, invalid response values, etc.
+    is_exposure = family.lower() in ("poisson", "quasipoisson", "gamma", "negbinomial") and link in (None, "log")
+    y, X, weights, offset = validate_glm_inputs(
+        y, X, family, weights, offset, feature_names, is_exposure_offset=is_exposure
+    )
     
     # Check for smooth terms (s() terms with automatic lambda selection)
     smooth_terms, smooth_col_indices = builder.get_smooth_terms()
