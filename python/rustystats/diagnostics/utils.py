@@ -32,23 +32,36 @@ def discretize(values: np.ndarray, n_bins: int) -> np.ndarray:
     np.ndarray
         Integer bin assignments.
     """
-    if values.dtype == object or str(values.dtype).startswith('str'):
-        # Categorical - map to integers
-        unique_vals = np.unique(values)
-        mapping = {v: i for i, v in enumerate(unique_vals)}
-        return np.array([mapping[v] for v in values])
-    else:
-        # Continuous - quantile bins
-        values = values.astype(np.float64)
-        valid_mask = ~np.isnan(values) & ~np.isinf(values)
-        
-        if not np.any(valid_mask):
-            return np.zeros(len(values), dtype=int)
-        
-        quantiles = np.percentile(values[valid_mask], np.linspace(0, 100, n_bins + 1))
-        bins = np.digitize(values, quantiles[1:-1])
-        bins[~valid_mask] = n_bins  # Invalid values in separate bin
-        return bins
+    # Check if array is non-numeric (object or string dtype)
+    is_string_like = values.dtype.kind in ('O', 'U', 'S')  # object, unicode, bytes
+    
+    if is_string_like:
+        # Try to coerce to float64 - handles Decimal, mixed numeric, and None/null
+        try:
+            values = np.asarray(values, dtype=np.float64)
+        except (ValueError, TypeError):
+            # Truly categorical - map to integers
+            # Filter None/null for sorting, assign them to a separate bin
+            non_null_mask = np.array([v is not None for v in values])
+            if not np.any(non_null_mask):
+                return np.zeros(len(values), dtype=int)
+            
+            unique_vals = np.unique(values[non_null_mask])
+            mapping = {v: i for i, v in enumerate(unique_vals)}
+            result = np.array([mapping.get(v, len(unique_vals)) for v in values])
+            return result
+    
+    # Continuous - quantile bins
+    values = values.astype(np.float64)
+    valid_mask = ~np.isnan(values) & ~np.isinf(values)
+    
+    if not np.any(valid_mask):
+        return np.zeros(len(values), dtype=int)
+    
+    quantiles = np.percentile(values[valid_mask], np.linspace(0, 100, n_bins + 1))
+    bins = np.digitize(values, quantiles[1:-1])
+    bins[~valid_mask] = n_bins  # Invalid values in separate bin
+    return bins
 
 
 def validate_factor_in_data(name: str, data, factor_type: str = "Factor") -> None:

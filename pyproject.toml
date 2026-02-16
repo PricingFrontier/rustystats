@@ -20,7 +20,7 @@ build-backend = "maturin"
 
 [project]
 name = "rustystats"
-version = "0.4.11"
+version = "0.4.13"
 description = "Fast Generalized Linear Models with a Rust backend - statsmodels compatible"
 readme = "README.md"
 license = { file = "LICENSE" }

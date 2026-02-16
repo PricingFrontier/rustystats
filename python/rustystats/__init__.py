@@ -129,6 +129,9 @@ from rustystats.exceptions import (
     SerializationError,
 )
 
+# Input validation (for advanced users who want to pre-validate)
+from rustystats.validation import validate_glm_inputs
+
 # What gets exported when someone does `from rustystats import *`
 __all__ = [
     # Version
@@ -193,4 +196,6 @@ __all__ = [
     "EncodingError",
     "ValidationError",
     "SerializationError",
+    # Input validation
+    "validate_glm_inputs",
 ]
