@@ -18,11 +18,13 @@ Protobuf serialization is implemented from scratch in Rust -- no external
 dependencies beyond numpy are required.
 """
 
+from __future__ import annotations
+
 import json
 import re
 import numpy as np
 from collections import OrderedDict, defaultdict
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Any
+from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from rustystats.formula import GLMModel

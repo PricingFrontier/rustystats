@@ -46,7 +46,7 @@ pub(crate) fn family_from_name(name: &str, var_power: f64, theta: f64) -> PyResu
         if parsed_theta <= 0.0 {
             return Err(PyValueError::new_err(format!("theta must be > 0 for Negative Binomial, got {}", parsed_theta)));
         }
-        return Ok(Box::new(NegativeBinomialFamily::new(parsed_theta)));
+        return Ok(Box::new(NegativeBinomialFamily::new(parsed_theta).map_err(|e| PyValueError::new_err(e))?));
     }
     
     match lower.as_str() {
@@ -58,7 +58,7 @@ pub(crate) fn family_from_name(name: &str, var_power: f64, theta: f64) -> PyResu
             if var_power > 0.0 && var_power < 1.0 {
                 return Err(PyValueError::new_err(format!("var_power must be <= 0 or >= 1, got {}", var_power)));
             }
-            Ok(Box::new(TweedieFamily::new(var_power)))
+            Ok(Box::new(TweedieFamily::new(var_power).map_err(|e| PyValueError::new_err(e))?))
         }
         "quasipoisson" | "quasi-poisson" | "quasi_poisson" => Ok(Box::new(QuasiPoissonFamily)),
         "quasibinomial" | "quasi-binomial" | "quasi_binomial" => Ok(Box::new(QuasiBinomialFamily)),
@@ -232,7 +232,7 @@ impl PyTweedieFamily {
                 format!("var_power must be <= 0 or >= 1, got {}", var_power)
             ));
         }
-        Ok(Self { inner: TweedieFamily::new(var_power) })
+        Ok(Self { inner: TweedieFamily::new(var_power).map_err(|e| PyValueError::new_err(e))? })
     }
     
     fn name(&self) -> &str {
@@ -314,7 +314,7 @@ impl PyNegativeBinomialFamily {
                 format!("theta must be > 0, got {}", theta)
             ));
         }
-        Ok(Self { inner: NegativeBinomialFamily::new(theta) })
+        Ok(Self { inner: NegativeBinomialFamily::new(theta).map_err(|e| PyValueError::new_err(e))? })
     }
 
     fn name(&self) -> &str {

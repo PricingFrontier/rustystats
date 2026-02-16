@@ -257,7 +257,8 @@ pub fn compute_loss_metrics_py<'py>(
     dict.set_item("mse", mse(&y_arr, &mu_arr, None))?;
     dict.set_item("rmse", rmse(&y_arr, &mu_arr, None))?;
     dict.set_item("mae", mae(&y_arr, &mu_arr, None))?;
-    dict.set_item("family_loss", compute_family_loss(family, &y_arr, &mu_arr, None, None, None))?;
+    dict.set_item("family_loss", compute_family_loss(family, &y_arr, &mu_arr, None, None, None)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?)?;
     
     Ok(dict.into_py(py))
 }
@@ -679,7 +680,8 @@ pub fn compute_null_deviance_py(
     let y_arr = y.as_array().to_owned();
     let exp_arr = exposure.map(|e| e.as_array().to_owned());
     
-    Ok(null_deviance(&y_arr, family, exp_arr.as_ref()))
+    null_deviance(&y_arr, family, exp_arr.as_ref())
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
 }
 
 /// Compute unit deviance from Rust

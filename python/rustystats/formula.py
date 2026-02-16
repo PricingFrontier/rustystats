@@ -26,7 +26,7 @@ Example
 from __future__ import annotations
 
 import weakref
-from typing import Optional, Union, List, Dict, Any, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 from dataclasses import dataclass
 import warnings
 import numpy as np
@@ -1466,7 +1466,6 @@ class GLMModel:
 # Dict-based API
 # =============================================================================
 
-from typing import Dict, Any, Set
 from rustystats.interactions import (
     ParsedFormula, InteractionTerm, TargetEncodingTermSpec, 
     IdentityTermSpec, CategoricalTermSpec, ConstraintTermSpec,

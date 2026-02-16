@@ -28,7 +28,8 @@ Dict API:
     >>> result = rs.glm_dict(response="y", terms={"brand": {"type": "target_encoding"}, "age": {"type": "linear"}}, data=data, family="poisson").fit()
 """
 
-from typing import Dict, List, Optional, Tuple, Union
+from __future__ import annotations
+
 import numpy as np
 
 from . import _rustystats

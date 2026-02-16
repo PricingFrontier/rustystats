@@ -9,13 +9,15 @@ Spline basis functions are collapsed to piecewise-linear NormContinuous
 derived fields evaluated on a configurable grid.
 """
 
+from __future__ import annotations
+
 import re
 import numpy as np
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
 from collections import OrderedDict, defaultdict
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Set
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from rustystats.formula import GLMModel

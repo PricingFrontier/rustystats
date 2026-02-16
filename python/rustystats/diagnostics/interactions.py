@@ -7,7 +7,7 @@ residual-based analysis (post-fit) for DiagnosticsComputer.
 
 from __future__ import annotations
 
-from typing import Optional, List, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 import numpy as np
 

@@ -33,7 +33,7 @@ Example
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional, Tuple, Literal, TYPE_CHECKING
+from typing import Literal, TYPE_CHECKING
 import numpy as np
 
 from rustystats.exceptions import FittingError, ValidationError

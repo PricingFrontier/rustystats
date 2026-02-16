@@ -8,7 +8,6 @@ Follows patterns from statsmodels and scikit-learn.
 
 from __future__ import annotations
 
-from typing import Optional, Tuple, List
 import warnings
 
 import numpy as np

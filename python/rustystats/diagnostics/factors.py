@@ -12,7 +12,7 @@ _FactorDiagnosticsComputer handles per-factor analysis including:
 from __future__ import annotations
 
 import re
-from typing import Optional, List, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -439,11 +439,11 @@ class _FactorDiagnosticsComputer:
                 significant=result["significant"],
             )
         except Exception as e:
-            import warnings
-            warnings.warn(
-                f"Score test computation failed for continuous factor: {e}. "
+            import logging
+            logging.getLogger(__name__).warning(
+                "Score test computation failed for continuous factor: %s. "
                 "This may indicate numerical issues with the design matrix or IRLS weights.",
-                RuntimeWarning
+                e,
             )
             return None
     
@@ -495,11 +495,11 @@ class _FactorDiagnosticsComputer:
                 significant=result["significant"],
             )
         except Exception as e:
-            import warnings
-            warnings.warn(
-                f"Score test computation failed for categorical factor: {e}. "
+            import logging
+            logging.getLogger(__name__).warning(
+                "Score test computation failed for categorical factor: %s. "
                 "This may indicate numerical issues with the target encoding or design matrix.",
-                RuntimeWarning
+                e,
             )
             return None
     

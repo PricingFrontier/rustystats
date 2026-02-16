@@ -52,6 +52,10 @@ pub const MU_MIN_PROBABILITY: f64 = 1e-10;
 /// Very small weights can cause condition number issues.
 pub const MIN_IRLS_WEIGHT: f64 = 1e-10;
 
+/// Maximum weight to prevent numerical instability in IRLS.
+/// Very large weights can dominate the system and cause overflow.
+pub const MAX_IRLS_WEIGHT: f64 = 1e10;
+
 // =============================================================================
 // Algorithm Defaults
 // =============================================================================

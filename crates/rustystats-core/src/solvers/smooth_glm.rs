@@ -24,6 +24,7 @@
 
 use ndarray::{Array1, Array2, ArrayView2, s};
 
+use crate::constants::MAX_IRLS_WEIGHT;
 use crate::error::{RustyStatsError, Result};
 use crate::families::Family;
 use crate::links::Link;
@@ -572,7 +573,7 @@ pub fn fit_smooth_glm_full_matrix(
             .map(|i| {
                 let d = link_deriv[i];
                 let v = variance[i];
-                (1.0 / (v * d * d)).max(config.irls_config.min_weight).min(1e10)
+                (1.0 / (v * d * d)).max(config.irls_config.min_weight).min(MAX_IRLS_WEIGHT)
             })
             .collect();
         

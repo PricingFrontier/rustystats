@@ -22,7 +22,7 @@ Example
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple, Union, Dict, Set, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 import numpy as np
 

@@ -434,7 +434,8 @@ fn compute_ae_bin(
     let y_arr = Array1::from_vec(y_bin);
     let mu_arr = Array1::from_vec(mu_bin);
     let w_arr = Array1::from_vec(w_bin);
-    let loss = compute_family_loss(family, &y_arr, &mu_arr, Some(&w_arr), var_power, theta);
+    let loss = compute_family_loss(family, &y_arr, &mu_arr, Some(&w_arr), var_power, theta)
+        .unwrap_or(f64::NAN);
     
     // Confidence interval for A/E
     let (ae_ci_lower, ae_ci_upper) = if predicted_sum > 0.0 && actual_sum >= 0.0 {

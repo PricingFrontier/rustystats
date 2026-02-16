@@ -322,21 +322,21 @@ pub fn negbinomial_deviance_loss(
 }
 
 /// Get the default loss function name for a family.
-/// Panics on unknown family - callers should validate family names first.
-pub fn default_loss_name(family: &str) -> &'static str {
+/// Returns an error for unknown family names.
+pub fn default_loss_name(family: &str) -> Result<&'static str, String> {
     match family.to_lowercase().as_str() {
-        "gaussian" | "normal" => "mse",
-        "poisson" | "quasipoisson" => "poisson_deviance",
-        "gamma" => "gamma_deviance",
-        "binomial" | "quasibinomial" => "log_loss",
-        "tweedie" => "tweedie_deviance",
-        "negativebinomial" | "negbinomial" | "nb" => "negbinomial_deviance",
-        other => panic!("Unknown family '{}' in default_loss_name", other),
+        "gaussian" | "normal" => Ok("mse"),
+        "poisson" | "quasipoisson" => Ok("poisson_deviance"),
+        "gamma" => Ok("gamma_deviance"),
+        "binomial" | "quasibinomial" => Ok("log_loss"),
+        "tweedie" => Ok("tweedie_deviance"),
+        "negativebinomial" | "negbinomial" | "nb" => Ok("negbinomial_deviance"),
+        other => Err(format!("Unknown family '{}' in default_loss_name", other)),
     }
 }
 
 /// Compute the default loss for a given family.
-/// Panics on unknown family - callers should validate family names first.
+/// Returns an error for unknown family names.
 pub fn compute_family_loss(
     family: &str,
     y: &Array1<f64>,
@@ -344,7 +344,7 @@ pub fn compute_family_loss(
     weights: Option<&Array1<f64>>,
     var_power: Option<f64>,
     theta: Option<f64>,
-) -> f64 {
+) -> Result<f64, String> {
     let lower = family.to_lowercase();
     
     // Handle negativebinomial with optional theta parameter like "negativebinomial(theta=1.38)"
@@ -357,16 +357,16 @@ pub fn compute_family_loss(
         } else {
             theta.unwrap_or(1.0)
         };
-        return negbinomial_deviance_loss(y, mu, parsed_theta, weights);
+        return Ok(negbinomial_deviance_loss(y, mu, parsed_theta, weights));
     }
     
     match lower.as_str() {
-        "gaussian" | "normal" => mse(y, mu, weights),
-        "poisson" | "quasipoisson" => poisson_deviance_loss(y, mu, weights),
-        "gamma" => gamma_deviance_loss(y, mu, weights),
-        "binomial" | "quasibinomial" => log_loss(y, mu, weights),
-        "tweedie" => tweedie_deviance_loss(y, mu, var_power.unwrap_or(1.5), weights),
-        other => panic!("Unknown family '{}' in compute_family_loss", other),
+        "gaussian" | "normal" => Ok(mse(y, mu, weights)),
+        "poisson" | "quasipoisson" => Ok(poisson_deviance_loss(y, mu, weights)),
+        "gamma" => Ok(gamma_deviance_loss(y, mu, weights)),
+        "binomial" | "quasibinomial" => Ok(log_loss(y, mu, weights)),
+        "tweedie" => Ok(tweedie_deviance_loss(y, mu, var_power.unwrap_or(1.5), weights)),
+        other => Err(format!("Unknown family '{}' in compute_family_loss", other)),
     }
 }
 
@@ -677,20 +677,21 @@ mod tests {
     
     #[test]
     fn test_default_loss_name() {
-        assert_eq!(default_loss_name("gaussian"), "mse");
-        assert_eq!(default_loss_name("Gaussian"), "mse");
-        assert_eq!(default_loss_name("normal"), "mse");
-        assert_eq!(default_loss_name("poisson"), "poisson_deviance");
-        assert_eq!(default_loss_name("Poisson"), "poisson_deviance");
-        assert_eq!(default_loss_name("quasipoisson"), "poisson_deviance");
-        assert_eq!(default_loss_name("gamma"), "gamma_deviance");
-        assert_eq!(default_loss_name("Gamma"), "gamma_deviance");
-        assert_eq!(default_loss_name("binomial"), "log_loss");
-        assert_eq!(default_loss_name("quasibinomial"), "log_loss");
-        assert_eq!(default_loss_name("tweedie"), "tweedie_deviance");
-        assert_eq!(default_loss_name("negativebinomial"), "negbinomial_deviance");
-        assert_eq!(default_loss_name("negbinomial"), "negbinomial_deviance");
-        assert_eq!(default_loss_name("nb"), "negbinomial_deviance");
+        assert_eq!(default_loss_name("gaussian").unwrap(), "mse");
+        assert_eq!(default_loss_name("Gaussian").unwrap(), "mse");
+        assert_eq!(default_loss_name("normal").unwrap(), "mse");
+        assert_eq!(default_loss_name("poisson").unwrap(), "poisson_deviance");
+        assert_eq!(default_loss_name("Poisson").unwrap(), "poisson_deviance");
+        assert_eq!(default_loss_name("quasipoisson").unwrap(), "poisson_deviance");
+        assert_eq!(default_loss_name("gamma").unwrap(), "gamma_deviance");
+        assert_eq!(default_loss_name("Gamma").unwrap(), "gamma_deviance");
+        assert_eq!(default_loss_name("binomial").unwrap(), "log_loss");
+        assert_eq!(default_loss_name("quasibinomial").unwrap(), "log_loss");
+        assert_eq!(default_loss_name("tweedie").unwrap(), "tweedie_deviance");
+        assert_eq!(default_loss_name("negativebinomial").unwrap(), "negbinomial_deviance");
+        assert_eq!(default_loss_name("negbinomial").unwrap(), "negbinomial_deviance");
+        assert_eq!(default_loss_name("nb").unwrap(), "negbinomial_deviance");
+        assert!(default_loss_name("unknown").is_err());
     }
     
     #[test]
@@ -698,7 +699,7 @@ mod tests {
         let y = array![1.0, 2.0, 3.0];
         let mu = array![1.5, 2.5, 3.5];
         
-        let result = compute_family_loss("gaussian", &y, &mu, None, None, None);
+        let result = compute_family_loss("gaussian", &y, &mu, None, None, None).unwrap();
         let expected = mse(&y, &mu, None);
         assert_abs_diff_eq!(result, expected, epsilon = 1e-10);
     }
@@ -708,7 +709,7 @@ mod tests {
         let y = array![1.0, 2.0, 3.0];
         let mu = array![1.0, 2.0, 3.0];
         
-        let result = compute_family_loss("poisson", &y, &mu, None, None, None);
+        let result = compute_family_loss("poisson", &y, &mu, None, None, None).unwrap();
         let expected = poisson_deviance_loss(&y, &mu, None);
         assert_abs_diff_eq!(result, expected, epsilon = 1e-10);
     }
@@ -718,7 +719,7 @@ mod tests {
         let y = array![1.0, 2.0, 3.0];
         let mu = array![1.0, 2.0, 3.0];
         
-        let result = compute_family_loss("gamma", &y, &mu, None, None, None);
+        let result = compute_family_loss("gamma", &y, &mu, None, None, None).unwrap();
         let expected = gamma_deviance_loss(&y, &mu, None);
         assert_abs_diff_eq!(result, expected, epsilon = 1e-10);
     }
@@ -728,7 +729,7 @@ mod tests {
         let y = array![0.0, 1.0, 0.0, 1.0];
         let mu = array![0.2, 0.8, 0.3, 0.7];
         
-        let result = compute_family_loss("binomial", &y, &mu, None, None, None);
+        let result = compute_family_loss("binomial", &y, &mu, None, None, None).unwrap();
         let expected = log_loss(&y, &mu, None);
         assert_abs_diff_eq!(result, expected, epsilon = 1e-10);
     }
@@ -738,7 +739,7 @@ mod tests {
         let y = array![0.0, 1.0, 2.0];
         let mu = array![0.5, 1.0, 2.0];
         
-        let result = compute_family_loss("tweedie", &y, &mu, None, Some(1.5), None);
+        let result = compute_family_loss("tweedie", &y, &mu, None, Some(1.5), None).unwrap();
         let expected = tweedie_deviance_loss(&y, &mu, 1.5, None);
         assert_abs_diff_eq!(result, expected, epsilon = 1e-10);
     }
@@ -748,7 +749,7 @@ mod tests {
         let y = array![1.0, 2.0, 3.0];
         let mu = array![1.0, 2.0, 3.0];
         
-        let result = compute_family_loss("negativebinomial", &y, &mu, None, None, Some(1.0));
+        let result = compute_family_loss("negativebinomial", &y, &mu, None, None, Some(1.0)).unwrap();
         let expected = negbinomial_deviance_loss(&y, &mu, 1.0, None);
         assert_abs_diff_eq!(result, expected, epsilon = 1e-10);
     }
@@ -758,7 +759,7 @@ mod tests {
         let y = array![1.0, 2.0, 3.0];
         let mu = array![1.0, 2.0, 3.0];
         
-        let result = compute_family_loss("negativebinomial(theta=2.5)", &y, &mu, None, None, None);
+        let result = compute_family_loss("negativebinomial(theta=2.5)", &y, &mu, None, None, None).unwrap();
         let expected = negbinomial_deviance_loss(&y, &mu, 2.5, None);
         assert_abs_diff_eq!(result, expected, epsilon = 1e-10);
     }
@@ -768,7 +769,7 @@ mod tests {
         let y = array![1.0, 2.0, 3.0];
         let mu = array![1.0, 2.0, 3.0];
         
-        let result = compute_family_loss("quasipoisson", &y, &mu, None, None, None);
+        let result = compute_family_loss("quasipoisson", &y, &mu, None, None, None).unwrap();
         let expected = poisson_deviance_loss(&y, &mu, None);
         assert_abs_diff_eq!(result, expected, epsilon = 1e-10);
     }
@@ -778,7 +779,7 @@ mod tests {
         let y = array![0.0, 1.0];
         let mu = array![0.3, 0.7];
         
-        let result = compute_family_loss("quasibinomial", &y, &mu, None, None, None);
+        let result = compute_family_loss("quasibinomial", &y, &mu, None, None, None).unwrap();
         let expected = log_loss(&y, &mu, None);
         assert_abs_diff_eq!(result, expected, epsilon = 1e-10);
     }

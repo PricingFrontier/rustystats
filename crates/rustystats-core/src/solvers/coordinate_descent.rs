@@ -49,7 +49,7 @@ use ndarray::ArrayView2;
 use ndarray::{Array1, Array2};
 use rayon::prelude::*;
 
-use crate::constants::ZERO_TOL;
+use crate::constants::{ZERO_TOL, MAX_IRLS_WEIGHT};
 use crate::error::{RustyStatsError, Result};
 use crate::families::Family;
 use crate::links::Link;
@@ -247,10 +247,10 @@ pub(crate) fn fit_glm_coordinate_descent(
                 let d = link_deriv[i];
                 let iw = if let Some(ref hw) = hessian_weights {
                     // True Hessian weight - use directly without dividing by d²
-                    hw[i].max(min_weight).min(1e10)
+                    hw[i].max(min_weight).min(MAX_IRLS_WEIGHT)
                 } else {
                     let v = variance.as_ref().unwrap()[i];
-                    (1.0 / (v * d * d)).max(min_weight).min(1e10)
+                    (1.0 / (v * d * d)).max(min_weight).min(MAX_IRLS_WEIGHT)
                 };
                 let cw = prior_weights_vec[i] * iw;
                 let wr = (eta[i] - offset_vec[i]) + (y[i] - mu[i]) * d;

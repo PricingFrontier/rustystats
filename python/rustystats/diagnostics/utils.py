@@ -7,8 +7,6 @@ Contains common computation helpers used by both DiagnosticsComputer
 
 from __future__ import annotations
 
-from typing import List
-
 import numpy as np
 
 from rustystats.exceptions import ValidationError

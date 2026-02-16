@@ -278,7 +278,7 @@ pub fn null_deviance(
     y: &Array1<f64>,
     family_name: &str,
     weights: Option<&Array1<f64>>,
-) -> f64 {
+) -> Result<f64, String> {
     null_deviance_with_offset(y, family_name, weights, None)
 }
 
@@ -292,7 +292,7 @@ pub fn null_deviance_with_offset(
     family_name: &str,
     weights: Option<&Array1<f64>>,
     offset: Option<&Array1<f64>>,
-) -> f64 {
+) -> Result<f64, String> {
     let n = y.len();
     
     // Compute null model predictions accounting for offset
@@ -427,16 +427,16 @@ pub fn null_deviance_with_offset(
                 })
         }
         other => {
-            panic!("Unknown family '{}' in null_deviance computation. \
-                   Supported families: gaussian, poisson, binomial, gamma, quasipoisson, quasibinomial, negativebinomial.", other)
+            return Err(format!("Unknown family '{}' in null_deviance computation. \
+                   Supported families: gaussian, poisson, binomial, gamma, quasipoisson, quasibinomial, negativebinomial.", other));
         }
     };
     
     // Sum up (weighted if applicable)
-    match weights {
+    Ok(match weights {
         Some(w) => (&unit_dev * w).sum(),
         None => unit_dev.sum(),
-    }
+    })
 }
 
 /// Compute null deviance using a Family trait object instead of family name string.
@@ -717,7 +717,7 @@ mod tests {
     fn test_null_deviance_gaussian() {
         let y = array![1.0, 2.0, 3.0, 4.0, 5.0];
         
-        let null_dev = null_deviance(&y, "Gaussian", None);
+        let null_dev = null_deviance(&y, "Gaussian", None).unwrap();
         
         // Mean = 3.0
         // Null deviance = Σ(y - 3)² = 4 + 1 + 0 + 1 + 4 = 10
@@ -729,7 +729,7 @@ mod tests {
         // Test case-insensitive "normal" alias
         let y = array![1.0, 3.0];
         
-        let null_dev = null_deviance(&y, "normal", None);
+        let null_dev = null_deviance(&y, "normal", None).unwrap();
         
         // Mean = 2.0
         // Null deviance = (1-2)² + (3-2)² = 1 + 1 = 2
@@ -740,7 +740,7 @@ mod tests {
     fn test_null_deviance_poisson() {
         let y = array![0.0, 1.0, 2.0, 3.0, 4.0];
         
-        let null_dev = null_deviance(&y, "Poisson", None);
+        let null_dev = null_deviance(&y, "Poisson", None).unwrap();
         
         // Mean = 2.0
         // This is more complex to compute manually, but should be positive
@@ -751,7 +751,7 @@ mod tests {
     fn test_null_deviance_quasipoisson() {
         let y = array![1.0, 2.0, 3.0];
         
-        let null_dev = null_deviance(&y, "quasipoisson", None);
+        let null_dev = null_deviance(&y, "quasipoisson", None).unwrap();
         
         assert!(null_dev >= 0.0);
     }
@@ -761,7 +761,7 @@ mod tests {
         let y = array![1.0, 5.0];
         let weights = array![3.0, 1.0];  // More weight on first obs
         
-        let null_dev = null_deviance(&y, "Gaussian", Some(&weights));
+        let null_dev = null_deviance(&y, "Gaussian", Some(&weights)).unwrap();
         
         // Weighted mean = (3×1 + 1×5) / 4 = 8/4 = 2.0
         // Null deviance = 3×(1-2)² + 1×(5-2)² = 3×1 + 1×9 = 12
@@ -772,7 +772,7 @@ mod tests {
     fn test_null_deviance_binomial() {
         let y = array![0.0, 1.0, 0.0, 1.0];
         
-        let null_dev = null_deviance(&y, "binomial", None);
+        let null_dev = null_deviance(&y, "binomial", None).unwrap();
         
         // Mean = 0.5
         // Should be positive
@@ -783,7 +783,7 @@ mod tests {
     fn test_null_deviance_quasibinomial() {
         let y = array![0.0, 0.0, 1.0, 1.0];
         
-        let null_dev = null_deviance(&y, "quasibinomial", None);
+        let null_dev = null_deviance(&y, "quasibinomial", None).unwrap();
         
         assert!(null_dev >= 0.0);
     }
@@ -792,7 +792,7 @@ mod tests {
     fn test_null_deviance_gamma() {
         let y = array![1.0, 2.0, 3.0, 4.0];
         
-        let null_dev = null_deviance(&y, "gamma", None);
+        let null_dev = null_deviance(&y, "gamma", None).unwrap();
         
         // Mean = 2.5
         // Should be positive
@@ -803,7 +803,7 @@ mod tests {
     fn test_null_deviance_negativebinomial() {
         let y = array![1.0, 2.0, 3.0, 4.0];  // All positive values
         
-        let null_dev = null_deviance(&y, "negativebinomial", None);
+        let null_dev = null_deviance(&y, "negativebinomial", None).unwrap();
         
         // Negative binomial deviance can be negative for some edge cases
         assert!(null_dev.is_finite());
@@ -813,7 +813,7 @@ mod tests {
     fn test_null_deviance_negativebinomial_with_theta() {
         let y = array![1.0, 2.0, 3.0, 4.0];  // All positive values
         
-        let null_dev = null_deviance(&y, "negativebinomial(theta=2.5)", None);
+        let null_dev = null_deviance(&y, "negativebinomial(theta=2.5)", None).unwrap();
         
         // Negative binomial deviance should be finite
         assert!(null_dev.is_finite());
@@ -824,7 +824,7 @@ mod tests {
         let y = array![1.0, 2.0, 4.0];
         let offset = array![0.0, 0.693, 1.386];  // log(1), log(2), log(4)
         
-        let null_dev = null_deviance_with_offset(&y, "poisson", None, Some(&offset));
+        let null_dev = null_deviance_with_offset(&y, "poisson", None, Some(&offset)).unwrap();
         
         // With offset, null model accounts for exposure
         assert!(null_dev >= 0.0);
@@ -835,10 +835,10 @@ mod tests {
         let y = array![1.0, 2.0, 3.0];
         let offset = array![0.0, 0.0, 0.0];
         
-        let null_dev = null_deviance_with_offset(&y, "gaussian", None, Some(&offset));
+        let null_dev = null_deviance_with_offset(&y, "gaussian", None, Some(&offset)).unwrap();
         
         // With zero offset, should match regular null deviance
-        let null_dev_no_offset = null_deviance(&y, "gaussian", None);
+        let null_dev_no_offset = null_deviance(&y, "gaussian", None).unwrap();
         assert_abs_diff_eq!(null_dev, null_dev_no_offset, epsilon = 1e-10);
     }
     
@@ -847,7 +847,7 @@ mod tests {
         let y = array![1.0, 2.0, 3.0];
         let offset = array![0.0, 0.5, 1.0];
         
-        let null_dev = null_deviance_with_offset(&y, "gamma", None, Some(&offset));
+        let null_dev = null_deviance_with_offset(&y, "gamma", None, Some(&offset)).unwrap();
         
         assert!(null_dev >= 0.0);
     }
@@ -857,7 +857,7 @@ mod tests {
         let y = array![1.0, 2.0, 3.0];
         let offset = array![0.0, 0.5, 1.0];
         
-        let null_dev = null_deviance_with_offset(&y, "negbinomial(theta=1.5)", None, Some(&offset));
+        let null_dev = null_deviance_with_offset(&y, "negbinomial(theta=1.5)", None, Some(&offset)).unwrap();
         
         assert!(null_dev >= 0.0);
     }
@@ -868,7 +868,7 @@ mod tests {
         let offset = array![0.0, 0.5];
         let weights = array![1.0, 2.0];
         
-        let null_dev = null_deviance_with_offset(&y, "poisson", Some(&weights), Some(&offset));
+        let null_dev = null_deviance_with_offset(&y, "poisson", Some(&weights), Some(&offset)).unwrap();
         
         assert!(null_dev >= 0.0);
     }

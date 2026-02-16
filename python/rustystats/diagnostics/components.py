@@ -7,7 +7,7 @@ DiagnosticsComputer coordinates these components to produce unified output.
 
 from __future__ import annotations
 
-from typing import List, Dict, Any
+from typing import Any
 
 import numpy as np
 

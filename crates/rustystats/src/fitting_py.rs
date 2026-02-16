@@ -213,7 +213,8 @@ pub fn fit_negbinomial_py(
     let mut coefficients: Option<Array1<f64>> = None;
 
     for _iter in 0..max_theta_iter {
-        let family = NegativeBinomialFamily::new(theta);
+        let family = NegativeBinomialFamily::new(theta)
+            .map_err(|e| PyValueError::new_err(format!("Invalid NB theta: {}", e)))?;
         result = fit_glm_unified(&y_array, x_view, &family, link_fn.as_ref(),
             &config_loose, offset_array.as_ref(), weights_array.as_ref(), coefficients.as_ref(),
         ).map_err(|e| PyValueError::new_err(format!("GLM fitting failed: {}", e)))?;
@@ -225,7 +226,8 @@ pub fn fit_negbinomial_py(
         theta = new_theta;
     }
 
-    let final_family = NegativeBinomialFamily::new(theta);
+    let final_family = NegativeBinomialFamily::new(theta)
+        .map_err(|e| PyValueError::new_err(format!("Invalid NB theta: {}", e)))?;
     result = fit_glm_unified(&y_array, x_view, &final_family, link_fn.as_ref(),
         &config_final, offset_array.as_ref(), weights_array.as_ref(), coefficients.as_ref(),
     ).map_err(|e| PyValueError::new_err(format!("Final GLM fit failed: {}", e)))?;

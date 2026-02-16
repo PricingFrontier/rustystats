@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Optional, List, Dict, Any, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 import numpy as np
 

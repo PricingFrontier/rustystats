@@ -54,7 +54,7 @@ use rayon::prelude::*;
 use nalgebra::{DMatrix, DVector};
 
 use crate::constants::{
-    CONVERGENCE_TOL, MIN_IRLS_WEIGHT, DEFAULT_MAX_ITER, ZERO_TOL,
+    CONVERGENCE_TOL, MIN_IRLS_WEIGHT, MAX_IRLS_WEIGHT, DEFAULT_MAX_ITER, ZERO_TOL,
 };
 use crate::error::{RustyStatsError, Result};
 use crate::families::Family;
@@ -565,11 +565,11 @@ fn fit_glm_core(
                 let iw = if let Some(ref hw) = hessian_weights {
                     // True Hessian weight - use directly without dividing by d²
                     // For Gamma+log link: w = μ (not μ/(1/μ)² = μ³ which was the bug)
-                    hw[i].max(min_weight).min(1e10)
+                    hw[i].max(min_weight).min(MAX_IRLS_WEIGHT)
                 } else {
                     // Standard Fisher information weight: w = 1/(V(μ) × (dη/dμ)²)
                     let v = variance.as_ref().unwrap()[i];
-                    (1.0 / (v * d * d)).max(min_weight).min(1e10)
+                    (1.0 / (v * d * d)).max(min_weight).min(MAX_IRLS_WEIGHT)
                 };
                 
                 // Combined weight
@@ -880,7 +880,7 @@ fn fit_glm_core(
 /// - Parallel chunked reduction via Rayon to utilize all cores
 /// - Only computes upper triangle of X'WX (symmetric)
 ///
-/// Safety: All unsafe accesses are within bounds because:
+/// // SAFETY: All unsafe accesses are within bounds because:
 /// - k ranges from 0 to n-1, and w_slice/z_slice have length n
 /// - row_start + j = k*p + j where k < n and j < p, so max index is (n-1)*p + (p-1) < n*p = x_slice.len()
 /// - i, j range from 0 to p-1, and xtx_local has length p*p, xtz_local has length p

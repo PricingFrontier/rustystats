@@ -13,8 +13,9 @@ Use the formula-based API instead:
 >>> print(result.summary())
 """
 
+from __future__ import annotations
+
 import numpy as np
-from typing import Optional, List
 
 from rustystats._rustystats import GLMResults
 from rustystats.exceptions import ValidationError, FittingError

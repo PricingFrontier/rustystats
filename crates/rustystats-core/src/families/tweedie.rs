@@ -51,7 +51,7 @@ use crate::constants::{MU_MIN_POSITIVE, ZERO_TOL};
 /// use ndarray::array;
 ///
 /// // Create Tweedie with p=1.5 (common for insurance)
-/// let family = TweedieFamily::new(1.5);
+/// let family = TweedieFamily::new(1.5).unwrap();
 ///
 /// let mu = array![1.0, 2.0, 4.0];
 /// let variance = family.variance(&mu);
@@ -74,14 +74,14 @@ impl TweedieFamily {
     ///   - p = 1.5: Balanced between Poisson and Gamma
     ///   - p = 1.6-1.9: More Gamma-like, fewer zeros
     ///
-    /// # Panics
-    /// Panics if var_power is in (0, 1) as this range is not supported.
-    pub fn new(var_power: f64) -> Self {
+    /// # Errors
+    /// Returns an error if var_power is in (0, 1) as this range is not supported.
+    pub fn new(var_power: f64) -> Result<Self, String> {
         // Tweedie is not defined for 0 < p < 1
         if var_power > 0.0 && var_power < 1.0 {
-            panic!("Tweedie var_power must be <= 0 or >= 1, got {}", var_power);
+            return Err(format!("Tweedie var_power must be <= 0 or >= 1, got {}", var_power));
         }
-        TweedieFamily { var_power }
+        Ok(TweedieFamily { var_power })
     }
 
     /// Create Tweedie with default power p=1.5 (good starting point for insurance)
@@ -212,7 +212,7 @@ mod tests {
 
     #[test]
     fn test_tweedie_variance_power_1_5() {
-        let family = TweedieFamily::new(1.5);
+        let family = TweedieFamily::new(1.5).unwrap();
         let mu = array![1.0, 4.0, 9.0];
 
         let variance = family.variance(&mu);
@@ -226,7 +226,7 @@ mod tests {
     #[test]
     fn test_tweedie_reduces_to_poisson() {
         // When p=1, Tweedie should behave like Poisson
-        let tweedie = TweedieFamily::new(1.0);
+        let tweedie = TweedieFamily::new(1.0).unwrap();
         let mu = array![1.0, 2.0, 3.0];
 
         let variance = tweedie.variance(&mu);
@@ -240,7 +240,7 @@ mod tests {
     #[test]
     fn test_tweedie_reduces_to_gamma() {
         // When p=2, Tweedie should behave like Gamma
-        let tweedie = TweedieFamily::new(2.0);
+        let tweedie = TweedieFamily::new(2.0).unwrap();
         let mu = array![1.0, 2.0, 3.0];
 
         let variance = tweedie.variance(&mu);
@@ -254,7 +254,7 @@ mod tests {
     #[test]
     fn test_tweedie_deviance_with_zeros() {
         // Tweedie (1 < p < 2) should handle exact zeros
-        let family = TweedieFamily::new(1.5);
+        let family = TweedieFamily::new(1.5).unwrap();
         let y = array![0.0, 0.0, 1.0, 2.0];
         let mu = array![0.5, 1.0, 1.0, 2.0];
 
@@ -267,7 +267,7 @@ mod tests {
 
     #[test]
     fn test_tweedie_deviance_perfect_fit() {
-        let family = TweedieFamily::new(1.5);
+        let family = TweedieFamily::new(1.5).unwrap();
         let y = array![1.0, 2.0, 3.0];
         let mu = array![1.0, 2.0, 3.0];  // Perfect fit
 
@@ -281,7 +281,7 @@ mod tests {
 
     #[test]
     fn test_tweedie_default_link() {
-        let family = TweedieFamily::new(1.5);
+        let family = TweedieFamily::new(1.5).unwrap();
         let link = family.default_link();
 
         // Default is log link
@@ -294,7 +294,7 @@ mod tests {
 
     #[test]
     fn test_tweedie_initialize_handles_zeros() {
-        let family = TweedieFamily::new(1.5);
+        let family = TweedieFamily::new(1.5).unwrap();
         let y = array![0.0, 0.0, 5.0, 10.0];
 
         let mu = family.initialize_mu(&y);
@@ -305,7 +305,7 @@ mod tests {
 
     #[test]
     fn test_tweedie_valid_mu() {
-        let family = TweedieFamily::new(1.5);
+        let family = TweedieFamily::new(1.5).unwrap();
 
         assert!(family.is_valid_mu(&array![0.1, 1.0, 10.0]));
         assert!(!family.is_valid_mu(&array![0.0, 1.0, 10.0]));  // Zero invalid
@@ -313,15 +313,14 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
     fn test_tweedie_invalid_power() {
         // p in (0, 1) is not valid for Tweedie
-        let _family = TweedieFamily::new(0.5);
+        assert!(TweedieFamily::new(0.5).is_err());
     }
 
     #[test]
     fn test_tweedie_name() {
-        let family = TweedieFamily::new(1.5);
+        let family = TweedieFamily::new(1.5).unwrap();
         assert_eq!(family.name(), "Tweedie");
     }
 

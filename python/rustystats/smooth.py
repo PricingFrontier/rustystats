@@ -44,7 +44,6 @@ where EDF = trace((X'WX + λS)⁻¹ X'WX) measures effective model complexity.
 
 from __future__ import annotations
 
-from typing import Optional
 import numpy as np
 
 
