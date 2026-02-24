@@ -40,7 +40,7 @@ nalgebra = { version = "0.33", features = ["matrixmultiply"] }
 
 # --- Python Integration ---
 pyo3 = { version = "0.22", features = ["extension-module", "generate-import-lib"] }  # Rust <-> Python bridge
-numpy = "0.22"                             # NumPy array support for PyO3
+numpy = "0.28"                             # NumPy array support for PyO3
 
 # --- Utilities ---
 thiserror = "2.0"                          # Easy error type definitions
