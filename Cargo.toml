@@ -31,7 +31,7 @@ resolver = "2"
 # ndarray: N-dimensional arrays, similar to NumPy for Python
 # We use this for all matrix and vector operations
 # The "approx" feature enables floating-point comparison support for tests
-ndarray = { version = "0.16", features = ["approx"] }
+ndarray = { version = "0.17", features = ["approx"] }
 
 # nalgebra: Pure Rust linear algebra library
 # Used for matrix operations in the IRLS solver (no system dependencies needed!)
