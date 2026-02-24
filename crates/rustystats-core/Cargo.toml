@@ -47,7 +47,7 @@ approx = { workspace = true }
 # Property-based testing for numerical code
 proptest = "1.5"
 # Benchmarking framework
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 
 [[bench]]
 name = "irls_benchmark"
