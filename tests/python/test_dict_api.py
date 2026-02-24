@@ -613,7 +613,9 @@ class TestDictEdgeCases:
 
     def test_missing_variable_fails(self):
         data = pl.DataFrame({"y": [1.0, 2.0], "x": [1.0, 2.0]})
-        with pytest.raises((KeyError, Exception)):
+        with pytest.raises(
+            (KeyError, rs.exceptions.ValidationError, pl.exceptions.ColumnNotFoundError)
+        ):
             rs.glm_dict(
                 response="y",
                 terms={"z": {"type": "linear"}},
