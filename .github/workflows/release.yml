@@ -189,7 +189,7 @@ jobs:
     needs: [linux, windows, macos, sdist]
     steps:
       - name: Download all wheels
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           pattern: wheels-*
           merge-multiple: true
@@ -216,7 +216,7 @@ jobs:
       id-token: write  # Required for trusted publishing
     steps:
       - name: Download all wheels
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           pattern: wheels-*
           merge-multiple: true
