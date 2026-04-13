@@ -317,8 +317,6 @@ pub struct GCVCache {
     pub n: usize,
     /// Number of parametric (unpenalized) columns
     pub n_parametric: usize,
-    /// Working residual sum of squares at lambda=0 (for normalization)
-    pub rss_base: f64,
     /// Working response z
     pub z: DVector<f64>,
     /// Design matrix X
@@ -360,7 +358,6 @@ impl GCVCache {
             col_end,
             n,
             n_parametric,
-            rss_base: 0.0,
             z: z_nalg,
             x: x_nalg,
             w: w_nalg,
@@ -639,6 +636,221 @@ impl MultiTermGCVOptimizer {
         }
 
         lambdas
+    }
+
+    /// Evaluate the REML criterion for given lambdas (Wood, 2011).
+    ///
+    /// R(rho) = RSS + penalty + log|H_p| - sum_j M_j * rho_j
+    fn evaluate_reml_internal(&self, lambdas: &[f64], penalty_ranks: &[f64]) -> f64 {
+        let xtwx_pen = build_penalized_xtwx(&self.xtwx, &self.penalties, &self.col_ranges, lambdas);
+        let chol = match xtwx_pen.cholesky() {
+            Some(c) => c,
+            None => return f64::INFINITY,
+        };
+        let beta = chol.solve(&self.xtwz);
+        let rss = compute_rss_from_cached(&self.xtwx, &self.xtwz, self.ztwz, &beta);
+
+        let mut penalty_value = 0.0;
+        for (j, (&(start, end), pen)) in self
+            .col_ranges
+            .iter()
+            .zip(self.penalties.iter())
+            .enumerate()
+        {
+            let beta_sub = beta.rows(start, end - start);
+            penalty_value += lambdas[j] * beta_sub.dot(&(pen * beta_sub));
+        }
+
+        let l_mat = chol.l();
+        let log_det: f64 = (0..l_mat.nrows())
+            .map(|i| {
+                let d = l_mat[(i, i)];
+                if d > 0.0 {
+                    d.ln()
+                } else {
+                    0.0
+                }
+            })
+            .sum::<f64>()
+            * 2.0;
+
+        let log_lam_term: f64 = penalty_ranks
+            .iter()
+            .zip(lambdas.iter())
+            .map(|(&m, &lam)| m * lam.max(1e-30).ln())
+            .sum();
+
+        rss + penalty_value + log_det - log_lam_term
+    }
+
+    /// Optimize all lambdas jointly using Newton's method on the REML
+    /// criterion (Wood, 2011). This matches scam's approach.
+    ///
+    /// Gradient:
+    ///   dR/d(rho_j) = lambda_j * beta' S_j beta + lambda_j * tr(H_p^{-1} S_j) - M_j
+    ///
+    /// Approximate Hessian:
+    ///   d²R/d(rho_j)d(rho_l) = lambda_j * lambda_l * tr(H_p^{-1} S_j H_p^{-1} S_l)
+    ///   diagonal += lambda_j * [beta' S_j beta + tr(H_p^{-1} S_j)]
+    pub fn optimize_lambdas_reml(
+        &self,
+        initial_lambdas: &[f64],
+        log_lambda_min: f64,
+        log_lambda_max: f64,
+        tol: f64,
+        max_iter: usize,
+    ) -> Vec<f64> {
+        let m = self.penalties.len();
+        let p = self.xtwx.nrows();
+        let mut rho: Vec<f64> = initial_lambdas
+            .iter()
+            .map(|&lam| lam.max(1e-30).ln())
+            .collect();
+
+        // Penalty ranks (computed once)
+        let penalty_ranks: Vec<f64> = self
+            .penalties
+            .iter()
+            .map(|pen| {
+                let eig = pen.clone().symmetric_eigen();
+                eig.eigenvalues.iter().filter(|&&v| v.abs() > 1e-10).count() as f64
+            })
+            .collect();
+
+        for _ in 0..max_iter {
+            let lambdas: Vec<f64> = rho.iter().map(|&r| r.exp()).collect();
+
+            // Build penalized system
+            let xtwx_pen =
+                build_penalized_xtwx(&self.xtwx, &self.penalties, &self.col_ranges, &lambdas);
+            let chol = match xtwx_pen.cholesky() {
+                Some(c) => c,
+                None => break,
+            };
+            let beta = chol.solve(&self.xtwz);
+
+            // Per-term: penalty value and tr(H_p^{-1} * lambda_j * S_j)
+            let mut pen_vals = vec![0.0; m];
+            let mut traces = vec![0.0; m];
+
+            // Also store forward-solved penalty columns for Hessian
+            let mut solved: Vec<DMatrix<f64>> = Vec::with_capacity(m);
+
+            for (j, (&(start, end), pen)) in self
+                .col_ranges
+                .iter()
+                .zip(self.penalties.iter())
+                .enumerate()
+            {
+                let k = end - start;
+                let beta_sub = beta.rows(start, k);
+                pen_vals[j] = beta_sub.dot(&(pen * beta_sub));
+
+                // Solve H_p * z = lambda_j * S_j[:, c] (embedded) for each column c
+                let mut v = DMatrix::zeros(p, k);
+                let mut tr = 0.0;
+                for c in 0..k {
+                    let mut rhs = DVector::zeros(p);
+                    for (r, &val) in pen.column(c).iter().enumerate() {
+                        rhs[start + r] = lambdas[j] * val;
+                    }
+                    let z = chol.solve(&rhs);
+                    tr += z[start + c];
+                    v.set_column(c, &z);
+                }
+                traces[j] = tr;
+                solved.push(v);
+            }
+
+            // Gradient
+            let mut grad = vec![0.0; m];
+            for j in 0..m {
+                grad[j] = lambdas[j] * pen_vals[j] + traces[j] - penalty_ranks[j];
+            }
+
+            // Check gradient convergence
+            let grad_norm: f64 = grad.iter().map(|&g| g * g).sum::<f64>().sqrt();
+            if grad_norm < tol {
+                break;
+            }
+
+            // Hessian
+            // Cross-term: tr(H^{-1} S_j_emb * H^{-1} S_l_emb)
+            //   = sum_i (solved[j] row i) dot (solved[l] row i)
+            //   restricted to the overlap of column ranges
+            // But since solved[j] is p×k_j and represents columns start_j..end_j,
+            // we need: sum_{i=0}^{p-1} sum_{k} [H^{-1}S_j]_{ik} [H^{-1}S_l]_{ki}
+            // = sum_i sum_{a in 0..kj} solved[j][i,a] * solved[l][sj+a-sl, ?]
+            // This only contributes when sj+a falls within [sl, el).
+            //
+            // Simpler: assemble as dense p×p products for small penalty blocks.
+            let mut hess = DMatrix::zeros(m, m);
+            for j in 0..m {
+                for l in j..m {
+                    let (sj, ej) = self.col_ranges[j];
+                    let (sl, el) = self.col_ranges[l];
+                    let kj = ej - sj;
+
+                    // tr(A * B) where A = H_p^{-1}(lambda_j S_j)_emb, B = H_p^{-1}(lambda_l S_l)_emb
+                    // = sum_k (row k of A) dot (col k of B)
+                    // A has nonzero cols sj..ej, B has nonzero cols sl..el
+                    let mut cross = 0.0;
+                    for k in sl..el {
+                        for a in 0..kj {
+                            let i = sj + a;
+                            cross += solved[j][(k, a)] * solved[l][(i, k - sl)];
+                        }
+                    }
+
+                    hess[(j, l)] = cross;
+                    if j != l {
+                        hess[(l, j)] = cross;
+                    }
+                }
+                // Diagonal extra term
+                hess[(j, j)] += lambdas[j] * pen_vals[j] + traces[j];
+            }
+
+            // Newton step: delta = -H^{-1} g
+            let g_vec = DVector::from_vec(grad);
+            let delta = match hess.clone().cholesky() {
+                Some(h_chol) => h_chol.solve(&g_vec) * -1.0,
+                None => {
+                    // Regularize Hessian
+                    let reg = hess.diagonal().amax() * 0.1 + 1e-6;
+                    let h_reg = &hess + &DMatrix::from_diagonal(&DVector::from_element(m, reg));
+                    match h_reg.cholesky() {
+                        Some(h_chol) => h_chol.solve(&g_vec) * -1.0,
+                        None => &g_vec * (-1.0 / grad_norm),
+                    }
+                }
+            };
+
+            // Step halving on REML
+            let current_reml = self.evaluate_reml_internal(&lambdas, &penalty_ranks);
+            let mut step = 1.0;
+            let mut accepted = false;
+            for _ in 0..20 {
+                let trial_rho: Vec<f64> = rho
+                    .iter()
+                    .enumerate()
+                    .map(|(j, &r)| (r + step * delta[j]).clamp(log_lambda_min, log_lambda_max))
+                    .collect();
+                let trial_lam: Vec<f64> = trial_rho.iter().map(|&r| r.exp()).collect();
+                let trial_reml = self.evaluate_reml_internal(&trial_lam, &penalty_ranks);
+                if trial_reml < current_reml {
+                    rho = trial_rho;
+                    accepted = true;
+                    break;
+                }
+                step *= 0.5;
+            }
+            if !accepted {
+                break;
+            }
+        }
+
+        rho.iter().map(|&r| r.exp()).collect()
     }
 
     /// Compute EDFs for each term at given lambdas.

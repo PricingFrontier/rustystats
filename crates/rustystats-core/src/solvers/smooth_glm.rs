@@ -18,7 +18,7 @@
 // ---------------------------
 // - Grid search: Evaluate GCV on log-spaced grid
 // - Performance iteration: Iterate between IRLS and lambda updates
-// - REML: More stable but more complex (future work)
+// - REML: Used for monotonic models (Wood, 2011)
 //
 // =============================================================================
 
@@ -198,13 +198,63 @@ fn alpha_to_beta(alpha: &[f64], monotonicity: &Monotonicity) -> Array1<f64> {
     beta
 }
 
+/// Project a sequence onto the monotone cone using the Pool Adjacent
+/// Violators (PAV) algorithm. Returns the closest (L2) non-decreasing
+/// sequence if `increasing` is true, or non-increasing if false.
+fn isotonic_projection(x: &[f64], increasing: bool) -> Vec<f64> {
+    let n = x.len();
+    if n == 0 {
+        return vec![];
+    }
+    let mut result = x.to_vec();
+    if !increasing {
+        for v in result.iter_mut() {
+            *v = -*v;
+        }
+    }
+    // PAV: merge adjacent violators into their weighted average
+    let mut blocks: Vec<(f64, usize)> = Vec::with_capacity(n); // (sum, count)
+    for &val in result.iter() {
+        blocks.push((val, 1));
+        while blocks.len() >= 2 {
+            let len = blocks.len();
+            let avg_last = blocks[len - 1].0 / blocks[len - 1].1 as f64;
+            let avg_prev = blocks[len - 2].0 / blocks[len - 2].1 as f64;
+            if avg_last < avg_prev {
+                let last = blocks.pop().expect("PAV: blocks non-empty after push");
+                let prev = blocks.last_mut().expect("PAV: blocks non-empty after pop");
+                prev.0 += last.0;
+                prev.1 += last.1;
+            } else {
+                break;
+            }
+        }
+    }
+    let mut idx = 0;
+    for (sum, count) in &blocks {
+        let avg = sum / *count as f64;
+        for _ in 0..*count {
+            result[idx] = avg;
+            idx += 1;
+        }
+    }
+    if !increasing {
+        for v in result.iter_mut() {
+            *v = -*v;
+        }
+    }
+    result
+}
+
 /// Convert monotonic beta coefficients back to unconstrained alpha parameters.
 ///
-/// This is used for initialization: given an unconstrained beta solution,
-/// compute alpha such that `alpha_to_beta(alpha) ~= beta`.
+/// Before conversion, betas are projected onto the monotone cone via isotonic
+/// regression (PAV). This gives the closest L2 monotonic approximation,
+/// avoiding extreme alpha values that would freeze parameters.
 ///
-/// - `alpha[0] = beta[0]`
-/// - `alpha[j] = ln(|beta[j] - beta[j-1]|)` for j >= 1 (clamped to avoid ln(0))
+/// - `alpha[0] = beta_proj[0]`
+/// - `alpha[j] = ln(beta_proj[j] - beta_proj[j-1])` for increasing, or
+///   `ln(beta_proj[j-1] - beta_proj[j])` for decreasing
 fn beta_to_alpha(beta: &[f64], monotonicity: &Monotonicity) -> Array1<f64> {
     let k = beta.len();
     let mut alpha = Array1::zeros(k);
@@ -214,15 +264,15 @@ fn beta_to_alpha(beta: &[f64], monotonicity: &Monotonicity) -> Array1<f64> {
     if *monotonicity == Monotonicity::None {
         return Array1::from_vec(beta.to_vec());
     }
-    let sign = match monotonicity {
-        Monotonicity::Increasing => 1.0,
-        Monotonicity::Decreasing => -1.0,
-        Monotonicity::None => unreachable!(),
-    };
-    alpha[0] = beta[0];
+    let increasing = *monotonicity == Monotonicity::Increasing;
+    let sign = if increasing { 1.0 } else { -1.0 };
+
+    // Project onto monotone cone for a clean initialization
+    let mono_beta = isotonic_projection(beta, increasing);
+
+    alpha[0] = mono_beta[0];
     for j in 1..k {
-        let diff = sign * (beta[j] - beta[j - 1]);
-        // Clamp to a small positive value to avoid ln(0) or ln(negative)
+        let diff = sign * (mono_beta[j] - mono_beta[j - 1]);
         alpha[j] = diff.max(ZERO_TOL).ln();
     }
     alpha
@@ -678,344 +728,252 @@ pub fn fit_smooth_glm_full_matrix(
         })
         .collect();
 
-    // Flag: has alpha been initialized from an unconstrained solve?
-    let mut alpha_initialized = !has_monotonic; // skip init if no monotonic terms
+    if has_monotonic {
+        // =================================================================
+        // MONOTONIC PATH: Nested iteration following scam (Pya & Wood 2015)
+        // =================================================================
+        //
+        // Architecture: outer loop updates lambda via GCV, inner loop runs
+        // PIRLS to convergence with fixed lambda. This is more stable than
+        // interleaving GCV within PIRLS because X_tilde changes every
+        // iteration (as alpha updates the Jacobian).
+        //
+        // Initialization: zero alpha (flat monotonic start), matching scam.
+        // REML selects initial lambda, then nested iteration refines.
+        // =================================================================
 
-    while iteration < config.irls_config.max_iterations {
-        iteration += 1;
-        let deviance_old = deviance;
-
-        // IRLS weights, combined weights, and working response — computed in a
-        // single fused loop using pre-allocated buffers (no per-iteration heap allocs)
-        let link_deriv = link.derivative(&mu);
-        let variance = family.variance(&mu);
-
-        for i in 0..n {
-            irls_weights[i] = (1.0 / (variance[i] * link_deriv[i] * link_deriv[i]))
-                .max(config.irls_config.min_weight)
-                .min(MAX_IRLS_WEIGHT);
-            combined_weights[i] = prior_weights[i] * irls_weights[i];
-            working_response[i] = (eta[i] - offset_vec[i]) + (y[i] - mu[i]) * link_deriv[i];
-        }
-
-        let mut new_coef;
-
-        // Save alpha state before WLS update, for step-halving (monotonic path only)
-        let pre_wls_alphas: Vec<Option<Array1<f64>>> = if has_monotonic {
-            alpha_params.clone()
-        } else {
-            vec![]
-        };
-
-        if has_monotonic {
-            // =================================================================
-            // Exp reparameterization path for monotonic smooth terms
-            // =================================================================
-            //
-            // On first iteration, solve unconstrained WLS to get initial beta,
-            // then convert to alpha via beta_to_alpha.
-            //
-            // On each iteration:
-            // 1. Build X_tilde by replacing monotonic columns with X_smooth * J
-            // 2. Build penalty with S_tilde = J' * S * J for monotonic terms
-            // 3. Solve standard (unconstrained) WLS in alpha-space
-            // 4. Update alpha, recover beta = h(alpha)
-            // =================================================================
-
-            if !alpha_initialized {
-                // Run GCV on the ORIGINAL (unconstrained) basis to select lambda.
-                // Then freeze lambda for all subsequent exp-reparam PIRLS iterations.
-                // This avoids GCV instability caused by X_tilde changing each iteration.
-                let (init_xtwx, init_xtwz) =
-                    compute_xtwx_xtwz(x_combined, &working_response, &combined_weights)?;
-                let init_ztwz: f64 = working_response
-                    .iter()
-                    .zip(combined_weights.iter())
-                    .map(|(&zi, &wi)| wi * zi * zi)
-                    .sum();
-                let init_penalties: Vec<Array2<f64>> =
-                    smooth_specs.iter().map(|s| s.penalty.clone()).collect();
-                let optimizer = MultiTermGCVOptimizer::new_from_cached(
-                    init_xtwx,
-                    init_xtwz,
-                    init_ztwz,
-                    init_penalties,
-                    term_indices.clone(),
-                    n,
-                    p_param,
-                );
-                lambdas = optimizer.optimize_lambdas(
-                    &lambdas,
-                    log_lambda_min,
-                    log_lambda_max,
-                    config.lambda_tol,
-                    5,
-                );
-                // Allow GCV to re-run on the transformed (X_tilde, S_tilde) system
-                // during the first exp-reparam iterations. The init GCV on the
-                // unconstrained basis provides a starting lambda, but the optimal
-                // lambda for the transformed system may differ.
-                lambdas_stable_count = 0;
-
-                // Run full unconstrained IRLS to convergence before switching
-                // to exp reparameterization. The exp reparam PIRLS needs a
-                // well-converged starting point — a single WLS solve is not enough.
-                let mut init_coef = coefficients.clone();
-                let mut init_mu = mu.clone();
-                let mut init_eta = eta.clone();
-                let mut init_dev = deviance;
-                for _init_iter in 0..config.irls_config.max_iterations {
-                    let init_link_deriv = link.derivative(&init_mu);
-                    let init_var = family.variance(&init_mu);
-                    let init_iw: Array1<f64> = (0..n)
-                        .map(|i| {
-                            let d = init_link_deriv[i];
-                            let v = init_var[i];
-                            (1.0 / (v * d * d))
-                                .max(config.irls_config.min_weight)
-                                .min(MAX_IRLS_WEIGHT)
-                        })
-                        .collect();
-                    let init_cw = &prior_weights * &init_iw;
-                    let init_z = (&init_eta - &offset_vec) + &((y - &init_mu) * &init_link_deriv);
-
-                    let mut init_penalty = Array2::zeros((total_cols, total_cols));
-                    for (i, spec) in smooth_specs.iter().enumerate() {
-                        embed_penalty(&mut init_penalty, &spec.penalty, spec.col_start, lambdas[i]);
-                    }
-                    let (new_init_coef, _) = solve_weighted_least_squares_with_penalty_matrix(
-                        x_combined,
-                        &init_z,
-                        &init_cw,
-                        &init_penalty,
-                        true, // skip covariance — only coefficients needed for initialization
-                    )?;
-                    init_coef = new_init_coef;
-                    init_eta = &x_combined.dot(&init_coef) + &offset_vec;
-                    init_mu = family.clamp_mu(&link.inverse(&init_eta));
-                    let new_dev = family.deviance(y, &init_mu, Some(&prior_weights));
-                    let init_rel = if init_dev.abs() > ZERO_TOL {
-                        (init_dev - new_dev).abs() / init_dev.abs()
-                    } else {
-                        (init_dev - new_dev).abs()
-                    };
-                    init_dev = new_dev;
-                    if init_rel < config.irls_config.tolerance {
-                        break;
-                    }
-                }
-                // Convert unconstrained beta to alpha for each monotonic term
-                for (i, spec) in smooth_specs.iter().enumerate() {
-                    if let Some(ref mut alpha) = alpha_params[i] {
-                        let beta_slice = &init_coef.as_slice().expect("contiguous array")
-                            [spec.col_start..spec.col_end];
-                        *alpha = beta_to_alpha(beta_slice, &spec.monotonicity);
-                    }
-                }
-
-                // Set initial coefficients: parametric from init_coef, smooth from alpha->beta
-                coefficients = init_coef;
-                for (i, spec) in smooth_specs.iter().enumerate() {
-                    if let Some(ref alpha) = alpha_params[i] {
-                        let beta = alpha_to_beta(
-                            alpha.as_slice().expect("contiguous array"),
-                            &spec.monotonicity,
-                        );
-                        let coef_slice = coefficients.as_slice_mut().expect("contiguous array");
-                        for (j, &b) in beta.iter().enumerate() {
-                            coef_slice[spec.col_start + j] = b;
-                        }
-                    }
-                }
-
-                // Update predictions from the (now monotonic) coefficients
-                eta = &x_combined.dot(&coefficients) + &offset_vec;
-                mu = family.clamp_mu(&link.inverse(&eta));
-                deviance = family.deviance(y, &mu, Some(&prior_weights));
-
-                alpha_initialized = true;
-                final_weights = combined_weights.clone();
-
-                // Skip the rest of this iteration — we've just initialized
-                continue;
+        // Phase 1: GCV on unconstrained basis for starting lambda
+        {
+            let link_deriv = link.derivative(&mu);
+            let variance = family.variance(&mu);
+            for i in 0..n {
+                irls_weights[i] = (1.0 / (variance[i] * link_deriv[i] * link_deriv[i]))
+                    .max(config.irls_config.min_weight)
+                    .min(MAX_IRLS_WEIGHT);
+                combined_weights[i] = prior_weights[i] * irls_weights[i];
+                working_response[i] = (eta[i] - offset_vec[i]) + (y[i] - mu[i]) * link_deriv[i];
             }
-
-            // Update X_tilde: only overwrite monotonic smooth columns each iteration.
-            // Parametric columns were set once during pre-allocation and never change.
-            for (i, spec) in smooth_specs.iter().enumerate() {
-                if let Some(ref alpha) = alpha_params[i] {
-                    let x_smooth = x_combined.slice(s![.., spec.col_start..spec.col_end]);
-                    let mut target = x_tilde.slice_mut(s![.., spec.col_start..spec.col_end]);
-                    compute_x_tilde_inplace(
-                        &x_smooth,
-                        alpha.as_slice().expect("contiguous array"),
-                        &spec.monotonicity,
-                        &mut target,
-                    );
-                }
-            }
-
-            // Adjust working response for the linearization offset.
-            // The model is nonlinear in alpha: eta = X * beta(alpha).
-            // Taylor expansion: X*beta(alpha) ≈ X*beta(alpha_old) + X*J*(alpha - alpha_old)
-            //                                  = X_tilde*alpha + X*(beta_old - J*alpha_old)
-            // The offset c = X*(beta_old - J*alpha_old) must be subtracted from z
-            // so that the WLS solve gives the full new alpha directly:
-            //   z_adj = z - c, then alpha_new = (X_tilde'WX_tilde)^-1 X_tilde'W z_adj
-            // Compute linearization offset c = X_smooth * (beta - J*alpha)
-            // and adjust working response: z_adj = z - c
-            adjusted_response.assign(&working_response);
-            for (i, spec) in smooth_specs.iter().enumerate() {
-                if let Some(ref alpha) = alpha_params[i] {
-                    let alpha_slice = alpha.as_slice().expect("contiguous array");
-                    let beta_mono = alpha_to_beta(alpha_slice, &spec.monotonicity);
-                    let j_mat = compute_monotonic_jacobian(alpha_slice, &spec.monotonicity);
-                    let j_alpha = j_mat.dot(alpha);
-                    let offset_mono = &beta_mono - &j_alpha;
-                    let x_smooth = x_combined.slice(s![.., spec.col_start..spec.col_end]);
-                    // Subtract c = X_smooth @ offset_mono in-place (no extra allocation)
-                    let k_sm = spec.col_end - spec.col_start;
-                    let offset_slice = offset_mono.as_slice().expect("contiguous array");
-                    let adj_slice = adjusted_response.as_slice_mut().expect("contiguous array");
-                    for row in 0..n {
-                        let mut dot = 0.0;
-                        for col in 0..k_sm {
-                            dot += x_smooth[[row, col]] * offset_slice[col];
-                        }
-                        adj_slice[row] -= dot;
-                    }
-                }
-            }
-
-            let x_tilde_view = x_tilde.view();
-            let (cached_xtwx_t, cached_xtwz_t) =
-                compute_xtwx_xtwz(x_tilde_view, &adjusted_response, &combined_weights)?;
-
-            // Compute z'Wz for GCV (using adjusted response)
-            let ztwz: f64 = adjusted_response
+            let (init_xtwx, init_xtwz) =
+                compute_xtwx_xtwz(x_combined, &working_response, &combined_weights)?;
+            let init_ztwz: f64 = working_response
                 .iter()
                 .zip(combined_weights.iter())
                 .map(|(&zi, &wi)| wi * zi * zi)
                 .sum();
+            let init_penalties: Vec<Array2<f64>> =
+                smooth_specs.iter().map(|s| s.penalty.clone()).collect();
+            let optimizer = MultiTermGCVOptimizer::new_from_cached(
+                init_xtwx,
+                init_xtwz,
+                init_ztwz,
+                init_penalties,
+                term_indices.clone(),
+                n,
+                p_param,
+            );
+            lambdas = optimizer.optimize_lambdas_reml(
+                &lambdas,
+                log_lambda_min,
+                log_lambda_max,
+                config.lambda_tol,
+                5,
+            );
+        }
 
-            // GCV optimization on transformed problem
-            let run_gcv = lambdas_stable_count < 1 && (iteration <= 3 || iteration % 2 == 0);
-            if run_gcv {
-                let old_lambdas = lambdas.clone();
-
-                // Build transformed penalties for GCV optimizer
-                let transformed_penalties: Vec<Array2<f64>> = smooth_specs
-                    .iter()
-                    .enumerate()
-                    .map(|(i, spec)| {
-                        if let Some(ref alpha) = alpha_params[i] {
-                            let j_mat = compute_monotonic_jacobian(
-                                alpha.as_slice().expect("contiguous array"),
-                                &spec.monotonicity,
-                            );
-                            compute_s_tilde(&spec.penalty, &j_mat)
-                        } else {
-                            spec.penalty.clone()
-                        }
+        // Warm-start: run unconstrained IRLS to convergence, then convert
+        // betas to alpha via beta_to_alpha (with PAV projection). This seeds
+        // the PIRLS with good parametric estimates and a reasonable monotonic
+        // starting shape, matching scam's approach of initializing from an
+        // unconstrained preliminary fit.
+        {
+            let mut init_coef = coefficients.clone();
+            let mut init_mu = mu.clone();
+            let mut init_eta = eta.clone();
+            let mut init_dev = deviance;
+            for _init_iter in 0..config.irls_config.max_iterations {
+                let init_link_deriv = link.derivative(&init_mu);
+                let init_var = family.variance(&init_mu);
+                let init_iw: Array1<f64> = (0..n)
+                    .map(|i| {
+                        let d = init_link_deriv[i];
+                        let v = init_var[i];
+                        (1.0 / (v * d * d))
+                            .max(config.irls_config.min_weight)
+                            .min(MAX_IRLS_WEIGHT)
                     })
                     .collect();
-
-                let optimizer = MultiTermGCVOptimizer::new_from_cached(
-                    cached_xtwx_t.clone(),
-                    cached_xtwz_t.clone(),
-                    ztwz,
-                    transformed_penalties,
-                    term_indices.clone(),
-                    n,
-                    p_param,
-                );
-
-                lambdas = optimizer.optimize_lambdas(
-                    &lambdas,
-                    log_lambda_min,
-                    log_lambda_max,
-                    config.lambda_tol,
-                    3,
-                );
-
-                let max_rel_change = old_lambdas
-                    .iter()
-                    .zip(lambdas.iter())
-                    .map(|(&old, &new)| {
-                        if old.abs() < 1e-12 {
-                            (new - old).abs()
-                        } else {
-                            (new - old).abs() / old.abs()
-                        }
-                    })
-                    .fold(0.0f64, f64::max);
-
-                if max_rel_change < 0.01 {
-                    lambdas_stable_count += 1;
-                } else {
-                    lambdas_stable_count = 0;
+                let init_cw = &prior_weights * &init_iw;
+                let init_z = (&init_eta - &offset_vec) + &((y - &init_mu) * &init_link_deriv);
+                let mut init_penalty = Array2::zeros((total_cols, total_cols));
+                for (i, spec) in smooth_specs.iter().enumerate() {
+                    embed_penalty(&mut init_penalty, &spec.penalty, spec.col_start, lambdas[i]);
+                }
+                let (new_init_coef, _) = solve_weighted_least_squares_with_penalty_matrix(
+                    x_combined,
+                    &init_z,
+                    &init_cw,
+                    &init_penalty,
+                    true,
+                )?;
+                init_coef = new_init_coef;
+                init_eta = &x_combined.dot(&init_coef) + &offset_vec;
+                init_mu = family.clamp_mu(&link.inverse(&init_eta));
+                let new_dev = family.deviance(y, &init_mu, Some(&prior_weights));
+                let init_rel = (init_dev - new_dev).abs() / (1.0 + init_dev.abs());
+                init_dev = new_dev;
+                if init_rel < config.irls_config.tolerance {
+                    break;
                 }
             }
 
-            // Build transformed penalty matrix for WLS solve
-            penalty_matrix.fill(0.0);
+            // Convert unconstrained betas to alpha (PAV projection ensures monotonicity)
+            for (i, spec) in smooth_specs.iter().enumerate() {
+                if let Some(ref mut alpha) = alpha_params[i] {
+                    let beta_slice =
+                        &init_coef.as_slice().expect("contiguous")[spec.col_start..spec.col_end];
+                    *alpha = beta_to_alpha(beta_slice, &spec.monotonicity);
+                }
+            }
+
+            // Set coefficients: parametric from init, monotonic from alpha→beta
+            coefficients = init_coef;
             for (i, spec) in smooth_specs.iter().enumerate() {
                 if let Some(ref alpha) = alpha_params[i] {
-                    let j_mat = compute_monotonic_jacobian(
+                    let beta = alpha_to_beta(
                         alpha.as_slice().expect("contiguous array"),
                         &spec.monotonicity,
                     );
-                    let s_tilde = compute_s_tilde(&spec.penalty, &j_mat);
-                    embed_penalty(&mut penalty_matrix, &s_tilde, spec.col_start, lambdas[i]);
-                } else {
-                    embed_penalty(
-                        &mut penalty_matrix,
-                        &spec.penalty,
-                        spec.col_start,
-                        lambdas[i],
-                    );
-                }
-            }
-
-            // Solve penalized WLS in alpha-space (X_tilde, S_tilde)
-            let (alpha_coef, _) =
-                solve_wls_from_precomputed(&cached_xtwx_t, &cached_xtwz_t, &penalty_matrix, true)?;
-
-            new_coef = coefficients.clone();
-
-            // Parametric columns: take the WLS solution directly (linear, no exp)
-            if let Some(first_spec) = smooth_specs.first() {
-                let coef_slice = new_coef.as_slice_mut().expect("contiguous array");
-                for j in 0..first_spec.col_start {
-                    coef_slice[j] = alpha_coef[j];
-                }
-            }
-
-            // Non-monotonic smooth terms: accept WLS solution directly (linear)
-            for (i, spec) in smooth_specs.iter().enumerate() {
-                if alpha_params[i].is_none() {
-                    let coef_slice = new_coef.as_slice_mut().expect("contiguous array");
-                    for j in spec.col_start..spec.col_end {
-                        coef_slice[j] = alpha_coef[j];
+                    let cs = coefficients.as_slice_mut().expect("contiguous array");
+                    for (j, &b) in beta.iter().enumerate() {
+                        cs[spec.col_start + j] = b;
                     }
                 }
             }
 
-            // Monotonic smooth terms: accept WLS solution as the new alpha candidate,
-            // with backtracking line search to prevent oscillation.
-            //
-            // The exp reparameterization makes the problem nonlinear in alpha, so
-            // the linearized WLS step can overshoot. We try the full step first;
-            // if deviance increases, we halve the step until deviance improves or
-            // we've tried enough fractions.
-            {
-                // Compute WLS-proposed alpha (full step) for each monotonic term
+            eta = &x_combined.dot(&coefficients) + &offset_vec;
+            mu = family.clamp_mu(&link.inverse(&eta));
+            deviance = family.deviance(y, &mu, Some(&prior_weights));
+        }
+
+        // Outer loop: update lambda, then converge inner PIRLS
+        let max_outer = 10;
+        for _outer in 0..max_outer {
+            let lambdas_at_start = lambdas.clone();
+
+            // Inner PIRLS loop: converge coefficients for fixed lambda.
+            // scam uses up to 200 inner iterations.
+            let inner_max = config.irls_config.max_iterations.max(200);
+            for _inner in 0..inner_max {
+                iteration += 1;
+                let deviance_old = deviance;
+
+                // Compute IRLS weights and working response
+                let link_deriv = link.derivative(&mu);
+                let variance = family.variance(&mu);
+                for i in 0..n {
+                    irls_weights[i] = (1.0 / (variance[i] * link_deriv[i] * link_deriv[i]))
+                        .max(config.irls_config.min_weight)
+                        .min(MAX_IRLS_WEIGHT);
+                    combined_weights[i] = prior_weights[i] * irls_weights[i];
+                    working_response[i] = (eta[i] - offset_vec[i]) + (y[i] - mu[i]) * link_deriv[i];
+                }
+
+                // Save alpha state before WLS for step halving
+                let pre_wls_alphas: Vec<Option<Array1<f64>>> = alpha_params.clone();
+
+                // Build X_tilde: replace monotonic smooth columns with X*J
+                for (i, spec) in smooth_specs.iter().enumerate() {
+                    if let Some(ref alpha) = alpha_params[i] {
+                        let x_smooth = x_combined.slice(s![.., spec.col_start..spec.col_end]);
+                        let mut target = x_tilde.slice_mut(s![.., spec.col_start..spec.col_end]);
+                        compute_x_tilde_inplace(
+                            &x_smooth,
+                            alpha.as_slice().expect("contiguous array"),
+                            &spec.monotonicity,
+                            &mut target,
+                        );
+                    }
+                }
+
+                // Pre-compute Jacobians for monotonic terms (used for both linearization and penalty)
+                let cached_jacobians: Vec<Option<Array2<f64>>> = smooth_specs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, spec)| {
+                        alpha_params[i].as_ref().map(|alpha| {
+                            compute_monotonic_jacobian(
+                                alpha.as_slice().expect("contiguous array"),
+                                &spec.monotonicity,
+                            )
+                        })
+                    })
+                    .collect();
+
+                // Linearization offset: z_adj = z - X*(beta - J*alpha)
+                adjusted_response.assign(&working_response);
+                for (i, spec) in smooth_specs.iter().enumerate() {
+                    if let Some(ref alpha) = alpha_params[i] {
+                        let alpha_slice = alpha.as_slice().expect("contiguous array");
+                        let beta_mono = alpha_to_beta(alpha_slice, &spec.monotonicity);
+                        let j_mat = cached_jacobians[i]
+                            .as_ref()
+                            .expect("cached Jacobian exists for monotonic term");
+                        let j_alpha = j_mat.dot(alpha);
+                        let offset_mono = &beta_mono - &j_alpha;
+                        let x_smooth = x_combined.slice(s![.., spec.col_start..spec.col_end]);
+                        let k_sm = spec.col_end - spec.col_start;
+                        let offset_slice = offset_mono.as_slice().expect("contiguous array");
+                        let adj_slice = adjusted_response.as_slice_mut().expect("contiguous array");
+                        for row in 0..n {
+                            let mut dot = 0.0;
+                            for col in 0..k_sm {
+                                dot += x_smooth[[row, col]] * offset_slice[col];
+                            }
+                            adj_slice[row] -= dot;
+                        }
+                    }
+                }
+
+                // Build transformed penalty and solve WLS
+                let x_tilde_view = x_tilde.view();
+                let (cached_xtwx_t, cached_xtwz_t) =
+                    compute_xtwx_xtwz(x_tilde_view, &adjusted_response, &combined_weights)?;
+
+                penalty_matrix.fill(0.0);
+                for (i, spec) in smooth_specs.iter().enumerate() {
+                    if let Some(ref _alpha) = alpha_params[i] {
+                        let j_mat = cached_jacobians[i]
+                            .as_ref()
+                            .expect("cached Jacobian exists for monotonic term");
+                        let s_tilde = compute_s_tilde(&spec.penalty, j_mat);
+                        embed_penalty(&mut penalty_matrix, &s_tilde, spec.col_start, lambdas[i]);
+                    } else {
+                        embed_penalty(
+                            &mut penalty_matrix,
+                            &spec.penalty,
+                            spec.col_start,
+                            lambdas[i],
+                        );
+                    }
+                }
+
+                let (alpha_coef, _) = solve_wls_from_precomputed(
+                    &cached_xtwx_t,
+                    &cached_xtwz_t,
+                    &penalty_matrix,
+                    true,
+                )?;
+
+                // Build candidate coefficients: all non-monotonic from WLS
+                let new_coef = alpha_coef.clone();
+
+                // WLS-proposed alpha for monotonic terms (clamped)
                 let wls_alphas: Vec<Option<Array1<f64>>> = smooth_specs
                     .iter()
                     .enumerate()
                     .map(|(i, spec)| {
                         if alpha_params[i].is_some() {
-                            let alpha_wls = &alpha_coef.as_slice().expect("contiguous array")
+                            let alpha_wls = &alpha_coef.as_slice().expect("contiguous")
                                 [spec.col_start..spec.col_end];
                             let clamped: Vec<f64> = alpha_wls
                                 .iter()
@@ -1035,23 +993,36 @@ pub fn fit_smooth_glm_full_matrix(
                     })
                     .collect();
 
-                // Parametric and non-monotonic smooth columns are already set
-                // in new_coef above (lines before this block).
+                // Penalized deviance at current point. With REML-selected lambdas,
+                // penalized deviance is well-calibrated for step acceptance.
+                let pen_dev_old = {
+                    let mut pd = deviance_old;
+                    let cs = coefficients.as_slice().expect("contiguous");
+                    for (j, spec) in smooth_specs.iter().enumerate() {
+                        let b = &cs[spec.col_start..spec.col_end];
+                        let bv = ndarray::ArrayView1::from(b);
+                        pd += lambdas[j] * bv.dot(&spec.penalty.dot(&bv));
+                    }
+                    pd
+                };
 
-                // Try full step, then halve if deviance increases
-                let mut best_step = 1.0_f64;
-                let mut best_dev = f64::INFINITY;
+                // Step halving on penalized deviance with unified blending
+                // of all coefficients. Always accept best step (scam approach).
+                let mut best_pen_dev = f64::INFINITY;
+                let mut best_coef = new_coef.clone();
                 let mut best_alphas = wls_alphas.clone();
 
-                for trial in 0..6 {
-                    let step = if trial == 0 {
-                        1.0
-                    } else {
-                        best_step * 0.5_f64.powi(trial)
-                    };
-                    let mut trial_coef = new_coef.clone();
+                for trial in 0..20 {
+                    let step = 0.5_f64.powi(trial);
 
-                    // Blend alpha: old_alpha * (1 - step) + wls_alpha * step
+                    // Blend all coefficients: parametric + non-monotonic smooth
+                    let mut trial_coef = if step >= 1.0 {
+                        new_coef.clone()
+                    } else {
+                        &coefficients * (1.0 - step) + &new_coef * step
+                    };
+
+                    // Monotonic terms: blend in alpha-space, recover beta
                     let mut trial_alphas: Vec<Option<Array1<f64>>> =
                         Vec::with_capacity(smooth_specs.len());
                     for (i, spec) in smooth_specs.iter().enumerate() {
@@ -1077,152 +1048,302 @@ pub fn fit_smooth_glm_full_matrix(
                         }
                     }
 
+                    // Re-apply sign constraints after blending
+                    if let Some(nn) = nonneg_indices {
+                        for &idx in nn {
+                            if idx < trial_coef.len() && trial_coef[idx] < 0.0 {
+                                trial_coef[idx] = 0.0;
+                            }
+                        }
+                    }
+                    if let Some(np) = nonpos_indices {
+                        for &idx in np {
+                            if idx < trial_coef.len() && trial_coef[idx] > 0.0 {
+                                trial_coef[idx] = 0.0;
+                            }
+                        }
+                    }
+
                     let trial_eta = &x_combined.dot(&trial_coef) + &offset_vec;
                     let trial_mu = family.clamp_mu(&link.inverse(&trial_eta));
                     let trial_dev = family.deviance(y, &trial_mu, Some(&prior_weights));
 
-                    if trial == 0 || trial_dev < best_dev {
-                        best_dev = trial_dev;
-                        best_step = step;
+                    // Penalized deviance for step acceptance
+                    let trial_pen_dev = {
+                        let mut pd = trial_dev;
+                        let cs = trial_coef.as_slice().expect("contiguous");
+                        for (j, spec) in smooth_specs.iter().enumerate() {
+                            let b = &cs[spec.col_start..spec.col_end];
+                            let bv = ndarray::ArrayView1::from(b);
+                            pd += lambdas[j] * bv.dot(&spec.penalty.dot(&bv));
+                        }
+                        pd
+                    };
+
+                    if trial == 0 || trial_pen_dev < best_pen_dev {
+                        best_pen_dev = trial_pen_dev;
+                        best_coef = trial_coef;
                         best_alphas = trial_alphas;
-                        new_coef = trial_coef;
-                        // If full step didn't increase deviance, accept it
-                        if trial == 0 && trial_dev <= deviance_old {
+                        if trial == 0 && trial_pen_dev <= pen_dev_old {
                             break;
                         }
                     }
-                    // If we found a step that reduces deviance, stop
-                    if trial > 0 && best_dev <= deviance_old {
+                    if trial > 0 && best_pen_dev <= pen_dev_old {
                         break;
                     }
                 }
 
-                // If no step reduced deviance, keep old coefficients and alpha
-                if best_dev > deviance_old {
-                    new_coef = coefficients.clone();
-                    // Restore alpha_params from pre-WLS state
-                    for (i, _spec) in smooth_specs.iter().enumerate() {
-                        if let Some(ref old_a) = pre_wls_alphas[i] {
-                            if let Some(ref mut alpha) = alpha_params[i] {
-                                *alpha = old_a.clone();
-                            }
-                        }
-                    }
-                } else {
-                    // Update alpha_params with the best step
-                    for (i, _spec) in smooth_specs.iter().enumerate() {
-                        if let Some(ref best_a) = best_alphas[i] {
-                            if let Some(ref mut alpha) = alpha_params[i] {
-                                *alpha = best_a.clone();
-                            }
-                        }
-                    }
-
-                    // Recompute beta from accepted alpha for new_coef
-                    for (i, spec) in smooth_specs.iter().enumerate() {
-                        if let Some(ref alpha) = alpha_params[i] {
-                            let beta = alpha_to_beta(
-                                alpha.as_slice().expect("contiguous array"),
-                                &spec.monotonicity,
-                            );
-                            let coef_slice = new_coef.as_slice_mut().expect("contiguous array");
-                            for (j, &b) in beta.iter().enumerate() {
-                                coef_slice[spec.col_start + j] = b;
-                            }
+                // Always accept best step (scam approach). With REML lambdas
+                // and nested iteration, the outer loop compensates.
+                for (i, _spec) in smooth_specs.iter().enumerate() {
+                    if let Some(ref best_a) = best_alphas[i] {
+                        if let Some(ref mut alpha) = alpha_params[i] {
+                            *alpha = best_a.clone();
                         }
                     }
                 }
+                coefficients = best_coef;
+
+                // Update state
+                eta = &x_combined.dot(&coefficients) + &offset_vec;
+                mu = family.clamp_mu(&link.inverse(&eta));
+                deviance = family.deviance(y, &mu, Some(&prior_weights));
+                final_weights = combined_weights.clone();
+
+                // Inner convergence: penalized deviance change
+                let rel_change = (pen_dev_old - best_pen_dev).abs() / (1.0 + pen_dev_old.abs());
+                if rel_change < smooth_tolerance {
+                    converged = true;
+                    break;
+                }
             }
-        } else {
-            // =================================================================
-            // Standard (unconstrained) path — no monotonic terms
-            // =================================================================
 
-            // Compute X'WX and X'Wz ONCE per iteration — shared by GCV and WLS
-            let (cached_xtwx, cached_xtwz) =
-                compute_xtwx_xtwz(x_combined, &working_response, &combined_weights)?;
+            // Outer loop: update lambdas via GCV on the converged X_tilde
+            {
+                // Recompute IRLS quantities at convergence point
+                let link_deriv = link.derivative(&mu);
+                let variance = family.variance(&mu);
+                for i in 0..n {
+                    irls_weights[i] = (1.0 / (variance[i] * link_deriv[i] * link_deriv[i]))
+                        .max(config.irls_config.min_weight)
+                        .min(MAX_IRLS_WEIGHT);
+                    combined_weights[i] = prior_weights[i] * irls_weights[i];
+                    working_response[i] = (eta[i] - offset_vec[i]) + (y[i] - mu[i]) * link_deriv[i];
+                }
 
-            // Compute z'Wz scalar for GCV RSS computation (O(n), trivial)
-            let ztwz: f64 = working_response
-                .iter()
-                .zip(combined_weights.iter())
-                .map(|(&zi, &wi)| wi * zi * zi)
-                .sum();
+                // Rebuild X_tilde at converged alpha
+                for (i, spec) in smooth_specs.iter().enumerate() {
+                    if let Some(ref alpha) = alpha_params[i] {
+                        let x_smooth = x_combined.slice(s![.., spec.col_start..spec.col_end]);
+                        let mut target = x_tilde.slice_mut(s![.., spec.col_start..spec.col_end]);
+                        compute_x_tilde_inplace(
+                            &x_smooth,
+                            alpha.as_slice().expect("contiguous array"),
+                            &spec.monotonicity,
+                            &mut target,
+                        );
+                    }
+                }
 
-            // Optimize lambdas using cached matrices (no X'WX recomputation)
-            // Skip GCV once lambdas have stabilized for 2 consecutive iterations
-            let run_gcv = lambdas_stable_count < 1 && (iteration <= 3 || iteration % 2 == 0);
-            if run_gcv {
-                let old_lambdas = lambdas.clone();
+                // Pre-compute Jacobians for monotonic terms (used for both linearization and penalty)
+                let cached_jacobians_outer: Vec<Option<Array2<f64>>> = smooth_specs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, spec)| {
+                        alpha_params[i].as_ref().map(|alpha| {
+                            compute_monotonic_jacobian(
+                                alpha.as_slice().expect("contiguous array"),
+                                &spec.monotonicity,
+                            )
+                        })
+                    })
+                    .collect();
 
-                let penalties: Vec<Array2<f64>> =
-                    smooth_specs.iter().map(|s| s.penalty.clone()).collect();
+                // Rebuild adjusted response at converged alpha
+                adjusted_response.assign(&working_response);
+                for (i, spec) in smooth_specs.iter().enumerate() {
+                    if let Some(ref alpha) = alpha_params[i] {
+                        let alpha_slice = alpha.as_slice().expect("contiguous array");
+                        let beta_mono = alpha_to_beta(alpha_slice, &spec.monotonicity);
+                        let j_mat = cached_jacobians_outer[i]
+                            .as_ref()
+                            .expect("cached Jacobian exists for monotonic term");
+                        let j_alpha = j_mat.dot(alpha);
+                        let offset_mono = &beta_mono - &j_alpha;
+                        let x_smooth = x_combined.slice(s![.., spec.col_start..spec.col_end]);
+                        let k_sm = spec.col_end - spec.col_start;
+                        let offset_slice = offset_mono.as_slice().expect("contiguous array");
+                        let adj_slice = adjusted_response.as_slice_mut().expect("contiguous array");
+                        for row in 0..n {
+                            let mut dot = 0.0;
+                            for col in 0..k_sm {
+                                dot += x_smooth[[row, col]] * offset_slice[col];
+                            }
+                            adj_slice[row] -= dot;
+                        }
+                    }
+                }
+
+                let x_tilde_view = x_tilde.view();
+                let (cached_xtwx_t, cached_xtwz_t) =
+                    compute_xtwx_xtwz(x_tilde_view, &adjusted_response, &combined_weights)?;
+                let ztwz: f64 = adjusted_response
+                    .iter()
+                    .zip(combined_weights.iter())
+                    .map(|(&zi, &wi)| wi * zi * zi)
+                    .sum();
+
+                let transformed_penalties: Vec<Array2<f64>> = smooth_specs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, spec)| {
+                        if let Some(ref _alpha) = alpha_params[i] {
+                            let j_mat = cached_jacobians_outer[i]
+                                .as_ref()
+                                .expect("cached Jacobian exists for monotonic term");
+                            compute_s_tilde(&spec.penalty, j_mat)
+                        } else {
+                            spec.penalty.clone()
+                        }
+                    })
+                    .collect();
 
                 let optimizer = MultiTermGCVOptimizer::new_from_cached(
-                    cached_xtwx.clone(),
-                    cached_xtwz.clone(),
+                    cached_xtwx_t,
+                    cached_xtwz_t,
                     ztwz,
-                    penalties,
+                    transformed_penalties,
                     term_indices.clone(),
                     n,
                     p_param,
                 );
 
-                lambdas = optimizer.optimize_lambdas(
+                // Use REML for monotonic models — more stable than GCV because
+                // it accounts for posterior uncertainty via the log-determinant
+                // term, rather than relying on trace-based EDF which doesn't
+                // capture the effect of monotonicity constraints.
+                lambdas = optimizer.optimize_lambdas_reml(
                     &lambdas,
                     log_lambda_min,
                     log_lambda_max,
                     config.lambda_tol,
-                    3,
+                    5,
                 );
-
-                // Check if lambdas have stabilized (max relative change < 1%)
-                let max_rel_change = old_lambdas
-                    .iter()
-                    .zip(lambdas.iter())
-                    .map(|(&old, &new)| {
-                        if old.abs() < 1e-12 {
-                            (new - old).abs()
-                        } else {
-                            (new - old).abs() / old.abs()
-                        }
-                    })
-                    .fold(0.0f64, f64::max);
-
-                if max_rel_change < 0.01 {
-                    lambdas_stable_count += 1;
-                } else {
-                    lambdas_stable_count = 0;
-                }
-
-                // Mark penalty as dirty if any lambda changed
-                penalty_dirty = lambdas != prev_lambdas;
             }
 
-            // Build penalty matrix only when lambdas have changed
-            if penalty_dirty {
-                penalty_matrix.fill(0.0);
-                for (i, spec) in smooth_specs.iter().enumerate() {
-                    embed_penalty(
-                        &mut penalty_matrix,
-                        &spec.penalty,
-                        spec.col_start,
-                        lambdas[i],
-                    );
-                }
-                prev_lambdas.clone_from_slice(&lambdas);
-                penalty_dirty = false;
-            }
+            // Check outer convergence: lambdas stabilized?
+            let max_lambda_change = lambdas_at_start
+                .iter()
+                .zip(lambdas.iter())
+                .map(|(&old, &new)| {
+                    if old.abs() < 1e-12 {
+                        (new - old).abs()
+                    } else {
+                        (new - old).abs() / old.abs()
+                    }
+                })
+                .fold(0.0f64, f64::max);
 
-            // Solve WLS from pre-computed X'WX — skip covariance on intermediate
-            // iterations (O(p³) savings per iteration). The covariance is computed
-            // once at the end by assemble_smooth_result_from_specs.
-            let (coef, _) =
-                solve_wls_from_precomputed(&cached_xtwx, &cached_xtwz, &penalty_matrix, true)?;
-            new_coef = coef;
+            if max_lambda_change < 0.01 && converged {
+                break;
+            }
+            // Reset inner convergence flag for next outer iteration
+            converged = false;
+        }
+        // converged remains true only if the last inner loop converged
+        // AND lambdas were stable. If the outer loop exhausted max_outer
+        // without meeting the break condition, converged stays false.
+    }
+
+    // =========================================================================
+    // NON-MONOTONIC PATH: Standard penalized IRLS with interleaved GCV
+    // =========================================================================
+    while !has_monotonic && iteration < config.irls_config.max_iterations {
+        iteration += 1;
+        let deviance_old = deviance;
+
+        let link_deriv = link.derivative(&mu);
+        let variance = family.variance(&mu);
+
+        for i in 0..n {
+            irls_weights[i] = (1.0 / (variance[i] * link_deriv[i] * link_deriv[i]))
+                .max(config.irls_config.min_weight)
+                .min(MAX_IRLS_WEIGHT);
+            combined_weights[i] = prior_weights[i] * irls_weights[i];
+            working_response[i] = (eta[i] - offset_vec[i]) + (y[i] - mu[i]) * link_deriv[i];
         }
 
-        // Apply sign constraints on parametric (non-smooth) columns
+        let mut new_coef;
+
+        // Compute X'WX and X'Wz ONCE per iteration — shared by GCV and WLS
+        let (cached_xtwx, cached_xtwz) =
+            compute_xtwx_xtwz(x_combined, &working_response, &combined_weights)?;
+
+        let ztwz: f64 = working_response
+            .iter()
+            .zip(combined_weights.iter())
+            .map(|(&zi, &wi)| wi * zi * zi)
+            .sum();
+
+        let run_gcv = lambdas_stable_count < 1 && (iteration <= 3 || iteration % 2 == 0);
+        if run_gcv {
+            let old_lambdas = lambdas.clone();
+            let penalties: Vec<Array2<f64>> =
+                smooth_specs.iter().map(|s| s.penalty.clone()).collect();
+            let optimizer = MultiTermGCVOptimizer::new_from_cached(
+                cached_xtwx.clone(),
+                cached_xtwz.clone(),
+                ztwz,
+                penalties,
+                term_indices.clone(),
+                n,
+                p_param,
+            );
+            lambdas = optimizer.optimize_lambdas(
+                &lambdas,
+                log_lambda_min,
+                log_lambda_max,
+                config.lambda_tol,
+                3,
+            );
+            let max_rel_change = old_lambdas
+                .iter()
+                .zip(lambdas.iter())
+                .map(|(&old, &new)| {
+                    if old.abs() < 1e-12 {
+                        (new - old).abs()
+                    } else {
+                        (new - old).abs() / old.abs()
+                    }
+                })
+                .fold(0.0f64, f64::max);
+            if max_rel_change < 0.01 {
+                lambdas_stable_count += 1;
+            } else {
+                lambdas_stable_count = 0;
+            }
+            penalty_dirty = lambdas != prev_lambdas;
+        }
+
+        if penalty_dirty {
+            penalty_matrix.fill(0.0);
+            for (i, spec) in smooth_specs.iter().enumerate() {
+                embed_penalty(
+                    &mut penalty_matrix,
+                    &spec.penalty,
+                    spec.col_start,
+                    lambdas[i],
+                );
+            }
+            prev_lambdas.clone_from_slice(&lambdas);
+            penalty_dirty = false;
+        }
+
+        let (coef, _) =
+            solve_wls_from_precomputed(&cached_xtwx, &cached_xtwz, &penalty_matrix, true)?;
+        new_coef = coef;
+
+        // Enforce sign constraints before evaluating deviance
         if let Some(nn) = nonneg_indices {
             for &idx in nn {
                 if idx < new_coef.len() && new_coef[idx] < 0.0 {
@@ -1238,57 +1359,19 @@ pub fn fit_smooth_glm_full_matrix(
             }
         }
 
-        // Update eta and mu with new coefficients (always use original X, not X_tilde)
+        // Step halving if deviance increased
         let eta_new = &x_combined.dot(&new_coef) + &offset_vec;
         let mu_new = family.clamp_mu(&link.inverse(&eta_new));
         let deviance_new = family.deviance(y, &mu_new, Some(&prior_weights));
 
-        // Step halving if deviance increased (blend old coefficients <-> new)
-        // For monotonic terms, we blend in alpha-space to preserve the
-        // exp reparameterization (blending in beta-space would break monotonicity).
         if deviance_new > deviance_old * 1.0001 && iteration > 1 {
             let mut step = 0.5;
             let mut best_coef = new_coef.clone();
             let mut best_dev = deviance_new;
 
-            // For monotonic terms, use the saved pre-WLS alpha state as the "old"
-            // alphas and the current alpha_params (post-WLS) as the "new" alphas.
-            // This avoids the lossy beta_to_alpha recovery.
-            let accepted_alphas: Vec<Option<Array1<f64>>> = alpha_params.to_vec();
-            let old_alphas: Vec<Option<Array1<f64>>> = if has_monotonic {
-                pre_wls_alphas.clone()
-            } else {
-                vec![]
-            };
-            let mut best_step = 1.0f64;
-
             for _ in 0..5 {
-                let mut blended;
-                if has_monotonic {
-                    // Blend parametric columns linearly
-                    blended = &coefficients * (1.0 - step) + &new_coef * step;
+                let mut blended = &coefficients * (1.0 - step) + &new_coef * step;
 
-                    // For monotonic terms, blend in alpha-space using tracked alphas
-                    for (i, spec) in smooth_specs.iter().enumerate() {
-                        if let (Some(ref new_alpha), Some(ref old_alpha)) =
-                            (&accepted_alphas[i], &old_alphas[i])
-                        {
-                            let blended_alpha = old_alpha * (1.0 - step) + new_alpha * step;
-                            let blended_beta = alpha_to_beta(
-                                blended_alpha.as_slice().expect("contiguous array"),
-                                &spec.monotonicity,
-                            );
-                            let coef_slice = blended.as_slice_mut().expect("contiguous array");
-                            for (j, &b) in blended_beta.iter().enumerate() {
-                                coef_slice[spec.col_start + j] = b;
-                            }
-                        }
-                    }
-                } else {
-                    blended = &coefficients * (1.0 - step) + &new_coef * step;
-                }
-
-                // Re-apply sign constraints after blending
                 if let Some(nn) = nonneg_indices {
                     for &idx in nn {
                         if idx < blended.len() && blended[idx] < 0.0 {
@@ -1311,24 +1394,9 @@ pub fn fit_smooth_glm_full_matrix(
                 if dev_blend < best_dev {
                     best_dev = dev_blend;
                     best_coef = blended;
-                    best_step = step;
                 }
                 step *= 0.5;
             }
-
-            // Update alpha_params by blending at the winning step fraction,
-            // instead of reverse-engineering via beta_to_alpha (which is lossy
-            // when consecutive betas are nearly equal).
-            if has_monotonic {
-                for (i, _spec) in smooth_specs.iter().enumerate() {
-                    if let (Some(ref mut alpha), Some(ref new_a), Some(ref old_a)) =
-                        (&mut alpha_params[i], &accepted_alphas[i], &old_alphas[i])
-                    {
-                        *alpha = old_a * (1.0 - best_step) + new_a * best_step;
-                    }
-                }
-            }
-
             coefficients = best_coef;
         } else {
             coefficients = new_coef;

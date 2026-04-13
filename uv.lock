@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.10"
 resolution-markers = [
     "python_full_version >= '3.14'",
@@ -2961,7 +2961,7 @@ wheels = [
 
 [[package]]
 name = "rustystats"
-version = "0.6.1"
+version = "0.6.3"
 source = { editable = "." }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -2994,9 +2994,6 @@ dev = [
     { name = "pymdown-extensions" },
     { name = "pypmml" },
     { name = "pytest" },
-    { name = "scikit-learn", version = "1.7.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "scikit-learn", version = "1.8.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "tabmat" },
 ]
 
 [package.metadata]
@@ -3026,8 +3023,6 @@ dev = [
     { name = "pymdown-extensions", specifier = ">=10.19.1" },
     { name = "pypmml", specifier = ">=1.5.8" },
     { name = "pytest", specifier = ">=8.4.2" },
-    { name = "scikit-learn", specifier = ">=1.6.1" },
-    { name = "tabmat", specifier = ">=4.1.5" },
 ]
 
 [[package]]
