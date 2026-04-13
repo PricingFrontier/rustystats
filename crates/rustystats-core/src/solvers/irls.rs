@@ -489,6 +489,8 @@ fn fit_glm_core(
     let mut best_coefficients = iter_coefficients.clone();
     let mut best_mu = mu.clone();
     let mut best_eta = eta.clone();
+    let mut best_cov = cov_unscaled.clone();
+    let mut best_weights = final_weights.clone();
 
     while iteration < config.max_iterations {
         iteration += 1;
@@ -664,6 +666,8 @@ fn fit_glm_core(
             best_coefficients = iter_coefficients.clone();
             best_mu = mu.clone();
             best_eta = eta.clone();
+            best_cov = cov_unscaled.clone();
+            best_weights = final_weights.clone();
         }
 
         if rel_change < config.tolerance {
@@ -685,7 +689,12 @@ fn fit_glm_core(
     // (deviance can increase due to projection, so last iteration may not be best)
     let (final_mu, final_eta, final_deviance, use_coefficients) =
         if has_constraints && best_deviance < deviance {
-            // Best solution was found earlier - use it
+            // Best solution was found earlier — use it and treat as converged
+            // (sign clamping can cause coefficient oscillation even when deviance
+            // has stabilized, so the best-tracked solution is the correct answer)
+            converged = true;
+            cov_unscaled = best_cov;
+            final_weights = best_weights;
             (best_mu, best_eta, best_deviance, best_coefficients)
         } else {
             (mu, eta, deviance, iter_coefficients)
@@ -939,8 +948,16 @@ pub fn compute_xtwx_xtwz(
 ///
 /// Falls back to LU decomposition if Cholesky fails (near-singular systems).
 /// Returns (coefficients, A⁻¹) as ndarray types.
+///
+/// When `skip_covariance` is true, the O(p³) matrix inverse is skipped and a
+/// zero matrix is returned instead. This is useful for intermediate IRLS
+/// iterations where only the coefficients are needed.
 #[inline]
-fn cholesky_solve(a: DMatrix<f64>, b: &DVector<f64>) -> Result<(Array1<f64>, Array2<f64>)> {
+fn cholesky_solve(
+    a: DMatrix<f64>,
+    b: &DVector<f64>,
+    skip_covariance: bool,
+) -> Result<(Array1<f64>, Array2<f64>)> {
     let p = a.nrows();
 
     let chol = match a.clone().cholesky() {
@@ -950,19 +967,24 @@ fn cholesky_solve(a: DMatrix<f64>, b: &DVector<f64>) -> Result<(Array1<f64>, Arr
             match a.clone().lu().solve(b) {
                 Some(sol) => {
                     let coef_array: Array1<f64> = sol.iter().copied().collect();
-                    let a_inv = a.try_inverse().ok_or_else(|| {
-                        RustyStatsError::LinearAlgebraError(
-                            "Failed to compute covariance matrix - system is not invertible. \
-                             This often indicates multicollinearity in predictors."
-                                .to_string(),
-                        )
-                    })?;
-                    let mut cov_array = Array2::zeros((p, p));
-                    for i in 0..p {
-                        for j in 0..p {
-                            cov_array[[i, j]] = a_inv[(i, j)];
+                    let cov_array = if skip_covariance {
+                        Array2::zeros((p, p))
+                    } else {
+                        let a_inv = a.try_inverse().ok_or_else(|| {
+                            RustyStatsError::LinearAlgebraError(
+                                "Failed to compute covariance matrix - system is not invertible. \
+                                 This often indicates multicollinearity in predictors."
+                                    .to_string(),
+                            )
+                        })?;
+                        let mut cov = Array2::zeros((p, p));
+                        for i in 0..p {
+                            for j in 0..p {
+                                cov[[i, j]] = a_inv[(i, j)];
+                            }
                         }
-                    }
+                        cov
+                    };
                     return Ok((coef_array, cov_array));
                 }
                 None => {
@@ -977,16 +999,21 @@ fn cholesky_solve(a: DMatrix<f64>, b: &DVector<f64>) -> Result<(Array1<f64>, Arr
     };
 
     let coefficients = chol.solve(b);
-    let identity = DMatrix::identity(p, p);
-    let a_inv = chol.solve(&identity);
 
     let coef_array: Array1<f64> = coefficients.iter().copied().collect();
-    let mut cov_array = Array2::zeros((p, p));
-    for i in 0..p {
-        for j in 0..p {
-            cov_array[[i, j]] = a_inv[(i, j)];
+    let cov_array = if skip_covariance {
+        Array2::zeros((p, p))
+    } else {
+        let identity = DMatrix::identity(p, p);
+        let a_inv = chol.solve(&identity);
+        let mut cov = Array2::zeros((p, p));
+        for i in 0..p {
+            for j in 0..p {
+                cov[[i, j]] = a_inv[(i, j)];
+            }
         }
-    }
+        cov
+    };
 
     Ok((coef_array, cov_array))
 }
@@ -1023,7 +1050,7 @@ fn solve_weighted_least_squares_penalized(
         }
     }
 
-    cholesky_solve(xtx, &xtz)
+    cholesky_solve(xtx, &xtz, false)
 }
 
 /// Solve weighted least squares with a full penalty matrix.
@@ -1040,15 +1067,17 @@ fn solve_weighted_least_squares_penalized(
 /// * `z` - Working response (n × 1)
 /// * `w` - Observation weights (n × 1)
 /// * `penalty_matrix` - Penalty matrix S (p × p), already scaled by lambdas
+/// * `skip_covariance` - If true, skip the O(p³) matrix inverse and return zeros
 ///
 /// # Returns
 /// * Coefficients β (p × 1)
-/// * Inverse of penalized normal equations (X'WX + S)⁻¹ (p × p)
+/// * Inverse of penalized normal equations (X'WX + S)⁻¹ (p × p), or zeros if skipped
 pub fn solve_weighted_least_squares_with_penalty_matrix(
     x: ArrayView2<'_, f64>,
     z: &Array1<f64>,
     w: &Array1<f64>,
     penalty_matrix: &Array2<f64>,
+    skip_covariance: bool,
 ) -> Result<(Array1<f64>, Array2<f64>)> {
     let p = x.ncols();
 
@@ -1071,13 +1100,12 @@ pub fn solve_weighted_least_squares_with_penalty_matrix(
 
     // Add full penalty matrix S to X'WX
     for i in 0..p {
-        for j in i..p {
+        for j in 0..p {
             xtx[(i, j)] += penalty_matrix[[i, j]];
-            xtx[(j, i)] += penalty_matrix[[j, i]];
         }
     }
 
-    cholesky_solve(xtx, &xtz)
+    cholesky_solve(xtx, &xtz, skip_covariance)
 }
 
 /// Solve penalized WLS from pre-computed X'WX and X'Wz matrices.
@@ -1089,27 +1117,28 @@ pub fn solve_weighted_least_squares_with_penalty_matrix(
 /// * `xtx` - Pre-computed X'WX (p × p) as nalgebra DMatrix
 /// * `xtz` - Pre-computed X'Wz (p × 1) as nalgebra DVector
 /// * `penalty_matrix` - Penalty matrix S (p × p) in ndarray format, already scaled
+/// * `skip_covariance` - If true, skip the O(p³) matrix inverse and return zeros
 ///
 /// # Returns
 /// * Coefficients β (p × 1)
-/// * Inverse of penalized normal equations (X'WX + S)⁻¹ (p × p)
+/// * Inverse of penalized normal equations (X'WX + S)⁻¹ (p × p), or zeros if skipped
 pub fn solve_wls_from_precomputed(
     xtx: &DMatrix<f64>,
     xtz: &DVector<f64>,
     penalty_matrix: &Array2<f64>,
+    skip_covariance: bool,
 ) -> Result<(Array1<f64>, Array2<f64>)> {
     let p = xtx.nrows();
     let mut xtx_pen = xtx.clone();
 
     // Add full penalty matrix S to X'WX
     for i in 0..p {
-        for j in i..p {
+        for j in 0..p {
             xtx_pen[(i, j)] += penalty_matrix[[i, j]];
-            xtx_pen[(j, i)] += penalty_matrix[[j, i]];
         }
     }
 
-    cholesky_solve(xtx_pen, xtz)
+    cholesky_solve(xtx_pen, xtz, skip_covariance)
 }
 
 /// Compute X'WX matrix for EDF calculation.

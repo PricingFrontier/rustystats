@@ -396,7 +396,14 @@ def _build_full_model(model: GLMModel, n_grid_points: int = 200) -> bytes:
             info = spline.get_knot_info()
             bk = info.get("boundary_knots", [0.0, 1.0])
             x_grid = np.linspace(float(bk[0]), float(bk[1]), n_grid_points)
-            basis, _ = spline.transform(x_grid)
+            # Nudge boundary points inward: spline.transform() returns
+            # all-zero basis at exact boundary knots, which would create
+            # a cliff in the piecewise-linear approximation.
+            eps = (float(bk[1]) - float(bk[0])) * 1e-10
+            x_eval = x_grid.copy()
+            x_eval[0] = x_grid[0] + eps
+            x_eval[-1] = x_grid[-1] - eps
+            basis, _ = spline.transform(x_eval)
             feats_sorted = sorted(feats, key=lambda f: f["basis_idx"])
             coefs = np.array([f["coef"] for f in feats_sorted])
             effects = basis @ coefs

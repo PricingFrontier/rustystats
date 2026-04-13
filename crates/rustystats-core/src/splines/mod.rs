@@ -257,19 +257,15 @@ pub fn bs_basis(
     let knots = compute_knots(x, actual_df, degree, boundary_knots);
     let n_basis = actual_df;
 
-    // Parallel evaluation over observations
-    let basis_rows: Vec<Vec<f64>> = (0..n)
-        .into_par_iter()
-        .map(|i| bspline_all_basis_at_point(x[i], degree, &knots, n_basis))
-        .collect();
-
-    // Convert to Array2
+    // Pre-allocate output and write directly in parallel (avoids 1 Vec<f64> per point)
     let mut result = Array2::zeros((n, n_basis));
-    for (i, row) in basis_rows.into_iter().enumerate() {
-        for (j, val) in row.into_iter().enumerate() {
-            result[[i, j]] = val;
-        }
-    }
+    let raw = result.as_slice_mut().expect("result must be contiguous");
+    raw.par_chunks_mut(n_basis)
+        .enumerate()
+        .for_each(|(i, row)| {
+            let vals = bspline_all_basis_at_point(x[i], degree, &knots, n_basis);
+            row.copy_from_slice(&vals);
+        });
 
     // Drop first column if no intercept (for identifiability in models with intercept)
     if !include_intercept && n_basis > 1 {
@@ -331,24 +327,20 @@ pub fn ns_basis(
     // Compute basis using d_k(x) functions (truncated cubic basis with constraint)
     // d_k(x) = D_k(x) - D_K(x) where D_k(x) = (x - ξ_k)³₊ - (x - ξ_K)³₊ / (ξ_K - ξ_k)
 
-    let result_rows: Vec<Vec<f64>> = (0..n)
-        .into_par_iter()
-        .map(|i| {
-            let xi = x[i];
-            compute_ns_row(xi, &all_knots, n_basis, include_intercept)
-        })
-        .collect();
-
-    // Convert to Array2
+    // Pre-allocate output and write directly in parallel
     let actual_cols = n_basis;
     let mut result = Array2::zeros((n, actual_cols));
-    for (i, row) in result_rows.into_iter().enumerate() {
-        for (j, &val) in row.iter().enumerate() {
-            if j < actual_cols {
-                result[[i, j]] = val;
+    let raw = result.as_slice_mut().expect("result must be contiguous");
+    raw.par_chunks_mut(actual_cols)
+        .enumerate()
+        .for_each(|(i, row)| {
+            let vals = compute_ns_row(x[i], &all_knots, n_basis, include_intercept);
+            for (j, v) in vals.into_iter().enumerate() {
+                if j < actual_cols {
+                    row[j] = v;
+                }
             }
-        }
-    }
+        });
 
     result
 }
@@ -389,25 +381,20 @@ pub fn ns_basis_with_knots(
     all_knots.extend(interior_knots);
     all_knots.push(x_max);
 
-    // Compute basis using same algorithm as ns_basis
-    let result_rows: Vec<Vec<f64>> = (0..n)
-        .into_par_iter()
-        .map(|i| {
-            let xi = x[i];
-            compute_ns_row(xi, &all_knots, n_basis, include_intercept)
-        })
-        .collect();
-
-    // Convert to Array2
+    // Pre-allocate output and write directly in parallel
     let actual_cols = n_basis;
     let mut result = Array2::zeros((n, actual_cols));
-    for (i, row) in result_rows.into_iter().enumerate() {
-        for (j, &val) in row.iter().enumerate() {
-            if j < actual_cols {
-                result[[i, j]] = val;
+    let raw = result.as_slice_mut().expect("result must be contiguous");
+    raw.par_chunks_mut(actual_cols)
+        .enumerate()
+        .for_each(|(i, row)| {
+            let vals = compute_ns_row(x[i], &all_knots, n_basis, include_intercept);
+            for (j, v) in vals.into_iter().enumerate() {
+                if j < actual_cols {
+                    row[j] = v;
+                }
             }
-        }
-    }
+        });
 
     result
 }
@@ -518,18 +505,15 @@ pub fn bs_with_knots(
 
     let n_basis = knots.len() + degree + 1;
 
-    // Parallel evaluation
-    let basis_rows: Vec<Vec<f64>> = (0..n)
-        .into_par_iter()
-        .map(|i| bspline_all_basis_at_point(x[i], degree, &full_knots, n_basis))
-        .collect();
-
+    // Pre-allocate output and write directly in parallel
     let mut result = Array2::zeros((n, n_basis));
-    for (i, row) in basis_rows.into_iter().enumerate() {
-        for (j, val) in row.into_iter().enumerate() {
-            result[[i, j]] = val;
-        }
-    }
+    let raw = result.as_slice_mut().expect("result must be contiguous");
+    raw.par_chunks_mut(n_basis)
+        .enumerate()
+        .for_each(|(i, row)| {
+            let vals = bspline_all_basis_at_point(x[i], degree, &full_knots, n_basis);
+            row.copy_from_slice(&vals);
+        });
 
     result
 }
@@ -613,19 +597,13 @@ pub fn is_basis(
     // which relate to B-splines of degree k
     let knots = compute_knots(x, df, degree, Some((x_min, x_max)));
 
-    // Parallel evaluation over observations
-    let basis_rows: Vec<Vec<f64>> = (0..n)
-        .into_par_iter()
-        .map(|i| compute_ispline_row(x[i], degree, &knots, df, x_min, x_max))
-        .collect();
-
-    // Convert to Array2
+    // Pre-allocate output and write directly in parallel
     let mut result = Array2::zeros((n, df));
-    for (i, row) in basis_rows.into_iter().enumerate() {
-        for (j, val) in row.into_iter().enumerate() {
-            result[[i, j]] = val;
-        }
-    }
+    let raw = result.as_slice_mut().expect("result must be contiguous");
+    raw.par_chunks_mut(df).enumerate().for_each(|(i, row)| {
+        let vals = compute_ispline_row(x[i], degree, &knots, df, x_min, x_max);
+        row.copy_from_slice(&vals);
+    });
 
     // For decreasing monotonicity, reverse the basis columns and flip values
     if !increasing {
@@ -659,19 +637,13 @@ pub fn is_basis_with_knots(
     // Build full knot vector from interior knots and boundaries
     let knots = build_knot_vector(interior_knots, degree, x_min, x_max);
 
-    // Parallel evaluation over observations
-    let basis_rows: Vec<Vec<f64>> = (0..n)
-        .into_par_iter()
-        .map(|i| compute_ispline_row(x[i], degree, &knots, df, x_min, x_max))
-        .collect();
-
-    // Convert to Array2
+    // Pre-allocate output and write directly in parallel
     let mut result = Array2::zeros((n, df));
-    for (i, row) in basis_rows.into_iter().enumerate() {
-        for (j, val) in row.into_iter().enumerate() {
-            result[[i, j]] = val;
-        }
-    }
+    let raw = result.as_slice_mut().expect("result must be contiguous");
+    raw.par_chunks_mut(df).enumerate().for_each(|(i, row)| {
+        let vals = compute_ispline_row(x[i], degree, &knots, df, x_min, x_max);
+        row.copy_from_slice(&vals);
+    });
 
     // For decreasing monotonicity, reverse the basis columns and flip values
     if !increasing {

@@ -343,6 +343,22 @@ pub(crate) fn fit_glm_coordinate_descent(
         }
 
         // ---------------------------------------------------------------------
+        // Step 5c: Apply coefficient sign constraints
+        // ---------------------------------------------------------------------
+        // Project non-negative constrained coefficients to be >= 0 (for ms(), pos())
+        for &idx in &irls_config.nonneg_indices {
+            if idx < coefficients.len() && coefficients[idx] < 0.0 {
+                coefficients[idx] = 0.0;
+            }
+        }
+        // Project non-positive constrained coefficients to be <= 0 (for neg())
+        for &idx in &irls_config.nonpos_indices {
+            if idx < coefficients.len() && coefficients[idx] > 0.0 {
+                coefficients[idx] = 0.0;
+            }
+        }
+
+        // ---------------------------------------------------------------------
         // Step 5d: Update η and μ
         // ---------------------------------------------------------------------
         let eta_base = x.dot(&coefficients);

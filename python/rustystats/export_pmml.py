@@ -191,6 +191,12 @@ class PMMLExporter:
     # ── analysis pass ────────────────────────────────────────────────────
 
     def _analyze(self):
+        # Register offset-derived field early so it appears in TransformationDictionary
+        offset_spec = getattr(self.model, "_offset_spec", None)
+        offset_is_exposure = getattr(self.model, "_offset_is_exposure", False)
+        if isinstance(offset_spec, str) and offset_is_exposure:
+            self._add_ln_derived(f"ln_{offset_spec}", offset_spec)
+
         names = self.model.feature_names
         params = self.model.params
 
@@ -304,8 +310,14 @@ class PMMLExporter:
         info = spline.get_knot_info()
         bk = info.get("boundary_knots", [0.0, 1.0])
         x_grid = np.linspace(float(bk[0]), float(bk[1]), self.n_grid)
-
-        basis, _ = spline.transform(x_grid)
+        # Nudge boundary points inward: spline.transform() returns
+        # all-zero basis at exact boundary knots, which would create
+        # a cliff in the piecewise-linear approximation.
+        eps = (float(bk[1]) - float(bk[0])) * 1e-10
+        x_eval = x_grid.copy()
+        x_eval[0] = x_grid[0] + eps
+        x_eval[-1] = x_grid[-1] - eps
+        basis, _ = spline.transform(x_eval)
         feats_sorted = sorted(feats, key=lambda f: f["basis_idx"])
         coefs = np.array([f["coef"] for f in feats_sorted])
         effects = basis @ coefs
@@ -458,7 +470,11 @@ class PMMLExporter:
         info = spline.get_knot_info()
         bk = info.get("boundary_knots", [0.0, 1.0])
         x_grid = np.linspace(float(bk[0]), float(bk[1]), self.n_grid)
-        basis, _ = spline.transform(x_grid)
+        eps = (float(bk[1]) - float(bk[0])) * 1e-10
+        x_eval = x_grid.copy()
+        x_eval[0] = x_grid[0] + eps
+        x_eval[-1] = x_grid[-1] - eps
+        basis, _ = spline.transform(x_eval)
 
         # Get the spline basis coefficients sorted by basis index
         spline_feats = []
@@ -585,6 +601,16 @@ class PMMLExporter:
         ET.SubElement(ap, "Constant", {"dataType": "double"}).text = str(power)
         self._derived_fields[name] = df
 
+    def _add_ln_derived(self, name: str, source: str):
+        """Add a DerivedField that computes ln(source)."""
+        df = ET.Element(
+            "DerivedField",
+            {"name": name, "optype": "continuous", "dataType": "double"},
+        )
+        ap = ET.SubElement(df, "Apply", {"function": "ln"})
+        ET.SubElement(ap, "FieldRef", {"field": source})
+        self._derived_fields[name] = df
+
     def _add_extension_derived(self, name: str, expr: str):
         df = ET.Element(
             "DerivedField",
@@ -644,9 +670,16 @@ class PMMLExporter:
         ts = ET.SubElement(hdr, "Timestamp")
         ts.text = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    def _offset_variable(self) -> str | None:
+        spec = getattr(self.model, "_offset_spec", None)
+        return spec if isinstance(spec, str) else None
+
     def _xml_data_dictionary(self, root: ET.Element):
         resp = self._response_name()
-        n_fields = len(self._raw_inputs) + 1
+        offset_var = self._offset_variable()
+        # Count: response + predictors + offset (if any and not already a predictor)
+        extra = 1 if offset_var and offset_var not in self._raw_inputs else 0
+        n_fields = len(self._raw_inputs) + 1 + extra
         dd = ET.SubElement(root, "DataDictionary", {"numberOfFields": str(n_fields)})
         ET.SubElement(
             dd,
@@ -662,6 +695,12 @@ class PMMLExporter:
             elem = ET.SubElement(dd, "DataField", attrs)
             for lv in info.get("levels", []):
                 ET.SubElement(elem, "Value", {"value": str(lv)})
+        if offset_var and offset_var not in self._raw_inputs:
+            ET.SubElement(
+                dd,
+                "DataField",
+                {"name": offset_var, "optype": "continuous", "dataType": "double"},
+            )
 
     def _xml_transformation_dictionary(self, root: ET.Element):
         td = ET.SubElement(root, "TransformationDictionary")
@@ -689,17 +728,26 @@ class PMMLExporter:
                 attrs["linkParameter"] = "0.5"
 
         offset_spec = getattr(self.model, "_offset_spec", None)
+        offset_is_exposure = getattr(self.model, "_offset_is_exposure", False)
         if isinstance(offset_spec, str):
-            attrs["offsetVariable"] = offset_spec
+            if offset_is_exposure:
+                # RustyStats applies log() to exposure before adding to eta.
+                # PMML adds offsetVariable raw, so use the ln() derived field.
+                attrs["offsetVariable"] = f"ln_{offset_spec}"
+            else:
+                attrs["offsetVariable"] = offset_spec
 
         grm = ET.SubElement(root, "GeneralRegressionModel", attrs)
 
         # MiningSchema
         resp = self._response_name()
+        offset_var = self._offset_variable()
         ms = ET.SubElement(grm, "MiningSchema")
         ET.SubElement(ms, "MiningField", {"name": resp, "usageType": "target"})
         for var in self._raw_inputs:
             ET.SubElement(ms, "MiningField", {"name": var, "usageType": "active"})
+        if offset_var and offset_var not in self._raw_inputs:
+            ET.SubElement(ms, "MiningField", {"name": offset_var, "usageType": "active"})
 
         # ParameterList
         pl = ET.SubElement(grm, "ParameterList")

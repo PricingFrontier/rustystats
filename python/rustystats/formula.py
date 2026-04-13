@@ -46,7 +46,6 @@ from rustystats.constants import (
 )
 from rustystats.exceptions import (
     PredictionError,
-    SerializationError,
     ValidationError,
 )
 
@@ -85,6 +84,37 @@ def get_default_link(family: str) -> str:
             f"Unknown family '{family}'. Supported families: {sorted(DEFAULT_LINKS.keys())}"
         )
     return link
+
+
+def apply_link(mu: np.ndarray, link: str) -> np.ndarray:
+    """
+    Apply forward link function to transform response-scale values to linear predictor scale.
+
+    Parameters
+    ----------
+    mu : np.ndarray
+        Values on response scale (means)
+    link : str
+        Link function name ("identity", "log", "logit", "inverse")
+
+    Returns
+    -------
+    np.ndarray
+        Values on linear predictor scale (eta)
+    """
+    if link == "identity":
+        return mu
+    elif link in (None, "log"):
+        return np.log(mu)
+    elif link == "logit":
+        return np.log(mu / (1.0 - mu))
+    elif link == "inverse":
+        return 1.0 / mu
+    else:
+        raise ValidationError(
+            f"Unknown link function '{link}'. "
+            f"Supported links: 'identity', 'log', 'logit', 'inverse'."
+        )
 
 
 def apply_inverse_link(eta: np.ndarray, link: str) -> np.ndarray:
@@ -136,6 +166,73 @@ def _get_column(data: pl.DataFrame, column: str) -> np.ndarray:
     return data[column].to_numpy()
 
 
+def _extract_needed_columns(
+    terms: dict[str, dict[str, Any]],
+    response: str | None = None,
+    interactions: list[dict[str, Any]] | None = None,
+    offset: str | np.ndarray | None = None,
+    weights: str | np.ndarray | None = None,
+    complement: str | np.ndarray | None = None,
+) -> set[str]:
+    """Extract all DataFrame column names needed to build this model.
+
+    Parameters
+    ----------
+    terms : dict
+        Term specifications (same format as glm_dict).
+    response : str, optional
+        Response column name. Omit for prediction (no response needed).
+    interactions, offset, weights, complement
+        Same as glm_dict parameters.
+    """
+    import re
+
+    cols: set[str] = set()
+    if response is not None:
+        cols.add(response)
+
+    for var_name, spec in terms.items():
+        term_type = spec.get("type", "linear")
+        if term_type == "expression":
+            expr = spec["expr"]
+            for token in re.findall(r"\b([A-Za-z_]\w*)\b", expr):
+                cols.add(token)
+        else:
+            cols.add(var_name)
+
+    if interactions:
+        for ix in interactions:
+            for key in ix:
+                if key in ("include_main", "target_encoding", "frequency_encoding", "prior_weight"):
+                    continue
+                cols.add(key)
+
+    if isinstance(offset, str):
+        cols.add(offset)
+    if isinstance(weights, str):
+        cols.add(weights)
+    if isinstance(complement, str):
+        cols.add(complement)
+
+    return cols
+
+
+def _collect_lazyframe(
+    data: pl.DataFrame | pl.LazyFrame,
+    needed_columns: set[str],
+) -> pl.DataFrame:
+    """If data is a LazyFrame, select only needed columns and collect. Otherwise return as-is."""
+    import polars as pl
+
+    if not isinstance(data, pl.LazyFrame):
+        return data
+
+    if needed_columns:
+        return data.select(sorted(needed_columns)).collect()
+
+    return data.collect()
+
+
 # Import from interactions module (the canonical implementation)
 from rustystats.interactions import InteractionBuilder
 
@@ -144,6 +241,11 @@ def _get_constraint_indices(feature_names: list[str]) -> tuple:
     """
     Compute coefficient constraint indices from feature names.
 
+    For smooth (penalized) monotonic bs() terms, the solver handles monotonicity
+    internally via exp reparameterization on B-spline coefficients (Pya & Wood, 2015).
+    The bs() sign constraints here serve as a fallback for fixed-df monotonic terms
+    that go through the IRLS path (which doesn't yet have exp reparameterization).
+
     Returns
     -------
     nonneg_indices : list[int]
@@ -151,21 +253,25 @@ def _get_constraint_indices(feature_names: list[str]) -> tuple:
     nonpos_indices : list[int]
         Indices of coefficients that must be non-positive (β ≤ 0)
     """
-    # ms()/ns() with + and pos() terms require non-negative coefficients
+    # ms()/ns()/bs() with + and pos() terms require non-negative coefficients.
+    # Smooth (penalized) terms with ", k," in the name use exp reparameterization
+    # for monotonicity and must NOT have sign clamping (which would corrupt beta[0]).
     nonneg_indices = [
         i
         for i, name in enumerate(feature_names)
         if name.startswith("pos(")
-        or (name.startswith("ms(") and ", +)" in name)
+        or (name.startswith("ms(") and ", +)" in name and ", k," not in name)
         or (name.startswith("ns(") and ", +)" in name)
+        or (name.startswith("bs(") and ", +)" in name and ", k," not in name)
     ]
-    # ms()/ns() with - and neg() terms require non-positive coefficients
+    # ms()/ns()/bs() with - and neg() terms require non-positive coefficients.
     nonpos_indices = [
         i
         for i, name in enumerate(feature_names)
         if name.startswith("neg(")
-        or (name.startswith("ms(") and ", -)" in name)
+        or (name.startswith("ms(") and ", -)" in name and ", k," not in name)
         or (name.startswith("ns(") and ", -)" in name)
+        or (name.startswith("bs(") and ", -)" in name and ", k," not in name)
     ]
     return nonneg_indices, nonpos_indices
 
@@ -275,6 +381,8 @@ def _fit_with_smooth_penalties(
     lambda_min: float = DEFAULT_LAMBDA_MIN,
     lambda_max: float = DEFAULT_LAMBDA_MAX,
     store_design_matrix: bool = False,
+    nonneg_indices: list[int] | None = None,
+    nonpos_indices: list[int] | None = None,
 ) -> tuple:
     """
     Fit GLM with penalized smooth terms using fast GCV optimization.
@@ -338,6 +446,8 @@ def _fit_with_smooth_penalties(
         lambda_max,
         monotonicity_specs if has_monotonic else None,
         store_design_matrix,
+        nonneg_indices if nonneg_indices else None,
+        nonpos_indices if nonpos_indices else None,
     )
 
     # Build smooth term results — coefficients are already in original column order
@@ -408,6 +518,9 @@ def _fit_glm_core(
     # Check for smooth terms (s() terms with automatic lambda selection)
     smooth_terms, smooth_col_indices = builder.get_smooth_terms()
 
+    # Compute sign constraints from feature names (pos()/neg() and monotonic splines)
+    nonneg_indices, nonpos_indices = _get_constraint_indices(feature_names)
+
     if smooth_terms and alpha == 0.0:
         # Use penalized fitting with GCV-based lambda selection
         result, smooth_results, total_edf, gcv = _fit_with_smooth_penalties(
@@ -424,11 +537,10 @@ def _fit_glm_core(
             max_iter,
             tol,
             store_design_matrix=store_design_matrix,
+            nonneg_indices=nonneg_indices if nonneg_indices else None,
+            nonpos_indices=nonpos_indices if nonpos_indices else None,
         )
         return result, smooth_results, total_edf, gcv
-
-    # Standard fitting (no smooth terms or regularization already applied)
-    nonneg_indices, nonpos_indices = _get_constraint_indices(feature_names)
 
     result = _fit_glm_rust(
         y,
@@ -465,6 +577,8 @@ def _build_results(
     gcv: float | None,
     terms_dict: dict[str, dict[str, Any]] | None = None,
     interactions_spec: list[dict[str, Any]] | None = None,
+    complement_spec: str | GLMModel | None = None,
+    complement_values: np.ndarray | None = None,
 ) -> GLMModel:
     """Build GLMModel with all metadata."""
     # Clear builder caches to free memory (keep TE stats for prediction)
@@ -486,6 +600,8 @@ def _build_results(
         gcv=gcv,
         terms_dict=terms_dict,
         interactions_spec=interactions_spec,
+        complement_spec=complement_spec,
+        complement_values=complement_values,
     )
 
 
@@ -557,6 +673,74 @@ class _GLMBase:
             return _get_column(self.data, weights).astype(np.float64)
         else:
             return np.asarray(weights, dtype=np.float64)
+
+    def _process_complement(
+        self,
+        complement: str | np.ndarray | GLMModel | None,
+        offset_spec: str | np.ndarray | None,
+    ) -> np.ndarray | None:
+        """Process complement of credibility and merge into offset.
+
+        The complement represents prior predictions on the response scale
+        (rates for log-link models, probabilities for logit-link).
+        It is transformed to the link scale and added to the existing offset,
+        so that regularization shrinks coefficients toward the complement
+        rather than toward zero.
+
+        Parameters
+        ----------
+        complement : str, array-like, GLMModel, or None
+            Complement of credibility. If str, column name in data with values
+            on response scale. If GLMModel, predictions are computed on this
+            data (divided by exposure if applicable). If array, used directly.
+        offset_spec : str, array-like, or None
+            The offset specification (needed to extract exposure when complement
+            is a GLMModel).
+
+        Returns
+        -------
+        np.ndarray or None
+            Complement values on link scale, ready to add to offset.
+        """
+        if complement is None:
+            return None
+
+        # Extract response-scale complement values
+        if isinstance(complement, GLMModel):
+            comp_values = complement.predict(self.data)
+            # If model has exposure offset, divide by exposure to get rate
+            if isinstance(offset_spec, str) and self._uses_log_link():
+                exposure = _get_column(self.data, offset_spec)
+                comp_values = comp_values / exposure
+        elif isinstance(complement, str):
+            comp_values = _get_column(self.data, complement)
+        else:
+            comp_values = np.asarray(complement, dtype=np.float64)
+
+        comp_values = np.asarray(comp_values, dtype=np.float64)
+
+        # Validate
+        link = self.link or get_default_link(self.family)
+        if link in (None, "log"):
+            n_invalid = np.sum(comp_values <= 0)
+            if n_invalid > 0:
+                raise ValidationError(
+                    f"Complement values must be strictly positive for {self.family} family with log link. "
+                    f"Found {n_invalid} values <= 0."
+                )
+        elif link == "logit":
+            n_invalid = np.sum((comp_values <= 0) | (comp_values >= 1))
+            if n_invalid > 0:
+                raise ValidationError(
+                    f"Complement values must be in (0, 1) for {self.family} family with logit link. "
+                    f"Found {n_invalid} values outside range."
+                )
+
+        # Store raw complement for reporting (before link transform)
+        self._complement_values = comp_values
+
+        # Transform to link scale
+        return apply_link(comp_values, link)
 
     def _get_raw_exposure(
         self,
@@ -688,7 +872,7 @@ class _DeserializedBuilder(InteractionBuilder):
         self._cat_encoding_cache = state["cat_encoding_cache"]
         self._fitted_splines = state["fitted_splines"]
         self._te_stats = state["te_stats"]
-        self._fe_stats: dict[str, dict] = {}
+        self._fe_stats: dict[str, dict] = state.get("fe_stats", {})
         self.dtype = state["dtype"]
         self.data = None
         self._n = 0
@@ -727,6 +911,8 @@ class GLMModel:
         gcv: float | None = None,
         terms_dict: dict[str, dict[str, Any]] | None = None,
         interactions_spec: list[dict[str, Any]] | None = None,
+        complement_spec: str | GLMModel | None = None,
+        complement_values: np.ndarray | None = None,
     ):
         self._result = result
         self._is_deserialized = isinstance(result, _DeserializedResult)
@@ -743,6 +929,8 @@ class GLMModel:
         self._offset_is_exposure = offset_is_exposure
         self._terms_dict = terms_dict
         self._interactions_spec = interactions_spec
+        self._complement_spec = complement_spec
+        self._complement_values = complement_values
 
     def __getattr__(self, name: str) -> Any:
         """Delegate attribute access to the underlying result object.
@@ -1007,9 +1195,71 @@ class GLMModel:
             }
         )
 
+    @property
+    def has_complement(self) -> bool:
+        """Whether the model was fitted with a complement of credibility."""
+        return self._complement_values is not None
+
+    def credibility_summary(self) -> pl.DataFrame:
+        """
+        Credibility summary for models fitted with a complement.
+
+        Shows each coefficient's deviation from the complement. Coefficients
+        shrunk to zero indicate full credibility in the complement for that
+        term. Non-zero deviations indicate the data supports a different value.
+
+        For log-link models, the Deviation_Factor column shows exp(beta) — the
+        multiplicative adjustment applied to the complement. A value of 1.0
+        means the complement is fully trusted.
+
+        Returns
+        -------
+        pl.DataFrame
+            DataFrame with Feature, Coef (deviation from complement),
+            Zeroed (whether lasso shrunk to zero), and Deviation_Factor
+            (for log-link models).
+
+        Raises
+        ------
+        ValidationError
+            If the model was not fitted with a complement.
+        """
+        import polars as pl
+
+        if not self.has_complement:
+            raise ValidationError(
+                "credibility_summary() requires a model fitted with complement=. "
+                "Use summary() for standard models."
+            )
+
+        coefs = self.params
+        zeroed = np.abs(coefs) < 1e-10
+        n_zeroed = int(np.sum(zeroed))
+        n_total = len(coefs) - 1  # Exclude intercept
+
+        result = {
+            "Feature": self.feature_names,
+            "Deviation": coefs,
+            "Zeroed": zeroed.tolist(),
+        }
+
+        if self.link == "log":
+            result["Deviation_Factor"] = np.exp(coefs)
+
+        df = pl.DataFrame(result)
+        # Add summary note as metadata attribute
+        df.__dict__["_credibility_note"] = (
+            f"{n_zeroed}/{n_total} non-intercept terms zeroed (complement fully trusted)"
+        )
+        return df
+
     def summary(self) -> str:
         """
         Generate a formatted summary string.
+
+        When the model was fitted with a complement of credibility,
+        the summary includes a note that coefficients represent
+        deviations from the complement.
 
         Returns
         -------
@@ -1018,7 +1268,27 @@ class GLMModel:
         """
         from rustystats.glm import summary
 
-        return summary(self._result, feature_names=self.feature_names)
+        title = "GLM Results"
+        if self.has_complement:
+            title = "Lasso Credibility Results"
+            if self._complement_spec is not None:
+                if isinstance(self._complement_spec, str):
+                    title += f" (complement: {self._complement_spec})"
+                elif isinstance(self._complement_spec, GLMModel):
+                    title += " (complement: GLMModel)"
+
+        result = summary(self._result, feature_names=self.feature_names, title=title)
+
+        if self.has_complement:
+            n_zeroed = int(np.sum(np.abs(self.params[1:]) < 1e-10))
+            n_total = len(self.params) - 1
+            result += (
+                f"\nNote: Coefficients are deviations from the complement of credibility.\n"
+                f"      {n_zeroed}/{n_total} non-intercept terms zeroed "
+                f"(complement fully trusted).\n"
+            )
+
+        return result
 
     def diagnostics(
         self,
@@ -1211,20 +1481,26 @@ class GLMModel:
 
     def predict(
         self,
-        new_data: pl.DataFrame,
+        new_data: pl.DataFrame | pl.LazyFrame,
         offset: str | np.ndarray | None = None,
+        complement: str | np.ndarray | None = None,
     ) -> np.ndarray:
         """
         Predict on new data using the fitted model.
 
         Parameters
         ----------
-        new_data : pl.DataFrame
+        new_data : pl.DataFrame or pl.LazyFrame
             New data to predict on. Must have the same columns as training data.
+            If a LazyFrame, only needed columns are collected.
         offset : str or array-like, optional
             Offset for new data. If None and the model was fit with an offset
             column name, that column will be extracted from new_data.
             For Poisson/Gamma with log link, log() is auto-applied to exposure.
+        complement : str or array-like, optional
+            Complement of credibility for new data (response scale).
+            If None and the model was fit with a complement column name,
+            that column will be extracted from new_data.
 
         Returns
         -------
@@ -1247,6 +1523,18 @@ class GLMModel:
                 "Cannot predict: model was not fitted with formula API. "
                 "Use fittedvalues for training data predictions."
             )
+
+        # Resolve LazyFrame: select only columns needed for prediction
+        if self._terms_dict is not None:
+            needed = _extract_needed_columns(
+                terms=self._terms_dict,
+                interactions=self._interactions_spec,
+                offset=offset if offset is not None else self._offset_spec,
+                complement=complement if complement is not None else self._complement_spec,
+            )
+            new_data = _collect_lazyframe(new_data, needed)
+        else:
+            new_data = _collect_lazyframe(new_data, set())
 
         # Build design matrix for new data using stored encoding state
         X_new = self._builder.transform_new_data(new_data)
@@ -1276,6 +1564,26 @@ class GLMModel:
             else:
                 offset_values = np.asarray(offset_to_use, dtype=np.float64)
             linear_pred = linear_pred + offset_values
+
+        # Handle complement (auto-use from fitting if not provided)
+        comp_to_use = complement
+        if comp_to_use is None and self._complement_spec is not None:
+            comp_to_use = self._complement_spec
+
+        if comp_to_use is not None:
+            if isinstance(comp_to_use, GLMModel):
+                comp_preds = comp_to_use.predict(new_data)
+                # Divide by exposure to get rate if model uses log-link with exposure
+                if self._offset_is_exposure and isinstance(self._offset_spec, str):
+                    exposure = new_data[self._offset_spec].to_numpy().astype(np.float64)
+                    comp_values = comp_preds / exposure
+                else:
+                    comp_values = comp_preds
+            elif isinstance(comp_to_use, str):
+                comp_values = new_data[comp_to_use].to_numpy().astype(np.float64)
+            else:
+                comp_values = np.asarray(comp_to_use, dtype=np.float64)
+            linear_pred = linear_pred + apply_link(comp_values, self.link)
 
         # Apply inverse link function to get predictions on response scale
         return self._apply_inverse_link(linear_pred)
@@ -1406,11 +1714,26 @@ class GLMModel:
                 "cat_encoding_cache": self._builder._cat_encoding_cache,
                 "fitted_splines": self._builder._fitted_splines,
                 "te_stats": getattr(self._builder, "_te_stats", {}),
+                "fe_stats": getattr(self._builder, "_fe_stats", {}),
                 "dtype": self._builder.dtype,
             }
 
+        # Record basis implementation for each spline term
+        spline_basis_impl = {}
+        if self._builder is not None and hasattr(self._builder, "_fitted_splines"):
+            for var_name, spline_term in self._builder._fitted_splines.items():
+                if hasattr(spline_term, "spline_type"):
+                    uses_ispline = spline_term.spline_type == "ms" or (
+                        spline_term.spline_type == "bs"
+                        and getattr(spline_term, "monotonicity", None) is not None
+                    )
+                    spline_basis_impl[var_name] = {
+                        "spline_type": spline_term.spline_type,
+                        "basis": "ispline" if uses_ispline else spline_term.spline_type,
+                        "monotonicity": getattr(spline_term, "monotonicity", None),
+                    }
+
         state = {
-            "version": 1,
             "result_state": result_state,
             "feature_names": self.feature_names,
             "formula": self.formula,
@@ -1424,6 +1747,8 @@ class GLMModel:
             "gcv": self._gcv,
             "terms_dict": self._terms_dict,
             "interactions_spec": self._interactions_spec,
+            "complement_spec": self._complement_spec,
+            "basis_impl": spline_basis_impl,
         }
 
         return pickle.dumps(state, protocol=pickle.HIGHEST_PROTOCOL)
@@ -1455,12 +1780,6 @@ class GLMModel:
         import pickle
 
         state = pickle.loads(data)
-
-        if state.get("version", 0) != 1:
-            raise SerializationError(
-                f"Unsupported serialization version: {state.get('version')}. "
-                "Model was saved with a different version of rustystats."
-            )
 
         result_state = state["result_state"]
 
@@ -1499,6 +1818,7 @@ class GLMModel:
             gcv=state["gcv"],
             terms_dict=state.get("terms_dict"),
             interactions_spec=state.get("interactions_spec"),
+            complement_spec=state.get("complement_spec"),
         )
 
     def __repr__(self) -> str:
@@ -1530,6 +1850,35 @@ from rustystats.interactions import (
 from rustystats.splines import SplineTerm
 
 
+def _validate_explicit_knots(
+    var_name: str,
+    knots: list | tuple,
+    spec: dict[str, Any],
+) -> list[float]:
+    """Validate explicit knots and return as list[float].
+
+    Raises ValidationError if knots are empty, unsorted, duplicated,
+    or combined with df/k.
+    """
+    if spec.get("k") is not None or spec.get("df") is not None:
+        raise ValidationError(
+            f"Cannot specify both 'knots' and 'df'/'k' for '{var_name}'. "
+            "Use either explicit knots or automatic knot placement, not both."
+        )
+    knots_list = list(knots)
+    if len(knots_list) == 0:
+        raise ValidationError(f"'knots' must be a non-empty sequence for '{var_name}'.")
+    if knots_list != sorted(knots_list):
+        raise ValidationError(
+            f"'knots' must be sorted in ascending order for '{var_name}'. Got: {knots_list}"
+        )
+    if len(set(knots_list)) != len(knots_list):
+        raise ValidationError(
+            f"'knots' must contain unique values for '{var_name}'. Got duplicates in: {knots_list}"
+        )
+    return [float(v) for v in knots_list]
+
+
 def _parse_term_spec(
     var_name: str,
     spec: dict[str, Any],
@@ -1547,8 +1896,9 @@ def _parse_term_spec(
     VALID_KEYS = {
         "linear": {"type", "monotonicity"},
         "categorical": {"type", "levels"},
-        "bs": {"type", "df", "k", "degree", "monotonicity"},
-        "ns": {"type", "df", "k"},
+        "bs": {"type", "df", "k", "degree", "monotonicity", "knots", "boundary_knots"},
+        "ns": {"type", "df", "k", "knots", "boundary_knots"},
+        "ms": {"type", "df", "k", "degree", "monotonicity", "knots", "boundary_knots"},
         "target_encoding": {"type", "prior_weight", "n_permutations", "variable"},
         "frequency_encoding": {"type", "variable"},
         "expression": {"type", "expr", "monotonicity"},
@@ -1608,56 +1958,146 @@ def _parse_term_spec(
             main_effects.append(var_name)
 
     elif term_type == "bs":
-        # Default to penalized smooth (k=DEFAULT_SPLINE_DF) if neither df nor k specified
-        k = spec.get("k")
-        df = spec.get("df")
-        if df is None and k is None:
-            df = DEFAULT_SPLINE_DF  # Default: penalized smooth
-            is_penalized = True
-        elif k is not None:
-            df = k
-            is_penalized = True
+        explicit_knots = spec.get("knots")
+        user_boundary_knots = spec.get("boundary_knots")
+        if explicit_knots is not None:
+            knots_list = _validate_explicit_knots(var_name, explicit_knots, spec)
+            degree = spec.get("degree", DEFAULT_SPLINE_DEGREE)
+            implied_df = len(knots_list) + degree
+            bk_tuple = tuple(user_boundary_knots) if user_boundary_knots is not None else None
+            term = SplineTerm(
+                var_name=var_name,
+                spline_type="bs",
+                df=implied_df,
+                degree=degree,
+                boundary_knots=bk_tuple,
+                monotonicity=monotonicity,
+            )
+            term._computed_internal_knots = knots_list
+            term._is_smooth = False
+            if monotonicity:
+                term._monotonic = True
+            spline_terms.append(term)
         else:
-            is_penalized = False
-        degree = spec.get("degree", DEFAULT_SPLINE_DEGREE)
-        term = SplineTerm(
-            var_name=var_name,
-            spline_type="bs",
-            df=df,
-            degree=degree,
-            monotonicity=monotonicity,
-        )
-        if is_penalized:
-            term._is_smooth = True
-        if monotonicity:
-            term._monotonic = True
-        spline_terms.append(term)
+            # Default to penalized smooth (k=DEFAULT_SPLINE_DF) if neither df nor k specified
+            k = spec.get("k")
+            df = spec.get("df")
+            if df is None and k is None:
+                df = DEFAULT_SPLINE_DF  # Default: penalized smooth
+                is_penalized = True
+            elif k is not None:
+                df = k
+                is_penalized = True
+            else:
+                is_penalized = False
+            degree = spec.get("degree", DEFAULT_SPLINE_DEGREE)
+            bk_tuple = tuple(user_boundary_knots) if user_boundary_knots is not None else None
+            term = SplineTerm(
+                var_name=var_name,
+                spline_type="bs",
+                df=df,
+                degree=degree,
+                boundary_knots=bk_tuple,
+                monotonicity=monotonicity,
+            )
+            if is_penalized:
+                term._is_smooth = True
+            if monotonicity:
+                term._monotonic = True
+            spline_terms.append(term)
 
     elif term_type == "ns":
-        # Default to penalized smooth (k=DEFAULT_SPLINE_DF) if neither df nor k specified
-        k = spec.get("k")
-        df = spec.get("df")
-        if df is None and k is None:
-            df = DEFAULT_SPLINE_DF  # Default: penalized smooth
-            is_penalized = True
-        elif k is not None:
-            df = k
-            is_penalized = True
-        else:
-            is_penalized = False
         if monotonicity:
             raise ValidationError(
                 "Monotonicity constraints are not supported for natural splines (ns). "
                 "Use type='bs' with monotonicity parameter instead for monotonic effects."
             )
-        term = SplineTerm(
-            var_name=var_name,
-            spline_type="ns",
-            df=df,
-        )
-        if is_penalized:
-            term._is_smooth = True
-        spline_terms.append(term)
+        explicit_knots = spec.get("knots")
+        user_boundary_knots = spec.get("boundary_knots")
+        if explicit_knots is not None:
+            knots_list = _validate_explicit_knots(var_name, explicit_knots, spec)
+            implied_df = len(knots_list)
+            bk_tuple = tuple(user_boundary_knots) if user_boundary_knots is not None else None
+            term = SplineTerm(
+                var_name=var_name,
+                spline_type="ns",
+                df=implied_df,
+                boundary_knots=bk_tuple,
+            )
+            term._computed_internal_knots = knots_list
+            term._is_smooth = False
+            spline_terms.append(term)
+        else:
+            # Default to penalized smooth (k=DEFAULT_SPLINE_DF) if neither df nor k specified
+            k = spec.get("k")
+            df = spec.get("df")
+            if df is None and k is None:
+                df = DEFAULT_SPLINE_DF  # Default: penalized smooth
+                is_penalized = True
+            elif k is not None:
+                df = k
+                is_penalized = True
+            else:
+                is_penalized = False
+            bk_tuple = tuple(user_boundary_knots) if user_boundary_knots is not None else None
+            term = SplineTerm(
+                var_name=var_name,
+                spline_type="ns",
+                df=df,
+                boundary_knots=bk_tuple,
+            )
+            if is_penalized:
+                term._is_smooth = True
+            spline_terms.append(term)
+
+    elif term_type == "ms":
+        # Monotonic spline — uses I-spline basis via SplineTerm with spline_type="ms"
+        # Default monotonicity to "increasing" if not specified
+        mono = monotonicity or "increasing"
+        explicit_knots = spec.get("knots")
+        user_boundary_knots = spec.get("boundary_knots")
+        if explicit_knots is not None:
+            knots_list = _validate_explicit_knots(var_name, explicit_knots, spec)
+            degree = spec.get("degree", DEFAULT_SPLINE_DEGREE)
+            implied_df = len(knots_list) + degree
+            bk_tuple = tuple(user_boundary_knots) if user_boundary_knots is not None else None
+            term = SplineTerm(
+                var_name=var_name,
+                spline_type="ms",
+                df=implied_df,
+                degree=degree,
+                boundary_knots=bk_tuple,
+                monotonicity=mono,
+            )
+            term._computed_internal_knots = knots_list
+            term._is_smooth = False
+            term._monotonic = True
+            spline_terms.append(term)
+        else:
+            k = spec.get("k")
+            df = spec.get("df")
+            if df is None and k is None:
+                df = DEFAULT_SPLINE_DF
+                is_penalized = True
+            elif k is not None:
+                df = k
+                is_penalized = True
+            else:
+                is_penalized = False
+            degree = spec.get("degree", DEFAULT_SPLINE_DEGREE)
+            bk_tuple = tuple(user_boundary_knots) if user_boundary_knots is not None else None
+            term = SplineTerm(
+                var_name=var_name,
+                spline_type="ms",
+                df=df,
+                degree=degree,
+                boundary_knots=bk_tuple,
+                monotonicity=mono,
+            )
+            if is_penalized:
+                term._is_smooth = True
+            term._monotonic = True
+            spline_terms.append(term)
 
     elif term_type == "target_encoding":
         prior_weight = spec.get("prior_weight", DEFAULT_PRIOR_WEIGHT)
@@ -1812,28 +2252,56 @@ def _parse_interaction_spec(
         elif term_type == "categorical":
             cat_factors.add(var_name)
             categorical_vars.add(var_name)
-        elif term_type in ("bs", "ns", "s"):
-            # For s() smooth terms, use k parameter; for bs/ns use df
-            if term_type == "s":
-                df = spec.get("k", DEFAULT_SPLINE_DF)
+        elif term_type in ("bs", "ns", "ms", "s"):
+            explicit_knots = spec.get("knots")
+            user_boundary_knots = spec.get("boundary_knots")
+            # For s() smooth terms, use k parameter; for bs/ns/ms use df
+            if explicit_knots is not None:
+                knots_list = _validate_explicit_knots(var_name, explicit_knots, spec)
+                degree = spec.get("degree", DEFAULT_SPLINE_DEGREE)
+                spline_type_out = "bs" if term_type == "s" else term_type
+                if spline_type_out in ("bs", "ms"):
+                    implied_df = len(knots_list) + degree
+                else:
+                    implied_df = len(knots_list)
+                bk_tuple = tuple(user_boundary_knots) if user_boundary_knots is not None else None
+                monotonicity = spec.get("monotonicity")
+                spline = SplineTerm(
+                    var_name=var_name,
+                    spline_type=spline_type_out,
+                    df=implied_df,
+                    degree=degree,
+                    boundary_knots=bk_tuple,
+                    monotonicity=monotonicity,
+                )
+                spline._computed_internal_knots = knots_list
+                spline._is_smooth = False
             else:
-                df = spec.get("df", 5 if term_type == "bs" else 4)
-            degree = spec.get("degree", DEFAULT_SPLINE_DEGREE)
-            monotonicity = spec.get("monotonicity")
-            # Use unified bs with monotonicity parameter
-            spline_type_out = "bs" if term_type == "s" else term_type
-            spline = SplineTerm(
-                var_name=var_name,
-                spline_type=spline_type_out,
-                df=df,
-                degree=degree,
-                monotonicity=monotonicity,
-            )
-            # Mark s() terms as smooth for penalized fitting
-            if term_type == "s":
-                spline._is_smooth = True
-                if monotonicity:
-                    spline._smooth_monotonicity = monotonicity
+                if term_type == "s":
+                    df = spec.get("k", DEFAULT_SPLINE_DF)
+                else:
+                    df = spec.get("df", 5 if term_type in ("bs", "ms") else 4)
+                degree = spec.get("degree", DEFAULT_SPLINE_DEGREE)
+                monotonicity = spec.get("monotonicity")
+                # For ms type, default monotonicity to "increasing"
+                if term_type == "ms" and monotonicity is None:
+                    monotonicity = "increasing"
+                # Use unified bs with monotonicity parameter
+                spline_type_out = "bs" if term_type == "s" else term_type
+                bk_tuple = tuple(user_boundary_knots) if user_boundary_knots is not None else None
+                spline = SplineTerm(
+                    var_name=var_name,
+                    spline_type=spline_type_out,
+                    df=df,
+                    degree=degree,
+                    boundary_knots=bk_tuple,
+                    monotonicity=monotonicity,
+                )
+                # Mark s() terms as smooth for penalized fitting
+                if term_type == "s":
+                    spline._is_smooth = True
+                    if monotonicity:
+                        spline._smooth_monotonicity = monotonicity
             spline_factors.append((var_name, spline))
         elif term_type == "target_encoding":
             prior_weight = spec.get("prior_weight", DEFAULT_PRIOR_WEIGHT)
@@ -1980,6 +2448,7 @@ class FormulaGLMDict(_GLMBase):
         offset: str | np.ndarray | None = None,
         weights: str | np.ndarray | None = None,
         seed: int | None = None,
+        complement: str | np.ndarray | None = None,
     ):
         self.response = response
         self.terms = terms
@@ -1994,6 +2463,8 @@ class FormulaGLMDict(_GLMBase):
         self._offset_spec = offset
         self._weights_spec = weights
         self._seed = seed
+        self._complement_spec = complement if isinstance(complement, str | GLMModel) else None
+        self._complement_values = None  # Set by _process_complement
 
         # Build formula string for compatibility (used in results/diagnostics)
         self.formula = self._build_formula_string()
@@ -2017,9 +2488,15 @@ class FormulaGLMDict(_GLMBase):
         self.n_obs = len(self.y)
         self.n_params = self.X.shape[1]
 
-        # Process offset and weights
+        # Process offset, weights, and complement
         self.offset = self._process_offset(offset)
         self.weights = self._process_weights(weights)
+        complement_link = self._process_complement(complement, offset)
+        if complement_link is not None:
+            if self.offset is not None:
+                self.offset = self.offset + complement_link
+            else:
+                self.offset = complement_link
 
     def _build_formula_string(self) -> str:
         """Build a formula string representation for display purposes."""
@@ -2033,11 +2510,27 @@ class FormulaGLMDict(_GLMBase):
             elif term_type == "categorical":
                 term_strs.append(f"C({var_name})")
             elif term_type == "bs":
-                df = spec.get("df", DEFAULT_SPLINE_DF)
-                term_strs.append(f"bs({var_name}, df={df})")
+                knots = spec.get("knots")
+                if knots is not None:
+                    term_strs.append(f"bs({var_name}, knots=[{len(knots)}])")
+                else:
+                    df = spec.get("df", DEFAULT_SPLINE_DF)
+                    term_strs.append(f"bs({var_name}, df={df})")
             elif term_type == "ns":
-                df = spec.get("df", DEFAULT_SPLINE_DF)
-                term_strs.append(f"ns({var_name}, df={df})")
+                knots = spec.get("knots")
+                if knots is not None:
+                    term_strs.append(f"ns({var_name}, knots=[{len(knots)}])")
+                else:
+                    df = spec.get("df", DEFAULT_SPLINE_DF)
+                    term_strs.append(f"ns({var_name}, df={df})")
+            elif term_type == "ms":
+                mono = spec.get("monotonicity", "increasing")
+                knots = spec.get("knots")
+                if knots is not None:
+                    term_strs.append(f"ms({var_name}, knots=[{len(knots)}], {mono})")
+                else:
+                    df = spec.get("df", DEFAULT_SPLINE_DF)
+                    term_strs.append(f"ms({var_name}, df={df}, {mono})")
             elif term_type == "target_encoding":
                 interaction = spec.get("interaction")
                 if interaction:
@@ -2242,13 +2735,15 @@ class FormulaGLMDict(_GLMBase):
             self._gcv,
             terms_dict=self.terms,
             interactions_spec=self.interactions_spec,
+            complement_spec=self._complement_spec,
+            complement_values=self._complement_values,
         )
 
 
 def glm_dict(
     response: str,
     terms: dict[str, dict[str, Any]],
-    data: pl.DataFrame,
+    data: pl.DataFrame | pl.LazyFrame,
     interactions: list[dict[str, Any]] | None = None,
     intercept: bool = True,
     family: str = "gaussian",
@@ -2258,6 +2753,7 @@ def glm_dict(
     offset: str | np.ndarray | None = None,
     weights: str | np.ndarray | None = None,
     seed: int | None = None,
+    complement: str | np.ndarray | None = None,
 ) -> FormulaGLMDict:
     """
     Create a GLM model from a dict specification.
@@ -2283,8 +2779,10 @@ def glm_dict(
         - ``{"type": "expression", "expr": "x**2"}`` - expression
         - ``{"type": "linear", "monotonicity": "increasing"}`` - constrained
 
-    data : pl.DataFrame
-        Polars DataFrame containing the data.
+    data : pl.DataFrame or pl.LazyFrame
+        Polars DataFrame or LazyFrame containing the data. If a LazyFrame
+        is passed, only the columns needed by the model are collected,
+        enabling optimized reads from Parquet/CSV scans.
     interactions : list of dict, optional
         List of interaction specifications. Each is a dict with variable
         names as keys and their specs as values, plus 'include_main'.
@@ -2299,11 +2797,18 @@ def glm_dict(
     theta : float, optional
         Dispersion for Negative Binomial.
     offset : str or array-like, optional
-        Offset term.
+        Offset term (e.g., exposure for rate models).
     weights : str or array-like, optional
         Prior weights.
     seed : int, optional
         Random seed for deterministic target encoding.
+    complement : str, array-like, or GLMModel, optional
+        Complement of credibility for lasso credibility. Values on
+        the response scale (rates for log-link, probabilities for logit).
+        When used with regularization (especially lasso), coefficients are
+        shrunk toward the complement rather than toward zero. If str,
+        column name in data. If GLMModel, predictions are computed and
+        divided by exposure if applicable.
 
     Returns
     -------
@@ -2312,6 +2817,7 @@ def glm_dict(
 
     Examples
     --------
+    >>> # Standard GLM
     >>> result = rs.glm_dict(
     ...     response="ClaimCount",
     ...     terms={
@@ -2320,14 +2826,45 @@ def glm_dict(
     ...         "Region": {"type": "categorical"},
     ...         "Brand": {"type": "target_encoding"},
     ...     },
-    ...     interactions=[
-    ...         {"VehAge": {"type": "linear"}, "Region": {"type": "categorical"}, "include_main": True},
-    ...     ],
     ...     data=data,
     ...     family="poisson",
     ...     offset="Exposure",
     ... ).fit()
+
+    >>> # LazyFrame: only needed columns are collected
+    >>> lf = pl.scan_parquet("insurance.parquet")
+    >>> result = rs.glm_dict(
+    ...     response="ClaimCount",
+    ...     terms={"VehAge": {"type": "linear"}, "Region": {"type": "categorical"}},
+    ...     data=lf,
+    ...     family="poisson",
+    ...     offset="Exposure",
+    ... ).fit()
+
+    >>> # Lasso credibility: shrink state model toward countrywide rates
+    >>> state_result = rs.glm_dict(
+    ...     response="ClaimCount",
+    ...     terms={
+    ...         "VehAge": {"type": "bs"},
+    ...         "Region": {"type": "categorical"},
+    ...     },
+    ...     data=state_data,
+    ...     family="poisson",
+    ...     offset="Exposure",
+    ...     complement="countrywide_rate",
+    ... ).fit(regularization="lasso")
     """
+    # Resolve LazyFrame: select only needed columns, then collect
+    needed = _extract_needed_columns(
+        terms,
+        response=response,
+        interactions=interactions,
+        offset=offset,
+        weights=weights,
+        complement=complement,
+    )
+    data = _collect_lazyframe(data, needed)
+
     return FormulaGLMDict(
         response=response,
         terms=terms,
@@ -2341,4 +2878,5 @@ def glm_dict(
         offset=offset,
         weights=weights,
         seed=seed,
+        complement=complement,
     )

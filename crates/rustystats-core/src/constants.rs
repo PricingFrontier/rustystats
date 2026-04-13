@@ -21,6 +21,11 @@
 /// We stop when: |deviance_new - deviance_old| / deviance_old < CONVERGENCE_TOL
 pub const CONVERGENCE_TOL: f64 = 1e-8;
 
+/// Convergence tolerance for smooth (penalized) GLM solvers.
+/// Looser than CONVERGENCE_TOL because GCV lambda perturbation introduces
+/// noise larger than 1e-8, so tighter tolerance just wastes iterations.
+pub const SMOOTH_CONVERGENCE_TOL: f64 = 1e-6;
+
 /// Tolerance for checking if a value is effectively zero.
 /// Used for comparing floating point numbers to zero.
 pub const ZERO_TOL: f64 = 1e-10;

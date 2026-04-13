@@ -48,7 +48,7 @@ When to Use Each Type
 - More flexible at boundaries
 - Good when you don't need to extrapolate
 - Standard choice for most applications
-- Supports monotonicity constraints via I-spline basis
+- Supports monotonicity constraints via exp reparameterization
 
 **Natural splines (`ns`):**
 - Linear extrapolation beyond boundaries
@@ -86,7 +86,13 @@ from rustystats._rustystats import (
     bs_py as _bs_rust,
 )
 from rustystats._rustystats import (
-    ns_names_py as _ns_names_rust,  # Monotonic splines with explicit knots
+    ms_py as _ms_rust,
+)
+from rustystats._rustystats import (
+    ms_with_knots_py as _ms_with_knots_rust,
+)
+from rustystats._rustystats import (
+    ns_names_py as _ns_names_rust,
 )
 from rustystats._rustystats import (
     ns_py as _ns_rust,
@@ -146,7 +152,8 @@ def bs(
         - "increasing": Effect must increase with x
         - "decreasing": Effect must decrease with x
         - None (default): No monotonicity constraint
-        Uses I-spline (integrated M-spline) basis internally.
+        Uses exp reparameterization on B-spline coefficients
+        (Pya & Wood, 2015). The solver enforces monotonicity internally.
 
     Returns
     -------
@@ -162,9 +169,9 @@ def bs(
 
     **Monotonicity:**
 
-    When monotonicity is specified, I-splines are used. Each basis function
-    increases from 0 to 1, and with non-negative coefficients (enforced during
-    fitting), the resulting curve is monotonic.
+    When monotonicity is specified, the standard B-spline basis is used.
+    Monotonicity is enforced by the solver via exp reparameterization on
+    the B-spline coefficients (Pya & Wood, 2015).
 
     Examples
     --------
@@ -197,16 +204,17 @@ def bs(
     # Default to penalized smooth (k=10) if neither df nor k specified
     effective_df = df if df is not None else (k if k is not None else 10)
 
-    # Handle monotonicity — use regular B-spline basis.
-    # The solver enforces monotonicity via PAVA projection on B-spline
-    # coefficients (non-decreasing for increasing, non-increasing for
-    # decreasing).  No I-spline basis needed.
+    # Handle monotonicity validation.
+    # Monotonicity is enforced by the solver via exp reparameterization
+    # on the B-spline coefficients (Pya & Wood, 2015).
     if monotonicity is not None:
         if monotonicity not in ("increasing", "decreasing"):
             raise ValidationError(
                 f"monotonicity must be 'increasing' or 'decreasing', got '{monotonicity}'"
             )
-        # Fall through to the standard B-spline path below
+        # Fall through to standard B-spline path below.
+        # Monotonicity is enforced by the solver via exp reparameterization
+        # on the B-spline coefficients (Pya & Wood, 2015).
 
     if knots is not None:
         # Use explicit knots
@@ -448,27 +456,35 @@ class SplineTerm:
         # On subsequent calls (prediction), reuse the stored boundary knots
         x_arr = np.asarray(x).ravel()
         if self._computed_boundary_knots is None:
-            # First call - compute and store knots using Rust for consistency
-            from rustystats._rustystats import compute_knots_natural_py, compute_knots_py
+            if self._computed_internal_knots is not None:
+                # Explicit knots were pre-set — only compute boundary knots
+                bk = self.boundary_knots
+                if bk is not None:
+                    self._computed_boundary_knots = (float(bk[0]), float(bk[1]))
+                else:
+                    self._computed_boundary_knots = (float(x_arr.min()), float(x_arr.max()))
+            else:
+                # Auto-compute knots from data using Rust for consistency
+                from rustystats._rustystats import compute_knots_natural_py, compute_knots_py
 
-            bk = self.boundary_knots  # user-specified or None
+                bk = self.boundary_knots  # user-specified or None
 
-            if self.spline_type == "bs":
-                interior, (x_min, x_max) = compute_knots_py(
-                    x_arr,
-                    self.df,
-                    self.degree,
-                    bk,
-                )
-            else:  # ns, ms
-                interior, (x_min, x_max) = compute_knots_natural_py(
-                    x_arr,
-                    self.df,
-                    bk,
-                )
+                if self.spline_type in ("bs", "ms"):
+                    interior, (x_min, x_max) = compute_knots_py(
+                        x_arr,
+                        self.df,
+                        self.degree,
+                        bk,
+                    )
+                else:  # ns
+                    interior, (x_min, x_max) = compute_knots_natural_py(
+                        x_arr,
+                        self.df,
+                        bk,
+                    )
 
-            self._computed_boundary_knots = (x_min, x_max)
-            self._computed_internal_knots = list(interior)
+                self._computed_boundary_knots = (x_min, x_max)
+                self._computed_internal_knots = list(interior)
 
         # Use stored boundary knots for basis computation
         boundary_knots_to_use = self._computed_boundary_knots
@@ -509,7 +525,7 @@ class SplineTerm:
                 raise ValidationError(
                     f"Monotonicity constraints are not supported for natural splines (ns). "
                     f"Use bs({self.var_name}, df={self.df}, monotonicity='increasing') "
-                    f"instead, which uses I-splines designed for monotonic effects."
+                    f"instead, which enforces monotonicity via exp reparameterization."
                 )
             # Pass stored internal knots to ensure consistent basis on new data
             basis = ns(
@@ -524,17 +540,18 @@ class SplineTerm:
             else:
                 names = ns_names(self.var_name, self.df, include_intercept=False)
         elif self.spline_type == "ms":
-            # Monotonic splines use I-spline basis via bs() with monotonicity
+            # Monotonic splines use I-spline (integrated M-spline) basis directly
             mono = self.monotonicity or "increasing"
-            basis = bs(
-                x,
-                df=self.df,
-                degree=self.degree,
-                knots=self._computed_internal_knots,
-                boundary_knots=boundary_knots_to_use,
-                include_intercept=False,
-                monotonicity=mono,
-            )
+            if self._computed_internal_knots is not None:
+                bk = boundary_knots_to_use or (float(x_arr.min()), float(x_arr.max()))
+                basis = _ms_with_knots_rust(
+                    x_arr, self._computed_internal_knots, self.degree, bk, self.df, True
+                )
+            else:
+                basis = _ms_rust(x_arr, self.df, self.degree, boundary_knots_to_use, True)
+            # Drop first column for identifiability (collinear with intercept)
+            if basis.shape[1] > 1:
+                basis = basis[:, 1:]
             sign = "+" if mono == "increasing" else "-"
             if self._is_smooth:
                 names = [
@@ -588,7 +605,7 @@ class SplineTerm:
             "type": self.spline_type,
             "df": self.df,
         }
-        if self.spline_type == "bs":
+        if self.spline_type in ("bs", "ms"):
             info["degree"] = self.degree
         if self.monotonicity:
             info["monotonicity"] = self.monotonicity
@@ -606,7 +623,10 @@ class SplineTerm:
         return info
 
     def __repr__(self) -> str:
-        if self.spline_type == "bs":
+        if self.spline_type == "ms":
+            mono = self.monotonicity or "increasing"
+            return f"ms({self.var_name}, df={self.df}, monotonicity='{mono}')"
+        elif self.spline_type == "bs":
             if self.monotonicity:
                 return f"bs({self.var_name}, df={self.df}, monotonicity='{self.monotonicity}')"
             return f"bs({self.var_name}, df={self.df}, degree={self.degree})"

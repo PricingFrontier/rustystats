@@ -414,6 +414,7 @@ def fit_cv_regularization_path(
 
     # Use Rust parallel implementation (no fallback)
     from rustystats._rustystats import fit_cv_path_py as _fit_cv_path_rust
+    from rustystats.formula import _get_constraint_indices
 
     if verbose:
         print("  Using Rust parallel CV")
@@ -422,6 +423,9 @@ def fit_cv_regularization_path(
     # since we only need approximate coefficients to estimate validation deviance.
     cv_max_iter = min(max_iter, 10)
     cv_tol = max(tol, 1e-4)
+
+    # Pass sign constraints so CV folds respect monotonicity/pos/neg
+    nonneg_indices, nonpos_indices = _get_constraint_indices(glm_instance.feature_names)
 
     rust_result = _fit_cv_path_rust(
         y,
@@ -438,6 +442,8 @@ def fit_cv_regularization_path(
         cv_max_iter,
         cv_tol,
         seed if seed is not None else DEFAULT_CV_SEED,
+        nonneg_indices=nonneg_indices if nonneg_indices else None,
+        nonpos_indices=nonpos_indices if nonpos_indices else None,
     )
 
     # Convert Rust result to path_results format

@@ -225,7 +225,7 @@ pub fn fit_glm_py(
 // =============================================================================
 
 #[pyfunction]
-#[pyo3(signature = (y, x, link=None, init_theta=None, theta_tol=1e-5, max_theta_iter=10, offset=None, weights=None, max_iter=25, tol=1e-8, alpha=0.0, l1_ratio=0.0, store_design_matrix=false))]
+#[pyo3(signature = (y, x, link=None, init_theta=None, theta_tol=1e-5, max_theta_iter=10, offset=None, weights=None, max_iter=25, tol=1e-8, alpha=0.0, l1_ratio=0.0, nonneg_indices=None, nonpos_indices=None, store_design_matrix=false))]
 pub fn fit_negbinomial_py(
     y: PyReadonlyArray1<f64>,
     x: PyReadonlyArray2<f64>,
@@ -239,6 +239,8 @@ pub fn fit_negbinomial_py(
     tol: f64,
     alpha: f64,
     l1_ratio: f64,
+    nonneg_indices: Option<Vec<usize>>,
+    nonpos_indices: Option<Vec<usize>>,
     store_design_matrix: bool,
 ) -> PyResult<PyGLMResults> {
     let y_array: Array1<f64> = y.as_array().to_owned();
@@ -265,8 +267,8 @@ pub fn fit_negbinomial_py(
         tolerance: 1e-4,
         min_weight: 1e-10,
         verbose: false,
-        nonneg_indices: Vec::new(),
-        nonpos_indices: Vec::new(),
+        nonneg_indices: nonneg_indices.unwrap_or_default(),
+        nonpos_indices: nonpos_indices.unwrap_or_default(),
         regularization: reg_config.clone(),
         skip_covariance: false,
     };
@@ -397,7 +399,7 @@ struct CVPathPoint {
 }
 
 #[pyfunction]
-#[pyo3(signature = (y, x, family, link=None, var_power=1.5, theta=1.0, offset=None, weights=None, alphas=None, l1_ratio=0.0, n_folds=5, max_iter=25, tol=1e-8, seed=None))]
+#[pyo3(signature = (y, x, family, link=None, var_power=1.5, theta=1.0, offset=None, weights=None, alphas=None, l1_ratio=0.0, n_folds=5, max_iter=25, tol=1e-8, seed=None, nonneg_indices=None, nonpos_indices=None))]
 pub fn fit_cv_path_py<'py>(
     py: Python<'py>,
     y: PyReadonlyArray1<f64>,
@@ -414,6 +416,8 @@ pub fn fit_cv_path_py<'py>(
     max_iter: usize,
     tol: f64,
     seed: Option<u64>,
+    nonneg_indices: Option<Vec<usize>>,
+    nonpos_indices: Option<Vec<usize>>,
 ) -> PyResult<Py<PyAny>> {
     let y_array: Array1<f64> = y.as_array().to_owned();
     let x_view = x.as_array(); // Zero-copy view
@@ -446,6 +450,9 @@ pub fn fit_cv_path_py<'py>(
     let _fam = family_from_name(family, var_power, theta)?;
     let default_link = default_link_name(family);
     let _link_fn = link_from_name(link.unwrap_or(default_link))?;
+
+    let nonneg = nonneg_indices.unwrap_or_default();
+    let nonpos = nonpos_indices.unwrap_or_default();
 
     let fold_all_results: Vec<Vec<f64>> = (0..n_folds)
         .into_par_iter()
@@ -515,8 +522,8 @@ pub fn fit_cv_path_py<'py>(
                     tolerance: tol,
                     min_weight: 1e-10,
                     verbose: false,
-                    nonneg_indices: Vec::new(),
-                    nonpos_indices: Vec::new(),
+                    nonneg_indices: nonneg.clone(),
+                    nonpos_indices: nonpos.clone(),
                     regularization: reg_config,
                     skip_covariance: true,
                 };
@@ -620,7 +627,7 @@ pub fn fit_cv_path_py<'py>(
 /// * `smooth_penalties` - List of penalty matrices (one per smooth term)
 /// * `smooth_monotonicity` - List of monotonicity constraints: None, "increasing", "decreasing"
 #[pyfunction]
-#[pyo3(signature = (y, x_full, smooth_col_ranges, smooth_penalties, family, link=None, offset=None, weights=None, max_iter=25, tol=1e-8, lambda_min=0.001, lambda_max=1000.0, smooth_monotonicity=None, store_design_matrix=false))]
+#[pyo3(signature = (y, x_full, smooth_col_ranges, smooth_penalties, family, link=None, offset=None, weights=None, max_iter=25, tol=1e-8, lambda_min=0.001, lambda_max=1000.0, smooth_monotonicity=None, store_design_matrix=false, nonneg_indices=None, nonpos_indices=None))]
 pub fn fit_smooth_glm_unified_py<'py>(
     py: Python<'py>,
     y: PyReadonlyArray1<f64>,
@@ -637,6 +644,8 @@ pub fn fit_smooth_glm_unified_py<'py>(
     lambda_max: f64,
     smooth_monotonicity: Option<Vec<Option<String>>>,
     store_design_matrix: bool,
+    nonneg_indices: Option<Vec<usize>>,
+    nonpos_indices: Option<Vec<usize>>,
 ) -> PyResult<Py<PyAny>> {
     let y_arr = y.as_array().to_owned();
     let x_view = x_full.as_array(); // Zero-copy view
@@ -689,6 +698,9 @@ pub fn fit_smooth_glm_unified_py<'py>(
 
     let config = build_smooth_config(max_iter, tol, lambda_min, lambda_max);
 
+    let nn = nonneg_indices.unwrap_or_default();
+    let np = nonpos_indices.unwrap_or_default();
+
     let result = fit_smooth_glm_full_matrix(
         &y_arr,
         x_view,
@@ -698,6 +710,8 @@ pub fn fit_smooth_glm_unified_py<'py>(
         &config,
         offset_arr.as_ref(),
         weights_arr.as_ref(),
+        if nn.is_empty() { None } else { Some(&nn) },
+        if np.is_empty() { None } else { Some(&np) },
     )
     .map_err(|e| PyValueError::new_err(format!("Smooth GLM fitting failed: {}", e)))?;
 

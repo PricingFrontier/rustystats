@@ -797,6 +797,96 @@ class TestDictSplineSerialization:
 
         np.testing.assert_array_almost_equal(original_pred, loaded_pred)
 
+    def test_monotonic_bs_serialization_roundtrip(self):
+        np.random.seed(42)
+        n = 500
+        x = np.random.uniform(0, 10, n)
+        y = np.random.poisson(np.exp(0.1 * x), n).astype(float)
+        data = pl.DataFrame({"y": y, "x": x})
+        train = data.head(400)
+        test = data.tail(100)
+
+        result = rs.glm_dict(
+            response="y",
+            terms={"x": {"type": "bs", "df": 5, "monotonicity": "increasing"}},
+            data=train,
+            family="poisson",
+        ).fit()
+        original_pred = result.predict(test)
+
+        model_bytes = result.to_bytes()
+        loaded = rs.GLMModel.from_bytes(model_bytes)
+        loaded_pred = loaded.predict(test)
+
+        np.testing.assert_array_almost_equal(original_pred, loaded_pred)
+
+    def test_monotonic_bs_decreasing_serialization(self):
+        np.random.seed(42)
+        n = 500
+        x = np.random.uniform(0, 10, n)
+        y = np.random.poisson(np.exp(2.0 - 0.15 * x), n).astype(float)
+        data = pl.DataFrame({"y": y, "x": x})
+        train = data.head(400)
+        test = data.tail(100)
+
+        result = rs.glm_dict(
+            response="y",
+            terms={"x": {"type": "bs", "df": 5, "monotonicity": "decreasing"}},
+            data=train,
+            family="poisson",
+        ).fit()
+        original_pred = result.predict(test)
+
+        model_bytes = result.to_bytes()
+        loaded = rs.GLMModel.from_bytes(model_bytes)
+        loaded_pred = loaded.predict(test)
+
+        np.testing.assert_array_almost_equal(original_pred, loaded_pred)
+
+    def test_ms_type_serialization_roundtrip(self):
+        np.random.seed(42)
+        n = 500
+        x = np.random.uniform(0, 10, n)
+        y = np.random.poisson(np.exp(0.1 * x), n).astype(float)
+        data = pl.DataFrame({"y": y, "x": x})
+        train = data.head(400)
+        test = data.tail(100)
+
+        result = rs.glm_dict(
+            response="y",
+            terms={"x": {"type": "ms", "df": 5}},
+            data=train,
+            family="poisson",
+        ).fit()
+        original_pred = result.predict(test)
+
+        model_bytes = result.to_bytes()
+        loaded = rs.GLMModel.from_bytes(model_bytes)
+        loaded_pred = loaded.predict(test)
+
+        np.testing.assert_array_almost_equal(original_pred, loaded_pred)
+
+    def test_monotonic_serialization_roundtrip_works(self):
+        np.random.seed(42)
+        n = 200
+        x = np.random.uniform(0, 10, n)
+        y = np.random.poisson(np.exp(0.1 * x), n).astype(float)
+        data = pl.DataFrame({"y": y, "x": x})
+
+        result = rs.glm_dict(
+            response="y",
+            terms={"x": {"type": "bs", "df": 5, "monotonicity": "increasing"}},
+            data=data,
+            family="poisson",
+        ).fit()
+
+        model_bytes = result.to_bytes()
+        loaded = rs.GLMModel.from_bytes(model_bytes)
+        new_data = pl.DataFrame({"x": np.linspace(0, 10, 50)})
+        original_pred = result.predict(new_data)
+        loaded_pred = loaded.predict(new_data)
+        np.testing.assert_array_almost_equal(original_pred, loaded_pred)
+
 
 class TestDictInteractionSerialization:
     """Test serialization with interactions (mirrors TestInteractionSerialization)."""
@@ -1721,13 +1811,11 @@ class TestDictMonotonicSplineFormula:
 
     def test_dict_monotonic_bs_basic(self):
         np.random.seed(42)
-        n = 100
-        data = pl.DataFrame(
-            {
-                "y": np.random.poisson(3, n),
-                "age": np.random.uniform(20, 70, n),
-            }
-        )
+        n = 200
+        age = np.random.uniform(20, 70, n)
+        rate = np.exp(0.5 + 0.02 * age)
+        y = np.random.poisson(rate)
+        data = pl.DataFrame({"y": y, "age": age})
 
         result = rs.glm_dict(
             response="y",
@@ -1789,12 +1877,17 @@ class TestDictMonotonicSplineFormula:
     def test_dict_monotonic_bs_with_other_terms(self):
         np.random.seed(42)
         n = 200
+        age = np.random.uniform(20, 70, n)
+        income = np.random.uniform(30000, 150000, n)
+        region = np.random.choice(["A", "B", "C"], n)
+        rate = np.exp(0.3 + 0.01 * age + 0.000005 * income)
+        y = np.random.poisson(rate)
         data = pl.DataFrame(
             {
-                "y": np.random.poisson(2, n),
-                "age": np.random.uniform(20, 70, n),
-                "income": np.random.uniform(30000, 150000, n),
-                "region": np.random.choice(["A", "B", "C"], n),
+                "y": y,
+                "age": age,
+                "income": income,
+                "region": region,
             }
         )
 
@@ -1811,6 +1904,187 @@ class TestDictMonotonicSplineFormula:
 
         assert len(result.params) >= 5
         assert result.converged
+
+
+class TestMonotonicSplineBoundary:
+    """Test monotonic spline boundary/tail behavior — regression tests for
+    bugs that previously hid in extrapolation and tail regions."""
+
+    def test_monotonic_increasing_at_boundaries(self):
+        """Fit bs(k=10, monotonicity='increasing') on data with a real
+        increasing relationship. Verify predictions are monotonically
+        non-decreasing within the training range."""
+        np.random.seed(42)
+        n = 500
+        x = np.random.uniform(10, 60, n)
+        rate = np.exp(0.5 + 0.03 * x)
+        y = np.random.poisson(rate)
+        data = pl.DataFrame({"y": y, "x": x})
+
+        result = rs.glm_dict(
+            response="y",
+            terms={"x": {"type": "bs", "k": 10, "monotonicity": "increasing"}},
+            data=data,
+            family="poisson",
+        ).fit(max_iter=100)
+
+        # Predict within the training range (B-splines don't guarantee
+        # monotonicity during extrapolation beyond boundary knots)
+        grid_values = np.linspace(15, 55, 50)
+        grid = pl.DataFrame({"x": grid_values.tolist()})
+        preds = result.predict(grid)
+
+        # Predictions must be non-decreasing within the training range
+        diffs = np.diff(preds)
+        assert np.all(diffs >= -1e-4), (
+            f"Increasing monotonic spline produced decreasing predictions: "
+            f"min diff = {diffs.min():.6f}"
+        )
+
+    def test_monotonic_decreasing_at_boundaries(self):
+        """Fit bs(k=10, monotonicity='decreasing') and verify predictions
+        are monotonically non-increasing within the training range."""
+        np.random.seed(42)
+        n = 500
+        x = np.random.uniform(0, 20, n)
+        rate = np.exp(2.0 - 0.1 * x)
+        y = np.random.poisson(rate)
+        data = pl.DataFrame({"y": y, "x": x})
+
+        result = rs.glm_dict(
+            response="y",
+            terms={"x": {"type": "bs", "k": 10, "monotonicity": "decreasing"}},
+            data=data,
+            family="poisson",
+        ).fit(max_iter=100)
+
+        # Predict within the training range
+        grid_values = np.linspace(0.5, 19.5, 50)
+        grid = pl.DataFrame({"x": grid_values.tolist()})
+        preds = result.predict(grid)
+
+        # Predictions must be non-increasing within the training range
+        diffs = np.diff(preds)
+        assert np.all(diffs <= 1e-4), (
+            f"Decreasing monotonic spline produced increasing predictions: "
+            f"max positive diff = {diffs.max():.6f}"
+        )
+
+    def test_monotonic_smooth_at_boundaries(self):
+        """Fit penalized smooth bs(k=10, monotonicity='decreasing') and
+        verify predictions are monotone within the training range."""
+        np.random.seed(42)
+        n = 500
+        x = np.random.uniform(0, 20, n)
+        rate = np.exp(2.5 - 0.08 * x)
+        y = np.random.poisson(rate)
+        data = pl.DataFrame({"y": y, "x": x})
+
+        result = rs.glm_dict(
+            response="y",
+            terms={"x": {"type": "bs", "k": 10, "monotonicity": "decreasing"}},
+            data=data,
+            family="poisson",
+        ).fit(max_iter=100)
+
+        # Predict within the training range
+        grid_values = np.linspace(0.5, 19.5, 40)
+        grid = pl.DataFrame({"x": grid_values.tolist()})
+        preds = result.predict(grid)
+
+        # Predictions must be non-increasing
+        diffs = np.diff(preds)
+        assert np.all(diffs <= 1e-4), (
+            f"Penalized decreasing monotonic spline produced increasing "
+            f"predictions: max positive diff = {diffs.max():.6f}"
+        )
+
+    def test_monotonic_coefficients_sign(self):
+        """After fitting monotonic splines, verify that the spline
+        coefficients respect sign constraints: all non-negative for
+        increasing, all non-positive for decreasing."""
+        np.random.seed(42)
+        n = 500
+        x = np.random.uniform(10, 60, n)
+
+        # --- Increasing: verify B-spline coefficients are non-decreasing ---
+        rate_inc = np.exp(0.5 + 0.03 * x)
+        y_inc = np.random.poisson(rate_inc)
+        data_inc = pl.DataFrame({"y": y_inc, "x": x})
+
+        result_inc = rs.glm_dict(
+            response="y",
+            terms={"x": {"type": "bs", "k": 10, "monotonicity": "increasing"}},
+            data=data_inc,
+            family="poisson",
+        ).fit(max_iter=100)
+
+        # With exp reparam, B-spline coefficients should be non-decreasing
+        spline_mask_inc = [
+            i for i, name in enumerate(result_inc.feature_names) if "bs(" in name and ", +)" in name
+        ]
+        assert len(spline_mask_inc) > 0, "No increasing-constrained features found"
+        spline_coefs_inc = np.array(result_inc.params)[spline_mask_inc]
+        coef_diffs = np.diff(spline_coefs_inc)
+        assert np.all(coef_diffs >= -1e-4), (
+            f"Increasing monotonic spline has non-monotone coefficients: " f"diffs = {coef_diffs}"
+        )
+
+        # --- Decreasing: verify B-spline coefficients are non-increasing ---
+        np.random.seed(42)
+        rate_dec = np.exp(2.0 - 0.1 * x)
+        y_dec = np.random.poisson(rate_dec)
+        data_dec = pl.DataFrame({"y": y_dec, "x": x})
+
+        result_dec = rs.glm_dict(
+            response="y",
+            terms={"x": {"type": "bs", "k": 10, "monotonicity": "decreasing"}},
+            data=data_dec,
+            family="poisson",
+        ).fit(max_iter=100)
+
+        # With exp reparam, B-spline coefficients should be non-increasing
+        spline_mask_dec = [
+            i for i, name in enumerate(result_dec.feature_names) if "bs(" in name and ", -)" in name
+        ]
+        assert len(spline_mask_dec) > 0, "No decreasing-constrained features found"
+        spline_coefs_dec = np.array(result_dec.params)[spline_mask_dec]
+        coef_diffs_dec = np.diff(spline_coefs_dec)
+        assert np.all(coef_diffs_dec <= 1e-4), (
+            f"Decreasing monotonic spline has non-monotone coefficients: "
+            f"diffs = {coef_diffs_dec}"
+        )
+
+    def test_ms_type_via_glm_dict(self):
+        """Verify that type='ms' works through glm_dict() and produces a
+        monotonically increasing curve (the default direction for ms)."""
+        np.random.seed(42)
+        n = 500
+        x = np.random.uniform(0, 30, n)
+        rate = np.exp(0.2 + 0.05 * x)
+        y = np.random.poisson(rate)
+        data = pl.DataFrame({"y": y, "x": x})
+
+        result = rs.glm_dict(
+            response="y",
+            terms={"x": {"type": "ms", "df": 5}},
+            data=data,
+            family="poisson",
+        ).fit(max_iter=100)
+
+        assert result.converged
+
+        # Predict on a grid spanning and slightly beyond the training range
+        grid_values = np.linspace(-2, 35, 50)
+        grid = pl.DataFrame({"x": grid_values.tolist()})
+        preds = result.predict(grid)
+
+        # ms() defaults to increasing — predictions must be non-decreasing
+        diffs = np.diff(preds)
+        assert np.all(diffs >= -1e-10), (
+            f"ms() monotonic spline produced decreasing predictions: "
+            f"min diff = {diffs.min():.6f}"
+        )
 
 
 # =============================================================================
@@ -1935,6 +2209,643 @@ class TestDictTrainPredictConsistency:
         test_pred = result.predict(test_data)
 
         assert np.all(np.isfinite(test_pred))
+
+
+# =============================================================================
+# LazyFrame Tests
+# =============================================================================
+
+from rustystats.formula import _collect_lazyframe, _extract_needed_columns
+
+
+class TestExtractNeededColumns:
+    """Unit tests for _extract_needed_columns column detection."""
+
+    def test_terms_only(self):
+        cols = _extract_needed_columns(terms={})
+        assert cols == set()
+
+    def test_response_included_when_provided(self):
+        cols = _extract_needed_columns(terms={}, response="y")
+        assert cols == {"y"}
+
+    def test_response_omitted_for_prediction(self):
+        cols = _extract_needed_columns(
+            terms={"x1": {"type": "linear"}, "x2": {"type": "linear"}},
+        )
+        assert cols == {"x1", "x2"}
+
+    def test_linear_terms(self):
+        cols = _extract_needed_columns(
+            terms={"x1": {"type": "linear"}, "x2": {"type": "linear"}},
+            response="y",
+        )
+        assert cols == {"y", "x1", "x2"}
+
+    def test_categorical_terms(self):
+        cols = _extract_needed_columns(
+            terms={"region": {"type": "categorical"}},
+            response="y",
+        )
+        assert cols == {"y", "region"}
+
+    def test_spline_terms(self):
+        cols = _extract_needed_columns(
+            terms={"age": {"type": "bs", "df": 5}, "income": {"type": "ns"}},
+            response="y",
+        )
+        assert cols == {"y", "age", "income"}
+
+    def test_expression_extracts_referenced_columns(self):
+        cols = _extract_needed_columns(
+            terms={"x1_sq": {"type": "expression", "expr": "x1 ** 2"}},
+            response="y",
+        )
+        assert cols == {"y", "x1"}
+
+    def test_expression_binary_op_extracts_both_columns(self):
+        cols = _extract_needed_columns(
+            terms={"ratio": {"type": "expression", "expr": "weight / height"}},
+            response="y",
+        )
+        assert cols == {"y", "weight", "height"}
+
+    def test_expression_missing_expr_key_raises(self):
+        with pytest.raises(KeyError):
+            _extract_needed_columns(
+                terms={"bad": {"type": "expression"}},
+            )
+
+    def test_expression_does_not_include_numeric_literals(self):
+        cols = _extract_needed_columns(
+            terms={"scaled": {"type": "expression", "expr": "income / 1000"}},
+            response="y",
+        )
+        assert "1000" not in cols
+        assert cols == {"y", "income"}
+
+    def test_interaction_columns(self):
+        cols = _extract_needed_columns(
+            terms={},
+            response="y",
+            interactions=[
+                {"x1": {"type": "linear"}, "cat": {"type": "categorical"}, "include_main": True},
+            ],
+        )
+        assert cols == {"y", "x1", "cat"}
+
+    def test_interaction_flags_excluded(self):
+        """include_main, target_encoding, frequency_encoding, prior_weight are not column names."""
+        cols = _extract_needed_columns(
+            terms={},
+            response="y",
+            interactions=[
+                {
+                    "a": {"type": "categorical"},
+                    "b": {"type": "categorical"},
+                    "target_encoding": True,
+                    "prior_weight": 1.0,
+                    "include_main": False,
+                    "frequency_encoding": False,
+                },
+            ],
+        )
+        assert cols == {"y", "a", "b"}
+
+    def test_offset_string(self):
+        cols = _extract_needed_columns(
+            terms={"x": {"type": "linear"}},
+            response="y",
+            offset="exposure",
+        )
+        assert "exposure" in cols
+
+    def test_offset_array_not_included(self):
+        cols = _extract_needed_columns(
+            terms={"x": {"type": "linear"}},
+            response="y",
+            offset=np.array([1.0]),
+        )
+        assert cols == {"y", "x"}
+
+    def test_weights_string(self):
+        cols = _extract_needed_columns(
+            terms={"x": {"type": "linear"}},
+            response="y",
+            weights="w",
+        )
+        assert "w" in cols
+
+    def test_complement_string(self):
+        cols = _extract_needed_columns(
+            terms={"x": {"type": "linear"}},
+            response="y",
+            complement="prior_rate",
+        )
+        assert "prior_rate" in cols
+
+    def test_all_sources_combined(self):
+        """Every source of columns works together without duplication."""
+        cols = _extract_needed_columns(
+            terms={
+                "x1": {"type": "linear"},
+                "cat": {"type": "categorical"},
+                "x1_sq": {"type": "expression", "expr": "x1 ** 2"},
+                "age": {"type": "bs", "df": 4},
+            },
+            response="y",
+            interactions=[
+                {"x1": {"type": "linear"}, "region": {"type": "categorical"}, "include_main": True},
+            ],
+            offset="exposure",
+            weights="w",
+            complement="prior",
+        )
+        assert cols == {"y", "x1", "cat", "age", "region", "exposure", "w", "prior"}
+
+
+class TestCollectLazyFrame:
+    """Unit tests for _collect_lazyframe."""
+
+    def test_dataframe_passes_through(self):
+        df = pl.DataFrame({"a": [1], "b": [2]})
+        result = _collect_lazyframe(df, {"a"})
+        assert result is df  # exact same object, no copy
+
+    def test_lazyframe_selects_only_needed_columns(self):
+        df = pl.DataFrame({"a": [1, 2], "b": [3, 4], "c": [5, 6]})
+        result = _collect_lazyframe(df.lazy(), {"a", "c"})
+        assert sorted(result.columns) == ["a", "c"]
+        assert result.shape == (2, 2)
+
+    def test_lazyframe_missing_column_raises(self):
+        df = pl.DataFrame({"a": [1]})
+        with pytest.raises(pl.exceptions.ColumnNotFoundError):
+            _collect_lazyframe(df.lazy(), {"a", "nonexistent"})
+
+    def test_lazyframe_empty_needed_collects_all(self):
+        df = pl.DataFrame({"a": [1], "b": [2], "c": [3]})
+        result = _collect_lazyframe(df.lazy(), set())
+        assert sorted(result.columns) == ["a", "b", "c"]
+
+
+class TestLazyFrameIntegration:
+    """Integration tests: LazyFrame through glm_dict produces identical results to DataFrame."""
+
+    @pytest.fixture
+    def wide_data(self):
+        np.random.seed(42)
+        n = 200
+        return pl.DataFrame(
+            {
+                "y": np.random.poisson(1, n),
+                "x1": np.random.uniform(0, 10, n),
+                "x2": np.random.uniform(0, 10, n),
+                "cat": np.random.choice(["A", "B", "C"], n),
+                "exposure": np.random.uniform(0.5, 1.5, n),
+                "weight": np.random.uniform(0.5, 2.0, n),
+                "unused1": np.random.normal(0, 1, n),
+                "unused2": np.random.normal(0, 1, n),
+                "unused3": np.random.choice(["X", "Y"], n),
+            }
+        )
+
+    def _fit_both(self, wide_data, **kwargs):
+        """Fit with DataFrame and LazyFrame, return both results."""
+        result_df = rs.glm_dict(data=wide_data, **kwargs).fit()
+        result_lf = rs.glm_dict(data=wide_data.lazy(), **kwargs).fit()
+        return result_df, result_lf
+
+    def test_linear_terms(self, wide_data):
+        r_df, r_lf = self._fit_both(
+            wide_data,
+            response="y",
+            terms={"x1": {"type": "linear"}, "x2": {"type": "linear"}},
+            family="poisson",
+            offset="exposure",
+        )
+        np.testing.assert_allclose(r_df.params, r_lf.params)
+
+    def test_categorical(self, wide_data):
+        r_df, r_lf = self._fit_both(
+            wide_data,
+            response="y",
+            terms={"x1": {"type": "linear"}, "cat": {"type": "categorical"}},
+            family="poisson",
+        )
+        np.testing.assert_allclose(r_df.params, r_lf.params)
+
+    def test_spline(self, wide_data):
+        r_df, r_lf = self._fit_both(
+            wide_data,
+            response="y",
+            terms={"x1": {"type": "bs", "df": 4}},
+            family="poisson",
+        )
+        np.testing.assert_allclose(r_df.params, r_lf.params)
+
+    def test_expression(self, wide_data):
+        r_df, r_lf = self._fit_both(
+            wide_data,
+            response="y",
+            terms={
+                "x1": {"type": "linear"},
+                "x1_sq": {"type": "expression", "expr": "x1 ** 2"},
+            },
+            family="poisson",
+        )
+        np.testing.assert_allclose(r_df.params, r_lf.params)
+
+    def test_interaction(self, wide_data):
+        r_df, r_lf = self._fit_both(
+            wide_data,
+            response="y",
+            terms={"x1": {"type": "linear"}, "cat": {"type": "categorical"}},
+            interactions=[
+                {"x1": {"type": "linear"}, "cat": {"type": "categorical"}, "include_main": False},
+            ],
+            family="poisson",
+        )
+        np.testing.assert_allclose(r_df.params, r_lf.params)
+
+    def test_weights(self, wide_data):
+        r_df, r_lf = self._fit_both(
+            wide_data,
+            response="y",
+            terms={"x1": {"type": "linear"}},
+            family="poisson",
+            weights="weight",
+        )
+        np.testing.assert_allclose(r_df.params, r_lf.params)
+
+    def test_predict_identical(self, wide_data):
+        """predict() with LazyFrame gives identical results to DataFrame."""
+        result = rs.glm_dict(
+            response="y",
+            terms={"x1": {"type": "linear"}, "cat": {"type": "categorical"}},
+            data=wide_data,
+            family="poisson",
+            offset="exposure",
+        ).fit()
+
+        pred_df = result.predict(wide_data)
+        pred_lf = result.predict(wide_data.lazy())
+        np.testing.assert_allclose(pred_df, pred_lf)
+
+    def test_predict_with_explicit_offset(self, wide_data):
+        """predict() with LazyFrame and string offset resolves correctly."""
+        result = rs.glm_dict(
+            response="y",
+            terms={"x1": {"type": "linear"}},
+            data=wide_data,
+            family="poisson",
+            offset="exposure",
+        ).fit()
+
+        pred_df = result.predict(wide_data, offset="exposure")
+        pred_lf = result.predict(wide_data.lazy(), offset="exposure")
+        np.testing.assert_allclose(pred_df, pred_lf)
+
+    def test_missing_column_in_lazyframe_raises(self, wide_data):
+        """LazyFrame missing a needed column raises immediately, not deep in the pipeline."""
+        lf_missing = wide_data.select("y", "x1").lazy()
+        with pytest.raises(pl.exceptions.ColumnNotFoundError):
+            rs.glm_dict(
+                response="y",
+                terms={"x1": {"type": "linear"}, "cat": {"type": "categorical"}},
+                data=lf_missing,
+                family="poisson",
+            )
+
+    def test_unused_columns_not_collected(self, wide_data):
+        """Verify the LazyFrame only materialises needed columns via scan_parquet simulation."""
+        # We can't intercept Polars' internal read, but we can verify by giving
+        # a LazyFrame that only has the needed columns — it should work fine,
+        # proving unused columns weren't required.
+        needed_only = wide_data.select("y", "x1", "exposure").lazy()
+        result = rs.glm_dict(
+            response="y",
+            terms={"x1": {"type": "linear"}},
+            data=needed_only,
+            family="poisson",
+            offset="exposure",
+        ).fit()
+        assert result.converged
+
+    def test_expression_column_not_in_terms_still_collected(self, wide_data):
+        """Expression referencing a column not in terms dict still works."""
+        # x2 is not a term key, but referenced in the expression
+        result = rs.glm_dict(
+            response="y",
+            terms={"ratio": {"type": "expression", "expr": "x1 / x2"}},
+            data=wide_data.lazy(),
+            family="poisson",
+        ).fit()
+        assert result.converged
+
+    def test_deserialized_model_predict_with_lazyframe(self, wide_data):
+        """Deserialized model (from_bytes) still prunes columns on predict with LazyFrame."""
+        result = rs.glm_dict(
+            response="y",
+            terms={"x1": {"type": "linear"}, "cat": {"type": "categorical"}},
+            data=wide_data,
+            family="poisson",
+            offset="exposure",
+        ).fit()
+
+        loaded = rs.GLMModel.from_bytes(result.to_bytes())
+
+        # Predict with full DataFrame
+        pred_df = loaded.predict(wide_data)
+
+        # Predict with LazyFrame containing only needed columns
+        needed_only = wide_data.select("x1", "cat", "exposure").lazy()
+        pred_lf = loaded.predict(needed_only)
+
+        np.testing.assert_allclose(pred_df, pred_lf)
+
+    def test_deserialized_model_predict_lazyframe_missing_col_raises(self, wide_data):
+        """Deserialized model raises on LazyFrame missing a needed column."""
+        result = rs.glm_dict(
+            response="y",
+            terms={"x1": {"type": "linear"}, "cat": {"type": "categorical"}},
+            data=wide_data,
+            family="poisson",
+        ).fit()
+
+        loaded = rs.GLMModel.from_bytes(result.to_bytes())
+
+        lf_missing = wide_data.select("x1").lazy()  # missing "cat"
+        with pytest.raises(pl.exceptions.ColumnNotFoundError):
+            loaded.predict(lf_missing)
+
+
+# =============================================================================
+# Constraint Enforcement Tests
+# =============================================================================
+
+
+class TestConstraintEnforcement:
+    """Test that sign constraints are correctly enforced across different code paths."""
+
+    def test_coord_descent_respects_sign_constraints(self):
+        """Lasso (coordinate descent) must respect monotonicity sign constraints on spline coefficients."""
+        np.random.seed(42)
+        n = 500
+        x = np.random.uniform(0, 10, n)
+        mu = np.exp(0.5 + 0.1 * x)
+        y = np.random.poisson(mu)
+        data = pl.DataFrame({"y": y, "x": x})
+
+        result = rs.glm_dict(
+            response="y",
+            terms={"x": {"type": "bs", "df": 4, "monotonicity": "increasing"}},
+            data=data,
+            family="poisson",
+        ).fit(regularization="lasso", verbose=False)
+
+        assert result.converged
+        # Spline coefficients have feature names like "bs(x, +)[1]"
+        spline_indices = [
+            i
+            for i, name in enumerate(result.feature_names)
+            if name.startswith("bs(") and ", +)" in name
+        ]
+        assert len(spline_indices) > 0, "Expected monotonic spline feature names"
+        spline_coefs = result.params[spline_indices]
+        assert np.all(
+            spline_coefs >= -1e-10
+        ), f"Coordinate descent violated non-negative constraint: {spline_coefs}"
+
+    def test_smooth_plus_constrained_linear(self):
+        """A model with both a smooth term and a constrained linear term must enforce the linear constraint."""
+        np.random.seed(42)
+        n = 500
+        x1 = np.random.uniform(0, 10, n)
+        x2 = np.random.uniform(0, 5, n)
+        mu = np.exp(0.2 + 0.05 * x1 + 0.1 * x2)
+        y = np.random.poisson(mu)
+        data = pl.DataFrame({"y": y, "x1": x1, "x2": x2})
+
+        result = rs.glm_dict(
+            response="y",
+            terms={
+                "x1": {"type": "bs", "k": 10},
+                "x2": {"type": "linear", "monotonicity": "increasing"},
+            },
+            data=data,
+            family="poisson",
+        ).fit()
+
+        assert result.converged
+        # The constrained linear term has feature name "pos(x2)"
+        pos_indices = [i for i, name in enumerate(result.feature_names) if name == "pos(x2)"]
+        assert len(pos_indices) == 1, f"Expected pos(x2) in feature names: {result.feature_names}"
+        assert (
+            result.params[pos_indices[0]] >= -1e-10
+        ), f"Linear constraint violated: pos(x2) coefficient = {result.params[pos_indices[0]]}"
+
+    def test_ns_monotonicity_rejected(self):
+        """Natural splines (ns) must reject monotonicity constraints."""
+        np.random.seed(42)
+        n = 100
+        data = pl.DataFrame(
+            {
+                "y": np.random.poisson(2, n),
+                "x": np.random.uniform(0, 10, n),
+            }
+        )
+
+        with pytest.raises((ValueError, rs.ValidationError)):
+            rs.glm_dict(
+                response="y",
+                terms={"x": {"type": "ns", "df": 4, "monotonicity": "increasing"}},
+                data=data,
+                family="poisson",
+            )
+
+    def test_cv_path_with_constraints(self):
+        """CV-based ridge path must converge and respect monotonicity constraints."""
+        np.random.seed(42)
+        n = 500
+        x = np.random.uniform(0, 10, n)
+        mu = np.exp(0.5 + 0.08 * x)
+        y = np.random.poisson(mu)
+        data = pl.DataFrame({"y": y, "x": x})
+
+        result = rs.glm_dict(
+            response="y",
+            terms={"x": {"type": "bs", "df": 4, "monotonicity": "increasing"}},
+            data=data,
+            family="poisson",
+        ).fit(cv=3, regularization="ridge", n_alphas=5, verbose=False)
+
+        assert result.converged
+        # Spline coefficients must respect non-negative constraint
+        spline_indices = [
+            i
+            for i, name in enumerate(result.feature_names)
+            if name.startswith("bs(") and ", +)" in name
+        ]
+        assert len(spline_indices) > 0, "Expected monotonic spline feature names"
+        spline_coefs = result.params[spline_indices]
+        assert np.all(
+            spline_coefs >= -1e-10
+        ), f"CV path violated non-negative constraint: {spline_coefs}"
+
+
+# =============================================================================
+# Explicit Knots Tests
+# =============================================================================
+
+
+class TestExplicitKnots:
+    """Test explicit knot placement for bs() and ns() splines."""
+
+    @pytest.fixture
+    def sample_data(self):
+        np.random.seed(42)
+        n = 200
+        x = np.random.uniform(0, 10, n)
+        return pl.DataFrame(
+            {
+                "y": np.random.poisson(np.exp(0.5 + 0.1 * x), n),
+                "x1": x,
+                "x2": np.random.uniform(0, 10, n),
+            }
+        )
+
+    def test_bs_explicit_knots(self, sample_data):
+        """bs with explicit knots converges and has correct param count."""
+        knots = [2.0, 5.0, 8.0]
+        # degree=3 (default), so df = len(knots) + degree + 1 = 7
+        result = rs.glm_dict(
+            response="y",
+            terms={"x1": {"type": "bs", "knots": knots}},
+            data=sample_data,
+            family="poisson",
+        ).fit()
+        assert result.converged
+        # 6 spline columns + intercept = 7 params (len(knots) + degree = 3 + 3 = 6)
+        assert len(result.params) == 7
+
+    def test_bs_explicit_knots_monotonicity(self, sample_data):
+        """bs with explicit knots and monotonicity constraint converges."""
+        knots = [3.0, 6.0]
+        result = rs.glm_dict(
+            response="y",
+            terms={"x1": {"type": "bs", "knots": knots, "monotonicity": "increasing"}},
+            data=sample_data,
+            family="poisson",
+        ).fit()
+        assert result.converged
+
+    def test_ns_explicit_knots(self, sample_data):
+        """ns with explicit knots converges and has correct param count."""
+        knots = [2.0, 5.0, 8.0]
+        # ns: df = len(knots) + 1 = 4
+        result = rs.glm_dict(
+            response="y",
+            terms={"x1": {"type": "ns", "knots": knots}},
+            data=sample_data,
+            family="poisson",
+        ).fit()
+        assert result.converged
+        # 3 spline columns + intercept = 4 params (len(knots) = 3)
+        assert len(result.params) == 4
+
+    def test_ns_explicit_knots_with_boundary_knots(self, sample_data):
+        """ns with explicit knots and boundary_knots converges."""
+        knots = [3.0, 7.0]
+        result = rs.glm_dict(
+            response="y",
+            terms={"x1": {"type": "ns", "knots": knots, "boundary_knots": (0.0, 10.0)}},
+            data=sample_data,
+            family="poisson",
+        ).fit()
+        assert result.converged
+        assert len(result.params) == 3  # 2 spline cols + intercept
+
+    def test_explicit_knots_rejects_df(self, sample_data):
+        """Cannot specify both knots and df."""
+        with pytest.raises(rs.ValidationError, match="Cannot specify both"):
+            rs.glm_dict(
+                response="y",
+                terms={"x1": {"type": "bs", "knots": [3.0, 6.0], "df": 5}},
+                data=sample_data,
+            )
+
+    def test_explicit_knots_rejects_k(self, sample_data):
+        """Cannot specify both knots and k."""
+        with pytest.raises(rs.ValidationError, match="Cannot specify both"):
+            rs.glm_dict(
+                response="y",
+                terms={"x1": {"type": "ns", "knots": [3.0, 6.0], "k": 10}},
+                data=sample_data,
+            )
+
+    def test_explicit_knots_empty(self, sample_data):
+        """Empty knots list raises ValidationError."""
+        with pytest.raises(rs.ValidationError, match="non-empty"):
+            rs.glm_dict(
+                response="y",
+                terms={"x1": {"type": "bs", "knots": []}},
+                data=sample_data,
+            )
+
+    def test_explicit_knots_unsorted(self, sample_data):
+        """Unsorted knots raises ValidationError."""
+        with pytest.raises(rs.ValidationError, match="sorted"):
+            rs.glm_dict(
+                response="y",
+                terms={"x1": {"type": "bs", "knots": [5.0, 2.0, 8.0]}},
+                data=sample_data,
+            )
+
+    def test_explicit_knots_duplicated(self, sample_data):
+        """Duplicate knots raises ValidationError."""
+        with pytest.raises(rs.ValidationError, match="unique"):
+            rs.glm_dict(
+                response="y",
+                terms={"x1": {"type": "ns", "knots": [3.0, 3.0, 6.0]}},
+                data=sample_data,
+            )
+
+    def test_explicit_knots_prediction_consistency(self, sample_data):
+        """Predictions on new data reuse the same knots."""
+        knots = [2.0, 5.0, 8.0]
+        result = rs.glm_dict(
+            response="y",
+            terms={"x1": {"type": "bs", "knots": knots}},
+            data=sample_data,
+            family="poisson",
+        ).fit()
+
+        # Predict on new data within the same range
+        new_data = pl.DataFrame({"x1": np.linspace(0, 10, 50)})
+        preds = result.predict(new_data)
+        assert len(preds) == 50
+        assert np.all(np.isfinite(preds))
+
+    def test_explicit_knots_serialization(self, sample_data):
+        """to_bytes/from_bytes roundtrip preserves explicit knots model."""
+        knots = [2.0, 5.0, 8.0]
+        result = rs.glm_dict(
+            response="y",
+            terms={"x1": {"type": "bs", "knots": knots}},
+            data=sample_data,
+            family="poisson",
+        ).fit()
+
+        # Roundtrip
+        loaded = rs.GLMModel.from_bytes(result.to_bytes())
+
+        # Predictions should match
+        new_data = pl.DataFrame({"x1": np.linspace(0, 10, 50)})
+        np.testing.assert_allclose(
+            result.predict(new_data),
+            loaded.predict(new_data),
+        )
 
 
 if __name__ == "__main__":

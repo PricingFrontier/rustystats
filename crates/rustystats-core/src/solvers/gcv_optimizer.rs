@@ -240,20 +240,27 @@ fn compute_weighted_rss(
     rss
 }
 
-/// Compute smooth EDF for given column ranges from (X'WX+λS)⁻¹ and X'WX.
-fn compute_smooth_edfs_from_inv(
-    xtwx_pen_inv: &DMatrix<f64>,
+/// Compute smooth EDF for given column ranges via Cholesky forward/back-substitution.
+///
+/// Computes trace((X'WX+λS)⁻¹ · X'WX) restricted to each term's columns,
+/// without forming the full p×p inverse. For each smooth column j, we solve
+/// A·z = xtwx[:,j] (O(p²) per column via Cholesky) and accumulate z[j]
+/// (the diagonal element of A⁻¹·X'WX). This replaces one O(p³) full inverse
+/// with k_total O(p²) solves, where k_total = sum of smooth term dimensions.
+fn compute_smooth_edfs_from_chol(
+    chol: &nalgebra::linalg::Cholesky<f64, nalgebra::Dyn>,
     xtwx: &DMatrix<f64>,
     col_ranges: &[(usize, usize)],
 ) -> Vec<f64> {
-    let p = xtwx.nrows();
     let mut edfs = Vec::with_capacity(col_ranges.len());
-    for (start, end) in col_ranges {
+    for &(start, end) in col_ranges {
         let mut edf = 0.0;
-        for i in *start..*end {
-            for j in 0..p {
-                edf += xtwx_pen_inv[(i, j)] * xtwx[(j, i)];
-            }
+        for col in start..end {
+            // Solve (X'WX + λS) · z = xtwx[:, col]  -- O(p²) per column
+            let rhs = xtwx.column(col).clone_owned();
+            let z = chol.solve(&rhs);
+            // Only the diagonal element z[col] contributes to the trace
+            edf += z[col];
         }
         edfs.push(edf);
     }
@@ -366,7 +373,6 @@ impl GCVCache {
     /// It computes coefficients, RSS, EDF, and GCV for the given lambda.
     pub fn evaluate_gcv(&self, log_lambda: f64) -> f64 {
         let lambda = log_lambda.exp();
-        let p = self.xtwx.nrows();
         let col_range = (self.col_start, self.col_end);
 
         let xtwx_pen = build_penalized_xtwx(
@@ -376,7 +382,7 @@ impl GCVCache {
             &[lambda],
         );
 
-        let chol = match xtwx_pen.clone().cholesky() {
+        let chol = match xtwx_pen.cholesky() {
             Some(c) => c,
             None => return f64::INFINITY,
         };
@@ -384,9 +390,7 @@ impl GCVCache {
         let beta = chol.solve(&self.xtwz);
         let rss = compute_weighted_rss(&self.x, &self.z, &self.w, &beta);
 
-        let identity = DMatrix::identity(p, p);
-        let xtwx_pen_inv = chol.solve(&identity);
-        let edfs = compute_smooth_edfs_from_inv(&xtwx_pen_inv, &self.xtwx, &[col_range]);
+        let edfs = compute_smooth_edfs_from_chol(&chol, &self.xtwx, &[col_range]);
         let total_edf = (self.n_parametric as f64) + edfs[0];
 
         gcv_from_rss_edf(self.n, rss, total_edf)
@@ -419,7 +423,6 @@ impl GCVCache {
 
     /// Compute EDF at a specific lambda.
     pub fn compute_edf(&self, lambda: f64) -> f64 {
-        let p = self.xtwx.nrows();
         let col_range = (self.col_start, self.col_end);
 
         let xtwx_pen = build_penalized_xtwx(
@@ -434,9 +437,7 @@ impl GCVCache {
             None => return (self.col_end - self.col_start) as f64,
         };
 
-        let identity = DMatrix::identity(p, p);
-        let xtwx_pen_inv = chol.solve(&identity);
-        compute_smooth_edfs_from_inv(&xtwx_pen_inv, &self.xtwx, &[col_range])[0]
+        compute_smooth_edfs_from_chol(&chol, &self.xtwx, &[col_range])[0]
     }
 
     /// Solve for coefficients at a specific lambda.
@@ -570,11 +571,9 @@ impl MultiTermGCVOptimizer {
 
     /// Evaluate GCV for given lambdas.
     pub fn evaluate_gcv(&self, lambdas: &[f64]) -> f64 {
-        let p = self.xtwx.nrows();
-
         let xtwx_pen = build_penalized_xtwx(&self.xtwx, &self.penalties, &self.col_ranges, lambdas);
 
-        let chol = match xtwx_pen.clone().cholesky() {
+        let chol = match xtwx_pen.cholesky() {
             Some(c) => c,
             None => return f64::INFINITY,
         };
@@ -584,24 +583,28 @@ impl MultiTermGCVOptimizer {
         // Compute RSS from cached matrices: O(p²) instead of O(n·p)
         let rss = compute_rss_from_cached(&self.xtwx, &self.xtwz, self.ztwz, &beta);
 
-        let identity = DMatrix::identity(p, p);
-        let xtwx_pen_inv = chol.solve(&identity);
-        let edfs = compute_smooth_edfs_from_inv(&xtwx_pen_inv, &self.xtwx, &self.col_ranges);
+        let edfs = compute_smooth_edfs_from_chol(&chol, &self.xtwx, &self.col_ranges);
         let total_edf = (self.n_parametric as f64) + edfs.iter().sum::<f64>();
 
         gcv_from_rss_edf(self.n, rss, total_edf)
     }
 
     /// Optimize all lambdas using coordinate descent.
+    ///
+    /// `initial_lambdas` provides a warm start from the previous iteration's
+    /// optimal lambdas. This reduces the number of Brent evaluations needed
+    /// since the starting point is already close to the optimum.
     pub fn optimize_lambdas(
         &self,
+        initial_lambdas: &[f64],
         log_lambda_min: f64,
         log_lambda_max: f64,
         tol: f64,
         max_outer_iter: usize,
     ) -> Vec<f64> {
         let n_terms = self.penalties.len();
-        let mut lambdas = vec![1.0; n_terms];
+        let mut lambdas: Vec<f64> = initial_lambdas.to_vec();
+        debug_assert_eq!(lambdas.len(), n_terms);
 
         for _ in 0..max_outer_iter {
             let old_lambdas = lambdas.clone();
@@ -640,8 +643,6 @@ impl MultiTermGCVOptimizer {
 
     /// Compute EDFs for each term at given lambdas.
     pub fn compute_edfs(&self, lambdas: &[f64]) -> Vec<f64> {
-        let p = self.xtwx.nrows();
-
         let xtwx_pen = build_penalized_xtwx(&self.xtwx, &self.penalties, &self.col_ranges, lambdas);
 
         let chol = match xtwx_pen.cholesky() {
@@ -649,9 +650,7 @@ impl MultiTermGCVOptimizer {
             None => return vec![0.0; lambdas.len()],
         };
 
-        let identity = DMatrix::identity(p, p);
-        let xtwx_pen_inv = chol.solve(&identity);
-        compute_smooth_edfs_from_inv(&xtwx_pen_inv, &self.xtwx, &self.col_ranges)
+        compute_smooth_edfs_from_chol(&chol, &self.xtwx, &self.col_ranges)
     }
 }
 
@@ -820,7 +819,7 @@ mod tests {
             n_param,
         );
 
-        let lambdas = optimizer.optimize_lambdas(-8.0, 12.0, 1e-4, 10);
+        let lambdas = optimizer.optimize_lambdas(&[1.0], -8.0, 12.0, 1e-4, 10);
         assert_eq!(lambdas.len(), 1);
         assert!(lambdas[0] > 0.0);
 
@@ -871,7 +870,7 @@ mod tests {
             1,
         );
 
-        let lambdas = optimizer.optimize_lambdas(-8.0, 12.0, 1e-4, 10);
+        let lambdas = optimizer.optimize_lambdas(&[1.0, 1.0], -8.0, 12.0, 1e-4, 10);
         assert_eq!(lambdas.len(), 2);
         assert!(lambdas.iter().all(|&l| l > 0.0));
 
