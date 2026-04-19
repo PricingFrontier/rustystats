@@ -188,7 +188,7 @@ pub fn compute_categorical_distribution(
         })
         .collect();
 
-    levels.sort_by(|a, b| b.count.cmp(&a.count));
+    levels.sort_by_key(|b| std::cmp::Reverse(b.count));
 
     // Count rare levels
     let n_rare_levels = levels
@@ -775,7 +775,7 @@ pub fn compute_residual_pattern_categorical(
             (level, mean, resids.len())
         })
         .collect();
-    level_means.sort_by(|a, b| b.2.cmp(&a.2)); // Sort by count
+    level_means.sort_by_key(|b| std::cmp::Reverse(b.2)); // Sort by count
 
     let mean_residual_by_bin: Vec<f64> = level_means.iter().map(|&(_, mean, _)| mean).collect();
 

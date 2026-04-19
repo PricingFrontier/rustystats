@@ -133,6 +133,12 @@ macro_rules! impl_py_link {
             inner: $inner_type,
         }
 
+        impl Default for $py_name {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+
         #[pymethods]
         impl $py_name {
             #[new]
