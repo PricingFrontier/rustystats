@@ -73,6 +73,12 @@ pub const DEFAULT_MAX_THETA_ITER: usize = 10;
 /// Default tolerance for theta convergence in Negative Binomial.
 pub const THETA_CONVERGENCE_TOL: f64 = 1e-5;
 
+/// Tolerance for matching a Tweedie variance power to a known special case
+/// (Quasi-Poisson at p=1, Gamma at p=2). Slightly looser than `ZERO_TOL`
+/// because user-supplied `var_power` values are typically rounded to a few
+/// decimal places.
+pub const TWEEDIE_VAR_POWER_TOL: f64 = 1e-6;
+
 // =============================================================================
 // Spline Constants
 // =============================================================================
@@ -82,3 +88,15 @@ pub const DEFAULT_SPLINE_DEGREE: usize = 3;
 
 /// Tolerance for knot spacing comparisons in spline basis computation.
 pub const KNOT_TOL: f64 = 1e-10;
+
+// =============================================================================
+// Confidence Interval Constants
+// =============================================================================
+
+/// Default alpha for confidence intervals (95% = 0.05).
+/// Used by Wilson-score Poisson rate intervals in diagnostics.
+pub const DEFAULT_CI_ALPHA: f64 = 0.05;
+
+/// z-score for the (1 - DEFAULT_CI_ALPHA/2) quantile of the standard normal.
+/// For alpha = 0.05 this is the canonical 1.959964 (95% two-sided).
+pub const DEFAULT_CI_Z: f64 = 1.959964;

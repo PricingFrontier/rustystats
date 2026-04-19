@@ -25,6 +25,8 @@
 
 use statrs::distribution::{ContinuousCDF, Normal, StudentsT};
 
+use crate::constants::ZERO_TOL;
+
 // =============================================================================
 // P-Value Calculation
 // =============================================================================
@@ -583,6 +585,109 @@ pub fn score_test_continuous(
         pvalue,
         significant: pvalue < 0.05,
     }
+}
+
+/// Batched Rao score test for k continuous candidate variables.
+///
+/// Computes the same score statistic as `score_test_continuous` for each
+/// column of `zs`, but reuses precomputed quantities across all k tests
+/// and parallelizes across k via rayon.
+///
+/// # Arguments
+/// * `zs` - Candidate variables stacked as columns (n × k)
+/// * `x` - Design matrix of the fitted model (n × p)
+/// * `y` - Response variable (n)
+/// * `mu` - Fitted values (n)
+/// * `weights` - IRLS working weights (n)
+/// * `bread` - (X'WX)^{-1} (p × p)
+/// * `_family` - kept for symmetry with the singular API
+///
+/// # Returns
+/// `Vec<ScoreTestResult>` of length k, in column order of `zs`.
+pub fn score_test_continuous_batch(
+    zs: &Array2<f64>,
+    x: &Array2<f64>,
+    y: &Array1<f64>,
+    mu: &Array1<f64>,
+    weights: &Array1<f64>,
+    bread: &Array2<f64>,
+    _family: &dyn Family,
+) -> Vec<ScoreTestResult> {
+    let n = x.nrows();
+    let p = x.ncols();
+    let k = zs.ncols();
+    debug_assert_eq!(zs.nrows(), n);
+    debug_assert_eq!(y.len(), n);
+    debug_assert_eq!(mu.len(), n);
+    debug_assert_eq!(weights.len(), n);
+
+    // Precompute residuals (y - mu) once — independent of z.
+    let resid: Array1<f64> = y
+        .iter()
+        .zip(mu.iter())
+        .map(|(&yi, &mui)| yi - mui)
+        .collect();
+
+    // Precompute weighted design matrix WX (n × p) once — independent of z.
+    // Row i of WX = weights[i] * x[i, :].
+    let mut wx = x.to_owned();
+    for i in 0..n {
+        let wi = weights[i];
+        for j in 0..p {
+            wx[[i, j]] *= wi;
+        }
+    }
+
+    // Process the k columns in parallel.
+    (0..k)
+        .into_par_iter()
+        .map(|col| {
+            let z = zs.column(col);
+
+            // U = z' (y - mu)
+            let u: f64 = z.iter().zip(resid.iter()).map(|(&zi, &ri)| zi * ri).sum();
+
+            // Z'WZ = sum_i z_i^2 * w_i
+            let zwz: f64 = z
+                .iter()
+                .zip(weights.iter())
+                .map(|(&zi, &wi)| zi * zi * wi)
+                .sum();
+
+            // Z'WX (1 × p): inner product of z with each column of WX.
+            // Iterate by row to keep cache-friendly access on row-major WX.
+            let mut zwx = vec![0.0_f64; p];
+            for (i, &zi) in z.iter().enumerate() {
+                let row = wx.row(i);
+                for j in 0..p {
+                    zwx[j] += zi * row[j];
+                }
+            }
+
+            // bread @ zwx
+            let mut bread_zwx = vec![0.0_f64; p];
+            for i in 0..p {
+                let row = bread.row(i);
+                let mut s = 0.0;
+                for j in 0..p {
+                    s += row[j] * zwx[j];
+                }
+                bread_zwx[i] = s;
+            }
+
+            // correction = zwx · bread_zwx
+            let correction: f64 = zwx.iter().zip(bread_zwx.iter()).map(|(&a, &b)| a * b).sum();
+            let info = zwz - correction;
+            let statistic = if info > ZERO_TOL { u * u / info } else { 0.0 };
+            let pvalue = 1.0 - chi2_cdf_internal(statistic, 1.0);
+            ScoreTestResult {
+                statistic,
+                df: 1,
+                pvalue,
+                significant: pvalue < 0.05,
+            }
+        })
+        .collect()
 }
 
 /// Compute Rao's score test for adding a categorical variable.

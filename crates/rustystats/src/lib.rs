@@ -69,6 +69,10 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Inference (score tests + CDFs)
     m.add_function(wrap_pyfunction!(inference_py::score_test_continuous_py, m)?)?;
     m.add_function(wrap_pyfunction!(
+        inference_py::score_test_continuous_batch_py,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
         inference_py::score_test_categorical_py,
         m
     )?)?;
@@ -113,6 +117,10 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     m.add_function(wrap_pyfunction!(
         design_matrix_py::multiply_matrix_by_continuous_py,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        design_matrix_py::stack_columns_horizontal_py,
         m
     )?)?;
 
@@ -161,11 +169,35 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m
     )?)?;
     m.add_function(wrap_pyfunction!(
+        diagnostics_py::compute_ae_continuous_batch_py,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
         diagnostics_py::compute_ae_categorical_py,
         m
     )?)?;
     m.add_function(wrap_pyfunction!(
+        diagnostics_py::compute_ae_categorical_batch_py,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        diagnostics_py::compute_ae_by_decile_py,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        diagnostics_py::partial_dependence_categorical_batch_py,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
         diagnostics_py::compute_factor_deviance_py,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        diagnostics_py::compute_factor_deviance_batch_py,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        diagnostics_py::compute_factor_deviance_batch_from_codes_py,
         m
     )?)?;
     m.add_function(wrap_pyfunction!(
@@ -198,6 +230,14 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m
     )?)?;
     m.add_function(wrap_pyfunction!(
+        diagnostics_py::compute_residual_pattern_batch_py,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        diagnostics_py::compute_factor_significance_batch_py,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
         diagnostics_py::compute_pearson_residuals_py,
         m
     )?)?;
@@ -211,6 +251,10 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     m.add_function(wrap_pyfunction!(
         diagnostics_py::compute_unit_deviance_py,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        diagnostics_py::inverse_diagonal_spd_py,
         m
     )?)?;
 

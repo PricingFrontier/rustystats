@@ -270,6 +270,18 @@ def score_test_continuous_py(
     bread: npt.NDArray[np.float64],
     family: str,
 ) -> dict: ...
+def score_test_continuous_batch_py(
+    zs: npt.NDArray[np.float64],
+    x: npt.NDArray[np.float64],
+    y: npt.NDArray[np.float64],
+    mu: npt.NDArray[np.float64],
+    weights: npt.NDArray[np.float64],
+    bread: npt.NDArray[np.float64],
+    family: str,
+) -> list[dict]:
+    """Batched Rao's score test for adding k continuous variables to a fitted model."""
+    ...
+
 def score_test_categorical_py(
     z_matrix: npt.NDArray[np.float64],
     x: npt.NDArray[np.float64],
@@ -386,6 +398,11 @@ def multiply_matrix_by_continuous_py(
     matrix: npt.NDArray[np.float64],
     continuous: npt.NDArray[np.float64],
 ) -> npt.NDArray[np.float64]: ...
+def stack_columns_horizontal_py(
+    blocks: list[npt.NDArray[np.float64]],
+) -> npt.NDArray[np.float64]:
+    """Stack a list of (n x c_i) f64 column blocks horizontally into a single (n x sum(c_i)) matrix."""
+    ...
 
 # =============================================================================
 # Target Encoding Functions
@@ -458,6 +475,17 @@ def compute_ae_continuous_py(
     n_bins: int = 10,
     family: str = "poisson",
 ) -> list[dict]: ...
+def compute_ae_continuous_batch_py(
+    values_matrix: npt.NDArray[np.float64],
+    y: npt.NDArray[np.float64],
+    mu: npt.NDArray[np.float64],
+    exposure: npt.NDArray[np.float64] | None = None,
+    n_bins: int = 10,
+    family: str = "poisson",
+) -> list[list[dict]]:
+    """Compute A/E bins for many continuous factors at once, parallelized over factors."""
+    ...
+
 def compute_ae_categorical_py(
     levels: npt.NDArray[np.float64],
     y: npt.NDArray[np.float64],
@@ -467,6 +495,43 @@ def compute_ae_categorical_py(
     max_levels: int = 20,
     family: str = "poisson",
 ) -> list[dict]: ...
+def compute_ae_categorical_batch_py(
+    codes_matrix: npt.NDArray[np.uint32],
+    levels_list: list[list[str]],
+    y: npt.NDArray[np.float64],
+    mu: npt.NDArray[np.float64],
+    exposure: npt.NDArray[np.float64] | None = None,
+    rare_threshold_pct: float = 1.0,
+    max_levels: int = 20,
+    family: str = "poisson",
+) -> list[list[dict]]:
+    """Compute A/E bins for many categorical factors at once, parallelized over factors."""
+    ...
+
+def compute_ae_by_decile_py(
+    y: npt.NDArray[np.float64],
+    mu: npt.NDArray[np.float64],
+    exposure: npt.NDArray[np.float64] | None = None,
+    n_deciles: int = 10,
+    sort_idx: npt.NDArray[np.uintp] | None = None,
+) -> list[dict]:
+    """Compute A/E aggregates per decile (sorted by predicted value) from Rust."""
+    ...
+
+def partial_dependence_categorical_batch_py(
+    codes_matrix: npt.NDArray[np.uint32],
+    mu: npt.NDArray[np.float64],
+    n_levels_per_factor: list[int],
+) -> list[tuple[list[float], list[float]]]:
+    """Per-factor categorical partial-dependence aggregates (counts, mu_sums), parallel over factors."""
+    ...
+
+def inverse_diagonal_spd_py(
+    matrix: npt.NDArray[np.float64],
+) -> npt.NDArray[np.float64]:
+    """Compute the diagonal of M^{-1} where M is symmetric positive-definite (used for VIF)."""
+    ...
+
 def compute_factor_deviance_py(
     factor_name: str,
     factor_values: npt.NDArray[np.float64],
@@ -476,6 +541,40 @@ def compute_factor_deviance_py(
     var_power: float = 1.5,
     theta: float = 1.0,
 ) -> dict: ...
+def compute_factor_deviance_batch_py(
+    factor_names: list[str],
+    factor_values_list: list[list[str]],
+    y: npt.NDArray[np.float64],
+    mu: npt.NDArray[np.float64],
+    family: str = "poisson",
+    var_power: float = 1.5,
+    theta: float = 1.0,
+) -> list[dict]:
+    """Compute factor deviance breakdown for many categorical factors at once, parallel over factors."""
+    ...
+
+def compute_factor_deviance_batch_from_codes_py(
+    factor_names: list[str],
+    codes_matrix: npt.NDArray[np.uint32],
+    levels_list: list[list[str]],
+    y: npt.NDArray[np.float64],
+    mu: npt.NDArray[np.float64],
+    family: str = "poisson",
+    var_power: float = 1.5,
+    theta: float = 1.0,
+) -> list[dict]:
+    """Code-based variant of compute_factor_deviance_batch_py (avoids per-row string marshalling)."""
+    ...
+
+def compute_factor_significance_batch_py(
+    param_indices_per_factor: list[list[int]],
+    params: npt.NDArray[np.float64],
+    bse: npt.NDArray[np.float64],
+    bread: npt.NDArray[np.float64],
+) -> list[dict | None]:
+    """Batch-compute joint Wald factor significance (chi2, pvalue, df) for k factors in parallel."""
+    ...
+
 def compute_loss_metrics_py(
     y: npt.NDArray[np.float64],
     mu: npt.NDArray[np.float64],

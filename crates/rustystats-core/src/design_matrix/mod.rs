@@ -13,7 +13,7 @@
 //
 // =============================================================================
 
-use ndarray::{Array1, Array2};
+use ndarray::{s, Array1, Array2, ArrayView2};
 use rayon::prelude::*;
 use std::collections::HashMap;
 
@@ -600,6 +600,98 @@ pub fn build_design_matrix(columns: Vec<DesignColumn>, n_obs: usize) -> (Array2<
 }
 
 // =============================================================================
+// HORIZONTAL COLUMN-BLOCK STACKING
+// =============================================================================
+
+/// Stack a list of (n × c_i) column blocks horizontally into a single
+/// (n × Σc_i) row-major matrix.
+///
+/// Each block is copied into its own slice of the output via `assign` (memcpy
+/// under the hood for f64). Blocks with disjoint column ranges in the output
+/// are copied in parallel via rayon: each worker writes to a unique column
+/// range, so the writes never overlap.
+///
+/// All blocks must share the same number of rows. The function panics if a
+/// block's row count differs from the first block (or if `blocks` is empty
+/// and the caller relies on a row count).
+///
+/// # Arguments
+/// * `blocks` - List of 2-D column blocks (each shape `(n, c_i)`).
+///
+/// # Returns
+/// An owned `Array2<f64>` of shape `(n, Σc_i)`.
+pub fn stack_columns_horizontal(blocks: &[ArrayView2<f64>]) -> Array2<f64> {
+    if blocks.is_empty() {
+        return Array2::<f64>::zeros((0, 0));
+    }
+
+    let n_rows = blocks[0].nrows();
+    let total_cols: usize = blocks.iter().map(|b| b.ncols()).sum();
+
+    // Validate row counts (catches caller bugs early; cheap).
+    for (i, b) in blocks.iter().enumerate() {
+        assert_eq!(
+            b.nrows(),
+            n_rows,
+            "stack_columns_horizontal: block {} has {} rows, expected {}",
+            i,
+            b.nrows(),
+            n_rows
+        );
+    }
+
+    if total_cols == 0 {
+        return Array2::<f64>::zeros((n_rows, 0));
+    }
+
+    // Compute starting column offset for each block.
+    let mut offsets = Vec::with_capacity(blocks.len());
+    let mut cur = 0usize;
+    for b in blocks {
+        offsets.push(cur);
+        cur += b.ncols();
+    }
+
+    // Allocate output. `Array2::zeros` writes the buffer once; the subsequent
+    // assigns overwrite it with the block contents.
+    let mut out = Array2::<f64>::zeros((n_rows, total_cols));
+
+    // Parallel copy each block into its disjoint column range of `out`.
+    //
+    // SAFETY: Each task writes to a disjoint column range
+    // `[offsets[i], offsets[i] + blocks[i].ncols())` of `out`. Because the
+    // ranges are disjoint and we never read from `out` during these writes,
+    // no two tasks ever touch the same memory location. We materialize a
+    // `*mut Array2<f64>` and reconstruct the disjoint slice views inside
+    // each task; rayon ensures the closure outlives the work.
+    //
+    // We use `addr_of_mut!` (rather than an `&mut -> *mut -> usize` round-trip)
+    // to preserve pointer provenance under Rust's strict provenance model
+    // (so this code is sound under Miri's strict checks). `*mut T` is `!Send`
+    // by default, so we wrap it in a small `SyncPtr` newtype with manual
+    // `Send`/`Sync` impls justified by the disjoint-write argument above.
+    struct SyncPtr<T>(*mut T);
+    // SAFETY: see comment above; tasks only touch disjoint column ranges.
+    unsafe impl<T> Send for SyncPtr<T> {}
+    unsafe impl<T> Sync for SyncPtr<T> {}
+
+    let out_ptr = SyncPtr(std::ptr::addr_of_mut!(out));
+    let out_ptr_ref = &out_ptr;
+    blocks
+        .par_iter()
+        .zip(offsets.par_iter())
+        .for_each(|(block, &off)| {
+            let w = block.ncols();
+            // SAFETY: see comment above; column ranges across tasks are disjoint.
+            let out_ref = unsafe { &mut *out_ptr_ref.0 };
+            let mut dst = out_ref.slice_mut(s![.., off..off + w]);
+            dst.assign(block);
+        });
+
+    out
+}
+
+// =============================================================================
 // TESTS
 // =============================================================================
 
@@ -961,5 +1053,73 @@ mod tests {
 
         assert_eq!(matrix.shape(), &[5, 0]);
         assert_eq!(names.len(), 0);
+    }
+
+    #[test]
+    fn test_stack_columns_horizontal_basic() {
+        let a = Array2::from_shape_vec((3, 2), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).unwrap();
+        let b = Array2::from_shape_vec((3, 1), vec![7.0, 8.0, 9.0]).unwrap();
+        let c = Array2::from_shape_vec(
+            (3, 3),
+            vec![10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0],
+        )
+        .unwrap();
+
+        let blocks = vec![a.view(), b.view(), c.view()];
+        let out = stack_columns_horizontal(&blocks);
+
+        assert_eq!(out.shape(), &[3, 6]);
+        // Row 0: [1, 2, 7, 10, 11, 12]
+        assert_eq!(out[[0, 0]], 1.0);
+        assert_eq!(out[[0, 1]], 2.0);
+        assert_eq!(out[[0, 2]], 7.0);
+        assert_eq!(out[[0, 3]], 10.0);
+        assert_eq!(out[[0, 4]], 11.0);
+        assert_eq!(out[[0, 5]], 12.0);
+        // Row 2: [5, 6, 9, 16, 17, 18]
+        assert_eq!(out[[2, 0]], 5.0);
+        assert_eq!(out[[2, 1]], 6.0);
+        assert_eq!(out[[2, 2]], 9.0);
+        assert_eq!(out[[2, 3]], 16.0);
+        assert_eq!(out[[2, 5]], 18.0);
+    }
+
+    #[test]
+    fn test_stack_columns_horizontal_single_block() {
+        let a = Array2::from_shape_vec((2, 2), vec![1.0, 2.0, 3.0, 4.0]).unwrap();
+        let blocks = vec![a.view()];
+        let out = stack_columns_horizontal(&blocks);
+        assert_eq!(out.shape(), &[2, 2]);
+        assert_eq!(out, a);
+    }
+
+    #[test]
+    fn test_stack_columns_horizontal_empty_blocks() {
+        let blocks: Vec<ArrayView2<f64>> = vec![];
+        let out = stack_columns_horizontal(&blocks);
+        assert_eq!(out.shape(), &[0, 0]);
+    }
+
+    #[test]
+    fn test_stack_columns_horizontal_zero_cols() {
+        let a = Array2::<f64>::zeros((4, 0));
+        let blocks = vec![a.view()];
+        let out = stack_columns_horizontal(&blocks);
+        assert_eq!(out.shape(), &[4, 0]);
+    }
+
+    #[test]
+    fn test_stack_columns_horizontal_many_blocks() {
+        // Stress-test parallel copy: 30 blocks of (1000, 1)
+        let block = Array2::<f64>::from_elem((1000, 1), 7.5);
+        let owned: Vec<Array2<f64>> = (0..30).map(|_| block.clone()).collect();
+        let views: Vec<_> = owned.iter().map(|b| b.view()).collect();
+        let out = stack_columns_horizontal(&views);
+        assert_eq!(out.shape(), &[1000, 30]);
+        for r in [0usize, 500, 999] {
+            for c in 0..30 {
+                assert_eq!(out[[r, c]], 7.5);
+            }
+        }
     }
 }

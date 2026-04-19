@@ -46,6 +46,20 @@ __all__ = [
     # Links and Aliases
     "DEFAULT_LINKS",
     "NEGBINOMIAL_ALIASES",
+    # Diagnostics Thresholds
+    "SIGNIFICANCE_THRESHOLD",
+    "OVERFITTING_GINI_GAP_THRESHOLD",
+    "CALIBRATION_AE_LOWER",
+    "CALIBRATION_AE_UPPER",
+    "FACTOR_AE_DIFF_THRESHOLD",
+    "OVERDISPERSION_SEVERE",
+    "OVERDISPERSION_MODERATE",
+    "OVERDISPERSION_MILD",
+    # Partial Dependence Shape Detection
+    "PD_FLAT_RELATIVE_RANGE",
+    "PD_MONOTONIC_THRESHOLD",
+    "PD_CURVATURE_RELATIVE_THRESHOLD",
+    "PD_STEP_FUNCTION_RATIO",
 ]
 
 # =============================================================================
@@ -138,3 +152,39 @@ NEGBINOMIAL_ALIASES = frozenset(
         "nb",
     }
 )
+
+# =============================================================================
+# Diagnostics Thresholds
+# =============================================================================
+# Coefficient significance threshold for p-values (alpha = 0.05 standard).
+SIGNIFICANCE_THRESHOLD = 0.05
+
+# Minimum train-test Gini gap that flags overfitting risk.
+OVERFITTING_GINI_GAP_THRESHOLD = 0.03
+
+# Acceptable A/E ratio range; outside this triggers calibration_drift flag.
+CALIBRATION_AE_LOWER = 0.95
+CALIBRATION_AE_UPPER = 1.05
+
+# Train/test factor-level A/E divergence flagged as unstable above this absolute difference.
+FACTOR_AE_DIFF_THRESHOLD = 0.1
+
+# Pearson chi-square dispersion thresholds for over-dispersion severity classification.
+OVERDISPERSION_SEVERE = 5.0
+OVERDISPERSION_MODERATE = 2.0
+OVERDISPERSION_MILD = 1.5
+
+# =============================================================================
+# Partial Dependence Shape Detection Thresholds
+# =============================================================================
+# Below this fraction of pred_mean, partial-dependence variation is "flat".
+PD_FLAT_RELATIVE_RANGE = 0.05
+
+# Fraction of grid steps that must move in the same direction to call a curve "monotonic".
+PD_MONOTONIC_THRESHOLD = 0.8
+
+# Curvature threshold (relative to pred_range) above which a monotonic curve is "non-linear".
+PD_CURVATURE_RELATIVE_THRESHOLD = 0.1
+
+# Fraction of total range concentrated in a single step → step-function shape.
+PD_STEP_FUNCTION_RATIO = 0.4

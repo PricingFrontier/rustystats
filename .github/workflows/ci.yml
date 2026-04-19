@@ -62,3 +62,33 @@ jobs:
 
       - name: Run tests
         run: uv run --extra dev pytest -x -q
+
+  diagnostics-verification:
+    name: Diagnostics correctness harness
+    needs: python
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build extension (release)
+        # `uv run` resolves the dev extras; maturin develop --release builds
+        # the optimized extension into the project's venv so the harness can
+        # import it.
+        run: uv run --extra dev maturin develop --release
+
+      - name: Run diagnostics verification harness
+        # The harness exits non-zero on any invariant failure, which fails
+        # the build. statsmodels is part of the `dev` extra (pyproject.toml),
+        # so cross-validation checks run automatically; the harness also
+        # gracefully skips them if statsmodels is unavailable.
+        run: uv run --extra dev python benchmarks/verify_diagnostics_correctness.py

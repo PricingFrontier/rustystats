@@ -18,6 +18,9 @@
 
 use ndarray::Array1;
 
+use super::ci::wilson_poisson_rate_ci;
+use crate::constants::DEFAULT_CI_ALPHA;
+
 // =============================================================================
 // Calibration Metrics
 // =============================================================================
@@ -171,15 +174,13 @@ fn compute_single_bin(
         f64::NAN
     };
 
-    // Confidence interval for A/E using normal approximation
-    // SE(A/E) ≈ sqrt(A) / E for Poisson-like data
+    // Confidence interval for A/E using the Wilson score interval for a
+    // Poisson rate. This is preferred over a Wald approximation in
+    // actuarial / insurance settings: it stays inside [0, ∞), behaves well
+    // for small counts, and does not need the historical `actual_sum.max(1.0)`
+    // fudge that masked the true k=0 behavior.
     let (ae_ci_lower, ae_ci_upper) = if predicted_sum > 0.0 && actual_sum >= 0.0 {
-        let se = (actual_sum.max(1.0)).sqrt() / predicted_sum;
-        let z = 1.96; // 95% CI
-        (
-            (actual_expected_ratio - z * se).max(0.0),
-            actual_expected_ratio + z * se,
-        )
+        wilson_poisson_rate_ci(actual_sum, predicted_sum, DEFAULT_CI_ALPHA)
     } else {
         (f64::NAN, f64::NAN)
     };

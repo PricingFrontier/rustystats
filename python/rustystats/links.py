@@ -59,6 +59,8 @@ Examples
 >>> print(mu)  # [0.119, 0.5, 0.881] - always between 0 and 1!
 """
 
+import numpy as np
+
 # Import the Rust implementations
 from rustystats._rustystats import (
     IdentityLink as _IdentityLink,
@@ -69,6 +71,15 @@ from rustystats._rustystats import (
 from rustystats._rustystats import (
     LogLink as _LogLink,
 )
+
+# Numerical guard rails for link transformations:
+#   - exp/sigmoid arguments are clipped to [-_ETA_CLIP, _ETA_CLIP] so that
+#     pathological linear predictors (e.g. from extreme outlier coefficients
+#     during diagnostics) cannot produce inf/nan.
+#   - Probabilities passed through forward links are clipped to
+#     [_PROB_EPS, 1 - _PROB_EPS] so that log(0) and log(1) → ±inf are avoided.
+_ETA_CLIP = 50.0
+_PROB_EPS = 1e-12
 
 
 def Identity() -> _IdentityLink:
@@ -221,4 +232,97 @@ def Logit() -> _LogitLink:
     return _LogitLink()
 
 
-__all__ = ["Identity", "Log", "Logit"]
+def link_inverse(link: str, eta):
+    """
+    Apply the inverse of the named link function: μ = g⁻¹(η).
+
+    Vectorised over numpy arrays. Used by the diagnostics layer (notably
+    partial-dependence) to convert a linear-predictor contribution back to
+    the response scale without dispatching on link name at every call site.
+
+    Parameters
+    ----------
+    link : str
+        One of ``"identity"``, ``"log"``, ``"logit"``, ``"cloglog"``.
+    eta : array-like or float
+        Linear predictor value(s).
+
+    Returns
+    -------
+    array-like or float
+        Inverse-link transformed mean μ.
+
+    Notes
+    -----
+    ``"probit"`` is intentionally not supported here: a numerically-stable
+    implementation requires ``scipy.stats.norm.cdf``, which would re-introduce
+    a scipy runtime dependency that this package has explicitly removed.
+    Probit-link partial-dependence support requires extending the Rust core.
+    """
+    if link == "identity":
+        return eta
+    if link == "log":
+        return np.exp(np.clip(eta, -_ETA_CLIP, _ETA_CLIP))
+    if link == "logit":
+        # sigmoid(eta) = 1 / (1 + exp(-eta)), with clipping for stability.
+        return 1.0 / (1.0 + np.exp(-np.clip(eta, -_ETA_CLIP, _ETA_CLIP)))
+    if link == "cloglog":
+        # Inverse of cloglog: μ = 1 - exp(-exp(η)).
+        return 1.0 - np.exp(-np.exp(np.clip(eta, -_ETA_CLIP, _ETA_CLIP)))
+    if link == "probit":
+        raise NotImplementedError(
+            "Probit link inverse is not supported in pure-Python helpers "
+            "(would require scipy). Extend the Rust core to add probit "
+            "partial-dependence support."
+        )
+    raise ValueError(f"Unsupported link: {link!r}")
+
+
+def link_forward(link: str, mu):
+    """
+    Apply the named link function (forward): η = g(μ).
+
+    Vectorised over numpy arrays. Used by the diagnostics layer (notably
+    partial-dependence) to invert a baseline mean back to the linear-predictor
+    scale before adding a variable contribution and re-applying the inverse
+    link.
+
+    Parameters
+    ----------
+    link : str
+        One of ``"identity"``, ``"log"``, ``"logit"``, ``"cloglog"``.
+    mu : array-like or float
+        Mean (response-scale) value(s). For ``"logit"``/``"cloglog"`` these
+        are clipped into (0, 1) for numerical safety.
+
+    Returns
+    -------
+    array-like or float
+        Linear-predictor η.
+
+    Notes
+    -----
+    ``"probit"`` raises ``NotImplementedError`` for the same reason as
+    :func:`link_inverse`.
+    """
+    if link == "identity":
+        return mu
+    if link == "log":
+        # Guard against log(0) → -inf for tiny baseline predictions.
+        return np.log(np.maximum(mu, _PROB_EPS))
+    if link == "logit":
+        mu_clipped = np.clip(mu, _PROB_EPS, 1.0 - _PROB_EPS)
+        return np.log(mu_clipped / (1.0 - mu_clipped))
+    if link == "cloglog":
+        mu_clipped = np.clip(mu, _PROB_EPS, 1.0 - _PROB_EPS)
+        return np.log(-np.log(1.0 - mu_clipped))
+    if link == "probit":
+        raise NotImplementedError(
+            "Probit forward link is not supported in pure-Python helpers "
+            "(would require scipy). Extend the Rust core to add probit "
+            "partial-dependence support."
+        )
+    raise ValueError(f"Unsupported link: {link!r}")
+
+
+__all__ = ["Identity", "Log", "Logit", "link_inverse", "link_forward"]

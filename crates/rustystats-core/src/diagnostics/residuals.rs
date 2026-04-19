@@ -133,6 +133,114 @@ pub fn resid_working(y: &Array1<f64>, mu: &Array1<f64>, link: &dyn Link) -> Arra
 }
 
 // =============================================================================
+// Residual Summary Statistics
+// =============================================================================
+
+/// Summary statistics for a vector of residuals.
+///
+/// Includes central moments (mean, std, skewness, kurtosis), extremes
+/// (min/max), and a fixed grid of percentiles. Used by diagnostic output
+/// to characterise the residual distribution at a glance.
+///
+/// `kurtosis` is the excess kurtosis (population kurtosis − 3).
+/// `skewness` is the population (biased) skewness.
+/// Percentiles use the nearest-rank rule on `total_cmp`-sorted data so
+/// NaN handling is deterministic.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResidualSummary {
+    pub mean: f64,
+    pub std: f64,
+    pub min: f64,
+    pub max: f64,
+    pub skewness: f64,
+    pub kurtosis: f64,
+    pub p1: f64,
+    pub p5: f64,
+    pub p10: f64,
+    pub p25: f64,
+    pub p50: f64,
+    pub p75: f64,
+    pub p90: f64,
+    pub p95: f64,
+    pub p99: f64,
+}
+
+/// Compute summary statistics for a residual vector.
+///
+/// Returns `None` if the input is empty (callers should reject empty
+/// arrays before computing diagnostics).
+///
+/// Skewness and kurtosis are zero when std is zero (degenerate case).
+/// Percentiles use the nearest-rank rule and `total_cmp` for NaN-safe
+/// ordering.
+///
+/// # Arguments
+/// * `residuals` - Array of residual values.
+///
+/// # Returns
+/// `Some(ResidualSummary)` with all fields populated, or `None` for
+/// empty input.
+pub fn compute_residual_summary(residuals: &Array1<f64>) -> Option<ResidualSummary> {
+    let n = residuals.len();
+    if n == 0 {
+        return None;
+    }
+    let n_f = n as f64;
+
+    let mean = residuals.iter().sum::<f64>() / n_f;
+    let variance = residuals.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n_f;
+    let std = variance.sqrt();
+    let min = residuals.iter().cloned().fold(f64::INFINITY, f64::min);
+    let max = residuals.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+
+    // Skewness and excess kurtosis (population formulas, biased).
+    // Match the original Python-side formulas exactly.
+    let (skewness, kurtosis) = if std > 0.0 {
+        let skew = residuals
+            .iter()
+            .map(|x| ((x - mean) / std).powi(3))
+            .sum::<f64>()
+            / n_f;
+        let kurt = residuals
+            .iter()
+            .map(|x| ((x - mean) / std).powi(4))
+            .sum::<f64>()
+            / n_f
+            - 3.0;
+        (skew, kurt)
+    } else {
+        (0.0, 0.0)
+    };
+
+    // Percentiles via nearest-rank on a total_cmp-sorted copy.
+    let mut sorted: Vec<f64> = residuals.iter().cloned().collect();
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    let last = sorted.len() - 1;
+    let percentile = |p: f64| -> f64 {
+        let idx = (p / 100.0 * last as f64).round() as usize;
+        sorted[idx.min(last)]
+    };
+
+    Some(ResidualSummary {
+        mean,
+        std,
+        min,
+        max,
+        skewness,
+        kurtosis,
+        p1: percentile(1.0),
+        p5: percentile(5.0),
+        p10: percentile(10.0),
+        p25: percentile(25.0),
+        p50: percentile(50.0),
+        p75: percentile(75.0),
+        p90: percentile(90.0),
+        p95: percentile(95.0),
+        p99: percentile(99.0),
+    })
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 
@@ -234,5 +342,68 @@ mod tests {
         // Working residual = (y - μ) / μ = (3 - 2) / 2 = 0.5
         let expected = (3.0 - 2.0) / 2.0;
         assert_abs_diff_eq!(resid[0], expected, epsilon = 1e-10);
+    }
+
+    // -----------------------------------------------------------------
+    // Residual summary tests
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_residual_summary_empty_returns_none() {
+        let r: Array1<f64> = Array1::zeros(0);
+        assert!(compute_residual_summary(&r).is_none());
+    }
+
+    #[test]
+    fn test_residual_summary_constant_zero_std() {
+        let r = array![2.0, 2.0, 2.0, 2.0];
+        let s = compute_residual_summary(&r).unwrap();
+        assert_abs_diff_eq!(s.mean, 2.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(s.std, 0.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(s.skewness, 0.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(s.kurtosis, 0.0, epsilon = 1e-12);
+        assert_eq!(s.min, 2.0);
+        assert_eq!(s.max, 2.0);
+        assert_eq!(s.p50, 2.0);
+    }
+
+    #[test]
+    fn test_residual_summary_basic_moments() {
+        let r = array![1.0, 2.0, 3.0, 4.0, 5.0];
+        let s = compute_residual_summary(&r).unwrap();
+        // Mean = 3, var = (4+1+0+1+4)/5 = 2 (population), std = sqrt(2)
+        assert_abs_diff_eq!(s.mean, 3.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(s.std, 2.0_f64.sqrt(), epsilon = 1e-12);
+        assert_eq!(s.min, 1.0);
+        assert_eq!(s.max, 5.0);
+        // Symmetric around mean → skew ≈ 0
+        assert_abs_diff_eq!(s.skewness, 0.0, epsilon = 1e-12);
+        // Median of 1..5 is 3
+        assert_eq!(s.p50, 3.0);
+    }
+
+    #[test]
+    fn test_residual_summary_percentile_nearest_rank() {
+        // With n=11, last=10, idx = round(p/100 * 10).
+        // Sorted ascending, value at idx i is i (0-indexed).
+        let r: Array1<f64> = (0..11).map(|i| i as f64).collect();
+        let s = compute_residual_summary(&r).unwrap();
+        assert_eq!(s.p1, 0.0); // round(0.1) = 0
+        assert_eq!(s.p10, 1.0); // round(1.0) = 1
+        assert_eq!(s.p50, 5.0); // round(5.0) = 5
+        assert_eq!(s.p99, 10.0); // round(9.9) = 10
+    }
+
+    #[test]
+    fn test_residual_summary_skewness_known() {
+        // Right-skewed sample: large positive tail
+        let r = array![0.0, 0.0, 0.0, 0.0, 10.0];
+        let s = compute_residual_summary(&r).unwrap();
+        // Mean = 2, var = (4+4+4+4+64)/5 = 16, std = 4
+        // skewness = mean of ((x-2)/4)^3 = ((-0.5)^3*4 + (2.0)^3) / 5
+        //          = ((-0.125)*4 + 8) / 5 = (-0.5 + 8)/5 = 1.5
+        assert_abs_diff_eq!(s.mean, 2.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(s.std, 4.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(s.skewness, 1.5, epsilon = 1e-10);
     }
 }

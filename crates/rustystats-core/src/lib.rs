@@ -47,8 +47,8 @@ pub mod target_encoding;
 pub use design_matrix::{
     build_categorical_categorical_interaction, build_categorical_continuous_interaction,
     build_continuous_continuous_interaction, build_design_matrix, encode_categorical,
-    encode_categorical_from_indices, multiply_matrix_by_continuous, CategoricalEncoding,
-    DesignColumn,
+    encode_categorical_from_indices, multiply_matrix_by_continuous, stack_columns_horizontal,
+    CategoricalEncoding, DesignColumn,
 };
 pub use error::{Result, RustyStatsError};
 pub use families::Family;

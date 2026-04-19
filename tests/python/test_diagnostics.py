@@ -898,6 +898,65 @@ class TestEnhancedDiagnostics:
             assert len(pd.grid_values) > 0
             assert len(pd.predictions) == len(pd.grid_values)
 
+    def test_pd_logit_link_uses_sigmoid(self):
+        """FIX-O B2: For binomial GLM with logit link, PD predictions must be
+        probabilities in (0, 1) computed as sigmoid(eta_baseline + delta_eta),
+        NOT base + delta. Before this fix the non-log branch added delta_eta
+        directly to base_pred, silently producing wrong PD probabilities for
+        every binomial model (the canonical link is logit, not identity)."""
+        import rustystats as rs
+        from rustystats.diagnostics import DiagnosticsComputer
+
+        rng = np.random.default_rng(42)
+        n = 5000
+        x = rng.standard_normal(n)
+        p = 1.0 / (1.0 + np.exp(-(0.5 + 1.0 * x)))
+        y_arr = (rng.uniform(size=n) < p).astype(float)
+        df = pl.DataFrame({"y": y_arr, "x": x})
+        result = rs.glm_dict(
+            response="y",
+            terms={"x": {"type": "linear"}},
+            data=df,
+            family="binomial",
+        ).fit()
+        # Drive `compute_partial_dependence` directly: bypasses the broader
+        # factor-diagnostics pipeline so the test isolates the PD codepath.
+        computer = DiagnosticsComputer(
+            y=df["y"].to_numpy().astype(np.float64),
+            mu=result.fittedvalues,
+            linear_predictor=result.linear_predictor,
+            family="binomial",
+            n_params=len(result.params),
+            deviance=result.deviance,
+            feature_names=result.feature_names,
+        )
+        partial_dep = computer.compute_partial_dependence(
+            data=df,
+            result=result,
+            continuous_factors=["x"],
+            categorical_factors=[],
+            link="logit",
+        )
+        pd_x = next(p for p in partial_dep if p.variable == "x")
+        # All predictions must be valid probabilities in (0, 1).
+        assert all(
+            0.0 < pred < 1.0 for pred in pd_x.predictions
+        ), f"Logit PD predictions out of (0,1): {pd_x.predictions}"
+        # The PD should also reflect the underlying β > 0: predictions should
+        # increase across the grid (predictions are aligned with grid_values).
+        first, last = pd_x.predictions[0], pd_x.predictions[-1]
+        assert last > first, (
+            f"Expected monotonically increasing PD for positive β, "
+            f"got first={first} last={last}"
+        )
+        # Sanity check: at the middle of the grid the PD should be close to
+        # the baseline (mean of fitted μ), since delta_eta ≈ 0 there.
+        mid_pred = pd_x.predictions[len(pd_x.predictions) // 2]
+        baseline = float(np.mean(result.fittedvalues))
+        assert abs(mid_pred - baseline) < 0.05, (
+            f"PD at grid midpoint ({mid_pred}) should be near baseline " f"({baseline})"
+        )
+
     def test_full_diagnostics_with_enhancements(self, fitted_model_with_data):
         """Test full diagnostics includes all new fields."""
         result, data = fitted_model_with_data
@@ -1360,3 +1419,205 @@ class TestSmoothTermDiagnostics:
                 for st in diagnostics.smooth_terms:
                     assert st.edf > 0
                     assert 0 <= st.p_value <= 1
+
+
+class TestFactorFeatureIndex:
+    """FIX-N regression tests: strict-matching factor → feature index.
+
+    The diagnostics module previously used ``if name in fn`` substring matching
+    to find features for a variable, which produced false positives when one
+    variable name was a substring of another (e.g. ``Age`` matching
+    ``bs(VehAge, 1/4)``). These tests guard against the bug class re-appearing.
+    """
+
+    def test_factor_index_no_substring_false_positive(self):
+        """Variable 'Age' must not match feature 'bs(VehAge, 1/4)'."""
+        from rustystats.diagnostics.factors import _FactorFeatureIndex
+
+        feature_names = [
+            "Intercept",
+            "bs(Age, 1/4)",
+            "bs(Age, 2/4)",
+            "bs(VehAge, 1/4)",
+            "bs(VehAge, 2/4)",
+        ]
+        index = _FactorFeatureIndex(["Age", "VehAge"], feature_names)
+        assert index.features_for("Age").indices == [1, 2]
+        assert index.features_for("VehAge").indices == [3, 4]
+        # Term type should be detected as spline.
+        assert index.features_for("Age").term_type == "spline"
+        assert index.features_for("VehAge").term_type == "spline"
+
+    def test_factor_index_te_interaction(self):
+        """TE interaction features should match every variable they involve."""
+        from rustystats.diagnostics.factors import _FactorFeatureIndex
+
+        feature_names = [
+            "Intercept",
+            "TE(Region)",
+            "TE(Brand:Region)",
+            "TE(Brand)",
+        ]
+        index = _FactorFeatureIndex(["Region", "Brand"], feature_names)
+        # TE(Region) and TE(Brand:Region) both reference Region.
+        assert index.features_for("Region").indices == [1, 2]
+        # TE(Brand:Region) and TE(Brand) both reference Brand.
+        assert index.features_for("Brand").indices == [2, 3]
+        assert index.features_for("Region").term_type == "te"
+        assert index.features_for("Brand").term_type == "te"
+
+    def test_factor_index_expression_word_boundary(self):
+        """I(<expr>) must word-boundary match (age != driver_age)."""
+        from rustystats.diagnostics.factors import _FactorFeatureIndex
+
+        feature_names = ["Intercept", "I(age ** 2)", "I(driver_age ** 2)"]
+        index = _FactorFeatureIndex(["age"], feature_names)
+        # age must NOT pull in I(driver_age ** 2) — that's a different variable.
+        assert index.features_for("age").indices == [1]
+        assert index.features_for("age").term_type == "expression"
+
+    def test_factor_index_linear_exact_match(self):
+        """Linear (raw) features must exact-match — no substring spread."""
+        from rustystats.diagnostics.factors import _FactorFeatureIndex
+
+        feature_names = ["Intercept", "Age", "VehAge"]
+        index = _FactorFeatureIndex(["Age", "VehAge"], feature_names)
+        assert index.features_for("Age").indices == [1]
+        assert index.features_for("VehAge").indices == [2]
+        assert index.features_for("Age").term_type == "linear"
+
+    def test_factor_index_categorical_strict(self):
+        """C(name) must strictly match — C(Brand) ≠ C(BrandX)."""
+        from rustystats.diagnostics.factors import _FactorFeatureIndex
+
+        feature_names = ["Intercept", "C(Brand)[T.A]", "C(Brand)[T.B]", "C(BrandX)[T.A]"]
+        index = _FactorFeatureIndex(["Brand", "BrandX"], feature_names)
+        assert index.features_for("Brand").indices == [1, 2]
+        assert index.features_for("BrandX").indices == [3]
+        assert index.features_for("Brand").term_type == "categorical"
+
+    def test_factor_index_intercept_excluded(self):
+        """The Intercept feature must never be matched."""
+        from rustystats.diagnostics.factors import _FactorFeatureIndex
+
+        index = _FactorFeatureIndex(["Intercept"], ["Intercept", "x"])
+        assert index.features_for("Intercept").indices == []
+        assert not index.is_in_model("Intercept")
+
+    def test_factor_index_unregistered_variable(self):
+        """Unregistered variables should return an empty _FactorFeature."""
+        from rustystats.diagnostics.factors import _FactorFeatureIndex
+
+        index = _FactorFeatureIndex(["Age"], ["Intercept", "Age"])
+        empty = index.features_for("NotRegistered")
+        assert empty.indices == []
+        assert empty.feature_names == []
+        assert empty.transformation is None
+        assert empty.term_type == "unknown"
+
+    def test_factor_index_interaction_recursion(self):
+        """Interaction features should be matched if any part matches the variable."""
+        from rustystats.diagnostics.factors import _FactorFeatureIndex
+
+        feature_names = [
+            "Intercept",
+            "Age",
+            "Region",
+            "Age:Region",
+            "bs(Age, 1/4):Region",
+        ]
+        index = _FactorFeatureIndex(["Age", "Region"], feature_names)
+        # Age appears as itself, in Age:Region, and inside bs(Age, 1/4):Region.
+        assert index.features_for("Age").indices == [1, 3, 4]
+        # Region appears as itself, in Age:Region, and in bs(Age, 1/4):Region.
+        assert index.features_for("Region").indices == [2, 3, 4]
+
+    def test_match_factor_helper_directly(self):
+        """The _match_factor helper should report the correct term kind."""
+        from rustystats.diagnostics.factors import _match_factor
+
+        assert _match_factor("Age", "Age") == (True, "linear")
+        assert _match_factor("VehAge", "Age") == (False, "unknown")
+        assert _match_factor("bs(Age, 1/4)", "Age") == (True, "spline")
+        assert _match_factor("bs(VehAge, 1/4)", "Age") == (False, "unknown")
+        assert _match_factor("ns(Age, 2)", "Age") == (True, "spline")
+        assert _match_factor("TE(Region)", "Region") == (True, "te")
+        assert _match_factor("TE(Brand:Region)", "Region") == (True, "te")
+        assert _match_factor("C(Brand)[T.A]", "Brand") == (True, "categorical")
+        assert _match_factor("C(BrandX)[T.A]", "Brand") == (False, "unknown")
+        assert _match_factor("I(age ** 2)", "age") == (True, "expression")
+        assert _match_factor("I(driver_age ** 2)", "age") == (False, "unknown")
+        assert _match_factor("Intercept", "Intercept") == (False, "unknown")
+
+    def test_diagnostics_no_substring_contamination_integration(self):
+        """End-to-end: Age and VehAge splines must not contaminate each other.
+
+        Builds a fitted model with two factors whose names are substrings of
+        each other, then verifies the diagnostic factor entries reference
+        DISJOINT feature sets.
+        """
+        import rustystats as rs
+
+        np.random.seed(42)
+        n = 500
+
+        age = np.random.uniform(18, 70, n)
+        veh_age = np.random.uniform(0, 25, n)
+        # Generate a Poisson response with both variables driving the rate.
+        mu = np.exp(-4 + 0.02 * age + 0.05 * veh_age)
+        y = np.random.poisson(mu)
+
+        data = pl.DataFrame({"y": y, "Age": age, "VehAge": veh_age})
+
+        result = rs.glm_dict(
+            response="y",
+            terms={
+                "Age": {"type": "bs"},
+                "VehAge": {"type": "bs"},
+            },
+            data=data,
+            family="poisson",
+        ).fit()
+
+        diagnostics = result.diagnostics(
+            train_data=data,
+            continuous_factors=["Age", "VehAge"],
+        )
+
+        age_factor = next(f for f in diagnostics.factors if f.name == "Age")
+        vehage_factor = next(f for f in diagnostics.factors if f.name == "VehAge")
+        assert age_factor.in_model
+        assert vehage_factor.in_model
+        assert age_factor.coefficients is not None
+        assert vehage_factor.coefficients is not None
+
+        age_terms = {c.term for c in age_factor.coefficients}
+        vehage_terms = {c.term for c in vehage_factor.coefficients}
+
+        # CRITICAL: no overlap between the two factors' coefficient term names.
+        # Before FIX-N, Age would pull in bs(VehAge, ...) features via
+        # substring matching, polluting both significance and the coefficient
+        # table.
+        assert age_terms & vehage_terms == set()
+        assert all("Age" in t and "VehAge" not in t for t in age_terms)
+        assert all("VehAge" in t for t in vehage_terms)
+
+        # Spline terms have no meaningful per-coefficient relativity (B3 fix);
+        # the multi-coef effect only makes sense in aggregate.
+        assert all(c.relativity is None for c in age_factor.coefficients)
+        assert all(c.relativity is None for c in vehage_factor.coefficients)
+
+        # Significance is also computed off the strict index, so each factor's
+        # χ² is based ONLY on its own basis coefficients (not the other
+        # factor's). We do NOT require statistical significance here — that's
+        # noise-dependent — only that the two significance entries exist
+        # independently and are not identical (which would happen if both
+        # factors aliased to the same param indices via substring matching).
+        assert age_factor.significance is not None
+        assert vehage_factor.significance is not None
+        # The two factors should have distinct chi2 values when their
+        # coefficient sets are disjoint. (If they shared the same param
+        # indices, the chi2 would be identical.)
+        assert age_factor.significance.chi2 != vehage_factor.significance.chi2 or len(
+            age_factor.coefficients
+        ) != len(vehage_factor.coefficients)

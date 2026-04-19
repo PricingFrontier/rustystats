@@ -9,6 +9,7 @@
 use ndarray::Array1;
 use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1};
 use pyo3::prelude::*;
+use rayon::prelude::*;
 
 use rustystats_core::target_encoding;
 
@@ -101,18 +102,29 @@ pub fn apply_target_encoding_py<'py>(
     prior: f64,
     prior_weight: f64,
 ) -> PyResult<Bound<'py, PyArray1<f64>>> {
-    let n = categories.len();
-    let mut values = Vec::with_capacity(n);
+    // PHASE 1: precompute the encoded value for each unique level once
+    // (k entries vs n rows -> avoids n arithmetic ops in the hot loop)
+    let encoded_per_level: std::collections::HashMap<&str, f64> = level_stats
+        .iter()
+        .map(|(level, &(sum_target, count))| {
+            let val = (sum_target + prior * prior_weight) / (count as f64 + prior_weight);
+            (level.as_str(), val)
+        })
+        .collect();
 
-    for cat in &categories {
-        let encoded = if let Some(&(sum_target, count)) = level_stats.get(cat) {
-            (sum_target + prior * prior_weight) / (count as f64 + prior_weight)
-        } else {
-            // Unseen category: use prior
-            prior
-        };
-        values.push(encoded);
-    }
+    // PHASE 2: per-row lookup (no arithmetic) — parallelized with rayon.
+    // Releases the GIL while the parallel work runs.
+    let values: Vec<f64> = py.detach(|| {
+        categories
+            .par_iter()
+            .map(|cat| {
+                encoded_per_level
+                    .get(cat.as_str())
+                    .copied()
+                    .unwrap_or(prior)
+            })
+            .collect()
+    });
 
     Ok(Array1::from_vec(values).into_pyarray(py))
 }
@@ -217,18 +229,28 @@ pub fn apply_exposure_weighted_target_encoding_py<'py>(
     prior: f64,
     prior_weight: f64,
 ) -> PyResult<Bound<'py, PyArray1<f64>>> {
-    let n = categories.len();
-    let mut values = Vec::with_capacity(n);
+    // PHASE 1: precompute the encoded value for each unique level once
+    // (k entries vs n rows -> avoids n arithmetic ops in the hot loop)
+    let encoded_per_level: std::collections::HashMap<&str, f64> = level_stats
+        .iter()
+        .map(|(level, &(sum_claims, sum_exposure))| {
+            let val = (sum_claims + prior * prior_weight) / (sum_exposure + prior_weight);
+            (level.as_str(), val)
+        })
+        .collect();
 
-    for cat in &categories {
-        let encoded = if let Some(&(sum_claims, sum_exposure)) = level_stats.get(cat) {
-            (sum_claims + prior * prior_weight) / (sum_exposure + prior_weight)
-        } else {
-            // Unseen category: use prior
-            prior
-        };
-        values.push(encoded);
-    }
+    // PHASE 2: per-row lookup (no arithmetic) — parallelized with rayon.
+    let values: Vec<f64> = py.detach(|| {
+        categories
+            .par_iter()
+            .map(|cat| {
+                encoded_per_level
+                    .get(cat.as_str())
+                    .copied()
+                    .unwrap_or(prior)
+            })
+            .collect()
+    });
 
     Ok(Array1::from_vec(values).into_pyarray(py))
 }

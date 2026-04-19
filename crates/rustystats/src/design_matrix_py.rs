@@ -229,3 +229,35 @@ pub fn multiply_matrix_by_continuous_py<'py>(
     );
     Ok((result.into_pyarray(py), names))
 }
+
+/// Stack a list of (n × c_i) f64 column blocks horizontally into a single
+/// (n × Σc_i) matrix.
+///
+/// All blocks must have the same number of rows. Each block must be 2-D and
+/// f64-typed; 1-D arrays should be reshaped to (n, 1) on the Python side
+/// before calling.
+///
+/// Parameters
+/// ----------
+/// blocks : list[numpy.ndarray]
+///     List of 2-D float64 arrays sharing the same first dimension.
+///
+/// Returns
+/// -------
+/// numpy.ndarray
+///     The horizontally-stacked design matrix.
+#[pyfunction]
+pub fn stack_columns_horizontal_py<'py>(
+    py: Python<'py>,
+    blocks: Vec<PyReadonlyArray2<'py, f64>>,
+) -> PyResult<Bound<'py, PyArray2<f64>>> {
+    if blocks.is_empty() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "stack_columns_horizontal_py: blocks must be non-empty",
+        ));
+    }
+    let views: Vec<_> = blocks.iter().map(|b| b.as_array()).collect();
+    // Release the GIL while doing the (potentially large) memcpy work.
+    let result = py.detach(|| design_matrix::stack_columns_horizontal(&views));
+    Ok(result.into_pyarray(py))
+}

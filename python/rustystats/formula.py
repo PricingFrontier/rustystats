@@ -1310,6 +1310,7 @@ class GLMModel:
         compute_lift: bool = True,
         compute_partial_dep: bool = True,
         compute_robust_se: bool = True,
+        compute_score_tests: bool = True,
         # Base predictions comparison
         base_predictions: str | None = None,
     ) -> ModelDiagnostics:
@@ -1424,6 +1425,7 @@ class GLMModel:
             compute_lift=compute_lift,
             compute_partial_dep=compute_partial_dep,
             compute_robust_se=compute_robust_se,
+            compute_score_tests=compute_score_tests,
             base_predictions=base_predictions,
         )
 
@@ -1439,6 +1441,7 @@ class GLMModel:
         detect_interactions: bool = False,
         max_interaction_factors: int = 10,
         test_data: pl.DataFrame | None = None,
+        compute_score_tests: bool = True,
         indent: int | None = None,
     ) -> str:
         """
@@ -1457,6 +1460,8 @@ class GLMModel:
             Names of continuous factors to analyze.
         test_data : pl.DataFrame, optional
             Test data for overfitting detection.
+        compute_score_tests : bool, default=True
+            Whether to compute Rao score tests for unfitted factors. Default True.
         indent : int, optional
             JSON indentation. None for compact output.
 
@@ -1476,6 +1481,7 @@ class GLMModel:
             detect_interactions=detect_interactions,
             max_interaction_factors=max_interaction_factors,
             test_data=test_data,
+            compute_score_tests=compute_score_tests,
         )
         return diag.to_json(indent=indent)
 

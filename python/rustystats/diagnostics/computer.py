@@ -16,6 +16,15 @@ from rustystats._rustystats import (
     chi2_cdf_py as _chi2_cdf,
 )
 from rustystats._rustystats import (
+    compute_ae_by_decile_py as _rust_ae_by_decile,
+)
+from rustystats._rustystats import (
+    compute_ae_categorical_batch_py as _rust_ae_categorical_batch,
+)
+from rustystats._rustystats import (
+    compute_ae_continuous_batch_py as _rust_ae_continuous_batch,
+)
+from rustystats._rustystats import (
     compute_dataset_metrics_py as _rust_dataset_metrics,
 )
 from rustystats._rustystats import (
@@ -33,6 +42,12 @@ from rustystats._rustystats import (
 from rustystats._rustystats import (
     compute_residual_summary_py as _rust_residual_summary,
 )
+from rustystats._rustystats import (
+    inverse_diagonal_spd_py as _rust_inverse_diagonal_spd,
+)
+from rustystats._rustystats import (
+    partial_dependence_categorical_batch_py as _rust_partial_dependence_categorical_batch,
+)
 from rustystats.constants import (
     DEFAULT_MAX_CATEGORICAL_LEVELS,
     DEFAULT_MAX_INTERACTION_FACTORS,
@@ -40,6 +55,10 @@ from rustystats.constants import (
     DEFAULT_N_FACTOR_BINS,
     DEFAULT_RARE_THRESHOLD_PCT,
     EPSILON,
+    PD_CURVATURE_RELATIVE_THRESHOLD,
+    PD_FLAT_RELATIVE_RANGE,
+    PD_MONOTONIC_THRESHOLD,
+    PD_STEP_FUNCTION_RATIO,
 )
 from rustystats.diagnostics.components import (
     _CalibrationComputer,
@@ -70,6 +89,7 @@ from rustystats.diagnostics.types import (
     _extract_base_variable,
 )
 from rustystats.exceptions import DesignMatrixError, ValidationError
+from rustystats.links import link_forward, link_inverse
 
 if TYPE_CHECKING:
     import polars as pl
@@ -212,6 +232,7 @@ class DiagnosticsComputer:
         cat_column_cache: dict[str, np.ndarray | None] | None = None,
         cont_column_cache: dict[str, np.ndarray | None] | None = None,
         cat_unique_cache: dict[str, tuple | None] | None = None,
+        compute_score_tests: bool = True,
     ) -> list[FactorDiagnostics]:
         """Compute diagnostics for each specified factor.
 
@@ -231,6 +252,7 @@ class DiagnosticsComputer:
             cat_column_cache=cat_column_cache,
             cont_column_cache=cont_column_cache,
             cat_unique_cache=cat_unique_cache,
+            compute_score_tests=compute_score_tests,
         )
 
     def detect_interactions(
@@ -403,7 +425,7 @@ class DiagnosticsComputer:
         list of VIFResult
             VIF for each feature, sorted by VIF (highest first)
         """
-        n_obs, n_features = X.shape
+        _n_obs, n_features = X.shape
         results = []
 
         # Skip intercept column if present
@@ -435,24 +457,50 @@ class DiagnosticsComputer:
         # Fast VIF via correlation matrix inverse
         # VIF_j = diag((R^{-1}))_j where R is correlation matrix
         try:
-            # Center and scale columns (standardize to get correlation matrix)
-            means = np.mean(X_no_int, axis=0)
-            stds = np.std(X_no_int, axis=0, ddof=0)
-            stds[stds == 0] = 1.0  # Avoid division by zero
-            X_std = (X_no_int - means) / stds
-
-            # Correlation matrix R = X'X / n
-            R = (X_std.T @ X_std) / n_obs
+            # Compute correlation matrix directly (avoids O(n*k) X_std allocation).
+            # np.corrcoef returns NaN for zero-variance columns; replace with identity row.
+            R = np.corrcoef(X_no_int, rowvar=False)
+            # Handle zero-variance columns: corrcoef returns NaN for the entire
+            # row/col of any zero-variance column. Zero-variance columns: their
+            # R row/col is 0 so EPSILON regularization later flags them with
+            # extreme VIF (R_inv[i,i] approx 1/EPSILON -> capped to 999, severe).
+            # Non-zero-variance columns keep their natural diagonal of 1.
+            nan_mask = np.isnan(R)
+            if nan_mask.any():
+                # Identify zero-variance columns: corrcoef NaNs an entire row/col,
+                # so the diagonal entry is NaN exactly for those columns.
+                zero_var_cols = np.isnan(np.diag(R))
+                R[nan_mask] = 0.0
+                # Leave zero-variance diagonals at 0; restore 1 only for normal cols.
+                diag_vals = np.where(zero_var_cols, 0.0, 1.0)
+                np.fill_diagonal(R, diag_vals)
 
             # Add small regularization for numerical stability
-            R += np.eye(k) * EPSILON
+            R_reg = R + np.eye(k) * EPSILON
 
-            # VIF = diagonal of R^{-1}
-            R_inv = np.linalg.inv(R)
-            vif_values = np.diag(R_inv)
+            # VIF only needs diag(R_inv). Delegate to a Rust Cholesky-based
+            # routine (rustystats core) so scipy is not a runtime dependency.
+            # R_reg is symmetric positive-definite (after EPSILON regularization);
+            # the Rust path falls back to LU internally and signals failure with
+            # NaN diagonals.
+            vif_values = _rust_inverse_diagonal_spd(R_reg)
 
-            # Also compute correlation matrix for finding collinear pairs
-            corr_matrix = R - np.eye(k) * EPSILON  # Remove regularization for reporting
+            if np.any(np.isnan(vif_values)):
+                # Pathological: not positive-definite even after EPSILON
+                # regularization. Rare given the regularization above.
+                raise np.linalg.LinAlgError(
+                    "VIF computation failed: design matrix correlation matrix is not "
+                    "positive-definite. This usually means your design matrix has "
+                    "exact collinearity (linearly-dependent columns). To diagnose: "
+                    "(1) check for duplicate features, (2) check that categorical levels "
+                    "haven't created a near-singular design (consider dropping a baseline "
+                    "level), (3) for high-cardinality categoricals consider target encoding "
+                    "instead of dummy encoding, or (4) use ridge/elastic-net regularization "
+                    "with .fit(regularization='ridge')."
+                )
+
+            # Correlation matrix for finding collinear pairs (unregularized)
+            corr_matrix = R
 
         except np.linalg.LinAlgError as e:
             raise DesignMatrixError(
@@ -609,11 +657,24 @@ class DiagnosticsComputer:
         self,
         data: pl.DataFrame,
         categorical_factors: list[str],
+        cat_column_cache: dict[str, np.ndarray | None] | None = None,
+        cat_unique_cache: dict[str, tuple | None] | None = None,
     ) -> list[FactorDeviance]:
         """
         Compute deviance breakdown by factor level.
 
         Uses Rust backend for fast groupby aggregation on large datasets.
+        All factors are processed in a single batched Rust call with rayon
+        parallelism across factors (OPT-9).
+
+        Fast path: when `cat_unique_cache` is provided (mapping factor name to
+        a tuple of (sorted_levels: ndarray[str], codes: ndarray[uint32])), the
+        code-based Rust entry is used and per-row string marshalling is
+        completely avoided.
+
+        Slow path: when only `cat_column_cache` is available (string arrays),
+        the string-based batch entry is used. Without either cache, falls back
+        to `data[name].cast(str).to_list()`.
 
         Identifies which categorical levels are driving poor fit,
         helping the agent pinpoint problem areas.
@@ -623,19 +684,74 @@ class DiagnosticsComputer:
         list of FactorDeviance
             Deviance breakdown for each categorical factor
         """
-        from rustystats._rustystats import compute_factor_deviance_py as _rust_factor_deviance
+        # Fast path: use the code-based batch when uint32 codes are available
+        # for every factor. This skips per-row string marshalling entirely.
+        valid_factors: list[str] = []
+        codes_columns: list[np.ndarray] = []
+        levels_per_factor: list[list[str]] = []
+        can_use_codes = cat_unique_cache is not None
 
-        results = []
-        for factor_name in categorical_factors:
-            if factor_name not in data.columns:
-                continue
+        if can_use_codes:
+            for factor_name in categorical_factors:
+                if factor_name not in data.columns:
+                    continue
+                entry = cat_unique_cache.get(factor_name)
+                if entry is None:
+                    can_use_codes = False
+                    break
+                sorted_levels, codes = entry
+                valid_factors.append(factor_name)
+                codes_columns.append(codes)
+                levels_per_factor.append(list(sorted_levels))
 
-            values = list(data[factor_name].cast(str).to_list())
+        if can_use_codes and valid_factors:
+            from rustystats._rustystats import (
+                compute_factor_deviance_batch_from_codes_py as _rust_factor_deviance_batch_from_codes,
+            )
 
-            # Call Rust for fast computation
-            rust_result = _rust_factor_deviance(
-                factor_name,
-                values,
+            # Stack code columns into an (n, k) uint32 matrix for the FFI
+            # boundary; this is one allocation, fast.
+            codes_matrix = np.stack(codes_columns, axis=1).astype(np.uint32, copy=False)
+
+            rust_results = _rust_factor_deviance_batch_from_codes(
+                valid_factors,
+                codes_matrix,
+                levels_per_factor,
+                self.y,
+                self.mu,
+                self.family,
+                getattr(self, "var_power", 1.5),
+                getattr(self, "theta", 1.0),
+            )
+        else:
+            # Slow path: collect string values and use the string-based batch.
+            # Prefer the pre-materialized array from cat_column_cache to skip
+            # cast(str).to_list(). Use ndarray.tolist() — ~6x faster than
+            # list(ndarray) AND yields native Python str (not numpy.str_),
+            # which PyO3 marshals faster.
+            from rustystats._rustystats import (
+                compute_factor_deviance_batch_py as _rust_factor_deviance_batch,
+            )
+
+            valid_factors = []
+            values_list: list[list[str]] = []
+            for factor_name in categorical_factors:
+                if factor_name not in data.columns:
+                    continue
+
+                cached = cat_column_cache.get(factor_name) if cat_column_cache is not None else None
+                if cached is not None:
+                    values_list.append(cached.tolist())
+                else:
+                    values_list.append(data[factor_name].cast(str).to_list())
+                valid_factors.append(factor_name)
+
+            if not valid_factors:
+                return []
+
+            rust_results = _rust_factor_deviance_batch(
+                valid_factors,
+                values_list,
                 self.y,
                 self.mu,
                 self.family,
@@ -643,7 +759,13 @@ class DiagnosticsComputer:
                 getattr(self, "theta", 1.0),
             )
 
-            # Convert Rust result to Python dataclasses
+        if not valid_factors:
+            return []
+
+        # Convert each Rust result to Python dataclasses, preserving the
+        # existing rounding, NaN handling, and `problem` field semantics.
+        results: list[FactorDeviance] = []
+        for rust_result in rust_results:
             levels = [
                 DevianceByLevel(
                     level=level["level"],
@@ -661,7 +783,7 @@ class DiagnosticsComputer:
 
             results.append(
                 FactorDeviance(
-                    factor=factor_name,
+                    factor=rust_result["factor_name"],
                     total_deviance=round(rust_result["total_deviance"], 2),
                     levels=levels,
                     problem_levels=rust_result["problem_levels"],
@@ -670,20 +792,31 @@ class DiagnosticsComputer:
 
         return results
 
-    def compute_lift_chart(self, n_deciles: int = 10) -> LiftChart:
+    def compute_lift_chart(
+        self, n_deciles: int = 10, sort_idx: np.ndarray | None = None
+    ) -> LiftChart:
         """
         Compute full lift chart with all deciles.
 
         Shows where the model discriminates well vs poorly,
         helping the agent identify risk bands needing attention.
 
+        Parameters
+        ----------
+        n_deciles : int, default=10
+            Number of deciles for binning.
+        sort_idx : np.ndarray, optional
+            Pre-computed argsort of self.mu. Pass this when multiple downstream
+            consumers need the same sort to avoid redundant O(n log n) work.
+
         Returns
         -------
         LiftChart
             Complete lift chart with discrimination metrics
         """
-        # Sort by predicted values
-        sort_idx = np.argsort(self.mu)
+        # Sort by predicted values (reuse pre-computed argsort when provided)
+        if sort_idx is None:
+            sort_idx = np.argsort(self.mu)
         y_sorted = self.y[sort_idx]
         mu_sorted = self.mu[sort_idx]
         exp_sorted = self.exposure[sort_idx]
@@ -777,6 +910,142 @@ class DiagnosticsComputer:
             weak_deciles=weak_deciles,
         )
 
+    def _compute_eta_contribution(
+        self,
+        var: str,
+        grid: np.ndarray,
+        result,
+        feature_to_idx: dict[str, int],
+    ) -> np.ndarray:
+        """
+        Compute the η (linear-predictor) contribution from variable `var` at each grid value.
+
+        For a GLM, η is additive: ``η = β₀ + Σ_j f_j(x_j) + offset``. This method
+        returns ``f_var(grid)`` for the supplied grid. Callers compute the partial
+        dependence as ``g_inv(η_baseline + f_var(g) - f_var(baseline_g))``.
+
+        Supports the following feature types found in ``feature_names``:
+
+        - ``var``                 : linear term (``coef * grid``)
+        - ``bs(var, ...)``        : B-spline basis (re-evaluated using stored knots)
+        - ``ns(var, ...)``        : natural spline basis (re-evaluated using stored knots)
+        - ``ms(var, ...)``        : monotonic spline basis (re-evaluated using stored knots)
+        - ``s(var, ...)``         : smooth-term variant (treated like its underlying spline type)
+        - ``I(<expr>)``           : identity expression (e.g. ``I(var ** 2)``)
+        - ``TE(var)``             : target-encoded categorical (no continuous PD; returns 0)
+
+        Parameters
+        ----------
+        var : str
+            Variable name (the user-facing column name, NOT the transformed feature name).
+        grid : np.ndarray
+            1-D array of grid values to evaluate at, shape (n_grid,).
+        result : GLMModel
+            The fitted model. Uses ``result.params`` and ``result._builder``.
+        feature_to_idx : dict[str, int]
+            Pre-built mapping from feature name to coefficient index.
+
+        Returns
+        -------
+        np.ndarray
+            η-contribution at each grid value, shape (n_grid,). Returns zeros if no
+            features for ``var`` are found in ``feature_names``.
+        """
+        params = np.asarray(result.params, dtype=np.float64)
+        builder = getattr(result, "_builder", None)
+        fitted_splines = getattr(builder, "_fitted_splines", {}) if builder is not None else {}
+
+        grid = np.asarray(grid, dtype=np.float64).ravel()
+        eta = np.zeros_like(grid)
+        found_any = False
+
+        # FIX-N: route feature filtering through the strict-matching
+        # per-variable cache owned by _FactorDiagnosticsComputer (single
+        # source of truth). Walking only the matched feature names below
+        # avoids substring false positives (e.g. `Age` previously could
+        # match `bs(VehAge, 1/4)`) AND avoids scanning the full feature_names
+        # list per branch.
+        feat = self._factors._get_feature_for(var)
+        matched_feature_names = feat.feature_names
+
+        # 1. Linear term: exact name match.
+        linear_idx = feature_to_idx.get(var)
+        if linear_idx is not None:
+            eta = eta + float(params[linear_idx]) * grid
+            found_any = True
+
+        # 2. Spline / smooth term: re-evaluate basis on grid using stored knots.
+        if var in fitted_splines:
+            spline_term = fitted_splines[var]
+            # Calling .transform() on a fitted SplineTerm reuses the stored
+            # boundary + internal knots (set during training), so the basis on
+            # `grid` is exactly the same family as during fit.
+            try:
+                basis, names = spline_term.transform(grid)
+            except Exception:
+                # If basis evaluation fails (e.g. unexpected NaN in grid),
+                # fall back to no spline contribution rather than error out.
+                basis, names = None, []
+            if basis is not None and len(names) > 0:
+                # Map each generated basis-column name to its coefficient.
+                # If a name isn't found (regularization may zero / drop columns),
+                # the coefficient is treated as zero.
+                col_coefs = np.zeros(len(names), dtype=np.float64)
+                for j, nm in enumerate(names):
+                    idx = feature_to_idx.get(nm)
+                    if idx is not None:
+                        col_coefs[j] = float(params[idx])
+                        found_any = True
+                eta = eta + basis @ col_coefs
+        # If `var` has spline features in feature_names but no fitted_splines
+        # entry, we conservatively skip — there is no correct way to evaluate
+        # the basis without the knots.
+
+        # 3. Identity expression: I(<expr>) where <expr> involves var.
+        # Iterate ONLY the strict-index-matched features so an unrelated
+        # expression like I(other_var ** 2) cannot be picked up for `var`.
+        for name in matched_feature_names:
+            if not (name.startswith("I(") and name.endswith(")")):
+                continue
+            expr = name[2:-1].strip()
+            idx = feature_to_idx.get(name)
+            if idx is None:
+                continue
+            coef = float(params[idx])
+            if coef == 0.0:
+                # Term was zeroed by regularization — no contribution.
+                found_any = True
+                continue
+            # Evaluate the expression with `var = grid` on a single-column
+            # polars DataFrame, reusing the builder's expression converter.
+            if builder is None or not hasattr(builder, "_convert_expression_to_polars"):
+                continue
+            try:
+                import polars as _pl
+
+                tmp = _pl.DataFrame({var: grid})
+                pl_expr = builder._convert_expression_to_polars(expr)
+                col = tmp.select(pl_expr.alias("__r__"))["__r__"].to_numpy()
+                eta = eta + coef * col.astype(np.float64)
+                found_any = True
+            except Exception:
+                # Expression couldn't be evaluated on the grid (likely
+                # involves other columns); skip silently.
+                continue
+
+        # 4. Target encoding TE(var): not meaningful for a continuous PD on
+        # `var`'s numeric range — TE maps levels (strings) → encoded means.
+        # We return whatever the linear/spline/expression contributions gave,
+        # plus mark `found_any` if a TE feature exists so callers don't warn.
+        # Use the strict index — it correctly recognizes both `TE(var)` and
+        # `TE(...:var:...)` interaction-TE features.
+        if any(name.startswith("TE(") for name in matched_feature_names):
+            found_any = True
+
+        if not found_any:
+            return np.zeros_like(grid)
+        return eta
+
     def compute_partial_dependence(
         self,
         data: pl.DataFrame,
@@ -800,6 +1069,20 @@ class DiagnosticsComputer:
         list of PartialDependence
             Partial dependence for each variable
         """
+        # OPT-10 Phase 1: cache values that are constant across all factors/grid points.
+        # np.mean(self.mu) was previously computed 24 + 6 = 30 times; now once.
+        base_pred = float(np.mean(self.mu))
+        # Feature-name -> index map avoids O(features) string scan per grid point.
+        feature_to_idx = {name: i for i, name in enumerate(self.feature_names)}
+        is_log_link = link == "log"
+
+        # FIX-O B2: invert the link once for the baseline mean, so the loop below
+        # can compute pred = link.inverse(eta_baseline + delta_eta) for ANY link.
+        # Previously the non-log branch used `base_pred + delta_eta`, which is
+        # only correct for the identity link and silently produced wrong PD
+        # probabilities for binomial models with the canonical logit link.
+        eta_baseline_response = float(link_forward(link, base_pred))
+
         results = []
 
         # Continuous variables
@@ -823,34 +1106,38 @@ class DiagnosticsComputer:
                 np.percentile(valid_values, 1), np.percentile(valid_values, 99), n_grid
             )
 
-            predictions = []
-            for g in grid:
-                # Mean prediction if we set this variable to g
-                # Use the coefficient to approximate partial effect
-                var_idx = None
-                for i, name in enumerate(self.feature_names):
-                    if var == name or var in name:
-                        var_idx = i
-                        break
+            # OPT-10 Phase 1: grid_mean is constant across the 20 grid points.
+            grid_mean = float(np.mean(valid_values))
 
-                if var_idx is not None:
-                    # Linear approximation using coefficient
-                    coef = result.params[var_idx]
-                    base_pred = np.mean(self.mu)
-                    if link == "log":
-                        pred = base_pred * np.exp(coef * (g - np.mean(valid_values)))
-                    else:
-                        pred = base_pred + coef * (g - np.mean(valid_values))
-                    predictions.append(float(pred))
-                else:
-                    predictions.append(float(np.mean(self.mu)))
+            # FIX-M: Decompose η = Σ f_j(x_j) and use the additive structure of
+            # the GLM linear predictor. For a spline like bs(var, df=4), the
+            # contribution to η is Σ_k β_k · basis_k(grid), NOT β · (grid - mean)
+            # picked from one fuzzy-matched coefficient. The previous fuzzy lookup
+            # could pick e.g. coef=1.45 for a spline column and then compute
+            # exp(1.45 * 150) → overflow → NaN downstream.
+            eta_contrib = self._compute_eta_contribution(var, grid, result, feature_to_idx)
+            eta_baseline = self._compute_eta_contribution(
+                var, np.array([grid_mean]), result, feature_to_idx
+            )[0]
+            delta_eta = eta_contrib - eta_baseline
+
+            # FIX-O B2: use the link's inverse to map the linear-predictor
+            # contribution back to the response scale uniformly for every link.
+            #   eta_baseline = g(base_pred)               # via link_forward
+            #   pred         = g⁻¹(eta_baseline + Δη)     # via link_inverse
+            # link_inverse already clips its argument to ±50 internally for
+            # numerical safety, but we clip delta_eta here too as defence in
+            # depth: if clipping ever fires that's a fitting bug, not a PD bug.
+            delta_eta_clipped = np.clip(delta_eta, -50.0, 50.0)
+            pred_arr = link_inverse(link, eta_baseline_response + delta_eta_clipped)
+            predictions = [float(p) for p in pred_arr]
 
             # Analyze shape
             shape, recommendation = self._analyze_pd_shape(grid, predictions, link)
 
             # Convert to relativities for log-link
             relativities = None
-            if link == "log" and predictions:
+            if is_log_link and predictions:
                 base = predictions[len(predictions) // 2]
                 relativities = [p / base if base > 0 else 1.0 for p in predictions]
 
@@ -866,32 +1153,75 @@ class DiagnosticsComputer:
                 )
             )
 
+        # OPT-20: pre-compute per-level (counts, mu_sums) for every categorical
+        # factor that has cached codes in a single rayon-parallel Rust call,
+        # replacing 6 sequential pairs of `np.bincount` per factor over n=1M.
+        # Factors without cached codes still take the per-loop slow path below.
+        pd_cat_lookup: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+        if cat_unique_cache:
+            cached_factors: list[str] = []
+            cached_levels: list[np.ndarray] = []
+            cached_codes: list[np.ndarray] = []
+            for var in categorical_factors:
+                if var not in data.columns:
+                    continue
+                entry = cat_unique_cache.get(var)
+                if entry is None:
+                    continue
+                unique_levels, codes = entry
+                cached_factors.append(var)
+                cached_levels.append(unique_levels)
+                cached_codes.append(codes)
+
+            if cached_factors:
+                codes_matrix = np.stack(cached_codes, axis=1).astype(np.uint32, copy=False)
+                n_levels_per_factor = [len(lv) for lv in cached_levels]
+                batch_results = _rust_partial_dependence_categorical_batch(
+                    codes_matrix, self.mu, n_levels_per_factor
+                )
+                for var, unique_levels, (counts, mu_sums) in zip(
+                    cached_factors, cached_levels, batch_results
+                ):
+                    pd_cat_lookup[var] = (
+                        unique_levels,
+                        np.asarray(counts, dtype=np.float64),
+                        np.asarray(mu_sums, dtype=np.float64),
+                    )
+
         # Categorical variables
         for var in categorical_factors:
             if var not in data.columns:
                 continue
 
-            values = (
-                cat_column_cache[var]
-                if cat_column_cache and var in cat_column_cache
-                else data[var].to_numpy().astype(str)
-            )
-            if cat_unique_cache and var in cat_unique_cache:
-                unique_levels, inverse = cat_unique_cache[var]
+            if var in pd_cat_lookup:
+                # OPT-20 fast path: aggregates pre-computed in Rust above.
+                unique_levels, counts, mu_sums = pd_cat_lookup[var]
             else:
-                unique_levels, inverse = np.unique(values, return_inverse=True)
+                # Slow fallback: factor wasn't in `cat_unique_cache`, so
+                # extract + factorize here, then bincount in NumPy as before.
+                # OPT-10 Phase 1: prefer the cached (levels, codes) pair — avoids
+                # re-extracting + re-factorizing the string column per factor.
+                if cat_unique_cache and var in cat_unique_cache:
+                    unique_levels, inverse = cat_unique_cache[var]
+                else:
+                    values = (
+                        cat_column_cache[var]
+                        if cat_column_cache and var in cat_column_cache
+                        else data[var].to_numpy().astype(str)
+                    )
+                    unique_levels, inverse = np.unique(values, return_inverse=True)
+                k = len(unique_levels)
+                counts = np.bincount(inverse, minlength=k).astype(np.float64)
+                mu_sums = np.bincount(inverse, weights=self.mu, minlength=k)
 
             grid_values = list(unique_levels)
             k = len(unique_levels)
-            # Vectorized mean prediction per level using bincount
-            counts = np.bincount(inverse, minlength=k)
-            mu_sums = np.bincount(inverse, weights=self.mu, minlength=k)
             predictions = []
             for j in range(k):
                 if counts[j] > 0:
                     predictions.append(float(mu_sums[j] / counts[j]))
                 else:
-                    predictions.append(float(np.mean(self.mu)))
+                    predictions.append(base_pred)
 
             # Analyze categorical effect
             if len(predictions) > 1:
@@ -913,7 +1243,7 @@ class DiagnosticsComputer:
                 recommendation = "Cannot assess with single level"
 
             relativities = None
-            if link == "log" and predictions:
+            if is_log_link and predictions:
                 base = predictions[0]  # First level as base
                 relativities = [p / base if base > 0 else 1.0 for p in predictions]
 
@@ -960,17 +1290,17 @@ class DiagnosticsComputer:
         pred_mean = np.mean(preds)
         relative_range = pred_range / pred_mean if pred_mean > 0 else 0
 
-        if relative_range < 0.05:
+        if relative_range < PD_FLAT_RELATIVE_RANGE:
             return "flat", "May not need in model - negligible effect"
 
-        if increasing >= n_diffs * 0.8:
-            if curvature < pred_range * 0.1:
+        if increasing >= n_diffs * PD_MONOTONIC_THRESHOLD:
+            if curvature < pred_range * PD_CURVATURE_RELATIVE_THRESHOLD:
                 return "linear_increasing", "Linear effect adequate"
             else:
                 return "monotonic_increasing", "Consider spline for non-linearity"
 
-        if decreasing >= n_diffs * 0.8:
-            if curvature < pred_range * 0.1:
+        if decreasing >= n_diffs * PD_MONOTONIC_THRESHOLD:
+            if curvature < pred_range * PD_CURVATURE_RELATIVE_THRESHOLD:
                 return "linear_decreasing", "Linear effect adequate"
             else:
                 return "monotonic_decreasing", "Consider spline for non-linearity"
@@ -987,7 +1317,7 @@ class DiagnosticsComputer:
 
         # Check for step function
         max_jump = np.max(np.abs(diffs))
-        if max_jump > pred_range * 0.4:
+        if max_jump > pred_range * PD_STEP_FUNCTION_RATIO:
             return "step_function", "Consider banding/categorical transformation"
 
         return "complex", "Use spline (df=5+) to capture non-linearity"
@@ -1006,6 +1336,7 @@ class DiagnosticsComputer:
         cat_column_cache: dict[str, np.ndarray | None] | None = None,
         cont_column_cache: dict[str, np.ndarray | None] | None = None,
         cat_unique_cache: dict[str, tuple | None] | None = None,
+        sort_idx: np.ndarray | None = None,
     ) -> DatasetDiagnostics:
         """Compute comprehensive diagnostics for a single dataset."""
         n_obs = len(y)
@@ -1031,8 +1362,9 @@ class DiagnosticsComputer:
         # Overall A/E
         ae_ratio = total_actual / total_predicted if total_predicted > 0 else float("nan")
 
-        # A/E by decile (sorted by predicted value)
-        ae_by_decile = self._compute_ae_by_decile(y, mu, exposure, n_deciles=10)
+        # A/E by decile (sorted by predicted value). Forward `sort_idx` so we
+        # don't re-sort the same `mu` array the orchestrator already sorted.
+        ae_by_decile = self._compute_ae_by_decile(y, mu, exposure, n_deciles=10, sort_idx=sort_idx)
 
         # Compute deviance residuals once for all factor/continuous diagnostics
         dev_resids = (
@@ -1041,48 +1373,32 @@ class DiagnosticsComputer:
             else None
         )
 
-        # Factor-level diagnostics — pre-encode columns once
-        factor_diag = {}
-        for factor in categorical_factors:
-            if factor in data.columns:
-                str_vals = (
-                    cat_column_cache[factor]
-                    if cat_column_cache and factor in cat_column_cache
-                    else data[factor].to_numpy().astype(str)
-                )
-                unique_inv = (
-                    cat_unique_cache[factor]
-                    if cat_unique_cache and factor in cat_unique_cache
-                    else np.unique(str_vals, return_inverse=True)
-                )
-                factor_diag[factor] = self._compute_factor_level_metrics(
-                    y,
-                    mu,
-                    exposure,
-                    str_vals,
-                    deviance_residuals=dev_resids,
-                    precomputed_unique_inverse=unique_inv,
-                )
+        # Factor-level diagnostics. Stage all factors, then dispatch a single
+        # Rust batch call (parallelised internally over k via rayon) instead of
+        # k sequential per-factor passes through five np.bincount calls.
+        factor_diag = self._compute_factor_level_metrics(
+            y,
+            mu,
+            exposure,
+            data,
+            categorical_factors,
+            dev_resids,
+            cat_unique_cache=cat_unique_cache,
+        )
 
-        # Continuous variable diagnostics
-        continuous_diag = {}
-        for var in continuous_factors:
-            if var in data.columns:
-                values = (
-                    cont_column_cache[var]
-                    if cont_column_cache and var in cont_column_cache
-                    else data[var].to_numpy().astype(np.float64)
-                )
-                continuous_diag[var] = self._compute_continuous_band_metrics(
-                    y,
-                    mu,
-                    exposure,
-                    values,
-                    result,
-                    var,
-                    n_bands,
-                    deviance_residuals=dev_resids,
-                )
+        # Continuous variable diagnostics. Same batched-Rust strategy as above:
+        # one cross-FFI call replaces k per-factor np.percentile + np.digitize +
+        # five np.bincount loops on the 1M-row arrays.
+        continuous_diag = self._compute_continuous_band_metrics(
+            y,
+            mu,
+            exposure,
+            data,
+            continuous_factors,
+            dev_resids,
+            n_bands,
+            cont_column_cache=cont_column_cache,
+        )
 
         return DatasetDiagnostics(
             dataset=dataset_name,
@@ -1109,37 +1425,38 @@ class DiagnosticsComputer:
         mu: np.ndarray,
         exposure: np.ndarray,
         n_deciles: int = 10,
+        sort_idx: np.ndarray | None = None,
     ) -> list[DecileMetrics]:
-        """Compute A/E by decile sorted by predicted value."""
-        # Sort by predicted values
-        sort_idx = np.argsort(mu)
-        y_sorted = y[sort_idx]
-        mu_sorted = mu[sort_idx]
-        exp_sorted = exposure[sort_idx]
+        """Compute A/E by decile sorted by predicted value.
 
-        n = len(y)
-        decile_size = n // n_deciles
+        Pass `sort_idx` (a pre-computed `np.argsort(mu)`) when the caller already
+        has it, to skip a redundant O(n log n) sort on the prediction array.
 
-        deciles = []
-        for d in range(n_deciles):
-            start = d * decile_size
-            end = (d + 1) * decile_size if d < n_deciles - 1 else n
+        Per-decile sums (`actual_sum`, `predicted_sum`, `exposure_sum`) are
+        computed in Rust via `compute_ae_by_decile_py`; the trivial divisions
+        that produce frequencies and the A/E ratio stay Python-side.
+        """
+        # Hand the pre-computed sort index to Rust as native uintp so the FFI
+        # layer can reuse it directly. `np.argsort` returns intp, so this is a
+        # no-op on 64-bit platforms but normalises the dtype on 32-bit.
+        sort_idx_arg = (
+            np.ascontiguousarray(sort_idx, dtype=np.uintp) if sort_idx is not None else None
+        )
 
-            y_d = y_sorted[start:end]
-            mu_d = mu_sorted[start:end]
-            exp_d = exp_sorted[start:end]
+        raw = _rust_ae_by_decile(y, mu, exposure, n_deciles, sort_idx_arg)
 
-            actual = float(np.sum(y_d))
-            predicted = float(np.sum(mu_d))
-            exp_sum = float(np.sum(exp_d))
+        deciles: list[DecileMetrics] = []
+        for r in raw:
+            actual = float(r["actual_sum"])
+            predicted = float(r["predicted_sum"])
+            exp_sum = float(r["exposure_sum"])
             ae = actual / predicted if predicted > 0 else float("nan")
-
             actual_freq = actual / exp_sum if exp_sum > 0 else 0.0
             predicted_freq = predicted / exp_sum if exp_sum > 0 else 0.0
             deciles.append(
                 DecileMetrics(
-                    decile=d + 1,
-                    n=len(y_d),
+                    decile=int(r["decile"]),
+                    n=int(r["n"]),
                     exposure=round(exp_sum, 2),
                     actual=round(actual_freq, 6),
                     predicted=round(predicted_freq, 6),
@@ -1154,142 +1471,259 @@ class DiagnosticsComputer:
         y: np.ndarray,
         mu: np.ndarray,
         exposure: np.ndarray,
-        factor_values: np.ndarray,
-        deviance_residuals: np.ndarray | None = None,
-        precomputed_unique_inverse: tuple | None = None,
-    ) -> list[FactorLevelMetrics]:
-        """Compute metrics for each level of a categorical factor.
+        data: pl.DataFrame,
+        categorical_factors: list[str],
+        deviance_residuals: np.ndarray | None,
+        cat_unique_cache: dict[str, tuple],
+    ) -> dict[str, list[FactorLevelMetrics]]:
+        """Compute factor-level metrics for all categorical factors in one shot.
 
-        Uses np.bincount for O(n) aggregation instead of per-level masking.
+        Stacks per-factor (codes, levels) into a (n × k) u32 codes_matrix and
+        dispatches a single Rust batch call (`compute_ae_categorical_batch_py`)
+        which runs the per-factor sums-by-level work in parallel via rayon.
+        Residual means are still computed Python-side via one np.bincount per
+        factor against the cached (unique, inverse) array.
+
+        `cat_unique_cache` must contain a (levels, codes) entry for every
+        factor present in `data.columns`. Callers (`api.py`, `explorer.py`)
+        populate this in lockstep with the factor list; a missing entry
+        indicates a caller bug and raises KeyError.
         """
-        if precomputed_unique_inverse is not None:
-            unique_levels, inverse = precomputed_unique_inverse
-        else:
-            unique_levels, inverse = np.unique(factor_values, return_inverse=True)
-        k = len(unique_levels)
+        factor_diag: dict[str, list[FactorLevelMetrics]] = {}
 
-        if deviance_residuals is None:
-            deviance_residuals = np.asarray(_rust_deviance_residuals(y, mu, self.family))
-
-        counts = np.bincount(inverse, minlength=k)
-        actual_by_level = np.bincount(inverse, weights=y, minlength=k)
-        predicted_by_level = np.bincount(inverse, weights=mu, minlength=k)
-        exposure_by_level = np.bincount(inverse, weights=exposure, minlength=k)
-        resid_sum_by_level = np.bincount(inverse, weights=deviance_residuals, minlength=k)
-
-        metrics = []
-        for i in range(k):
-            n = int(counts[i])
-            if n == 0:
+        # Stage per-factor work using the cached (levels, codes) tuple.
+        cat_entries: list[dict] = []
+        for factor in categorical_factors:
+            if factor not in data.columns:
                 continue
 
-            actual = float(actual_by_level[i])
-            predicted = float(predicted_by_level[i])
-            exp_sum = float(exposure_by_level[i])
-            ae = actual / predicted if predicted > 0 else float("nan")
-            resid_mean = float(resid_sum_by_level[i] / n)
-
-            actual_freq = actual / exp_sum if exp_sum > 0 else 0.0
-            predicted_freq = predicted / exp_sum if exp_sum > 0 else 0.0
-            metrics.append(
-                FactorLevelMetrics(
-                    level=str(unique_levels[i]),
-                    n=n,
-                    exposure=round(exp_sum, 2),
-                    actual=round(actual_freq, 6),
-                    predicted=round(predicted_freq, 6),
-                    ae_ratio=round(ae, 4) if not np.isnan(ae) else None,
-                    residual_mean=round(resid_mean, 6),
-                )
+            unique_levels, inverse = cat_unique_cache[factor]
+            cat_entries.append(
+                {
+                    "name": factor,
+                    "unique": unique_levels,
+                    "inverse": np.ascontiguousarray(inverse, dtype=np.uint32),
+                }
             )
 
-        # Sort by exposure (largest first)
-        metrics.sort(key=lambda x: -x.exposure)
-        return metrics
+        # Pack codes into an (n × k) matrix and dispatch the batched Rust call.
+        if cat_entries:
+            # Fortran-order so each code column is contiguous; the Rust
+            # `column(j).to_vec()` becomes a single memcpy per column.
+            n_rows = cat_entries[0]["inverse"].shape[0]
+            codes_matrix = np.empty((n_rows, len(cat_entries)), dtype=np.uint32, order="F")
+            levels_list: list[list[str]] = []
+            for j, entry in enumerate(cat_entries):
+                codes_matrix[:, j] = entry["inverse"]
+                levels_list.append([str(v) for v in entry["unique"]])
+
+            # Pass loose thresholds so all populated levels are kept (the
+            # singular Python helper returns every level; preserve that). The
+            # Rust check is `pct < threshold || bin_idx >= max_levels - 1`, so
+            # threshold=-1 and max_levels=max_k+2 trigger neither branch.
+            max_k_plus_2 = max(len(lst) for lst in levels_list) + 2
+
+            ae_batch = _rust_ae_categorical_batch(
+                codes_matrix,
+                levels_list,
+                y,
+                mu,
+                exposure,
+                -1.0,  # rare_threshold_pct: never rare
+                max_k_plus_2,  # max_levels: never overflow into "_Other"
+                self.family,
+            )
+
+            # Compute residual_means per factor with one bincount each, then
+            # build FactorLevelMetrics from the (level, count, exposure_sum,
+            # actual_sum, predicted_sum, ae_ratio) values Rust returned.
+            for entry, rust_bins in zip(cat_entries, ae_batch):
+                unique_levels = entry["unique"]
+                inverse = entry["inverse"]
+                k = len(unique_levels)
+
+                if deviance_residuals is not None:
+                    resid_sum_by_code = np.bincount(
+                        inverse, weights=deviance_residuals, minlength=k
+                    )
+                else:
+                    resid_sum_by_code = np.zeros(k, dtype=np.float64)
+
+                # Map level label -> code for residual lookup. unique_levels
+                # is a numpy array of strings; build a small dict (k items).
+                level_to_code = {str(lv): i for i, lv in enumerate(unique_levels)}
+
+                metrics: list[FactorLevelMetrics] = []
+                for b in rust_bins:
+                    n = int(b["count"])
+                    if n == 0:
+                        continue
+
+                    code = level_to_code.get(b["bin_label"])
+                    resid_mean = float(resid_sum_by_code[code] / n) if code is not None else 0.0
+
+                    exp_sum = float(b["exposure"])
+                    actual_sum = float(b["actual_sum"])
+                    predicted_sum = float(b["predicted_sum"])
+                    # Recompute A/E from un-rounded sums in Python to match the
+                    # singular path bit-for-bit; reading b["actual_expected_ratio"]
+                    # picks up Rust-side division-rounding drift (~5e-3 worst case).
+                    ae = actual_sum / predicted_sum if predicted_sum > 0 else float("nan")
+
+                    actual_freq = actual_sum / exp_sum if exp_sum > 0 else 0.0
+                    predicted_freq = predicted_sum / exp_sum if exp_sum > 0 else 0.0
+                    metrics.append(
+                        FactorLevelMetrics(
+                            level=b["bin_label"],
+                            n=n,
+                            exposure=round(exp_sum, 2),
+                            actual=round(actual_freq, 6),
+                            predicted=round(predicted_freq, 6),
+                            ae_ratio=round(ae, 4) if not np.isnan(ae) else None,
+                            residual_mean=round(resid_mean, 6),
+                        )
+                    )
+
+                # Rust already sorts levels by exposure descending; replicate
+                # the singular path's explicit sort so output order is stable
+                # regardless of any future Rust-side reordering.
+                metrics.sort(key=lambda x: -x.exposure)
+                factor_diag[entry["name"]] = metrics
+
+        return factor_diag
 
     def _compute_continuous_band_metrics(
         self,
         y: np.ndarray,
         mu: np.ndarray,
         exposure: np.ndarray,
-        values: np.ndarray,
-        result,
-        var_name: str,
-        n_bands: int = 10,
-        deviance_residuals: np.ndarray | None = None,
-    ) -> list[ContinuousBandMetrics]:
-        """Compute metrics for bands of a continuous variable."""
-        # Remove NaN/Inf
-        valid_mask = ~np.isnan(values) & ~np.isinf(values)
+        data: pl.DataFrame,
+        continuous_factors: list[str],
+        deviance_residuals: np.ndarray | None,
+        n_bands: int,
+        cont_column_cache: dict[str, np.ndarray],
+    ) -> dict[str, list[ContinuousBandMetrics]]:
+        """Compute continuous band metrics for all factors in one batched call.
 
-        if np.sum(valid_mask) < n_bands:
-            return []
+        Stacks per-factor `values` arrays into an (n × k) f64 matrix and calls
+        `compute_ae_continuous_batch_py`, which parallelises the per-factor
+        quantile-binning + sums-by-bin work via rayon. For residual_mean we
+        still need per-bin assignments — these are recovered cheaply by
+        `np.searchsorted` on the bin edges Rust returned for each factor.
 
-        # Use quantile bands
-        percentiles = np.linspace(0, 100, n_bands + 1)
-        edges = np.percentile(values[valid_mask], percentiles)
-        edges = np.unique(edges)  # Remove duplicates
+        `cont_column_cache` must contain an entry for every factor present in
+        `data.columns`. Callers (`api.py`, `explorer.py`) populate this in
+        lockstep with the factor list; a missing entry indicates a caller
+        bug and raises KeyError.
+        """
+        continuous_diag: dict[str, list[ContinuousBandMetrics]] = {}
 
-        if len(edges) < 2:
-            return []
+        cont_entries: list[dict] = []
+        for var in continuous_factors:
+            if var not in data.columns:
+                continue
+            cont_entries.append({"name": var, "values": cont_column_cache[var]})
 
-        metrics = []
-        if deviance_residuals is None:
-            deviance_residuals = np.asarray(_rust_deviance_residuals(y, mu, self.family))
-        deviance_resids = deviance_residuals
+        if not cont_entries:
+            return continuous_diag
 
-        n_edges = len(edges)
-        n_bins = n_edges - 1
+        # Fortran-order (column-major) matrix: each column is contiguous,
+        # so the Rust `column(j).to_vec()` copy on the FFI boundary is a
+        # single memcpy per column instead of a strided gather.
+        n_rows = cont_entries[0]["values"].shape[0]
+        values_matrix = np.empty((n_rows, len(cont_entries)), dtype=np.float64, order="F")
+        for j, entry in enumerate(cont_entries):
+            values_matrix[:, j] = entry["values"]
 
-        # Vectorized band assignment using np.digitize (O(n log b) instead of O(n*b))
-        # digitize returns 1-indexed bins; clip to [1, n_bins] for right-edge inclusion
-        bin_idx = np.digitize(values, edges, right=False)
-        # Last bin should include the right edge
-        bin_idx = np.clip(bin_idx, 1, n_bins)
-        # Zero out invalid entries so they don't contribute
-        bin_idx[~valid_mask] = 0
+        ae_batch = _rust_ae_continuous_batch(
+            values_matrix,
+            y,
+            mu,
+            exposure,
+            n_bands,
+            self.family,
+        )
 
-        # Vectorized aggregation with bincount (bins 0..n_bins, 0 = invalid)
-        counts = np.bincount(bin_idx, minlength=n_bins + 1)
-        y_sums = np.bincount(bin_idx, weights=y, minlength=n_bins + 1)
-        mu_sums = np.bincount(bin_idx, weights=mu, minlength=n_bins + 1)
-        exp_sums = np.bincount(bin_idx, weights=exposure, minlength=n_bins + 1)
-        resid_sums = np.bincount(bin_idx, weights=deviance_resids, minlength=n_bins + 1)
+        for entry, rust_bins in zip(cont_entries, ae_batch):
+            values = entry["values"]
+            metrics: list[ContinuousBandMetrics] = []
 
-        for i in range(n_bins):
-            b = i + 1  # 1-indexed bin
-            n = int(counts[b])
-            if n == 0:
+            # Skip empty results (Rust returns empty list when n_valid == 0
+            # or when the factor has fewer valid rows than n_bands).
+            if not rust_bins:
+                continuous_diag[entry["name"]] = metrics
                 continue
 
-            lower, upper = edges[i], edges[i + 1]
-            actual = float(y_sums[b])
-            predicted = float(mu_sums[b])
-            exp_sum = float(exp_sums[b])
-            ae = actual / predicted if predicted > 0 else float("nan")
-            midpoint = (lower + upper) / 2
-            partial_dep = predicted / n
-            resid_mean = float(resid_sums[b]) / n
+            # Reconstruct edges from Rust's per-bin bounds. Rust may collapse
+            # adjacent identical-bound bins (when many ties), so derive edges
+            # by walking the bins in order: edges = [b0.lower, b0.upper,
+            # b1.upper, b2.upper, ...].
+            edges = [rust_bins[0]["bin_lower"]]
+            for b in rust_bins:
+                edges.append(b["bin_upper"])
+            edges_arr = np.asarray(edges, dtype=np.float64)
+            n_bins = len(rust_bins)
 
-            actual_freq = actual / exp_sum if exp_sum > 0 else 0.0
-            predicted_freq = predicted / exp_sum if exp_sum > 0 else 0.0
-            metrics.append(
-                ContinuousBandMetrics(
-                    band=i + 1,
-                    range_min=round(float(lower), 4),
-                    range_max=round(float(upper), 4),
-                    midpoint=round(float(midpoint), 4),
-                    n=n,
-                    exposure=round(exp_sum, 2),
-                    actual=round(actual_freq, 6),
-                    predicted=round(predicted_freq, 6),
-                    ae_ratio=round(ae, 4) if not np.isnan(ae) else None,
-                    partial_dep=round(partial_dep, 6),
-                    residual_mean=round(resid_mean, 6),
+            # Compute residual sums per bin in one pass.
+            if deviance_residuals is not None:
+                # np.searchsorted returns where each value would be inserted
+                # in the sorted edges array. side='right' makes [edge_i,
+                # edge_{i+1}) inclusive on the left, exclusive on the right;
+                # subtract 1 and clip to [0, n_bins-1] to recover the bin
+                # index. This matches Rust's binning rule (>= lower &&
+                # (< upper || last bin)).
+                bin_idx = np.searchsorted(edges_arr, values, side="right") - 1
+                bin_idx = np.clip(bin_idx, 0, n_bins - 1)
+                # Mask invalid entries so they don't contribute. Use a
+                # sentinel bin index n_bins for invalids; minlength ensures
+                # bincount allocates that bucket but we never read it.
+                valid = np.isfinite(values)
+                bin_idx_safe = np.where(valid, bin_idx, n_bins)
+                resid_sums = np.bincount(
+                    bin_idx_safe, weights=deviance_residuals, minlength=n_bins + 1
                 )
-            )
+            else:
+                resid_sums = np.zeros(n_bins + 1, dtype=np.float64)
 
-        return metrics
+            for i, b in enumerate(rust_bins):
+                n = int(b["count"])
+                if n == 0:
+                    continue
+
+                lower = float(b["bin_lower"])
+                upper = float(b["bin_upper"])
+                exp_sum = float(b["exposure"])
+                actual_sum = float(b["actual_sum"])
+                predicted_sum = float(b["predicted_sum"])
+                # Recompute A/E from un-rounded sums in Python to match the
+                # singular path bit-for-bit; reading b["actual_expected_ratio"]
+                # picks up Rust-side division-rounding drift (~5e-3 worst case).
+                ae = actual_sum / predicted_sum if predicted_sum > 0 else float("nan")
+                midpoint = (lower + upper) / 2
+                partial_dep = predicted_sum / n
+                resid_mean = float(resid_sums[i] / n)
+
+                actual_freq = actual_sum / exp_sum if exp_sum > 0 else 0.0
+                predicted_freq = predicted_sum / exp_sum if exp_sum > 0 else 0.0
+                metrics.append(
+                    ContinuousBandMetrics(
+                        band=i + 1,
+                        range_min=round(lower, 4),
+                        range_max=round(upper, 4),
+                        midpoint=round(midpoint, 4),
+                        n=n,
+                        exposure=round(exp_sum, 2),
+                        actual=round(actual_freq, 6),
+                        predicted=round(predicted_freq, 6),
+                        ae_ratio=round(ae, 4) if not np.isnan(ae) else None,
+                        partial_dep=round(partial_dep, 6),
+                        residual_mean=round(resid_mean, 6),
+                    )
+                )
+
+            continuous_diag[entry["name"]] = metrics
+
+        return continuous_diag
 
     def compute_base_predictions_comparison(
         self,
