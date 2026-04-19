@@ -14,3 +14,13 @@ repos:
         language: system
         types: [rust]
         pass_filenames: false
+
+      - id: cargo-clippy
+        name: cargo clippy (-D warnings)
+        # Mirror CI: any new clippy lint becomes a hard failure here too,
+        # so issues like unnecessary_sort_by / new_without_default are caught
+        # before they reach origin instead of failing the workflow.
+        entry: cargo clippy --workspace -- -D warnings
+        language: system
+        types: [rust]
+        pass_filenames: false
