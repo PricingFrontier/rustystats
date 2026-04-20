@@ -89,9 +89,11 @@ pub fn compute_calibration_curve(
         return Vec::new();
     }
 
-    // Sort indices by predicted values
+    // Sort indices by predicted values. `sort_unstable_by` is in-place
+    // (vs. Timsort's O(n) scratch buffer); ties on `mu` end up in the same
+    // bin and are summed, so stability is irrelevant here.
     let mut indices: Vec<usize> = (0..n).collect();
-    indices.sort_by(|&a, &b| mu[a].total_cmp(&mu[b]));
+    indices.sort_unstable_by(|&a, &b| mu[a].total_cmp(&mu[b]));
 
     // Compute quantile boundaries based on exposure (if provided) or count
     let total_exposure: f64 = exposure.map_or(n as f64, |e| e.sum());
@@ -277,10 +279,16 @@ pub fn compute_discrimination_stats(
         };
     }
 
-    // Sort by predicted RATE (descending - high risk first for positive Gini)
-    // When exposure is provided, rate = mu/exposure; otherwise rate = mu
+    // Sort by predicted RATE (descending - high risk first for positive Gini).
+    // When exposure is provided, rate = mu/exposure; otherwise rate = mu.
+    //
+    // We use `sort_unstable_by` (pdqsort) instead of `sort_by` (Timsort).
+    // Timsort allocates an O(n) scratch buffer (~8 MB at n=1M); pdqsort is
+    // in-place. Tie-breaking on equal predicted rates is irrelevant here:
+    // observations with identical rates contribute identically to Gini, KS,
+    // and lift accumulators regardless of their internal order.
     let mut indices: Vec<usize> = (0..n).collect();
-    indices.sort_by(|&a, &b| {
+    indices.sort_unstable_by(|&a, &b| {
         let rate_a = if let Some(exp) = exposure {
             if exp[a] > 0.0 {
                 mu[a] / exp[a]
@@ -419,9 +427,10 @@ pub fn compute_lorenz_curve(
         return Vec::new();
     }
 
-    // Sort by predictions (ascending - low risk first)
+    // Sort by predictions (ascending - low risk first). `sort_unstable_by`
+    // is in-place (vs. Timsort's O(n) scratch buffer).
     let mut indices: Vec<usize> = (0..n).collect();
-    indices.sort_by(|&a, &b| mu[a].total_cmp(&mu[b]));
+    indices.sort_unstable_by(|&a, &b| mu[a].total_cmp(&mu[b]));
 
     let total_exposure: f64 = exposure.map_or(n as f64, |e| e.sum());
     let total_actual: f64 = y.sum();

@@ -484,25 +484,31 @@ class _FactorDiagnosticsComputer:
                 }
             )
 
-        # BATCH CALL: stack codes from all entries that have them and dispatch
-        # a single Rust call that runs the k per-factor A/E computations in
-        # parallel via rayon. Factors without a cached codes array fall back
-        # to the singular string-based path below.
+        # BATCH CALL: collect per-factor code arrays and dispatch a single
+        # Rust call that runs the k per-factor A/E computations in parallel
+        # via rayon. Factors without a cached codes array fall back to the
+        # singular string-based path below.
+        #
+        # Memory: pass a Python list of contiguous uint32 arrays (one per
+        # factor) instead of stacking them into a single (n, k) matrix. The
+        # Rust binding zero-copies each into a `&[u32]` slice. Skipping the
+        # matrix allocation saves ~24 MB transient peak at 1M rows × 6 cat
+        # factors (and the same again on the Rust side that previously did
+        # `column(j).to_vec()`).
         ae_bins_per_factor: list[list[ActualExpectedBin] | None] = [None for _ in cat_entries]
         batchable_indices = [i for i, e in enumerate(cat_entries) if e["codes"] is not None]
         if batchable_indices:
-            n_rows = cat_entries[batchable_indices[0]]["codes"].shape[0]
-            codes_matrix = np.empty((n_rows, len(batchable_indices)), dtype=np.uint32)
+            codes_list: list[np.ndarray] = []
             levels_list: list[list[str]] = []
-            for out_col, src_idx in enumerate(batchable_indices):
+            for src_idx in batchable_indices:
                 entry = cat_entries[src_idx]
-                codes_matrix[:, out_col] = entry["codes"]
+                codes_list.append(entry["codes"])
                 # `unique` is an ndarray of strings; the Rust binding needs a
                 # Python list[str]. tolist() on a k-element array is cheap.
                 levels_list.append([str(v) for v in entry["unique"]])
 
             batch_result = _rust_ae_categorical_batch(
-                codes_matrix,
+                codes_list,
                 levels_list,
                 self.y,
                 self.mu,
@@ -669,22 +675,24 @@ class _FactorDiagnosticsComputer:
         # factors; a single Rust call with rayon-parallel internals is much
         # faster than k sequential single-threaded calls, especially for large
         # n and moderate k.
+        #
+        # Memory: pass a Python list of the per-factor `values` arrays directly
+        # instead of stacking them into an (n, k) `values_matrix`. Each entry
+        # is already a contiguous numpy array; the Rust binding zero-copies it
+        # into a `&[f64]` slice. Skipping the matrix allocation saves a 192 MB
+        # transient peak at 1M rows × 24 continuous factors (and the same
+        # again on the Rust side, which previously did `column(j).to_vec()`).
         ae_bins_per_factor: list[list[ActualExpectedBin]] = [[] for _ in cont_entries]
         resid_patterns_per_factor: list[ResidualPattern] = [
             ResidualPattern(resid_corr=0.0, var_explained=0.0) for _ in cont_entries
         ]
         if cont_entries:
-            # Preallocate (n, k) directly instead of np.column_stack + astype,
-            # which would allocate twice (once for the stacked view, once for
-            # the cast). One allocation with per-column assignment is cheaper
-            # on the ~192MB (1M × 24) array.
-            n_rows = cont_entries[0]["values"].shape[0]
-            values_matrix = np.empty((n_rows, len(cont_entries)), dtype=np.float64)
-            for j, entry in enumerate(cont_entries):
-                values_matrix[:, j] = entry["values"]
+            values_list = [
+                np.ascontiguousarray(entry["values"], dtype=np.float64) for entry in cont_entries
+            ]
 
             ae_batch = _rust_ae_continuous_batch(
-                values_matrix, self.y, self.mu, self.exposure, n_bins, self.family
+                values_list, self.y, self.mu, self.exposure, n_bins, self.family
             )
             for i, rust_bins in enumerate(ae_batch):
                 ae_bins_per_factor[i] = self._format_ae_bins(rust_bins)
@@ -693,10 +701,13 @@ class _FactorDiagnosticsComputer:
             # semantics: factors whose values are entirely NaN/Inf get a
             # zero-filled pattern rather than whatever Rust would produce).
             # `is_valid_any` was cached in PASS 1 — no need to scan again.
-            rp_batch = _rust_residual_pattern_batch(values_matrix, self.pearson_residuals, n_bins)
+            rp_batch = _rust_residual_pattern_batch(values_list, self.pearson_residuals, n_bins)
             for i, raw in enumerate(rp_batch):
                 if cont_entries[i]["is_valid_any"]:
                     resid_patterns_per_factor[i] = self._format_residual_pattern_continuous(raw)
+            # PASS 2 doesn't read `values_list`, so free it early — the
+            # entry["values"] references still keep the arrays alive.
+            del values_list
 
         # Second pass: assemble FactorDiagnostics now that score tests are known.
         for idx, entry in enumerate(cont_entries):
@@ -1004,9 +1015,26 @@ class _FactorDiagnosticsComputer:
         resid_sums = np.bincount(inverse, weights=self.pearson_residuals, minlength=k)
         level_means = np.divide(resid_sums, level_counts, out=np.zeros(k), where=level_counts > 0)
 
-        overall_mean = np.mean(self.pearson_residuals)
-        ss_total = np.sum((self.pearson_residuals - overall_mean) ** 2)
-        ss_between = np.sum(level_counts * (level_means - overall_mean) ** 2)
+        # `overall_mean` and `ss_total` depend only on self.pearson_residuals,
+        # not on the per-factor values. Cache the (mean, ss) pair on the
+        # computer instance so the 6 categorical factors share the work
+        # instead of each materializing an n-element `(resid - mean)**2`
+        # numpy array (8 MB transient × 6 = 48 MB peak avoided).
+        cache = getattr(self, "_pearson_resid_moments_cache", None)
+        if cache is None or cache[0] is not self.pearson_residuals:
+            resid = self.pearson_residuals
+            n_resid = len(resid)
+            overall_mean = float(resid.sum() / n_resid)
+            # Use the algebraic identity sum((x - mean)^2) = sum(x^2) - n*mean^2
+            # with np.dot for the sum-of-squares — no n-element temp allocation
+            # (vs `(x - mean)**2` which materialises an 8 MB float64 array).
+            sum_sq = float(np.dot(resid, resid))
+            ss_total = sum_sq - n_resid * overall_mean * overall_mean
+            cache = (resid, overall_mean, ss_total)
+            self._pearson_resid_moments_cache = cache
+        _, overall_mean, ss_total = cache
+
+        ss_between = float(np.sum(level_counts * (level_means - overall_mean) ** 2))
 
         eta_squared = ss_between / ss_total if ss_total > 0 else 0.0
         mean_abs_resid = np.mean(np.abs(level_means))

@@ -84,17 +84,18 @@ impl Family for GammaFamily {
     /// Note: y must be > 0 for Gamma. We use a small floor to prevent log(0) = -inf
     /// when data contains zeros (which is technically invalid for Gamma but can occur).
     fn unit_deviance(&self, y: &Array1<f64>, mu: &Array1<f64>) -> Array1<f64> {
+        ndarray::Zip::from(y)
+            .and(mu)
+            .map_collect(|&yi, &mui| self.unit_deviance_at(yi, mui))
+    }
+
+    #[inline]
+    fn unit_deviance_at(&self, yi: f64, mui: f64) -> f64 {
         use crate::constants::MU_MIN_POSITIVE;
-
-        ndarray::Zip::from(y).and(mu).map_collect(|&yi, &mui| {
-            // Floor y to prevent log(0) issues
-            let yi_safe = yi.max(MU_MIN_POSITIVE);
-            let mui_safe = mui.max(MU_MIN_POSITIVE);
-
-            // (y - μ) / μ - log(y/μ)
-            let ratio = yi_safe / mui_safe;
-            2.0 * ((yi_safe - mui_safe) / mui_safe - ratio.ln())
-        })
+        let yi_safe = yi.max(MU_MIN_POSITIVE);
+        let mui_safe = mui.max(MU_MIN_POSITIVE);
+        let ratio = yi_safe / mui_safe;
+        2.0 * ((yi_safe - mui_safe) / mui_safe - ratio.ln())
     }
 
     /// Default link for Gamma.

@@ -8,6 +8,8 @@ We test both mathematical properties and numerical stability.
 Run with: pytest tests/python/test_links.py -v
 """
 
+import warnings
+
 import numpy as np
 import pytest
 
@@ -295,6 +297,271 @@ class TestLinkComparisons:
         # For small μ, log(μ) ≈ log(μ/(1-μ)) since 1-μ ≈ 1
         # So they should be similar
         assert abs(log_eta - logit_eta) < 1.0  # Within 1 unit
+
+
+# =============================================================================
+# Numerical-hardening parity tests
+# =============================================================================
+#
+# These tests assert that the Python helpers ``apply_link`` and
+# ``apply_inverse_link`` (defined in ``rustystats.formula``) produce the SAME
+# finite outputs as the Rust ``Link`` trait implementations for all eta — most
+# importantly at the extreme tails where naive ``np.exp(-eta)`` / ``np.exp(eta)``
+# overflow to ``inf`` or trigger ``RuntimeWarning: overflow encountered in exp``.
+#
+# Rust guards (canonical reference):
+#   - ``LogitLink::inverse``  — branches on ``x >= 0`` vs ``x < 0`` so
+#                               ``exp(-x)`` / ``exp(x)`` is bounded; result
+#                               saturates to 0 or 1 cleanly without inf/NaN.
+#   - ``LogLink::inverse``    — clamps eta to ``[-700, 700]`` before ``exp``;
+#                               result saturates around the IEEE-754 limit
+#                               (``exp(700) ≈ 1.014e304``) instead of inf.
+#   - ``IdentityLink::inverse`` — pure passthrough, no guards needed.
+#
+# Comparison strategy: the Rust link impls are exposed directly via PyO3 as
+# ``rs.links.Identity()/Log()/Logit()``. We call ``.inverse(eta)`` on those
+# wrappers as the canonical reference and assert equality (atol=1e-12) and
+# finiteness against ``apply_inverse_link``. No GLMModel-fit detour needed.
+# =============================================================================
+
+
+class TestPythonRustLinkParityExtremeEta:
+    """Python helpers in formula.py must match Rust links at extreme eta."""
+
+    # Cases per task spec: normal, large negative, large positive,
+    # near-boundary for logit (where 1/(1+exp(-eta)) rounds to 0 or 1).
+    NORMAL = np.array([-2.0, -1.0, 0.0, 1.0, 2.0])
+    LARGE_NEG = np.array([-100.0, -500.0, -700.0, -1000.0])
+    LARGE_POS = np.array([100.0, 500.0, 700.0, 1000.0])
+    NEAR_BOUNDARY_LOGIT = np.array([-50.0, 50.0])
+
+    @pytest.mark.parametrize(
+        "eta",
+        [NORMAL, LARGE_NEG, LARGE_POS, NEAR_BOUNDARY_LOGIT],
+        ids=["normal", "large_neg", "large_pos", "near_boundary_logit"],
+    )
+    def test_logit_inverse_matches_rust(self, eta):
+        """Python apply_inverse_link must equal Rust LogitLink.inverse for all eta."""
+        from rustystats.formula import apply_inverse_link
+
+        rust_mu = rs.links.Logit().inverse(eta)
+        py_mu = apply_inverse_link(eta, "logit")
+
+        # Both must be finite (Rust always is; Python must be after hardening).
+        assert np.all(
+            np.isfinite(py_mu)
+        ), f"Python logit inverse produced non-finite values: {py_mu}"
+        assert np.all(
+            np.isfinite(rust_mu)
+        ), f"Rust logit inverse produced non-finite values: {rust_mu}"
+
+        # Element-wise equal to atol=1e-12.
+        np.testing.assert_allclose(
+            py_mu,
+            rust_mu,
+            atol=1e-12,
+            err_msg=f"Logit Python/Rust mismatch at eta={eta}",
+        )
+
+    @pytest.mark.parametrize(
+        "eta",
+        [NORMAL, LARGE_NEG, LARGE_POS],
+        ids=["normal", "large_neg", "large_pos"],
+    )
+    def test_log_inverse_matches_rust(self, eta):
+        """Python apply_inverse_link must equal Rust LogLink.inverse for all eta."""
+        from rustystats.formula import apply_inverse_link
+
+        rust_mu = rs.links.Log().inverse(eta)
+        py_mu = apply_inverse_link(eta, "log")
+
+        assert np.all(np.isfinite(py_mu)), f"Python log inverse produced non-finite values: {py_mu}"
+        assert np.all(
+            np.isfinite(rust_mu)
+        ), f"Rust log inverse produced non-finite values: {rust_mu}"
+
+        np.testing.assert_allclose(
+            py_mu,
+            rust_mu,
+            atol=1e-12,
+            err_msg=f"Log Python/Rust mismatch at eta={eta}",
+        )
+
+    @pytest.mark.parametrize(
+        "eta",
+        [NORMAL, LARGE_NEG, LARGE_POS],
+        ids=["normal", "large_neg", "large_pos"],
+    )
+    def test_identity_inverse_matches_rust(self, eta):
+        """Identity passthrough — should already match Rust trivially."""
+        from rustystats.formula import apply_inverse_link
+
+        rust_mu = rs.links.Identity().inverse(eta)
+        py_mu = apply_inverse_link(eta, "identity")
+
+        assert np.all(np.isfinite(py_mu))
+        assert np.all(np.isfinite(rust_mu))
+        np.testing.assert_allclose(py_mu, rust_mu, atol=1e-12)
+
+    def test_logit_inverse_no_runtime_warning(self):
+        """Hardened Python should not emit overflow RuntimeWarnings at extremes."""
+        from rustystats.formula import apply_inverse_link
+
+        eta = np.array([-1000.0, -700.0, -500.0, -100.0, 100.0, 500.0, 700.0, 1000.0])
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")  # promote RuntimeWarnings to errors
+            mu = apply_inverse_link(eta, "logit")
+        assert np.all(np.isfinite(mu))
+
+    def test_log_inverse_no_runtime_warning(self):
+        """Hardened Python should not emit overflow RuntimeWarnings or return inf."""
+        from rustystats.formula import apply_inverse_link
+
+        eta = np.array([-1000.0, -700.0, 700.0, 1000.0])
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            mu = apply_inverse_link(eta, "log")
+        assert np.all(np.isfinite(mu)), f"log inverse must be finite, got {mu}"
+
+
+class TestRoundtripExtremeEta:
+    """``apply_link(apply_inverse_link(eta, link), link) ≈ eta`` on a wide grid.
+
+    Identity roundtrips exactly. Log/logit naturally lose information once eta
+    is past the saturation region (e.g. logit-inverse of 1000 is exactly 1.0
+    and ``logit(1.0) = +inf``), so we restrict the roundtrip grid to the
+    representable interior — but we still go well past the historical Python
+    overflow point (~700) so any test failure indicates a genuine guard
+    asymmetry between forward and inverse links.
+    """
+
+    def test_identity_roundtrip_on_extremes(self):
+        from rustystats.formula import apply_inverse_link, apply_link
+
+        eta = np.array([-1e10, -1000.0, -1.0, 0.0, 1.0, 1000.0, 1e10])
+        recovered = apply_link(apply_inverse_link(eta, "identity"), "identity")
+        np.testing.assert_allclose(recovered, eta, atol=0.0, rtol=0.0)
+
+    def test_log_roundtrip_on_safe_grid(self):
+        """Roundtrip on eta in [-700, 700] — within Rust clamp range."""
+        from rustystats.formula import apply_inverse_link, apply_link
+
+        eta = np.array([-700.0, -100.0, -1.0, 0.0, 1.0, 100.0, 700.0])
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            mu = apply_inverse_link(eta, "log")
+            recovered = apply_link(mu, "log")
+        np.testing.assert_allclose(recovered, eta, atol=1e-9, rtol=1e-12)
+
+    def test_logit_roundtrip_on_safe_grid(self):
+        """Roundtrip on eta in [-20, 20]: well past the historical Python
+        overflow point for naive ``1/(1+exp(-eta))`` at eta ≈ -700, but
+        comfortably inside the region where sigmoid output hasn't saturated
+        to bit-exact 1.0/0.0 (which would lose information through forward
+        logit regardless of implementation). This covers the guarded path
+        without being confounded by inherent float precision loss at deeper
+        extremes (shared between Python and Rust)."""
+        from rustystats.formula import apply_inverse_link, apply_link
+
+        eta = np.array([-20.0, -10.0, -1.0, 0.0, 1.0, 10.0, 20.0])
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            mu = apply_inverse_link(eta, "logit")
+            recovered = apply_link(mu, "logit")
+        np.testing.assert_allclose(recovered, eta, atol=1e-6, rtol=1e-6)
+
+
+class TestPerLinkEdgeCases:
+    """Per-link edge cases called out in the TDD spec."""
+
+    def test_identity_passes_huge_eta_unchanged(self):
+        """Identity has no transformation — large |eta| is preserved exactly."""
+        from rustystats.formula import apply_inverse_link
+
+        eta = np.array([-1e300, -1e10, 1e10, 1e300])
+        mu = apply_inverse_link(eta, "identity")
+        # Bit-exact passthrough — atol=0, rtol=0.
+        np.testing.assert_array_equal(mu, eta)
+        assert np.all(np.isfinite(mu))
+
+    def test_log_inverse_at_minus_1000_is_finite(self):
+        """``apply_inverse_link(-1000, "log")`` must be finite, not NaN.
+
+        Rust clamps to -700, so the result is ``exp(-700) ≈ 9.86e-305``
+        (a tiny denormal-region positive). Underflow to 0.0 would also be
+        acceptable per the spec ("essentially 0 is fine, but not NaN"); we
+        match the Rust output exactly.
+        """
+        from rustystats.formula import apply_inverse_link
+
+        mu = apply_inverse_link(np.array([-1000.0]), "log")
+        assert np.all(np.isfinite(mu))
+        assert not np.any(np.isnan(mu))
+        rust_mu = rs.links.Log().inverse(np.array([-1000.0]))
+        np.testing.assert_allclose(mu, rust_mu, atol=1e-12)
+
+    def test_log_inverse_at_plus_1000_is_finite(self):
+        """``apply_inverse_link(1000, "log")`` currently returns inf — must be
+        clamped to a finite value matching Rust (``exp(700) ≈ 1.014e304``)."""
+        from rustystats.formula import apply_inverse_link
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            mu = apply_inverse_link(np.array([1000.0]), "log")
+        assert np.all(np.isfinite(mu)), f"Expected finite, got {mu}"
+        rust_mu = rs.links.Log().inverse(np.array([1000.0]))
+        np.testing.assert_allclose(mu, rust_mu, atol=1e-12)
+
+    def test_log_forward_at_zero_matches_rust(self):
+        """``log(0) = -inf`` is the canonical Rust behavior; NaN is not.
+        We assert Python behavior matches Rust, whatever that may be."""
+        from rustystats.formula import apply_link
+
+        # numpy's log(0) emits a divide-by-zero RuntimeWarning; suppress
+        # because the contract here is "match Rust", not "be silent".
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            py_eta = apply_link(np.array([0.0]), "log")
+        rust_eta = rs.links.Log().link(np.array([0.0]))
+        # Either both -inf, or both NaN — but they must agree, and NaN is
+        # explicitly disallowed by the spec for log.
+        assert not np.any(np.isnan(py_eta)), f"log(0) must not produce NaN, got {py_eta}"
+        assert not np.any(np.isnan(rust_eta))
+        # -inf should compare equal to -inf under assert_array_equal.
+        np.testing.assert_array_equal(py_eta, rust_eta)
+
+    def test_logit_inverse_at_minus_1000_is_finite_near_zero(self):
+        """``apply_inverse_link(-1000, "logit")`` must be finite ≈ 0+, not NaN.
+
+        Currently the Python branch ``1.0 / (1.0 + np.exp(-eta))`` evaluates
+        ``exp(1000)`` → inf, then ``1/(1+inf)`` → 0, but raises a
+        RuntimeWarning along the way. After hardening, the result should be
+        finite, in ``[0, 0.5)``, and warning-free.
+        """
+        from rustystats.formula import apply_inverse_link
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            mu = apply_inverse_link(np.array([-1000.0]), "logit")
+        assert np.all(np.isfinite(mu))
+        assert not np.any(np.isnan(mu))
+        assert mu[0] >= 0.0 and mu[0] < 0.5
+        rust_mu = rs.links.Logit().inverse(np.array([-1000.0]))
+        np.testing.assert_allclose(mu, rust_mu, atol=1e-12)
+
+    def test_logit_inverse_at_plus_1000_is_finite_near_one(self):
+        """``apply_inverse_link(1000, "logit")`` must be finite, just below or
+        equal to 1, not NaN."""
+        from rustystats.formula import apply_inverse_link
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            mu = apply_inverse_link(np.array([1000.0]), "logit")
+        assert np.all(np.isfinite(mu))
+        assert not np.any(np.isnan(mu))
+        assert mu[0] > 0.5 and mu[0] <= 1.0
+        rust_mu = rs.links.Logit().inverse(np.array([1000.0]))
+        np.testing.assert_allclose(mu, rust_mu, atol=1e-12)
 
 
 if __name__ == "__main__":

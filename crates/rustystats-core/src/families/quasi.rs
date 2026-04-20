@@ -109,6 +109,11 @@ impl Family for QuasiPoissonFamily {
         PoissonFamily.unit_deviance(y, mu)
     }
 
+    #[inline]
+    fn unit_deviance_at(&self, yi: f64, mui: f64) -> f64 {
+        PoissonFamily.unit_deviance_at(yi, mui)
+    }
+
     /// Default link: Log (same as Poisson)
     fn default_link(&self) -> Box<dyn Link> {
         Box::new(LogLink)
@@ -194,6 +199,11 @@ impl Family for QuasiBinomialFamily {
     #[inline]
     fn unit_deviance(&self, y: &Array1<f64>, mu: &Array1<f64>) -> Array1<f64> {
         BinomialFamily.unit_deviance(y, mu)
+    }
+
+    #[inline]
+    fn unit_deviance_at(&self, yi: f64, mui: f64) -> f64 {
+        BinomialFamily.unit_deviance_at(yi, mui)
     }
 
     /// Default link: Logit (same as Binomial)

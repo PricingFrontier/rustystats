@@ -10,7 +10,12 @@
 // =============================================================================
 
 use nalgebra::{Cholesky, DMatrix};
-use ndarray::{Array1, Array2};
+use ndarray::{Array1, Array2, ArrayView2};
+use rayon::prelude::*;
+
+/// Rows processed per rayon task when accumulating Gram/sum moments.
+/// Sized so each chunk fits comfortably in L2 for typical `k ≤ 256`.
+const GRAM_CHUNK_ROWS: usize = 8192;
 
 /// Compute the diagonal of M^{-1} where M is symmetric positive-definite (n x n).
 ///
@@ -22,7 +27,7 @@ use ndarray::{Array1, Array2};
 /// caller can detect the failure.
 ///
 /// Returns the n diagonal values of M^{-1} as an Array1<f64>.
-pub fn inverse_diagonal_spd(m: &Array2<f64>) -> Array1<f64> {
+fn inverse_diagonal_spd(m: &Array2<f64>) -> Array1<f64> {
     let n = m.nrows();
     debug_assert_eq!(n, m.ncols(), "matrix must be square");
 
@@ -43,6 +48,194 @@ pub fn inverse_diagonal_spd(m: &Array2<f64>) -> Array1<f64> {
     };
 
     Array1::from_iter((0..n).map(|i| inv[(i, i)]))
+}
+
+/// Compute the Pearson correlation matrix of the columns of `x` (n x k).
+///
+/// Equivalent to `numpy.corrcoef(x, rowvar=False)` but without materializing a
+/// mean-centered copy of `x`. We compute, in a single row-major pass over `x`:
+///   * column sums (length k)
+///   * the upper triangle of the Gram-style matrix `G_ij = Σ_r x_ri · x_rj`
+///
+/// then derive covariance and correlation from these moments. Memory cost is
+/// O(k²) instead of numpy's O(n·k) mean-centered intermediate.
+///
+/// Numerical formula (population denominator cancels in the ratio):
+///   cov_ij  = G_ij − n · mean_i · mean_j
+///   var_i   = G_ii − n · mean_i²
+///   corr_ij = cov_ij / sqrt(var_i · var_j)
+///
+/// For columns with zero variance, the entire row/column is set to 0 (matching
+/// the calling Python convention that downstream code substitutes 0 for the
+/// NaNs `numpy.corrcoef` would otherwise produce).
+///
+/// Performance: row-major iteration is cache-friendly because design matrices
+/// arriving from Python are typically C-contiguous. We chunk the rows for
+/// rayon parallelism and reduce per-chunk Gram matrices into the final result.
+/// Mirrors the IRLS X'WX hot-loop in `solvers::irls::compute_xtwx_xtwz`.
+fn correlation_matrix(x: ArrayView2<f64>) -> Array2<f64> {
+    let n = x.nrows();
+    let k = x.ncols();
+    if k == 0 || n == 0 {
+        return Array2::zeros((k, k));
+    }
+
+    // Use the contiguous fast path when possible: for a C-contiguous (n, k)
+    // matrix, slice access lets the compiler generate tight inner loops with
+    // no stride bookkeeping. Fall back to ndarray indexing otherwise (e.g.
+    // when the caller passes a strided view such as `X[:, 1:]`).
+    let (sums, gram_upper) = if let Some(slice) = x.as_slice() {
+        compute_sums_and_gram_contiguous(slice, n, k)
+    } else {
+        compute_sums_and_gram_strided(x, n, k)
+    };
+
+    let n_f = n as f64;
+    let means: Vec<f64> = sums.iter().map(|s| s / n_f).collect();
+
+    // Variances along the diagonal (G_ii − n·mean²). Clamp tiny negatives
+    // from cancellation to zero so the std-dev sqrt is well-defined.
+    let variances: Vec<f64> = (0..k)
+        .map(|i| {
+            let v = gram_upper[i * k + i] - n_f * means[i] * means[i];
+            if v > 0.0 {
+                v
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let stds: Vec<f64> = variances.iter().map(|v| v.sqrt()).collect();
+
+    let mut r = Array2::<f64>::zeros((k, k));
+    for i in 0..k {
+        for j in i..k {
+            if stds[i] == 0.0 || stds[j] == 0.0 {
+                // Leave row/col at 0; caller may overwrite the diagonal.
+                continue;
+            }
+            let cov = gram_upper[i * k + j] - n_f * means[i] * means[j];
+            let denom = stds[i] * stds[j];
+            let corr = (cov / denom).clamp(-1.0, 1.0);
+            r[[i, j]] = corr;
+            if i != j {
+                r[[j, i]] = corr;
+            }
+        }
+    }
+    r
+}
+
+/// Fast path for C-contiguous design matrices (slice access).
+/// Returns `(column_sums, gram_upper_flat)` where `gram_upper_flat[i*k + j]`
+/// holds `Σ_r x_ri · x_rj` for `i <= j` (lower triangle is left at 0).
+fn compute_sums_and_gram_contiguous(x_slice: &[f64], n: usize, k: usize) -> (Vec<f64>, Vec<f64>) {
+    debug_assert_eq!(x_slice.len(), n * k);
+
+    let num_chunks = n.div_ceil(GRAM_CHUNK_ROWS);
+
+    (0..num_chunks)
+        .into_par_iter()
+        .map(|chunk_idx| {
+            let chunk_start = chunk_idx * GRAM_CHUNK_ROWS;
+            let chunk_end = (chunk_start + GRAM_CHUNK_ROWS).min(n);
+            let mut sums_local = vec![0.0_f64; k];
+            let mut gram_local = vec![0.0_f64; k * k];
+
+            for r in chunk_start..chunk_end {
+                let row_start = r * k;
+                for i in 0..k {
+                    // SAFETY: row_start + i < n*k = x_slice.len()
+                    let xri = unsafe { *x_slice.get_unchecked(row_start + i) };
+                    // SAFETY: i < k = sums_local.len()
+                    unsafe { *sums_local.get_unchecked_mut(i) += xri };
+                    for j in i..k {
+                        // SAFETY: row_start + j < n*k = x_slice.len()
+                        let xrj = unsafe { *x_slice.get_unchecked(row_start + j) };
+                        // SAFETY: i*k + j < k*k = gram_local.len() (i, j < k)
+                        unsafe { *gram_local.get_unchecked_mut(i * k + j) += xri * xrj };
+                    }
+                }
+            }
+            (sums_local, gram_local)
+        })
+        .reduce(
+            || (vec![0.0_f64; k], vec![0.0_f64; k * k]),
+            |(mut a_sums, mut a_gram), (b_sums, b_gram)| {
+                for i in 0..a_sums.len() {
+                    a_sums[i] += b_sums[i];
+                }
+                for i in 0..a_gram.len() {
+                    a_gram[i] += b_gram[i];
+                }
+                (a_sums, a_gram)
+            },
+        )
+}
+
+/// Strided fallback for non-contiguous matrices (e.g. `X[:, 1:]` slices that
+/// hop a stride per row). Same algorithm but uses ndarray indexing instead of
+/// raw slice access, so the compiler can't elide stride math.
+fn compute_sums_and_gram_strided(x: ArrayView2<f64>, n: usize, k: usize) -> (Vec<f64>, Vec<f64>) {
+    let num_chunks = n.div_ceil(GRAM_CHUNK_ROWS);
+
+    (0..num_chunks)
+        .into_par_iter()
+        .map(|chunk_idx| {
+            let chunk_start = chunk_idx * GRAM_CHUNK_ROWS;
+            let chunk_end = (chunk_start + GRAM_CHUNK_ROWS).min(n);
+            let mut sums_local = vec![0.0_f64; k];
+            let mut gram_local = vec![0.0_f64; k * k];
+
+            for r in chunk_start..chunk_end {
+                for i in 0..k {
+                    let xri = x[[r, i]];
+                    sums_local[i] += xri;
+                    for j in i..k {
+                        gram_local[i * k + j] += xri * x[[r, j]];
+                    }
+                }
+            }
+            (sums_local, gram_local)
+        })
+        .reduce(
+            || (vec![0.0_f64; k], vec![0.0_f64; k * k]),
+            |(mut a_sums, mut a_gram), (b_sums, b_gram)| {
+                for i in 0..a_sums.len() {
+                    a_sums[i] += b_sums[i];
+                }
+                for i in 0..a_gram.len() {
+                    a_gram[i] += b_gram[i];
+                }
+                (a_sums, a_gram)
+            },
+        )
+}
+
+/// Combined correlation-matrix + VIF computation used by the Python diagnostics.
+///
+/// Returns `(R, vif_diagonal)` where:
+///   R is the k x k Pearson correlation matrix (zero-variance columns get
+///     an all-zero row/col with 0 on the diagonal — caller may overwrite),
+///   vif_diagonal is `diag((R + ε·I)^{-1})` of length k. Zero-variance columns
+///     are skipped: the regularized inverse will yield ≈ 1/ε at that diagonal,
+///     which the caller maps to a "severe" VIF.
+///
+/// Computing both inside one Rust call lets the Python side avoid materializing
+/// any (n, k) intermediate (numpy.corrcoef centers in-place and copies X), so
+/// transient memory drops from O(n·k) to O(k²).
+pub fn correlation_and_vif(x: ArrayView2<f64>, epsilon: f64) -> (Array2<f64>, Array1<f64>) {
+    let r = correlation_matrix(x);
+    let k = r.nrows();
+    if k == 0 {
+        return (r, Array1::zeros(0));
+    }
+    let mut r_reg = r.clone();
+    for i in 0..k {
+        r_reg[[i, i]] += epsilon;
+    }
+    let vif = inverse_diagonal_spd(&r_reg);
+    (r, vif)
 }
 
 #[cfg(test)]
@@ -91,5 +284,115 @@ mod tests {
         let m = Array2::<f64>::zeros((3, 3));
         let diag = inverse_diagonal_spd(&m);
         assert!(diag.iter().all(|v| v.is_nan()));
+    }
+
+    #[test]
+    fn test_correlation_matrix_independent_columns() {
+        // Independent uniform-ish columns — diag is 1, off-diag near 0.
+        // Use a small deterministic dataset so we can compare to numpy by hand.
+        // Columns: x1 = [1,2,3,4,5,6,7,8], x2 = [8,7,6,5,4,3,2,1]
+        // -> perfect negative correlation (-1).
+        let x = array![
+            [1.0, 8.0],
+            [2.0, 7.0],
+            [3.0, 6.0],
+            [4.0, 5.0],
+            [5.0, 4.0],
+            [6.0, 3.0],
+            [7.0, 2.0],
+            [8.0, 1.0]
+        ];
+        let r = correlation_matrix(x.view());
+        assert_abs_diff_eq!(r[[0, 0]], 1.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(r[[1, 1]], 1.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(r[[0, 1]], -1.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(r[[1, 0]], -1.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn test_correlation_matrix_matches_numpy_formula() {
+        // Verify the standard sample correlation formula on a 3-column dataset.
+        // x1 = [1,2,3,4,5], x2 = [2,4,5,4,5], x3 = [5,4,3,2,1]
+        let x = array![
+            [1.0, 2.0, 5.0],
+            [2.0, 4.0, 4.0],
+            [3.0, 5.0, 3.0],
+            [4.0, 4.0, 2.0],
+            [5.0, 5.0, 1.0]
+        ];
+        let r = correlation_matrix(x.view());
+        // Hand-computed:
+        // mean1=3, mean2=4, mean3=3
+        // var1=10, var2=6, var3=10  (sum of squared deviations)
+        // cov12 = 6, cov13 = -10
+        // corr12 = 6 / sqrt(10*6) = 6/sqrt(60) = 0.7745966692414834
+        // corr13 = -10 / sqrt(100) = -1
+        assert_abs_diff_eq!(r[[0, 0]], 1.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(r[[0, 1]], 6.0 / (60.0_f64).sqrt(), epsilon = 1e-12);
+        assert_abs_diff_eq!(r[[0, 2]], -1.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(r[[1, 0]], r[[0, 1]], epsilon = 1e-12);
+        assert_abs_diff_eq!(r[[2, 0]], r[[0, 2]], epsilon = 1e-12);
+    }
+
+    #[test]
+    fn test_correlation_matrix_zero_variance_column() {
+        // Constant column → row/col should be all zero (no NaN propagation).
+        let x = array![[1.0, 5.0], [2.0, 5.0], [3.0, 5.0], [4.0, 5.0]];
+        let r = correlation_matrix(x.view());
+        assert_abs_diff_eq!(r[[0, 0]], 1.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(r[[1, 1]], 0.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(r[[0, 1]], 0.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(r[[1, 0]], 0.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn test_correlation_and_vif_combined() {
+        // 2-column case with corr 0.5 → VIF = 1/(1-0.25) = 4/3 (ε is tiny).
+        // Choose data with corr exactly 0.5: the small dataset
+        //   x1 = [-1, 0, 1, 2], x2 = [0, 1, 1, 2] gives roughly that.
+        // For an exact answer, use synthetic columns: x1 = a, x2 = a+b
+        // where corr(a, a+b) is whatever. We instead just verify the
+        // produced matrix matches a computed-by-hand correlation and that
+        // VIF = diag((R + εI)^{-1}).
+        let x = array![[1.0, 1.0], [2.0, 3.0], [3.0, 5.0], [4.0, 7.0]];
+        // x2 = 2*x1 - 1 -> perfect collinearity; VIF blows up but with ε it
+        // resolves to ~ 1/(2ε) on each diagonal. Verify zero-variance is not
+        // triggered (both columns vary), R is well-formed, and ε regularizes.
+        let (r, vif) = correlation_and_vif(x.view(), 1e-10);
+        assert_abs_diff_eq!(r[[0, 0]], 1.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(r[[1, 1]], 1.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(r[[0, 1]], 1.0, epsilon = 1e-12);
+        assert!(vif[0].is_finite() && vif[1].is_finite());
+        assert!(vif[0] > 1e8); // collinear → very large VIF after tiny ε
+    }
+
+    #[test]
+    fn test_inverse_diagonal_spd_empty() {
+        // 0×0 matrix — should return empty diagonal, not panic.
+        let m = Array2::<f64>::zeros((0, 0));
+        let diag = inverse_diagonal_spd(&m);
+        assert_eq!(diag.len(), 0);
+    }
+
+    #[test]
+    fn test_correlation_matrix_n_zero() {
+        // 0 rows × k columns — degenerate input. The early-return preserves
+        // shape `(k, k)` (filled with zeros) rather than allocating moments
+        // from no data, so callers always get a square output of the
+        // expected dimension.
+        let x = Array2::<f64>::zeros((0, 3));
+        let r = correlation_matrix(x.view());
+        assert_eq!(r.dim(), (3, 3));
+        assert!(r.iter().all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn test_correlation_and_vif_k_zero() {
+        // n rows × 0 columns — no features. Should return empty diag/R
+        // without dividing by zero.
+        let x = Array2::<f64>::zeros((10, 0));
+        let (r, vif) = correlation_and_vif(x.view(), 1e-8);
+        assert_eq!(r.dim(), (0, 0));
+        assert_eq!(vif.len(), 0);
     }
 }

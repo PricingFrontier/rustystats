@@ -86,6 +86,35 @@ def get_default_link(family: str) -> str:
     return link
 
 
+# Default row-chunk size for predict(). Caps transient memory of the
+# design-matrix builder so a 1M-row × 100-param prediction allocates ~200k×100×8B
+# (~160 MB) per chunk instead of materializing the full ~800 MB X.
+# Only kicks in when n_rows exceeds the threshold; smaller inputs keep the
+# fast single-shot path. The 200_000 sweet spot was picked from the per-chunk
+# RSS-vs-throughput sweep in `benchmarks/bench_diagnostics_memory.py` — not arbitrary.
+#
+# For wide models (many features — e.g. high-cardinality categoricals), the
+# row-count cap alone is insufficient: a 200k × 10k float64 chunk is ~16 GB.
+# `_compute_predict_chunk_size` combines the row cap with a per-chunk byte
+# budget so the design-matrix allocation stays bounded regardless of width.
+_PREDICT_ROW_CHUNK_DEFAULT = 200_000
+_PREDICT_CHUNK_BYTES_BUDGET = 200_000_000  # ~200 MB per-chunk design matrix cap
+
+
+def _compute_predict_chunk_size(n_features: int) -> int:
+    """Rows per chunk in predict(), adaptive to model width.
+
+    Caps the per-chunk design matrix at ~_PREDICT_CHUNK_BYTES_BUDGET bytes.
+    For narrow models (p <= ~125) the default 200k row cap dominates; for
+    wider models we shrink so (chunk_size * p * 8) <= budget. Always
+    returns at least 1000 rows so very wide models still make progress.
+    """
+    if n_features <= 0:
+        return _PREDICT_ROW_CHUNK_DEFAULT
+    budget_rows = _PREDICT_CHUNK_BYTES_BUDGET // (n_features * 8)
+    return max(1000, min(_PREDICT_ROW_CHUNK_DEFAULT, budget_rows))
+
+
 def apply_link(mu: np.ndarray, link: str) -> np.ndarray:
     """
     Apply forward link function to transform response-scale values to linear predictor scale.
@@ -141,9 +170,22 @@ def apply_inverse_link(eta: np.ndarray, link: str) -> np.ndarray:
     if link == "identity":
         return eta
     elif link in (None, "log"):
-        return np.exp(eta)
+        # Mirror LogLink::inverse in crates/rustystats-core/src/links/log.rs:
+        # clamp to [-700, 700] before exp() so extreme eta saturates at
+        # ~1e-304 / 1e304 instead of underflowing/overflowing to NaN.
+        return np.exp(np.clip(eta, -700.0, 700.0))
     elif link == "logit":
-        return 1.0 / (1.0 + np.exp(-eta))
+        # Mirror LogitLink::inverse in crates/rustystats-core/src/links/logit.rs:
+        # branch on sign so the exponent passed to exp() is always <= 0.
+        # For eta >= 0:  1 / (1 + exp(-eta))
+        # For eta <  0:  exp(eta) / (1 + exp(eta))
+        eta_arr = np.asarray(eta, dtype=np.float64)
+        out = np.empty_like(eta_arr)
+        pos = eta_arr >= 0
+        out[pos] = 1.0 / (1.0 + np.exp(-eta_arr[pos]))
+        exp_neg = np.exp(eta_arr[~pos])
+        out[~pos] = exp_neg / (1.0 + exp_neg)
+        return out
     elif link == "inverse":
         return 1.0 / eta
     else:
@@ -1542,11 +1584,40 @@ class GLMModel:
         else:
             new_data = _collect_lazyframe(new_data, set())
 
-        # Build design matrix for new data using stored encoding state
-        X_new = self._builder.transform_new_data(new_data)
-
         # Compute linear predictor: η = X @ β
-        linear_pred = X_new @ self.params
+        # For large inputs we build the design matrix in row-chunks so that the
+        # full (n × p) materialization never coexists in memory; each chunk's
+        # X is dropped after its slice of η is written. The chunk size is
+        # adaptive to model width via `_compute_predict_chunk_size` — narrow
+        # models use the full `_PREDICT_ROW_CHUNK_DEFAULT` row cap, while wide
+        # models (many features) shrink per-chunk rows so the design matrix
+        # stays within `_PREDICT_CHUNK_BYTES_BUDGET` bytes. The result is
+        # FP-equivalent — but not bit-identical — to the single-shot `X @ β`:
+        # BLAS gemv reduces row contributions in a different order between one
+        # large call and several smaller calls, so per-element diffs are bounded
+        # at ~1-2 ULP. See
+        # `tests/python/test_dict_api.py::test_predict_chunked_matches_singleshot`.
+        n_rows = len(new_data)
+        n_features = len(self.params)
+        chunk_size = _compute_predict_chunk_size(n_features)
+        params = np.asarray(self.params, dtype=np.float64)
+        if n_rows <= chunk_size:
+            # Small input: skip slicing overhead, keep behavior identical to
+            # the pre-chunking implementation.
+            X_new = self._builder.transform_new_data(new_data)
+            linear_pred = X_new @ params
+            del X_new
+        else:
+            linear_pred = np.empty(n_rows, dtype=np.float64)
+            for start in range(0, n_rows, chunk_size):
+                stop = min(start + chunk_size, n_rows)
+                chunk = new_data.slice(start, stop - start)
+                X_chunk = self._builder.transform_new_data(chunk)
+                # Write directly into the pre-allocated output slice; the
+                # X_chunk reference is rebound on the next iteration so the
+                # ~chunk_size × p matrix is freed before the next one is built.
+                linear_pred[start:stop] = X_chunk @ params
+                del X_chunk, chunk
 
         # Handle offset
         # If offset is provided as a string, extract column and apply log() for log-link models

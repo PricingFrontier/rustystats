@@ -6,7 +6,7 @@
 // discrimination stats, A/E analysis, residuals, loss metrics, etc.
 // =============================================================================
 
-use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1, PyReadonlyArray2};
+use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -15,8 +15,8 @@ use rustystats_core::diagnostics::{
     compute_ae_continuous, compute_ae_continuous_batch, compute_calibration_curve,
     compute_discrimination_stats, compute_factor_significance_batch, compute_family_loss,
     compute_lorenz_curve, compute_residual_pattern_continuous,
-    compute_residual_pattern_continuous_batch, detect_interactions, hosmer_lemeshow_test,
-    inverse_diagonal_spd, mae, mse, null_deviance, partial_dependence_categorical_batch,
+    compute_residual_pattern_continuous_batch, correlation_and_vif, detect_interactions,
+    hosmer_lemeshow_test, mae, mse, null_deviance, partial_dependence_categorical_batch,
     resid_deviance, resid_pearson, rmse, ActualExpectedBin, DevianceByLevel, FactorData,
     FactorDevianceResult, InteractionConfig, ResidualPattern,
 };
@@ -235,40 +235,63 @@ pub fn compute_ae_continuous_py<'py>(
 
 /// Compute A/E bins for many continuous factors at once, parallelized over factors.
 ///
-/// `values_matrix` has shape (n, k) where each column is the per-row values for
-/// one factor. Returns a list of length k, where each element is the same list
-/// of bin dicts produced by `compute_ae_continuous_py`.
+/// `values_list` is a Python list of length k, where each element is a 1D
+/// numpy array of length n holding per-row values for one factor. Returns a
+/// list of length k, where each element is the same list of bin dicts
+/// produced by `compute_ae_continuous_py`.
+///
+/// Memory note: the previous signature took a stacked (n, k) `values_matrix`
+/// and re-copied each column into a `Vec<f64>` because columns of a row-major
+/// matrix aren't contiguous. Both copies — the Python-side stacking AND the
+/// Rust-side per-column copy — are eliminated by passing a list of
+/// already-contiguous 1D arrays. At 1M rows × 24 factors this saves a 192 MB
+/// transient peak (per copy, so 384 MB combined) on every factor diagnostics
+/// call.
 #[pyfunction]
-#[pyo3(signature = (values_matrix, y, mu, exposure=None, n_bins=10, family="poisson"))]
+#[pyo3(signature = (values_list, y, mu, exposure=None, n_bins=10, family="poisson"))]
 pub fn compute_ae_continuous_batch_py<'py>(
     py: Python<'py>,
-    values_matrix: PyReadonlyArray2<'py, f64>,
+    values_list: Vec<PyReadonlyArray1<'py, f64>>,
     y: PyReadonlyArray1<f64>,
     mu: PyReadonlyArray1<f64>,
     exposure: Option<PyReadonlyArray1<f64>>,
     n_bins: usize,
     family: &str,
 ) -> PyResult<Vec<Vec<Py<PyAny>>>> {
-    let values_view = values_matrix.as_array();
     let y_arr = y.as_array().to_owned();
     let mu_arr = mu.as_array().to_owned();
     let exp_arr = exposure.map(|e| e.as_array().to_owned());
 
-    let n = values_view.nrows();
-    let k = values_view.ncols();
+    let n = y_arr.len();
 
-    if y_arr.len() != n {
-        return Err(PyValueError::new_err(format!(
-            "values_matrix has {} rows but y has {} elements",
-            n,
-            y_arr.len()
-        )));
-    }
-
-    // Materialize each column into an owned Vec<f64> so the slices we hand to
-    // Rust are contiguous regardless of the input matrix's memory order.
-    let columns: Vec<Vec<f64>> = (0..k).map(|j| values_view.column(j).to_vec()).collect();
-    let column_slices: Vec<&[f64]> = columns.iter().map(|c| c.as_slice()).collect();
+    // Borrow each input array as a contiguous slice. PyReadonlyArray1 holds a
+    // reference to the underlying numpy buffer for the duration of the FFI
+    // call, so no copy is needed. `as_slice()` requires the array to be
+    // C-contiguous; numpy arrays from the Python caller already are.
+    let column_slices: Vec<&[f64]> = values_list
+        .iter()
+        .enumerate()
+        .map(|(j, arr)| {
+            // `as_slice()` returns Option<&[T]> with lifetime tied to `arr`,
+            // not to a local view, so it's safe to return from the closure.
+            let slice = arr.as_slice().map_err(|_| {
+                PyValueError::new_err(format!(
+                    "values_list[{}] is not a contiguous numpy array; \
+                     pass np.ascontiguousarray(arr) at the call site",
+                    j
+                ))
+            })?;
+            if slice.len() != n {
+                return Err(PyValueError::new_err(format!(
+                    "values_list[{}] has {} elements but y has {} (must match)",
+                    j,
+                    slice.len(),
+                    n
+                )));
+            }
+            Ok(slice)
+        })
+        .collect::<PyResult<Vec<&[f64]>>>()?;
 
     // Release the GIL for the parallel Rust work, then re-enter to build the
     // Python dicts.
@@ -332,19 +355,24 @@ pub fn compute_ae_categorical_py<'py>(
 
 /// Compute A/E bins for many categorical factors at once, parallelized over factors.
 ///
-/// `codes_matrix` has shape (n, k) where each column is a u32 code for one
-/// factor (codes index into that factor's `levels_list[j]`). Returns a list
-/// of length k, each element being the same list of bin dicts as
-/// `compute_ae_categorical_py`.
+/// `codes_list` is a Python list of length k where each element is a 1D
+/// `np.uint32` array of length n holding per-row codes for one factor (codes
+/// index into that factor's `levels_list[j]`). Returns a list of length k,
+/// each element being the same list of bin dicts as `compute_ae_categorical_py`.
 ///
 /// This avoids the per-row string marshalling that dominates the singular
 /// categorical path when n is large; all categorical A/E work is now a single
 /// cross-FFI call into a rayon-parallel Rust loop.
+///
+/// Memory note: previously took a stacked (n, k) `codes_matrix` plus a
+/// per-column Rust copy. Switching to a list of contiguous u32 arrays
+/// eliminates both, saving ~24 MB transient peak (per copy, 48 MB combined)
+/// at 1M rows × 6 categorical factors.
 #[pyfunction]
-#[pyo3(signature = (codes_matrix, levels_list, y, mu, exposure=None, rare_threshold_pct=1.0, max_levels=20, family="poisson"))]
+#[pyo3(signature = (codes_list, levels_list, y, mu, exposure=None, rare_threshold_pct=1.0, max_levels=20, family="poisson"))]
 pub fn compute_ae_categorical_batch_py<'py>(
     py: Python<'py>,
-    codes_matrix: PyReadonlyArray2<'py, u32>,
+    codes_list: Vec<PyReadonlyArray1<'py, u32>>,
     levels_list: Vec<Vec<String>>,
     y: PyReadonlyArray1<f64>,
     mu: PyReadonlyArray1<f64>,
@@ -353,34 +381,43 @@ pub fn compute_ae_categorical_batch_py<'py>(
     max_levels: usize,
     family: &str,
 ) -> PyResult<Vec<Vec<Py<PyAny>>>> {
-    let codes_view = codes_matrix.as_array();
     let y_arr = y.as_array().to_owned();
     let mu_arr = mu.as_array().to_owned();
     let exp_arr = exposure.map(|e| e.as_array().to_owned());
 
-    let n = codes_view.nrows();
-    let k = codes_view.ncols();
-
-    if y_arr.len() != n {
-        return Err(PyValueError::new_err(format!(
-            "codes_matrix has {} rows but y has {} elements",
-            n,
-            y_arr.len()
-        )));
-    }
+    let n = y_arr.len();
+    let k = codes_list.len();
 
     if levels_list.len() != k {
         return Err(PyValueError::new_err(format!(
-            "codes_matrix has {} columns but levels_list has {} entries",
+            "codes_list has {} entries but levels_list has {} entries",
             k,
             levels_list.len()
         )));
     }
 
-    // Materialize each column as a contiguous Vec<u32> so we can hand slices
-    // to Rust regardless of the input matrix's memory order.
-    let code_columns: Vec<Vec<u32>> = (0..k).map(|j| codes_view.column(j).to_vec()).collect();
-    let code_slices: Vec<&[u32]> = code_columns.iter().map(|c| c.as_slice()).collect();
+    let code_slices: Vec<&[u32]> = codes_list
+        .iter()
+        .enumerate()
+        .map(|(j, arr)| {
+            let slice = arr.as_slice().map_err(|_| {
+                PyValueError::new_err(format!(
+                    "codes_list[{}] is not a contiguous numpy array; \
+                     pass np.ascontiguousarray(arr, dtype=np.uint32) at the call site",
+                    j
+                ))
+            })?;
+            if slice.len() != n {
+                return Err(PyValueError::new_err(format!(
+                    "codes_list[{}] has {} elements but y has {} (must match)",
+                    j,
+                    slice.len(),
+                    n
+                )));
+            }
+            Ok(slice)
+        })
+        .collect::<PyResult<Vec<&[u32]>>>()?;
     let level_slices: Vec<&[String]> = levels_list.iter().map(|l| l.as_slice()).collect();
 
     // Release the GIL for the parallel Rust work, then re-enter to build the
@@ -921,33 +958,49 @@ pub fn compute_residual_pattern_py<'py>(
 
 /// Compute residual patterns for many continuous factors at once, parallelized.
 ///
-/// `values_matrix` has shape (n, k) where each column is the per-row values for
-/// one factor. Returns a list of length k, each element being the same dict
-/// produced by `compute_residual_pattern_py`.
+/// `values_list` is a Python list of length k where each element is a 1D
+/// numpy array of length n holding per-row values for one factor. Returns a
+/// list of length k, each element being the same dict produced by
+/// `compute_residual_pattern_py`.
+///
+/// Memory note: like `compute_ae_continuous_batch_py`, this used to take a
+/// stacked (n, k) `values_matrix` and re-copy each column into a `Vec<f64>`.
+/// Both copies are eliminated by accepting a list of already-contiguous 1D
+/// arrays, saving a 192 MB transient peak (per copy, 384 MB combined) at
+/// 1M rows × 24 factors.
 #[pyfunction]
-#[pyo3(signature = (values_matrix, residuals, n_bins=10))]
+#[pyo3(signature = (values_list, residuals, n_bins=10))]
 pub fn compute_residual_pattern_batch_py<'py>(
     py: Python<'py>,
-    values_matrix: PyReadonlyArray2<'py, f64>,
+    values_list: Vec<PyReadonlyArray1<'py, f64>>,
     residuals: PyReadonlyArray1<f64>,
     n_bins: usize,
 ) -> PyResult<Vec<Py<PyAny>>> {
-    let values_view = values_matrix.as_array();
     let resid_arr = residuals.as_array().to_owned();
+    let n = resid_arr.len();
 
-    let n = values_view.nrows();
-    let k = values_view.ncols();
-
-    if resid_arr.len() != n {
-        return Err(PyValueError::new_err(format!(
-            "values_matrix has {} rows but residuals has {} elements",
-            n,
-            resid_arr.len()
-        )));
-    }
-
-    let columns: Vec<Vec<f64>> = (0..k).map(|j| values_view.column(j).to_vec()).collect();
-    let column_slices: Vec<&[f64]> = columns.iter().map(|c| c.as_slice()).collect();
+    let column_slices: Vec<&[f64]> = values_list
+        .iter()
+        .enumerate()
+        .map(|(j, arr)| {
+            let slice = arr.as_slice().map_err(|_| {
+                PyValueError::new_err(format!(
+                    "values_list[{}] is not a contiguous numpy array; \
+                     pass np.ascontiguousarray(arr) at the call site",
+                    j
+                ))
+            })?;
+            if slice.len() != n {
+                return Err(PyValueError::new_err(format!(
+                    "values_list[{}] has {} elements but residuals has {} (must match)",
+                    j,
+                    slice.len(),
+                    n
+                )));
+            }
+            Ok(slice)
+        })
+        .collect::<PyResult<Vec<&[f64]>>>()?;
 
     let patterns =
         py.detach(|| compute_residual_pattern_continuous_batch(&column_slices, &resid_arr, n_bins));
@@ -1116,67 +1169,114 @@ pub fn compute_ae_by_decile_py<'py>(
 
 /// Per-factor categorical partial-dependence aggregates, parallel over factors.
 ///
-/// `codes_matrix` has shape `(n, k)` where each column is a u32 code per row
-/// for one categorical factor. `mu` is the length-`n` prediction vector and
-/// `n_levels_per_factor` gives the level count for each factor. Returns a
-/// list of length `k`; each entry is `(counts, mu_sums)` of length
-/// `n_levels_per_factor[j]`. The Python caller divides `mu_sums / counts` for
-/// the per-level mean prediction. (OPT-20 — replaces 6 sequential
-/// `np.bincount` × 2 calls per factor with a single rayon-parallel batch.)
+/// `codes_list` is a length-`k` list of 1D u32 numpy arrays; entry `j` has
+/// shape `(n,)` holding the per-row code for factor `j`. `mu` is the length-
+/// `n` prediction vector and `n_levels_per_factor` gives the level count for
+/// each factor. Returns a list of length `k`; each entry is `(counts,
+/// mu_sums)` of length `n_levels_per_factor[j]`. The Python caller divides
+/// `mu_sums / counts` for the per-level mean prediction. (OPT-20 — replaces 6
+/// sequential `np.bincount` × 2 calls per factor with a single rayon-parallel
+/// batch.)
+///
+/// Memory note: this used to take a stacked `(n, k)` `codes_matrix` which
+/// forced the Python caller to run `np.stack(cached_codes, axis=1)` — a
+/// 400 MB transient at n=1M × k=100. Accepting a list of already-contiguous
+/// 1D arrays lets the Rust side borrow the numpy buffers directly with no
+/// copy or stacking.
 #[pyfunction]
 pub fn partial_dependence_categorical_batch_py<'py>(
     py: Python<'py>,
-    codes_matrix: PyReadonlyArray2<'py, u32>,
+    codes_list: Vec<PyReadonlyArray1<'py, u32>>,
     mu: PyReadonlyArray1<'py, f64>,
     n_levels_per_factor: Vec<usize>,
 ) -> PyResult<Vec<(Vec<f64>, Vec<f64>)>> {
-    let codes_arr = codes_matrix.as_array().to_owned();
     let mu_arr = mu.as_array().to_owned();
-
     let n = mu_arr.len();
-    let k = codes_arr.ncols();
-
-    if codes_arr.nrows() != n {
-        return Err(PyValueError::new_err(format!(
-            "codes_matrix has {} rows but mu has {} elements",
-            codes_arr.nrows(),
-            n
-        )));
-    }
+    let k = codes_list.len();
 
     if n_levels_per_factor.len() != k {
         return Err(PyValueError::new_err(format!(
-            "codes_matrix has {} columns but n_levels_per_factor has {} entries",
+            "codes_list has {} entries but n_levels_per_factor has {} entries",
             k,
             n_levels_per_factor.len()
         )));
     }
 
-    let result = py
-        .detach(|| partial_dependence_categorical_batch(&codes_arr, &mu_arr, &n_levels_per_factor));
+    // Borrow each input array as a contiguous slice. PyReadonlyArray1 holds a
+    // reference to the underlying numpy buffer for the duration of the FFI
+    // call, so no copy is needed. `as_slice()` requires the array to be
+    // C-contiguous; numpy arrays from the Python caller already are.
+    let column_slices: Vec<&[u32]> = codes_list
+        .iter()
+        .enumerate()
+        .map(|(j, arr)| {
+            let slice = arr.as_slice().map_err(|_| {
+                PyValueError::new_err(format!(
+                    "codes_list[{}] is not a contiguous numpy array; \
+                     pass np.ascontiguousarray(arr) at the call site",
+                    j
+                ))
+            })?;
+            if slice.len() != n {
+                return Err(PyValueError::new_err(format!(
+                    "codes_list[{}] has {} elements but mu has {} (must match)",
+                    j,
+                    slice.len(),
+                    n
+                )));
+            }
+            Ok(slice)
+        })
+        .collect::<PyResult<Vec<&[u32]>>>()?;
+
+    let result = py.detach(|| {
+        partial_dependence_categorical_batch(&column_slices, &mu_arr, &n_levels_per_factor)
+    });
     Ok(result)
 }
 
-/// Compute the diagonal of M^{-1} where M is symmetric positive-definite.
+/// Compute the column correlation matrix and the VIF (`diag((R + ε·I)^{-1})`)
+/// of an (n x k) design matrix in a single Rust call.
 ///
-/// Used for VIF (Variance Inflation Factor) computation: VIF_j = diag(R^{-1})_j
-/// where R is the correlation matrix of the design columns. Replaces a previous
-/// scipy.linalg Cholesky/cho_solve path so that scipy is not a runtime
-/// dependency. Returns NaN for every entry if the matrix is non-invertible
-/// (caller should detect and raise).
+/// This is the memory-efficient path for `Computer.compute_vif`. The Python
+/// implementation that this replaces materializes a full (n, k) mean-centered
+/// copy via `numpy.corrcoef`, peaking at O(n·k) bytes. The Rust path takes a
+/// zero-copy `PyReadonlyArray2` view, computes the correlation matrix and VIF
+/// in O(k²) extra memory, and returns only the small (k, k) and (k,) arrays
+/// to Python.
+///
+/// `skip_cols` lets the caller drop leading columns (typically the intercept)
+/// without first slicing in Python. Slicing in Python (`X[:, 1:]`) yields a
+/// non-contiguous view that defeats the row-major fast path; skipping inside
+/// Rust preserves the C-contiguous slice access for the inner loop.
+///
+/// Returns `(R, vif_diagonal)` where:
+///   * `R` is the (k - skip_cols) x (k - skip_cols) correlation matrix (zero-
+///     variance columns get an all-zero row/col with 0 on the diagonal —
+///     caller may overwrite to 1).
+///   * `vif_diagonal` is `diag((R + ε·I)^{-1})`. Returns NaN for every entry
+///     if the regularized matrix is non-invertible (caller should detect and
+///     raise).
 #[pyfunction]
-pub fn inverse_diagonal_spd_py<'py>(
+#[pyo3(signature = (x, epsilon, skip_cols=0))]
+pub fn compute_correlation_and_vif_py<'py>(
     py: Python<'py>,
-    matrix: PyReadonlyArray2<'py, f64>,
-) -> PyResult<Bound<'py, PyArray1<f64>>> {
-    let arr = matrix.as_array().to_owned();
-    if arr.nrows() != arr.ncols() {
+    x: PyReadonlyArray2<'py, f64>,
+    epsilon: f64,
+    skip_cols: usize,
+) -> PyResult<(Bound<'py, PyArray2<f64>>, Bound<'py, PyArray1<f64>>)> {
+    let full_view = x.as_array();
+    let total_cols = full_view.ncols();
+    if skip_cols >= total_cols {
         return Err(PyValueError::new_err(format!(
-            "matrix must be square, got shape ({}, {})",
-            arr.nrows(),
-            arr.ncols()
+            "skip_cols ({}) must be less than the column count ({})",
+            skip_cols, total_cols
         )));
     }
-    let result = py.detach(|| inverse_diagonal_spd(&arr));
-    Ok(result.into_pyarray(py))
+    // Slice off the leading `skip_cols`. For C-contiguous X this still leaves
+    // a non-contiguous view, BUT the strided fallback is fast enough for
+    // diagnostic use; the contiguous fast path triggers when skip_cols=0.
+    let view = full_view.slice(ndarray::s![.., skip_cols..]);
+    let (r, vif) = py.detach(|| correlation_and_vif(view, epsilon));
+    Ok((r.into_pyarray(py), vif.into_pyarray(py)))
 }

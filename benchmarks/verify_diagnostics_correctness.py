@@ -670,8 +670,8 @@ def check_singular_vs_batch(
 
     # ===== Continuous A/E: singular vs batch =====
     sing_cont = _rust_ae_continuous(cont_values, y, mu, exposure, 10, family_name)
-    batch_cont_matrix = cont_values.reshape(-1, 1).astype(np.float64, copy=False)
-    batch_cont = _rust_ae_continuous_batch(batch_cont_matrix, y, mu, exposure, 10, family_name)
+    batch_cont_list = [np.ascontiguousarray(cont_values, dtype=np.float64)]
+    batch_cont = _rust_ae_continuous_batch(batch_cont_list, y, mu, exposure, 10, family_name)
     c.check(
         f"{scenario} ae_continuous singular vs batch len",
         len(sing_cont) == len(batch_cont[0]),
@@ -705,9 +705,12 @@ def check_singular_vs_batch(
     sing_cat = _rust_ae_categorical(cat_str, y, mu, exposure, 1.0, 20, family_name)
     # Build codes for the batch
     unique_levels, inverse = np.unique(cat_str, return_inverse=True)
-    codes_matrix = inverse.reshape(-1, 1).astype(np.uint32, copy=False)
+    codes_arr = np.ascontiguousarray(inverse, dtype=np.uint32)
+    # The factor_deviance_batch_from_codes path still takes a 2D matrix; the
+    # newer A/E batch path takes a list of 1D arrays.
+    codes_matrix = codes_arr.reshape(-1, 1).astype(np.uint32, copy=False)
     batch_cat = _rust_ae_categorical_batch(
-        codes_matrix, [list(unique_levels)], y, mu, exposure, 1.0, 20, family_name
+        [codes_arr], [list(unique_levels)], y, mu, exposure, 1.0, 20, family_name
     )
     c.check(
         f"{scenario} ae_categorical singular vs batch len",
@@ -806,7 +809,7 @@ def check_singular_vs_batch(
     # ===== Partial dependence categorical batch: vs np.bincount manual =====
     counts_manual = np.bincount(inverse, minlength=len(unique_levels)).astype(np.float64)
     mu_sums_manual = np.bincount(inverse, weights=mu, minlength=len(unique_levels))
-    batch_pd = _rust_partial_dependence_categorical_batch(codes_matrix, mu, [len(unique_levels)])
+    batch_pd = _rust_partial_dependence_categorical_batch([codes_arr], mu, [len(unique_levels)])
     counts_rust, mu_sums_rust = batch_pd[0]
     counts_rust_arr = np.asarray(counts_rust, dtype=np.float64)
     mu_sums_rust_arr = np.asarray(mu_sums_rust, dtype=np.float64)

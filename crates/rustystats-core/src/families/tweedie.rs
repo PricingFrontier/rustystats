@@ -113,40 +113,38 @@ impl Family for TweedieFamily {
     /// - p = 2: 2 × [(y - μ)/μ - log(y/μ)]
     /// - Otherwise: 2 × [y^(2-p)/((1-p)(2-p)) - y×μ^(1-p)/(1-p) + μ^(2-p)/(2-p)]
     fn unit_deviance(&self, y: &Array1<f64>, mu: &Array1<f64>) -> Array1<f64> {
+        ndarray::Zip::from(y)
+            .and(mu)
+            .map_collect(|&yi, &mui| self.unit_deviance_at(yi, mui))
+    }
+
+    #[inline]
+    fn unit_deviance_at(&self, yi: f64, mui: f64) -> f64 {
         let p = self.var_power;
+        let yi_safe = yi.max(0.0);
+        let mui_safe = mui.max(MU_MIN_POSITIVE);
 
-        ndarray::Zip::from(y).and(mu).map_collect(|&yi, &mui| {
-            // Ensure positive values for numerical stability
-            let yi_safe = yi.max(0.0);
-            let mui_safe = mui.max(MU_MIN_POSITIVE);
-
-            if (p - 0.0).abs() < ZERO_TOL {
-                // p = 0: Gaussian
-                let diff = yi_safe - mui_safe;
-                diff * diff
-            } else if (p - 1.0).abs() < ZERO_TOL {
-                // p = 1: Poisson
-                if yi_safe == 0.0 {
-                    2.0 * mui_safe
-                } else {
-                    2.0 * (yi_safe * (yi_safe / mui_safe).ln() - (yi_safe - mui_safe))
-                }
-            } else if (p - 2.0).abs() < ZERO_TOL {
-                // p = 2: Gamma
-                2.0 * ((yi_safe - mui_safe) / mui_safe - (yi_safe / mui_safe).ln())
+        if (p - 0.0).abs() < ZERO_TOL {
+            let diff = yi_safe - mui_safe;
+            diff * diff
+        } else if (p - 1.0).abs() < ZERO_TOL {
+            if yi_safe == 0.0 {
+                2.0 * mui_safe
             } else {
-                // General case: 1 < p < 2 (compound Poisson-Gamma) or p > 2
-                let term1 = if yi_safe > 0.0 {
-                    yi_safe.powf(2.0 - p) / ((1.0 - p) * (2.0 - p))
-                } else {
-                    0.0
-                };
-                let term2 = yi_safe * mui_safe.powf(1.0 - p) / (1.0 - p);
-                let term3 = mui_safe.powf(2.0 - p) / (2.0 - p);
-
-                2.0 * (term1 - term2 + term3)
+                2.0 * (yi_safe * (yi_safe / mui_safe).ln() - (yi_safe - mui_safe))
             }
-        })
+        } else if (p - 2.0).abs() < ZERO_TOL {
+            2.0 * ((yi_safe - mui_safe) / mui_safe - (yi_safe / mui_safe).ln())
+        } else {
+            let term1 = if yi_safe > 0.0 {
+                yi_safe.powf(2.0 - p) / ((1.0 - p) * (2.0 - p))
+            } else {
+                0.0
+            };
+            let term2 = yi_safe * mui_safe.powf(1.0 - p) / (1.0 - p);
+            let term3 = mui_safe.powf(2.0 - p) / (2.0 - p);
+            2.0 * (term1 - term2 + term3)
+        }
     }
 
     /// Default link for Tweedie is log link.

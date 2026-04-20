@@ -476,14 +476,19 @@ def compute_ae_continuous_py(
     family: str = "poisson",
 ) -> list[dict]: ...
 def compute_ae_continuous_batch_py(
-    values_matrix: npt.NDArray[np.float64],
+    values_list: list[npt.NDArray[np.float64]],
     y: npt.NDArray[np.float64],
     mu: npt.NDArray[np.float64],
     exposure: npt.NDArray[np.float64] | None = None,
     n_bins: int = 10,
     family: str = "poisson",
 ) -> list[list[dict]]:
-    """Compute A/E bins for many continuous factors at once, parallelized over factors."""
+    """Compute A/E bins for many continuous factors at once, parallelized over factors.
+
+    `values_list` is a Python list where each entry is a contiguous 1D float64
+    array of per-row values for one factor. Length-mismatched entries raise
+    ValueError.
+    """
     ...
 
 def compute_ae_categorical_py(
@@ -496,7 +501,7 @@ def compute_ae_categorical_py(
     family: str = "poisson",
 ) -> list[dict]: ...
 def compute_ae_categorical_batch_py(
-    codes_matrix: npt.NDArray[np.uint32],
+    codes_list: list[npt.NDArray[np.uint32]],
     levels_list: list[list[str]],
     y: npt.NDArray[np.float64],
     mu: npt.NDArray[np.float64],
@@ -505,7 +510,12 @@ def compute_ae_categorical_batch_py(
     max_levels: int = 20,
     family: str = "poisson",
 ) -> list[list[dict]]:
-    """Compute A/E bins for many categorical factors at once, parallelized over factors."""
+    """Compute A/E bins for many categorical factors at once, parallelized over factors.
+
+    `codes_list` is a Python list where each entry is a contiguous 1D
+    np.uint32 array of per-row codes for one factor; codes index into the
+    matching `levels_list[j]`. Length-mismatched entries raise ValueError.
+    """
     ...
 
 def compute_ae_by_decile_py(
@@ -519,17 +529,29 @@ def compute_ae_by_decile_py(
     ...
 
 def partial_dependence_categorical_batch_py(
-    codes_matrix: npt.NDArray[np.uint32],
+    codes_list: list[npt.NDArray[np.uint32]],
     mu: npt.NDArray[np.float64],
     n_levels_per_factor: list[int],
 ) -> list[tuple[list[float], list[float]]]:
-    """Per-factor categorical partial-dependence aggregates (counts, mu_sums), parallel over factors."""
+    """Per-factor categorical partial-dependence aggregates (counts, mu_sums), parallel over factors.
+
+    `codes_list` is a length-k list of 1D u32 numpy arrays (one per factor),
+    avoiding the (n, k) `np.stack` transient required by the prior matrix
+    signature.
+    """
     ...
 
-def inverse_diagonal_spd_py(
-    matrix: npt.NDArray[np.float64],
-) -> npt.NDArray[np.float64]:
-    """Compute the diagonal of M^{-1} where M is symmetric positive-definite (used for VIF)."""
+def compute_correlation_and_vif_py(
+    x: npt.NDArray[np.float64],
+    epsilon: float,
+    skip_cols: int = 0,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Compute the column correlation matrix and `diag((R + ε·I)^{-1})` of (n, k) X.
+
+    Skips the first ``skip_cols`` columns (typically the intercept) without
+    requiring a Python-side slice. Returns (R, vif_diagonal) of shape
+    ((k - skip_cols), (k - skip_cols)) and (k - skip_cols,).
+    """
     ...
 
 def compute_factor_deviance_py(
@@ -635,6 +657,19 @@ def compute_residual_pattern_py(
     var_power: float | None = None,
     theta: float | None = None,
 ) -> dict: ...
+def compute_residual_pattern_batch_py(
+    values_list: list[npt.NDArray[np.float64]],
+    residuals: npt.NDArray[np.float64],
+    n_bins: int = 10,
+) -> list[dict]:
+    """Compute residual-pattern dicts for many continuous factors at once, parallelized over factors.
+
+    `values_list` is a Python list where each entry is a contiguous 1D float64
+    array of per-row values for one factor; the shared `residuals` array is
+    reused across all factors. Length-mismatched entries raise ValueError.
+    """
+    ...
+
 def compute_pearson_residuals_py(
     y: npt.NDArray[np.float64],
     mu: npt.NDArray[np.float64],

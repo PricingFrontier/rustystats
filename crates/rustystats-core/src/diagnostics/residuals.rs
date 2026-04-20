@@ -212,14 +212,49 @@ pub fn compute_residual_summary(residuals: &Array1<f64>) -> Option<ResidualSumma
         (0.0, 0.0)
     };
 
-    // Percentiles via nearest-rank on a total_cmp-sorted copy.
-    let mut sorted: Vec<f64> = residuals.iter().cloned().collect();
-    sorted.sort_by(|a, b| a.total_cmp(b));
-    let last = sorted.len() - 1;
-    let percentile = |p: f64| -> f64 {
+    // Percentiles via nearest-rank.
+    //
+    // Strategy: clone the residuals once (we cannot mutate the input), then
+    // run `select_nth_unstable_by` for each requested percentile in
+    // ascending order. Each call partitions the array around the target
+    // index in O(n) average time, in-place, with no extra allocation. This
+    // replaces a full `sort_by` (Timsort: O(n log n) AND an O(n) scratch
+    // buffer ~= 8 MB at n=1M).
+    //
+    // We process the percentiles in ascending index order so that earlier
+    // selects' partitions stay intact for later selects, which we run on
+    // the right-hand sub-slice. The result is bit-identical to the previous
+    // sort-and-index path because nearest-rank percentiles only depend on
+    // the value at a specific sorted position, not on the relative ordering
+    // of the rest of the array.
+    let mut buf: Vec<f64> = residuals.iter().cloned().collect();
+    let last = buf.len() - 1;
+    let percentile_idx = |p: f64| -> usize {
         let idx = (p / 100.0 * last as f64).round() as usize;
-        sorted[idx.min(last)]
+        idx.min(last)
     };
+
+    // Pre-compute the (sorted, deduplicated) target indices.
+    let percent_specs = [1.0, 5.0, 10.0, 25.0, 50.0, 75.0, 90.0, 95.0, 99.0];
+    let mut targets: Vec<usize> = percent_specs.iter().map(|&p| percentile_idx(p)).collect();
+    targets.sort_unstable();
+    targets.dedup();
+
+    // Walk the targets left-to-right, each time selecting on the slice of
+    // values that are still unordered relative to the previous select.
+    let mut start = 0usize;
+    for &t in &targets {
+        // After this call, buf[t] holds the value that would be at sorted
+        // position `t`, and elements in buf[start..t] are all <= buf[t].
+        let local = t - start;
+        // `select_nth_unstable_by` returns (lesser, pivot, greater) but we
+        // only need its side-effect: after the call, buf[t] holds the sorted
+        // pivot value. Discard the tuple directly.
+        let _ = buf[start..].select_nth_unstable_by(local, |a, b| a.total_cmp(b));
+        start = t + 1;
+    }
+
+    let percentile = |p: f64| -> f64 { buf[percentile_idx(p)] };
 
     Some(ResidualSummary {
         mean,
@@ -405,5 +440,72 @@ mod tests {
         assert_abs_diff_eq!(s.mean, 2.0, epsilon = 1e-12);
         assert_abs_diff_eq!(s.std, 4.0, epsilon = 1e-12);
         assert_abs_diff_eq!(s.skewness, 1.5, epsilon = 1e-10);
+    }
+
+    /// Bit-exact equivalence vs the previous full-sort percentile path.
+    ///
+    /// Nearest-rank percentiles only depend on the value at a specific sorted
+    /// position — not on the relative ordering of the rest of the array — so
+    /// repeated `select_nth_unstable_by` calls (in ascending target-index
+    /// order) must return the *same* float at each percentile index as a
+    /// full sort would. This test pins that invariant on a 1k-row LCG-random
+    /// vector with both unique and tied values.
+    #[test]
+    fn test_residual_summary_select_nth_matches_full_sort() {
+        // Naive reference: full sort + index lookup.
+        fn naive(residuals: &Array1<f64>) -> [f64; 9] {
+            let mut sorted: Vec<f64> = residuals.iter().cloned().collect();
+            sorted.sort_by(|a, b| a.total_cmp(b));
+            let last = sorted.len() - 1;
+            let p = |q: f64| {
+                let idx = (q / 100.0 * last as f64).round() as usize;
+                sorted[idx.min(last)]
+            };
+            [
+                p(1.0),
+                p(5.0),
+                p(10.0),
+                p(25.0),
+                p(50.0),
+                p(75.0),
+                p(90.0),
+                p(95.0),
+                p(99.0),
+            ]
+        }
+        // Mixed unique & tied values to exercise total_cmp ordering.
+        let mut s: u64 = 0xC0FFEE;
+        let n = 1000;
+        let v: Vec<f64> = (0..n)
+            .map(|i| {
+                s = s
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let u = ((s >> 11) as f64) / ((1u64 << 53) as f64);
+                if i % 7 == 0 {
+                    // Inject ties at every 7th element to stress tie-breaking.
+                    0.5
+                } else {
+                    -1.0 + 2.0 * u
+                }
+            })
+            .collect();
+        let r = Array1::from_vec(v);
+        let summary = compute_residual_summary(&r).unwrap();
+        let ref_pcts = naive(&r);
+        let new_pcts = [
+            summary.p1,
+            summary.p5,
+            summary.p10,
+            summary.p25,
+            summary.p50,
+            summary.p75,
+            summary.p90,
+            summary.p95,
+            summary.p99,
+        ];
+        // total_cmp is total ordering on f64, so equal sorted positions
+        // contain identical values — bit-exact equality is required.
+        assert_eq!(new_pcts, ref_pcts, "percentiles must match full-sort path");
     }
 }

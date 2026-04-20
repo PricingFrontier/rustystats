@@ -81,15 +81,20 @@ impl Family for PoissonFamily {
     /// Note: When y = 0, the y × log(y/μ) term is defined as 0.
     fn unit_deviance(&self, y: &Array1<f64>, mu: &Array1<f64>) -> Array1<f64> {
         // For each observation, compute the unit deviance
-        ndarray::Zip::from(y).and(mu).map_collect(|&yi, &mui| {
-            if yi == 0.0 {
-                // When y=0: 2 × [0 - (0 - μ)] = 2μ
-                2.0 * mui
-            } else {
-                // General case: 2 × [y × log(y/μ) - (y - μ)]
-                2.0 * (yi * (yi / mui).ln() - (yi - mui))
-            }
-        })
+        ndarray::Zip::from(y)
+            .and(mu)
+            .map_collect(|&yi, &mui| self.unit_deviance_at(yi, mui))
+    }
+
+    #[inline]
+    fn unit_deviance_at(&self, yi: f64, mui: f64) -> f64 {
+        if yi == 0.0 {
+            // When y=0: 2 × [0 - (0 - μ)] = 2μ
+            2.0 * mui
+        } else {
+            // General case: 2 × [y × log(y/μ) - (y - μ)]
+            2.0 * (yi * (yi / mui).ln() - (yi - mui))
+        }
     }
 
     /// The canonical link for Poisson is the log link.

@@ -20,10 +20,7 @@ use std::collections::HashMap;
 use super::ci::wilson_poisson_rate_ci;
 use super::distributions::chi2_cdf;
 use super::loss::compute_family_loss;
-use crate::constants::{
-    DEFAULT_CI_ALPHA, MU_MAX_PROBABILITY, MU_MIN_POSITIVE, MU_MIN_PROBABILITY,
-    TWEEDIE_VAR_POWER_TOL,
-};
+use crate::constants::DEFAULT_CI_ALPHA;
 
 // =============================================================================
 // Factor Types
@@ -670,7 +667,16 @@ pub struct ResidualPattern {
     pub residual_variance_explained: f64,
 }
 
-/// Compute residual patterns for a continuous factor
+/// Compute residual patterns for a continuous factor.
+///
+/// Memory note: the previous implementation materialized two Vec<(f64, f64)>
+/// of length n_valid (the masked rows): one `valid_pairs` for correlation +
+/// linear trend, and a clone for the bin sort. At 1M rows × 24 factors run
+/// in parallel the peak was ~16 MB × 24 × 2 = ~768 MB. This implementation
+/// keeps only a `Vec<u32>` of valid row indices (4 MB at 1M rows), sorted by
+/// factor value for the binning step. Correlation, trend slope, and trend
+/// p-value are computed via in-place folds over the (factor_values,
+/// residuals) slices using the index list — no (f64, f64) materialization.
 pub fn compute_residual_pattern_continuous(
     factor_values: &[f64],
     residuals: &Array1<f64>,
@@ -687,33 +693,108 @@ pub fn compute_residual_pattern_continuous(
         };
     }
 
-    // Compute correlation
-    let valid_pairs: Vec<(f64, f64)> = factor_values
+    // Indices of finite factor_values. u32 is sufficient (n ≤ 4e9) and uses
+    // 4× less memory than `Vec<usize>` on 64-bit platforms.
+    let valid_idx: Vec<u32> = factor_values
         .iter()
-        .zip(residuals.iter())
-        .filter(|(&f, _)| !f.is_nan() && !f.is_infinite())
-        .map(|(&f, &r)| (f, r))
+        .enumerate()
+        .filter_map(|(i, &v)| {
+            if v.is_nan() || v.is_infinite() {
+                None
+            } else {
+                Some(i as u32)
+            }
+        })
         .collect();
 
-    let correlation = compute_correlation(&valid_pairs);
+    let n_valid = valid_idx.len();
+    if n_valid < 2 {
+        return ResidualPattern {
+            correlation_with_residuals: f64::NAN,
+            mean_residual_by_bin: Vec::new(),
+            trend_slope: f64::NAN,
+            trend_pvalue: f64::NAN,
+            residual_variance_explained: f64::NAN,
+        };
+    }
 
-    // Compute mean residual by bin
-    let mut sorted_pairs = valid_pairs.clone();
-    sorted_pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
+    // Pass 1: compute means.
+    let mut sum_f = 0.0;
+    let mut sum_r = 0.0;
+    for &i in &valid_idx {
+        let i = i as usize;
+        sum_f += factor_values[i];
+        sum_r += residuals[i];
+    }
+    let mean_f = sum_f / n_valid as f64;
+    let mean_r = sum_r / n_valid as f64;
 
-    let bin_size = sorted_pairs.len().div_ceil(n_bins);
-    let mean_residual_by_bin: Vec<f64> = sorted_pairs
-        .chunks(bin_size.max(1))
+    // Pass 2: variances, covariance, and SS_res (for the linear trend test).
+    let mut var_f = 0.0;
+    let mut var_r = 0.0;
+    let mut cov = 0.0;
+    for &i in &valid_idx {
+        let i = i as usize;
+        let dx = factor_values[i] - mean_f;
+        let dy = residuals[i] - mean_r;
+        cov += dx * dy;
+        var_f += dx * dx;
+        var_r += dy * dy;
+    }
+
+    let correlation = if var_f == 0.0 || var_r == 0.0 {
+        0.0
+    } else {
+        cov / (var_f * var_r).sqrt()
+    };
+
+    // Linear trend slope: ss_xy / ss_xx; p-value via t-statistic. Mirrors
+    // `compute_linear_trend` exactly, but uses the same already-computed
+    // moments to avoid a third pass.
+    let (slope, pvalue) = if var_f == 0.0 || n_valid < 3 {
+        if n_valid < 3 {
+            (f64::NAN, f64::NAN)
+        } else {
+            (0.0, 1.0)
+        }
+    } else {
+        let slope = cov / var_f;
+        // ss_res = sum((y - (mean_y + slope * (x - mean_x)))^2)
+        //        = sum((dy - slope * dx)^2)
+        //        = var_r - 2*slope*cov + slope^2 * var_f
+        //        = var_r - slope * cov   (since slope = cov/var_f)
+        let ss_res = (var_r - slope * cov).max(0.0);
+        let df = n_valid - 2;
+        let mse = ss_res / df as f64;
+        let se_slope = (mse / var_f).sqrt();
+        // Perfect linear fit (ss_res ≈ 0): se_slope == 0 means t-statistic is
+        // undefined (∞ × 0). The legacy `compute_linear_trend` helper returned
+        // (slope, 1.0) here; preserve that convention so the trend test reports
+        // "no evidence of departure from a linear trend" rather than NaN.
+        if se_slope == 0.0 {
+            (slope, 1.0)
+        } else {
+            let t_stat = slope / se_slope;
+            let pvalue = 2.0 * (1.0 - t_cdf(t_stat.abs(), df));
+            (slope, pvalue)
+        }
+    };
+
+    // Sort the index list by factor value for binning. We sort indices instead
+    // of (f64, f64) pairs, saving 12 B per element (24 B → 4 B → 4× smaller
+    // working set during sort).
+    let mut sorted_idx = valid_idx;
+    sorted_idx.sort_by(|&a, &b| factor_values[a as usize].total_cmp(&factor_values[b as usize]));
+
+    let bin_size = sorted_idx.len().div_ceil(n_bins).max(1);
+    let mean_residual_by_bin: Vec<f64> = sorted_idx
+        .chunks(bin_size)
         .map(|chunk| {
-            let sum: f64 = chunk.iter().map(|&(_, r)| r).sum();
+            let sum: f64 = chunk.iter().map(|&i| residuals[i as usize]).sum();
             sum / chunk.len() as f64
         })
         .collect();
 
-    // Compute linear trend
-    let (slope, pvalue) = compute_linear_trend(&valid_pairs);
-
-    // R² of residuals ~ factor (how much variance could this factor explain)
     let r_squared = correlation * correlation;
 
     ResidualPattern {
@@ -811,6 +892,14 @@ pub fn compute_residual_pattern_categorical(
 // Helper Functions
 // =============================================================================
 
+// `compute_correlation` and `compute_linear_trend` are now used only by the
+// in-file `#[cfg(test)] mod tests` below — the production code path
+// (`compute_residual_pattern_continuous`) inlines the same arithmetic over
+// `(factor_values, residuals, valid_idx)` slices to avoid the
+// `Vec<(f64, f64)>` materialization that previously dominated peak memory.
+// Keep them under `#[cfg(test)]` so they don't trip dead-code lints in
+// release builds.
+#[cfg(test)]
 fn compute_correlation(pairs: &[(f64, f64)]) -> f64 {
     let n = pairs.len();
     if n < 2 {
@@ -841,6 +930,7 @@ fn compute_correlation(pairs: &[(f64, f64)]) -> f64 {
     cov / (var_x * var_y).sqrt()
 }
 
+#[cfg(test)]
 fn compute_linear_trend(pairs: &[(f64, f64)]) -> (f64, f64) {
     let n = pairs.len();
     if n < 3 {
@@ -1408,7 +1498,14 @@ pub fn compute_glm_deviance(
         .sum()
 }
 
-/// Compute unit deviance for a single observation
+/// Compute unit deviance for a single observation.
+///
+/// Dispatches by family name to the canonical `Family::unit_deviance_at`
+/// implementation. Previously this function re-implemented per-family
+/// arithmetic inline; the NegBin y=0 branch had a sign error
+/// (`ln(θ/(μ+θ))` instead of `ln((μ+θ)/θ)`), producing negative deviance
+/// whenever NegBin data contained zeros. The trait-based path has no such
+/// bug and is the single source of truth for deviance arithmetic.
 pub(crate) fn unit_deviance_for_family(
     y: f64,
     mu: f64,
@@ -1416,56 +1513,25 @@ pub(crate) fn unit_deviance_for_family(
     var_power: f64,
     theta: f64,
 ) -> f64 {
+    use crate::families::{
+        BinomialFamily, Family, GammaFamily, GaussianFamily, NegativeBinomialFamily, PoissonFamily,
+        TweedieFamily,
+    };
     let lower = family.to_lowercase();
-    let mu_safe = mu.max(MU_MIN_POSITIVE);
-    let y_safe = y.max(0.0);
-
     match lower.as_str() {
-        "gaussian" | "normal" => (y - mu).powi(2),
-        "poisson" => {
-            if y_safe > 0.0 {
-                2.0 * (y_safe * (y_safe / mu_safe).ln() - (y_safe - mu_safe))
-            } else {
-                2.0 * mu_safe
-            }
+        "gaussian" | "normal" => GaussianFamily.unit_deviance_at(y, mu),
+        "poisson" | "quasipoisson" => PoissonFamily.unit_deviance_at(y, mu),
+        "binomial" | "quasibinomial" => BinomialFamily.unit_deviance_at(y, mu),
+        "gamma" => GammaFamily.unit_deviance_at(y, mu),
+        "tweedie" => TweedieFamily::new(var_power)
+            .map(|f| f.unit_deviance_at(y, mu))
+            .unwrap_or_else(|_| (y - mu).powi(2)),
+        s if s.starts_with("negbin") || s.starts_with("negativebinomial") => {
+            NegativeBinomialFamily::new(theta)
+                .map(|f| f.unit_deviance_at(y, mu))
+                .unwrap_or_else(|_| (y - mu).powi(2))
         }
-        "binomial" => {
-            let y_clamp = y.clamp(MU_MIN_PROBABILITY, MU_MAX_PROBABILITY);
-            let mu_clamp = mu.clamp(MU_MIN_PROBABILITY, MU_MAX_PROBABILITY);
-            2.0 * (y_clamp * (y_clamp / mu_clamp).ln()
-                + (1.0 - y_clamp) * ((1.0 - y_clamp) / (1.0 - mu_clamp)).ln())
-        }
-        "gamma" => 2.0 * ((y_safe - mu_safe) / mu_safe - (y_safe / mu_safe).ln()),
-        "tweedie" => {
-            // Tweedie deviance depends on var_power
-            if (var_power - 1.0).abs() < TWEEDIE_VAR_POWER_TOL {
-                // Quasi-Poisson
-                2.0 * (y_safe * (y_safe / mu_safe).ln() - (y_safe - mu_safe))
-            } else if (var_power - 2.0).abs() < TWEEDIE_VAR_POWER_TOL {
-                // Gamma
-                2.0 * ((y_safe - mu_safe) / mu_safe - (y_safe / mu_safe).ln())
-            } else {
-                // General Tweedie
-                let p = var_power;
-                if y_safe > 0.0 {
-                    2.0 * (y_safe.powf(2.0 - p) / ((1.0 - p) * (2.0 - p))
-                        - y_safe * mu_safe.powf(1.0 - p) / (1.0 - p)
-                        + mu_safe.powf(2.0 - p) / (2.0 - p))
-                } else {
-                    2.0 * mu_safe.powf(2.0 - p) / (2.0 - p)
-                }
-            }
-        }
-        _ if lower.starts_with("negbin") || lower.starts_with("negativebinomial") => {
-            // Negative binomial deviance
-            if y_safe > 0.0 {
-                2.0 * (y_safe * (y_safe / mu_safe).ln()
-                    - (y_safe + theta) * ((y_safe + theta) / (mu_safe + theta)).ln())
-            } else {
-                2.0 * theta * ((theta) / (mu_safe + theta)).ln()
-            }
-        }
-        _ => (y - mu).powi(2), // Default to Gaussian
+        _ => (y - mu).powi(2), // Unknown family: fall back to squared error
     }
 }
 
@@ -1934,6 +2000,86 @@ mod tests {
     }
 
     #[test]
+    fn test_residual_pattern_continuous_perfect_linear_fit_returns_pvalue_one() {
+        // Perfect linear relationship y = 2*x: ss_res == 0 → se_slope == 0.
+        // The trend p-value must be 1.0 (matches legacy compute_linear_trend
+        // semantics), NOT NaN — see the tests below for the parity check.
+        let factor = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let residuals = array![2.0, 4.0, 6.0, 8.0, 10.0, 12.0];
+
+        let pattern = compute_residual_pattern_continuous(&factor, &residuals, 3);
+
+        assert!(pattern.trend_slope.is_finite());
+        assert!((pattern.trend_slope - 2.0).abs() < 1e-12);
+        assert_eq!(
+            pattern.trend_pvalue, 1.0,
+            "perfect-linear-fit case must return p-value 1.0, not NaN"
+        );
+    }
+
+    #[test]
+    fn test_residual_pattern_continuous_matches_legacy_helpers() {
+        // Parity check: the inlined fold in compute_residual_pattern_continuous
+        // should match (compute_correlation, compute_linear_trend) on the same
+        // (factor, residual) data within tight tolerance. We use a strong but
+        // imperfect linear trend (R² ≈ 0.9, n = 1000) so neither
+        // numerical-cancellation regime nor the perfect-fit branch is exercised.
+        let n = 1000usize;
+        // Deterministic LCG for reproducibility without an external crate.
+        let mut state: u64 = 0xC0FFEE_1234_5678u64;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            // Map to [0.0, 1.0).
+            ((state >> 11) as f64) / ((1u64 << 53) as f64)
+        };
+
+        // Factor values uniform on [0, 10).
+        let factor: Vec<f64> = (0..n).map(|_| next() * 10.0).collect();
+        // Strong linear trend: y = 0.5*x + small noise. The noise std-dev is
+        // tuned so the resulting R² lands close to ~0.9.
+        let residuals: Vec<f64> = factor
+            .iter()
+            .map(|&x| 0.5 * x + 0.4 * (next() - 0.5))
+            .collect();
+        let resid_arr = Array1::from(residuals.clone());
+
+        let pattern = compute_residual_pattern_continuous(&factor, &resid_arr, 10);
+
+        // Build the (x, y) pairs the legacy helpers consume and compute the
+        // same statistics.
+        let pairs: Vec<(f64, f64)> = factor
+            .iter()
+            .zip(residuals.iter())
+            .map(|(&x, &y)| (x, y))
+            .collect();
+        let legacy_corr = compute_correlation(&pairs);
+        let (legacy_slope, legacy_pvalue) = compute_linear_trend(&pairs);
+
+        let rel_tol = 1e-12;
+        let rel_diff = |a: f64, b: f64| (a - b).abs() / b.abs().max(1e-300);
+        assert!(
+            rel_diff(pattern.correlation_with_residuals, legacy_corr) < rel_tol,
+            "correlation: got {}, want {}",
+            pattern.correlation_with_residuals,
+            legacy_corr,
+        );
+        assert!(
+            rel_diff(pattern.trend_slope, legacy_slope) < rel_tol,
+            "slope: got {}, want {}",
+            pattern.trend_slope,
+            legacy_slope,
+        );
+        assert!(
+            rel_diff(pattern.trend_pvalue, legacy_pvalue) < rel_tol,
+            "pvalue: got {}, want {}",
+            pattern.trend_pvalue,
+            legacy_pvalue,
+        );
+    }
+
+    #[test]
     fn test_compute_factor_deviance() {
         let factor = vec![
             "A".to_string(),
@@ -1998,14 +2144,29 @@ mod tests {
 
     #[test]
     fn test_compute_factor_deviance_negbinomial() {
+        // Deliberately includes y=0: that branch had a sign error
+        // (returned negative deviance) when the per-family arithmetic was
+        // inlined. Deviance MUST be non-negative and MUST match
+        // `NegativeBinomialFamily::unit_deviance_at` exactly.
+        use crate::families::{Family, NegativeBinomialFamily};
+
+        let theta = 2.0;
         let factor = vec!["A".to_string(), "B".to_string()];
         let y = array![0.0, 5.0];
         let mu = array![1.0, 4.0];
 
         let result =
-            compute_factor_deviance("count", &factor, &y, &mu, "negativebinomial", 1.5, 2.0);
+            compute_factor_deviance("count", &factor, &y, &mu, "negativebinomial", 1.5, theta);
 
-        assert!(result.total_deviance.is_finite());
+        let family = NegativeBinomialFamily::new(theta).unwrap();
+        let expected: f64 = y
+            .iter()
+            .zip(mu.iter())
+            .map(|(&yi, &mui)| family.unit_deviance_at(yi, mui))
+            .sum();
+
+        assert!(result.total_deviance >= 0.0);
+        approx::assert_relative_eq!(result.total_deviance, expected, max_relative = 1e-12);
     }
 
     #[test]
@@ -2242,6 +2403,54 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_residual_pattern_continuous_matches_naive() {
+        // Pin the algebraic-identity refactor (`ss_res = var_r − slope·cov`)
+        // against the legacy two-pass helpers `compute_correlation` +
+        // `compute_linear_trend`. Strong-trend data (R² ≈ 0.9) is the worst
+        // case for the identity (var_r and slope·cov nearly cancel), so it
+        // also exercises the cancellation behaviour.
+        let n = 1000usize;
+        let mut factor = Vec::with_capacity(n);
+        let mut residuals = Vec::with_capacity(n);
+        // Deterministic LCG for reproducibility.
+        let mut s: u64 = 0xC0FFEE_u64;
+        let next = |s: &mut u64| -> f64 {
+            *s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((*s >> 11) as f64) / ((1u64 << 53) as f64)
+        };
+        for i in 0..n {
+            let x = (i as f64) / (n as f64) * 10.0 - 5.0;
+            // Strong linear trend + small noise → R² ≈ 0.9.
+            let noise = next(&mut s) - 0.5;
+            factor.push(x);
+            residuals.push(0.5 * x + 0.1 * noise);
+        }
+        let resid_arr = Array1::from_vec(residuals.clone());
+
+        let new = compute_residual_pattern_continuous(&factor, &resid_arr, 10);
+
+        // Naive reference: pairs over all (factor, residual), reusing the
+        // legacy helpers which now live in `#[cfg(test)]`.
+        let pairs: Vec<(f64, f64)> = factor
+            .iter()
+            .zip(residuals.iter())
+            .map(|(&f, &r)| (f, r))
+            .collect();
+        let corr_old = compute_correlation(&pairs);
+        let (slope_old, pvalue_old) = compute_linear_trend(&pairs);
+
+        approx::assert_relative_eq!(
+            new.correlation_with_residuals,
+            corr_old,
+            max_relative = 1e-12
+        );
+        approx::assert_relative_eq!(new.trend_slope, slope_old, max_relative = 1e-12);
+        approx::assert_relative_eq!(new.trend_pvalue, pvalue_old, max_relative = 1e-9);
     }
 
     #[test]

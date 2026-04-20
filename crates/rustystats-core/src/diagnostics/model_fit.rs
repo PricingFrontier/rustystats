@@ -33,7 +33,7 @@
 //
 // =============================================================================
 
-use crate::constants::{MU_MAX_PROBABILITY, MU_MIN_POSITIVE, MU_MIN_PROBABILITY};
+use crate::constants::{MU_MAX_PROBABILITY, MU_MIN_PROBABILITY};
 use ndarray::Array1;
 use std::f64::consts::PI;
 
@@ -264,11 +264,60 @@ pub fn null_deviance(
     null_deviance_with_offset(y, family_name, weights, None)
 }
 
+/// Build a `Box<dyn Family>` from a lowercased family-name string.
+///
+/// This is the single point of string→family dispatch for the streaming
+/// null-deviance path. All per-row arithmetic then flows through
+/// `Family::unit_deviance_at`, keeping "one code path" across families.
+fn family_from_name(lower: &str) -> Result<Box<dyn crate::families::Family>, String> {
+    use crate::families::{
+        BinomialFamily, GammaFamily, GaussianFamily, NegativeBinomialFamily, PoissonFamily,
+    };
+    match lower {
+        "gaussian" | "normal" => Ok(Box::new(GaussianFamily)),
+        "poisson" | "quasipoisson" => Ok(Box::new(PoissonFamily)),
+        "binomial" | "quasibinomial" => Ok(Box::new(BinomialFamily)),
+        "gamma" => Ok(Box::new(GammaFamily)),
+        other if other.starts_with("negativebinomial") || other.starts_with("negbinomial") => {
+            let theta = if let Some(start) = other.find("theta=") {
+                let rest = &other[start + "theta=".len()..];
+                let end = rest.find(')').unwrap_or(rest.len());
+                rest[..end].parse::<f64>().unwrap_or(1.0)
+            } else {
+                1.0
+            };
+            Ok(Box::new(NegativeBinomialFamily::new(theta)?))
+        }
+        other => Err(format!(
+            "Unknown family '{}' in null_deviance computation. \
+             Supported families: gaussian, poisson, binomial, gamma, \
+             quasipoisson, quasibinomial, negativebinomial.",
+            other
+        )),
+    }
+}
+
 /// Compute the null deviance with optional offset support.
 ///
 /// When offset is provided, the null model prediction is:
 /// - For log-link models: mu_null = mean_rate * exp(offset), where mean_rate = sum(y) / sum(exp(offset))
 /// - For identity link: mu_null = mean(y - offset) + offset
+///
+/// # Implementation notes
+/// Single-pass `Zip::fold`: rather than materialising `exp_offset`, `mu_null`,
+/// and `unit_dev` (3 × 8 MB at n=1M for the Poisson log-link path), we
+/// recompute `mu_i` on the fly inside the deviance fold and call
+/// `family.unit_deviance_at(yi, mu_i)` per row. `exp(.)` is a few cycles vs.
+/// an 8 MB write/read round-trip. Per-family arithmetic lives in the
+/// `Family` trait impls, so this function and the vectorized
+/// `Family::unit_deviance` cannot drift apart.
+///
+/// **Numerical note.** The previous implementation called `Array1::sum()` on
+/// the materialised `unit_dev`, which uses ndarray's 8-way unrolled
+/// (pairwise-style) accumulation. The new code uses `Zip::fold`, which is a
+/// strict left-fold. For typical inputs the two agree to ~1 ULP; on adversarial
+/// data the drift may be a few ULP. This is a one-shot summation, not iterated,
+/// so the drift does not compound through any downstream computation.
 pub fn null_deviance_with_offset(
     y: &Array1<f64>,
     family_name: &str,
@@ -277,157 +326,88 @@ pub fn null_deviance_with_offset(
 ) -> Result<f64, String> {
     let n = y.len();
 
-    // Compute null model predictions accounting for offset
-    let mu_null: Array1<f64> = match offset {
-        Some(off) => {
-            // For log-link families (Poisson, NegBin, Gamma), offset is on log scale
-            // mu_null = mean_rate * exp(offset), where mean_rate = sum(y) / sum(exp(offset))
-            let family_lower = family_name.to_lowercase();
-            let is_log_link = family_lower.starts_with("poisson")
-                || family_lower.starts_with("negbin")
-                || family_lower.starts_with("negativebinomial")
-                || family_lower.starts_with("gamma")
-                || family_lower.starts_with("quasipoisson");
+    // ---- Pass 1: compute the scalar parameter(s) of the null model ----
+    //
+    // For log-link + offset: we need `mean_rate = sum(y * w) / sum(exp(off) * w)`
+    // For everything else:    we need `y_mean   = sum(y * w) / sum(w)`
+    //
+    // The `mu_i` for each row is then derived deterministically from these
+    // scalars (and the offset, when log-link) inside the second pass.
 
-            if is_log_link {
-                // exp(offset) gives the exposure
-                let exp_offset: Array1<f64> = off.mapv(|x| x.exp());
-                let sum_exp_offset: f64 = match weights {
-                    Some(w) => ndarray::Zip::from(&exp_offset)
-                        .and(w)
-                        .fold(0.0, |acc, &e, &wi| acc + e * wi),
-                    None => exp_offset.sum(),
-                };
-                let sum_y: f64 = match weights {
-                    Some(w) => ndarray::Zip::from(y)
-                        .and(w)
-                        .fold(0.0, |acc, &yi, &wi| acc + yi * wi),
-                    None => y.sum(),
-                };
-                let mean_rate = sum_y / sum_exp_offset;
-                exp_offset.mapv(|e| mean_rate * e)
-            } else {
-                // For identity link, just use weighted mean of y
-                let (sum_y, sum_w) = match weights {
-                    Some(w) => {
-                        let sy: f64 = ndarray::Zip::from(y)
-                            .and(w)
-                            .fold(0.0, |acc, &yi, &wi| acc + yi * wi);
-                        let sw: f64 = w.sum();
-                        (sy, sw)
-                    }
-                    None => (y.sum(), n as f64),
-                };
-                let y_mean = sum_y / sum_w;
-                Array1::from_elem(n, y_mean)
-            }
+    let family_lower = family_name.to_lowercase();
+    let is_log_link_with_offset = offset.is_some()
+        && (family_lower.starts_with("poisson")
+            || family_lower.starts_with("negbin")
+            || family_lower.starts_with("negativebinomial")
+            || family_lower.starts_with("gamma")
+            || family_lower.starts_with("quasipoisson"));
+
+    // Closure: given a row index, return the null-model prediction `mu_i`.
+    // Captures `mean_rate`/`y_mean` and `offset` by value/reference as needed.
+    // Inlined here so the per-row work in pass 2 is a couple of FLOPs.
+    let (mean_rate, y_mean) = if is_log_link_with_offset {
+        let off = offset.expect("offset checked above");
+        let (sum_exp_off, sum_y) = match weights {
+            Some(w) => ndarray::Zip::from(off)
+                .and(y)
+                .and(w)
+                .fold((0.0_f64, 0.0_f64), |(se, sy), &oi, &yi, &wi| {
+                    (se + oi.exp() * wi, sy + yi * wi)
+                }),
+            None => ndarray::Zip::from(off)
+                .and(y)
+                .fold((0.0_f64, 0.0_f64), |(se, sy), &oi, &yi| {
+                    (se + oi.exp(), sy + yi)
+                }),
+        };
+        (sum_y / sum_exp_off, f64::NAN) // y_mean unused on this branch
+    } else {
+        let (sum_y, sum_w) = match weights {
+            Some(w) => ndarray::Zip::from(y)
+                .and(w)
+                .fold((0.0_f64, 0.0_f64), |(sy, sw), &yi, &wi| {
+                    (sy + yi * wi, sw + wi)
+                }),
+            None => (y.sum(), n as f64),
+        };
+        (f64::NAN, sum_y / sum_w) // mean_rate unused on this branch
+    };
+
+    // ---- Pass 2: fold the (weighted) unit deviance ----
+    //
+    // Resolve the family name to a concrete Family trait object once, then
+    // call `family.unit_deviance_at(yi, mui)` inside the fold. This avoids
+    // both the materialised `mu_null` array (~8 MB at n=1M) and a parallel
+    // per-row deviance implementation (previously a local `Kernel` enum
+    // that duplicated the arithmetic of `Family::unit_deviance`).
+    let family = family_from_name(family_lower.as_str())?;
+
+    let total = match (weights, offset) {
+        (Some(w), Some(off)) if is_log_link_with_offset => ndarray::Zip::from(y)
+            .and(w)
+            .and(off)
+            .fold(0.0, |a, &yi, &wi, &oi| {
+                a + family.unit_deviance_at(yi, mean_rate * oi.exp()) * wi
+            }),
+        (Some(w), _) => {
+            // Constant mu_null = y_mean for all rows on the non-log-link path.
+            let mu_const = y_mean;
+            ndarray::Zip::from(y).and(w).fold(0.0, |a, &yi, &wi| {
+                a + family.unit_deviance_at(yi, mu_const) * wi
+            })
         }
-        None => {
-            // No offset: use weighted mean
-            let (sum_y, sum_w) = match weights {
-                Some(w) => {
-                    let sy: f64 = ndarray::Zip::from(y)
-                        .and(w)
-                        .fold(0.0, |acc, &yi, &wi| acc + yi * wi);
-                    let sw: f64 = w.sum();
-                    (sy, sw)
-                }
-                None => (y.sum(), n as f64),
-            };
-            let y_mean = sum_y / sum_w;
-            Array1::from_elem(n, y_mean)
+        (None, Some(off)) if is_log_link_with_offset => {
+            ndarray::Zip::from(y).and(off).fold(0.0, |a, &yi, &oi| {
+                a + family.unit_deviance_at(yi, mean_rate * oi.exp())
+            })
+        }
+        (None, _) => {
+            let mu_const = y_mean;
+            ndarray::Zip::from(y).fold(0.0, |a, &yi| a + family.unit_deviance_at(yi, mu_const))
         }
     };
 
-    // Compute unit deviances based on family (case-insensitive matching)
-    let unit_dev: Array1<f64> = match family_name.to_lowercase().as_str() {
-        "gaussian" | "normal" => {
-            // (y - μ)²
-            ndarray::Zip::from(y)
-                .and(&mu_null)
-                .map_collect(|&yi, &mui| {
-                    let diff = yi - mui;
-                    diff * diff
-                })
-        }
-        "poisson" | "quasipoisson" => {
-            // 2 × [y × log(y/μ) - (y - μ)]
-            ndarray::Zip::from(y)
-                .and(&mu_null)
-                .map_collect(|&yi, &mui| {
-                    if yi == 0.0 {
-                        2.0 * mui
-                    } else {
-                        2.0 * (yi * (yi / mui).ln() - (yi - mui))
-                    }
-                })
-        }
-        "binomial" | "quasibinomial" => {
-            // 2 × [y × log(y/μ) + (1-y) × log((1-y)/(1-μ))]
-            // Clamp mu values for numerical stability
-            ndarray::Zip::from(y)
-                .and(&mu_null)
-                .map_collect(|&yi, &mui| {
-                    let mui_safe = mui.clamp(MU_MIN_PROBABILITY, MU_MAX_PROBABILITY);
-                    let mut dev = 0.0;
-                    if yi > 0.0 {
-                        dev += yi * (yi / mui_safe).ln();
-                    }
-                    if yi < 1.0 {
-                        dev += (1.0 - yi) * ((1.0 - yi) / (1.0 - mui_safe)).ln();
-                    }
-                    2.0 * dev
-                })
-        }
-        "gamma" => {
-            // 2 × [(y - μ)/μ - log(y/μ)]
-            // Floor y to prevent log(0) issues
-            ndarray::Zip::from(y)
-                .and(&mu_null)
-                .map_collect(|&yi, &mui| {
-                    let yi_safe = yi.max(MU_MIN_POSITIVE);
-                    let mui_safe = mui.max(MU_MIN_POSITIVE);
-                    let ratio = yi_safe / mui_safe;
-                    2.0 * ((yi_safe - mui_safe) / mui_safe - ratio.ln())
-                })
-        }
-        other if other.starts_with("negativebinomial") || other.starts_with("negbinomial") => {
-            // Parse theta from family string like "negativebinomial(theta=1.3802)"
-            let theta = if let Some(start) = other.find("theta=") {
-                let rest = &other[start + 6..];
-                let end = rest.find(')').unwrap_or(rest.len());
-                rest[..end].parse::<f64>().unwrap_or(1.0)
-            } else {
-                1.0 // Default theta
-            };
-
-            // 2 × [y × log(y/μ) - (y + θ) × log((y + θ)/(μ + θ))]
-            // For y=0: 2 × θ × log(θ/(μ + θ))
-            ndarray::Zip::from(y)
-                .and(&mu_null)
-                .map_collect(|&yi, &mui| {
-                    let mui_safe = mui.max(MU_MIN_POSITIVE);
-                    if yi == 0.0 {
-                        // Special case for y=0
-                        2.0 * theta * (theta / (mui_safe + theta)).ln()
-                    } else {
-                        // General case
-                        2.0 * (yi * (yi / mui_safe).ln()
-                            - (yi + theta) * ((yi + theta) / (mui_safe + theta)).ln())
-                    }
-                })
-        }
-        other => {
-            return Err(format!("Unknown family '{}' in null_deviance computation. \
-                   Supported families: gaussian, poisson, binomial, gamma, quasipoisson, quasibinomial, negativebinomial.", other));
-        }
-    };
-
-    // Sum up (weighted if applicable)
-    Ok(match weights {
-        Some(w) => (&unit_dev * w).sum(),
-        None => unit_dev.sum(),
-    })
+    Ok(total)
 }
 
 /// Compute null deviance using a Family trait object instead of family name string.
@@ -444,57 +424,61 @@ pub fn null_deviance_for_family(
 ) -> f64 {
     let n = y.len();
 
-    let mu_null: Array1<f64> = match offset {
-        Some(off) => {
-            if family.is_log_link_default() {
-                let exp_offset: Array1<f64> = off.mapv(|x| x.exp());
-                let sum_exp_offset: f64 = match weights {
-                    Some(w) => ndarray::Zip::from(&exp_offset)
-                        .and(w)
-                        .fold(0.0, |acc, &e, &wi| acc + e * wi),
-                    None => exp_offset.sum(),
-                };
-                let sum_y: f64 = match weights {
-                    Some(w) => ndarray::Zip::from(y)
-                        .and(w)
-                        .fold(0.0, |acc, &yi, &wi| acc + yi * wi),
-                    None => y.sum(),
-                };
-                let mean_rate = sum_y / sum_exp_offset;
-                exp_offset.mapv(|e| mean_rate * e)
-            } else {
-                let (sum_y, sum_w) = match weights {
-                    Some(w) => {
-                        let sy: f64 = ndarray::Zip::from(y)
-                            .and(w)
-                            .fold(0.0, |acc, &yi, &wi| acc + yi * wi);
-                        (sy, w.sum())
-                    }
-                    None => (y.sum(), n as f64),
-                };
-                Array1::from_elem(n, sum_y / sum_w)
-            }
+    // Resolve the single scalar (mean_rate for log-link + offset, else y_mean)
+    // that parameterises the null model, then fold
+    // `family.unit_deviance_at(yi, mu_i)` in one pass. No `mu_null` array,
+    // no intermediate `unit_dev` array — matches the streaming design of
+    // `null_deviance_with_offset` so the two cannot drift apart.
+    let (mean_rate, y_mean, use_log_link_offset) = match offset {
+        Some(off) if family.is_log_link_default() => {
+            let (sum_exp_off, sum_y) = match weights {
+                Some(w) => ndarray::Zip::from(off)
+                    .and(y)
+                    .and(w)
+                    .fold((0.0_f64, 0.0_f64), |(se, sy), &oi, &yi, &wi| {
+                        (se + oi.exp() * wi, sy + yi * wi)
+                    }),
+                None => ndarray::Zip::from(off)
+                    .and(y)
+                    .fold((0.0_f64, 0.0_f64), |(se, sy), &oi, &yi| {
+                        (se + oi.exp(), sy + yi)
+                    }),
+            };
+            (sum_y / sum_exp_off, f64::NAN, true)
         }
-        None => {
+        _ => {
             let (sum_y, sum_w) = match weights {
-                Some(w) => {
-                    let sy: f64 = ndarray::Zip::from(y)
-                        .and(w)
-                        .fold(0.0, |acc, &yi, &wi| acc + yi * wi);
-                    (sy, w.sum())
-                }
+                Some(w) => ndarray::Zip::from(y)
+                    .and(w)
+                    .fold((0.0_f64, 0.0_f64), |(sy, sw), &yi, &wi| {
+                        (sy + yi * wi, sw + wi)
+                    }),
                 None => (y.sum(), n as f64),
             };
-            Array1::from_elem(n, sum_y / sum_w)
+            (f64::NAN, sum_y / sum_w, false)
         }
     };
 
-    // Use the family's own unit_deviance — no string dispatch needed
-    let unit_dev = family.unit_deviance(y, &mu_null);
-
-    match weights {
-        Some(w) => (&unit_dev * w).sum(),
-        None => unit_dev.sum(),
+    match (weights, offset, use_log_link_offset) {
+        (Some(w), Some(off), true) => ndarray::Zip::from(y)
+            .and(w)
+            .and(off)
+            .fold(0.0, |a, &yi, &wi, &oi| {
+                a + family.unit_deviance_at(yi, mean_rate * oi.exp()) * wi
+            }),
+        (Some(w), _, _) => {
+            let mu_const = y_mean;
+            ndarray::Zip::from(y).and(w).fold(0.0, |a, &yi, &wi| {
+                a + family.unit_deviance_at(yi, mu_const) * wi
+            })
+        }
+        (None, Some(off), true) => ndarray::Zip::from(y).and(off).fold(0.0, |a, &yi, &oi| {
+            a + family.unit_deviance_at(yi, mean_rate * oi.exp())
+        }),
+        (None, _, _) => {
+            let mu_const = y_mean;
+            ndarray::Zip::from(y).fold(0.0, |a, &yi| a + family.unit_deviance_at(yi, mu_const))
+        }
     }
 }
 
@@ -872,5 +856,336 @@ mod tests {
             null_deviance_with_offset(&y, "poisson", Some(&weights), Some(&offset)).unwrap();
 
         assert!(null_dev >= 0.0);
+    }
+
+    // -----------------------------------------------------------------
+    // Reference (gather-then-sum) implementation for the null deviance,
+    // pinned at this layer so the streaming `null_deviance_with_offset`
+    // refactor can be checked for bit-exact equivalence.
+    // -----------------------------------------------------------------
+    fn null_deviance_with_offset_naive(
+        y: &Array1<f64>,
+        family_name: &str,
+        weights: Option<&Array1<f64>>,
+        offset: Option<&Array1<f64>>,
+    ) -> f64 {
+        let n = y.len();
+        let family_lower = family_name.to_lowercase();
+        let mu_null: Array1<f64> = match offset {
+            Some(off) => {
+                let log_link = family_lower.starts_with("poisson")
+                    || family_lower.starts_with("negbin")
+                    || family_lower.starts_with("negativebinomial")
+                    || family_lower.starts_with("gamma")
+                    || family_lower.starts_with("quasipoisson");
+                if log_link {
+                    let exp_off: Array1<f64> = off.mapv(|x| x.exp());
+                    let sum_exp_off: f64 = match weights {
+                        Some(w) => ndarray::Zip::from(&exp_off)
+                            .and(w)
+                            .fold(0.0, |a, &e, &wi| a + e * wi),
+                        None => exp_off.sum(),
+                    };
+                    let sum_y: f64 = match weights {
+                        Some(w) => ndarray::Zip::from(y)
+                            .and(w)
+                            .fold(0.0, |a, &yi, &wi| a + yi * wi),
+                        None => y.sum(),
+                    };
+                    let mean_rate = sum_y / sum_exp_off;
+                    exp_off.mapv(|e| mean_rate * e)
+                } else {
+                    let (sy, sw) = match weights {
+                        Some(w) => (
+                            ndarray::Zip::from(y)
+                                .and(w)
+                                .fold(0.0, |a, &yi, &wi| a + yi * wi),
+                            w.sum(),
+                        ),
+                        None => (y.sum(), n as f64),
+                    };
+                    Array1::from_elem(n, sy / sw)
+                }
+            }
+            None => {
+                let (sy, sw) = match weights {
+                    Some(w) => (
+                        ndarray::Zip::from(y)
+                            .and(w)
+                            .fold(0.0, |a, &yi, &wi| a + yi * wi),
+                        w.sum(),
+                    ),
+                    None => (y.sum(), n as f64),
+                };
+                Array1::from_elem(n, sy / sw)
+            }
+        };
+
+        // Delegate per-family unit deviance to the canonical `Family` trait
+        // via `family_from_name`. This keeps the naive reference from
+        // duplicating the trait arithmetic — it only reproduces the
+        // `mu_null` allocation (its raison d'être as a naive reference).
+        let family = family_from_name(&family_lower).expect("unsupported family in naive ref");
+        let unit_dev = family.unit_deviance(y, &mu_null);
+
+        match weights {
+            Some(w) => (&unit_dev * w).sum(),
+            None => unit_dev.sum(),
+        }
+    }
+
+    #[test]
+    fn test_null_deviance_streaming_matches_naive() {
+        // Pseudo-random but deterministic inputs.
+        let mut s: u64 = 0xCAFEBABE;
+        let mut next = || {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((s >> 11) as f64) / ((1u64 << 53) as f64)
+        };
+        let n = 500;
+        let y_v: Vec<f64> = (0..n).map(|_| (next() * 5.0).round()).collect();
+        let off_v: Vec<f64> = (0..n).map(|_| (0.1 + 0.9 * next()).ln()).collect();
+        let w_v: Vec<f64> = (0..n).map(|_| 0.5 + next()).collect();
+        let y = Array1::from_vec(y_v);
+        let off = Array1::from_vec(off_v);
+        let w = Array1::from_vec(w_v);
+
+        // The streaming `Zip::fold` and the gather-then-`Array1::sum()` reference
+        // disagree by at most a few ULP because ndarray's `sum` does an 8-way
+        // unrolled (pairwise-style) accumulation while `Zip::fold` is a strict
+        // left-fold. We assert relative agreement at 1e-13 (~10 ULP for sums of
+        // O(1e3) values), which is strictly tighter than any downstream test
+        // tolerance in this crate.
+        let approx_eq = |a: f64, b: f64| -> bool {
+            if a == b {
+                return true;
+            }
+            let denom = a.abs().max(b.abs()).max(1.0);
+            (a - b).abs() / denom < 1e-13
+        };
+
+        for fam in [
+            "gaussian",
+            "poisson",
+            "quasipoisson",
+            "gamma",
+            "binomial",
+            "negativebinomial(theta=1.5)",
+        ] {
+            // For binomial we need y in [0,1] and no offset semantics that break things.
+            let (y_use, mu_use, off_use): (Array1<f64>, _, _) = if fam == "binomial" {
+                (y.mapv(|v| if v > 2.5 { 1.0 } else { 0.0 }), w.clone(), None)
+            } else {
+                (y.clone(), w.clone(), Some(&off))
+            };
+            // No offset, no weights
+            let new = null_deviance_with_offset(&y_use, fam, None, None).unwrap();
+            let old = null_deviance_with_offset_naive(&y_use, fam, None, None);
+            assert!(
+                approx_eq(new, old),
+                "no offset, no weights, fam={}: new={} old={}",
+                fam,
+                new,
+                old
+            );
+            // No offset, with weights
+            let new = null_deviance_with_offset(&y_use, fam, Some(&mu_use), None).unwrap();
+            let old = null_deviance_with_offset_naive(&y_use, fam, Some(&mu_use), None);
+            assert!(
+                approx_eq(new, old),
+                "no offset, weighted, fam={}: new={} old={}",
+                fam,
+                new,
+                old
+            );
+            // With offset
+            if let Some(o) = off_use {
+                let new = null_deviance_with_offset(&y_use, fam, None, Some(o)).unwrap();
+                let old = null_deviance_with_offset_naive(&y_use, fam, None, Some(o));
+                assert!(
+                    approx_eq(new, old),
+                    "with offset, no weights, fam={}: new={} old={}",
+                    fam,
+                    new,
+                    old
+                );
+                let new = null_deviance_with_offset(&y_use, fam, Some(&mu_use), Some(o)).unwrap();
+                let old = null_deviance_with_offset_naive(&y_use, fam, Some(&mu_use), Some(o));
+                assert!(
+                    approx_eq(new, old),
+                    "with offset, weighted, fam={}: new={} old={}",
+                    fam,
+                    new,
+                    old
+                );
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // `null_deviance_with_offset_naive` reference vs. trait-based path
+    // -----------------------------------------------------------------
+    //
+    // The `null_deviance_with_offset_naive` helper above is a test-only
+    // reference with per-family inline deviance formulas. The production
+    // `null_deviance_with_offset` goes through
+    // `Family::unit_deviance_at`. A planned refactor will collapse the
+    // naive helper to also delegate to the trait; these tests exist so
+    // the refactor can be verified AND so any future drift between the
+    // helper and the canonical trait is caught.
+    //
+    // Drift catchers (what each test would fire on):
+    //   * Sign flip in NegBin y=0 branch of the helper       → O(1) drift
+    //   * Dropped outer factor of 2 in any family            → 2× drift
+    //   * Swapping (y, μ) arguments                          → O(1) drift
+    //   * Changing the mean-rate formula for log-link+offset → O(1) drift
+    //
+    // Tolerance: 1e-12 relative. The two paths use the same per-row
+    // arithmetic once the naive helper is refactored, so drift will be
+    // pure float-ordering (below 1e-13). Today's helper has identical
+    // arithmetic for the families under test (Poisson/Gamma/NegBin/
+    // Gaussian/Binomial — all use the same formulas as the corresponding
+    // `Family::unit_deviance_at`), so 1e-12 is comfortably above the
+    // ULP drift while being far tighter than any downstream tolerance
+    // in this crate. A looser aggregate tolerance than the loss.rs
+    // tests is warranted because the naive helper uses
+    // `Array1::map_collect` + `sum()` (8-way unrolled) while production
+    // uses a strict left-fold via `Zip::fold`, so ULP-level drift on
+    // the sum itself can exceed 1e-14 for n=500.
+
+    /// Trait-based path and naive test reference must agree across all
+    /// supported families and every combination of weights/offset. This
+    /// is the primary drift catcher for the naive helper's role as a
+    /// reference implementation.
+    #[test]
+    fn test_null_deviance_naive_ref_matches_trait() {
+        // Deterministic synthetic data — mix of ints and fractions, mu
+        // bounded away from 0, offsets bounded.
+        let mut s: u64 = 0xC0_FF_EE_42;
+        let mut next = || {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((s >> 11) as f64) / ((1u64 << 53) as f64)
+        };
+        let n = 300;
+        let y_v: Vec<f64> = (0..n).map(|_| (next() * 5.0).round()).collect();
+        let off_v: Vec<f64> = (0..n).map(|_| (0.2 + 0.8 * next()).ln()).collect();
+        let w_v: Vec<f64> = (0..n).map(|_| 0.5 + next()).collect();
+        let y = Array1::from_vec(y_v);
+        let off = Array1::from_vec(off_v);
+        let w = Array1::from_vec(w_v);
+
+        let rel_le = |a: f64, b: f64, tol: f64| -> bool {
+            if a == b {
+                return true;
+            }
+            let denom = a.abs().max(b.abs()).max(1.0);
+            (a - b).abs() / denom < tol
+        };
+        let tol = 1e-12;
+
+        for fam in [
+            "gaussian",
+            "poisson",
+            "binomial",
+            "gamma",
+            "negativebinomial(theta=1.5)",
+        ] {
+            // Binomial needs y in [0,1]; offset on binomial is not
+            // special-cased (identity-link-like in the helper), so we
+            // skip offset there to keep comparisons meaningful.
+            let y_use: Array1<f64> = if fam == "binomial" {
+                y.mapv(|v| if v > 2.5 { 1.0 } else { 0.0 })
+            } else {
+                y.clone()
+            };
+            let off_opt: Option<&Array1<f64>> = if fam == "binomial" { None } else { Some(&off) };
+
+            // No weights, no offset
+            let prod = null_deviance_with_offset(&y_use, fam, None, None).unwrap();
+            let naive = null_deviance_with_offset_naive(&y_use, fam, None, None);
+            assert!(
+                rel_le(prod, naive, tol),
+                "no wt/off, fam={}: prod={} naive={}",
+                fam,
+                prod,
+                naive
+            );
+
+            // Weighted, no offset
+            let prod = null_deviance_with_offset(&y_use, fam, Some(&w), None).unwrap();
+            let naive = null_deviance_with_offset_naive(&y_use, fam, Some(&w), None);
+            assert!(
+                rel_le(prod, naive, tol),
+                "wt no off, fam={}: prod={} naive={}",
+                fam,
+                prod,
+                naive
+            );
+
+            // Offset (when applicable)
+            if let Some(o) = off_opt {
+                let prod = null_deviance_with_offset(&y_use, fam, None, Some(o)).unwrap();
+                let naive = null_deviance_with_offset_naive(&y_use, fam, None, Some(o));
+                assert!(
+                    rel_le(prod, naive, tol),
+                    "off no wt, fam={}: prod={} naive={}",
+                    fam,
+                    prod,
+                    naive
+                );
+
+                // Weighted + offset
+                let prod = null_deviance_with_offset(&y_use, fam, Some(&w), Some(o)).unwrap();
+                let naive = null_deviance_with_offset_naive(&y_use, fam, Some(&w), Some(o));
+                assert!(
+                    rel_le(prod, naive, tol),
+                    "off + wt, fam={}: prod={} naive={}",
+                    fam,
+                    prod,
+                    naive
+                );
+            }
+        }
+    }
+
+    /// Focussed NegBin-with-zeros test — this is the specific scenario
+    /// that produced the original NegBin y=0 sign bug in the production
+    /// streaming path. Pins the naive helper at that scenario so any
+    /// refactor that re-introduces the sign flip (either in the helper
+    /// or in the trait that `null_deviance_with_offset` delegates to)
+    /// is caught immediately.
+    #[test]
+    fn test_null_deviance_naive_ref_negbinomial_with_zeros() {
+        // Deliberate mix with ~half zero y rows — guarantees the NB
+        // y=0 branch dominates the sum and the sign bug would produce
+        // a large (negative or wildly off) result.
+        let y = array![0.0, 0.0, 0.0, 1.0, 2.0, 0.0, 0.0, 3.0, 0.0, 5.0];
+        let fam = "negativebinomial(theta=1.5)";
+
+        let prod = null_deviance_with_offset(&y, fam, None, None).unwrap();
+        let naive = null_deviance_with_offset_naive(&y, fam, None, None);
+
+        // Deviance must be non-negative (would have been negative
+        // under the original bug).
+        assert!(prod >= 0.0, "production null deviance must be non-negative");
+        assert!(
+            naive >= 0.0,
+            "naive null deviance must be non-negative (catches sign bug in helper)"
+        );
+
+        // And the two must agree.
+        let denom = prod.abs().max(naive.abs()).max(1.0);
+        let rel_err = (prod - naive).abs() / denom;
+        assert!(
+            rel_err < 1e-12,
+            "prod={} naive={} rel_err={}",
+            prod,
+            naive,
+            rel_err
+        );
     }
 }

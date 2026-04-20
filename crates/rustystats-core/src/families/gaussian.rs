@@ -75,6 +75,12 @@ impl Family for GaussianFamily {
         &residuals * &residuals // Element-wise squaring
     }
 
+    #[inline]
+    fn unit_deviance_at(&self, yi: f64, mui: f64) -> f64 {
+        let diff = yi - mui;
+        diff * diff
+    }
+
     /// The canonical link for Gaussian is the identity link.
     fn default_link(&self) -> Box<dyn Link> {
         Box::new(IdentityLink)

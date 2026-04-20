@@ -96,4 +96,4 @@ pub use interactions::{detect_interactions, FactorData, InteractionCandidate, In
 
 pub use distributions::{chi2_cdf, f_cdf, t_cdf};
 
-pub use vif::inverse_diagonal_spd;
+pub use vif::correlation_and_vif;

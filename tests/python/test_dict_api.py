@@ -2848,5 +2848,444 @@ class TestExplicitKnots:
         )
 
 
+class TestPredictChunked:
+    """Pin the row-chunked predict path against the single-shot path.
+
+    `predict()` switches to chunked design-matrix construction when
+    n_rows > _PREDICT_ROW_CHUNK_DEFAULT. The chunked path is
+    FP-equivalent (not bit-exact) because BLAS gemv reduces row
+    contributions in a different order across chunks. We verify the
+    two agree to ~1 ULP relative.
+    """
+
+    def test_predict_chunked_matches_singleshot(self):
+        from rustystats import formula as _formula
+
+        rng = np.random.default_rng(7)
+        n_fit = 5_000
+        fit_df = pl.DataFrame(
+            {
+                "x": rng.standard_normal(n_fit),
+                "cat": rng.integers(0, 4, n_fit).astype(str),
+                "exposure": rng.uniform(0.1, 1.0, n_fit),
+            }
+        )
+        eta = 0.5 * fit_df["x"].to_numpy() + 0.3
+        mu = np.exp(eta) * fit_df["exposure"].to_numpy()
+        fit_df = fit_df.with_columns(pl.Series("y", rng.poisson(mu).astype(float)))
+
+        result = rs.glm_dict(
+            response="y",
+            terms={
+                "x": {"type": "bs", "df": 4},
+                "cat": {"type": "categorical"},
+            },
+            data=fit_df,
+            family="poisson",
+            offset="exposure",
+        ).fit()
+
+        # n deliberately NOT a multiple of any reasonable chunk size.
+        n_pred = 350_001
+        pred_df = pl.DataFrame(
+            {
+                "x": rng.standard_normal(n_pred),
+                "cat": rng.integers(0, 4, n_pred).astype(str),
+                "exposure": rng.uniform(0.1, 1.0, n_pred),
+            }
+        )
+
+        original_chunk = _formula._PREDICT_ROW_CHUNK_DEFAULT
+        try:
+            _formula._PREDICT_ROW_CHUNK_DEFAULT = n_pred + 1
+            single = result.predict(pred_df)
+            _formula._PREDICT_ROW_CHUNK_DEFAULT = 50_000
+            chunked = result.predict(pred_df)
+        finally:
+            _formula._PREDICT_ROW_CHUNK_DEFAULT = original_chunk
+
+        assert single.shape == chunked.shape == (n_pred,)
+        np.testing.assert_allclose(chunked, single, rtol=1e-12, atol=0)
+
+
+class TestPredictAdaptiveChunk:
+    """Pin adaptive chunk sizing for the chunked predict path.
+
+    The current implementation uses a fixed chunk_size of
+    `_PREDICT_ROW_CHUNK_DEFAULT = 200_000` rows regardless of model
+    width (n_features). For a model with many categorical levels,
+    each chunk materializes a (chunk_size × n_features) float64
+    design matrix — at 200_000 × 10_000 that's 16 GB per chunk, OOM.
+
+    The expected fix is an adaptive chunk size:
+        chunk_size = min(_PREDICT_ROW_CHUNK_DEFAULT,
+                         BUDGET_BYTES // (n_features * 8))
+    exposed as a pure helper `_compute_predict_chunk_size(n_features)`
+    so it can be unit-tested in isolation.
+
+    Some tests in this class are TDD-style and will FAIL on the
+    current implementation (noted inline). They pin the target
+    behavior for the dev working on the memory-hardening change.
+    """
+
+    @staticmethod
+    def _make_wide_fit_data(n_fit: int, n_levels: int, seed: int = 11):
+        """Build a fitting DataFrame with a high-cardinality categorical.
+
+        A categorical with `n_levels` levels + 3 linear terms +
+        intercept yields ~(n_levels + 3) features. Cheap way to get a
+        wide model without needing many input columns.
+        """
+        rng = np.random.default_rng(seed)
+        cats = np.array([f"L{i}" for i in range(n_levels)])
+        fit_df = pl.DataFrame(
+            {
+                "cat": rng.choice(cats, n_fit),
+                "x1": rng.standard_normal(n_fit),
+                "x2": rng.standard_normal(n_fit),
+                "x3": rng.standard_normal(n_fit),
+                "exposure": rng.uniform(0.1, 1.0, n_fit),
+            }
+        )
+        eta = (
+            0.1 * fit_df["x1"].to_numpy()
+            + 0.05 * fit_df["x2"].to_numpy()
+            - 0.05 * fit_df["x3"].to_numpy()
+            + 0.2
+        )
+        mu = np.exp(eta) * fit_df["exposure"].to_numpy()
+        fit_df = fit_df.with_columns(
+            pl.Series("y", rng.poisson(np.clip(mu, 1e-6, None)).astype(float))
+        )
+        return fit_df
+
+    @staticmethod
+    def _fit_wide_model(n_fit: int, n_levels: int, seed: int = 11):
+        fit_df = TestPredictAdaptiveChunk._make_wide_fit_data(
+            n_fit=n_fit, n_levels=n_levels, seed=seed
+        )
+        # Ridge keeps high-cardinality categorical well-conditioned.
+        return rs.glm_dict(
+            response="y",
+            terms={
+                "cat": {"type": "categorical"},
+                "x1": {"type": "linear"},
+                "x2": {"type": "linear"},
+                "x3": {"type": "linear"},
+            },
+            data=fit_df,
+            family="poisson",
+            offset="exposure",
+        ).fit(alpha=1e-3, l1_ratio=0.0)
+
+    # ---- Test 1: Wide-model predict produces correct output --------------
+
+    def test_wide_model_chunked_predict_matches_singleshot(self):
+        """Correctness: chunked predict on a wide model agrees with single-shot.
+
+        Monkey-patches `_PREDICT_ROW_CHUNK_DEFAULT` to force each
+        branch. This test does NOT depend on the adaptive-chunk fix
+        and should pass on both current and post-fix code.
+        """
+        from rustystats import formula as _formula
+
+        # ~200 features: 150 categorical levels → 149 dummies + intercept +
+        # 3 linear terms = 153 columns. Bump to ~200 by adding splines on x1.
+        # We instead use 200 categorical levels which gives ~203 columns.
+        n_levels = 200
+        result = self._fit_wide_model(n_fit=4_000, n_levels=n_levels)
+        n_features = len(result.params)
+        # Sanity check on model width.
+        assert n_features >= 150, f"expected ~200 features for the wide test, got {n_features}"
+
+        rng = np.random.default_rng(23)
+        n_pred = 400_001  # > current chunk default (200_000) to force chunking
+        cats = np.array([f"L{i}" for i in range(n_levels)])
+        pred_df = pl.DataFrame(
+            {
+                "cat": rng.choice(cats, n_pred),
+                "x1": rng.standard_normal(n_pred),
+                "x2": rng.standard_normal(n_pred),
+                "x3": rng.standard_normal(n_pred),
+                "exposure": rng.uniform(0.1, 1.0, n_pred),
+            }
+        )
+
+        original = _formula._PREDICT_ROW_CHUNK_DEFAULT
+        try:
+            # Force single-shot by bumping the threshold above n_pred.
+            _formula._PREDICT_ROW_CHUNK_DEFAULT = n_pred + 1
+            single = result.predict(pred_df)
+            # Force chunking with a small chunk size.
+            _formula._PREDICT_ROW_CHUNK_DEFAULT = 50_000
+            chunked = result.predict(pred_df)
+        finally:
+            _formula._PREDICT_ROW_CHUNK_DEFAULT = original
+
+        assert single.shape == chunked.shape == (n_pred,)
+        assert np.all(np.isfinite(single))
+        assert np.all(np.isfinite(chunked))
+        # Reasonable response-scale values (poisson + log link + exposure).
+        assert (single >= 0).all()
+        # FP-equivalent, not bit-exact (BLAS gemv reduction order).
+        np.testing.assert_allclose(chunked, single, rtol=1e-10, atol=0)
+
+    # ---- Test 2: Chunked predict with wide model completes (no-OOM smoke) -
+
+    @pytest.mark.slow
+    def test_wide_model_large_predict_completes(self):
+        """Smoke test: wide model + large predict completes in reasonable time.
+
+        We can't easily assert peak RSS in a unit test. This test
+        just verifies the call returns a correct-shape finite array
+        under a generous timeout. With the adaptive-chunk fix the
+        per-chunk allocation is bounded; without it, a bigger model
+        would OOM on CI.
+        """
+        import time
+
+        # ~300 features: 300 categorical levels → 299 dummies + intercept +
+        # 3 linear terms ≈ 303 columns.
+        n_levels = 300
+        result = self._fit_wide_model(n_fit=4_000, n_levels=n_levels)
+        n_features = len(result.params)
+        assert n_features >= 250, f"expected wide model, got {n_features} features"
+
+        rng = np.random.default_rng(37)
+        n_pred = 500_000
+        cats = np.array([f"L{i}" for i in range(n_levels)])
+        pred_df = pl.DataFrame(
+            {
+                "cat": rng.choice(cats, n_pred),
+                "x1": rng.standard_normal(n_pred),
+                "x2": rng.standard_normal(n_pred),
+                "x3": rng.standard_normal(n_pred),
+                "exposure": rng.uniform(0.1, 1.0, n_pred),
+            }
+        )
+
+        t0 = time.perf_counter()
+        preds = result.predict(pred_df)
+        elapsed = time.perf_counter() - t0
+
+        assert preds.shape == (n_pred,)
+        assert np.all(np.isfinite(preds))
+        assert elapsed < 60.0, f"predict too slow: {elapsed:.1f}s"
+
+    # ---- Test 3: TDD — _compute_predict_chunk_size helper ----------------
+
+    def test_compute_predict_chunk_size_narrow_model_unchanged(self):
+        """TDD: small/narrow models keep the default chunk size.
+
+        For a tiny model (p=10) the memory budget is a non-binding
+        constraint, so chunk_size should equal the default (200_000).
+
+        FAILS on current code — the helper doesn't exist yet.
+        """
+        from rustystats.formula import (
+            _PREDICT_ROW_CHUNK_DEFAULT,
+            _compute_predict_chunk_size,
+        )
+
+        assert _compute_predict_chunk_size(10) == _PREDICT_ROW_CHUNK_DEFAULT
+        assert _compute_predict_chunk_size(50) == _PREDICT_ROW_CHUNK_DEFAULT
+
+    def test_compute_predict_chunk_size_wide_model_shrinks(self):
+        """TDD: wide models get a chunk size below the default.
+
+        For p=1000 the default-sized chunk would materialize
+        200_000 × 1000 × 8B = 1.6 GB per chunk. The adaptive logic
+        should cap this below the default.
+
+        FAILS on current code.
+        """
+        from rustystats.formula import (
+            _PREDICT_ROW_CHUNK_DEFAULT,
+            _compute_predict_chunk_size,
+        )
+
+        chunk = _compute_predict_chunk_size(1000)
+        assert chunk < _PREDICT_ROW_CHUNK_DEFAULT
+        assert chunk > 0
+        # Sanity: per-chunk float64 bytes should not blow past a few
+        # hundred MB. At p=1000, 50_000 rows × 1000 × 8B = 400 MB which
+        # is a rough upper bound — if the budget is ~200 MB we'd expect
+        # chunk ≤ 25_000, but we leave headroom for implementation choice.
+        per_chunk_bytes = chunk * 1000 * 8
+        assert (
+            per_chunk_bytes <= 1_000_000_000
+        ), f"per-chunk allocation too large: {per_chunk_bytes:,} bytes"
+
+    def test_compute_predict_chunk_size_very_wide_model_positive(self):
+        """TDD: very wide models get a small but strictly positive chunk size.
+
+        For p=10_000 the chunk size must be small — but NEVER zero,
+        or the predict loop would divide-by-zero / spin forever.
+
+        FAILS on current code.
+        """
+        from rustystats.formula import _compute_predict_chunk_size
+
+        chunk = _compute_predict_chunk_size(10_000)
+        assert chunk > 0, "chunk size must be strictly positive"
+        # And strictly smaller than for p=1000 (monotonicity is pinned
+        # separately below; this is just a sanity cap).
+        assert chunk < 200_000
+
+    def test_compute_predict_chunk_size_monotonic_in_width(self):
+        """TDD: chunk size is non-increasing as n_features grows.
+
+        chunk_size(p1) >= chunk_size(p2) whenever p1 <= p2.
+
+        FAILS on current code.
+        """
+        from rustystats.formula import _compute_predict_chunk_size
+
+        widths = [1, 10, 50, 200, 500, 1_000, 5_000, 10_000, 50_000]
+        chunks = [_compute_predict_chunk_size(p) for p in widths]
+        for p1, p2, c1, c2 in zip(widths, widths[1:], chunks, chunks[1:]):
+            assert c1 >= c2, f"non-monotonic: chunk_size({p1})={c1} < chunk_size({p2})={c2}"
+        # All strictly positive.
+        assert all(c > 0 for c in chunks)
+
+    def test_compute_predict_chunk_size_budget_cap_observed(self):
+        """TDD: per-chunk bytes stay within a reasonable memory budget.
+
+        For any moderately wide model, `chunk_size * n_features * 8`
+        should fit in a few hundred MB. Exact budget is the dev's call
+        (spec targets ~200 MB ≈ 25M float64 values); we pin a loose
+        upper bound of 1 GB so the test is robust to reasonable choices.
+
+        FAILS on current code.
+        """
+        from rustystats.formula import _compute_predict_chunk_size
+
+        for p in (100, 500, 1_000, 5_000, 10_000):
+            chunk = _compute_predict_chunk_size(p)
+            per_chunk_bytes = chunk * p * 8
+            assert (
+                per_chunk_bytes <= 1_000_000_000
+            ), f"p={p}: per-chunk {per_chunk_bytes:,} bytes exceeds 1 GB"
+
+    # ---- Test 3b: Observable chunk-count scaling (integration) ----------
+
+    def test_chunk_count_scales_with_model_width(self):
+        """TDD-ish: wider models produce MORE chunks for the same n_rows.
+
+        Counts calls to `InteractionBuilder.transform_new_data` via
+        monkey-patching. For the same n_rows, a wider model must
+        trigger at least as many chunks as a narrower model (and
+        strictly more once the width forces the budget below the
+        default). This is the user-visible effect of the adaptive
+        chunk sizing.
+
+        FAILS on current code — today both widths use chunk_size =
+        200_000 so the counts are equal.
+        """
+        from unittest.mock import patch
+
+        from rustystats.interactions import InteractionBuilder
+
+        narrow = self._fit_wide_model(n_fit=2_000, n_levels=20)
+        wide = self._fit_wide_model(n_fit=4_000, n_levels=1_000)
+
+        # Must be wide enough that the adaptive budget bites.
+        assert len(wide.params) >= 500, (
+            f"wide model only has {len(wide.params)} features; "
+            "test cannot distinguish the adaptive-chunk effect"
+        )
+
+        rng = np.random.default_rng(101)
+        n_pred = 600_000  # > default chunk to force chunking on both
+
+        def _make_pred_df(n_levels_: int) -> pl.DataFrame:
+            cats = np.array([f"L{i}" for i in range(n_levels_)])
+            return pl.DataFrame(
+                {
+                    "cat": rng.choice(cats, n_pred),
+                    "x1": rng.standard_normal(n_pred),
+                    "x2": rng.standard_normal(n_pred),
+                    "x3": rng.standard_normal(n_pred),
+                    "exposure": rng.uniform(0.1, 1.0, n_pred),
+                }
+            )
+
+        pred_narrow = _make_pred_df(20)
+        pred_wide = _make_pred_df(1_000)
+
+        original = InteractionBuilder.transform_new_data
+
+        def count_calls(model, pred_df):
+            counter = {"n": 0}
+
+            def counting_transform(self, data):
+                counter["n"] += 1
+                return original(self, data)
+
+            with patch.object(InteractionBuilder, "transform_new_data", counting_transform):
+                model.predict(pred_df)
+            return counter["n"]
+
+        n_chunks_narrow = count_calls(narrow, pred_narrow)
+        n_chunks_wide = count_calls(wide, pred_wide)
+
+        # Narrow model at n=600k with default chunk=200k → 3 chunks.
+        assert n_chunks_narrow >= 3
+        # Wide model should produce *more* chunks once adaptive sizing
+        # shrinks per-chunk rows below the default.
+        assert n_chunks_wide > n_chunks_narrow, (
+            f"adaptive chunking not active: narrow={n_chunks_narrow} "
+            f"chunks, wide={n_chunks_wide} chunks (expected wide > narrow)"
+        )
+
+    # ---- Test 4: Small-n fast path unaffected ----------------------------
+
+    def test_small_n_fast_path_unaffected(self):
+        """Small n_rows uses the single-shot path regardless of width.
+
+        For n=100 rows, no chunking should happen: the predict output
+        must equal what a single-shot call produces (bit-exact, since
+        it IS the same call path). Verified by counting calls to
+        `transform_new_data` — must be exactly 1.
+
+        This test should pass on both current and post-fix code.
+        """
+        from unittest.mock import patch
+
+        from rustystats.interactions import InteractionBuilder
+
+        result = self._fit_wide_model(n_fit=2_000, n_levels=100)
+
+        rng = np.random.default_rng(55)
+        n_pred = 100
+        cats = np.array([f"L{i}" for i in range(100)])
+        pred_df = pl.DataFrame(
+            {
+                "cat": rng.choice(cats, n_pred),
+                "x1": rng.standard_normal(n_pred),
+                "x2": rng.standard_normal(n_pred),
+                "x3": rng.standard_normal(n_pred),
+                "exposure": rng.uniform(0.1, 1.0, n_pred),
+            }
+        )
+
+        original = InteractionBuilder.transform_new_data
+        counter = {"n": 0}
+
+        def counting_transform(self, data):
+            counter["n"] += 1
+            return original(self, data)
+
+        with patch.object(InteractionBuilder, "transform_new_data", counting_transform):
+            preds = result.predict(pred_df)
+
+        assert counter["n"] == 1, (
+            f"small-n should use single-shot path, got {counter['n']} "
+            "calls to transform_new_data"
+        )
+        assert preds.shape == (n_pred,)
+        assert np.all(np.isfinite(preds))
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

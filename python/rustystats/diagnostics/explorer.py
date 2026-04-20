@@ -855,7 +855,17 @@ class DataExplorer:
     def _compute_cramers_v_pair_fast(self, x_uniq_inv: tuple, y_uniq_inv: tuple) -> float:
         """Compute Cramér's V from pre-computed (unique, inverse) tuples.
 
-        Uses vectorized contingency table via combined integer encoding.
+        Streaming implementation: instead of materializing the full (r, k)
+        contingency table, iterate over the unique ``(x_inv, y_inv)`` pairs
+        (at most ``n`` of them) and accumulate chi-squared via the identity
+
+            chi2 = sum_{i,j} (obs_ij - exp_ij)^2 / exp_ij
+                 = sum_{i,j} obs_ij^2 / exp_ij - n
+
+        Only nonzero cells contribute to the first sum, so we only touch as
+        many cells as actually appear in the data. Memory is O(n) in the
+        worst case (vs O(r*k) previously) and typically far less for sparse
+        high-cardinality factors.
         """
         x_cats, x_inv = x_uniq_inv
         y_cats, y_inv = y_uniq_inv
@@ -864,84 +874,48 @@ class DataExplorer:
         if r < 2 or k < 2:
             return 0.0
 
-        # Build contingency table vectorized: encode (x_inv, y_inv) as single int
-        combined = x_inv * k + y_inv
-        flat_counts = np.bincount(combined, minlength=r * k)
-        contingency = flat_counts.reshape(r, k).astype(np.float64)
-
-        n = contingency.sum()
-        if n == 0:
+        n_rows = len(x_inv)
+        if n_rows == 0:
             return 0.0
 
-        # Chi-squared statistic
-        row_sums = contingency.sum(axis=1, keepdims=True)
-        col_sums = contingency.sum(axis=0, keepdims=True)
-        expected = row_sums * col_sums / n
+        # Marginals from the 1D inverse arrays — O(r) and O(k), tiny.
+        row_sums = np.bincount(x_inv, minlength=r).astype(np.float64)
+        col_sums = np.bincount(y_inv, minlength=k).astype(np.float64)
+        n = float(n_rows)
 
-        # Handle zero expected values explicitly (don't suppress warnings)
-        if np.any(expected == 0):
-            # Zero expected values indicate empty cells - raise error for actuarial transparency
+        # Any zero marginal ⇒ at least one expected cell is 0 ⇒ ill-defined.
+        # Preserve the original defensive ValidationError path here.
+        if np.any(row_sums == 0) or np.any(col_sums == 0):
             raise ValidationError(
                 "Cramér's V calculation has zero expected frequencies. "
                 "This indicates empty cells in the contingency table between factors. "
                 "Check data quality or reduce number of factor levels."
             )
-        chi2 = np.sum((contingency - expected) ** 2 / expected)
 
-        # Cramér's V
+        # Encode (i, j) as a single int64 key; int64 guards against overflow
+        # when r * k exceeds int32 range on high-cardinality factors.
+        k_i64 = np.int64(k)
+        combined = x_inv.astype(np.int64, copy=False) * k_i64 + y_inv.astype(np.int64, copy=False)
+
+        # Only the cells that actually appear contribute to sum obs^2 / exp;
+        # empty cells have obs = 0 and drop out algebraically. np.unique here
+        # is O(n log n) in time and O(n) in memory (worst case), which is
+        # strictly dominated by the previous O(r*k) float64 materialization
+        # for high-cardinality sparse inputs.
+        cell_codes, counts = np.unique(combined, return_counts=True)
+        i_idx = cell_codes // k_i64
+        j_idx = cell_codes % k_i64
+
+        exp_nonzero = row_sums[i_idx] * col_sums[j_idx] / n
+        # All marginals are strictly positive (checked above), so exp_nonzero
+        # is strictly positive — no divide-by-zero guard needed here.
+        chi2 = float(np.sum(counts.astype(np.float64) ** 2 / exp_nonzero) - n)
+
         min_dim = min(r - 1, k - 1)
-        if min_dim == 0 or n == 0:
+        if min_dim == 0:
             return 0.0
 
-        v = np.sqrt(chi2 / (n * min_dim))
-        return float(v)
-
-    def _compute_cramers_v_pair(self, x: np.ndarray, y: np.ndarray) -> float:
-        """Compute Cramér's V for a pair of categorical variables (fallback).
-
-        Uses vectorized contingency table via combined integer encoding.
-        """
-        x_str = x.astype(str)
-        y_str = y.astype(str)
-
-        x_cats, x_inv = np.unique(x_str, return_inverse=True)
-        y_cats, y_inv = np.unique(y_str, return_inverse=True)
-
-        r, k = len(x_cats), len(y_cats)
-        if r < 2 or k < 2:
-            return 0.0
-
-        # Build contingency table vectorized: encode (x_inv, y_inv) as single int
-        combined = x_inv * k + y_inv
-        flat_counts = np.bincount(combined, minlength=r * k)
-        contingency = flat_counts.reshape(r, k).astype(np.float64)
-
-        n = contingency.sum()
-        if n == 0:
-            return 0.0
-
-        # Chi-squared statistic
-        row_sums = contingency.sum(axis=1, keepdims=True)
-        col_sums = contingency.sum(axis=0, keepdims=True)
-        expected = row_sums * col_sums / n
-
-        # Handle zero expected values explicitly (don't suppress warnings)
-        if np.any(expected == 0):
-            # Zero expected values indicate empty cells - raise error for actuarial transparency
-            raise ValidationError(
-                "Cramér's V calculation has zero expected frequencies. "
-                "This indicates empty cells in the contingency table between factors. "
-                "Check data quality or reduce number of factor levels."
-            )
-        chi2 = np.sum((contingency - expected) ** 2 / expected)
-
-        # Cramér's V
-        min_dim = min(r - 1, k - 1)
-        if min_dim == 0 or n == 0:
-            return 0.0
-
-        v = np.sqrt(chi2 / (n * min_dim))
-        return float(v)
+        return float(np.sqrt(chi2 / (n * min_dim)))
 
     def detect_interactions(
         self,

@@ -300,11 +300,13 @@ def _precompute_data_caches(
     categorical_factors: list[str],
     continuous_factors: list[str],
 ) -> tuple[dict, dict, dict]:
-    """Pre-extract categorical and continuous columns using polars-native casting.
+    """Pre-extract categorical and continuous columns using per-column factorization.
 
-    Uses Categorical cast: get_categories() + to_physical() avoids Python list
-    materialization and Rust string marshalling. Codes are remapped to
-    sorted-level order to preserve the contract expected by downstream consumers.
+    Uses ``pl.Enum`` per column: Enum is a per-column categorical type
+    (unlike ``pl.Categorical`` which uses a session-level string cache that
+    leaks levels across columns). This gives the correctness of isolated
+    factorization with the speed of polars' native string handling
+    (~8× faster than ``np.unique`` on an object-dtype array at n=1M).
     """
     cat_cache: dict = {}
     cat_unique_cache: dict = {}
@@ -312,23 +314,13 @@ def _precompute_data_caches(
         if name not in data.columns:
             continue
 
-        # Cast to categorical once. get_categories gives insertion-order uniques;
-        # to_physical gives insertion-order codes. We want sorted uniques + remapped codes
-        # to match the existing contract enforced by _factorize_strings.
-        cat_series = data[name].cast(pl.Utf8).cast(pl.Categorical)
-        insertion_levels = cat_series.cat.get_categories().to_numpy()
-        insertion_codes = cat_series.to_physical().to_numpy().astype(np.uint32)
+        values = data[name].cast(pl.Utf8)
+        sorted_level_list = values.unique().sort().to_list()
+        sorted_levels = np.array(sorted_level_list)
+        enum_series = values.cast(pl.Enum(sorted_level_list))
+        codes = enum_series.to_physical().to_numpy().astype(np.uint32)
 
-        # Sort levels lexicographically and remap codes.
-        order = np.argsort(insertion_levels, kind="stable")
-        sorted_levels = insertion_levels[order]
-        # Inverse permutation: for each old code, find its new position.
-        remap = np.empty(len(order), dtype=np.uint32)
-        remap[order] = np.arange(len(order), dtype=np.uint32)
-        codes = remap[insertion_codes]
-
-        # The string-array view needs to be the ACTUAL values, not levels[codes]
-        # (cheaper: materialize once from codes rather than cast(str).to_list()).
+        # Materialized string array for the legacy cat_cache (unchanged contract).
         str_vals = sorted_levels[codes]
 
         cat_cache[name] = str_vals
@@ -357,7 +349,28 @@ def _extract_score_test_matrices(
     if hasattr(result, "get_design_matrix"):
         design_matrix = result.get_design_matrix()
     if design_matrix is None and hasattr(result, "_builder") and result._builder is not None:
-        design_matrix = result._builder.transform_new_data(train_data)
+        # Chunked rebuild: for large n we write row-blocks into a preallocated
+        # (n, p) output, so transient peak is ~2*(chunk_size*p*8) rather than
+        # doubling during Rust's horizontal stack of the full build. Mirrors
+        # the chunked predict() path in formula.py.
+        from rustystats.formula import _compute_predict_chunk_size
+
+        n_rows = len(train_data)
+        n_features = len(result.params)
+        chunk_size = _compute_predict_chunk_size(n_features)
+        if n_rows <= chunk_size:
+            # Small input: keep the single-shot fast path (bit-exact to
+            # pre-refactor behavior).
+            design_matrix = result._builder.transform_new_data(train_data)
+        else:
+            design_matrix = np.empty((n_rows, n_features), dtype=np.float64)
+            for start in range(0, n_rows, chunk_size):
+                stop = min(start + chunk_size, n_rows)
+                X_chunk = result._builder.transform_new_data(train_data.slice(start, stop - start))
+                design_matrix[start:stop, :] = X_chunk
+                # Mark the reference dead so the chunk can be freed before the
+                # next iteration allocates.
+                del X_chunk
     if hasattr(result, "get_bread_matrix"):
         bread_matrix = result.get_bread_matrix()
     if hasattr(result, "get_irls_weights"):

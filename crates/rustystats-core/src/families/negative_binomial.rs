@@ -143,21 +143,22 @@ impl Family for NegativeBinomialFamily {
     /// When y = 0, this simplifies to:
     /// d_i = 2θ × log((μ + θ)/θ)
     fn unit_deviance(&self, y: &Array1<f64>, mu: &Array1<f64>) -> Array1<f64> {
+        ndarray::Zip::from(y)
+            .and(mu)
+            .map_collect(|&yi, &mui| self.unit_deviance_at(yi, mui))
+    }
+
+    #[inline]
+    fn unit_deviance_at(&self, yi: f64, mui: f64) -> f64 {
         let theta = self.theta;
-
-        ndarray::Zip::from(y).and(mu).map_collect(|&yi, &mui| {
-            let mui_safe = mui.max(MU_MIN_POSITIVE);
-
-            if yi == 0.0 {
-                // When y = 0: 2θ × log((μ+θ)/θ)
-                2.0 * theta * ((mui_safe + theta) / theta).ln()
-            } else {
-                // General case: 2 × [y×log(y/μ) - (y+θ)×log((y+θ)/(μ+θ))]
-                let term1 = yi * (yi / mui_safe).ln();
-                let term2 = (yi + theta) * ((yi + theta) / (mui_safe + theta)).ln();
-                2.0 * (term1 - term2)
-            }
-        })
+        let mui_safe = mui.max(MU_MIN_POSITIVE);
+        if yi == 0.0 {
+            2.0 * theta * ((mui_safe + theta) / theta).ln()
+        } else {
+            let term1 = yi * (yi / mui_safe).ln();
+            let term2 = (yi + theta) * ((yi + theta) / (mui_safe + theta)).ln();
+            2.0 * (term1 - term2)
+        }
     }
 
     /// Default link: Log (same as Poisson).

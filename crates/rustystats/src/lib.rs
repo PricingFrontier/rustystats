@@ -254,7 +254,7 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m
     )?)?;
     m.add_function(wrap_pyfunction!(
-        diagnostics_py::inverse_diagonal_spd_py,
+        diagnostics_py::compute_correlation_and_vif_py,
         m
     )?)?;
 

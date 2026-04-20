@@ -121,6 +121,17 @@ pub trait Family: Send + Sync {
     /// Array of unit deviance values (one per observation)
     fn unit_deviance(&self, y: &Array1<f64>, mu: &Array1<f64>) -> Array1<f64>;
 
+    /// Per-row scalar unit deviance.
+    ///
+    /// This is the streaming counterpart of [`unit_deviance`]: identical
+    /// arithmetic, but evaluated for a single (y, μ) pair without allocating.
+    /// Streaming callers (e.g. null-deviance computation) fold over this in a
+    /// single pass instead of materialising an `Array1<f64>` of unit deviances.
+    ///
+    /// Implementations MUST mirror the per-row arithmetic of `unit_deviance`
+    /// exactly so the two paths agree to bit-equality.
+    fn unit_deviance_at(&self, yi: f64, mui: f64) -> f64;
+
     /// Compute the total deviance (sum of unit deviances).
     ///
     /// This can be weighted if weights are provided.

@@ -1007,6 +1007,140 @@ class TestEnhancedDiagnostics:
         assert "relativity" in coef_summary[0]
         # impact/recommendation removed for token optimization (derivable from z_value and relativity)
 
+    def test_partial_dependence_categorical_batch_py_matches_bincount(self):
+        """Change 7 regression guard: ``partial_dependence_categorical_batch_py``
+        now accepts a list of 1D u32 arrays (one per factor) instead of a
+        stacked ``(n, k)`` matrix, eliminating a 400 MB transient ``np.stack``
+        at n=1M × k=100. This test calls the PyO3 binding directly with 5
+        factors × 10_000 rows (varying levels 3, 5, 10, 20, 50) and asserts
+        the per-factor ``(counts, mu_sums)`` match an independent
+        ``np.bincount`` reference. The underlying Rust aggregator's behaviour
+        is the invariant the refactor must preserve — independent of how the
+        Python caller assembles its arguments."""
+        from rustystats._rustystats import partial_dependence_categorical_batch_py
+
+        rng = np.random.default_rng(12345)
+        n = 10_000
+        n_levels_per_factor = [3, 5, 10, 20, 50]
+        k = len(n_levels_per_factor)
+
+        codes_list = [
+            rng.integers(0, n_levels_per_factor[j], size=n, dtype=np.uint32) for j in range(k)
+        ]
+        mu = rng.uniform(0.1, 2.1, size=n).astype(np.float64)
+
+        batch_results = partial_dependence_categorical_batch_py(codes_list, mu, n_levels_per_factor)
+
+        assert len(batch_results) == k
+        for j in range(k):
+            got_counts, got_mu_sums = batch_results[j]
+            m = n_levels_per_factor[j]
+
+            # Independent reference via numpy's bincount — the semantics the
+            # Rust helper replaced.
+            ref_counts = np.bincount(codes_list[j], minlength=m).astype(np.float64)
+            ref_mu_sums = np.bincount(codes_list[j], weights=mu, minlength=m)
+
+            assert len(got_counts) == m
+            assert len(got_mu_sums) == m
+            np.testing.assert_array_equal(
+                np.asarray(got_counts), ref_counts, err_msg=f"counts factor {j}"
+            )
+            # mu_sums can differ by FP ULPs due to summation order — tight
+            # but not bit-exact.
+            np.testing.assert_allclose(
+                np.asarray(got_mu_sums),
+                ref_mu_sums,
+                rtol=1e-12,
+                atol=1e-9,
+                err_msg=f"mu_sums factor {j}",
+            )
+
+            # Invariant: total count == n, total mu_sum == sum(mu).
+            assert sum(got_counts) == float(n)
+            np.testing.assert_allclose(sum(got_mu_sums), float(mu.sum()), rtol=1e-12)
+
+    def test_partial_dependence_diagnostics_end_to_end_stable(self):
+        """End-to-end regression guard: fit a model with 3 categorical
+        factors, run ``result.diagnostics(...)`` and pin per-level mean
+        predictions. The refactor of ``partial_dependence_categorical_batch_py``
+        must leave these numbers unchanged. Uses hand-computable per-factor
+        grouping so the expected values are derivable from the input."""
+        import rustystats as rs
+
+        rng = np.random.default_rng(777)
+        n = 1_500
+
+        regions = rng.choice(["A", "B", "C"], n)
+        brands = rng.choice(["x", "y", "z", "w"], n)
+        fuels = rng.choice(["petrol", "diesel", "electric"], n)
+        age = rng.uniform(18, 70, n)
+
+        eta = -2.0 + 0.02 * age + 0.15 * (regions == "A").astype(float)
+        mu_true = np.exp(eta)
+        y = rng.poisson(mu_true).astype(np.float64)
+
+        data = pl.DataFrame(
+            {
+                "y": y,
+                "age": age,
+                "region": regions,
+                "brand": brands,
+                "fuel": fuels,
+            }
+        )
+
+        result = rs.glm_dict(
+            response="y",
+            terms={
+                "age": {"type": "linear"},
+                "region": {"type": "categorical"},
+                "brand": {"type": "categorical"},
+                "fuel": {"type": "categorical"},
+            },
+            data=data,
+            family="poisson",
+        ).fit()
+
+        cat_factors = ["region", "brand", "fuel"]
+        diagnostics = result.diagnostics(
+            train_data=data,
+            categorical_factors=cat_factors,
+            continuous_factors=["age"],
+        )
+
+        assert diagnostics.partial_dependence is not None
+        pd_by_var = {pd.variable: pd for pd in diagnostics.partial_dependence}
+        mu = result.fittedvalues
+
+        # For each categorical factor, the bucket-mean prediction for every
+        # observed level must equal mean(mu[rows at that level]) — pin it.
+        # (grid_values ordering is an internal implementation detail of the
+        # diagnostics computer and not load-bearing for this refactor; we
+        # look up predictions by level string rather than by index.)
+        for var in cat_factors:
+            assert var in pd_by_var, f"missing partial_dependence for {var}"
+            pd_obj = pd_by_var[var]
+            assert pd_obj.variable_type == "categorical"
+
+            grid = list(pd_obj.grid_values)
+            preds = list(pd_obj.predictions)
+            assert len(preds) == len(grid)
+            values = data[var].to_numpy().astype(str)
+
+            for lvl, got_pred in zip(grid, preds):
+                mask = values == lvl
+                if not mask.any():
+                    # Level advertised in grid but not present in data: the
+                    # computer falls back to a base prediction. Skip — the
+                    # invariant we're pinning is the populated-bucket mean.
+                    continue
+                expected = float(mu[mask].mean())
+                assert abs(float(got_pred) - expected) < 1e-5, (
+                    f"PD regression for {var} level {lvl!r}: "
+                    f"got {got_pred} vs expected bucket-mean {expected}"
+                )
+
     def test_multicollinearity_warning(self):
         """Test that multicollinearity generates appropriate warnings."""
         import rustystats as rs
@@ -1621,3 +1755,982 @@ class TestFactorFeatureIndex:
         assert age_factor.significance.chi2 != vehage_factor.significance.chi2 or len(
             age_factor.coefficients
         ) != len(vehage_factor.coefficients)
+
+
+class TestScoreTestMatrixChunking:
+    """Regression tests for memory-hardening of the lean-mode score-test path.
+
+    `_extract_score_test_matrices` (diagnostics/api.py) rebuilds the design
+    matrix from train_data when `store_design_matrix=False` was used at fit
+    time. The dev is refactoring this to chunk the rebuild via
+    `_compute_predict_chunk_size`, writing into a preallocated (n, p) output
+    rather than letting the Rust horizontal stack double-allocate. These
+    tests pin down both behavioral equivalence and the chunking trigger.
+    """
+
+    # Use a cross-class seed so downstream diagnostics are deterministic.
+    _SEED = 20260419
+
+    @staticmethod
+    def _make_frequency_dataset(n: int, n_cat_levels: int = 4, seed: int = 20260419):
+        """Synthetic Poisson frequency dataset with one continuous + one categorical.
+
+        Kept small (2 covariates in the model => ~n_cat_levels + 2 features)
+        so the first test can fit quickly even at n=300_001. Row count is the
+        knob we use to trigger chunking (default row cap is 200_000).
+        """
+        import polars as pl
+
+        rng = np.random.default_rng(seed)
+        age = rng.uniform(18, 70, n).astype(np.float64)
+        cats = np.array(["A", "B", "C", "D"][:n_cat_levels])
+        region = rng.choice(cats, n)
+        unfitted_cont = rng.standard_normal(n).astype(np.float64)
+        unfitted_cat = rng.choice(np.array(["X", "Y", "Z"]), n)
+        mu_true = np.exp(-2.0 + 0.01 * age + 0.3 * (region == cats[0]).astype(np.float64))
+        y = rng.poisson(mu_true).astype(np.float64)
+        exposure = rng.uniform(0.5, 1.0, n)
+
+        data = pl.DataFrame(
+            {
+                "y": y,
+                "age": age,
+                "region": region,
+                "unfitted_cont": unfitted_cont,
+                "unfitted_cat": unfitted_cat,
+                "exposure": exposure,
+            }
+        )
+        return data
+
+    @staticmethod
+    def _make_wide_dataset(n: int, seed: int = 20260419):
+        """High-cardinality categorical + spline + linear, producing ~150 features."""
+        import polars as pl
+
+        rng = np.random.default_rng(seed)
+        age = rng.uniform(18, 70, n).astype(np.float64)
+        vehage = rng.uniform(0, 25, n).astype(np.float64)
+        # 100 levels in "brand" -> ~99 dummy columns -> ~150 total features with
+        # age + bs(vehage, 6).
+        brand = np.array([f"B{i:03d}" for i in rng.integers(0, 100, n)])
+        unfitted_cont = rng.standard_normal(n).astype(np.float64)
+        unfitted_cat = rng.choice(np.array(["X", "Y", "Z"]), n)
+        mu_true = np.exp(-2.0 + 0.01 * age + 0.02 * vehage)
+        y = rng.poisson(mu_true).astype(np.float64)
+        exposure = rng.uniform(0.5, 1.0, n)
+
+        data = pl.DataFrame(
+            {
+                "y": y,
+                "age": age,
+                "vehage": vehage,
+                "brand": brand,
+                "unfitted_cont": unfitted_cont,
+                "unfitted_cat": unfitted_cat,
+                "exposure": exposure,
+            }
+        )
+        return data
+
+    def _run_lean_diagnostics(self, data, categorical=None, continuous=None):
+        """Helper: fit in lean mode (store_design_matrix=False) and run diagnostics."""
+        import rustystats as rs
+
+        result = rs.glm_dict(
+            response="y",
+            terms={
+                "age": {"type": "linear"},
+                "region": {"type": "categorical"},
+            },
+            data=data,
+            family="poisson",
+            offset="exposure",
+        ).fit(store_design_matrix=False)
+
+        return result.diagnostics(
+            train_data=data,
+            categorical_factors=categorical or ["region", "unfitted_cat"],
+            continuous_factors=continuous or ["age", "unfitted_cont"],
+        )
+
+    def test_score_test_matrices_bit_exact_under_chunking(self):
+        """Chunked vs single-shot score-test design matrix produce matching p-values.
+
+        Two diagnostics runs on a >200k-row model:
+          (a) lean mode (store_design_matrix=False) → score-test path rebuilds
+              X from train_data. After the refactor, this rebuild is chunked.
+          (b) eager mode (store_design_matrix=True) → score-test path uses the
+              cached X from fit time; this path is unaffected by the refactor.
+
+        Both paths feed the SAME X (bit-exact, since horizontal stacking is
+        deterministic and row-chunks are concatenated, not reduced with BLAS),
+        so the score-test p-values for the unfitted factors must agree to
+        within numerical noise.
+
+        n=300_001 rows forces the chunked path (> default 200_000 row cap).
+        """
+        import rustystats as rs
+
+        data = self._make_frequency_dataset(n=300_001)
+
+        # Path (a): lean mode — rebuilds X (chunked after refactor).
+        lean_result = rs.glm_dict(
+            response="y",
+            terms={
+                "age": {"type": "linear"},
+                "region": {"type": "categorical"},
+            },
+            data=data,
+            family="poisson",
+            offset="exposure",
+        ).fit(store_design_matrix=False)
+        diag_lean = lean_result.diagnostics(
+            train_data=data,
+            categorical_factors=["region", "unfitted_cat"],
+            continuous_factors=["age", "unfitted_cont"],
+        )
+
+        # Path (b): eager mode — uses cached X.
+        eager_result = rs.glm_dict(
+            response="y",
+            terms={
+                "age": {"type": "linear"},
+                "region": {"type": "categorical"},
+            },
+            data=data,
+            family="poisson",
+            offset="exposure",
+        ).fit(store_design_matrix=True)
+        diag_eager = eager_result.diagnostics(
+            train_data=data,
+            categorical_factors=["region", "unfitted_cat"],
+            continuous_factors=["age", "unfitted_cont"],
+        )
+
+        # Sanity: coefficients match (fit path is identical; store flag only
+        # controls whether X is retained). If they don't match, the test is
+        # broken, not the feature under test.
+        np.testing.assert_allclose(
+            np.asarray(lean_result.params),
+            np.asarray(eager_result.params),
+            rtol=1e-12,
+            atol=1e-12,
+            err_msg="Fit coefficients diverged between lean and eager modes.",
+        )
+
+        # Align factors by name and compare score-test p-values. Unfitted
+        # factors have `score_test`; fitted factors do not.
+        lean_by_name = {f.name: f for f in diag_lean.factors}
+        eager_by_name = {f.name: f for f in diag_eager.factors}
+        assert set(lean_by_name) == set(eager_by_name)
+
+        compared_any = False
+        for name, lean_f in lean_by_name.items():
+            eager_f = eager_by_name[name]
+            if lean_f.score_test is None and eager_f.score_test is None:
+                continue
+            # Both modes must agree on whether a score test was produced.
+            assert (lean_f.score_test is None) == (
+                eager_f.score_test is None
+            ), f"Factor {name}: score_test presence differs between lean and eager"
+            if lean_f.score_test is None:
+                continue
+            compared_any = True
+            # Statistic, df, pvalue should match. `pvalue` is rounded to 4
+            # decimals inside the ScoreTestResult constructor; the underlying
+            # chi2 is rounded to 2 decimals. Use near-exact tolerances after
+            # accounting for that rounding.
+            assert lean_f.score_test.df == eager_f.score_test.df
+            assert abs(lean_f.score_test.statistic - eager_f.score_test.statistic) < 1e-6, (
+                f"Factor {name}: score statistic lean={lean_f.score_test.statistic} "
+                f"eager={eager_f.score_test.statistic}"
+            )
+            assert abs(lean_f.score_test.pvalue - eager_f.score_test.pvalue) < 1e-6, (
+                f"Factor {name}: score pvalue lean={lean_f.score_test.pvalue} "
+                f"eager={eager_f.score_test.pvalue}"
+            )
+
+        # Regression guard: we must actually have compared at least one
+        # score test, else the assertion above is vacuous.
+        assert compared_any, (
+            "No unfitted factors produced a score_test; test would be "
+            "vacuous. Check factor lists."
+        )
+
+    def test_chunked_build_fires_for_large_n_in_lean_mode(self, monkeypatch):
+        """transform_new_data is called > 1 time when rebuilding lean-mode X.
+
+        This test currently FAILS on unmodified code: the lean-mode path at
+        diagnostics/api.py:360 calls transform_new_data once (single-shot),
+        regardless of n. After the refactor it should be called multiple
+        times (one per row chunk) when n > _PREDICT_ROW_CHUNK_DEFAULT.
+        """
+        import rustystats as rs
+        from rustystats.interactions import InteractionBuilder
+
+        data = self._make_frequency_dataset(n=500_000)
+
+        result = rs.glm_dict(
+            response="y",
+            terms={
+                "age": {"type": "linear"},
+                "region": {"type": "categorical"},
+            },
+            data=data,
+            family="poisson",
+            offset="exposure",
+        ).fit(store_design_matrix=False)
+
+        # Patch transform_new_data to count calls. Must happen AFTER fit so
+        # we don't count build-time calls on the training X.
+        original = InteractionBuilder.transform_new_data
+        call_count = {"n": 0}
+
+        def counting_transform(self, new_data):
+            call_count["n"] += 1
+            return original(self, new_data)
+
+        monkeypatch.setattr(InteractionBuilder, "transform_new_data", counting_transform)
+
+        # Run diagnostics. Disable partial dependence and interaction detection
+        # to isolate the score-test rebuild call(s) — those features also
+        # internally call transform_new_data on new data slices.
+        result.diagnostics(
+            train_data=data,
+            categorical_factors=["region", "unfitted_cat"],
+            continuous_factors=["age", "unfitted_cont"],
+            compute_partial_dep=False,
+            detect_interactions=False,
+        )
+
+        # After the refactor: at n=500_000 with default chunk size of 200_000,
+        # the lean-mode score-test rebuild should fire at least 3 transform
+        # calls (ceil(500_000 / 200_000) = 3). We assert >= 2 to remain
+        # robust to minor chunk-size tuning.
+        assert call_count["n"] >= 2, (
+            f"Expected chunked rebuild (>=2 transform_new_data calls); "
+            f"got {call_count['n']}. Lean-mode score-test path is probably "
+            f"still doing a single-shot rebuild."
+        )
+
+    def test_small_n_lean_mode_single_shot_preserved(self, monkeypatch):
+        """Small inputs keep the existing single-shot fast path.
+
+        When n <= chunk_size, the helper should fall through to one
+        transform_new_data call (matching pre-refactor behavior). This
+        guards against over-eager chunking adding overhead to the common
+        small-input case.
+        """
+        import rustystats as rs
+        from rustystats.interactions import InteractionBuilder
+
+        data = self._make_frequency_dataset(n=100)
+
+        result = rs.glm_dict(
+            response="y",
+            terms={
+                "age": {"type": "linear"},
+                "region": {"type": "categorical"},
+            },
+            data=data,
+            family="poisson",
+            offset="exposure",
+        ).fit(store_design_matrix=False)
+
+        original = InteractionBuilder.transform_new_data
+        call_count = {"n": 0}
+
+        def counting_transform(self, new_data):
+            call_count["n"] += 1
+            return original(self, new_data)
+
+        monkeypatch.setattr(InteractionBuilder, "transform_new_data", counting_transform)
+
+        result.diagnostics(
+            train_data=data,
+            categorical_factors=["region", "unfitted_cat"],
+            continuous_factors=["age", "unfitted_cont"],
+            compute_partial_dep=False,
+            detect_interactions=False,
+        )
+
+        # At n=100 (well below any reasonable chunk_size), the score-test
+        # rebuild must be exactly 1 transform_new_data call — the pre-refactor
+        # single-shot fast path. Other diagnostics phases with this setup do
+        # not call transform_new_data (partial dep / interactions disabled),
+        # so we can assert the exact count.
+        assert call_count["n"] == 1, (
+            f"Expected exactly 1 transform_new_data call on small-n lean "
+            f"mode (single-shot path preserved); got {call_count['n']}. "
+            f"Chunking may be firing unnecessarily."
+        )
+
+    def test_eager_mode_skips_rebuild_entirely(self, monkeypatch):
+        """store_design_matrix=True path: score tests use cached X, zero rebuilds.
+
+        This pins down the orthogonal invariant: when the design matrix IS
+        stored, the score-test rebuild branch at api.py:359-360 must not
+        execute at all. The chunking refactor should not regress this.
+        """
+        import rustystats as rs
+        from rustystats.interactions import InteractionBuilder
+
+        data = self._make_frequency_dataset(n=100)
+
+        result = rs.glm_dict(
+            response="y",
+            terms={
+                "age": {"type": "linear"},
+                "region": {"type": "categorical"},
+            },
+            data=data,
+            family="poisson",
+            offset="exposure",
+        ).fit(store_design_matrix=True)
+
+        original = InteractionBuilder.transform_new_data
+        call_count = {"n": 0}
+
+        def counting_transform(self, new_data):
+            call_count["n"] += 1
+            return original(self, new_data)
+
+        monkeypatch.setattr(InteractionBuilder, "transform_new_data", counting_transform)
+
+        result.diagnostics(
+            train_data=data,
+            categorical_factors=["region", "unfitted_cat"],
+            continuous_factors=["age", "unfitted_cont"],
+            compute_partial_dep=False,
+            detect_interactions=False,
+        )
+
+        # With eager mode, get_design_matrix() returns a non-None X, so the
+        # fallback rebuild branch is skipped entirely. Zero rebuild calls
+        # from this path.
+        assert call_count["n"] == 0, (
+            f"Expected 0 transform_new_data calls in eager mode "
+            f"(cached X is used); got {call_count['n']}. The rebuild "
+            f"fallback is firing when it shouldn't."
+        )
+
+    def test_factor_score_test_pvalues_finite_with_wide_model_lean(self):
+        """Wide (~150-feature) lean-mode diagnostics produce finite score p-values.
+
+        This is the correctness regression check: if the chunked-build
+        concatenates rows wrong (e.g. a slicing off-by-one, or writes into
+        the wrong output row), the score test math downstream will produce
+        NaN/inf or wildly wrong p-values. We assert every unfitted factor's
+        score-test pvalue is finite and in [0, 1].
+        """
+        import rustystats as rs
+
+        data = self._make_wide_dataset(n=400_001)
+
+        result = rs.glm_dict(
+            response="y",
+            terms={
+                "age": {"type": "linear"},
+                "vehage": {"type": "bs", "df": 6},
+                "brand": {"type": "categorical"},
+            },
+            data=data,
+            family="poisson",
+            offset="exposure",
+        ).fit(store_design_matrix=False)
+
+        # Confirm the model is genuinely wide — if `brand` collapsed to
+        # <10 levels on this random seed for some reason, the "wide"
+        # part of the regression guard would evaporate.
+        n_features = len(result.params)
+        assert n_features >= 100, (
+            f"Expected a wide model (>=100 features); got {n_features}. "
+            f"Dataset construction changed."
+        )
+
+        diagnostics = result.diagnostics(
+            train_data=data,
+            categorical_factors=["brand", "unfitted_cat"],
+            continuous_factors=["age", "vehage", "unfitted_cont"],
+            compute_partial_dep=False,
+            detect_interactions=False,
+        )
+
+        checked = 0
+        for factor in diagnostics.factors:
+            if factor.score_test is None:
+                continue
+            checked += 1
+            pval = factor.score_test.pvalue
+            stat = factor.score_test.statistic
+            assert np.isfinite(pval), (
+                f"Factor {factor.name}: score_test.pvalue={pval} is not finite. "
+                f"Chunked rebuild likely corrupted the design matrix."
+            )
+            assert (
+                0.0 <= pval <= 1.0
+            ), f"Factor {factor.name}: score_test.pvalue={pval} not in [0, 1]."
+            assert np.isfinite(
+                stat
+            ), f"Factor {factor.name}: score_test.statistic={stat} is not finite."
+            assert stat >= 0.0, f"Factor {factor.name}: score_test.statistic={stat} is negative."
+
+        # At least one unfitted factor must have a score test, else this
+        # regression guard is toothless.
+        assert checked >= 1, "No factor produced a score_test result; widen the factor list."
+
+
+class TestExplorerCramersVStreaming:
+    """Regression guard for the upcoming streaming refactor of
+    ``DataExplorer._compute_cramers_v_pair_fast``.
+
+    The refactor replaces a full ``(r, k)`` contingency materialization with
+    a streaming sum over unique ``(x_inv, y_inv)`` pairs using the algebraic
+    identity
+
+        chi2 = sum_ij obs_ij^2 / exp_ij - n
+
+    where ``exp_ij = row_sum[i] * col_sum[j] / n``. These tests pin numerical
+    equivalence against the current implementation and a hand-computed
+    reference, exercise high-cardinality sparse scenarios where the memory
+    savings are realized, and cover edge cases (r=1, k=1, n=0, independent,
+    perfectly associated, ValidationError on zero expected frequencies).
+    """
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _cramers_v_reference(x_inv, y_inv, r, k):
+        """Hand-rolled Cramér's V via an explicit (r, k) contingency table.
+
+        This mirrors the pre-refactor implementation and acts as the
+        ground-truth reference the streaming implementation must match to
+        1e-10 relative tolerance. No scipy — numpy only.
+        """
+        x_inv = np.asarray(x_inv)
+        y_inv = np.asarray(y_inv)
+        n = len(x_inv)
+        if r < 2 or k < 2 or n == 0:
+            return 0.0
+        combined = x_inv.astype(np.int64) * k + y_inv.astype(np.int64)
+        contingency = np.bincount(combined, minlength=r * k).reshape(r, k).astype(np.float64)
+        row_sums = contingency.sum(axis=1, keepdims=True)
+        col_sums = contingency.sum(axis=0, keepdims=True)
+        expected = row_sums * col_sums / n
+        # Avoid division-by-zero noise in the reference (tests that exercise
+        # the ValidationError path do not call this helper).
+        chi2 = np.sum((contingency - expected) ** 2 / expected)
+        min_dim = min(r - 1, k - 1)
+        if min_dim == 0:
+            return 0.0
+        return float(np.sqrt(chi2 / (n * min_dim)))
+
+    @staticmethod
+    def _build_inv(r, k, n, seed, ensure_all_levels=True):
+        """Construct (x_inv, y_inv) such that every level of r and k is
+        observed at least once (otherwise a zero row/column sum trips
+        ValidationError and the parity check can't run)."""
+        rng = np.random.default_rng(seed)
+        x_inv = rng.integers(0, r, size=n).astype(np.intp)
+        y_inv = rng.integers(0, k, size=n).astype(np.intp)
+        if ensure_all_levels:
+            # Plant each level at least once so row/col sums are nonzero.
+            if n >= r:
+                x_inv[:r] = np.arange(r, dtype=np.intp)
+            if n >= k:
+                y_inv[:k] = np.arange(k, dtype=np.intp)
+        return x_inv, y_inv
+
+    @staticmethod
+    def _make_explorer(n=10):
+        from rustystats.diagnostics.explorer import DataExplorer
+
+        return DataExplorer(y=np.zeros(n, dtype=np.float64))
+
+    @staticmethod
+    def _pair(x_inv, y_inv, r=None, k=None):
+        """Build the ``(cats, inv)`` tuple pair the fast path expects."""
+        if r is None:
+            r = int(x_inv.max()) + 1 if len(x_inv) else 0
+        if k is None:
+            k = int(y_inv.max()) + 1 if len(y_inv) else 0
+        x_cats = np.array([f"x{i}" for i in range(r)])
+        y_cats = np.array([f"y{i}" for i in range(k)])
+        return (x_cats, x_inv), (y_cats, y_inv)
+
+    # ------------------------------------------------------------------
+    # 1. Parity — hand-computed reference on a small 2x2 table
+    # ------------------------------------------------------------------
+
+    def test_cramers_v_matches_hand_computed_2x2(self):
+        """Classic 2x2 table with known chi-squared/V.
+
+        Layout (counts):
+              B=0  B=1
+        A=0    50   10  (row sum 60)
+        A=1    20   20  (row sum 40)
+             col70 col30, n=100
+
+        Expected cells: 42, 18, 28, 12.
+        chi2 = 64/42 + 64/18 + 64/28 + 64/12 = 12.6984126984...
+        V = sqrt(chi2 / (100 * min(1,1))) = 0.356348322549899...
+        """
+        x_inv = np.concatenate(
+            [
+                np.zeros(50, dtype=np.intp),  # A=0, B=0 (50)
+                np.zeros(10, dtype=np.intp),  # A=0, B=1 (10)
+                np.ones(20, dtype=np.intp),  # A=1, B=0 (20)
+                np.ones(20, dtype=np.intp),  # A=1, B=1 (20)
+            ]
+        )
+        y_inv = np.concatenate(
+            [
+                np.zeros(50, dtype=np.intp),
+                np.ones(10, dtype=np.intp),
+                np.zeros(20, dtype=np.intp),
+                np.ones(20, dtype=np.intp),
+            ]
+        )
+        chi2 = 64 / 42 + 64 / 18 + 64 / 28 + 64 / 12
+        v_expected = float(np.sqrt(chi2 / (100 * 1)))
+
+        explorer = self._make_explorer()
+        x_pair, y_pair = self._pair(x_inv, y_inv, r=2, k=2)
+        v_actual = explorer._compute_cramers_v_pair_fast(x_pair, y_pair)
+
+        assert abs(v_actual - v_expected) / v_expected < 1e-10, (
+            f"Hand-computed V={v_expected} vs function V={v_actual}; "
+            f"rel_err={abs(v_actual - v_expected) / v_expected:.3e}"
+        )
+
+    # ------------------------------------------------------------------
+    # 2. Parity against the reference implementation across sizes
+    # ------------------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "n,r,k,seed",
+        [
+            (1_000, 5, 7, 0),
+            (10_000, 50, 80, 1),
+            (100_000, 500, 800, 2),
+        ],
+    )
+    def test_cramers_v_parity_against_reference(self, n, r, k, seed):
+        """Across a range of sizes the fast path must match the explicit
+        reference to 1e-10 relative tolerance."""
+        x_inv, y_inv = self._build_inv(r, k, n, seed)
+        ref = self._cramers_v_reference(x_inv, y_inv, r, k)
+
+        explorer = self._make_explorer()
+        x_pair, y_pair = self._pair(x_inv, y_inv, r=r, k=k)
+        actual = explorer._compute_cramers_v_pair_fast(x_pair, y_pair)
+
+        # Both should be finite and positive for the random-level mix.
+        assert np.isfinite(ref) and ref > 0.0
+        assert np.isfinite(actual) and actual > 0.0
+
+        rel_err = abs(actual - ref) / max(abs(ref), 1e-30)
+        assert rel_err < 1e-10, (
+            f"n={n}, r={r}, k={k}: reference={ref:.15g} actual={actual:.15g} "
+            f"rel_err={rel_err:.3e}"
+        )
+
+    # ------------------------------------------------------------------
+    # 3. High-cardinality sparse case — memory pressure scenario
+    # ------------------------------------------------------------------
+
+    def test_cramers_v_high_cardinality_sparse(self):
+        """Insurance-shaped sparse case: n=50k, r=500, k=700, only a small
+        fraction of the 350_000 cells ever appear. The streaming impl must
+        still return a finite, positive V within a few seconds."""
+        import time
+
+        n = 50_000
+        r = 500
+        k = 700
+
+        rng = np.random.default_rng(123)
+        # Sparse pattern: bias toward a small number of (x, y) combinations
+        # so the contingency stays sparse. Each row's y-level is chosen
+        # pseudo-independently of x but from a restricted per-x subset so
+        # the marginals remain balanced enough to avoid zero row/col sums.
+        x_inv = rng.integers(0, r, size=n).astype(np.intp)
+        y_inv = rng.integers(0, k, size=n).astype(np.intp)
+        # Plant each level at least once so every row_sum and col_sum > 0.
+        x_inv[:r] = np.arange(r, dtype=np.intp)
+        y_inv[:k] = np.arange(k, dtype=np.intp)
+
+        # Confirm the sparsity assumption holds — otherwise this test is
+        # not exercising the memory-pressure case.
+        n_distinct_pairs = len(np.unique(x_inv.astype(np.int64) * k + y_inv.astype(np.int64)))
+        assert (
+            n_distinct_pairs < r * k
+        ), f"Expected sparse contingency; got {n_distinct_pairs}/{r * k} cells."
+
+        explorer = self._make_explorer(n)
+        x_pair, y_pair = self._pair(x_inv, y_inv, r=r, k=k)
+
+        t0 = time.perf_counter()
+        v = explorer._compute_cramers_v_pair_fast(x_pair, y_pair)
+        elapsed = time.perf_counter() - t0
+
+        assert np.isfinite(v), f"V={v} is not finite"
+        assert v > 0.0, f"V={v} should be positive for random independent-ish data"
+        assert elapsed < 5.0, f"High-cardinality Cramér's V took {elapsed:.3f}s (>5s)"
+
+        # Parity on the same sparse input — the streaming impl must agree
+        # with the explicit reference here too.
+        ref = self._cramers_v_reference(x_inv, y_inv, r, k)
+        rel_err = abs(v - ref) / max(abs(ref), 1e-30)
+        assert (
+            rel_err < 1e-10
+        ), f"Sparse case: reference={ref:.15g} actual={v:.15g} rel_err={rel_err:.3e}"
+
+    # ------------------------------------------------------------------
+    # 4. Edge cases
+    # ------------------------------------------------------------------
+
+    def test_cramers_v_single_x_category_returns_zero(self):
+        """r=1: Cramér's V is trivially 0 (no variation in x)."""
+        x_inv = np.zeros(20, dtype=np.intp)
+        y_inv = np.tile(np.arange(4, dtype=np.intp), 5)
+        explorer = self._make_explorer()
+        x_pair, y_pair = self._pair(x_inv, y_inv, r=1, k=4)
+        v = explorer._compute_cramers_v_pair_fast(x_pair, y_pair)
+        assert v == 0.0
+
+    def test_cramers_v_single_y_category_returns_zero(self):
+        """k=1: V is trivially 0."""
+        x_inv = np.tile(np.arange(4, dtype=np.intp), 5)
+        y_inv = np.zeros(20, dtype=np.intp)
+        explorer = self._make_explorer()
+        x_pair, y_pair = self._pair(x_inv, y_inv, r=4, k=1)
+        v = explorer._compute_cramers_v_pair_fast(x_pair, y_pair)
+        assert v == 0.0
+
+    def test_cramers_v_empty_input_returns_zero(self):
+        """n=0 with r,k>=2: function must return 0, not NaN or raise."""
+        explorer = self._make_explorer(n=0)
+        x_cats = np.array(["x0", "x1"])
+        y_cats = np.array(["y0", "y1"])
+        empty = np.array([], dtype=np.intp)
+        v = explorer._compute_cramers_v_pair_fast((x_cats, empty), (y_cats, empty))
+        assert v == 0.0
+
+    def test_cramers_v_independent_near_zero(self):
+        """Independent draws: V should be small (not exactly 0 due to
+        finite-sample noise, but well below any reasonable threshold)."""
+        rng = np.random.default_rng(2026)
+        n = 20_000
+        r, k = 5, 7
+        x_inv = rng.integers(0, r, size=n).astype(np.intp)
+        y_inv = rng.integers(0, k, size=n).astype(np.intp)
+        # Ensure every level is observed.
+        x_inv[:r] = np.arange(r, dtype=np.intp)
+        y_inv[:k] = np.arange(k, dtype=np.intp)
+
+        explorer = self._make_explorer(n)
+        x_pair, y_pair = self._pair(x_inv, y_inv, r=r, k=k)
+        v = explorer._compute_cramers_v_pair_fast(x_pair, y_pair)
+
+        assert np.isfinite(v)
+        assert v >= 0.0
+        assert v < 0.1, f"Independent data V={v}; expected near 0."
+
+    def test_cramers_v_perfect_association_is_one(self):
+        """y is a deterministic function of x: V must be 1.0."""
+        n_per = 50
+        # x takes 3 levels, y = x (one-to-one). Contingency is diagonal.
+        x_inv = np.concatenate([np.full(n_per, i, dtype=np.intp) for i in range(3)])
+        y_inv = x_inv.copy()
+        explorer = self._make_explorer(3 * n_per)
+        x_pair, y_pair = self._pair(x_inv, y_inv, r=3, k=3)
+        v = explorer._compute_cramers_v_pair_fast(x_pair, y_pair)
+        assert abs(v - 1.0) < 1e-10, f"Perfect association V={v}; expected 1.0"
+
+    def test_cramers_v_small_table_all_sizes(self):
+        """Parity for very small tables including 2x3, 3x2, 3x3, 4x5 to
+        cover any branching on r vs k (the refactor may special-case
+        square vs rectangular)."""
+        rng = np.random.default_rng(99)
+        for r, k, n in [(2, 3, 200), (3, 2, 200), (3, 3, 500), (4, 5, 800)]:
+            x_inv, y_inv = self._build_inv(r, k, n, seed=int(r * 100 + k))
+            ref = self._cramers_v_reference(x_inv, y_inv, r, k)
+            explorer = self._make_explorer(n)
+            x_pair, y_pair = self._pair(x_inv, y_inv, r=r, k=k)
+            actual = explorer._compute_cramers_v_pair_fast(x_pair, y_pair)
+            rel_err = abs(actual - ref) / max(abs(ref), 1e-30)
+            assert rel_err < 1e-10, (
+                f"({r}x{k}, n={n}): reference={ref} actual={actual} " f"rel_err={rel_err:.3e}"
+            )
+
+    # ------------------------------------------------------------------
+    # 5. ValidationError preserved on zero expected frequencies
+    # ------------------------------------------------------------------
+
+    def test_cramers_v_validation_error_on_empty_level(self):
+        """If a level is declared in ``x_cats``/``y_cats`` but never appears
+        in ``x_inv``/``y_inv``, its row/column sum is 0, producing a zero
+        expected cell and a ValidationError. This behavior must survive
+        the refactor."""
+        from rustystats.exceptions import ValidationError
+
+        # Three declared x levels but level 2 never appears.
+        x_cats = np.array(["a", "b", "c"])
+        x_inv = np.array([0, 0, 0, 0, 0, 1, 1, 1, 1, 1], dtype=np.intp)
+        y_cats = np.array(["x", "y"])
+        y_inv = np.array([0, 1, 0, 1, 0, 0, 1, 0, 1, 0], dtype=np.intp)
+
+        explorer = self._make_explorer(len(x_inv))
+        with pytest.raises(ValidationError):
+            explorer._compute_cramers_v_pair_fast((x_cats, x_inv), (y_cats, y_inv))
+
+    # ------------------------------------------------------------------
+    # 6. Public API path — explore_data() integration
+    # ------------------------------------------------------------------
+
+    def test_cramers_v_via_explore_data_public_api(self):
+        """End-to-end: invoking ``explore_data`` with two categorical
+        factors populates ``exploration.cramers_v`` with a 2x2 matrix whose
+        off-diagonal equals the direct private-method call. This ensures
+        the refactor does not break the public callsite."""
+        from rustystats.diagnostics import explore_data
+
+        rng = np.random.default_rng(7)
+        n = 2_000
+        A = rng.choice(["A1", "A2", "A3"], size=n)
+        B = rng.choice(["B1", "B2", "B3", "B4"], size=n)
+        # Plant every combination at least once to keep marginals nonzero.
+        for i, a in enumerate(["A1", "A2", "A3"]):
+            A[i] = a
+        for j, b in enumerate(["B1", "B2", "B3", "B4"]):
+            B[j] = b
+        y = rng.poisson(1.0, size=n).astype(np.int64)
+        data = pl.DataFrame({"y": y, "A": A, "B": B})
+
+        exploration = explore_data(
+            data=data,
+            response="y",
+            categorical_factors=["A", "B"],
+            continuous_factors=[],
+        )
+
+        cv = exploration.cramers_v
+        assert cv is not None
+        assert cv["factors"] == ["A", "B"]
+        matrix = np.asarray(cv["matrix"], dtype=np.float64)
+        assert matrix.shape == (2, 2)
+        assert matrix[0, 0] == 1.0
+        assert matrix[1, 1] == 1.0
+        # Symmetric and finite.
+        assert np.isfinite(matrix[0, 1])
+        assert abs(matrix[0, 1] - matrix[1, 0]) < 1e-15
+        # Parity vs. hand-rolled reference on the same data.
+        a_cats, a_inv = np.unique(A.astype(str), return_inverse=True)
+        b_cats, b_inv = np.unique(B.astype(str), return_inverse=True)
+        ref = self._cramers_v_reference(a_inv, b_inv, len(a_cats), len(b_cats))
+        rel_err = abs(matrix[0, 1] - ref) / max(abs(ref), 1e-30)
+        assert (
+            rel_err < 1e-10
+        ), f"explore_data V={matrix[0, 1]} vs reference V={ref}; rel_err={rel_err:.3e}"
+
+
+class TestCategoricalFactorizationIsolation:
+    """Regression tests: categorical factor caches must be per-column.
+
+    Previously, `_precompute_data_caches` used
+    `data[name].cast(pl.Utf8).cast(pl.Categorical)`, which relies on the
+    polars global/session string cache. That cache accumulates across
+    successive casts in the same loop, so the second column's `Categorical`
+    inherits the first column's levels. Downstream this corrupted
+    `grid_values` in partial dependence and the `(counts, mu_sums)` arrays
+    in factor-level analysis, because their length became
+    `len(levels_union)` rather than `len(actual_distinct)`.
+
+    The fix is to factorize each column on its own (e.g. np.unique on the
+    raw string values), producing per-column `(sorted_levels, codes)`.
+    """
+
+    def _build_df(self, *, with_brand=True, with_region=True, with_product=False):
+        rng = np.random.default_rng(0)
+        n = 1000
+        cols = {
+            "exposure": rng.uniform(0.1, 1.0, n),
+            "y": rng.poisson(1.0, n).astype(float),
+        }
+        if with_brand:
+            cols["brand"] = rng.choice(["A", "B", "C"], n)
+        if with_region:
+            cols["region"] = rng.choice(["W", "X", "Y", "Z"], n)
+        if with_product:
+            cols["product"] = rng.choice(["p1", "p2"], n)
+        return pl.DataFrame(cols), n
+
+    def test_partial_dependence_grid_values_not_contaminated_across_factors(self):
+        """Regression: polars Categorical cache leaked levels across columns,
+        so region's grid_values included brand's levels."""
+        import rustystats as rs
+
+        df, _ = self._build_df()
+
+        terms = {
+            "brand": {"type": "categorical"},
+            "region": {"type": "categorical"},
+        }
+        result = rs.glm_dict(
+            response="y",
+            terms=terms,
+            data=df,
+            family="poisson",
+            offset="exposure",
+        ).fit()
+        diag = result.diagnostics(
+            train_data=df,
+            categorical_factors=["brand", "region"],
+            continuous_factors=[],
+        )
+
+        pd_by_var = {pd.variable: pd for pd in (diag.partial_dependence or [])}
+        assert "brand" in pd_by_var
+        assert "region" in pd_by_var
+
+        brand_levels_actual = set(df["brand"].unique().to_list())
+        region_levels_actual = set(df["region"].unique().to_list())
+        # Disjoint: by construction brand in {A,B,C}, region in {W,X,Y,Z}.
+        assert brand_levels_actual.isdisjoint(region_levels_actual)
+
+        brand_grid = set(pd_by_var["brand"].grid_values)
+        region_grid = set(pd_by_var["region"].grid_values)
+
+        # Core assertion: each factor's grid_values is exactly its own
+        # distinct levels — nothing from the other factor.
+        assert brand_grid == brand_levels_actual, f"brand grid_values contaminated: {brand_grid}"
+        assert (
+            region_grid == region_levels_actual
+        ), f"region grid_values contaminated: {region_grid}"
+        # predictions must be aligned 1:1 with grid_values.
+        assert len(pd_by_var["brand"].predictions) == len(brand_levels_actual)
+        assert len(pd_by_var["region"].predictions) == len(region_levels_actual)
+
+    def test_precompute_data_caches_returns_per_column_levels(self):
+        """Unit test: the cache helper must factorize each column on its own."""
+        from rustystats.diagnostics.api import _precompute_data_caches
+
+        df = pl.DataFrame({"brand": ["A", "B", "A"], "region": ["W", "X", "Y"]})
+
+        _cat_cache, cat_unique_cache, _cont_cache = _precompute_data_caches(
+            df, ["brand", "region"], []
+        )
+
+        brand_levels, brand_codes = cat_unique_cache["brand"]
+        region_levels, region_codes = cat_unique_cache["region"]
+
+        assert set(brand_levels.tolist()) == {"A", "B"}
+        assert set(region_levels.tolist()) == {"W", "X", "Y"}
+        # Codes must remain valid indices into the per-column levels.
+        assert int(brand_codes.max()) < len(brand_levels)
+        assert int(region_codes.max()) < len(region_levels)
+        # Codes must round-trip: levels[codes] == original values.
+        brand_round_trip = brand_levels[brand_codes].tolist()
+        region_round_trip = region_levels[region_codes].tolist()
+        assert brand_round_trip == ["A", "B", "A"]
+        assert region_round_trip == ["W", "X", "Y"]
+
+    def test_precompute_counts_match_actual_observations(self):
+        """Regression: bincount over codes must sum to n and have one
+        entry per ACTUAL distinct value, not per union-of-levels."""
+        from rustystats.diagnostics.api import _precompute_data_caches
+
+        df, n = self._build_df()
+
+        _cat_cache, cat_unique_cache, _cont_cache = _precompute_data_caches(
+            df, ["brand", "region"], []
+        )
+
+        brand_levels, brand_codes = cat_unique_cache["brand"]
+        region_levels, region_codes = cat_unique_cache["region"]
+
+        brand_counts = np.bincount(brand_codes, minlength=len(brand_levels))
+        region_counts = np.bincount(region_codes, minlength=len(region_levels))
+
+        # Total observations must be accounted for.
+        assert int(brand_counts.sum()) == n
+        assert int(region_counts.sum()) == n
+        # Length must equal the number of distinct values actually in the
+        # column — not the union with sibling columns.
+        assert len(brand_counts) == df["brand"].n_unique()
+        assert len(region_counts) == df["region"].n_unique()
+        # And concretely: no zero-count entries (each level observed).
+        assert int(brand_counts.min()) > 0
+        assert int(region_counts.min()) > 0
+
+    def test_precompute_levels_are_sorted_lexicographically(self):
+        """The existing API sorts levels lexicographically via np.argsort
+        (stable). The fix must preserve that deterministic ordering."""
+        from rustystats.diagnostics.api import _precompute_data_caches
+
+        # Insertion order is NOT sorted; verify the cache returns sorted.
+        df = pl.DataFrame(
+            {
+                "brand": ["C", "A", "B", "A", "C"],
+                "region": ["Z", "W", "Y", "X", "W"],
+            }
+        )
+
+        _cat_cache, cat_unique_cache, _cont_cache = _precompute_data_caches(
+            df, ["brand", "region"], []
+        )
+
+        brand_levels, brand_codes = cat_unique_cache["brand"]
+        region_levels, region_codes = cat_unique_cache["region"]
+
+        assert brand_levels.tolist() == sorted(brand_levels.tolist())
+        assert region_levels.tolist() == sorted(region_levels.tolist())
+        assert brand_levels.tolist() == ["A", "B", "C"]
+        assert region_levels.tolist() == ["W", "X", "Y", "Z"]
+
+        # Codes are indices into the SORTED levels (must round-trip).
+        assert brand_levels[brand_codes].tolist() == ["C", "A", "B", "A", "C"]
+        assert region_levels[region_codes].tolist() == ["Z", "W", "Y", "X", "W"]
+
+    def test_single_categorical_factor_still_works(self):
+        """Sanity: with only one categorical, behaviour is unchanged."""
+        from rustystats.diagnostics.api import _precompute_data_caches
+
+        df, n = self._build_df(with_brand=True, with_region=False)
+
+        _cat_cache, cat_unique_cache, _cont_cache = _precompute_data_caches(df, ["brand"], [])
+
+        brand_levels, brand_codes = cat_unique_cache["brand"]
+        assert set(brand_levels.tolist()) == {"A", "B", "C"}
+        counts = np.bincount(brand_codes, minlength=len(brand_levels))
+        assert int(counts.sum()) == n
+        assert len(counts) == 3
+
+    def test_three_categoricals_no_cross_contamination(self):
+        """Stress test: with 3 disjoint categoricals, each cache entry
+        must contain only that column's levels."""
+        from rustystats.diagnostics.api import _precompute_data_caches
+
+        df, n = self._build_df(with_brand=True, with_region=True, with_product=True)
+
+        _cat_cache, cat_unique_cache, _cont_cache = _precompute_data_caches(
+            df, ["brand", "region", "product"], []
+        )
+
+        expected = {
+            "brand": {"A", "B", "C"},
+            "region": {"W", "X", "Y", "Z"},
+            "product": {"p1", "p2"},
+        }
+        for name, want in expected.items():
+            levels, codes = cat_unique_cache[name]
+            got = set(levels.tolist())
+            assert got == want, f"{name} levels contaminated: got={got} want={want}"
+            counts = np.bincount(codes, minlength=len(levels))
+            assert int(counts.sum()) == n
+            assert len(counts) == len(want)
+            assert int(counts.min()) > 0

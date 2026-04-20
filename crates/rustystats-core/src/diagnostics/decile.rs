@@ -51,11 +51,16 @@ pub fn compute_ae_by_decile(
 
     // If the caller didn't pass a sort index, build one locally. Keep it owned
     // separately so the borrow lives for the whole function.
+    //
+    // Use `sort_unstable_by` instead of `sort_by`: stable sort allocates a
+    // scratch buffer of size n (an extra 8 MB at n=1M), and we do not need
+    // index stability — ties on `mu` end up in the same decile bucket
+    // regardless of original row order, since the bucket is summed.
     let owned_sort: Option<Array1<usize>> = match sort_idx {
         Some(_) => None,
         None => {
             let mut idx: Vec<usize> = (0..n).collect();
-            idx.sort_by(|&a, &b| {
+            idx.sort_unstable_by(|&a, &b| {
                 mu[a]
                     .partial_cmp(&mu[b])
                     .unwrap_or(std::cmp::Ordering::Equal)
@@ -69,25 +74,16 @@ pub fn compute_ae_by_decile(
             .expect("owned_sort must be Some when sort_idx is None")
     });
 
-    // Gather y/mu (and exposure when provided) into contiguous buffers in
-    // sort-index order. This mirrors NumPy's `arr[sort_idx]` strategy: the
-    // indirect access happens once during the gather, then per-decile sums
-    // run on contiguous slices the optimiser can vectorise.
+    // Pull the underlying contiguous slices once. The decile loop below
+    // walks `idx_slice[start..end]` directly and accumulates into scalar
+    // sums, avoiding the 3 × n-element scratch Vecs the previous gather
+    // strategy needed (was ~24 MB of transient allocation per call at n=1M).
     let y_slice = y.as_slice().expect("y must be contiguous");
     let mu_slice = mu.as_slice().expect("mu must be contiguous");
+    let exp_slice = exposure.map(|e| e.as_slice().expect("exposure must be contiguous"));
     let idx_slice = sort_idx_view
         .as_slice()
         .expect("sort_idx must be contiguous");
-
-    // Sequential gather: the per-decile sums are tiny (10 chunks of n/10
-    // contiguous f64s) so rayon's thread fan-out overhead dominates. The
-    // gather loop below is autovectorisable and runs at ~memory bandwidth.
-    let y_sorted: Vec<f64> = idx_slice.iter().map(|&row| y_slice[row]).collect();
-    let mu_sorted: Vec<f64> = idx_slice.iter().map(|&row| mu_slice[row]).collect();
-    let exp_sorted: Option<Vec<f64>> = exposure.map(|e| {
-        let e_slice = e.as_slice().expect("exposure must be contiguous");
-        idx_slice.iter().map(|&row| e_slice[row]).collect()
-    });
 
     let decile_size = n / n_deciles;
     let mut out = Vec::with_capacity(n_deciles);
@@ -99,17 +95,34 @@ pub fn compute_ae_by_decile(
             (d + 1) * decile_size
         };
 
-        // Sequential sums on contiguous slices — autovectorisable.
-        let actual: f64 = y_sorted[start..end].iter().sum();
-        let predicted: f64 = mu_sorted[start..end].iter().sum();
-        let expo: f64 = match &exp_sorted {
-            Some(v) => v[start..end].iter().sum(),
+        let bucket = &idx_slice[start..end];
+
+        // Sequential gather + sum per decile: each decile aggregates a
+        // ~n/n_deciles run of indices into scalar accumulators. Indexed
+        // loads through `bucket` are still cheap because the indices are
+        // sorted by `mu`, but we never materialise the gathered values.
+        let mut actual = 0.0f64;
+        let mut predicted = 0.0f64;
+        for &row in bucket {
+            actual += y_slice[row];
+            predicted += mu_slice[row];
+        }
+        let expo: f64 = match exp_slice {
+            Some(e) => {
+                let mut s = 0.0f64;
+                for &row in bucket {
+                    s += e[row];
+                }
+                s
+            }
             None => (end - start) as f64,
         };
-        // mu is already sorted ascending in this slice. Guard against empty
-        // deciles (n < n_deciles) where the slice is zero-length.
-        let (mu_min, mu_max) = if start < end {
-            (mu_sorted[start], mu_sorted[end - 1])
+        // mu is sorted ascending across the full sort_idx, so the first
+        // and last elements of `bucket` map to the decile's min/max mu.
+        // Guard against empty deciles (n < n_deciles).
+        let (mu_min, mu_max) = if let (Some(&first), Some(&last)) = (bucket.first(), bucket.last())
+        {
+            (mu_slice[first], mu_slice[last])
         } else {
             (f64::NAN, f64::NAN)
         };
@@ -232,5 +245,120 @@ mod tests {
             compute_ae_by_decile(&Array1::from_vec(y), &Array1::from_vec(mu), None, 2, None);
         assert_eq!(result[0].n, 5);
         assert_eq!(result[1].n, 6);
+    }
+
+    /// Naive reference implementation that materialises the gathered slices
+    /// and sums them sequentially. Kept inside the test module so the
+    /// production code can drop the gather-Vec strategy. Uses the same
+    /// `sort_unstable_by` as the production path so tie-breaking matches.
+    fn compute_ae_by_decile_naive(
+        y: &Array1<f64>,
+        mu: &Array1<f64>,
+        exposure: Option<&Array1<f64>>,
+        n_deciles: usize,
+    ) -> Vec<DecileMetricsRaw> {
+        let n = y.len();
+        let mut idx: Vec<usize> = (0..n).collect();
+        idx.sort_unstable_by(|&a, &b| {
+            mu[a]
+                .partial_cmp(&mu[b])
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let y_sorted: Vec<f64> = idx.iter().map(|&r| y[r]).collect();
+        let mu_sorted: Vec<f64> = idx.iter().map(|&r| mu[r]).collect();
+        let exp_sorted: Option<Vec<f64>> = exposure.map(|e| idx.iter().map(|&r| e[r]).collect());
+        let decile_size = n / n_deciles;
+        let mut out = Vec::with_capacity(n_deciles);
+        for d in 0..n_deciles {
+            let start = d * decile_size;
+            let end = if d == n_deciles - 1 {
+                n
+            } else {
+                (d + 1) * decile_size
+            };
+            let actual: f64 = y_sorted[start..end].iter().sum();
+            let predicted: f64 = mu_sorted[start..end].iter().sum();
+            let expo = match &exp_sorted {
+                Some(v) => v[start..end].iter().sum(),
+                None => (end - start) as f64,
+            };
+            let (mu_min, mu_max) = if start < end {
+                (mu_sorted[start], mu_sorted[end - 1])
+            } else {
+                (f64::NAN, f64::NAN)
+            };
+            out.push(DecileMetricsRaw {
+                decile: d + 1,
+                n: end - start,
+                actual_sum: actual,
+                predicted_sum: predicted,
+                exposure_sum: expo,
+                mu_min,
+                mu_max,
+            });
+        }
+        out
+    }
+
+    /// Deterministic LCG so the test is hermetic without pulling in `rand`.
+    fn lcg_random(seed: u64, n: usize) -> Vec<f64> {
+        let mut state = seed;
+        let mut out = Vec::with_capacity(n);
+        for _ in 0..n {
+            // Numerical Recipes constants
+            state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+            // Map upper 32 bits into [0, 1)
+            let u = (state >> 32) as u32;
+            out.push(u as f64 / (u32::MAX as f64 + 1.0));
+        }
+        out
+    }
+
+    #[test]
+    fn matches_naive_on_random_n1000() {
+        let n = 1000;
+        // Use distinct seeds so y, mu, exposure aren't identical.
+        let y = Array1::from_vec(lcg_random(0xDEADBEEF, n).iter().map(|v| v * 5.0).collect());
+        let mu = Array1::from_vec(
+            lcg_random(0xC0FFEE42, n)
+                .iter()
+                .map(|v| 0.05 + v * 2.0)
+                .collect(),
+        );
+        let exposure = Array1::from_vec(
+            lcg_random(0x12345678, n)
+                .iter()
+                .map(|v| 0.1 + v * 3.0)
+                .collect(),
+        );
+
+        // With exposure
+        let new_with = compute_ae_by_decile(&y, &mu, Some(&exposure), 10, None);
+        let ref_with = compute_ae_by_decile_naive(&y, &mu, Some(&exposure), 10);
+        assert_eq!(new_with.len(), ref_with.len());
+        for (a, b) in new_with.iter().zip(ref_with.iter()) {
+            assert_eq!(a.decile, b.decile);
+            assert_eq!(a.n, b.n);
+            // Bit-exact: the new path performs the same per-row adds in the
+            // same order as the naive gather-then-sum path.
+            assert_eq!(a.actual_sum, b.actual_sum);
+            assert_eq!(a.predicted_sum, b.predicted_sum);
+            assert_eq!(a.exposure_sum, b.exposure_sum);
+            assert_eq!(a.mu_min, b.mu_min);
+            assert_eq!(a.mu_max, b.mu_max);
+        }
+
+        // Without exposure
+        let new_no = compute_ae_by_decile(&y, &mu, None, 10, None);
+        let ref_no = compute_ae_by_decile_naive(&y, &mu, None, 10);
+        for (a, b) in new_no.iter().zip(ref_no.iter()) {
+            assert_eq!(a.decile, b.decile);
+            assert_eq!(a.n, b.n);
+            assert_eq!(a.actual_sum, b.actual_sum);
+            assert_eq!(a.predicted_sum, b.predicted_sum);
+            assert_eq!(a.exposure_sum, b.exposure_sum);
+            assert_eq!(a.mu_min, b.mu_min);
+            assert_eq!(a.mu_max, b.mu_max);
+        }
     }
 }

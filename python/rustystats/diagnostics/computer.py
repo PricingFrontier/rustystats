@@ -25,6 +25,9 @@ from rustystats._rustystats import (
     compute_ae_continuous_batch_py as _rust_ae_continuous_batch,
 )
 from rustystats._rustystats import (
+    compute_correlation_and_vif_py as _rust_correlation_and_vif,
+)
+from rustystats._rustystats import (
     compute_dataset_metrics_py as _rust_dataset_metrics,
 )
 from rustystats._rustystats import (
@@ -41,9 +44,6 @@ from rustystats._rustystats import (
 )
 from rustystats._rustystats import (
     compute_residual_summary_py as _rust_residual_summary,
-)
-from rustystats._rustystats import (
-    inverse_diagonal_spd_py as _rust_inverse_diagonal_spd,
 )
 from rustystats._rustystats import (
     partial_dependence_categorical_batch_py as _rust_partial_dependence_categorical_batch,
@@ -445,45 +445,41 @@ class DiagnosticsComputer:
                 )
             return results
 
-        # Extract non-intercept columns
-        X_no_int = X[:, start_idx:]
         names_no_int = (
             feature_names[start_idx:]
             if feature_names
             else [f"X{i}" for i in range(start_idx, n_features)]
         )
-        k = X_no_int.shape[1]
+        k = n_features - start_idx
 
         # Fast VIF via correlation matrix inverse
         # VIF_j = diag((R^{-1}))_j where R is correlation matrix
         try:
-            # Compute correlation matrix directly (avoids O(n*k) X_std allocation).
-            # np.corrcoef returns NaN for zero-variance columns; replace with identity row.
-            R = np.corrcoef(X_no_int, rowvar=False)
-            # Handle zero-variance columns: corrcoef returns NaN for the entire
-            # row/col of any zero-variance column. Zero-variance columns: their
-            # R row/col is 0 so EPSILON regularization later flags them with
-            # extreme VIF (R_inv[i,i] approx 1/EPSILON -> capped to 999, severe).
-            # Non-zero-variance columns keep their natural diagonal of 1.
-            nan_mask = np.isnan(R)
-            if nan_mask.any():
-                # Identify zero-variance columns: corrcoef NaNs an entire row/col,
-                # so the diagonal entry is NaN exactly for those columns.
-                zero_var_cols = np.isnan(np.diag(R))
-                R[nan_mask] = 0.0
-                # Leave zero-variance diagonals at 0; restore 1 only for normal cols.
-                diag_vals = np.where(zero_var_cols, 0.0, 1.0)
-                np.fill_diagonal(R, diag_vals)
-
-            # Add small regularization for numerical stability
-            R_reg = R + np.eye(k) * EPSILON
-
-            # VIF only needs diag(R_inv). Delegate to a Rust Cholesky-based
-            # routine (rustystats core) so scipy is not a runtime dependency.
-            # R_reg is symmetric positive-definite (after EPSILON regularization);
-            # the Rust path falls back to LU internally and signals failure with
-            # NaN diagonals.
-            vif_values = _rust_inverse_diagonal_spd(R_reg)
+            # Push correlation matrix + Cholesky inverse-diagonal into Rust
+            # in a single call. The Python implementation that this replaces
+            # ran `np.corrcoef(X[:, start_idx:], rowvar=False)`, which mean-
+            # centers a copy of X internally — an O(n*k) transient allocation
+            # that dominated this method's RSS peak (~800 MB at 1M rows ×
+            # 100+ params).
+            #
+            # Rust takes a zero-copy view of X via PyReadonlyArray2 and skips
+            # the first `start_idx` columns (typically the intercept) inside
+            # the same call so we never allocate a Python-side slice. The
+            # correlation matrix and `diag((R + ε·I)^{-1})` are computed in
+            # O(k²) extra memory, and only the small (k, k) and (k,) arrays
+            # come back to Python.
+            #
+            # Zero-variance columns get an all-zero row/col + 0 diagonal in R
+            # from Rust. Downstream "find correlated pairs" logic uses
+            # `not np.isnan(corr) and abs(corr) > 0.5`, which (a) ignores the
+            # 0 entries and (b) the regularized inverse picks up ~1/EPSILON
+            # at that diagonal, so the severity classifier flags them severe.
+            R, vif_values = _rust_correlation_and_vif(X, EPSILON, start_idx)
+            # Non-zero-variance columns: rust sets corr_ii to 1 directly.
+            # Zero-variance columns: rust leaves the row/col + diagonal at 0,
+            # which (a) keeps the "diagonal == 0" sentinel for collinear-pair
+            # display logic and (b) drives `(R + ε·I)^{-1}_ii ≈ 1/ε`, so the
+            # Severity classifier later flags them as severe (= 999.0).
 
             if np.any(np.isnan(vif_values)):
                 # Pathological: not positive-definite even after EPSILON
@@ -1174,10 +1170,17 @@ class DiagnosticsComputer:
                 cached_codes.append(codes)
 
             if cached_factors:
-                codes_matrix = np.stack(cached_codes, axis=1).astype(np.uint32, copy=False)
+                # Memory-hardening (Change 7): pass a list of 1D u32 arrays
+                # instead of a stacked (n, k) matrix; this avoids a 400 MB
+                # transient `np.stack` allocation at n=1M × k=100. The Rust
+                # binding borrows each numpy buffer directly with no copy.
+                # `astype(..., copy=False)` returns the input unchanged when
+                # it is already u32; otherwise it allocates a single column-
+                # sized cast (much smaller than the stacked matrix).
+                codes_list = [c.astype(np.uint32, copy=False) for c in cached_codes]
                 n_levels_per_factor = [len(lv) for lv in cached_levels]
                 batch_results = _rust_partial_dependence_categorical_batch(
-                    codes_matrix, self.mu, n_levels_per_factor
+                    codes_list, self.mu, n_levels_per_factor
                 )
                 for var, unique_levels, (counts, mu_sums) in zip(
                     cached_factors, cached_levels, batch_results
@@ -1506,16 +1509,16 @@ class DiagnosticsComputer:
                 }
             )
 
-        # Pack codes into an (n × k) matrix and dispatch the batched Rust call.
+        # Dispatch the batched Rust call with a list of per-factor code arrays.
+        # Passing contiguous 1D arrays (instead of an (n, k) matrix) lets the
+        # Rust binding zero-copy each column into a `&[u32]` slice, avoiding
+        # both the Python matrix allocation and a previously-required
+        # per-column Rust-side `to_vec()`.
         if cat_entries:
-            # Fortran-order so each code column is contiguous; the Rust
-            # `column(j).to_vec()` becomes a single memcpy per column.
-            n_rows = cat_entries[0]["inverse"].shape[0]
-            codes_matrix = np.empty((n_rows, len(cat_entries)), dtype=np.uint32, order="F")
-            levels_list: list[list[str]] = []
-            for j, entry in enumerate(cat_entries):
-                codes_matrix[:, j] = entry["inverse"]
-                levels_list.append([str(v) for v in entry["unique"]])
+            codes_list: list[np.ndarray] = [entry["inverse"] for entry in cat_entries]
+            levels_list: list[list[str]] = [
+                [str(v) for v in entry["unique"]] for entry in cat_entries
+            ]
 
             # Pass loose thresholds so all populated levels are kept (the
             # singular Python helper returns every level; preserve that). The
@@ -1524,7 +1527,7 @@ class DiagnosticsComputer:
             max_k_plus_2 = max(len(lst) for lst in levels_list) + 2
 
             ae_batch = _rust_ae_categorical_batch(
-                codes_matrix,
+                codes_list,
                 levels_list,
                 y,
                 mu,
@@ -1627,16 +1630,16 @@ class DiagnosticsComputer:
         if not cont_entries:
             return continuous_diag
 
-        # Fortran-order (column-major) matrix: each column is contiguous,
-        # so the Rust `column(j).to_vec()` copy on the FFI boundary is a
-        # single memcpy per column instead of a strided gather.
-        n_rows = cont_entries[0]["values"].shape[0]
-        values_matrix = np.empty((n_rows, len(cont_entries)), dtype=np.float64, order="F")
-        for j, entry in enumerate(cont_entries):
-            values_matrix[:, j] = entry["values"]
+        # Pass a Python list of per-factor `values` arrays directly (each is
+        # already contiguous f64). The Rust binding zero-copies into
+        # `&[f64]` slices — avoiding both the (n × k) matrix allocation and
+        # a previously-required per-column Rust-side `to_vec()`.
+        values_list = [
+            np.ascontiguousarray(entry["values"], dtype=np.float64) for entry in cont_entries
+        ]
 
         ae_batch = _rust_ae_continuous_batch(
-            values_matrix,
+            values_list,
             y,
             mu,
             exposure,
