@@ -510,10 +510,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#why-rustystats" class="md-nav__link">
+  <a href="#key-highlights" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Why RustyStats?
+        Key Highlights
       
     </span>
   </a>
@@ -2212,10 +2212,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#why-rustystats" class="md-nav__link">
+  <a href="#key-highlights" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Why RustyStats?
+        Key Highlights
       
     </span>
   </a>
@@ -2377,39 +2377,13 @@
 
 <h1 id="rustystats-documentation">RustyStats Documentation<a class="headerlink" href="#rustystats-documentation" title="Permanent link">&para;</a></h1>
 <p><strong>High-performance Generalized Linear Models with a Rust backend and Python API</strong></p>
-<p>RustyStats is a statistical modeling library designed for actuarial and data science applications. It combines the performance of Rust with the ease of use of Python, providing a <code>statsmodels</code>-compatible API with significant performance improvements.</p>
-<h2 id="why-rustystats">Why RustyStats?<a class="headerlink" href="#why-rustystats" title="Permanent link">&para;</a></h2>
-<table>
-<thead>
-<tr>
-<th>Feature</th>
-<th>RustyStats</th>
-<th>Statsmodels</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><strong>Parallel IRLS Solver</strong></td>
-<td>✅ Multi-threaded via Rayon</td>
-<td>❌ Single-threaded</td>
-</tr>
-<tr>
-<td><strong>Native Polars Support</strong></td>
-<td>✅ Formula API with Polars</td>
-<td>❌ Pandas only</td>
-</tr>
-<tr>
-<td><strong>Built-in Lasso/Elastic Net</strong></td>
-<td>✅ All GLM families</td>
-<td>⚠️ Limited</td>
-</tr>
-<tr>
-<td><strong>Performance</strong></td>
-<td>5-23x faster</td>
-<td>Baseline</td>
-</tr>
-</tbody>
-</table>
+<p>RustyStats is a statistical modeling library designed for actuarial and data science applications. It combines the performance of Rust with the ease of use of Python.</p>
+<h2 id="key-highlights">Key Highlights<a class="headerlink" href="#key-highlights" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Parallel IRLS Solver</strong> — Multi-threaded via Rayon</li>
+<li><strong>Native Polars Support</strong> — Formula API with Polars DataFrames</li>
+<li><strong>Built-in Lasso/Elastic Net</strong> — Regularization across all GLM families</li>
+</ul>
 <h2 id="quick-example">Quick Example<a class="headerlink" href="#quick-example" title="Permanent link">&para;</a></h2>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">rustystats</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">rs</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kn">import</span><span class="w"> </span><span class="nn">polars</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pl</span>

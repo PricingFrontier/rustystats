@@ -1,239 +1,198 @@
 {
   "data_summary": {
-    "n_rows": 200,
+    "n_rows": 2000,
     "n_columns": 3,
     "response_column": "y",
     "exposure_column": null,
-    "n_categorical_factors": 1,
-    "n_continuous_factors": 1
+    "n_categorical_factors": 2,
+    "n_continuous_factors": 0
   },
   "factor_stats": [
     {
-      "name": "age",
-      "type": "continuous",
-      "mean": 43.1683,
-      "std": 15.296,
-      "min": 18.2872,
-      "max": 69.3181,
-      "missing_count": 0,
-      "missing_pct": 0.0,
-      "response_by_bin": [
+      "name": "A",
+      "type": "categorical",
+      "n_levels": 3,
+      "n_levels_shown": 3,
+      "levels": [
         {
-          "bin_index": 0,
-          "bin_lower": 18.2872,
-          "bin_upper": 22.8267,
-          "count": 20,
-          "exposure": 20.0,
-          "response_sum": 5.0,
-          "response_rate": 0.25
+          "level": "A3",
+          "count": 693,
+          "exposure": 693.0,
+          "exposure_pct": 34.65,
+          "response_sum": 657.0,
+          "response_rate": 0.948052
         },
         {
-          "bin_index": 1,
-          "bin_lower": 22.8267,
-          "bin_upper": 27.5974,
-          "count": 20,
-          "exposure": 20.0,
-          "response_sum": 3.0,
-          "response_rate": 0.15
+          "level": "A1",
+          "count": 654,
+          "exposure": 654.0,
+          "exposure_pct": 32.7,
+          "response_sum": 655.0,
+          "response_rate": 1.0015
         },
         {
-          "bin_index": 2,
-          "bin_lower": 27.5974,
-          "bin_upper": 32.3758,
-          "count": 20,
-          "exposure": 20.0,
-          "response_sum": 4.0,
-          "response_rate": 0.2
-        },
-        {
-          "bin_index": 3,
-          "bin_lower": 32.3758,
-          "bin_upper": 35.6931,
-          "count": 20,
-          "exposure": 20.0,
-          "response_sum": 5.0,
-          "response_rate": 0.25
-        },
-        {
-          "bin_index": 4,
-          "bin_lower": 35.6931,
-          "bin_upper": 43.7133,
-          "count": 20,
-          "exposure": 20.0,
-          "response_sum": 4.0,
-          "response_rate": 0.2
-        },
-        {
-          "bin_index": 5,
-          "bin_lower": 43.7133,
-          "bin_upper": 48.9197,
-          "count": 20,
-          "exposure": 20.0,
-          "response_sum": 8.0,
-          "response_rate": 0.4
-        },
-        {
-          "bin_index": 6,
-          "bin_lower": 48.9197,
-          "bin_upper": 54.1172,
-          "count": 20,
-          "exposure": 20.0,
-          "response_sum": 11.0,
-          "response_rate": 0.55
-        },
-        {
-          "bin_index": 7,
-          "bin_lower": 54.1172,
-          "bin_upper": 59.8301,
-          "count": 20,
-          "exposure": 20.0,
-          "response_sum": 12.0,
-          "response_rate": 0.6
-        },
-        {
-          "bin_index": 8,
-          "bin_lower": 59.8301,
-          "bin_upper": 64.6503,
-          "count": 20,
-          "exposure": 20.0,
-          "response_sum": 6.0,
-          "response_rate": 0.3
-        },
-        {
-          "bin_index": 9,
-          "bin_lower": 64.6503,
-          "bin_upper": 69.3181,
-          "count": 20,
-          "exposure": 20.0,
-          "response_sum": 15.0,
-          "response_rate": 0.75
+          "level": "A2",
+          "count": 653,
+          "exposure": 653.0,
+          "exposure_pct": 32.65,
+          "response_sum": 594.0,
+          "response_rate": 0.909648
         }
       ],
       "modeling_hints": {
-        "shape": "step_function",
-        "recommendation": "banding or categorical",
-        "thin_cells": null,
-        "thin_cell_warning": null
+        "suggested_base_level": "A3",
+        "ordinal": true,
+        "ordinal_pattern": "prefix_numeric",
+        "thin_levels": null,
+        "thin_level_warning": null
       }
     },
     {
-      "name": "region",
+      "name": "B",
       "type": "categorical",
-      "n_levels": 2,
-      "n_levels_shown": 2,
+      "n_levels": 4,
+      "n_levels_shown": 4,
       "levels": [
         {
-          "level": "B",
-          "count": 111,
-          "exposure": 111.0,
-          "exposure_pct": 55.5,
-          "response_sum": 30.0,
-          "response_rate": 0.27027
+          "level": "B2",
+          "count": 545,
+          "exposure": 545.0,
+          "exposure_pct": 27.25,
+          "response_sum": 513.0,
+          "response_rate": 0.941284
         },
         {
-          "level": "A",
-          "count": 89,
-          "exposure": 89.0,
-          "exposure_pct": 44.5,
-          "response_sum": 43.0,
-          "response_rate": 0.483146
+          "level": "B4",
+          "count": 507,
+          "exposure": 507.0,
+          "exposure_pct": 25.35,
+          "response_sum": 471.0,
+          "response_rate": 0.928994
+        },
+        {
+          "level": "B3",
+          "count": 481,
+          "exposure": 481.0,
+          "exposure_pct": 24.05,
+          "response_sum": 450.0,
+          "response_rate": 0.935551
+        },
+        {
+          "level": "B1",
+          "count": 467,
+          "exposure": 467.0,
+          "exposure_pct": 23.35,
+          "response_sum": 472.0,
+          "response_rate": 1.0107
         }
       ],
       "modeling_hints": {
-        "suggested_base_level": "B",
+        "suggested_base_level": "B2",
         "ordinal": true,
-        "ordinal_pattern": "alphabetic",
+        "ordinal_pattern": "prefix_numeric",
         "thin_levels": null,
         "thin_level_warning": null
       }
     }
   ],
   "missing_values": {
-    "total_rows": 200,
+    "total_rows": 2000,
     "factors_with_missing": [],
-    "n_complete_rows": 200,
+    "n_complete_rows": 2000,
     "summary": "No missing values"
   },
   "univariate_tests": [
     {
-      "factor": "age",
-      "type": "continuous",
-      "test": "correlation_f_test",
-      "correlation": 0.236868,
-      "r_squared": 0.056107,
-      "f_statistic": 11.7695,
-      "pvalue": 0.000733,
-      "significant_01": true,
-      "significant_05": true
-    },
-    {
-      "factor": "region",
+      "factor": "A",
       "type": "categorical",
       "test": "anova_f_test",
-      "n_levels": 2,
-      "eta_squared": 0.02718,
-      "f_statistic": 5.5319,
-      "pvalue": 0.019654,
+      "n_levels": 3,
+      "eta_squared": 0.001457,
+      "f_statistic": 1.4566,
+      "pvalue": 0.233286,
       "significant_01": false,
-      "significant_05": true
+      "significant_05": false
+    },
+    {
+      "factor": "B",
+      "type": "categorical",
+      "test": "anova_f_test",
+      "n_levels": 4,
+      "eta_squared": 0.001082,
+      "f_statistic": 0.720752,
+      "pvalue": 0.539546,
+      "significant_01": false,
+      "significant_05": false
     }
   ],
   "correlations": {
-    "factors": [
-      "age"
-    ],
+    "factors": [],
     "matrix": [],
     "high_correlations": []
   },
   "cramers_v": {
     "factors": [
-      "region"
+      "A",
+      "B"
     ],
-    "matrix": [],
+    "matrix": [
+      [
+        1.0,
+        0.023209
+      ],
+      [
+        0.023209,
+        1.0
+      ]
+    ],
     "high_associations": []
   },
-  "vif": [
-    {
-      "factor": "age",
-      "vif": 1.0,
-      "severity": "none"
-    }
-  ],
+  "vif": [],
   "zero_inflation": {
-    "observed_zeros": 143,
-    "observed_zero_pct": 71.5,
-    "expected_zero_pct_poisson": 69.4197,
-    "excess_zero_pct": 2.0803,
+    "observed_zeros": 777,
+    "observed_zero_pct": 38.85,
+    "expected_zero_pct_poisson": 38.5583,
+    "excess_zero_pct": 0.291746,
     "severity": "none",
     "recommendation": "Standard Poisson/NegBin likely adequate"
   },
   "overdispersion": {
-    "mean_count": 0.365,
-    "var_count": 0.413844,
-    "dispersion_ratio": 1.1338,
+    "mean_count": 0.953,
+    "var_count": 0.956269,
+    "dispersion_ratio": 1.0034,
     "severity": "none",
     "recommendation": "Poisson assumption reasonable"
   },
-  "interaction_candidates": [],
+  "interaction_candidates": [
+    {
+      "factor1": "A",
+      "factor2": "B",
+      "interaction_strength": 0.003119,
+      "pvalue": 0.858056,
+      "n_cells": 12,
+      "current_terms": null,
+      "recommendation": null
+    }
+  ],
   "response_stats": {
-    "n_observations": 200,
-    "total_exposure": 200.0,
-    "total_response": 73.0,
-    "mean_response": 0.365,
-    "mean_rate": 0.365,
-    "std_rate": 0.641697,
+    "n_observations": 2000,
+    "total_exposure": 2000.0,
+    "total_response": 1906.0,
+    "mean_response": 0.953,
+    "mean_rate": 0.953,
+    "std_rate": 0.977646,
     "min": 0.0,
-    "max": 3.0,
-    "zeros_count": 143,
-    "zeros_pct": 71.5,
+    "max": 6.0,
+    "zeros_count": 777,
+    "zeros_pct": 38.85,
     "p1": 0.0,
     "p5": 0.0,
     "p10": 0.0,
     "p25": 0.0,
-    "p50": 0.0,
+    "p50": 1.0,
     "p75": 1.0,
-    "p90": 1.0,
-    "p95": 2.0,
-    "p99": 2.01
+    "p90": 2.0,
+    "p95": 3.0,
+    "p99": 4.0
   }
 }

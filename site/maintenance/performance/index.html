@@ -2347,56 +2347,6 @@
   
 </li>
       
-        <li class="md-nav__item">
-  <a href="#comparison-with-other-libraries" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Comparison with Other Libraries
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Comparison with Other Libraries">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#vs-statsmodels" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        vs Statsmodels
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#vs-glmnet-r" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        vs glmnet (R)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#why-rustystats-is-fast" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Why RustyStats is Fast
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
     </ul>
   
 </nav>
@@ -2990,56 +2940,6 @@
   
 </li>
       
-        <li class="md-nav__item">
-  <a href="#comparison-with-other-libraries" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Comparison with Other Libraries
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Comparison with Other Libraries">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#vs-statsmodels" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        vs Statsmodels
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#vs-glmnet-r" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        vs glmnet (R)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#why-rustystats-is-fast" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Why RustyStats is Fast
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
     </ul>
   
 </nav>
@@ -3268,7 +3168,7 @@
 </span><span id="__span-13-9"><a id="__codelineno-13-9" name="__codelineno-13-9" href="#__codelineno-13-9"></a><span class="n">stats</span><span class="o">.</span><span class="n">print_stats</span><span class="p">(</span><span class="mi">10</span><span class="p">)</span>
 </span></code></pre></div>
 <h4 id="line_profiler">line_profiler<a class="headerlink" href="#line_profiler" title="Permanent link">&para;</a></h4>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="c1"># Install: pip install line_profiler</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="c1"># Install: uv add --dev line_profiler</span>
 </span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>
 </span><span id="__span-14-3"><a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="nd">@profile</span>
 </span><span id="__span-14-4"><a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="k">def</span><span class="w"> </span><span class="nf">benchmark</span><span class="p">():</span>
@@ -3370,56 +3270,6 @@
 <li>[ ] Profile to find actual bottlenecks</li>
 <li>[ ] Benchmark before and after changes</li>
 </ul>
-<hr />
-<h2 id="comparison-with-other-libraries">Comparison with Other Libraries<a class="headerlink" href="#comparison-with-other-libraries" title="Permanent link">&para;</a></h2>
-<h3 id="vs-statsmodels">vs Statsmodels<a class="headerlink" href="#vs-statsmodels" title="Permanent link">&para;</a></h3>
-<table>
-<thead>
-<tr>
-<th>Operation</th>
-<th>RustyStats</th>
-<th>Statsmodels</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Poisson 100K × 20</td>
-<td>~100ms</td>
-<td>~500ms</td>
-</tr>
-<tr>
-<td>Lasso GLM 100K × 50</td>
-<td>~500ms</td>
-<td>N/A</td>
-</tr>
-</tbody>
-</table>
-<h3 id="vs-glmnet-r">vs glmnet (R)<a class="headerlink" href="#vs-glmnet-r" title="Permanent link">&para;</a></h3>
-<table>
-<thead>
-<tr>
-<th>Operation</th>
-<th>RustyStats</th>
-<th>glmnet</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Lasso path 100K × 100</td>
-<td>~2s</td>
-<td>~1.5s</td>
-</tr>
-</tbody>
-</table>
-<p>glmnet is highly optimized; RustyStats is competitive.</p>
-<h3 id="why-rustystats-is-fast">Why RustyStats is Fast<a class="headerlink" href="#why-rustystats-is-fast" title="Permanent link">&para;</a></h3>
-<ol>
-<li><strong>Rust</strong>: No GC, predictable performance</li>
-<li><strong>Rayon</strong>: Automatic parallelization</li>
-<li><strong>SIMD</strong>: Auto-vectorization by LLVM</li>
-<li><strong>Cache-friendly</strong>: Careful memory layout</li>
-<li><strong>Zero-copy</strong>: NumPy interop where possible</li>
-</ol>
 
 
 
