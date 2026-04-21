@@ -100,18 +100,19 @@ mod tests {
 
     #[test]
     fn test_parse_plain_families_returns_defaults() {
-        let p = parse_family_params("poisson", 1.5, 1.0).unwrap();
+        let p = parse_family_params("poisson", 1.5, 1.0).expect("test setup should be valid");
         assert_abs_diff_eq!(p.var_power, 1.5, epsilon = 1e-12);
         assert_abs_diff_eq!(p.theta, 1.0, epsilon = 1e-12);
 
-        let p = parse_family_params("Gaussian", 2.0, 3.0).unwrap();
+        let p = parse_family_params("Gaussian", 2.0, 3.0).expect("test setup should be valid");
         assert_abs_diff_eq!(p.var_power, 2.0, epsilon = 1e-12);
         assert_abs_diff_eq!(p.theta, 3.0, epsilon = 1e-12);
     }
 
     #[test]
     fn test_parse_negbin_with_theta() {
-        let p = parse_family_params("negativebinomial(theta=2.5)", 1.5, 1.0).unwrap();
+        let p = parse_family_params("negativebinomial(theta=2.5)", 1.5, 1.0)
+            .expect("test setup should be valid");
         assert_abs_diff_eq!(p.theta, 2.5, epsilon = 1e-12);
         // var_power stays at default for negbin.
         assert_abs_diff_eq!(p.var_power, 1.5, epsilon = 1e-12);
@@ -119,45 +120,51 @@ mod tests {
 
     #[test]
     fn test_parse_negbinomial_alias() {
-        let p = parse_family_params("negbinomial(theta=0.42)", 1.5, 1.0).unwrap();
+        let p = parse_family_params("negbinomial(theta=0.42)", 1.5, 1.0)
+            .expect("test setup should be valid");
         assert_abs_diff_eq!(p.theta, 0.42, epsilon = 1e-12);
     }
 
     #[test]
     fn test_parse_negbin_without_theta_uses_default() {
-        let p = parse_family_params("negativebinomial", 1.5, 7.0).unwrap();
+        let p =
+            parse_family_params("negativebinomial", 1.5, 7.0).expect("test setup should be valid");
         assert_abs_diff_eq!(p.theta, 7.0, epsilon = 1e-12);
     }
 
     #[test]
     fn test_parse_negbin_case_insensitive() {
-        let p = parse_family_params("NegativeBinomial(THETA=4.0)", 1.5, 1.0).unwrap();
+        let p = parse_family_params("NegativeBinomial(THETA=4.0)", 1.5, 1.0)
+            .expect("test setup should be valid");
         assert_abs_diff_eq!(p.theta, 4.0, epsilon = 1e-12);
     }
 
     #[test]
     fn test_parse_tweedie_with_p() {
-        let p = parse_family_params("tweedie(p=1.7)", 1.5, 1.0).unwrap();
+        let p =
+            parse_family_params("tweedie(p=1.7)", 1.5, 1.0).expect("test setup should be valid");
         assert_abs_diff_eq!(p.var_power, 1.7, epsilon = 1e-12);
         assert_abs_diff_eq!(p.theta, 1.0, epsilon = 1e-12);
     }
 
     #[test]
     fn test_parse_tweedie_without_p_uses_default() {
-        let p = parse_family_params("tweedie", 1.42, 1.0).unwrap();
+        let p = parse_family_params("tweedie", 1.42, 1.0).expect("test setup should be valid");
         assert_abs_diff_eq!(p.var_power, 1.42, epsilon = 1e-12);
     }
 
     #[test]
     fn test_parse_invalid_theta_errors() {
-        let err = parse_family_params("negativebinomial(theta=oops)", 1.5, 1.0).unwrap_err();
+        let err = parse_family_params("negativebinomial(theta=oops)", 1.5, 1.0)
+            .expect_err("test should exercise the error path");
         assert!(err.contains("Failed to parse theta value"));
         assert!(err.contains("oops"));
     }
 
     #[test]
     fn test_parse_invalid_var_power_errors() {
-        let err = parse_family_params("tweedie(p=zoom)", 1.5, 1.0).unwrap_err();
+        let err = parse_family_params("tweedie(p=zoom)", 1.5, 1.0)
+            .expect_err("test should exercise the error path");
         assert!(err.contains("Failed to parse var_power value"));
         assert!(err.contains("zoom"));
     }
@@ -165,7 +172,8 @@ mod tests {
     #[test]
     fn test_parse_handles_missing_close_paren() {
         // Be permissive: "theta=1.5" without trailing ')' should still parse.
-        let p = parse_family_params("negativebinomial(theta=1.5", 1.5, 1.0).unwrap();
+        let p = parse_family_params("negativebinomial(theta=1.5", 1.5, 1.0)
+            .expect("test setup should be valid");
         assert_abs_diff_eq!(p.theta, 1.5, epsilon = 1e-12);
     }
 }

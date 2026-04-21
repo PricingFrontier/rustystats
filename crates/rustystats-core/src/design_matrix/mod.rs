@@ -928,7 +928,8 @@ mod tests {
 
     #[test]
     fn test_multiply_matrix_by_continuous() {
-        let matrix = Array2::from_shape_vec((3, 2), vec![1.0, 0.0, 0.0, 1.0, 1.0, 1.0]).unwrap();
+        let matrix = Array2::from_shape_vec((3, 2), vec![1.0, 0.0, 0.0, 1.0, 1.0, 1.0])
+            .expect("test setup should be valid");
         let continuous = Array1::from_vec(vec![2.0, 3.0, 4.0]);
         let names = vec!["a".to_string(), "b".to_string()];
 
@@ -1010,7 +1011,8 @@ mod tests {
     fn test_build_design_matrix_with_interaction() {
         let n = 2;
 
-        let int_matrix = Array2::from_shape_vec((2, 2), vec![1.0, 0.0, 0.0, 1.0]).unwrap();
+        let int_matrix = Array2::from_shape_vec((2, 2), vec![1.0, 0.0, 0.0, 1.0])
+            .expect("test setup should be valid");
 
         let columns = vec![
             DesignColumn::Intercept,
@@ -1030,8 +1032,8 @@ mod tests {
     fn test_build_design_matrix_with_spline() {
         let n = 3;
 
-        let spline_matrix =
-            Array2::from_shape_vec((3, 2), vec![0.5, 0.5, 0.3, 0.7, 0.1, 0.9]).unwrap();
+        let spline_matrix = Array2::from_shape_vec((3, 2), vec![0.5, 0.5, 0.3, 0.7, 0.1, 0.9])
+            .expect("test setup should be valid");
 
         let columns = vec![DesignColumn::Spline {
             matrix: spline_matrix,
@@ -1057,13 +1059,15 @@ mod tests {
 
     #[test]
     fn test_stack_columns_horizontal_basic() {
-        let a = Array2::from_shape_vec((3, 2), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).unwrap();
-        let b = Array2::from_shape_vec((3, 1), vec![7.0, 8.0, 9.0]).unwrap();
+        let a = Array2::from_shape_vec((3, 2), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+            .expect("test setup should be valid");
+        let b = Array2::from_shape_vec((3, 1), vec![7.0, 8.0, 9.0])
+            .expect("test setup should be valid");
         let c = Array2::from_shape_vec(
             (3, 3),
             vec![10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0],
         )
-        .unwrap();
+        .expect("test setup should be valid");
 
         let blocks = vec![a.view(), b.view(), c.view()];
         let out = stack_columns_horizontal(&blocks);
@@ -1086,7 +1090,8 @@ mod tests {
 
     #[test]
     fn test_stack_columns_horizontal_single_block() {
-        let a = Array2::from_shape_vec((2, 2), vec![1.0, 2.0, 3.0, 4.0]).unwrap();
+        let a = Array2::from_shape_vec((2, 2), vec![1.0, 2.0, 3.0, 4.0])
+            .expect("test setup should be valid");
         let blocks = vec![a.view()];
         let out = stack_columns_horizontal(&blocks);
         assert_eq!(out.shape(), &[2, 2]);

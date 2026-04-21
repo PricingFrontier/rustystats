@@ -60,7 +60,7 @@ fn bench_gaussian(c: &mut Criterion) {
                         None,
                         None,
                     )
-                    .unwrap();
+                    .expect("test setup should be valid");
                 });
             },
         );
@@ -92,7 +92,7 @@ fn bench_poisson(c: &mut Criterion) {
                         None,
                         None,
                     )
-                    .unwrap();
+                    .expect("test setup should be valid");
                 });
             },
         );
@@ -124,7 +124,7 @@ fn bench_gamma(c: &mut Criterion) {
                         None,
                         None,
                     )
-                    .unwrap();
+                    .expect("test setup should be valid");
                 });
             },
         );

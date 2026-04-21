@@ -94,7 +94,7 @@ mod tests {
     #[test]
     fn test_log_link() {
         let link = LogLink;
-        let mu = array![1.0, 2.718281828, 10.0]; // e ≈ 2.718...
+        let mu = array![1.0, std::f64::consts::E, 10.0];
 
         let eta = link.link(&mu);
 

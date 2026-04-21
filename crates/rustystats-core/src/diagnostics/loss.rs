@@ -737,29 +737,62 @@ mod tests {
 
     #[test]
     fn test_default_loss_name() {
-        assert_eq!(default_loss_name("gaussian").unwrap(), "mse");
-        assert_eq!(default_loss_name("Gaussian").unwrap(), "mse");
-        assert_eq!(default_loss_name("normal").unwrap(), "mse");
-        assert_eq!(default_loss_name("poisson").unwrap(), "poisson_deviance");
-        assert_eq!(default_loss_name("Poisson").unwrap(), "poisson_deviance");
         assert_eq!(
-            default_loss_name("quasipoisson").unwrap(),
+            default_loss_name("gaussian").expect("test setup should be valid"),
+            "mse"
+        );
+        assert_eq!(
+            default_loss_name("Gaussian").expect("test setup should be valid"),
+            "mse"
+        );
+        assert_eq!(
+            default_loss_name("normal").expect("test setup should be valid"),
+            "mse"
+        );
+        assert_eq!(
+            default_loss_name("poisson").expect("test setup should be valid"),
             "poisson_deviance"
         );
-        assert_eq!(default_loss_name("gamma").unwrap(), "gamma_deviance");
-        assert_eq!(default_loss_name("Gamma").unwrap(), "gamma_deviance");
-        assert_eq!(default_loss_name("binomial").unwrap(), "log_loss");
-        assert_eq!(default_loss_name("quasibinomial").unwrap(), "log_loss");
-        assert_eq!(default_loss_name("tweedie").unwrap(), "tweedie_deviance");
         assert_eq!(
-            default_loss_name("negativebinomial").unwrap(),
+            default_loss_name("Poisson").expect("test setup should be valid"),
+            "poisson_deviance"
+        );
+        assert_eq!(
+            default_loss_name("quasipoisson").expect("test setup should be valid"),
+            "poisson_deviance"
+        );
+        assert_eq!(
+            default_loss_name("gamma").expect("test setup should be valid"),
+            "gamma_deviance"
+        );
+        assert_eq!(
+            default_loss_name("Gamma").expect("test setup should be valid"),
+            "gamma_deviance"
+        );
+        assert_eq!(
+            default_loss_name("binomial").expect("test setup should be valid"),
+            "log_loss"
+        );
+        assert_eq!(
+            default_loss_name("quasibinomial").expect("test setup should be valid"),
+            "log_loss"
+        );
+        assert_eq!(
+            default_loss_name("tweedie").expect("test setup should be valid"),
+            "tweedie_deviance"
+        );
+        assert_eq!(
+            default_loss_name("negativebinomial").expect("test setup should be valid"),
             "negbinomial_deviance"
         );
         assert_eq!(
-            default_loss_name("negbinomial").unwrap(),
+            default_loss_name("negbinomial").expect("test setup should be valid"),
             "negbinomial_deviance"
         );
-        assert_eq!(default_loss_name("nb").unwrap(), "negbinomial_deviance");
+        assert_eq!(
+            default_loss_name("nb").expect("test setup should be valid"),
+            "negbinomial_deviance"
+        );
         assert!(default_loss_name("unknown").is_err());
     }
 
@@ -768,7 +801,8 @@ mod tests {
         let y = array![1.0, 2.0, 3.0];
         let mu = array![1.5, 2.5, 3.5];
 
-        let result = compute_family_loss("gaussian", &y, &mu, None, None, None).unwrap();
+        let result = compute_family_loss("gaussian", &y, &mu, None, None, None)
+            .expect("test setup should be valid");
         let expected = mse(&y, &mu, None);
         assert_abs_diff_eq!(result, expected, epsilon = 1e-10);
     }
@@ -778,7 +812,8 @@ mod tests {
         let y = array![1.0, 2.0, 3.0];
         let mu = array![1.0, 2.0, 3.0];
 
-        let result = compute_family_loss("poisson", &y, &mu, None, None, None).unwrap();
+        let result = compute_family_loss("poisson", &y, &mu, None, None, None)
+            .expect("test setup should be valid");
         let expected = poisson_deviance_loss(&y, &mu, None);
         assert_abs_diff_eq!(result, expected, epsilon = 1e-10);
     }
@@ -788,7 +823,8 @@ mod tests {
         let y = array![1.0, 2.0, 3.0];
         let mu = array![1.0, 2.0, 3.0];
 
-        let result = compute_family_loss("gamma", &y, &mu, None, None, None).unwrap();
+        let result = compute_family_loss("gamma", &y, &mu, None, None, None)
+            .expect("test setup should be valid");
         let expected = gamma_deviance_loss(&y, &mu, None);
         assert_abs_diff_eq!(result, expected, epsilon = 1e-10);
     }
@@ -798,7 +834,8 @@ mod tests {
         let y = array![0.0, 1.0, 0.0, 1.0];
         let mu = array![0.2, 0.8, 0.3, 0.7];
 
-        let result = compute_family_loss("binomial", &y, &mu, None, None, None).unwrap();
+        let result = compute_family_loss("binomial", &y, &mu, None, None, None)
+            .expect("test setup should be valid");
         let expected = log_loss(&y, &mu, None);
         assert_abs_diff_eq!(result, expected, epsilon = 1e-10);
     }
@@ -808,7 +845,8 @@ mod tests {
         let y = array![0.0, 1.0, 2.0];
         let mu = array![0.5, 1.0, 2.0];
 
-        let result = compute_family_loss("tweedie", &y, &mu, None, Some(1.5), None).unwrap();
+        let result = compute_family_loss("tweedie", &y, &mu, None, Some(1.5), None)
+            .expect("test setup should be valid");
         let expected = tweedie_deviance_loss(&y, &mu, 1.5, None);
         assert_abs_diff_eq!(result, expected, epsilon = 1e-10);
     }
@@ -818,8 +856,8 @@ mod tests {
         let y = array![1.0, 2.0, 3.0];
         let mu = array![1.0, 2.0, 3.0];
 
-        let result =
-            compute_family_loss("negativebinomial", &y, &mu, None, None, Some(1.0)).unwrap();
+        let result = compute_family_loss("negativebinomial", &y, &mu, None, None, Some(1.0))
+            .expect("test setup should be valid");
         let expected = negbinomial_deviance_loss(&y, &mu, 1.0, None);
         assert_abs_diff_eq!(result, expected, epsilon = 1e-10);
     }
@@ -829,8 +867,8 @@ mod tests {
         let y = array![1.0, 2.0, 3.0];
         let mu = array![1.0, 2.0, 3.0];
 
-        let result =
-            compute_family_loss("negativebinomial(theta=2.5)", &y, &mu, None, None, None).unwrap();
+        let result = compute_family_loss("negativebinomial(theta=2.5)", &y, &mu, None, None, None)
+            .expect("test setup should be valid");
         let expected = negbinomial_deviance_loss(&y, &mu, 2.5, None);
         assert_abs_diff_eq!(result, expected, epsilon = 1e-10);
     }
@@ -840,7 +878,8 @@ mod tests {
         let y = array![1.0, 2.0, 3.0];
         let mu = array![1.0, 2.0, 3.0];
 
-        let result = compute_family_loss("quasipoisson", &y, &mu, None, None, None).unwrap();
+        let result = compute_family_loss("quasipoisson", &y, &mu, None, None, None)
+            .expect("test setup should be valid");
         let expected = poisson_deviance_loss(&y, &mu, None);
         assert_abs_diff_eq!(result, expected, epsilon = 1e-10);
     }
@@ -850,7 +889,8 @@ mod tests {
         let y = array![0.0, 1.0];
         let mu = array![0.3, 0.7];
 
-        let result = compute_family_loss("quasibinomial", &y, &mu, None, None, None).unwrap();
+        let result = compute_family_loss("quasibinomial", &y, &mu, None, None, None)
+            .expect("test setup should be valid");
         let expected = log_loss(&y, &mu, None);
         assert_abs_diff_eq!(result, expected, epsilon = 1e-10);
     }
@@ -1269,7 +1309,7 @@ mod tests {
             "test premise: synthetic y must contain zeros to exercise the NB y=0 branch"
         );
         let theta = 1.5;
-        let fam = NegativeBinomialFamily::new(theta).unwrap();
+        let fam = NegativeBinomialFamily::new(theta).expect("test setup should be valid");
         let expected = trait_loss_reference(&fam, &y, &mu, None);
         assert_relative_eq!(
             negbinomial_deviance_loss(&y, &mu, theta, None),
@@ -1286,7 +1326,7 @@ mod tests {
         let (y, mu) = synthetic_with_zeros(0xDE_AD_BE_EF, 0xCA_FE_BA_BE, 1_000);
         let w = synthetic_pair(0xFE_ED_FA_CE, 1_000, 0.5, 1.5);
         let theta = 1.5;
-        let fam = NegativeBinomialFamily::new(theta).unwrap();
+        let fam = NegativeBinomialFamily::new(theta).expect("test setup should be valid");
         let expected = trait_loss_reference(&fam, &y, &mu, Some(&w));
         assert_relative_eq!(
             negbinomial_deviance_loss(&y, &mu, theta, Some(&w)),
@@ -1301,7 +1341,7 @@ mod tests {
     fn test_negbinomial_deviance_loss_theta_sweep_matches_family_trait() {
         let (y, mu) = synthetic_with_zeros(0xDE_AD_BE_EF, 0xCA_FE_BA_BE, 500);
         for &theta in &[0.25, 1.0, 3.7, 10.0] {
-            let fam = NegativeBinomialFamily::new(theta).unwrap();
+            let fam = NegativeBinomialFamily::new(theta).expect("test setup should be valid");
             let expected = trait_loss_reference(&fam, &y, &mu, None);
             assert_relative_eq!(
                 negbinomial_deviance_loss(&y, &mu, theta, None),
@@ -1392,7 +1432,7 @@ mod tests {
         assert_relative_eq!(
             negbinomial_deviance_loss(&y, &mu, theta, None),
             NegativeBinomialFamily::new(theta)
-                .unwrap()
+                .expect("test setup should be valid")
                 .unit_deviance_at(0.0, 2.0),
             max_relative = 1e-13
         );
@@ -1402,7 +1442,9 @@ mod tests {
         let mu = ndarray::array![1.3];
         assert_relative_eq!(
             tweedie_deviance_loss(&y, &mu, 1.0, None),
-            TweedieFamily::new(1.0).unwrap().unit_deviance_at(0.0, 1.3),
+            TweedieFamily::new(1.0)
+                .expect("test setup should be valid")
+                .unit_deviance_at(0.0, 1.3),
             max_relative = 1e-13
         );
         // Tweedie p=2 (Gamma) with y>0 — the aggregation check; we avoid
@@ -1412,7 +1454,9 @@ mod tests {
         let mu = ndarray::array![1.3];
         assert_relative_eq!(
             tweedie_deviance_loss(&y, &mu, 2.0, None),
-            TweedieFamily::new(2.0).unwrap().unit_deviance_at(2.0, 1.3),
+            TweedieFamily::new(2.0)
+                .expect("test setup should be valid")
+                .unit_deviance_at(2.0, 1.3),
             max_relative = 1e-13
         );
     }
@@ -1435,7 +1479,7 @@ mod tests {
 
         // NegBin at a couple of thetas
         for &theta in &[0.5, 2.0] {
-            let fam = NegativeBinomialFamily::new(theta).unwrap();
+            let fam = NegativeBinomialFamily::new(theta).expect("test setup should be valid");
             let expected_nb = trait_loss_reference(&fam, &y, &mu, None);
             assert_relative_eq!(
                 negbinomial_deviance_loss(&y, &mu, theta, None),
@@ -1465,7 +1509,12 @@ mod tests {
         // Also check Gaussian trait at p=0 (uses GaussianFamily variant).
         assert_eq!(
             tweedie_deviance_loss(&y, &mu, 0.0, None),
-            trait_loss_reference(&TweedieFamily::new(0.0).unwrap(), &y, &mu, None)
+            trait_loss_reference(
+                &TweedieFamily::new(0.0).expect("test setup should be valid"),
+                &y,
+                &mu,
+                None
+            )
         );
         // Sanity: GaussianFamily.unit_deviance_at(1.0, 1.0) == 0.
         assert_eq!(GaussianFamily.unit_deviance_at(1.0, 1.0), 0.0);

@@ -2158,7 +2158,7 @@ mod tests {
         let result =
             compute_factor_deviance("count", &factor, &y, &mu, "negativebinomial", 1.5, theta);
 
-        let family = NegativeBinomialFamily::new(theta).unwrap();
+        let family = NegativeBinomialFamily::new(theta).expect("test setup should be valid");
         let expected: f64 = y
             .iter()
             .zip(mu.iter())

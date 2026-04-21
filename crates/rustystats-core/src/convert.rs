@@ -159,7 +159,8 @@ mod tests {
 
     #[test]
     fn test_roundtrip_matrix() {
-        let a = Array2::from_shape_vec((2, 3), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).unwrap();
+        let a = Array2::from_shape_vec((2, 3), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+            .expect("test setup should be valid");
         let m = to_dmatrix(&a);
         let back = to_array2(&m);
         assert_eq!(a, back);
@@ -177,7 +178,7 @@ mod tests {
     fn test_solve_symmetric_identity() {
         let a = Array2::eye(3);
         let b = array![1.0, 2.0, 3.0];
-        let x = solve_symmetric(&a, &b).unwrap();
+        let x = solve_symmetric(&a, &b).expect("test setup should be valid");
         for i in 0..3 {
             assert!((x[i] - b[i]).abs() < 1e-12);
         }
@@ -186,7 +187,7 @@ mod tests {
     #[test]
     fn test_invert_identity() {
         let a = Array2::eye(3);
-        let inv = invert_matrix(&a).unwrap();
+        let inv = invert_matrix(&a).expect("test setup should be valid");
         for i in 0..3 {
             for j in 0..3 {
                 let expected = if i == j { 1.0 } else { 0.0 };
@@ -199,7 +200,7 @@ mod tests {
     fn test_solve_and_invert() {
         let a = DMatrix::from_row_slice(2, 2, &[4.0, 1.0, 1.0, 3.0]);
         let b = DVector::from_row_slice(&[5.0, 4.0]);
-        let (sol, inv) = solve_and_invert(&a, &b, 2).unwrap();
+        let (sol, inv) = solve_and_invert(&a, &b, 2).expect("test setup should be valid");
         // A * x should equal b
         let ax0 = 4.0 * sol[0] + 1.0 * sol[1];
         let ax1 = 1.0 * sol[0] + 3.0 * sol[1];

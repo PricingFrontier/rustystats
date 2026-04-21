@@ -843,7 +843,7 @@ mod tests {
     #[test]
     fn test_ns_names() {
         let names = ns_names("age", 5, false);
-        assert!(names.len() >= 1);
+        assert!(!names.is_empty());
         assert!(names[0].contains("ns(age"));
     }
 

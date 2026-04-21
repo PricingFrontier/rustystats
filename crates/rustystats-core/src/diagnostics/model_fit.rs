@@ -700,7 +700,7 @@ mod tests {
     fn test_null_deviance_gaussian() {
         let y = array![1.0, 2.0, 3.0, 4.0, 5.0];
 
-        let null_dev = null_deviance(&y, "Gaussian", None).unwrap();
+        let null_dev = null_deviance(&y, "Gaussian", None).expect("test setup should be valid");
 
         // Mean = 3.0
         // Null deviance = Σ(y - 3)² = 4 + 1 + 0 + 1 + 4 = 10
@@ -712,7 +712,7 @@ mod tests {
         // Test case-insensitive "normal" alias
         let y = array![1.0, 3.0];
 
-        let null_dev = null_deviance(&y, "normal", None).unwrap();
+        let null_dev = null_deviance(&y, "normal", None).expect("test setup should be valid");
 
         // Mean = 2.0
         // Null deviance = (1-2)² + (3-2)² = 1 + 1 = 2
@@ -723,7 +723,7 @@ mod tests {
     fn test_null_deviance_poisson() {
         let y = array![0.0, 1.0, 2.0, 3.0, 4.0];
 
-        let null_dev = null_deviance(&y, "Poisson", None).unwrap();
+        let null_dev = null_deviance(&y, "Poisson", None).expect("test setup should be valid");
 
         // Mean = 2.0
         // This is more complex to compute manually, but should be positive
@@ -734,7 +734,7 @@ mod tests {
     fn test_null_deviance_quasipoisson() {
         let y = array![1.0, 2.0, 3.0];
 
-        let null_dev = null_deviance(&y, "quasipoisson", None).unwrap();
+        let null_dev = null_deviance(&y, "quasipoisson", None).expect("test setup should be valid");
 
         assert!(null_dev >= 0.0);
     }
@@ -744,7 +744,8 @@ mod tests {
         let y = array![1.0, 5.0];
         let weights = array![3.0, 1.0]; // More weight on first obs
 
-        let null_dev = null_deviance(&y, "Gaussian", Some(&weights)).unwrap();
+        let null_dev =
+            null_deviance(&y, "Gaussian", Some(&weights)).expect("test setup should be valid");
 
         // Weighted mean = (3×1 + 1×5) / 4 = 8/4 = 2.0
         // Null deviance = 3×(1-2)² + 1×(5-2)² = 3×1 + 1×9 = 12
@@ -755,7 +756,7 @@ mod tests {
     fn test_null_deviance_binomial() {
         let y = array![0.0, 1.0, 0.0, 1.0];
 
-        let null_dev = null_deviance(&y, "binomial", None).unwrap();
+        let null_dev = null_deviance(&y, "binomial", None).expect("test setup should be valid");
 
         // Mean = 0.5
         // Should be positive
@@ -766,7 +767,8 @@ mod tests {
     fn test_null_deviance_quasibinomial() {
         let y = array![0.0, 0.0, 1.0, 1.0];
 
-        let null_dev = null_deviance(&y, "quasibinomial", None).unwrap();
+        let null_dev =
+            null_deviance(&y, "quasibinomial", None).expect("test setup should be valid");
 
         assert!(null_dev >= 0.0);
     }
@@ -775,7 +777,7 @@ mod tests {
     fn test_null_deviance_gamma() {
         let y = array![1.0, 2.0, 3.0, 4.0];
 
-        let null_dev = null_deviance(&y, "gamma", None).unwrap();
+        let null_dev = null_deviance(&y, "gamma", None).expect("test setup should be valid");
 
         // Mean = 2.5
         // Should be positive
@@ -786,7 +788,8 @@ mod tests {
     fn test_null_deviance_negativebinomial() {
         let y = array![1.0, 2.0, 3.0, 4.0]; // All positive values
 
-        let null_dev = null_deviance(&y, "negativebinomial", None).unwrap();
+        let null_dev =
+            null_deviance(&y, "negativebinomial", None).expect("test setup should be valid");
 
         // Negative binomial deviance can be negative for some edge cases
         assert!(null_dev.is_finite());
@@ -796,7 +799,8 @@ mod tests {
     fn test_null_deviance_negativebinomial_with_theta() {
         let y = array![1.0, 2.0, 3.0, 4.0]; // All positive values
 
-        let null_dev = null_deviance(&y, "negativebinomial(theta=2.5)", None).unwrap();
+        let null_dev = null_deviance(&y, "negativebinomial(theta=2.5)", None)
+            .expect("test setup should be valid");
 
         // Negative binomial deviance should be finite
         assert!(null_dev.is_finite());
@@ -807,7 +811,8 @@ mod tests {
         let y = array![1.0, 2.0, 4.0];
         let offset = array![0.0, 0.693, 1.386]; // log(1), log(2), log(4)
 
-        let null_dev = null_deviance_with_offset(&y, "poisson", None, Some(&offset)).unwrap();
+        let null_dev = null_deviance_with_offset(&y, "poisson", None, Some(&offset))
+            .expect("test setup should be valid");
 
         // With offset, null model accounts for exposure
         assert!(null_dev >= 0.0);
@@ -818,10 +823,12 @@ mod tests {
         let y = array![1.0, 2.0, 3.0];
         let offset = array![0.0, 0.0, 0.0];
 
-        let null_dev = null_deviance_with_offset(&y, "gaussian", None, Some(&offset)).unwrap();
+        let null_dev = null_deviance_with_offset(&y, "gaussian", None, Some(&offset))
+            .expect("test setup should be valid");
 
         // With zero offset, should match regular null deviance
-        let null_dev_no_offset = null_deviance(&y, "gaussian", None).unwrap();
+        let null_dev_no_offset =
+            null_deviance(&y, "gaussian", None).expect("test setup should be valid");
         assert_abs_diff_eq!(null_dev, null_dev_no_offset, epsilon = 1e-10);
     }
 
@@ -830,7 +837,8 @@ mod tests {
         let y = array![1.0, 2.0, 3.0];
         let offset = array![0.0, 0.5, 1.0];
 
-        let null_dev = null_deviance_with_offset(&y, "gamma", None, Some(&offset)).unwrap();
+        let null_dev = null_deviance_with_offset(&y, "gamma", None, Some(&offset))
+            .expect("test setup should be valid");
 
         assert!(null_dev >= 0.0);
     }
@@ -840,8 +848,8 @@ mod tests {
         let y = array![1.0, 2.0, 3.0];
         let offset = array![0.0, 0.5, 1.0];
 
-        let null_dev =
-            null_deviance_with_offset(&y, "negbinomial(theta=1.5)", None, Some(&offset)).unwrap();
+        let null_dev = null_deviance_with_offset(&y, "negbinomial(theta=1.5)", None, Some(&offset))
+            .expect("test setup should be valid");
 
         assert!(null_dev >= 0.0);
     }
@@ -852,8 +860,8 @@ mod tests {
         let offset = array![0.0, 0.5];
         let weights = array![1.0, 2.0];
 
-        let null_dev =
-            null_deviance_with_offset(&y, "poisson", Some(&weights), Some(&offset)).unwrap();
+        let null_dev = null_deviance_with_offset(&y, "poisson", Some(&weights), Some(&offset))
+            .expect("test setup should be valid");
 
         assert!(null_dev >= 0.0);
     }
@@ -981,7 +989,8 @@ mod tests {
                 (y.clone(), w.clone(), Some(&off))
             };
             // No offset, no weights
-            let new = null_deviance_with_offset(&y_use, fam, None, None).unwrap();
+            let new = null_deviance_with_offset(&y_use, fam, None, None)
+                .expect("test setup should be valid");
             let old = null_deviance_with_offset_naive(&y_use, fam, None, None);
             assert!(
                 approx_eq(new, old),
@@ -991,7 +1000,8 @@ mod tests {
                 old
             );
             // No offset, with weights
-            let new = null_deviance_with_offset(&y_use, fam, Some(&mu_use), None).unwrap();
+            let new = null_deviance_with_offset(&y_use, fam, Some(&mu_use), None)
+                .expect("test setup should be valid");
             let old = null_deviance_with_offset_naive(&y_use, fam, Some(&mu_use), None);
             assert!(
                 approx_eq(new, old),
@@ -1002,7 +1012,8 @@ mod tests {
             );
             // With offset
             if let Some(o) = off_use {
-                let new = null_deviance_with_offset(&y_use, fam, None, Some(o)).unwrap();
+                let new = null_deviance_with_offset(&y_use, fam, None, Some(o))
+                    .expect("test setup should be valid");
                 let old = null_deviance_with_offset_naive(&y_use, fam, None, Some(o));
                 assert!(
                     approx_eq(new, old),
@@ -1011,7 +1022,8 @@ mod tests {
                     new,
                     old
                 );
-                let new = null_deviance_with_offset(&y_use, fam, Some(&mu_use), Some(o)).unwrap();
+                let new = null_deviance_with_offset(&y_use, fam, Some(&mu_use), Some(o))
+                    .expect("test setup should be valid");
                 let old = null_deviance_with_offset_naive(&y_use, fam, Some(&mu_use), Some(o));
                 assert!(
                     approx_eq(new, old),
@@ -1105,7 +1117,8 @@ mod tests {
             let off_opt: Option<&Array1<f64>> = if fam == "binomial" { None } else { Some(&off) };
 
             // No weights, no offset
-            let prod = null_deviance_with_offset(&y_use, fam, None, None).unwrap();
+            let prod = null_deviance_with_offset(&y_use, fam, None, None)
+                .expect("test setup should be valid");
             let naive = null_deviance_with_offset_naive(&y_use, fam, None, None);
             assert!(
                 rel_le(prod, naive, tol),
@@ -1116,7 +1129,8 @@ mod tests {
             );
 
             // Weighted, no offset
-            let prod = null_deviance_with_offset(&y_use, fam, Some(&w), None).unwrap();
+            let prod = null_deviance_with_offset(&y_use, fam, Some(&w), None)
+                .expect("test setup should be valid");
             let naive = null_deviance_with_offset_naive(&y_use, fam, Some(&w), None);
             assert!(
                 rel_le(prod, naive, tol),
@@ -1128,7 +1142,8 @@ mod tests {
 
             // Offset (when applicable)
             if let Some(o) = off_opt {
-                let prod = null_deviance_with_offset(&y_use, fam, None, Some(o)).unwrap();
+                let prod = null_deviance_with_offset(&y_use, fam, None, Some(o))
+                    .expect("test setup should be valid");
                 let naive = null_deviance_with_offset_naive(&y_use, fam, None, Some(o));
                 assert!(
                     rel_le(prod, naive, tol),
@@ -1139,7 +1154,8 @@ mod tests {
                 );
 
                 // Weighted + offset
-                let prod = null_deviance_with_offset(&y_use, fam, Some(&w), Some(o)).unwrap();
+                let prod = null_deviance_with_offset(&y_use, fam, Some(&w), Some(o))
+                    .expect("test setup should be valid");
                 let naive = null_deviance_with_offset_naive(&y_use, fam, Some(&w), Some(o));
                 assert!(
                     rel_le(prod, naive, tol),
@@ -1166,7 +1182,8 @@ mod tests {
         let y = array![0.0, 0.0, 0.0, 1.0, 2.0, 0.0, 0.0, 3.0, 0.0, 5.0];
         let fam = "negativebinomial(theta=1.5)";
 
-        let prod = null_deviance_with_offset(&y, fam, None, None).unwrap();
+        let prod =
+            null_deviance_with_offset(&y, fam, None, None).expect("test setup should be valid");
         let naive = null_deviance_with_offset_naive(&y, fam, None, None);
 
         // Deviance must be non-negative (would have been negative

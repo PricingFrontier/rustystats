@@ -907,20 +907,19 @@ mod tests {
     // GCVCache tests
     // =========================================================================
 
+    type SmoothProblem = (
+        Array2<f64>,
+        Array1<f64>,
+        Array1<f64>,
+        Array2<f64>,
+        usize,
+        usize,
+        usize,
+    );
+
     /// Helper: build a simple smooth regression problem.
     /// Returns (x_combined, z, w, penalty, n_parametric, col_start, col_end)
-    fn simple_smooth_problem(
-        n: usize,
-        k: usize,
-    ) -> (
-        Array2<f64>,
-        Array1<f64>,
-        Array1<f64>,
-        Array2<f64>,
-        usize,
-        usize,
-        usize,
-    ) {
+    fn simple_smooth_problem(n: usize, k: usize) -> SmoothProblem {
         let x_vals: Array1<f64> = (0..n).map(|i| i as f64 * 10.0 / n as f64).collect();
         let basis = bs_basis(&x_vals, k, 3, None, false);
         let k_actual = basis.ncols();
@@ -1010,7 +1009,7 @@ mod tests {
 
         let beta = cache.solve_coefficients(1.0);
         assert!(beta.is_some());
-        let beta = beta.unwrap();
+        let beta = beta.expect("test setup should be valid");
         assert_eq!(beta.len(), x.ncols());
     }
 

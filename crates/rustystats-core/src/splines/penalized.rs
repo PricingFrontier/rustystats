@@ -563,7 +563,8 @@ mod tests {
 
         // Check that all eigenvalues are non-negative
         use nalgebra::DMatrix;
-        let s_nalg = DMatrix::from_row_slice(5, 5, s.as_slice().unwrap());
+        let s_nalg =
+            DMatrix::from_row_slice(5, 5, s.as_slice().expect("test setup should be valid"));
         let eigenvalues = s_nalg.symmetric_eigenvalues();
 
         for ev in eigenvalues.iter() {
@@ -631,7 +632,8 @@ mod tests {
 
     #[test]
     fn test_smooth_term_creation() {
-        let basis = Array2::from_shape_vec((100, 10), vec![0.0; 1000]).unwrap();
+        let basis =
+            Array2::from_shape_vec((100, 10), vec![0.0; 1000]).expect("test setup should be valid");
         let term = SmoothTerm::new("age".to_string(), basis, 2);
 
         assert_eq!(term.name, "age");
@@ -645,8 +647,10 @@ mod tests {
     fn test_smooth_terms_collection() {
         let mut terms = SmoothTerms::new();
 
-        let basis1 = Array2::from_shape_vec((100, 8), vec![0.0; 800]).unwrap();
-        let basis2 = Array2::from_shape_vec((100, 10), vec![0.0; 1000]).unwrap();
+        let basis1 =
+            Array2::from_shape_vec((100, 8), vec![0.0; 800]).expect("test setup should be valid");
+        let basis2 =
+            Array2::from_shape_vec((100, 10), vec![0.0; 1000]).expect("test setup should be valid");
 
         terms.add(SmoothTerm::new("age".to_string(), basis1, 2));
         terms.add(SmoothTerm::new("income".to_string(), basis2, 2));
