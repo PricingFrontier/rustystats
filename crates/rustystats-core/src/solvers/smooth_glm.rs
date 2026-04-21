@@ -1462,7 +1462,7 @@ impl SmoothTermSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::families::{GammaFamily, GaussianFamily, PoissonFamily};
+    use crate::families::{GaussianFamily, PoissonFamily};
     use crate::links::{IdentityLink, LogLink};
     use crate::splines::bs_basis;
 

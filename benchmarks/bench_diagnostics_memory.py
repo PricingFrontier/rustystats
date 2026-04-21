@@ -197,18 +197,18 @@ def print_report(sections: list[dict], n_iterations: int, top_n: int | None = No
         if show_spread:
             print(
                 f"{r['name']:<55} {r['calls']:>5} {r['elapsed_s']:>8.2f} "
-                f"{r['rss_peak_above_baseline_kb']/1024:>9.1f} "
-                f"{r['rss_peak_above_baseline_kb_spread']/1024:>7.1f} "
-                f"{r['rss_delta_kb']/1024:>+8.1f} "
-                f"{r['rss_delta_kb_spread']/1024:>7.1f} "
-                f"{r['py_peak_kb']/1024:>8.1f}"
+                f"{r['rss_peak_above_baseline_kb'] / 1024:>9.1f} "
+                f"{r['rss_peak_above_baseline_kb_spread'] / 1024:>7.1f} "
+                f"{r['rss_delta_kb'] / 1024:>+8.1f} "
+                f"{r['rss_delta_kb_spread'] / 1024:>7.1f} "
+                f"{r['py_peak_kb'] / 1024:>8.1f}"
             )
         else:
             print(
                 f"{r['name']:<55} {r['calls']:>5} {r['elapsed_s']:>8.2f} "
-                f"{r['rss_peak_above_baseline_kb']/1024:>9.1f} "
-                f"{r['rss_delta_kb']/1024:>+8.1f} "
-                f"{r['py_peak_kb']/1024:>10.1f}"
+                f"{r['rss_peak_above_baseline_kb'] / 1024:>9.1f} "
+                f"{r['rss_delta_kb'] / 1024:>+8.1f} "
+                f"{r['py_peak_kb'] / 1024:>10.1f}"
             )
     print("-" * len(hdr))
     print(
@@ -342,7 +342,7 @@ def run_benchmark(n_rows: int, repeat: int = 1) -> tuple[list[dict], dict]:
     data = make_dataset(n=n_rows)
     print(
         f"  built in {time.perf_counter() - t0:.2f}s, shape={data.shape}, "
-        f"RSS now {(_read_vm_rss_kb()-rss_at_start)/1024:.1f} MB above start"
+        f"RSS now {(_read_vm_rss_kb() - rss_at_start) / 1024:.1f} MB above start"
     )
 
     terms: dict[str, dict] = {}
@@ -365,7 +365,7 @@ def run_benchmark(n_rows: int, repeat: int = 1) -> tuple[list[dict], dict]:
     ).fit()
     print(
         f"  fitted in {time.perf_counter() - t0:.2f}s, params={len(result.params)}, "
-        f"RSS now {(_read_vm_rss_kb()-rss_at_start)/1024:.1f} MB above start"
+        f"RSS now {(_read_vm_rss_kb() - rss_at_start) / 1024:.1f} MB above start"
     )
 
     tracker = MemTracker()
@@ -396,8 +396,8 @@ def run_benchmark(n_rows: int, repeat: int = 1) -> tuple[list[dict], dict]:
         )
         total = time.perf_counter() - t0
         rss_after_diag = _read_vm_rss_kb()
-        tag = "warmup" if (repeat > 1 and i == 0) else f"iter {i+1}/{repeat}"
-        print(f"  [{tag}] {total:.3f}s, " f"RSS Δ {(rss_after_diag-rss_before_diag)/1024:+.1f} MB")
+        tag = "warmup" if (repeat > 1 and i == 0) else f"iter {i + 1}/{repeat}"
+        print(f"  [{tag}] {total:.3f}s, RSS Δ {(rss_after_diag - rss_before_diag) / 1024:+.1f} MB")
         iter_aggs.append(tracker.aggregate())
         iter_totals.append(total)
         iter_rss_before.append(rss_before_diag)
@@ -445,14 +445,14 @@ def cmd_compare(args: argparse.Namespace) -> int:
     b = json.loads(Path(args.after).read_text())
 
     print(
-        f"\nBEFORE: {args.before}  ({a['summary'].get('git_sha','?')}, "
-        f"{a['summary'].get('timestamp','?')})"
+        f"\nBEFORE: {args.before}  ({a['summary'].get('git_sha', '?')}, "
+        f"{a['summary'].get('timestamp', '?')})"
     )
     print(
-        f"AFTER:  {args.after}  ({b['summary'].get('git_sha','?')}, "
-        f"{b['summary'].get('timestamp','?')})"
+        f"AFTER:  {args.after}  ({b['summary'].get('git_sha', '?')}, "
+        f"{b['summary'].get('timestamp', '?')})"
     )
-    print(f"Dataset: {a['summary'].get('n_rows','?')} rows")
+    print(f"Dataset: {a['summary'].get('n_rows', '?')} rows")
 
     by_name_a = {s["name"]: s for s in a["sections"]}
     by_name_b = {s["name"]: s for s in b["sections"]}
@@ -523,12 +523,11 @@ def cmd_compare(args: argparse.Namespace) -> int:
         b["summary"].get("rss_after_diag_kb", 0) - b["summary"].get("rss_before_diag_kb", 0)
     ) / 1024
     print(
-        f"\nTotal diagnostics elapsed:  {total_a:.2f}s → {total_b:.2f}s "
-        f"({total_b-total_a:+.2f}s)"
+        f"\nTotal diagnostics elapsed:  {total_a:.2f}s → {total_b:.2f}s ({total_b - total_a:+.2f}s)"
     )
     print(
         f"Total RSS growth across diag: {rss_growth_a:+.1f} MB → "
-        f"{rss_growth_b:+.1f} MB ({rss_growth_b-rss_growth_a:+.1f} MB)"
+        f"{rss_growth_b:+.1f} MB ({rss_growth_b - rss_growth_a:+.1f} MB)"
     )
     return 0
 

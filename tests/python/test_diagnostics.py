@@ -945,17 +945,16 @@ class TestEnhancedDiagnostics:
         # The PD should also reflect the underlying β > 0: predictions should
         # increase across the grid (predictions are aligned with grid_values).
         first, last = pd_x.predictions[0], pd_x.predictions[-1]
-        assert last > first, (
-            f"Expected monotonically increasing PD for positive β, "
-            f"got first={first} last={last}"
-        )
+        assert (
+            last > first
+        ), f"Expected monotonically increasing PD for positive β, got first={first} last={last}"
         # Sanity check: at the middle of the grid the PD should be close to
         # the baseline (mean of fitted μ), since delta_eta ≈ 0 there.
         mid_pred = pd_x.predictions[len(pd_x.predictions) // 2]
         baseline = float(np.mean(result.fittedvalues))
-        assert abs(mid_pred - baseline) < 0.05, (
-            f"PD at grid midpoint ({mid_pred}) should be near baseline " f"({baseline})"
-        )
+        assert (
+            abs(mid_pred - baseline) < 0.05
+        ), f"PD at grid midpoint ({mid_pred}) should be near baseline ({baseline})"
 
     def test_full_diagnostics_with_enhancements(self, fitted_model_with_data):
         """Test full diagnostics includes all new fields."""
@@ -1953,10 +1952,9 @@ class TestScoreTestMatrixChunking:
 
         # Regression guard: we must actually have compared at least one
         # score test, else the assertion above is vacuous.
-        assert compared_any, (
-            "No unfitted factors produced a score_test; test would be "
-            "vacuous. Check factor lists."
-        )
+        assert (
+            compared_any
+        ), "No unfitted factors produced a score_test; test would be vacuous. Check factor lists."
 
     def test_chunked_build_fires_for_large_n_in_lean_mode(self, monkeypatch):
         """transform_new_data is called > 1 time when rebuilding lean-mode X.
@@ -2333,10 +2331,9 @@ class TestExplorerCramersVStreaming:
         assert np.isfinite(actual) and actual > 0.0
 
         rel_err = abs(actual - ref) / max(abs(ref), 1e-30)
-        assert rel_err < 1e-10, (
-            f"n={n}, r={r}, k={k}: reference={ref:.15g} actual={actual:.15g} "
-            f"rel_err={rel_err:.3e}"
-        )
+        assert (
+            rel_err < 1e-10
+        ), f"n={n}, r={r}, k={k}: reference={ref:.15g} actual={actual:.15g} rel_err={rel_err:.3e}"
 
     # ------------------------------------------------------------------
     # 3. High-cardinality sparse case — memory pressure scenario
@@ -2463,9 +2460,9 @@ class TestExplorerCramersVStreaming:
             x_pair, y_pair = self._pair(x_inv, y_inv, r=r, k=k)
             actual = explorer._compute_cramers_v_pair_fast(x_pair, y_pair)
             rel_err = abs(actual - ref) / max(abs(ref), 1e-30)
-            assert rel_err < 1e-10, (
-                f"({r}x{k}, n={n}): reference={ref} actual={actual} " f"rel_err={rel_err:.3e}"
-            )
+            assert (
+                rel_err < 1e-10
+            ), f"({r}x{k}, n={n}): reference={ref} actual={actual} rel_err={rel_err:.3e}"
 
     # ------------------------------------------------------------------
     # 5. ValidationError preserved on zero expected frequencies

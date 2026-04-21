@@ -1102,7 +1102,7 @@ mod tests {
 
     #[test]
     fn test_score_test_continuous_basic() {
-        use ndarray::{arr1, arr2};
+        use ndarray::arr2;
 
         // Simple case: test if adding a variable correlated with residuals is significant
         let n = 100;
@@ -1125,7 +1125,7 @@ mod tests {
 
     #[test]
     fn test_score_test_continuous_null_variable() {
-        use ndarray::{arr1, arr2};
+        use ndarray::arr2;
 
         // Test with a variable that has no relationship to residuals
         let n = 50;

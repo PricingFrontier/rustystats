@@ -86,6 +86,9 @@ python_files = ["test_*.py"]
 python_functions = ["test_*"]
 # Show extra test summary info
 addopts = "-v --tb=short"
+markers = [
+    "slow: marks tests as slow integration coverage",
+]
 
 # =============================================================================
 # Ruff Configuration (Python linter + formatter)

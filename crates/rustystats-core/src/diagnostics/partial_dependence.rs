@@ -321,7 +321,7 @@ mod tests {
         // reference implementation mirrors this so aggregates must still agree.
         let n = 2_000;
         let n_levels_per_factor = vec![4usize, 8, 3]; // factor 2 under-sized
-        let gen_levels = vec![4u32, 8, 6]; // generate 0..6 but only 0..3 counted
+        let gen_levels = [4u32, 8, 6]; // generate 0..6 but only 0..3 counted
 
         let k = n_levels_per_factor.len();
         let cols: Vec<Vec<u32>> = (0..k)

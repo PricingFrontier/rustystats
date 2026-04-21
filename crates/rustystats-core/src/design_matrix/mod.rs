@@ -882,7 +882,7 @@ mod tests {
         let cont = Array1::from_vec(vec![1.0, 2.0, 3.0, 4.0]);
         let cat_names = vec!["cat[T.B]".to_string(), "cat[T.C]".to_string()];
 
-        let (matrix, names) =
+        let (matrix, _names) =
             build_categorical_continuous_interaction(&cat_idx, 2, &cont, &cat_names, "x");
 
         assert_eq!(matrix.ncols(), 2);
