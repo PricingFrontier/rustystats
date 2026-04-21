@@ -34,6 +34,7 @@ pub mod ci;
 pub mod decile;
 mod dispersion;
 mod distributions;
+mod exploration;
 pub mod factor_diagnostics;
 mod family_params;
 mod fit_statistics;
@@ -77,6 +78,10 @@ pub use calibration::{
 };
 
 pub use decile::{compute_ae_by_decile, DecileMetricsRaw};
+
+pub use exploration::{
+    cramers_v_from_codes, cramers_v_matrix_from_codes, detect_exploratory_interactions_from_codes,
+};
 
 pub use partial_dependence::partial_dependence_categorical_batch;
 
