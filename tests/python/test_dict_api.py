@@ -2580,6 +2580,132 @@ class TestLazyFrameIntegration:
             loaded.predict(lf_missing)
 
 
+class TestRequiredColumns:
+    """GLMModel.required_columns exposes raw input columns for predict-time pipelines."""
+
+    @pytest.fixture
+    def data(self):
+        np.random.seed(42)
+        n = 200
+        return pl.DataFrame(
+            {
+                "y": np.random.poisson(2, n).astype(float),
+                "x1": np.random.randn(n),
+                "x2": np.random.randn(n),
+                "cat": np.random.choice(["A", "B", "C"], n),
+                "region": np.random.choice(["N", "S"], n),
+                "exposure": np.random.uniform(0.5, 2.0, n),
+                "prior_rate": np.random.uniform(0.1, 0.5, n),
+            }
+        )
+
+    def test_basic_terms_excludes_response(self, data):
+        result = rs.glm_dict(
+            response="y",
+            terms={"x1": {"type": "linear"}, "cat": {"type": "categorical"}},
+            data=data,
+            family="poisson",
+        ).fit()
+        assert result.required_columns == ["cat", "x1"]
+
+    def test_returns_sorted_list(self, data):
+        result = rs.glm_dict(
+            response="y",
+            terms={"x2": {"type": "linear"}, "x1": {"type": "linear"}},
+            data=data,
+            family="poisson",
+        ).fit()
+        cols = result.required_columns
+        assert isinstance(cols, list)
+        assert cols == sorted(cols)
+
+    def test_expression_pulls_source_columns(self, data):
+        result = rs.glm_dict(
+            response="y",
+            terms={"sq": {"type": "expression", "expr": "x1 ** 2"}},
+            data=data,
+            family="poisson",
+        ).fit()
+        assert result.required_columns == ["x1"]
+
+    def test_includes_offset_column(self, data):
+        result = rs.glm_dict(
+            response="y",
+            terms={"x1": {"type": "linear"}},
+            data=data,
+            family="poisson",
+            offset="exposure",
+        ).fit()
+        assert "exposure" in result.required_columns
+
+    def test_includes_complement_column(self, data):
+        result = rs.glm_dict(
+            response="y",
+            terms={"x1": {"type": "linear"}},
+            data=data,
+            family="poisson",
+            offset="exposure",
+            complement="prior_rate",
+        ).fit(regularization="lasso")
+        cols = result.required_columns
+        assert "prior_rate" in cols
+        assert "exposure" in cols
+
+    def test_interaction_columns_included(self, data):
+        result = rs.glm_dict(
+            response="y",
+            terms={"x1": {"type": "linear"}},
+            data=data,
+            family="poisson",
+            interactions=[
+                {"x2": {"type": "linear"}, "region": {"type": "categorical"}, "include_main": True},
+            ],
+        ).fit()
+        cols = result.required_columns
+        assert "x2" in cols
+        assert "region" in cols
+
+    def test_survives_serialization(self, data):
+        result = rs.glm_dict(
+            response="y",
+            terms={
+                "x1": {"type": "linear"},
+                "cat": {"type": "categorical"},
+                "sq": {"type": "expression", "expr": "x2 ** 2"},
+            },
+            data=data,
+            family="poisson",
+            offset="exposure",
+        ).fit()
+        loaded = rs.GLMModel.from_bytes(result.to_bytes())
+        assert loaded.required_columns == result.required_columns
+
+    def test_raises_when_terms_dict_missing(self, data):
+        """Models without a stored dict spec (e.g. older serialized formats) fail loudly."""
+        result = rs.glm_dict(
+            response="y",
+            terms={"x1": {"type": "linear"}},
+            data=data,
+            family="poisson",
+        ).fit()
+        result._terms_dict = None
+        with pytest.raises(RuntimeError, match="glm_dict"):
+            _ = result.required_columns
+
+    def test_predict_with_lazyframe_select(self, data):
+        """The advertised pipeline-optimization use case actually works."""
+        result = rs.glm_dict(
+            response="y",
+            terms={"x1": {"type": "linear"}, "cat": {"type": "categorical"}},
+            data=data,
+            family="poisson",
+            offset="exposure",
+        ).fit()
+        full_pred = result.predict(data)
+        projected = data.lazy().select(result.required_columns).collect()
+        np.testing.assert_array_almost_equal(result.predict(projected), full_pred)
+
+
 # =============================================================================
 # Constraint Enforcement Tests
 # =============================================================================

@@ -1051,6 +1051,31 @@ class GLMModel:
         indices = self._result.selected_features()
         return [self.feature_names[i] for i in indices]
 
+    @property
+    def required_columns(self) -> list[str]:
+        """Raw DataFrame columns required to predict with this model.
+
+        Unlike ``feature_names`` (which lists the post-encoding design-matrix
+        columns, e.g. ``Region[B]``, ``VehAge_bs1``), this returns the raw
+        input columns — including any source columns referenced by
+        ``expression`` terms, plus offset and complement columns. Use it to
+        project a LazyFrame before collecting:
+
+            df.lazy().select(model.required_columns).collect()
+        """
+        if self._terms_dict is None:
+            raise RuntimeError(
+                "required_columns is only available for models fitted via glm_dict()"
+            )
+        return sorted(
+            _extract_needed_columns(
+                terms=self._terms_dict,
+                interactions=self._interactions_spec,
+                offset=self._offset_spec,
+                complement=self._complement_spec,
+            )
+        )
+
     # CV-based regularization path properties
     @property
     def cv_deviance(self) -> float | None:
