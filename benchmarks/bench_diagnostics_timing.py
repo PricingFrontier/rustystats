@@ -47,7 +47,7 @@ class Timer:
         print("-" * 90)
         unaccounted = total - accounted
         print(
-            f"{'(unaccounted / orchestrator overhead)':<55} {'':>6} {unaccounted:>12.3f} {100*unaccounted/total:>11.1f}%"
+            f"{'(unaccounted / orchestrator overhead)':<55} {'':>6} {unaccounted:>12.3f} {100 * unaccounted / total:>11.1f}%"
         )
         print(f"{'TOTAL':<55} {'':>6} {total:>12.3f} {'100.0%':>12}")
 

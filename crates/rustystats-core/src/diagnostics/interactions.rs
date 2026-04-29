@@ -524,7 +524,6 @@ fn ln_gamma_approx(x: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ndarray::array;
 
     #[test]
     fn test_detect_interactions_basic() {
@@ -906,7 +905,8 @@ mod tests {
         let mut rng = Lcg::new(42);
         let f1: Vec<f64> = (0..n).map(|_| rng.next_range(5) as f64).collect();
         let f2: Vec<f64> = (0..n).map(|_| rng.next_range(5) as f64).collect();
-        let residuals = Array1::from_vec(vec![3.14_f64; n]);
+        let residual = f64::from(314_u16) / 100.0;
+        let residuals = Array1::from_vec(vec![residual; n]);
 
         let result = compute_interaction_strength(
             "f1",

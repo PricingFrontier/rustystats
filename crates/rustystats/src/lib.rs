@@ -206,6 +206,14 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     m.add_function(wrap_pyfunction!(diagnostics_py::detect_interactions_py, m)?)?;
     m.add_function(wrap_pyfunction!(
+        diagnostics_py::compute_cramers_v_matrix_from_codes_py,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        diagnostics_py::detect_exploratory_interactions_py,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
         diagnostics_py::compute_lorenz_curve_py,
         m
     )?)?;

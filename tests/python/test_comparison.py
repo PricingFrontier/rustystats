@@ -404,7 +404,7 @@ class TestTweedieFamily:
 
     def test_tweedie_near_poisson_limit(self, data):
         """Tweedie with var_power=1.01 (near Poisson limit) should converge."""
-        df, x1, *_ = data
+        _df, x1, *_ = data
         rng = np.random.RandomState(SEED)
         y = rng.poisson(np.exp(0.5 + 0.1 * x1)).astype(float)
         y = np.maximum(y, 0.01)  # avoid exact zeros for Tweedie
@@ -423,7 +423,7 @@ class TestTweedieFamily:
 
     def test_tweedie_near_gamma_limit(self, data):
         """Tweedie with var_power=1.99 (near Gamma limit) should converge and match Gamma."""
-        df, x1, *_ = data
+        _df, x1, *_ = data
         rng = np.random.RandomState(SEED)
         mu = np.exp(1.0 + 0.1 * x1)
         y = rng.gamma(2.0, mu / 2.0)

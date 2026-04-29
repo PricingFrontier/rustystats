@@ -18,10 +18,11 @@ Methodology:
 - Peak RSS memory tracking via psutil
 - Same synthetic data for both
 """
-import time
-import threading
+
 import gc
-import sys
+import threading
+import time
+import traceback
 
 import numpy as np
 import polars as pl
@@ -32,11 +33,12 @@ import psutil
 # ---------------------------------------------------------------------------
 N_ROWS = 1_000_000
 N_FEATURES = 15
-N_KNOTS = 9          # internal knots
+N_KNOTS = 9  # internal knots
 DEGREE = 3
 N_RUNS = 3
 SEED = 42
-ALPHA = 1.0          # fixed alpha for mode A
+ALPHA = 1.0  # fixed alpha for mode A
+
 
 # ---------------------------------------------------------------------------
 # Data generation
@@ -69,7 +71,7 @@ def time_fn(func, n_runs=N_RUNS, label=""):
         t1 = time.perf_counter()
         times.append(t1 - t0)
         if label:
-            print(f"    {label} run {i+1}: {t1-t0:.3f}s")
+            print(f"    {label} run {i + 1}: {t1 - t0:.3f}s")
         del result
     return np.median(times), times
 
@@ -103,9 +105,9 @@ def measure_peak_memory_mb(func):
 # ---------------------------------------------------------------------------
 def bench_glum(X, y, n_features, alpha=ALPHA):
     """Fit penalized splines in glum using P2 = block_diag(D'D)."""
-    from sklearn.preprocessing import SplineTransformer
     from glum import GeneralizedLinearRegressor
     from scipy.linalg import block_diag
+    from sklearn.preprocessing import SplineTransformer
 
     st = SplineTransformer(
         n_knots=N_KNOTS + 2,
@@ -125,8 +127,14 @@ def bench_glum(X, y, n_features, alpha=ALPHA):
     P2 = block_diag(*penalties)
 
     model = GeneralizedLinearRegressor(
-        family="poisson", link="log", alpha=alpha, l1_ratio=0,
-        P2=P2, fit_intercept=True, max_iter=100, gradient_tol=1e-8,
+        family="poisson",
+        link="log",
+        alpha=alpha,
+        l1_ratio=0,
+        P2=P2,
+        fit_intercept=True,
+        max_iter=100,
+        gradient_tol=1e-8,
     )
 
     def fit_fn():
@@ -171,7 +179,10 @@ def bench_rustystats_auto(df, n_features):
 
     def fit_fn():
         return rs.glm_dict(
-            response="y", terms=terms, data=df, family="poisson",
+            response="y",
+            terms=terms,
+            data=df,
+            family="poisson",
         ).fit()
 
     # Warmup
@@ -213,7 +224,10 @@ def bench_rustystats_fixed(df, n_features, alpha=ALPHA):
 
     def fit_fn():
         return rs.glm_dict(
-            response="y", terms=terms, data=df, family="poisson",
+            response="y",
+            terms=terms,
+            data=df,
+            family="poisson",
         ).fit(alpha=alpha)
 
     # Warmup
@@ -288,11 +302,11 @@ def print_comparison(results):
     if len(results) > 1:
         print()
         for r in results[1:]:
-            ratio = r['median_time'] / base['median_time']
+            ratio = r["median_time"] / base["median_time"]
             if ratio > 1:
                 print(f"  {base['library']} is {ratio:.1f}× faster than {r['library']}")
             else:
-                print(f"  {r['library']} is {1/ratio:.1f}× faster than {base['library']}")
+                print(f"  {r['library']} is {1 / ratio:.1f}× faster than {base['library']}")
 
 
 # ---------------------------------------------------------------------------
@@ -303,16 +317,16 @@ def main():
     print("PENALIZED SPLINE BENCHMARK: rustystats vs glum")
     print(f"  Rows:      {N_ROWS:,}")
     print(f"  Features:  {N_FEATURES} continuous")
-    print(f"  Family:    Poisson (log link)")
+    print("  Family:    Poisson (log link)")
     print(f"  Splines:   cubic B-spline, {N_KNOTS} internal knots")
-    print(f"  Penalty:   D'D (second-difference)")
+    print("  Penalty:   D'D (second-difference)")
     print(f"  Fixed α:   {ALPHA}")
     print(f"  Runs:      {N_RUNS} (median)")
     print("=" * 70)
 
     print("\nGenerating data...")
     df, X, y = generate_data(N_ROWS, N_FEATURES, seed=SEED)
-    print(f"  Shape: {X.shape}, y mean: {y.mean():.3f}, y>0: {(y>0).mean():.1%}")
+    print(f"  Shape: {X.shape}, y mean: {y.mean():.3f}, y>0: {(y > 0).mean():.1%}")
 
     all_results = []
 
@@ -328,7 +342,7 @@ def main():
         all_results.append(r)
     except Exception as e:
         print(f"  ERROR: {e}")
-        import traceback; traceback.print_exc()
+        traceback.print_exc()
 
     gc.collect()
 
@@ -339,7 +353,7 @@ def main():
         all_results.append(r)
     except Exception as e:
         print(f"  ERROR: {e}")
-        import traceback; traceback.print_exc()
+        traceback.print_exc()
 
     gc.collect()
 
@@ -355,7 +369,7 @@ def main():
         all_results.append(r)
     except Exception as e:
         print(f"  ERROR: {e}")
-        import traceback; traceback.print_exc()
+        traceback.print_exc()
 
     # --- Summary ---
     if all_results:

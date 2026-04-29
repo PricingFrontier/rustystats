@@ -15,10 +15,11 @@ use rustystats_core::diagnostics::{
     compute_ae_continuous, compute_ae_continuous_batch, compute_calibration_curve,
     compute_discrimination_stats, compute_factor_significance_batch, compute_family_loss,
     compute_lorenz_curve, compute_residual_pattern_continuous,
-    compute_residual_pattern_continuous_batch, correlation_and_vif, detect_interactions,
-    hosmer_lemeshow_test, mae, mse, null_deviance, partial_dependence_categorical_batch,
-    resid_deviance, resid_pearson, rmse, ActualExpectedBin, DevianceByLevel, FactorData,
-    FactorDevianceResult, InteractionConfig, ResidualPattern,
+    compute_residual_pattern_continuous_batch, correlation_and_vif, cramers_v_matrix_from_codes,
+    detect_exploratory_interactions_from_codes, detect_interactions, hosmer_lemeshow_test, mae,
+    mse, null_deviance, partial_dependence_categorical_batch, resid_deviance, resid_pearson, rmse,
+    ActualExpectedBin, DevianceByLevel, FactorData, FactorDevianceResult, InteractionConfig,
+    ResidualPattern,
 };
 
 use crate::families_py::family_from_name;
@@ -703,6 +704,171 @@ pub fn detect_interactions_py<'py>(
         .collect();
 
     result
+}
+
+/// Compute a Cramer's V matrix from pre-factorized categorical codes.
+///
+/// `codes_list` is a list of contiguous uint32 arrays, one per categorical
+/// factor. `n_levels_per_factor[j]` is the number of declared levels for
+/// `codes_list[j]`. The row-heavy pairwise contingency aggregation runs in
+/// Rust and returns only the small symmetric matrix to Python.
+#[pyfunction]
+pub fn compute_cramers_v_matrix_from_codes_py<'py>(
+    py: Python<'py>,
+    codes_list: Vec<PyReadonlyArray1<'py, u32>>,
+    n_levels_per_factor: Vec<usize>,
+) -> PyResult<Bound<'py, PyArray2<f64>>> {
+    let k = codes_list.len();
+    if n_levels_per_factor.len() != k {
+        return Err(PyValueError::new_err(format!(
+            "codes_list has {} entries but n_levels_per_factor has {} entries",
+            k,
+            n_levels_per_factor.len()
+        )));
+    }
+    if k == 0 {
+        return Ok(ndarray::Array2::<f64>::zeros((0, 0)).into_pyarray(py));
+    }
+
+    let n = codes_list[0].as_array().len();
+    let slices: Vec<&[u32]> = codes_list
+        .iter()
+        .enumerate()
+        .map(|(j, arr)| {
+            let slice = arr.as_slice().map_err(|_| {
+                PyValueError::new_err(format!(
+                    "codes_list[{}] is not a contiguous numpy array; \
+                     pass np.ascontiguousarray(arr) at the call site",
+                    j
+                ))
+            })?;
+            if slice.len() != n {
+                return Err(PyValueError::new_err(format!(
+                    "codes_list[{}] has {} rows but codes_list[0] has {} rows",
+                    j,
+                    slice.len(),
+                    n
+                )));
+            }
+            Ok(slice)
+        })
+        .collect::<PyResult<Vec<&[u32]>>>()?;
+
+    let matrix = py
+        .detach(|| cramers_v_matrix_from_codes(&slices, &n_levels_per_factor))
+        .map_err(PyValueError::new_err)?;
+    Ok(matrix.into_pyarray(py))
+}
+
+/// Detect pre-fit response-based interactions from integer-coded factor bins.
+///
+/// Categorical factors should pass their factorization codes. Continuous
+/// factors should pass precomputed quantile-bin codes. This keeps public API
+/// semantics in Python while moving the O(n * pair_count) aggregation into
+/// Rust.
+#[pyfunction]
+#[pyo3(signature = (
+    y,
+    exposure,
+    factor_names,
+    codes_list,
+    n_levels_per_factor,
+    max_factors=10,
+    min_effect_size=0.001,
+    max_candidates=5,
+    min_cell_count=30
+))]
+pub fn detect_exploratory_interactions_py<'py>(
+    py: Python<'py>,
+    y: PyReadonlyArray1<'py, f64>,
+    exposure: PyReadonlyArray1<'py, f64>,
+    factor_names: Vec<String>,
+    codes_list: Vec<PyReadonlyArray1<'py, u32>>,
+    n_levels_per_factor: Vec<usize>,
+    max_factors: usize,
+    min_effect_size: f64,
+    max_candidates: usize,
+    min_cell_count: usize,
+) -> PyResult<Vec<Py<PyAny>>> {
+    let n = y.as_array().len();
+    let y_slice = y.as_slice().map_err(|_| {
+        PyValueError::new_err("y is not a contiguous numpy array; pass np.ascontiguousarray(y)")
+    })?;
+    let exposure_slice = exposure.as_slice().map_err(|_| {
+        PyValueError::new_err(
+            "exposure is not a contiguous numpy array; pass np.ascontiguousarray(exposure)",
+        )
+    })?;
+    if exposure_slice.len() != n {
+        return Err(PyValueError::new_err(format!(
+            "y has {} rows but exposure has {} rows",
+            n,
+            exposure_slice.len()
+        )));
+    }
+
+    let k = codes_list.len();
+    if factor_names.len() != k || n_levels_per_factor.len() != k {
+        return Err(PyValueError::new_err(format!(
+            "factor_names, codes_list, and n_levels_per_factor must have the same length \
+             (got {}, {}, {})",
+            factor_names.len(),
+            k,
+            n_levels_per_factor.len()
+        )));
+    }
+
+    let code_slices: Vec<&[u32]> = codes_list
+        .iter()
+        .enumerate()
+        .map(|(j, arr)| {
+            let slice = arr.as_slice().map_err(|_| {
+                PyValueError::new_err(format!(
+                    "codes_list[{}] is not a contiguous numpy array; \
+                     pass np.ascontiguousarray(arr) at the call site",
+                    j
+                ))
+            })?;
+            if slice.len() != n {
+                return Err(PyValueError::new_err(format!(
+                    "codes_list[{}] has {} rows but y has {} rows",
+                    j,
+                    slice.len(),
+                    n
+                )));
+            }
+            Ok(slice)
+        })
+        .collect::<PyResult<Vec<&[u32]>>>()?;
+
+    let candidates = py
+        .detach(|| {
+            detect_exploratory_interactions_from_codes(
+                &factor_names,
+                &code_slices,
+                &n_levels_per_factor,
+                y_slice,
+                exposure_slice,
+                max_factors,
+                min_effect_size,
+                max_candidates,
+                min_cell_count,
+            )
+        })
+        .map_err(PyValueError::new_err)?;
+
+    candidates
+        .into_iter()
+        .map(|candidate| {
+            let dict = PyDict::new(py);
+            dict.set_item("factor1", candidate.factor1)?;
+            dict.set_item("factor2", candidate.factor2)?;
+            dict.set_item("interaction_strength", candidate.interaction_strength)?;
+            dict.set_item("pvalue", candidate.pvalue)?;
+            dict.set_item("n_cells", candidate.n_cells)?;
+            Ok(dict.unbind().into())
+        })
+        .collect()
 }
 
 /// Compute Lorenz curve from Rust

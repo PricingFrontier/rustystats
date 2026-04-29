@@ -293,8 +293,8 @@ mod tests {
 
     #[test]
     fn test_xtx_continuous() {
-        let x =
-            Array2::from_shape_vec((4, 2), vec![1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0, 5.0]).unwrap();
+        let x = Array2::from_shape_vec((4, 2), vec![1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0, 5.0])
+            .expect("test setup should be valid");
         let weights = Array1::from_vec(vec![1.0, 1.0, 1.0, 1.0]);
 
         // x1:x2 values are [2, 6, 12, 20]
@@ -306,8 +306,8 @@ mod tests {
 
     #[test]
     fn test_xtx_continuous_with_weights() {
-        let x =
-            Array2::from_shape_vec((4, 2), vec![1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0, 5.0]).unwrap();
+        let x = Array2::from_shape_vec((4, 2), vec![1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0, 5.0])
+            .expect("test setup should be valid");
         let weights = Array1::from_vec(vec![2.0, 0.5, 1.0, 0.5]);
 
         // x1:x2 values are [2, 6, 12, 20]
@@ -319,8 +319,8 @@ mod tests {
 
     #[test]
     fn test_xtz_continuous_continuous() {
-        let x =
-            Array2::from_shape_vec((4, 2), vec![1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0, 5.0]).unwrap();
+        let x = Array2::from_shape_vec((4, 2), vec![1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0, 5.0])
+            .expect("test setup should be valid");
         let weights = Array1::from_vec(vec![1.0, 1.0, 1.0, 1.0]);
         let z = Array1::from_vec(vec![1.0, 2.0, 3.0, 4.0]);
 
@@ -333,7 +333,8 @@ mod tests {
 
     #[test]
     fn test_xtz_continuous_continuous_with_weights() {
-        let x = Array2::from_shape_vec((3, 2), vec![1.0, 1.0, 2.0, 2.0, 3.0, 3.0]).unwrap();
+        let x = Array2::from_shape_vec((3, 2), vec![1.0, 1.0, 2.0, 2.0, 3.0, 3.0])
+            .expect("test setup should be valid");
         let weights = Array1::from_vec(vec![2.0, 1.0, 0.5]);
         let z = Array1::from_vec(vec![1.0, 1.0, 1.0]);
 

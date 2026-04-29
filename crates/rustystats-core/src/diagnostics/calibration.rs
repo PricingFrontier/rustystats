@@ -608,7 +608,7 @@ mod tests {
         // First point should be (0, 0, 0)
         assert_abs_diff_eq!(points[0].cumulative_exposure_pct, 0.0, epsilon = 1e-10);
         // Last point should be (1, 1, 1)
-        let last = points.last().unwrap();
+        let last = points.last().expect("test setup should be valid");
         assert_abs_diff_eq!(last.cumulative_exposure_pct, 1.0, epsilon = 1e-10);
     }
 }

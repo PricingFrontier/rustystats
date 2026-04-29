@@ -53,7 +53,7 @@ use ndarray::Array1;
 /// use ndarray::array;
 ///
 /// // Create Tweedie with p=1.5 (common for insurance)
-/// let family = TweedieFamily::new(1.5).unwrap();
+/// let family = TweedieFamily::new(1.5).expect("test setup should be valid");
 ///
 /// let mu = array![1.0, 2.0, 4.0];
 /// let variance = family.variance(&mu);
@@ -215,7 +215,7 @@ mod tests {
 
     #[test]
     fn test_tweedie_variance_power_1_5() {
-        let family = TweedieFamily::new(1.5).unwrap();
+        let family = TweedieFamily::new(1.5).expect("test setup should be valid");
         let mu = array![1.0, 4.0, 9.0];
 
         let variance = family.variance(&mu);
@@ -229,7 +229,7 @@ mod tests {
     #[test]
     fn test_tweedie_reduces_to_poisson() {
         // When p=1, Tweedie should behave like Poisson
-        let tweedie = TweedieFamily::new(1.0).unwrap();
+        let tweedie = TweedieFamily::new(1.0).expect("test setup should be valid");
         let mu = array![1.0, 2.0, 3.0];
 
         let variance = tweedie.variance(&mu);
@@ -243,7 +243,7 @@ mod tests {
     #[test]
     fn test_tweedie_reduces_to_gamma() {
         // When p=2, Tweedie should behave like Gamma
-        let tweedie = TweedieFamily::new(2.0).unwrap();
+        let tweedie = TweedieFamily::new(2.0).expect("test setup should be valid");
         let mu = array![1.0, 2.0, 3.0];
 
         let variance = tweedie.variance(&mu);
@@ -257,7 +257,7 @@ mod tests {
     #[test]
     fn test_tweedie_deviance_with_zeros() {
         // Tweedie (1 < p < 2) should handle exact zeros
-        let family = TweedieFamily::new(1.5).unwrap();
+        let family = TweedieFamily::new(1.5).expect("test setup should be valid");
         let y = array![0.0, 0.0, 1.0, 2.0];
         let mu = array![0.5, 1.0, 1.0, 2.0];
 
@@ -270,7 +270,7 @@ mod tests {
 
     #[test]
     fn test_tweedie_deviance_perfect_fit() {
-        let family = TweedieFamily::new(1.5).unwrap();
+        let family = TweedieFamily::new(1.5).expect("test setup should be valid");
         let y = array![1.0, 2.0, 3.0];
         let mu = array![1.0, 2.0, 3.0]; // Perfect fit
 
@@ -284,7 +284,7 @@ mod tests {
 
     #[test]
     fn test_tweedie_default_link() {
-        let family = TweedieFamily::new(1.5).unwrap();
+        let family = TweedieFamily::new(1.5).expect("test setup should be valid");
         let link = family.default_link();
 
         // Default is log link
@@ -297,7 +297,7 @@ mod tests {
 
     #[test]
     fn test_tweedie_initialize_handles_zeros() {
-        let family = TweedieFamily::new(1.5).unwrap();
+        let family = TweedieFamily::new(1.5).expect("test setup should be valid");
         let y = array![0.0, 0.0, 5.0, 10.0];
 
         let mu = family.initialize_mu(&y);
@@ -308,7 +308,7 @@ mod tests {
 
     #[test]
     fn test_tweedie_valid_mu() {
-        let family = TweedieFamily::new(1.5).unwrap();
+        let family = TweedieFamily::new(1.5).expect("test setup should be valid");
 
         assert!(family.is_valid_mu(&array![0.1, 1.0, 10.0]));
         assert!(!family.is_valid_mu(&array![0.0, 1.0, 10.0])); // Zero invalid
@@ -323,7 +323,7 @@ mod tests {
 
     #[test]
     fn test_tweedie_name() {
-        let family = TweedieFamily::new(1.5).unwrap();
+        let family = TweedieFamily::new(1.5).expect("test setup should be valid");
         assert_eq!(family.name(), "Tweedie");
     }
 

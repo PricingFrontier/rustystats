@@ -649,6 +649,196 @@ class TestPreFitExploration:
         result = model.fit()
         assert result.converged
 
+    def test_explore_data_deterministic_golden_outputs(self):
+        """Golden-ish public output check for optimized exploration paths."""
+        from rustystats.constants import EPSILON
+        from rustystats.diagnostics import explore_data
+
+        rows = []
+        for cat_a, cat_b, count, response in [
+            ("A0", "B0", 45, 1.0),
+            ("A0", "B1", 35, 2.0),
+            ("A1", "B0", 35, 2.0),
+            ("A1", "B1", 45, 12.0),
+        ]:
+            rows.extend([(cat_a, cat_b, response)] * count)
+
+        rng = np.random.default_rng(123)
+        idx = rng.permutation(len(rows))
+        cat_a = np.array([rows[i][0] for i in idx])
+        cat_b = np.array([rows[i][1] for i in idx])
+        y = np.array([rows[i][2] for i in idx], dtype=np.float64)
+        x1 = rng.normal(size=len(rows))
+        x2 = 0.35 * x1 + rng.normal(scale=0.8, size=len(rows))
+
+        data = pl.DataFrame(
+            {
+                "y": y,
+                "exposure": np.ones(len(rows), dtype=np.float64),
+                "cat_a": cat_a,
+                "cat_b": cat_b,
+                "x1": x1,
+                "x2": x2,
+            }
+        )
+
+        exploration = explore_data(
+            data=data,
+            response="y",
+            exposure="exposure",
+            categorical_factors=["cat_a", "cat_b"],
+            continuous_factors=["x1", "x2"],
+            n_bins=4,
+            detect_interactions=True,
+            max_interaction_factors=4,
+        )
+
+        corr = np.asarray(exploration.correlations["matrix"], dtype=np.float64)
+        expected_corr = float(np.corrcoef(x1, x2)[0, 1])
+        np.testing.assert_allclose(corr, [[1.0, expected_corr], [expected_corr, 1.0]], rtol=1e-12)
+
+        expected_vif = (1.0 + EPSILON) / ((1.0 + EPSILON) ** 2 - expected_corr**2)
+        vif_by_factor = {row["factor"]: row for row in exploration.vif}
+        np.testing.assert_allclose(vif_by_factor["x1"]["vif"], expected_vif, rtol=1e-10)
+        np.testing.assert_allclose(vif_by_factor["x2"]["vif"], expected_vif, rtol=1e-10)
+        assert vif_by_factor["x1"]["severity"] == "none"
+        assert vif_by_factor["x2"]["severity"] == "none"
+
+        cramers_v = np.asarray(exploration.cramers_v["matrix"], dtype=np.float64)
+        np.testing.assert_allclose(cramers_v, [[1.0, 0.125], [0.125, 1.0]], rtol=1e-12)
+
+        assert exploration.interaction_candidates
+        top = exploration.interaction_candidates[0]
+        assert {top.factor1, top.factor2} == {"cat_a", "cat_b"}
+        np.testing.assert_allclose(top.interaction_strength, 1.0, rtol=1e-12)
+        assert top.n_cells == 4
+
+    def test_explore_data_public_api_detects_known_interaction(self):
+        """Public API should route known pre-fit interactions through Rust."""
+        from rustystats.diagnostics import explore_data
+
+        rows = []
+        for segment, channel, count, response in [
+            ("A", "online", 60, 20.0),
+            ("A", "branch", 60, 2.0),
+            ("B", "online", 60, 2.0),
+            ("B", "branch", 60, 1.0),
+        ]:
+            rows.extend([(segment, channel, response)] * count)
+
+        rng = np.random.default_rng(0)
+        idx = rng.permutation(len(rows))
+        data = pl.DataFrame(
+            {
+                "y": np.array([rows[i][2] for i in idx], dtype=np.float64),
+                "exposure": np.ones(len(rows), dtype=np.float64),
+                "segment": np.array([rows[i][0] for i in idx]),
+                "channel": np.array([rows[i][1] for i in idx]),
+                "noise": rng.choice(["n0", "n1", "n2"], len(rows)),
+            }
+        )
+
+        exploration = explore_data(
+            data=data,
+            response="y",
+            exposure="exposure",
+            categorical_factors=["segment", "channel", "noise"],
+            continuous_factors=[],
+            detect_interactions=True,
+            max_interaction_factors=3,
+        )
+
+        assert exploration.interaction_candidates
+        top = exploration.interaction_candidates[0]
+        assert {top.factor1, top.factor2} == {"segment", "channel"}
+        assert top.interaction_strength > 0.95
+        assert top.n_cells == 4
+
+    def test_explore_data_handles_categorical_nulls_and_continuous_nan_inf(self):
+        """Null categoricals and non-finite continuous values should be stable."""
+        from rustystats.diagnostics import explore_data
+
+        x = np.array([0.0, 1.0, np.nan, 2.0, np.inf, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0])
+        x2 = np.array([0.0, 2.0, 4.0, 4.0, 8.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0])
+        data = pl.DataFrame(
+            {
+                "y": np.arange(12, dtype=np.float64),
+                "exposure": np.ones(12, dtype=np.float64),
+                "cat": ["A", None, "B", None, "A", "B", "A", None, "B", "A", "B", None],
+                "x": x,
+                "x2": x2,
+            }
+        )
+
+        exploration = explore_data(
+            data=data,
+            response="y",
+            exposure="exposure",
+            categorical_factors=["cat"],
+            continuous_factors=["x", "x2"],
+            n_bins=4,
+            detect_interactions=False,
+        )
+
+        factor_stats = {row["name"]: row for row in exploration.factor_stats}
+        assert factor_stats["cat"]["n_levels"] == 3
+        assert {row["level"] for row in factor_stats["cat"]["levels"]} == {"A", "B", "None"}
+
+        assert factor_stats["x"]["missing_count"] == 2
+        assert sum(row["count"] for row in factor_stats["x"]["response_by_bin"]) == 10
+
+        corr = np.asarray(exploration.correlations["matrix"], dtype=np.float64)
+        assert corr.shape == (2, 2)
+        assert np.isfinite(corr).all()
+        np.testing.assert_allclose(corr[0, 1], 1.0, rtol=1e-12)
+        assert exploration.correlations["high_correlations"][0]["severity"] == "high"
+
+        vif_by_factor = {row["factor"]: row for row in exploration.vif}
+        assert vif_by_factor["x"]["severity"] == "severe"
+        assert vif_by_factor["x2"]["severity"] == "severe"
+
+    @pytest.mark.slow
+    def test_explore_data_performance_regression_smoke(self):
+        """Generous smoke guard against obvious exploratory path regressions."""
+        import time
+
+        from rustystats.diagnostics import explore_data
+
+        n = 50_000
+        rng = np.random.default_rng(10)
+        exposure = rng.uniform(0.5, 1.5, n)
+        cols = {
+            "y": rng.poisson(0.4 * exposure).astype(np.float64),
+            "exposure": exposure,
+        }
+        categorical_factors = []
+        continuous_factors = []
+
+        for i in range(6):
+            name = f"cat{i}"
+            categorical_factors.append(name)
+            levels = np.array([f"L{i}_{j}" for j in range(30)])
+            cols[name] = rng.choice(levels, n)
+
+        for i in range(6):
+            name = f"x{i}"
+            continuous_factors.append(name)
+            cols[name] = rng.normal(size=n)
+
+        start = time.perf_counter()
+        exploration = explore_data(
+            data=pl.DataFrame(cols),
+            response="y",
+            exposure="exposure",
+            categorical_factors=categorical_factors,
+            continuous_factors=continuous_factors,
+            detect_interactions=True,
+        )
+        elapsed = time.perf_counter() - start
+
+        assert len(exploration.factor_stats) == 12
+        assert elapsed < 10.0, f"explore_data performance smoke took {elapsed:.3f}s"
+
 
 class TestEnhancedDiagnostics:
     """Tests for new enhanced diagnostics features for agentic workflows."""
@@ -945,17 +1135,16 @@ class TestEnhancedDiagnostics:
         # The PD should also reflect the underlying β > 0: predictions should
         # increase across the grid (predictions are aligned with grid_values).
         first, last = pd_x.predictions[0], pd_x.predictions[-1]
-        assert last > first, (
-            f"Expected monotonically increasing PD for positive β, "
-            f"got first={first} last={last}"
-        )
+        assert (
+            last > first
+        ), f"Expected monotonically increasing PD for positive β, got first={first} last={last}"
         # Sanity check: at the middle of the grid the PD should be close to
         # the baseline (mean of fitted μ), since delta_eta ≈ 0 there.
         mid_pred = pd_x.predictions[len(pd_x.predictions) // 2]
         baseline = float(np.mean(result.fittedvalues))
-        assert abs(mid_pred - baseline) < 0.05, (
-            f"PD at grid midpoint ({mid_pred}) should be near baseline " f"({baseline})"
-        )
+        assert (
+            abs(mid_pred - baseline) < 0.05
+        ), f"PD at grid midpoint ({mid_pred}) should be near baseline ({baseline})"
 
     def test_full_diagnostics_with_enhancements(self, fitted_model_with_data):
         """Test full diagnostics includes all new fields."""
@@ -1953,10 +2142,9 @@ class TestScoreTestMatrixChunking:
 
         # Regression guard: we must actually have compared at least one
         # score test, else the assertion above is vacuous.
-        assert compared_any, (
-            "No unfitted factors produced a score_test; test would be "
-            "vacuous. Check factor lists."
-        )
+        assert (
+            compared_any
+        ), "No unfitted factors produced a score_test; test would be vacuous. Check factor lists."
 
     def test_chunked_build_fires_for_large_n_in_lean_mode(self, monkeypatch):
         """transform_new_data is called > 1 time when rebuilding lean-mode X.
@@ -2333,10 +2521,9 @@ class TestExplorerCramersVStreaming:
         assert np.isfinite(actual) and actual > 0.0
 
         rel_err = abs(actual - ref) / max(abs(ref), 1e-30)
-        assert rel_err < 1e-10, (
-            f"n={n}, r={r}, k={k}: reference={ref:.15g} actual={actual:.15g} "
-            f"rel_err={rel_err:.3e}"
-        )
+        assert (
+            rel_err < 1e-10
+        ), f"n={n}, r={r}, k={k}: reference={ref:.15g} actual={actual:.15g} rel_err={rel_err:.3e}"
 
     # ------------------------------------------------------------------
     # 3. High-cardinality sparse case — memory pressure scenario
@@ -2463,9 +2650,9 @@ class TestExplorerCramersVStreaming:
             x_pair, y_pair = self._pair(x_inv, y_inv, r=r, k=k)
             actual = explorer._compute_cramers_v_pair_fast(x_pair, y_pair)
             rel_err = abs(actual - ref) / max(abs(ref), 1e-30)
-            assert rel_err < 1e-10, (
-                f"({r}x{k}, n={n}): reference={ref} actual={actual} " f"rel_err={rel_err:.3e}"
-            )
+            assert (
+                rel_err < 1e-10
+            ), f"({r}x{k}, n={n}): reference={ref} actual={actual} rel_err={rel_err:.3e}"
 
     # ------------------------------------------------------------------
     # 5. ValidationError preserved on zero expected frequencies

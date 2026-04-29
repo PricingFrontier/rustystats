@@ -2026,9 +2026,9 @@ class TestMonotonicSplineBoundary:
         assert len(spline_mask_inc) > 0, "No increasing-constrained features found"
         spline_coefs_inc = np.array(result_inc.params)[spline_mask_inc]
         coef_diffs = np.diff(spline_coefs_inc)
-        assert np.all(coef_diffs >= -1e-4), (
-            f"Increasing monotonic spline has non-monotone coefficients: " f"diffs = {coef_diffs}"
-        )
+        assert np.all(
+            coef_diffs >= -1e-4
+        ), f"Increasing monotonic spline has non-monotone coefficients: diffs = {coef_diffs}"
 
         # --- Decreasing: verify B-spline coefficients are non-increasing ---
         np.random.seed(42)
@@ -2050,10 +2050,9 @@ class TestMonotonicSplineBoundary:
         assert len(spline_mask_dec) > 0, "No decreasing-constrained features found"
         spline_coefs_dec = np.array(result_dec.params)[spline_mask_dec]
         coef_diffs_dec = np.diff(spline_coefs_dec)
-        assert np.all(coef_diffs_dec <= 1e-4), (
-            f"Decreasing monotonic spline has non-monotone coefficients: "
-            f"diffs = {coef_diffs_dec}"
-        )
+        assert np.all(
+            coef_diffs_dec <= 1e-4
+        ), f"Decreasing monotonic spline has non-monotone coefficients: diffs = {coef_diffs_dec}"
 
     def test_ms_type_via_glm_dict(self):
         """Verify that type='ms' works through glm_dict() and produces a
@@ -2081,10 +2080,9 @@ class TestMonotonicSplineBoundary:
 
         # ms() defaults to increasing — predictions must be non-decreasing
         diffs = np.diff(preds)
-        assert np.all(diffs >= -1e-10), (
-            f"ms() monotonic spline produced decreasing predictions: "
-            f"min diff = {diffs.min():.6f}"
-        )
+        assert np.all(
+            diffs >= -1e-10
+        ), f"ms() monotonic spline produced decreasing predictions: min diff = {diffs.min():.6f}"
 
 
 # =============================================================================
@@ -3049,9 +3047,8 @@ class TestPredictAdaptiveChunk:
     exposed as a pure helper `_compute_predict_chunk_size(n_features)`
     so it can be unit-tested in isolation.
 
-    Some tests in this class are TDD-style and will FAIL on the
-    current implementation (noted inline). They pin the target
-    behavior for the dev working on the memory-hardening change.
+    The tests pin the memory-hardening behavior while keeping the
+    integration cases bounded enough for routine CI runs.
     """
 
     @staticmethod
@@ -3198,15 +3195,13 @@ class TestPredictAdaptiveChunk:
         assert np.all(np.isfinite(preds))
         assert elapsed < 60.0, f"predict too slow: {elapsed:.1f}s"
 
-    # ---- Test 3: TDD — _compute_predict_chunk_size helper ----------------
+    # ---- Test 3: _compute_predict_chunk_size helper invariants -----------
 
     def test_compute_predict_chunk_size_narrow_model_unchanged(self):
-        """TDD: small/narrow models keep the default chunk size.
+        """Small/narrow models keep the default chunk size.
 
         For a tiny model (p=10) the memory budget is a non-binding
         constraint, so chunk_size should equal the default (200_000).
-
-        FAILS on current code — the helper doesn't exist yet.
         """
         from rustystats.formula import (
             _PREDICT_ROW_CHUNK_DEFAULT,
@@ -3217,13 +3212,11 @@ class TestPredictAdaptiveChunk:
         assert _compute_predict_chunk_size(50) == _PREDICT_ROW_CHUNK_DEFAULT
 
     def test_compute_predict_chunk_size_wide_model_shrinks(self):
-        """TDD: wide models get a chunk size below the default.
+        """Wide models get a chunk size below the default.
 
         For p=1000 the default-sized chunk would materialize
         200_000 × 1000 × 8B = 1.6 GB per chunk. The adaptive logic
         should cap this below the default.
-
-        FAILS on current code.
         """
         from rustystats.formula import (
             _PREDICT_ROW_CHUNK_DEFAULT,
@@ -3243,12 +3236,10 @@ class TestPredictAdaptiveChunk:
         ), f"per-chunk allocation too large: {per_chunk_bytes:,} bytes"
 
     def test_compute_predict_chunk_size_very_wide_model_positive(self):
-        """TDD: very wide models get a small but strictly positive chunk size.
+        """Very wide models get a small but strictly positive chunk size.
 
         For p=10_000 the chunk size must be small — but NEVER zero,
         or the predict loop would divide-by-zero / spin forever.
-
-        FAILS on current code.
         """
         from rustystats.formula import _compute_predict_chunk_size
 
@@ -3259,11 +3250,9 @@ class TestPredictAdaptiveChunk:
         assert chunk < 200_000
 
     def test_compute_predict_chunk_size_monotonic_in_width(self):
-        """TDD: chunk size is non-increasing as n_features grows.
+        """Chunk size is non-increasing as n_features grows.
 
         chunk_size(p1) >= chunk_size(p2) whenever p1 <= p2.
-
-        FAILS on current code.
         """
         from rustystats.formula import _compute_predict_chunk_size
 
@@ -3275,14 +3264,12 @@ class TestPredictAdaptiveChunk:
         assert all(c > 0 for c in chunks)
 
     def test_compute_predict_chunk_size_budget_cap_observed(self):
-        """TDD: per-chunk bytes stay within a reasonable memory budget.
+        """Per-chunk bytes stay within a reasonable memory budget.
 
         For any moderately wide model, `chunk_size * n_features * 8`
         should fit in a few hundred MB. Exact budget is the dev's call
         (spec targets ~200 MB ≈ 25M float64 values); we pin a loose
         upper bound of 1 GB so the test is robust to reasonable choices.
-
-        FAILS on current code.
         """
         from rustystats.formula import _compute_predict_chunk_size
 
@@ -3296,7 +3283,7 @@ class TestPredictAdaptiveChunk:
     # ---- Test 3b: Observable chunk-count scaling (integration) ----------
 
     def test_chunk_count_scales_with_model_width(self):
-        """TDD-ish: wider models produce MORE chunks for the same n_rows.
+        """Wider models produce MORE chunks for the same n_rows.
 
         Counts calls to `InteractionBuilder.transform_new_data` via
         monkey-patching. For the same n_rows, a wider model must
@@ -3305,24 +3292,23 @@ class TestPredictAdaptiveChunk:
         default). This is the user-visible effect of the adaptive
         chunk sizing.
 
-        FAILS on current code — today both widths use chunk_size =
-        200_000 so the counts are equal.
+        This guards against regressing to a fixed 200k-row chunk size.
         """
         from unittest.mock import patch
 
         from rustystats.interactions import InteractionBuilder
 
-        narrow = self._fit_wide_model(n_fit=2_000, n_levels=20)
-        wide = self._fit_wide_model(n_fit=4_000, n_levels=1_000)
+        narrow = self._fit_wide_model(n_fit=500, n_levels=20)
+        wide = self._fit_wide_model(n_fit=800, n_levels=220)
 
         # Must be wide enough that the adaptive budget bites.
-        assert len(wide.params) >= 500, (
+        assert len(wide.params) >= 150, (
             f"wide model only has {len(wide.params)} features; "
             "test cannot distinguish the adaptive-chunk effect"
         )
 
         rng = np.random.default_rng(101)
-        n_pred = 600_000  # > default chunk to force chunking on both
+        n_pred = 400_000  # > default chunk to force chunking on both
 
         def _make_pred_df(n_levels_: int) -> pl.DataFrame:
             cats = np.array([f"L{i}" for i in range(n_levels_)])
@@ -3337,7 +3323,7 @@ class TestPredictAdaptiveChunk:
             )
 
         pred_narrow = _make_pred_df(20)
-        pred_wide = _make_pred_df(1_000)
+        pred_wide = _make_pred_df(220)
 
         original = InteractionBuilder.transform_new_data
 
@@ -3355,8 +3341,8 @@ class TestPredictAdaptiveChunk:
         n_chunks_narrow = count_calls(narrow, pred_narrow)
         n_chunks_wide = count_calls(wide, pred_wide)
 
-        # Narrow model at n=600k with default chunk=200k → 3 chunks.
-        assert n_chunks_narrow >= 3
+        # Narrow model at n=400k with default chunk=200k uses at least 2 chunks.
+        assert n_chunks_narrow >= 2
         # Wide model should produce *more* chunks once adaptive sizing
         # shrinks per-chunk rows below the default.
         assert n_chunks_wide > n_chunks_narrow, (
@@ -3405,10 +3391,9 @@ class TestPredictAdaptiveChunk:
         with patch.object(InteractionBuilder, "transform_new_data", counting_transform):
             preds = result.predict(pred_df)
 
-        assert counter["n"] == 1, (
-            f"small-n should use single-shot path, got {counter['n']} "
-            "calls to transform_new_data"
-        )
+        assert (
+            counter["n"] == 1
+        ), f"small-n should use single-shot path, got {counter['n']} calls to transform_new_data"
         assert preds.shape == (n_pred,)
         assert np.all(np.isfinite(preds))
 

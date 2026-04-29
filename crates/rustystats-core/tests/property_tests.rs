@@ -212,7 +212,7 @@ proptest! {
 
     #[test]
     fn tweedie_variance_positive(mu_vals in positive_mu_vec(10)) {
-        let family = TweedieFamily::new(1.5).unwrap();
+        let family = TweedieFamily::new(1.5).expect("test setup should be valid");
         let mu = Array1::from_vec(mu_vals);
         let var = family.variance(&mu);
         for &v in var.iter() {

@@ -523,7 +523,7 @@ mod tests {
                 1.0, 9.0, 0.3, 0.2, 1.0, 10.0, 0.1, 0.1,
             ],
         )
-        .unwrap();
+        .expect("test setup should be valid");
 
         // y strongly related to x1, weakly to x2, x3
         let y = array![5.0, 8.0, 11.0, 14.0, 17.0, 20.0, 23.0, 26.0, 29.0, 32.0];
@@ -546,7 +546,7 @@ mod tests {
             None,
             false,
         )
-        .unwrap();
+        .expect("test setup should be valid");
 
         assert!(result.converged);
 
@@ -573,13 +573,15 @@ mod tests {
             (5, 2),
             vec![1.0, 1.0, 1.0, 2.0, 1.0, 3.0, 1.0, 4.0, 1.0, 5.0],
         )
-        .unwrap();
+        .expect("test setup should be valid");
         let y = array![5.0, 8.0, 11.0, 14.0, 17.0];
 
         let family = GaussianFamily;
         let link = IdentityLink;
-        let mut irls_config = IRLSConfig::default();
-        irls_config.max_iterations = 50; // More iterations for small penalty
+        let irls_config = IRLSConfig {
+            max_iterations: 50, // More iterations for small penalty
+            ..IRLSConfig::default()
+        };
 
         // Very small Lasso penalty
         let reg_config = RegularizationConfig::lasso(0.001);
@@ -595,7 +597,7 @@ mod tests {
             None,
             false,
         )
-        .unwrap();
+        .expect("test setup should be valid");
 
         // With Gaussian + identity link, should converge quickly or reach good solution
         // Coefficients should be close to OLS (intercept ~2, slope ~3)
@@ -621,13 +623,15 @@ mod tests {
                 1.0, 2.0, 2.2, 1.0, 3.0, 3.1, 1.0, 4.0, 4.3, 1.0, 5.0, 5.2, 1.0, 6.0, 6.1,
             ],
         )
-        .unwrap();
+        .expect("test setup should be valid");
         let y = array![5.0, 8.0, 11.0, 14.0, 17.0, 20.0];
 
         let family = GaussianFamily;
         let link = IdentityLink;
-        let mut irls_config = IRLSConfig::default();
-        irls_config.max_iterations = 50;
+        let irls_config = IRLSConfig {
+            max_iterations: 50,
+            ..IRLSConfig::default()
+        };
 
         // Elastic Net: 50% L1, 50% L2
         let reg_config = RegularizationConfig::elastic_net(1.0, 0.5);
@@ -643,7 +647,7 @@ mod tests {
             None,
             false,
         )
-        .unwrap();
+        .expect("test setup should be valid");
 
         // Should produce reasonable fitted values even if not converged
         assert!(result.fitted_values.iter().all(|&x| x.is_finite()));
@@ -659,7 +663,7 @@ mod tests {
             (6, 2),
             vec![1.0, 0.0, 1.0, 1.0, 1.0, 2.0, 1.0, 3.0, 1.0, 4.0, 1.0, 5.0],
         )
-        .unwrap();
+        .expect("test setup should be valid");
         let y = array![2.0, 3.0, 4.0, 6.0, 8.0, 12.0];
 
         let family = PoissonFamily;
@@ -679,7 +683,7 @@ mod tests {
             None,
             false,
         )
-        .unwrap();
+        .expect("test setup should be valid");
 
         assert!(result.converged);
         assert!(result.fitted_values.iter().all(|&x| x > 0.0));
@@ -692,7 +696,7 @@ mod tests {
             (5, 2),
             vec![1.0, 1.0, 1.0, 2.0, 1.0, 3.0, 1.0, 4.0, 1.0, 5.0],
         )
-        .unwrap();
+        .expect("test setup should be valid");
         let y = array![10.0, 10.0, 10.0, 10.0, 10.0]; // Constant y
 
         let family = GaussianFamily;
@@ -713,7 +717,7 @@ mod tests {
             None,
             false,
         )
-        .unwrap();
+        .expect("test setup should be valid");
 
         assert!(result.converged);
 

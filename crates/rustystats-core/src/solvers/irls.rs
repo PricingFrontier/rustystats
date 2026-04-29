@@ -1220,7 +1220,7 @@ mod tests {
             (5, 2),
             vec![1.0, 1.0, 1.0, 2.0, 1.0, 3.0, 1.0, 4.0, 1.0, 5.0],
         )
-        .unwrap();
+        .expect("test setup should be valid");
         let y = array![5.1, 7.9, 11.2, 13.8, 17.1];
 
         let config = FitConfig::default();
@@ -1234,7 +1234,7 @@ mod tests {
             None,
             None,
         )
-        .unwrap();
+        .expect("test setup should be valid");
 
         assert!(result.converged);
         assert!((result.coefficients[0] - 2.0).abs() < 0.5);
@@ -1247,7 +1247,7 @@ mod tests {
             (6, 2),
             vec![1.0, 0.0, 1.0, 1.0, 1.0, 2.0, 1.0, 3.0, 1.0, 4.0, 1.0, 5.0],
         )
-        .unwrap();
+        .expect("test setup should be valid");
         let y = array![2.0, 2.0, 3.0, 4.0, 5.0, 7.0];
 
         let config = FitConfig::default();
@@ -1261,7 +1261,7 @@ mod tests {
             None,
             None,
         )
-        .unwrap();
+        .expect("test setup should be valid");
 
         assert!(result.converged);
         assert!(result.fitted_values.iter().all(|&x| x > 0.0));
@@ -1269,7 +1269,8 @@ mod tests {
 
     #[test]
     fn test_dimension_mismatch_error() {
-        let x = Array2::from_shape_vec((3, 2), vec![1.0, 1.0, 1.0, 2.0, 1.0, 3.0]).unwrap();
+        let x = Array2::from_shape_vec((3, 2), vec![1.0, 1.0, 1.0, 2.0, 1.0, 3.0])
+            .expect("test setup should be valid");
         let y = array![1.0, 2.0]; // Wrong length!
 
         let config = FitConfig::default();
@@ -1286,15 +1287,15 @@ mod tests {
 
         assert!(result.is_err());
         assert!(matches!(
-            result.unwrap_err(),
+            result.expect_err("test should exercise the error path"),
             RustyStatsError::DimensionMismatch { .. }
         ));
     }
 
     #[test]
     fn test_convergence_with_max_iter() {
-        let x =
-            Array2::from_shape_vec((4, 2), vec![1.0, 1.0, 1.0, 2.0, 1.0, 3.0, 1.0, 4.0]).unwrap();
+        let x = Array2::from_shape_vec((4, 2), vec![1.0, 1.0, 1.0, 2.0, 1.0, 3.0, 1.0, 4.0])
+            .expect("test setup should be valid");
         let y = array![2.0, 4.0, 6.0, 8.0];
 
         let config = FitConfig::default().with_max_iterations(50);
@@ -1308,7 +1309,7 @@ mod tests {
             None,
             None,
         )
-        .unwrap();
+        .expect("test setup should be valid");
 
         assert!(result.converged);
         assert!(result.iterations < 10);
@@ -1323,7 +1324,7 @@ mod tests {
             (5, 2),
             vec![1.0, 1.0, 1.0, 2.0, 1.0, 3.0, 1.0, 4.0, 1.0, 5.0],
         )
-        .unwrap();
+        .expect("test setup should be valid");
         let y = array![5.0, 8.0, 11.0, 14.0, 17.0];
         (x, y)
     }
@@ -1342,7 +1343,7 @@ mod tests {
             None,
             None,
         )
-        .unwrap();
+        .expect("test setup should be valid");
 
         let ridge = fit_glm_unified(
             &y,
@@ -1354,7 +1355,7 @@ mod tests {
             None,
             None,
         )
-        .unwrap();
+        .expect("test setup should be valid");
 
         assert!(
             ridge.coefficients[1].abs() < unreg.coefficients[1].abs(),
@@ -1382,7 +1383,7 @@ mod tests {
             None,
             None,
         )
-        .unwrap();
+        .expect("test setup should be valid");
 
         let ridge_zero = fit_glm_unified(
             &y,
@@ -1394,7 +1395,7 @@ mod tests {
             None,
             None,
         )
-        .unwrap();
+        .expect("test setup should be valid");
 
         for i in 0..2 {
             assert!(
@@ -1421,7 +1422,7 @@ mod tests {
             None,
             None,
         )
-        .unwrap();
+        .expect("test setup should be valid");
 
         let ridge = fit_glm_unified(
             &y,
@@ -1433,7 +1434,7 @@ mod tests {
             None,
             None,
         )
-        .unwrap();
+        .expect("test setup should be valid");
 
         assert!(
             ridge.coefficients[1].abs() < unreg.coefficients[1].abs() * 0.5,
@@ -1452,7 +1453,7 @@ mod tests {
             (6, 2),
             vec![1.0, 0.0, 1.0, 1.0, 1.0, 2.0, 1.0, 3.0, 1.0, 4.0, 1.0, 5.0],
         )
-        .unwrap();
+        .expect("test setup should be valid");
         let y = array![2.0, 3.0, 4.0, 6.0, 8.0, 12.0];
 
         let config = FitConfig::default().with_regularization(RegularizationConfig::ridge(1.0));
@@ -1466,7 +1467,7 @@ mod tests {
             None,
             None,
         )
-        .unwrap();
+        .expect("test setup should be valid");
 
         assert!(result.converged);
         assert!(result.fitted_values.iter().all(|&x| x > 0.0));

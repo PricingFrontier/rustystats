@@ -18,10 +18,16 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from rustystats._rustystats import (
-    f_cdf_py as _f_cdf,
+    compute_correlation_and_vif_py as _compute_correlation_and_vif,
 )
 from rustystats._rustystats import (
-    factorize_strings_py as _factorize_strings,
+    compute_cramers_v_matrix_from_codes_py as _compute_cramers_v_matrix_from_codes,
+)
+from rustystats._rustystats import (
+    detect_exploratory_interactions_py as _detect_exploratory_interactions,
+)
+from rustystats._rustystats import (
+    f_cdf_py as _f_cdf,
 )
 from rustystats.constants import (
     DEFAULT_MAX_CATEGORICAL_LEVELS,
@@ -155,28 +161,32 @@ class DataExplorer:
             thin_cells = []
             total_exposure = np.sum(self.exposure)
 
-            for i in range(n_bins):
-                if i == n_bins - 1:
-                    bin_mask = (values >= quantiles[i]) & (values <= quantiles[i + 1])
-                else:
-                    bin_mask = (values >= quantiles[i]) & (values < quantiles[i + 1])
+            valid_bin_ids = np.searchsorted(quantiles, valid_values, side="right") - 1
+            valid_bin_ids = np.clip(valid_bin_ids, 0, n_bins - 1)
+            valid_exposure = self.exposure[valid_mask]
+            valid_y = self.y[valid_mask]
 
-                if not np.any(bin_mask):
+            bin_counts = np.bincount(valid_bin_ids, minlength=n_bins)
+            bin_exposures = np.bincount(valid_bin_ids, weights=valid_exposure, minlength=n_bins)
+            bin_responses = np.bincount(valid_bin_ids, weights=valid_y, minlength=n_bins)
+
+            for i in range(n_bins):
+                count = int(bin_counts[i])
+                if count == 0:
                     continue
 
-                y_bin = self.y[bin_mask]
-                exp_bin = self.exposure[bin_mask]
-                bin_exposure = float(np.sum(exp_bin))
-                rate = float(np.sum(y_bin) / bin_exposure) if bin_exposure > 0 else 0
+                bin_exposure = float(bin_exposures[i])
+                response_sum = float(bin_responses[i])
+                rate = float(response_sum / bin_exposure) if bin_exposure > 0 else 0
 
                 bins_data.append(
                     {
                         "bin_index": i,
                         "bin_lower": float(quantiles[i]),
                         "bin_upper": float(quantiles[i + 1]),
-                        "count": int(np.sum(bin_mask)),
+                        "count": count,
                         "exposure": bin_exposure,
-                        "response_sum": float(np.sum(y_bin)),
+                        "response_sum": response_sum,
                         "response_rate": rate,
                     }
                 )
@@ -207,14 +217,14 @@ class DataExplorer:
         for name in categorical_factors:
             validate_factor_in_data(name, data, "Categorical factor")
 
-            values = (
-                cat_column_cache[name]
-                if cat_column_cache and name in cat_column_cache
-                else data[name].to_numpy().astype(str)
-            )
             if cat_unique_cache and name in cat_unique_cache:
                 unique_levels, inverse = cat_unique_cache[name]
             else:
+                values = (
+                    cat_column_cache[name]
+                    if cat_column_cache and name in cat_column_cache
+                    else data[name].to_numpy().astype(str)
+                )
                 unique_levels, inverse = np.unique(values, return_inverse=True)
             k = len(unique_levels)
 
@@ -444,21 +454,19 @@ class DataExplorer:
         for name in categorical_factors:
             validate_factor_in_data(name, data, "Categorical factor")
 
-            values = (
-                cat_column_cache[name]
-                if cat_column_cache and name in cat_column_cache
-                else data[name].to_numpy().astype(str)
-            )
-
-            # ANOVA: eta-squared and F-test
-            eta_sq = self._compute_eta_squared_response(values)
-
             if cat_unique_cache and name in cat_unique_cache:
-                unique_levels, _ = cat_unique_cache[name]
+                unique_levels, inverse = cat_unique_cache[name]
+                eta_sq = self._compute_eta_squared_response_codes(inverse, len(unique_levels))
             else:
-                unique_levels = np.unique(values)
+                values = (
+                    cat_column_cache[name]
+                    if cat_column_cache and name in cat_column_cache
+                    else data[name].to_numpy().astype(str)
+                )
+                unique_levels, inverse = np.unique(values, return_inverse=True)
+                eta_sq = self._compute_eta_squared_response_codes(inverse, len(unique_levels))
             k = len(unique_levels)
-            n = len(values)
+            n = len(inverse)
 
             if k > 1 and n > k:
                 f_stat = (eta_sq / (k - 1)) / ((1 - eta_sq) / (n - k)) if eta_sq < 1 else 0
@@ -515,22 +523,31 @@ class DataExplorer:
 
         X = np.column_stack(arrays)
 
-        # Handle missing values - use pairwise complete observations
         n_factors = len(valid_factors)
-        corr_matrix = np.eye(n_factors)
+        if np.all(np.isfinite(X)):
+            corr_matrix, _ = _compute_correlation_and_vif(
+                np.ascontiguousarray(X, dtype=np.float64), EPSILON, 0
+            )
+            corr_matrix = np.asarray(corr_matrix, dtype=np.float64)
+            np.fill_diagonal(corr_matrix, 1.0)
+        else:
+            # Preserve pairwise-complete semantics when missing or infinite
+            # values are present; the Rust fast path intentionally handles the
+            # common dense/finite case.
+            corr_matrix = np.eye(n_factors)
 
-        for i in range(n_factors):
-            for j in range(i + 1, n_factors):
-                xi, xj = X[:, i], X[:, j]
-                valid = ~np.isnan(xi) & ~np.isnan(xj) & ~np.isinf(xi) & ~np.isinf(xj)
+            for i in range(n_factors):
+                for j in range(i + 1, n_factors):
+                    xi, xj = X[:, i], X[:, j]
+                    valid = ~np.isnan(xi) & ~np.isnan(xj) & ~np.isinf(xi) & ~np.isinf(xj)
 
-                if np.sum(valid) > 2:
-                    corr = np.corrcoef(xi[valid], xj[valid])[0, 1]
-                    corr_matrix[i, j] = corr
-                    corr_matrix[j, i] = corr
-                else:
-                    corr_matrix[i, j] = float("nan")
-                    corr_matrix[j, i] = float("nan")
+                    if np.sum(valid) > 2:
+                        corr = np.corrcoef(xi[valid], xj[valid])[0, 1]
+                        corr_matrix[i, j] = corr
+                        corr_matrix[j, i] = corr
+                    else:
+                        corr_matrix[i, j] = float("nan")
+                        corr_matrix[j, i] = float("nan")
 
         # Find high correlations (|r| > 0.7)
         high_corrs = []
@@ -593,31 +610,19 @@ class DataExplorer:
                 {"factor": f, "vif": float("nan"), "severity": "unknown"} for f in valid_factors
             ]
 
-        # Standardize
-        X = (X - np.mean(X, axis=0)) / (np.std(X, axis=0) + EPSILON)
+        zero_variance = np.std(X, axis=0) <= EPSILON
+
+        try:
+            _, vif_values = _compute_correlation_and_vif(
+                np.ascontiguousarray(X, dtype=np.float64), EPSILON, 0
+            )
+            vif_values = np.asarray(vif_values, dtype=np.float64)
+        except Exception as e:
+            raise FittingError(f"Failed to compute VIF: {e}") from e
 
         results = []
         for i, name in enumerate(valid_factors):
-            # Regress factor i on all others
-            y = X[:, i]
-            others = np.delete(X, i, axis=1)
-
-            # Add intercept
-            others_with_int = np.column_stack([np.ones(len(others)), others])
-
-            try:
-                # OLS: beta = (X'X)^-1 X'y
-                beta = np.linalg.lstsq(others_with_int, y, rcond=None)[0]
-                y_pred = others_with_int @ beta
-
-                ss_res = np.sum((y - y_pred) ** 2)
-                ss_tot = np.sum((y - np.mean(y)) ** 2)
-
-                r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0
-                vif = 1 / (1 - r2) if r2 < 1 else float("inf")
-            except Exception as e:
-                # Re-raise - VIF computation shouldn't fail silently
-                raise FittingError(f"Failed to compute VIF for '{name}': {e}") from e
+            vif = 1.0 if zero_variance[i] else float(vif_values[i])
 
             if np.isnan(vif) or np.isinf(vif):
                 severity = "unknown"
@@ -804,30 +809,34 @@ class DataExplorer:
         if len(valid_factors) < 2:
             return {"factors": valid_factors, "matrix": [], "high_associations": []}
 
-        # Pre-fetch arrays and unique/inverse for all factors
-        _arrays = {}
+        # Pre-fetch per-column unique/inverse codes; Rust owns the pairwise
+        # contingency aggregation.
         _uniq_inv = {}
         for name in valid_factors:
-            if cat_column_cache and name in cat_column_cache:
-                _arrays[name] = cat_column_cache[name]
-            else:
-                _arrays[name] = data[name].to_numpy().astype(str)
             if cat_unique_cache and name in cat_unique_cache:
                 _uniq_inv[name] = cat_unique_cache[name]
             else:
-                _uniq_inv[name] = np.unique(_arrays[name], return_inverse=True)
+                values = (
+                    cat_column_cache[name]
+                    if cat_column_cache and name in cat_column_cache
+                    else data[name].to_numpy().astype(str)
+                )
+                _uniq_inv[name] = np.unique(values, return_inverse=True)
+
+        codes_list = [
+            np.ascontiguousarray(_uniq_inv[name][1], dtype=np.uint32) for name in valid_factors
+        ]
+        n_levels = [len(_uniq_inv[name][0]) for name in valid_factors]
+
+        try:
+            v_matrix = np.asarray(
+                _compute_cramers_v_matrix_from_codes(codes_list, n_levels),
+                dtype=np.float64,
+            )
+        except ValueError as e:
+            raise ValidationError(str(e)) from e
 
         n_factors = len(valid_factors)
-        v_matrix = np.eye(n_factors)
-
-        for i in range(n_factors):
-            for j in range(i + 1, n_factors):
-                v = self._compute_cramers_v_pair_fast(
-                    _uniq_inv[valid_factors[i]],
-                    _uniq_inv[valid_factors[j]],
-                )
-                v_matrix[i, j] = v
-                v_matrix[j, i] = v
 
         # Find high associations (V > 0.3)
         high_assoc = []
@@ -853,69 +862,23 @@ class DataExplorer:
         }
 
     def _compute_cramers_v_pair_fast(self, x_uniq_inv: tuple, y_uniq_inv: tuple) -> float:
-        """Compute Cramér's V from pre-computed (unique, inverse) tuples.
-
-        Streaming implementation: instead of materializing the full (r, k)
-        contingency table, iterate over the unique ``(x_inv, y_inv)`` pairs
-        (at most ``n`` of them) and accumulate chi-squared via the identity
-
-            chi2 = sum_{i,j} (obs_ij - exp_ij)^2 / exp_ij
-                 = sum_{i,j} obs_ij^2 / exp_ij - n
-
-        Only nonzero cells contribute to the first sum, so we only touch as
-        many cells as actually appear in the data. Memory is O(n) in the
-        worst case (vs O(r*k) previously) and typically far less for sparse
-        high-cardinality factors.
-        """
+        """Compute Cramér's V from pre-computed ``np.unique`` tuples."""
         x_cats, x_inv = x_uniq_inv
         y_cats, y_inv = y_uniq_inv
 
-        r, k = len(x_cats), len(y_cats)
-        if r < 2 or k < 2:
-            return 0.0
-
-        n_rows = len(x_inv)
-        if n_rows == 0:
-            return 0.0
-
-        # Marginals from the 1D inverse arrays — O(r) and O(k), tiny.
-        row_sums = np.bincount(x_inv, minlength=r).astype(np.float64)
-        col_sums = np.bincount(y_inv, minlength=k).astype(np.float64)
-        n = float(n_rows)
-
-        # Any zero marginal ⇒ at least one expected cell is 0 ⇒ ill-defined.
-        # Preserve the original defensive ValidationError path here.
-        if np.any(row_sums == 0) or np.any(col_sums == 0):
-            raise ValidationError(
-                "Cramér's V calculation has zero expected frequencies. "
-                "This indicates empty cells in the contingency table between factors. "
-                "Check data quality or reduce number of factor levels."
+        codes = [
+            np.ascontiguousarray(x_inv, dtype=np.uint32),
+            np.ascontiguousarray(y_inv, dtype=np.uint32),
+        ]
+        try:
+            matrix = _compute_cramers_v_matrix_from_codes(
+                codes,
+                [len(x_cats), len(y_cats)],
             )
+        except ValueError as e:
+            raise ValidationError(str(e)) from e
 
-        # Encode (i, j) as a single int64 key; int64 guards against overflow
-        # when r * k exceeds int32 range on high-cardinality factors.
-        k_i64 = np.int64(k)
-        combined = x_inv.astype(np.int64, copy=False) * k_i64 + y_inv.astype(np.int64, copy=False)
-
-        # Only the cells that actually appear contribute to sum obs^2 / exp;
-        # empty cells have obs = 0 and drop out algebraically. np.unique here
-        # is O(n log n) in time and O(n) in memory (worst case), which is
-        # strictly dominated by the previous O(r*k) float64 materialization
-        # for high-cardinality sparse inputs.
-        cell_codes, counts = np.unique(combined, return_counts=True)
-        i_idx = cell_codes // k_i64
-        j_idx = cell_codes % k_i64
-
-        exp_nonzero = row_sums[i_idx] * col_sums[j_idx] / n
-        # All marginals are strictly positive (checked above), so exp_nonzero
-        # is strictly positive — no divide-by-zero guard needed here.
-        chi2 = float(np.sum(counts.astype(np.float64) ** 2 / exp_nonzero) - n)
-
-        min_dim = min(r - 1, k - 1)
-        if min_dim == 0:
-            return 0.0
-
-        return float(np.sqrt(chi2 / (n * min_dim)))
+        return float(matrix[0][1])
 
     def detect_interactions(
         self,
@@ -926,6 +889,7 @@ class DataExplorer:
         max_candidates: int = 5,
         min_cell_count: int = 30,
         cat_column_cache: dict[str, np.ndarray | None] | None = None,
+        cat_unique_cache: dict[str, tuple | None] | None = None,
         cont_column_cache: dict[str, np.ndarray | None] | None = None,
     ) -> list[InteractionCandidate]:
         """
@@ -934,78 +898,81 @@ class DataExplorer:
         This identifies factors whose combined effect on the response
         differs from their individual effects, suggesting an interaction.
         """
-        # First, rank factors by their effect on response variance
-        factor_scores = []
+        encoded_names: list[str] = []
+        encoded_codes: list[np.ndarray] = []
+        encoded_n_levels: list[int] = []
 
         for name in factor_names:
             validate_factor_in_data(name, data)
 
-            # Use cached arrays when available
-            if cat_column_cache and name in cat_column_cache:
-                score = self._compute_eta_squared_response(cat_column_cache[name])
+            if cat_unique_cache and name in cat_unique_cache:
+                levels, inverse = cat_unique_cache[name]
+                codes = np.ascontiguousarray(inverse, dtype=np.uint32)
+                n_levels = len(levels)
+            elif cat_column_cache and name in cat_column_cache:
+                levels, inverse = np.unique(cat_column_cache[name], return_inverse=True)
+                codes = np.ascontiguousarray(inverse, dtype=np.uint32)
+                n_levels = len(levels)
             elif cont_column_cache and name in cont_column_cache:
                 values = cont_column_cache[name]
                 valid_mask = ~np.isnan(values) & ~np.isinf(values)
                 if np.sum(valid_mask) < 10:
                     continue
                 bins = self._discretize(values, 5)
-                score = self._compute_eta_squared_response(bins.astype(str))
+                codes = np.ascontiguousarray(bins, dtype=np.uint32)
+                n_levels = int(np.max(codes)) + 1 if len(codes) else 0
             else:
                 values = data[name].to_numpy()
-                if values.dtype == object or str(values.dtype).startswith("str"):
-                    score = self._compute_eta_squared_response(values.astype(str))
+                if values.dtype.kind in ("O", "U", "S"):
+                    levels, inverse = np.unique(values.astype(str), return_inverse=True)
+                    codes = np.ascontiguousarray(inverse, dtype=np.uint32)
+                    n_levels = len(levels)
                 else:
                     values = values.astype(np.float64)
                     valid_mask = ~np.isnan(values) & ~np.isinf(values)
                     if np.sum(valid_mask) < 10:
                         continue
                     bins = self._discretize(values, 5)
-                    score = self._compute_eta_squared_response(bins.astype(str))
+                    codes = np.ascontiguousarray(bins, dtype=np.uint32)
+                    n_levels = int(np.max(codes)) + 1 if len(codes) else 0
 
-            if score >= min_effect_size:
-                factor_scores.append((name, score))
+            if n_levels < 2:
+                continue
+            encoded_names.append(name)
+            encoded_codes.append(codes)
+            encoded_n_levels.append(n_levels)
 
-        # Sort and take top factors
-        factor_scores.sort(key=lambda x: -x[1])
-        top_factors = [name for name, _ in factor_scores[:max_factors]]
-
-        if len(top_factors) < 2:
+        if len(encoded_names) < 2:
             return []
 
-        # Check pairwise interactions
-        candidates = []
-
-        for i in range(len(top_factors)):
-            for j in range(i + 1, len(top_factors)):
-                name1, name2 = top_factors[i], top_factors[j]
-
-                values1 = data[name1].to_numpy()
-                values2 = data[name2].to_numpy()
-
-                # Discretize both factors
-                bins1 = self._discretize(values1, 5)
-                bins2 = self._discretize(values2, 5)
-
-                # Compute interaction strength
-                candidate = self._compute_interaction_strength_response(
-                    name1, bins1, name2, bins2, min_cell_count
-                )
-
-                if candidate is not None:
-                    candidates.append(candidate)
-
-        # Sort by strength and return top candidates
-        candidates.sort(key=lambda x: -x.interaction_strength)
-        return candidates[:max_candidates]
+        raw_candidates = _detect_exploratory_interactions(
+            np.ascontiguousarray(self.y, dtype=np.float64),
+            np.ascontiguousarray(self.exposure, dtype=np.float64),
+            encoded_names,
+            encoded_codes,
+            encoded_n_levels,
+            max_factors,
+            min_effect_size,
+            max_candidates,
+            min_cell_count,
+        )
+        return [InteractionCandidate(**candidate) for candidate in raw_candidates]
 
     def _compute_eta_squared_response(self, categories: np.ndarray) -> float:
         """Compute eta-squared for categorical association with response.
 
         Uses np.bincount for O(n) aggregation instead of per-level masking.
         """
-        y_rate = self.y / self.exposure
         _unique_levels, inverse = np.unique(categories, return_inverse=True)
-        k = len(_unique_levels)
+        return self._compute_eta_squared_response_codes(inverse, len(_unique_levels))
+
+    def _compute_eta_squared_response_codes(self, inverse: np.ndarray, n_levels: int) -> float:
+        """Compute eta-squared from pre-factorized level codes."""
+        if n_levels == 0:
+            return 0.0
+
+        y_rate = self.y / self.exposure
+        inverse = np.asarray(inverse, dtype=np.int64)
         overall_mean = np.average(y_rate, weights=self.exposure)
 
         ss_total = np.sum(self.exposure * (y_rate - overall_mean) ** 2)
@@ -1014,9 +981,9 @@ class DataExplorer:
             return 0.0
 
         # Weighted mean per level: sum(exposure * rate) / sum(exposure) = sum(y) / sum(exposure)
-        level_y = np.bincount(inverse, weights=self.y, minlength=k)
-        level_exp = np.bincount(inverse, weights=self.exposure, minlength=k)
-        level_means = np.divide(level_y, level_exp, out=np.zeros(k), where=level_exp > 0)
+        level_y = np.bincount(inverse, weights=self.y, minlength=n_levels)
+        level_exp = np.bincount(inverse, weights=self.exposure, minlength=n_levels)
+        level_means = np.divide(level_y, level_exp, out=np.zeros(n_levels), where=level_exp > 0)
         ss_between = float(np.sum(level_exp * (level_means - overall_mean) ** 2))
 
         return ss_between / ss_total
@@ -1176,16 +1143,25 @@ def explore_data(
     explorer = DataExplorer(y=y, exposure=exp, family=family)
 
     # Pre-extract columns once to avoid repeated .to_numpy().astype() calls
-    # Uses Rust HashMap-based factorize for O(n) encoding instead of O(n log n) np.unique
+    # Use per-column pl.Enum factorization to avoid global Categorical string-cache leakage.
+    import polars as pl
+
     _cat_cache = {}
     _cat_unique_cache = {}
     for name in categorical_factors:
         if name in data.columns:
-            str_list = data[name].cast(str).to_list()
-            levels, codes = _factorize_strings(str_list)
-            str_vals = np.array(str_list)
-            _cat_cache[name] = str_vals
-            _cat_unique_cache[name] = (np.array(levels), codes)
+            values = data[name].cast(pl.Utf8).fill_null("None")
+            level_list = values.unique().sort().to_list()
+            levels = np.array(level_list, dtype=object)
+            codes = (
+                values.cast(pl.Enum(level_list)).to_physical().to_numpy().astype(np.uint32)
+                if level_list
+                else np.array([], dtype=np.uint32)
+            )
+            _cat_unique_cache[name] = (
+                levels,
+                np.ascontiguousarray(codes, dtype=np.uint32),
+            )
     _cont_cache = {}
     for name in continuous_factors:
         if name in data.columns:
@@ -1261,6 +1237,7 @@ def explore_data(
             max_factors=max_interaction_factors,
             min_effect_size=0.001,  # Lower threshold to catch more interactions
             cat_column_cache=_cat_cache,
+            cat_unique_cache=_cat_unique_cache,
             cont_column_cache=_cont_cache,
         )
 

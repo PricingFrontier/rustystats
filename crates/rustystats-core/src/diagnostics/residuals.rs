@@ -392,7 +392,7 @@ mod tests {
     #[test]
     fn test_residual_summary_constant_zero_std() {
         let r = array![2.0, 2.0, 2.0, 2.0];
-        let s = compute_residual_summary(&r).unwrap();
+        let s = compute_residual_summary(&r).expect("test setup should be valid");
         assert_abs_diff_eq!(s.mean, 2.0, epsilon = 1e-12);
         assert_abs_diff_eq!(s.std, 0.0, epsilon = 1e-12);
         assert_abs_diff_eq!(s.skewness, 0.0, epsilon = 1e-12);
@@ -405,7 +405,7 @@ mod tests {
     #[test]
     fn test_residual_summary_basic_moments() {
         let r = array![1.0, 2.0, 3.0, 4.0, 5.0];
-        let s = compute_residual_summary(&r).unwrap();
+        let s = compute_residual_summary(&r).expect("test setup should be valid");
         // Mean = 3, var = (4+1+0+1+4)/5 = 2 (population), std = sqrt(2)
         assert_abs_diff_eq!(s.mean, 3.0, epsilon = 1e-12);
         assert_abs_diff_eq!(s.std, 2.0_f64.sqrt(), epsilon = 1e-12);
@@ -422,7 +422,7 @@ mod tests {
         // With n=11, last=10, idx = round(p/100 * 10).
         // Sorted ascending, value at idx i is i (0-indexed).
         let r: Array1<f64> = (0..11).map(|i| i as f64).collect();
-        let s = compute_residual_summary(&r).unwrap();
+        let s = compute_residual_summary(&r).expect("test setup should be valid");
         assert_eq!(s.p1, 0.0); // round(0.1) = 0
         assert_eq!(s.p10, 1.0); // round(1.0) = 1
         assert_eq!(s.p50, 5.0); // round(5.0) = 5
@@ -433,7 +433,7 @@ mod tests {
     fn test_residual_summary_skewness_known() {
         // Right-skewed sample: large positive tail
         let r = array![0.0, 0.0, 0.0, 0.0, 10.0];
-        let s = compute_residual_summary(&r).unwrap();
+        let s = compute_residual_summary(&r).expect("test setup should be valid");
         // Mean = 2, var = (4+4+4+4+64)/5 = 16, std = 4
         // skewness = mean of ((x-2)/4)^3 = ((-0.5)^3*4 + (2.0)^3) / 5
         //          = ((-0.125)*4 + 8) / 5 = (-0.5 + 8)/5 = 1.5
@@ -491,7 +491,7 @@ mod tests {
             })
             .collect();
         let r = Array1::from_vec(v);
-        let summary = compute_residual_summary(&r).unwrap();
+        let summary = compute_residual_summary(&r).expect("test setup should be valid");
         let ref_pcts = naive(&r);
         let new_pcts = [
             summary.p1,

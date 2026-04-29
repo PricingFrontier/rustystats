@@ -1462,7 +1462,7 @@ impl SmoothTermSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::families::{GammaFamily, GaussianFamily, PoissonFamily};
+    use crate::families::{GaussianFamily, PoissonFamily};
     use crate::links::{IdentityLink, LogLink};
     use crate::splines::bs_basis;
 
@@ -1587,7 +1587,7 @@ mod tests {
             None,
             None,
         )
-        .unwrap();
+        .expect("test setup should be valid");
 
         assert!(result.converged, "Gaussian smooth GLM should converge");
         assert!(result.deviance > 0.0);
@@ -1614,7 +1614,7 @@ mod tests {
             None,
             None,
         )
-        .unwrap();
+        .expect("test setup should be valid");
 
         assert_eq!(result.smooth_edfs.len(), 1);
         assert!(
@@ -1649,7 +1649,7 @@ mod tests {
             None,
             None,
         )
-        .unwrap();
+        .expect("test setup should be valid");
 
         assert!(result.gcv > 0.0, "GCV should be positive");
         assert_eq!(result.lambdas.len(), 1);
@@ -1678,7 +1678,7 @@ mod tests {
             None,
             None,
         )
-        .unwrap();
+        .expect("test setup should be valid");
 
         assert!(result.converged, "Poisson smooth GLM should converge");
         assert!(
@@ -1707,7 +1707,7 @@ mod tests {
             None,
             None,
         )
-        .unwrap();
+        .expect("test setup should be valid");
 
         assert_eq!(result.covariance_unscaled.shape(), &[p_total, p_total]);
         assert_eq!(result.coefficients.len(), p_total);
@@ -1735,7 +1735,7 @@ mod tests {
             None,
             None,
         )
-        .unwrap();
+        .expect("test setup should be valid");
 
         assert!(result.converged);
     }
@@ -1761,7 +1761,7 @@ mod tests {
             None,
             None,
         )
-        .unwrap();
+        .expect("test setup should be valid");
 
         assert!(result.converged);
     }
@@ -1860,7 +1860,7 @@ mod tests {
             None,
             None,
         )
-        .unwrap();
+        .expect("test setup should be valid");
 
         assert!(result.converged);
         assert_eq!(result.lambdas.len(), 2);
@@ -1893,7 +1893,7 @@ mod tests {
             None,
             None,
         )
-        .unwrap();
+        .expect("test setup should be valid");
 
         assert_eq!(result.fitted_values.len(), n);
         assert_eq!(result.linear_predictor.len(), n);
@@ -1925,7 +1925,7 @@ mod tests {
             None,
             None,
         )
-        .unwrap();
+        .expect("test setup should be valid");
 
         assert!(result.converged);
         assert!(result.lambdas.is_empty());

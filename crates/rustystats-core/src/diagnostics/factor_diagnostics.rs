@@ -2026,7 +2026,7 @@ mod tests {
         // numerical-cancellation regime nor the perfect-fit branch is exercised.
         let n = 1000usize;
         // Deterministic LCG for reproducibility without an external crate.
-        let mut state: u64 = 0xC0FFEE_1234_5678u64;
+        let mut state: u64 = 0x00C0_FFEE_1234_5678_u64;
         let mut next = || {
             state = state
                 .wrapping_mul(6364136223846793005)
@@ -2158,7 +2158,7 @@ mod tests {
         let result =
             compute_factor_deviance("count", &factor, &y, &mu, "negativebinomial", 1.5, theta);
 
-        let family = NegativeBinomialFamily::new(theta).unwrap();
+        let family = NegativeBinomialFamily::new(theta).expect("test setup should be valid");
         let expected: f64 = y
             .iter()
             .zip(mu.iter())

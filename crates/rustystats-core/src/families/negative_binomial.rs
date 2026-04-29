@@ -70,7 +70,7 @@ use ndarray::Array1;
 /// use ndarray::array;
 ///
 /// // Create NB with θ = 1.0 (moderate overdispersion)
-/// let family = NegativeBinomialFamily::new(1.0).unwrap();
+/// let family = NegativeBinomialFamily::new(1.0).expect("test setup should be valid");
 ///
 /// let mu = array![1.0, 2.0, 4.0];
 /// let variance = family.variance(&mu);
@@ -210,13 +210,13 @@ mod tests {
 
     #[test]
     fn test_negative_binomial_name() {
-        let family = NegativeBinomialFamily::new(1.0).unwrap();
+        let family = NegativeBinomialFamily::new(1.0).expect("test setup should be valid");
         assert_eq!(family.name(), "NegativeBinomial");
     }
 
     #[test]
     fn test_negative_binomial_variance() {
-        let family = NegativeBinomialFamily::new(1.0).unwrap(); // θ = 1, α = 1
+        let family = NegativeBinomialFamily::new(1.0).expect("test setup should be valid"); // θ = 1, α = 1
         let mu = array![1.0, 2.0, 4.0];
 
         let var = family.variance(&mu);
@@ -233,7 +233,7 @@ mod tests {
     #[test]
     fn test_negative_binomial_variance_different_theta() {
         // θ = 2 means α = 0.5
-        let family = NegativeBinomialFamily::new(2.0).unwrap();
+        let family = NegativeBinomialFamily::new(2.0).expect("test setup should be valid");
         let mu = array![2.0];
 
         let var = family.variance(&mu);
@@ -245,7 +245,7 @@ mod tests {
     #[test]
     fn test_negative_binomial_approaches_poisson() {
         // Large θ should give variance ≈ μ (Poisson-like)
-        let family = NegativeBinomialFamily::new(1000.0).unwrap();
+        let family = NegativeBinomialFamily::new(1000.0).expect("test setup should be valid");
         let mu = array![1.0, 2.0, 5.0];
 
         let var = family.variance(&mu);
@@ -258,7 +258,7 @@ mod tests {
 
     #[test]
     fn test_negative_binomial_deviance_perfect_fit() {
-        let family = NegativeBinomialFamily::new(1.0).unwrap();
+        let family = NegativeBinomialFamily::new(1.0).expect("test setup should be valid");
         let y = array![1.0, 2.0, 3.0];
         let mu = array![1.0, 2.0, 3.0]; // Perfect fit
 
@@ -272,7 +272,7 @@ mod tests {
 
     #[test]
     fn test_negative_binomial_deviance_with_zero() {
-        let family = NegativeBinomialFamily::new(1.0).unwrap();
+        let family = NegativeBinomialFamily::new(1.0).expect("test setup should be valid");
         let y = array![0.0];
         let mu = array![1.0];
 
@@ -295,14 +295,14 @@ mod tests {
 
     #[test]
     fn test_negative_binomial_default_link() {
-        let family = NegativeBinomialFamily::new(1.0).unwrap();
+        let family = NegativeBinomialFamily::new(1.0).expect("test setup should be valid");
         let link = family.default_link();
         assert_eq!(link.name(), "log");
     }
 
     #[test]
     fn test_negative_binomial_initialize_handles_zeros() {
-        let family = NegativeBinomialFamily::new(1.0).unwrap();
+        let family = NegativeBinomialFamily::new(1.0).expect("test setup should be valid");
         let y = array![0.0, 0.0, 1.0, 5.0];
 
         let mu_init = family.initialize_mu(&y);
@@ -313,7 +313,7 @@ mod tests {
 
     #[test]
     fn test_negative_binomial_valid_mu() {
-        let family = NegativeBinomialFamily::new(1.0).unwrap();
+        let family = NegativeBinomialFamily::new(1.0).expect("test setup should be valid");
 
         assert!(family.is_valid_mu(&array![0.1, 1.0, 10.0]));
         assert!(!family.is_valid_mu(&array![0.0, 1.0])); // Zero invalid
@@ -332,10 +332,10 @@ mod tests {
 
     #[test]
     fn test_negative_binomial_alpha() {
-        let family = NegativeBinomialFamily::new(2.0).unwrap();
+        let family = NegativeBinomialFamily::new(2.0).expect("test setup should be valid");
         assert_abs_diff_eq!(family.alpha(), 0.5, epsilon = 1e-10);
 
-        let family2 = NegativeBinomialFamily::new(0.5).unwrap();
+        let family2 = NegativeBinomialFamily::new(0.5).expect("test setup should be valid");
         assert_abs_diff_eq!(family2.alpha(), 2.0, epsilon = 1e-10);
     }
 }
