@@ -173,6 +173,28 @@ class ConstraintTermSpec:
 
 
 @dataclass
+class TermSlot:
+    """Maps one source term to its design-matrix column range.
+
+    Used by predict_contributions to group design columns (spline bases,
+    categorical dummies, TE columns, interaction tensor products) back to
+    their originating user-facing term so the contribution ladder shows
+    factor-level rows instead of per-basis rows.
+    """
+
+    # User-facing name: "VehAge", "Region", "VehAge:Region", "TE(brand)", "Intercept"
+    term_name: str
+    term_type: str  # "intercept" | "linear" | "categorical" | "bs" | "ns" | "ms" |
+    #              "target_encoding" | "frequency_encoding" | "expression" |
+    #              "interaction" | "constraint" | "categorical_indicator"
+    factors: list[str]  # Raw column names this term depends on
+    col_start: int  # Inclusive design-matrix column index
+    col_end: int  # Exclusive
+    design_column_names: list[str]  # Per-column names (same as feature_names slice)
+    extra: dict = field(default_factory=dict)  # Term-type-specific bag (levels, expression, etc.)
+
+
+@dataclass
 class ParsedFormula:
     """Parsed formula with identified terms."""
 
@@ -248,6 +270,9 @@ class InteractionBuilder:
         self._fitted_splines: dict[str, SplineTerm] = {}
         # Store parsed formula for prediction
         self._parsed_formula: ParsedFormula | None = None
+        # Per-term column ranges populated during _build_design_matrix_core
+        # (consumed by predict_contributions to group design columns back to terms)
+        self._term_slots: list[TermSlot] = []
 
     def get_spline_info(self) -> dict[str, dict]:
         """
@@ -1229,11 +1254,24 @@ class InteractionBuilder:
         """
         columns = []
         names = []
+        self._term_slots = []
+        n_cols = 0  # Running column count, kept in sync with columns/names
 
         # Add intercept
         if parsed.has_intercept:
             columns.append(np.ones(self._n, dtype=self.dtype))
             names.append("Intercept")
+            self._term_slots.append(
+                TermSlot(
+                    term_name="Intercept",
+                    term_type="intercept",
+                    factors=[],
+                    col_start=n_cols,
+                    col_end=n_cols + 1,
+                    design_column_names=["Intercept"],
+                )
+            )
+            n_cols += 1
 
         # Add main effects
         for var in parsed.main_effects:
@@ -1241,9 +1279,33 @@ class InteractionBuilder:
                 enc, enc_names = self._get_categorical_encoding(var)
                 columns.append(enc)
                 names.extend(enc_names)
+                n_added = enc.shape[1]
+                self._term_slots.append(
+                    TermSlot(
+                        term_name=var,
+                        term_type="categorical",
+                        factors=[var],
+                        col_start=n_cols,
+                        col_end=n_cols + n_added,
+                        design_column_names=list(enc_names),
+                        extra={"levels": list(self._cat_encoding_cache[f"{var}_True"].levels)},
+                    )
+                )
+                n_cols += n_added
             else:
                 columns.append(self._get_column(var).reshape(-1, 1))
                 names.append(var)
+                self._term_slots.append(
+                    TermSlot(
+                        term_name=var,
+                        term_type="linear",
+                        factors=[var],
+                        col_start=n_cols,
+                        col_end=n_cols + 1,
+                        design_column_names=[var],
+                    )
+                )
+                n_cols += 1
 
         # Add spline terms (tracking smooth term column indices for penalized fitting)
         self._smooth_terms = []  # SplineTerm objects marked as smooth
@@ -1252,7 +1314,7 @@ class InteractionBuilder:
         self._all_spline_col_indices = []  # (start, end) for all spline terms
 
         for spline in parsed.spline_terms:
-            col_start = sum(c.shape[1] if c.ndim == 2 else 1 for c in columns)
+            col_start = n_cols
             spline_cols, spline_names = self._build_spline_columns(spline)
             col_end = col_start + spline_cols.shape[1]
 
@@ -1269,6 +1331,19 @@ class InteractionBuilder:
             if getattr(spline, "_is_smooth", False):
                 self._smooth_terms.append(spline)
                 self._smooth_col_indices.append((col_start, col_end))
+
+            self._term_slots.append(
+                TermSlot(
+                    term_name=spline.var_name,
+                    term_type=spline.spline_type,
+                    factors=[spline.var_name],
+                    col_start=col_start,
+                    col_end=col_end,
+                    design_column_names=list(spline_names),
+                    extra={"is_smooth": bool(getattr(spline, "_is_smooth", False))},
+                )
+            )
+            n_cols = col_end
 
         # Store parsed formula for prediction
         self._parsed_formula = parsed
@@ -1289,6 +1364,22 @@ class InteractionBuilder:
             names.append(te_name)
             self._te_stats[te_term.var_name] = te_stats
             te_encodings[te_name] = te_col  # Store for interactions
+            self._term_slots.append(
+                TermSlot(
+                    term_name=te_name,
+                    term_type="target_encoding",
+                    factors=list(te_term.interaction_vars or [te_term.var_name]),
+                    col_start=n_cols,
+                    col_end=n_cols + 1,
+                    design_column_names=[te_name],
+                    extra={
+                        "var_name": te_term.var_name,
+                        "interaction_vars": te_term.interaction_vars,
+                        "prior_weight": te_term.prior_weight,
+                    },
+                )
+            )
+            n_cols += 1
 
         # Add frequency encoding terms
         self._fe_stats: dict[str, dict] = {}
@@ -1297,6 +1388,21 @@ class InteractionBuilder:
             columns.append(fe_col.reshape(-1, 1))
             names.append(fe_name)
             self._fe_stats[fe_term.var_name] = fe_stats
+            self._term_slots.append(
+                TermSlot(
+                    term_name=fe_name,
+                    term_type="frequency_encoding",
+                    factors=list(fe_term.interaction_vars or [fe_term.var_name]),
+                    col_start=n_cols,
+                    col_end=n_cols + 1,
+                    design_column_names=[fe_name],
+                    extra={
+                        "var_name": fe_term.var_name,
+                        "interaction_vars": fe_term.interaction_vars,
+                    },
+                )
+            )
+            n_cols += 1
 
         # Add interactions (now with TE encodings available)
         for interaction in parsed.interactions:
@@ -1305,24 +1411,102 @@ class InteractionBuilder:
                 int_cols = int_cols.reshape(-1, 1)
             columns.append(int_cols)
             names.extend(int_names)
+            n_added = int_cols.shape[1]
+            self._term_slots.append(
+                TermSlot(
+                    term_name=":".join(interaction.factors),
+                    term_type="interaction",
+                    factors=list(interaction.factors),
+                    col_start=n_cols,
+                    col_end=n_cols + n_added,
+                    design_column_names=list(int_names),
+                    extra={
+                        "categorical_flags": list(interaction.categorical_flags),
+                        "force_linear": list(interaction.force_linear or []),
+                    },
+                )
+            )
+            n_cols += n_added
 
         # Add identity terms (I() expressions like I(x ** 2))
         for identity in parsed.identity_terms:
             id_col, id_name = self._build_identity_columns(identity, self.data)
             columns.append(id_col.reshape(-1, 1))
             names.append(id_name)
+            # Extract referenced columns from the expression for `factors`
+            import re as _re
+
+            id_factors = sorted(
+                {
+                    tok
+                    for tok in _re.findall(r"\b([A-Za-z_]\w*)\b", identity.expression)
+                    if tok in self.data.columns
+                }
+            )
+            self._term_slots.append(
+                TermSlot(
+                    term_name=id_name,
+                    term_type="expression",
+                    factors=id_factors,
+                    col_start=n_cols,
+                    col_end=n_cols + 1,
+                    design_column_names=[id_name],
+                    extra={"expression": identity.expression},
+                )
+            )
+            n_cols += 1
 
         # Add constraint terms (pos() / neg() for coefficient sign constraints)
         for constraint in parsed.constraint_terms:
             con_col, con_name = self._build_constraint_columns(constraint, self.data)
             columns.append(con_col.reshape(-1, 1))
             names.append(con_name)
+            # Constraint may wrap a raw var or an I() expression
+            inner = constraint.var_name
+            if inner.startswith("I(") and inner.endswith(")"):
+                import re as _re
+
+                con_factors = sorted(
+                    {
+                        tok
+                        for tok in _re.findall(r"\b([A-Za-z_]\w*)\b", inner[2:-1])
+                        if tok in self.data.columns
+                    }
+                )
+            else:
+                con_factors = [inner] if inner in self.data.columns else []
+            self._term_slots.append(
+                TermSlot(
+                    term_name=con_name,
+                    term_type="constraint",
+                    factors=con_factors,
+                    col_start=n_cols,
+                    col_end=n_cols + 1,
+                    design_column_names=[con_name],
+                    extra={"constraint": constraint.constraint, "var_name": constraint.var_name},
+                )
+            )
+            n_cols += 1
 
         # Add categorical terms with level selection (C(var, level='value'))
         for cat_term in parsed.categorical_terms:
             cat_cols, cat_names = self._build_categorical_level_indicators(cat_term)
             columns.append(cat_cols)
             names.extend(cat_names)
+            n_added = cat_cols.shape[1]
+            if n_added > 0:
+                self._term_slots.append(
+                    TermSlot(
+                        term_name=cat_term.var_name,
+                        term_type="categorical_indicator",
+                        factors=[cat_term.var_name],
+                        col_start=n_cols,
+                        col_end=n_cols + n_added,
+                        design_column_names=list(cat_names),
+                        extra={"levels": list(cat_term.levels or [])},
+                    )
+                )
+            n_cols += n_added
 
         # Stack all columns using pre-allocated helper
         X = self._stack_columns(columns, self._n, self.dtype)

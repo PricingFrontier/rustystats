@@ -520,6 +520,49 @@ The comparison includes:
 
 ---
 
+## Per-Prediction Contributions
+
+Decompose each row's prediction into per-term contributions for trace explainability:
+
+```python
+result = rs.glm_dict(
+    response="sale_flag",
+    terms={"diff_to_market": {"type": "ns", "df": 10}},
+    data=train,
+    family="binomial",
+).fit()
+
+rows = result.predict_contributions(new_data)
+print(rows[0])
+# {
+#   "family": "binomial", "link": "logit",
+#   "output_space": "linear_predictor", "prediction_space": "response",
+#   "base_value": 0.0417,
+#   "sum_contributions": -1.4280,
+#   "prediction_from_contributions": -1.3863,   # eta
+#   "prediction_value": 0.2000,                  # mu = inverse_link(eta)
+#   "contributions": [
+#       {"term": "diff_to_market", "term_type": "ns",
+#        "feature_value": -25.0, "contribution": -1.4280, "rank": 1}
+#   ]
+# }
+```
+
+**Key properties:**
+- `base_value + sum(contributions) == linear predictor` (validated to 1e-9 by default)
+- `inverse_link(linear predictor) == predict()` (also validated)
+- Spline bases, categorical dummies, target/frequency encoding columns, and interaction tensor products are grouped back to their source term; the ladder shows factor-level rows, not basis-level rows
+- Offset is an explicit row (`term_type="offset"`, contribution = `log(Exposure)` for log-link)
+- For complement-of-credibility models, `base_value` is **per-row** = `link(complement[row])`, and the intercept appears as a contribution row representing the deviation
+
+**Options:**
+- `group_terms=False`: expand multi-column terms into one row per design column
+- `include_design_columns=True`: keep grouped rows but attach a per-column breakdown
+- `return_format="dataframe"`: long-format `pl.DataFrame` (faster for batch scoring)
+- `validate=False`, `atol`, `rtol`: control the additivity check
+
+---
+
 ## Model Serialization
 
 Save and load fitted models for later use:
