@@ -2293,7 +2293,7 @@ class TestExtractNeededColumns:
         assert cols == {"y", "x1", "cat"}
 
     def test_interaction_flags_excluded(self):
-        """include_main, target_encoding, frequency_encoding, prior_weight are not column names."""
+        """Interaction-control keys are not treated as data column names."""
         cols = _extract_needed_columns(
             terms={},
             response="y",
@@ -2303,6 +2303,7 @@ class TestExtractNeededColumns:
                     "b": {"type": "categorical"},
                     "target_encoding": True,
                     "prior_weight": 1.0,
+                    "n_permutations": 10,
                     "include_main": False,
                     "frequency_encoding": False,
                 },

@@ -214,7 +214,8 @@ def _extract_needed_columns(
     interactions: list[dict[str, Any]] | None = None,
     offset: str | np.ndarray | None = None,
     weights: str | np.ndarray | None = None,
-    complement: str | np.ndarray | None = None,
+    complement: Any = None,
+    _seen_models: set[int] | None = None,
 ) -> set[str]:
     """Extract all DataFrame column names needed to build this model.
 
@@ -245,7 +246,13 @@ def _extract_needed_columns(
     if interactions:
         for ix in interactions:
             for key in ix:
-                if key in ("include_main", "target_encoding", "frequency_encoding", "prior_weight"):
+                if key in (
+                    "include_main",
+                    "target_encoding",
+                    "frequency_encoding",
+                    "prior_weight",
+                    "n_permutations",
+                ):
                     continue
                 cols.add(key)
 
@@ -255,8 +262,34 @@ def _extract_needed_columns(
         cols.add(weights)
     if isinstance(complement, str):
         cols.add(complement)
+    else:
+        cols.update(_extract_model_needed_columns(complement, _seen_models))
 
     return cols
+
+
+def _extract_model_needed_columns(model: Any, seen_models: set[int] | None = None) -> set[str]:
+    """Return prediction columns needed by a GLMModel-like complement."""
+    if model is None:
+        return set()
+
+    terms = getattr(model, "_terms_dict", None)
+    if terms is None:
+        return set()
+
+    model_id = id(model)
+    seen = set() if seen_models is None else set(seen_models)
+    if model_id in seen:
+        return set()
+    seen.add(model_id)
+
+    return _extract_needed_columns(
+        terms=terms,
+        interactions=getattr(model, "_interactions_spec", None),
+        offset=getattr(model, "_offset_spec", None),
+        complement=getattr(model, "_complement_spec", None),
+        _seen_models=seen,
+    )
 
 
 def _collect_lazyframe(
@@ -918,6 +951,62 @@ class _DeserializedBuilder(InteractionBuilder):
         self.dtype = state["dtype"]
         self.data = None
         self._n = 0
+        self._term_slots = state["term_slots"]
+
+
+def _resolve_predict_offset(
+    new_data: pl.DataFrame,
+    offset_override: str | np.ndarray | None,
+    stored_offset_spec: str | np.ndarray | None,
+    offset_is_exposure: bool,
+) -> tuple[np.ndarray | None, np.ndarray | None, str | None]:
+    """Resolve a prediction-time offset to its raw and link-scale forms.
+
+    Returns ``(raw, link_scale, column_name)`` or all-``None`` when no
+    offset applies. ``raw`` and ``link_scale`` differ only for log-link
+    exposure offsets (raw = exposure, link_scale = ``log(exposure)``);
+    otherwise they share the same array.
+    """
+    offset_to_use = offset_override if offset_override is not None else stored_offset_spec
+    if offset_to_use is None:
+        return None, None, None
+    if isinstance(offset_to_use, str):
+        raw = new_data[offset_to_use].to_numpy().astype(np.float64)
+        link = np.log(raw) if offset_is_exposure else raw
+        return raw, link, offset_to_use
+    arr = np.asarray(offset_to_use, dtype=np.float64)
+    return arr, arr, None
+
+
+def _resolve_predict_complement(
+    new_data: pl.DataFrame,
+    complement_override: Any,
+    stored_complement_spec: Any,
+    offset_is_exposure: bool,
+    offset_spec_for_complement: str | np.ndarray | None,
+    link: str,
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """Resolve a prediction-time complement to its response and link scales.
+
+    Returns ``(response_scale, link_scale)`` or both ``None`` when no
+    complement applies. When the complement is a fitted ``GLMModel`` and the
+    current model uses an exposure offset, the prior's response is divided by
+    exposure to recover the rate before being passed through the link.
+    """
+    comp_to_use = complement_override if complement_override is not None else stored_complement_spec
+    if comp_to_use is None:
+        return None, None
+    if isinstance(comp_to_use, GLMModel):
+        comp_response = comp_to_use.predict(new_data)
+        if offset_is_exposure and isinstance(offset_spec_for_complement, str):
+            exposure = new_data[offset_spec_for_complement].to_numpy().astype(np.float64)
+            comp_response = comp_response / exposure
+    elif isinstance(comp_to_use, str):
+        comp_response = new_data[comp_to_use].to_numpy().astype(np.float64)
+    else:
+        comp_response = np.asarray(comp_to_use, dtype=np.float64)
+    comp_response = comp_response.astype(np.float64, copy=False)
+    return comp_response, apply_link(comp_response, link)
 
 
 class GLMModel:
@@ -1556,7 +1645,7 @@ class GLMModel:
         self,
         new_data: pl.DataFrame | pl.LazyFrame,
         offset: str | np.ndarray | None = None,
-        complement: str | np.ndarray | None = None,
+        complement: str | np.ndarray | GLMModel | None = None,
     ) -> np.ndarray:
         """
         Predict on new data using the fitted model.
@@ -1570,7 +1659,7 @@ class GLMModel:
             Offset for new data. If None and the model was fit with an offset
             column name, that column will be extracted from new_data.
             For Poisson/Gamma with log link, log() is auto-applied to exposure.
-        complement : str or array-like, optional
+        complement : str, array-like, or GLMModel, optional
             Complement of credibility for new data (response scale).
             If None and the model was fit with a complement column name,
             that column will be extracted from new_data.
@@ -1644,55 +1733,127 @@ class GLMModel:
                 linear_pred[start:stop] = X_chunk @ params
                 del X_chunk, chunk
 
-        # Handle offset
-        # If offset is provided as a string, extract column and apply log() for log-link models
-        # If offset is provided as array, use directly (user handles transformation)
-        # If offset is None but model was fit with offset, use the stored offset column
-        offset_to_use = offset
-        if (
-            offset_to_use is None
-            and hasattr(self, "_offset_spec")
-            and self._offset_spec is not None
-        ):
-            # Auto-use the offset column from fitting
-            offset_to_use = self._offset_spec
+        _, offset_link, _ = _resolve_predict_offset(
+            new_data, offset, self._offset_spec, self._offset_is_exposure
+        )
+        if offset_link is not None:
+            linear_pred = linear_pred + offset_link
 
-        if offset_to_use is not None:
-            if isinstance(offset_to_use, str):
-                offset_values = new_data[offset_to_use].to_numpy().astype(np.float64)
-                # Apply log() for log-link models (same as fitting)
-                if self._offset_is_exposure:
-                    offset_values = np.log(offset_values)
-            else:
-                offset_values = np.asarray(offset_to_use, dtype=np.float64)
-            linear_pred = linear_pred + offset_values
+        _, complement_link = _resolve_predict_complement(
+            new_data,
+            complement,
+            self._complement_spec,
+            self._offset_is_exposure,
+            offset if offset is not None else self._offset_spec,
+            self.link,
+        )
+        if complement_link is not None:
+            linear_pred = linear_pred + complement_link
 
-        # Handle complement (auto-use from fitting if not provided)
-        comp_to_use = complement
-        if comp_to_use is None and self._complement_spec is not None:
-            comp_to_use = self._complement_spec
-
-        if comp_to_use is not None:
-            if isinstance(comp_to_use, GLMModel):
-                comp_preds = comp_to_use.predict(new_data)
-                # Divide by exposure to get rate if model uses log-link with exposure
-                if self._offset_is_exposure and isinstance(self._offset_spec, str):
-                    exposure = new_data[self._offset_spec].to_numpy().astype(np.float64)
-                    comp_values = comp_preds / exposure
-                else:
-                    comp_values = comp_preds
-            elif isinstance(comp_to_use, str):
-                comp_values = new_data[comp_to_use].to_numpy().astype(np.float64)
-            else:
-                comp_values = np.asarray(comp_to_use, dtype=np.float64)
-            linear_pred = linear_pred + apply_link(comp_values, self.link)
-
-        # Apply inverse link function to get predictions on response scale
         return self._apply_inverse_link(linear_pred)
 
     def _apply_inverse_link(self, eta: np.ndarray) -> np.ndarray:
         """Apply inverse link function to linear predictor."""
         return apply_inverse_link(eta, self.link)
+
+    def predict_contributions(
+        self,
+        new_data: pl.DataFrame | pl.LazyFrame,
+        *,
+        offset: str | np.ndarray | None = None,
+        complement: str | np.ndarray | GLMModel | None = None,
+        group_terms: bool = True,
+        include_design_columns: bool = False,
+        return_format: str = "records",
+        validate: bool = True,
+        atol: float = 1e-9,
+        rtol: float = 1e-7,
+    ) -> list[dict] | pl.DataFrame:
+        """Decompose each prediction into per-term contributions.
+
+        For every row in ``new_data`` returns the additive decomposition::
+
+            base_value + sum(contributions)  ==  linear predictor
+            inverse_link(linear predictor) ==  prediction
+
+        Spline bases, categorical dummies, target/frequency encoding columns,
+        and interaction tensor products are grouped back to their source term
+        so the output renders a factor-level contribution ladder.
+
+        Parameters
+        ----------
+        new_data : pl.DataFrame or pl.LazyFrame
+            Data to decompose. Must contain every column the model needs.
+        offset : str or array-like, optional
+            Override the offset used during fitting. ``str`` resolves a column
+            in ``new_data``; arrays are used directly. For log-link models with
+            an exposure offset, ``log()`` is applied automatically when a
+            string is given.
+        complement : str, array-like, or GLMModel, optional
+            Override the complement of credibility. When set (here or at fit
+            time), ``base_value`` becomes per-row equal to
+            ``link(complement_value_for_row)`` and the intercept appears as a
+            regular contribution row representing the deviation.
+        group_terms : bool, default True
+            Group design columns back to source terms. ``False`` expands
+            multi-column terms (splines, categoricals, TE/FE) into one
+            contribution row per design column. Interactions remain grouped
+            in either mode (per-column rows of an interaction are not
+            individually meaningful).
+        include_design_columns : bool, default False
+            When ``group_terms=True``, attach a ``design_columns`` list to
+            each grouped term containing per-column ``basis_value``,
+            ``coefficient``, and ``contribution``.
+        return_format : {"records", "dataframe"}, default "records"
+            ``"records"``: one ``dict`` per row of ``new_data`` with a nested
+            ``contributions`` list (matches the trace contract).
+            ``"dataframe"``: long-format ``pl.DataFrame`` with one row per
+            ``(input_row, term)`` pair. Faster for large ``N``.
+        validate : bool, default True
+            Verify ``base + sum(contribs) == linear predictor`` and
+            ``inverse_link(linear predictor) == predict()``. Raises
+            ``PredictionError`` on tolerance breach.
+        atol, rtol : float
+            Additivity tolerance: ``|delta| > atol + rtol * |actual|``.
+
+        Returns
+        -------
+        list[dict] or pl.DataFrame
+            Per-row decomposition. See module docstring for the full record
+            shape.
+
+        Raises
+        ------
+        PredictionError
+            If the model lacks term-slot metadata (e.g. deserialized from a
+            pre-feature payload), or if the additivity check fails.
+
+        Examples
+        --------
+        >>> result = rs.glm_dict(
+        ...     response="sale_flag",
+        ...     terms={"diff_to_market": {"type": "ns", "df": 10}},
+        ...     data=train,
+        ...     family="binomial",
+        ... ).fit()
+        >>> rows = result.predict_contributions(new_data)
+        >>> rows[0]["contributions"][0]["term"]
+        'diff_to_market'
+        """
+        from rustystats.contributions import compute_contributions
+
+        return compute_contributions(
+            self,
+            new_data,
+            offset=offset,
+            complement=complement,
+            group_terms=group_terms,
+            include_design_columns=include_design_columns,
+            return_format=return_format,
+            validate=validate,
+            atol=atol,
+            rtol=rtol,
+        )
 
     def to_pmml(
         self,
@@ -1818,6 +1979,7 @@ class GLMModel:
                 "te_stats": getattr(self._builder, "_te_stats", {}),
                 "fe_stats": getattr(self._builder, "_fe_stats", {}),
                 "dtype": self._builder.dtype,
+                "term_slots": getattr(self._builder, "_term_slots", []),
             }
 
         # Record basis implementation for each spline term
@@ -2550,7 +2712,7 @@ class FormulaGLMDict(_GLMBase):
         offset: str | np.ndarray | None = None,
         weights: str | np.ndarray | None = None,
         seed: int | None = None,
-        complement: str | np.ndarray | None = None,
+        complement: str | np.ndarray | GLMModel | None = None,
     ):
         self.response = response
         self.terms = terms
@@ -2855,7 +3017,7 @@ def glm_dict(
     offset: str | np.ndarray | None = None,
     weights: str | np.ndarray | None = None,
     seed: int | None = None,
-    complement: str | np.ndarray | None = None,
+    complement: str | np.ndarray | GLMModel | None = None,
 ) -> FormulaGLMDict:
     """
     Create a GLM model from a dict specification.
