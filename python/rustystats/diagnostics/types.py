@@ -39,6 +39,12 @@ __all__ = [
     # Interaction and VIF
     "InteractionCandidate",
     "VIFResult",
+    # Pair diagnostics (user-supplied interactions=[...])
+    "SurfaceCell",
+    "SurfaceGrid",
+    "InteractionDiagnostics",
+    "InteractionExploration",
+    "FactorBinPair",
     # Coefficient and deviance
     "CoefficientSummary",
     "DevianceByLevel",
@@ -321,6 +327,8 @@ class FactorDiagnostics:
     significance: FactorSignificance | None = None
     score_test: ScoreTestResult | None = None
     relative_importance: float | None = None
+    gvif: float | None = None
+    train_test_bins: list[FactorBinPair] | None = None
 
 
 # =============================================================================
@@ -349,6 +357,88 @@ class VIFResult:
     vif: float
     severity: str  # "none", "moderate", "severe", "expected"
     collinear_with: list[str] | None = None
+
+
+# =============================================================================
+# Pair Diagnostics
+# =============================================================================
+
+
+@dataclass
+class SurfaceCell:
+    """One cell of the binned 2D interaction surface."""
+
+    r: int
+    c: int
+    n: int
+    exposure: float
+    actual: float
+    predicted: float | None = None
+    ae_ratio: float | None = None
+
+
+@dataclass
+class SurfaceGrid:
+    """Binned 2D surface for an interaction pair."""
+
+    row_axis: str
+    col_axis: str
+    row_type: str  # "quantile" | "levels"
+    col_type: str
+    cells: list[SurfaceCell]
+    row_edges: list[float] | None = None
+    row_levels: list[str] | None = None
+    col_edges: list[float] | None = None
+    col_levels: list[str] | None = None
+
+
+@dataclass
+class InteractionDiagnostics:
+    """Diagnostics for a single user-specified interaction pair (post-fit)."""
+
+    name: str
+    factor1: str
+    factor2: str
+    pair_type: (
+        str  # "continuous_x_continuous" | "continuous_x_categorical" | "categorical_x_categorical"
+    )
+    in_model: bool
+    representation: str | None  # "tensor_product" | "target_encoding" | "frequency_encoding" | None
+    train_surface_grid: SurfaceGrid
+    test_surface_grid: SurfaceGrid | None = None
+    coefficients: list[FactorCoefficient] | None = None
+    significance: FactorSignificance | None = None
+    score_test: ScoreTestResult | None = None
+    gvif: float | None = None
+
+
+@dataclass
+class InteractionExploration:
+    """Pre-fit data summary for a single user-specified interaction pair."""
+
+    name: str
+    factor1: str
+    factor2: str
+    pair_type: str
+    surface_grid: SurfaceGrid
+    interaction_strength: float
+
+
+@dataclass
+class FactorBinPair:
+    """Train/test pair for one bin/level of a factor (cell-aligned by bin label)."""
+
+    bin: str
+    train_n: int
+    train_exposure: float
+    train_actual: float
+    train_predicted: float
+    train_ae_ratio: float | None
+    test_n: int
+    test_exposure: float
+    test_actual: float | None = None
+    test_predicted: float | None = None
+    test_ae_ratio: float | None = None
 
 
 # =============================================================================
@@ -633,6 +723,7 @@ class DataExploration:
     overdispersion: dict[str, Any]
     interaction_candidates: list[InteractionCandidate]
     response_stats: dict[str, Any]
+    interactions: list[InteractionExploration] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return _to_dict_recursive(self)
@@ -667,6 +758,7 @@ class ModelDiagnostics:
     overdispersion: dict[str, Any] | None = None
     spline_info: dict[str, dict[str, Any]] | None = None
     base_predictions_comparison: BasePredictionsComparison | None = None
+    interactions: list[InteractionDiagnostics] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return _to_dict_recursive(self)

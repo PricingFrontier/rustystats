@@ -67,6 +67,7 @@ from rustystats.diagnostics.components import (
 )
 from rustystats.diagnostics.factors import _FactorDiagnosticsComputer
 from rustystats.diagnostics.interactions import _InteractionDetector
+from rustystats.diagnostics.pair_diagnostics import _PairDiagnosticsComputer
 from rustystats.diagnostics.types import (
     BasePredictionsComparison,
     BasePredictionsMetrics,
@@ -79,6 +80,7 @@ from rustystats.diagnostics.types import (
     FactorDiagnostics,
     FactorLevelMetrics,
     InteractionCandidate,
+    InteractionDiagnostics,
     LiftChart,
     LiftDecile,
     ModelVsBaseDecile,
@@ -149,6 +151,14 @@ class DiagnosticsComputer:
         self._interactions = _InteractionDetector(
             self.pearson_residuals,
             self.feature_names,
+        )
+        self._pairs = _PairDiagnosticsComputer(
+            y=self.y,
+            mu=self.mu,
+            exposure=self.exposure,
+            family=self.family,
+            feature_names=self.feature_names,
+            link=None,
         )
 
     @property
@@ -253,6 +263,40 @@ class DiagnosticsComputer:
             cont_column_cache=cont_column_cache,
             cat_unique_cache=cat_unique_cache,
             compute_score_tests=compute_score_tests,
+        )
+
+    def compute_pair_diagnostics(
+        self,
+        pairs: list[Any],
+        data: pl.DataFrame,
+        model: Any = None,
+        design_matrix: np.ndarray | None = None,
+        bread_matrix: np.ndarray | None = None,
+        params: np.ndarray | None = None,
+        bse: np.ndarray | None = None,
+        correlation_matrix: np.ndarray | None = None,
+        test_data: pl.DataFrame | None = None,
+        test_y: np.ndarray | None = None,
+        test_mu: np.ndarray | None = None,
+        test_exposure: np.ndarray | None = None,
+        link: str | None = None,
+    ) -> list[InteractionDiagnostics]:
+        """Compute per-pair diagnostics. Delegates to ``_PairDiagnosticsComputer``."""
+        if link is not None:
+            self._pairs.link = link
+        return self._pairs.compute_pair_diagnostics(
+            pairs=pairs,
+            data=data,
+            model=model,
+            design_matrix=design_matrix,
+            bread_matrix=bread_matrix,
+            params=params,
+            bse=bse,
+            correlation_matrix=correlation_matrix,
+            test_data=test_data,
+            test_y=test_y,
+            test_mu=test_mu,
+            test_exposure=test_exposure,
         )
 
     def detect_interactions(
@@ -622,19 +666,36 @@ class DiagnosticsComputer:
         summaries: list[CoefficientSummary],
         result,
         cov_type: str = "HC1",
-    ) -> bool:
-        """
-        Enrich coefficient summaries with robust standard errors.
+    ) -> tuple[bool, str | None]:
+        """Enrich coefficient summaries with robust standard errors in place.
 
-        Modifies summaries in-place. Returns True if enrichment succeeded,
-        False if not available (e.g. lean mode without design matrix).
+        Returns ``(enriched, reason)``:
+
+        - ``(True, None)`` when robust SEs were attached to every coefficient.
+        - ``(False, reason)`` when they could not be computed. ``reason`` is
+          a short human-readable string the caller can surface as a warning
+          so the user knows why ``robust_*`` fields are null (instead of
+          silently leaving them ``None``, which the previous bool-only
+          return forced).
+
+        The two known not-applicable cases:
+
+        - Models fit without a stored design matrix (``store_design_matrix=False``,
+          deserialized models) — ``AttributeError`` from ``bse_robust``.
+        - Regularized fits (``alpha > 0``) where sandwich SEs aren't
+          statistically meaningful — ``ValueError`` from ``bse_robust``.
         """
         try:
             robust_bse = np.asarray(result.bse_robust(cov_type))
             robust_tvalues = np.asarray(result.tvalues_robust(cov_type))
             robust_pvalues = np.asarray(result.pvalues_robust(cov_type))
-        except (ValueError, AttributeError):
-            return False
+        except AttributeError:
+            return False, (
+                "robust SE unavailable — fitted model does not expose "
+                "bse_robust() (lean / deserialized model)"
+            )
+        except ValueError as exc:
+            return False, f"robust SE unavailable — {exc}"
 
         # Build a lookup by feature name since summaries may be reordered
         feature_to_idx = {name: i for i, name in enumerate(self.feature_names)}
@@ -647,7 +708,7 @@ class DiagnosticsComputer:
                 s.robust_p_value = round(float(robust_pvalues[idx]), 4)
                 s.robust_significant = float(robust_pvalues[idx]) < 0.05
 
-        return True
+        return True, None
 
     def compute_factor_deviance(
         self,

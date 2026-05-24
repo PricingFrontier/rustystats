@@ -61,6 +61,7 @@ from rustystats.diagnostics.types import (
     DatasetDiagnostics,
     DecileMetrics,
     DevianceByLevel,
+    FactorBinPair,
     FactorCoefficient,
     FactorDeviance,
     FactorDiagnostics,
@@ -68,6 +69,8 @@ from rustystats.diagnostics.types import (
     FactorSignificance,
     # Interaction and VIF
     InteractionCandidate,
+    InteractionDiagnostics,
+    InteractionExploration,
     LiftChart,
     # Lift and calibration
     LiftDecile,
@@ -84,6 +87,8 @@ from rustystats.diagnostics.types import (
     ScoreTestResult,
     # Smooth terms
     SmoothTermDiagnostics,
+    SurfaceCell,
+    SurfaceGrid,
     TrainTestComparison,
     VIFResult,
     _extract_base_variable,  # noqa: F401
@@ -108,7 +113,12 @@ __all__ = [
     "ScoreTestResult",
     "FactorCoefficient",
     "FactorDiagnostics",
+    "FactorBinPair",
     "InteractionCandidate",
+    "InteractionDiagnostics",
+    "InteractionExploration",
+    "SurfaceCell",
+    "SurfaceGrid",
     "VIFResult",
     "CoefficientSummary",
     "DevianceByLevel",

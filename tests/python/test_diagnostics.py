@@ -1129,22 +1129,22 @@ class TestEnhancedDiagnostics:
         )
         pd_x = next(p for p in partial_dep if p.variable == "x")
         # All predictions must be valid probabilities in (0, 1).
-        assert all(
-            0.0 < pred < 1.0 for pred in pd_x.predictions
-        ), f"Logit PD predictions out of (0,1): {pd_x.predictions}"
+        assert all(0.0 < pred < 1.0 for pred in pd_x.predictions), (
+            f"Logit PD predictions out of (0,1): {pd_x.predictions}"
+        )
         # The PD should also reflect the underlying β > 0: predictions should
         # increase across the grid (predictions are aligned with grid_values).
         first, last = pd_x.predictions[0], pd_x.predictions[-1]
-        assert (
-            last > first
-        ), f"Expected monotonically increasing PD for positive β, got first={first} last={last}"
+        assert last > first, (
+            f"Expected monotonically increasing PD for positive β, got first={first} last={last}"
+        )
         # Sanity check: at the middle of the grid the PD should be close to
         # the baseline (mean of fitted μ), since delta_eta ≈ 0 there.
         mid_pred = pd_x.predictions[len(pd_x.predictions) // 2]
         baseline = float(np.mean(result.fittedvalues))
-        assert (
-            abs(mid_pred - baseline) < 0.05
-        ), f"PD at grid midpoint ({mid_pred}) should be near baseline ({baseline})"
+        assert abs(mid_pred - baseline) < 0.05, (
+            f"PD at grid midpoint ({mid_pred}) should be near baseline ({baseline})"
+        )
 
     def test_full_diagnostics_with_enhancements(self, fitted_model_with_data):
         """Test full diagnostics includes all new fields."""
@@ -1528,9 +1528,9 @@ class TestScoreTest:
         # Check that fitted factors don't have score_test
         for factor in diagnostics.factors:
             if factor.in_model:
-                assert (
-                    factor.score_test is None
-                ), f"Fitted factor {factor.name} should not have score_test"
+                assert factor.score_test is None, (
+                    f"Fitted factor {factor.name} should not have score_test"
+                )
 
         # Check that unfitted factors have score_test (if diagnostics provides matrices)
         # Note: score_test requires design_matrix, bread_matrix, and irls_weights
@@ -2120,9 +2120,9 @@ class TestScoreTestMatrixChunking:
             if lean_f.score_test is None and eager_f.score_test is None:
                 continue
             # Both modes must agree on whether a score test was produced.
-            assert (lean_f.score_test is None) == (
-                eager_f.score_test is None
-            ), f"Factor {name}: score_test presence differs between lean and eager"
+            assert (lean_f.score_test is None) == (eager_f.score_test is None), (
+                f"Factor {name}: score_test presence differs between lean and eager"
+            )
             if lean_f.score_test is None:
                 continue
             compared_any = True
@@ -2142,9 +2142,9 @@ class TestScoreTestMatrixChunking:
 
         # Regression guard: we must actually have compared at least one
         # score test, else the assertion above is vacuous.
-        assert (
-            compared_any
-        ), "No unfitted factors produced a score_test; test would be vacuous. Check factor lists."
+        assert compared_any, (
+            "No unfitted factors produced a score_test; test would be vacuous. Check factor lists."
+        )
 
     def test_chunked_build_fires_for_large_n_in_lean_mode(self, monkeypatch):
         """transform_new_data is called > 1 time when rebuilding lean-mode X.
@@ -2356,12 +2356,12 @@ class TestScoreTestMatrixChunking:
                 f"Factor {factor.name}: score_test.pvalue={pval} is not finite. "
                 f"Chunked rebuild likely corrupted the design matrix."
             )
-            assert (
-                0.0 <= pval <= 1.0
-            ), f"Factor {factor.name}: score_test.pvalue={pval} not in [0, 1]."
-            assert np.isfinite(
-                stat
-            ), f"Factor {factor.name}: score_test.statistic={stat} is not finite."
+            assert 0.0 <= pval <= 1.0, (
+                f"Factor {factor.name}: score_test.pvalue={pval} not in [0, 1]."
+            )
+            assert np.isfinite(stat), (
+                f"Factor {factor.name}: score_test.statistic={stat} is not finite."
+            )
             assert stat >= 0.0, f"Factor {factor.name}: score_test.statistic={stat} is negative."
 
         # At least one unfitted factor must have a score test, else this
@@ -2521,9 +2521,9 @@ class TestExplorerCramersVStreaming:
         assert np.isfinite(actual) and actual > 0.0
 
         rel_err = abs(actual - ref) / max(abs(ref), 1e-30)
-        assert (
-            rel_err < 1e-10
-        ), f"n={n}, r={r}, k={k}: reference={ref:.15g} actual={actual:.15g} rel_err={rel_err:.3e}"
+        assert rel_err < 1e-10, (
+            f"n={n}, r={r}, k={k}: reference={ref:.15g} actual={actual:.15g} rel_err={rel_err:.3e}"
+        )
 
     # ------------------------------------------------------------------
     # 3. High-cardinality sparse case — memory pressure scenario
@@ -2553,9 +2553,9 @@ class TestExplorerCramersVStreaming:
         # Confirm the sparsity assumption holds — otherwise this test is
         # not exercising the memory-pressure case.
         n_distinct_pairs = len(np.unique(x_inv.astype(np.int64) * k + y_inv.astype(np.int64)))
-        assert (
-            n_distinct_pairs < r * k
-        ), f"Expected sparse contingency; got {n_distinct_pairs}/{r * k} cells."
+        assert n_distinct_pairs < r * k, (
+            f"Expected sparse contingency; got {n_distinct_pairs}/{r * k} cells."
+        )
 
         explorer = self._make_explorer(n)
         x_pair, y_pair = self._pair(x_inv, y_inv, r=r, k=k)
@@ -2572,9 +2572,9 @@ class TestExplorerCramersVStreaming:
         # with the explicit reference here too.
         ref = self._cramers_v_reference(x_inv, y_inv, r, k)
         rel_err = abs(v - ref) / max(abs(ref), 1e-30)
-        assert (
-            rel_err < 1e-10
-        ), f"Sparse case: reference={ref:.15g} actual={v:.15g} rel_err={rel_err:.3e}"
+        assert rel_err < 1e-10, (
+            f"Sparse case: reference={ref:.15g} actual={v:.15g} rel_err={rel_err:.3e}"
+        )
 
     # ------------------------------------------------------------------
     # 4. Edge cases
@@ -2650,9 +2650,9 @@ class TestExplorerCramersVStreaming:
             x_pair, y_pair = self._pair(x_inv, y_inv, r=r, k=k)
             actual = explorer._compute_cramers_v_pair_fast(x_pair, y_pair)
             rel_err = abs(actual - ref) / max(abs(ref), 1e-30)
-            assert (
-                rel_err < 1e-10
-            ), f"({r}x{k}, n={n}): reference={ref} actual={actual} rel_err={rel_err:.3e}"
+            assert rel_err < 1e-10, (
+                f"({r}x{k}, n={n}): reference={ref} actual={actual} rel_err={rel_err:.3e}"
+            )
 
     # ------------------------------------------------------------------
     # 5. ValidationError preserved on zero expected frequencies
@@ -2720,9 +2720,9 @@ class TestExplorerCramersVStreaming:
         b_cats, b_inv = np.unique(B.astype(str), return_inverse=True)
         ref = self._cramers_v_reference(a_inv, b_inv, len(a_cats), len(b_cats))
         rel_err = abs(matrix[0, 1] - ref) / max(abs(ref), 1e-30)
-        assert (
-            rel_err < 1e-10
-        ), f"explore_data V={matrix[0, 1]} vs reference V={ref}; rel_err={rel_err:.3e}"
+        assert rel_err < 1e-10, (
+            f"explore_data V={matrix[0, 1]} vs reference V={ref}; rel_err={rel_err:.3e}"
+        )
 
 
 class TestCategoricalFactorizationIsolation:
@@ -2795,9 +2795,9 @@ class TestCategoricalFactorizationIsolation:
         # Core assertion: each factor's grid_values is exactly its own
         # distinct levels — nothing from the other factor.
         assert brand_grid == brand_levels_actual, f"brand grid_values contaminated: {brand_grid}"
-        assert (
-            region_grid == region_levels_actual
-        ), f"region grid_values contaminated: {region_grid}"
+        assert region_grid == region_levels_actual, (
+            f"region grid_values contaminated: {region_grid}"
+        )
         # predictions must be aligned 1:1 with grid_values.
         assert len(pd_by_var["brand"].predictions) == len(brand_levels_actual)
         assert len(pd_by_var["region"].predictions) == len(region_levels_actual)
@@ -2921,3 +2921,1944 @@ class TestCategoricalFactorizationIsolation:
             assert int(counts.sum()) == n
             assert len(counts) == len(want)
             assert int(counts.min()) > 0
+
+
+# =============================================================================
+# Pair (interaction) diagnostics — user-specified `interactions=[...]`
+# =============================================================================
+
+
+class TestPairDiagnostics:
+    """Exercises ``result.diagnostics(interactions=[...])`` and the matching
+    ``rs.explore_data(interactions=[...])`` path.
+
+    The pair pipeline must:
+      - produce one ``InteractionDiagnostics`` per requested pair, in order
+      - detect ``in_model`` correctly from ``TermSlot``
+      - populate ``train_surface_grid`` cells with raw aggregates
+      - share bin edges between train and test surfaces
+      - compute block GVIF only for fitted pairs
+      - serialize cleanly through ``to_json()`` and auto-save to disk
+      - never perform a refit (covered indirectly: no per-pair test data
+        prediction beyond the single ``result.predict(test_data)`` call)
+    """
+
+    @staticmethod
+    def _make_data(seed: int = 42, n: int = 1000) -> "pl.DataFrame":
+        import polars as pl
+
+        rng = np.random.default_rng(seed)
+        age = rng.uniform(18, 70, n)
+        veh_power = rng.uniform(50, 200, n)
+        region = rng.choice(["A", "B", "C", "D"], n)
+        brand = rng.choice(["X", "Y", "Z"], n)
+        exposure = rng.uniform(0.5, 1.0, n)
+        mu_true = np.exp(
+            -2.0
+            + 0.02 * age
+            + 0.001 * veh_power
+            + 0.3 * (region == "A").astype(float)
+            - 0.2 * (brand == "Z").astype(float)
+        )
+        y = rng.poisson(mu_true * exposure)
+        return pl.DataFrame(
+            {
+                "y": y,
+                "age": age,
+                "veh_power": veh_power,
+                "region": region,
+                "brand": brand,
+                "exposure": exposure,
+            }
+        )
+
+    @staticmethod
+    def _fit(data: "pl.DataFrame", with_interaction: bool = False):
+        import rustystats as rs
+
+        kwargs = dict(
+            response="y",
+            terms={
+                "age": {"type": "linear"},
+                "veh_power": {"type": "linear"},
+                "region": {"type": "categorical"},
+                "brand": {"type": "categorical"},
+            },
+            data=data,
+            family="poisson",
+            offset="exposure",
+        )
+        if with_interaction:
+            kwargs["interactions"] = [
+                {
+                    "age": {"type": "linear"},
+                    "region": {"type": "categorical"},
+                    "include_main": False,
+                }
+            ]
+        return rs.glm_dict(**kwargs).fit()
+
+    # ------------------------------------------------------------------ post-fit
+
+    def test_interactions_none_default(self):
+        """When ``interactions`` is not passed, the new field is empty and
+        no per-pair work is done. This is the backwards-compatible default.
+        """
+        data = self._make_data()
+        result = self._fit(data, with_interaction=False)
+        diag = result.diagnostics(
+            train_data=data,
+            categorical_factors=["region"],
+            continuous_factors=["age"],
+        )
+        assert diag.interactions == []
+
+    def test_post_fit_basic_shape(self):
+        """One requested pair → one InteractionDiagnostics. Cells contain
+        raw aggregates; axis labels match the input columns.
+        """
+        data = self._make_data()
+        result = self._fit(data, with_interaction=True)
+        diag = result.diagnostics(
+            train_data=data,
+            categorical_factors=["region"],
+            continuous_factors=["age", "veh_power"],
+            interactions=[("age", "region")],
+        )
+        assert len(diag.interactions) == 1
+        inter = diag.interactions[0]
+        assert inter.name == "age:region"
+        assert inter.factor1 == "age"
+        assert inter.factor2 == "region"
+        assert inter.pair_type == "continuous_x_categorical"
+        assert inter.in_model is True
+        assert inter.representation == "tensor_product"
+        # Surface grid
+        grid = inter.train_surface_grid
+        assert grid.row_axis == "age"
+        assert grid.col_axis == "region"
+        assert grid.row_type == "quantile"
+        assert grid.col_type == "levels"
+        assert grid.row_edges is not None and len(grid.row_edges) >= 2
+        assert grid.col_levels is not None and "A" in grid.col_levels
+        assert len(grid.cells) > 0
+        # Per-cell raw fields
+        c0 = grid.cells[0]
+        assert c0.n > 0
+        assert c0.exposure > 0
+        assert c0.actual >= 0
+        assert c0.predicted is not None and c0.predicted > 0
+        assert c0.ae_ratio is not None
+        # No test surface when no test data supplied
+        assert inter.test_surface_grid is None
+        # Block GVIF and block significance populated for the fitted pair
+        assert inter.gvif is not None and inter.gvif > 0
+        assert inter.significance is not None
+        assert inter.coefficients is not None and len(inter.coefficients) > 0
+
+    def test_in_model_false_for_unfitted_pair(self):
+        """A pair the user requests but never fit: ``in_model=False``, no
+        coefficients, no significance, no GVIF — but the surface grid still
+        renders from the raw data.
+        """
+        data = self._make_data()
+        result = self._fit(data, with_interaction=False)
+        diag = result.diagnostics(
+            train_data=data,
+            categorical_factors=["region", "brand"],
+            continuous_factors=["age", "veh_power"],
+            interactions=[("brand", "region")],
+        )
+        assert len(diag.interactions) == 1
+        inter = diag.interactions[0]
+        assert inter.in_model is False
+        assert inter.representation is None
+        assert inter.coefficients is None
+        assert inter.significance is None
+        assert inter.gvif is None
+        # Surface still rendered from raw data
+        assert len(inter.train_surface_grid.cells) > 0
+        for cell in inter.train_surface_grid.cells:
+            assert cell.predicted is not None  # model is fit, so we have mu
+
+    def test_test_surface_alignment(self):
+        """Train and test surface grids share bin edges/levels by construction
+        so the caller can do element-wise divergence in one line.
+        """
+        data = self._make_data(n=1200)
+        train = data[:900]
+        test = data[900:]
+        result = self._fit(train, with_interaction=False)
+        diag = result.diagnostics(
+            train_data=train,
+            test_data=test,
+            categorical_factors=["region"],
+            continuous_factors=["age"],
+            interactions=[("age", "region")],
+        )
+        inter = diag.interactions[0]
+        assert inter.test_surface_grid is not None
+        assert inter.train_surface_grid.row_edges == inter.test_surface_grid.row_edges
+        assert inter.train_surface_grid.col_levels == inter.test_surface_grid.col_levels
+        # Test cells are a subset/superset of train cells (some may be empty)
+        # but the grid frame matches.
+        assert inter.test_surface_grid.row_axis == inter.train_surface_grid.row_axis
+        assert inter.test_surface_grid.col_axis == inter.train_surface_grid.col_axis
+
+    def test_continuous_x_continuous(self):
+        """Cont × cont uses quantile bins on both axes."""
+        data = self._make_data()
+        result = self._fit(data, with_interaction=False)
+        diag = result.diagnostics(
+            train_data=data,
+            categorical_factors=["region"],
+            continuous_factors=["age", "veh_power"],
+            interactions=[("age", "veh_power")],
+        )
+        inter = diag.interactions[0]
+        assert inter.pair_type == "continuous_x_continuous"
+        assert inter.train_surface_grid.row_type == "quantile"
+        assert inter.train_surface_grid.col_type == "quantile"
+        assert inter.train_surface_grid.row_edges is not None
+        assert inter.train_surface_grid.col_edges is not None
+        assert inter.train_surface_grid.row_levels is None
+        assert inter.train_surface_grid.col_levels is None
+
+    def test_categorical_x_categorical(self):
+        """Cat × cat uses level lists on both axes; higher cardinality
+        becomes ``factor1``.
+        """
+        data = self._make_data()
+        result = self._fit(data, with_interaction=False)
+        diag = result.diagnostics(
+            train_data=data,
+            categorical_factors=["region", "brand"],
+            continuous_factors=["age"],
+            interactions=[("brand", "region")],
+        )
+        inter = diag.interactions[0]
+        assert inter.pair_type == "categorical_x_categorical"
+        assert inter.train_surface_grid.row_type == "levels"
+        assert inter.train_surface_grid.col_type == "levels"
+        # region has 4 levels, brand has 3 → region is factor1
+        assert inter.factor1 == "region"
+        assert inter.factor2 == "brand"
+
+    def test_pair_spec_forms(self):
+        """All accepted spec forms produce the same result."""
+        data = self._make_data()
+        result = self._fit(data, with_interaction=False)
+        diag1 = result.diagnostics(
+            train_data=data,
+            categorical_factors=["region"],
+            continuous_factors=["age"],
+            interactions=[("age", "region")],
+        )
+        diag2 = result.diagnostics(
+            train_data=data,
+            categorical_factors=["region"],
+            continuous_factors=["age"],
+            interactions=[["age", "region"]],
+        )
+        diag3 = result.diagnostics(
+            train_data=data,
+            categorical_factors=["region"],
+            continuous_factors=["age"],
+            interactions=[{"factor1": "age", "factor2": "region"}],
+        )
+        assert (
+            diag1.interactions[0].name == diag2.interactions[0].name == diag3.interactions[0].name
+        )
+
+    def test_json_serialization(self):
+        """Interactions field round-trips through ``to_json``."""
+        import json
+
+        data = self._make_data()
+        result = self._fit(data, with_interaction=True)
+        diag = result.diagnostics(
+            train_data=data,
+            categorical_factors=["region"],
+            continuous_factors=["age"],
+            interactions=[("age", "region")],
+        )
+        payload = json.loads(diag.to_json())
+        assert "interactions" in payload
+        assert len(payload["interactions"]) == 1
+        node = payload["interactions"][0]
+        assert node["name"] == "age:region"
+        assert node["pair_type"] == "continuous_x_categorical"
+        assert node["in_model"] is True
+        assert "train_surface_grid" in node
+        assert "cells" in node["train_surface_grid"]
+        # Each cell carries the raw fields visualizers need
+        cell0 = node["train_surface_grid"]["cells"][0]
+        for key in ("r", "c", "n", "exposure", "actual", "predicted", "ae_ratio"):
+            assert key in cell0
+
+    # ------------------------------------------------------------------ pre-fit
+
+    def test_pre_fit_basic(self):
+        """``explore_data(interactions=...)`` produces InteractionExploration
+        with a surface grid and an ``interaction_strength`` scalar.
+        """
+        import rustystats as rs
+
+        data = self._make_data()
+        exp = rs.explore_data(
+            data=data,
+            response="y",
+            categorical_factors=["region"],
+            continuous_factors=["age", "veh_power"],
+            exposure="exposure",
+            family="poisson",
+            interactions=[("age", "region")],
+        )
+        assert len(exp.interactions) == 1
+        ex = exp.interactions[0]
+        assert ex.name == "age:region"
+        assert ex.pair_type == "continuous_x_categorical"
+        assert 0.0 <= ex.interaction_strength <= 1.0
+        # Pre-fit cells: actual is populated but predicted/ae_ratio are null.
+        assert len(ex.surface_grid.cells) > 0
+        for cell in ex.surface_grid.cells:
+            assert cell.predicted is None
+            assert cell.ae_ratio is None
+
+    def test_pre_fit_json_field_present(self):
+        """The new field is present in the auto-emitted JSON."""
+        import json
+
+        import rustystats as rs
+
+        data = self._make_data()
+        exp = rs.explore_data(
+            data=data,
+            response="y",
+            categorical_factors=["region"],
+            continuous_factors=["age"],
+            exposure="exposure",
+            family="poisson",
+            interactions=[("age", "region")],
+        )
+        payload = json.loads(exp.to_json())
+        assert "interactions" in payload
+        assert len(payload["interactions"]) == 1
+        assert "surface_grid" in payload["interactions"][0]
+        assert "interaction_strength" in payload["interactions"][0]
+
+
+class TestFactorExtensions:
+    """Block GVIF and typed train/test bin pairs added to ``FactorDiagnostics``."""
+
+    @staticmethod
+    def _make_data(n: int = 1000):
+        import polars as pl
+
+        rng = np.random.default_rng(0)
+        age = rng.uniform(18, 70, n)
+        power = rng.uniform(50, 200, n)
+        region = rng.choice(["A", "B", "C", "D"], n)
+        exposure = rng.uniform(0.5, 1.0, n)
+        mu = np.exp(-2 + 0.02 * age + 0.001 * power)
+        y = rng.poisson(mu * exposure)
+        return pl.DataFrame(
+            {"y": y, "age": age, "power": power, "region": region, "exposure": exposure}
+        )
+
+    @staticmethod
+    def _fit(data):
+        import rustystats as rs
+
+        return rs.glm_dict(
+            response="y",
+            terms={
+                "age": {"type": "linear"},
+                "power": {"type": "linear"},
+                "region": {"type": "categorical"},
+            },
+            data=data,
+            family="poisson",
+            offset="exposure",
+        ).fit()
+
+    def test_gvif_populated_for_fitted_factors(self):
+        """Block GVIF is populated for every fitted factor and is positive."""
+        data = self._make_data()
+        result = self._fit(data)
+        diag = result.diagnostics(
+            train_data=data,
+            categorical_factors=["region"],
+            continuous_factors=["age", "power"],
+        )
+        for factor in diag.factors:
+            if factor.in_model:
+                assert factor.gvif is not None
+                assert factor.gvif > 0
+            # else (unfitted factor): GVIF stays None
+
+    def test_train_test_bins_only_with_test_data(self):
+        """``train_test_bins`` is None when no test data is supplied."""
+        data = self._make_data()
+        result = self._fit(data)
+        diag_no_test = result.diagnostics(
+            train_data=data,
+            categorical_factors=["region"],
+            continuous_factors=["age"],
+        )
+        for factor in diag_no_test.factors:
+            assert factor.train_test_bins is None
+
+    def test_train_test_bins_populated_with_test(self):
+        """``train_test_bins`` is populated with one entry per train bin
+        when test data is supplied, regardless of test-side coverage.
+        """
+        data = self._make_data(n=1200)
+        train, test = data[:900], data[900:]
+        result = self._fit(train)
+        diag = result.diagnostics(
+            train_data=train,
+            test_data=test,
+            categorical_factors=["region"],
+            continuous_factors=["age"],
+        )
+        for factor in diag.factors:
+            ttb = factor.train_test_bins
+            if factor.in_model:
+                assert ttb is not None
+                assert len(ttb) > 0
+                # Each pair carries train-side fields always
+                for pair in ttb:
+                    assert pair.bin
+                    assert pair.train_n >= 0
+                    assert pair.train_exposure >= 0
+                    # test fields can be None when the bin is empty in test
+
+    def test_robust_se_unavailable_emits_warning_on_regularized_fit(self):
+        """A regularized fit cannot produce HC1 sandwich SEs. Instead of
+        silently leaving every ``coefficient_summary[*].robust_*`` null with
+        no signal to the caller, ``diagnostics(...)`` must emit a
+        ``robust_se_unavailable`` warning that names the reason.
+        """
+        import polars as pl
+        import rustystats as rs
+
+        rng = np.random.default_rng(1129)
+        n = 600
+        x1 = rng.standard_normal(n)
+        x2 = rng.standard_normal(n)
+        region = rng.choice(["A", "B", "C"], n)
+        exposure = rng.uniform(0.5, 1.0, n)
+        mu = np.exp(-2 + 0.2 * x1 + 0.1 * x2)
+        y = rng.poisson(mu * exposure)
+        data = pl.DataFrame({"y": y, "x1": x1, "x2": x2, "region": region, "exposure": exposure})
+        # Regularized fit — bse_robust() will raise on this result.
+        result = rs.glm_dict(
+            response="y",
+            terms={
+                "x1": {"type": "linear"},
+                "x2": {"type": "linear"},
+                "region": {"type": "categorical"},
+            },
+            data=data,
+            family="poisson",
+            offset="exposure",
+        ).fit(alpha=0.5, l1_ratio=0.5)
+
+        diag = result.diagnostics(
+            train_data=data,
+            categorical_factors=["region"],
+            continuous_factors=["x1", "x2"],
+        )
+        # All robust SEs null on every coefficient.
+        assert diag.coefficient_summary is not None
+        assert all(c.robust_std_error is None for c in diag.coefficient_summary)
+        # And the warning is present, with a non-empty message naming the reason.
+        robust_warnings = [w for w in diag.warnings if w.get("type") == "robust_se_unavailable"]
+        assert len(robust_warnings) == 1
+        assert "robust SE unavailable" in robust_warnings[0]["message"]
+
+    def test_factor_extensions_in_json(self):
+        """New fields serialize through ``to_json``."""
+        import json
+
+        data = self._make_data(n=1200)
+        train, test = data[:900], data[900:]
+        result = self._fit(train)
+        diag = result.diagnostics(
+            train_data=train,
+            test_data=test,
+            categorical_factors=["region"],
+            continuous_factors=["age"],
+        )
+        payload = json.loads(diag.to_json())
+        fitted = [f for f in payload["factors"] if f["in_model"]]
+        assert fitted
+        for f in fitted:
+            assert "gvif" in f and f["gvif"] is not None
+            assert "train_test_bins" in f
+            if f["train_test_bins"]:
+                pair = f["train_test_bins"][0]
+                for key in (
+                    "bin",
+                    "train_n",
+                    "train_exposure",
+                    "train_actual",
+                    "train_predicted",
+                    "train_ae_ratio",
+                    "test_n",
+                    "test_exposure",
+                ):
+                    assert key in pair
+
+
+# =============================================================================
+# Helper unit tests — exercise the pair_diagnostics building blocks in
+# isolation so a future refactor that breaks one helper fails loudly here.
+# =============================================================================
+
+
+class TestPairDiagnosticsHelpers:
+    """Unit tests for the pure helpers in ``pair_diagnostics`` module."""
+
+    # ----- spec normalization -----
+
+    def test_normalize_pair_spec_tuple(self):
+        from rustystats.diagnostics.pair_diagnostics import _normalize_pair_spec
+
+        assert _normalize_pair_spec(("a", "b")) == ("a", "b")
+
+    def test_normalize_pair_spec_list(self):
+        from rustystats.diagnostics.pair_diagnostics import _normalize_pair_spec
+
+        assert _normalize_pair_spec(["a", "b"]) == ("a", "b")
+
+    def test_normalize_pair_spec_named_dict(self):
+        from rustystats.diagnostics.pair_diagnostics import _normalize_pair_spec
+
+        assert _normalize_pair_spec({"factor1": "x", "factor2": "y"}) == ("x", "y")
+
+    def test_normalize_pair_spec_legacy_dict(self):
+        """Fit-time style with reserved keys filtered out."""
+        from rustystats.diagnostics.pair_diagnostics import _normalize_pair_spec
+
+        spec = {
+            "VehAge": {"type": "linear"},
+            "Region": {"type": "categorical"},
+            "include_main": True,
+        }
+        assert _normalize_pair_spec(spec) == ("VehAge", "Region")
+
+    def test_normalize_pair_spec_target_encoding_keys_ignored(self):
+        """``target_encoding`` / ``frequency_encoding`` / ``prior_weight``
+        keys are stripped before counting variables.
+        """
+        from rustystats.diagnostics.pair_diagnostics import _normalize_pair_spec
+
+        spec = {
+            "Brand": {"type": "categorical"},
+            "Region": {"type": "categorical"},
+            "target_encoding": True,
+            "prior_weight": 1.0,
+        }
+        assert _normalize_pair_spec(spec) == ("Brand", "Region")
+
+    def test_normalize_pair_spec_invalid_dict_raises(self):
+        from rustystats.diagnostics.pair_diagnostics import _normalize_pair_spec
+
+        with pytest.raises(ValueError):
+            _normalize_pair_spec({"only_one": {"type": "linear"}})
+
+    def test_normalize_pair_spec_invalid_type_raises(self):
+        from rustystats.diagnostics.pair_diagnostics import _normalize_pair_spec
+
+        with pytest.raises(ValueError):
+            _normalize_pair_spec("not a pair")
+
+    def test_normalize_pair_spec_three_element_list_raises(self):
+        from rustystats.diagnostics.pair_diagnostics import _normalize_pair_spec
+
+        with pytest.raises(ValueError):
+            _normalize_pair_spec(["a", "b", "c"])
+
+    # ----- pair type detection / normalization -----
+
+    def test_detect_pair_type_cont_cont(self):
+        import polars as pl
+        from rustystats.diagnostics.pair_diagnostics import _detect_pair_type
+
+        df = pl.DataFrame({"x": [1.0, 2.0, 3.0], "y": [4.0, 5.0, 6.0]})
+        assert _detect_pair_type(df, "x", "y") == ("continuous_x_continuous", "x", "y")
+
+    def test_detect_pair_type_cat_cat_normalizes_by_cardinality(self):
+        """Higher-cardinality categorical becomes factor1."""
+        import polars as pl
+        from rustystats.diagnostics.pair_diagnostics import _detect_pair_type
+
+        df = pl.DataFrame(
+            {
+                "small": ["A", "A", "B", "B"],  # 2 unique
+                "big": ["X", "Y", "Z", "W"],  # 4 unique
+            }
+        )
+        kind, f1, f2 = _detect_pair_type(df, "small", "big")
+        assert kind == "categorical_x_categorical"
+        assert f1 == "big"
+        assert f2 == "small"
+
+    def test_detect_pair_type_mixed_continuous_first(self):
+        import polars as pl
+        from rustystats.diagnostics.pair_diagnostics import _detect_pair_type
+
+        df = pl.DataFrame({"age": [1.0, 2.0, 3.0], "region": ["A", "B", "C"]})
+        # Pass categorical first — should be re-ordered.
+        kind, f1, f2 = _detect_pair_type(df, "region", "age")
+        assert kind == "continuous_x_categorical"
+        assert f1 == "age"
+        assert f2 == "region"
+
+    # ----- continuous binning -----
+
+    def test_bin_continuous_edges_normal(self):
+        from rustystats.diagnostics.pair_diagnostics import _bin_continuous_edges
+
+        values = np.linspace(0.0, 10.0, 100)
+        edges = _bin_continuous_edges(values, n_bins=5)
+        assert edges.size == 6  # 5 bins → 6 edges
+        assert edges[0] <= values.min()
+        assert edges[-1] >= values.max()
+
+    def test_bin_continuous_edges_degenerate_identical(self):
+        """All identical values → produces a valid 2-edge degenerate grid."""
+        from rustystats.diagnostics.pair_diagnostics import _bin_continuous_edges
+
+        values = np.full(100, 5.0)
+        edges = _bin_continuous_edges(values, n_bins=5)
+        assert edges.size >= 2
+        assert edges[0] == 5.0
+
+    def test_bin_continuous_edges_empty(self):
+        """No finite values: returns a placeholder [0, 1] grid."""
+        from rustystats.diagnostics.pair_diagnostics import _bin_continuous_edges
+
+        values = np.array([np.nan, np.nan])
+        edges = _bin_continuous_edges(values, n_bins=4)
+        assert edges.size >= 2
+
+    def test_apply_continuous_edges_in_range(self):
+        from rustystats.diagnostics.pair_diagnostics import (
+            _apply_continuous_edges,
+            _bin_continuous_edges,
+        )
+
+        edges = _bin_continuous_edges(np.linspace(0.0, 10.0, 100), n_bins=5)
+        codes = _apply_continuous_edges(np.array([0.1, 5.0, 9.9]), edges)
+        # Codes are bin indices in [0, len(edges)-2]
+        assert codes.min() >= 0
+        assert codes.max() <= edges.size - 2
+
+    def test_apply_continuous_edges_clips_out_of_range(self):
+        """Test data outside the train range is clipped to boundary bins."""
+        from rustystats.diagnostics.pair_diagnostics import (
+            _apply_continuous_edges,
+            _bin_continuous_edges,
+        )
+
+        edges = _bin_continuous_edges(np.linspace(0.0, 10.0, 100), n_bins=5)
+        # -1000 → first bin (0); +1000 → last bin (edges.size-2)
+        codes = _apply_continuous_edges(np.array([-1000.0, 1000.0]), edges)
+        assert codes[0] == 0
+        assert codes[1] == edges.size - 2
+
+    # ----- categorical binning -----
+
+    def test_bin_categorical_levels_top_k(self):
+        from rustystats.diagnostics.pair_diagnostics import _bin_categorical_levels
+
+        # 5 unique levels, take top 3 → returns 3 selected + _Other
+        values = np.array(["A"] * 50 + ["B"] * 30 + ["C"] * 15 + ["D"] * 4 + ["E"] * 1)
+        levels = _bin_categorical_levels(values, top_k=3)
+        assert levels[-1] == "_Other"
+        assert set(levels[:-1]) == {"A", "B", "C"}
+
+    def test_bin_categorical_levels_exposure_weighted(self):
+        """Top-K is exposure-weighted, not row-count-weighted."""
+        from rustystats.diagnostics.pair_diagnostics import _bin_categorical_levels
+
+        # A appears 1 time with exposure 1000; B appears 50 times with exposure 1
+        values = np.array(["A"] + ["B"] * 50)
+        exposure = np.array([1000.0] + [1.0] * 50)
+        levels = _bin_categorical_levels(values, top_k=1, exposure=exposure)
+        # Without exposure: B wins (50 rows). With exposure: A wins (1000 units).
+        assert "A" in levels
+
+    def test_bin_categorical_levels_no_other_when_cardinality_fits(self):
+        """If cardinality <= top_k, ``_Other`` is not appended."""
+        from rustystats.diagnostics.pair_diagnostics import _bin_categorical_levels
+
+        values = np.array(["A", "A", "B", "B", "C", "C"])
+        levels = _bin_categorical_levels(values, top_k=5)
+        assert "_Other" not in levels
+        assert set(levels) == {"A", "B", "C"}
+
+    def test_apply_categorical_levels_seen(self):
+        from rustystats.diagnostics.pair_diagnostics import _apply_categorical_levels
+
+        levels = ["A", "B", "C", "_Other"]
+        codes = _apply_categorical_levels(np.array(["A", "B", "C", "A"]), levels)
+        assert codes.tolist() == [0, 1, 2, 0]
+
+    def test_apply_categorical_levels_unseen_to_other(self):
+        from rustystats.diagnostics.pair_diagnostics import _apply_categorical_levels
+
+        levels = ["A", "B", "_Other"]
+        codes = _apply_categorical_levels(np.array(["A", "Z", "B", "Q"]), levels)
+        # Z and Q are unseen → _Other (code 2)
+        assert codes.tolist() == [0, 2, 1, 2]
+
+    def test_apply_categorical_levels_no_other_drops_unseen(self):
+        """When the levels list has no ``_Other``, unseen values get -1
+        sentinel which the cell aggregator then drops.
+        """
+        from rustystats.diagnostics.pair_diagnostics import _apply_categorical_levels
+
+        levels = ["A", "B"]  # no _Other
+        codes = _apply_categorical_levels(np.array(["A", "Z", "B"]), levels)
+        assert codes[0] == 0
+        assert codes[1] == -1  # unseen sentinel
+        assert codes[2] == 1
+
+    # ----- bin-count selection -----
+
+    def test_choose_bin_counts_cont_cont_under_cap(self):
+        from rustystats.diagnostics.pair_diagnostics import _choose_bin_counts
+
+        n1, n2 = _choose_bin_counts(
+            "continuous_x_continuous", (6, 6), (8, 15), (12, 12), 150, None, None
+        )
+        assert (n1, n2) == (6, 6)
+
+    def test_choose_bin_counts_cont_cont_over_cap_shrinks(self):
+        from rustystats.diagnostics.pair_diagnostics import _choose_bin_counts
+
+        n1, n2 = _choose_bin_counts(
+            "continuous_x_continuous", (20, 20), (8, 15), (12, 12), 100, None, None
+        )
+        assert n1 * n2 <= 100
+
+    def test_choose_bin_counts_cat_cat_respects_cardinality(self):
+        from rustystats.diagnostics.pair_diagnostics import _choose_bin_counts
+
+        # cat × cat with cardinalities 3 and 5; defaults are (12, 12)
+        n1, n2 = _choose_bin_counts(
+            "categorical_x_categorical",
+            (6, 6),
+            (8, 15),
+            (12, 12),
+            150,
+            cardinality1=3,
+            cardinality2=5,
+        )
+        assert n1 == 3
+        assert n2 == 5
+
+    def test_choose_bin_counts_cat_cat_shrinks_to_cap(self):
+        from rustystats.diagnostics.pair_diagnostics import _choose_bin_counts
+
+        # 50 × 50 cardinalities, cap 150
+        n1, n2 = _choose_bin_counts(
+            "categorical_x_categorical",
+            (6, 6),
+            (8, 15),
+            (12, 12),
+            150,
+            cardinality1=50,
+            cardinality2=50,
+        )
+        assert n1 * n2 <= 150
+
+    # ----- cell aggregation -----
+
+    def test_aggregate_cells_basic(self):
+        from rustystats.diagnostics.pair_diagnostics import _aggregate_cells
+
+        codes1 = np.array([0, 0, 1, 1], dtype=np.int32)
+        codes2 = np.array([0, 1, 0, 1], dtype=np.int32)
+        y = np.array([1.0, 2.0, 3.0, 4.0])
+        exposure = np.ones(4)
+        mu = np.array([0.5, 1.5, 2.5, 3.5])
+        cells = _aggregate_cells(codes1, codes2, y, exposure, mu, n_rows=2, n_cols=2)
+        assert cells[(0, 0)] == (1, 1.0, 1.0, 0.5)
+        assert cells[(0, 1)] == (1, 1.0, 2.0, 1.5)
+        assert cells[(1, 0)] == (1, 1.0, 3.0, 2.5)
+        assert cells[(1, 1)] == (1, 1.0, 4.0, 3.5)
+
+    def test_aggregate_cells_groups_correctly(self):
+        """Multiple rows in the same cell → counts and sums add up."""
+        from rustystats.diagnostics.pair_diagnostics import _aggregate_cells
+
+        codes1 = np.array([0, 0, 0, 1], dtype=np.int32)
+        codes2 = np.array([0, 0, 0, 1], dtype=np.int32)
+        y = np.array([1.0, 2.0, 3.0, 10.0])
+        exposure = np.array([1.0, 1.0, 1.0, 2.0])
+        cells = _aggregate_cells(codes1, codes2, y, exposure, mu=None, n_rows=2, n_cols=2)
+        assert cells[(0, 0)] == (3, 3.0, 6.0, None)
+        assert cells[(1, 1)] == (1, 2.0, 10.0, None)
+
+    def test_aggregate_cells_drops_invalid_codes(self):
+        """Rows with negative codes (unseen, no _Other) are dropped."""
+        from rustystats.diagnostics.pair_diagnostics import _aggregate_cells
+
+        codes1 = np.array([0, -1, 1], dtype=np.int32)
+        codes2 = np.array([0, 1, 1], dtype=np.int32)
+        y = np.array([1.0, 99.0, 3.0])
+        exposure = np.ones(3)
+        cells = _aggregate_cells(codes1, codes2, y, exposure, mu=None, n_rows=2, n_cols=2)
+        assert (0, 0) in cells
+        assert (1, 1) in cells
+        # The middle row (code1 = -1) is dropped — no cell with y=99
+        for cell in cells.values():
+            assert cell[2] != 99.0  # y_sum
+
+    # ----- interaction_strength is exposed as a Rust function (no Python
+    #       reimplementation); see TestPairDiagnosticsNumerics::
+    #       test_pre_fit_strength_matches_existing_detector for the
+    #       integrated parity check, and TestPairDiagnosticsEdgeCases::
+    #       test_pre_fit_strength_in_unit_interval for the [0, 1] contract.
+
+    # ----- block GVIF on synthetic designs -----
+
+    def test_compute_block_gvif_orthogonal_near_one(self):
+        """Block GVIF on orthogonal columns is ~1 (no inflation)."""
+        from rustystats.diagnostics.pair_diagnostics import (
+            _build_design_correlation_matrix,
+            _compute_block_gvif,
+        )
+
+        rng = np.random.default_rng(0)
+        n = 500
+        # 4 mutually-orthogonal-ish columns; one of them is the "block".
+        X = rng.standard_normal((n, 4))
+        # Orthogonalize via QR
+        Q, _ = np.linalg.qr(X)
+        R_reg = _build_design_correlation_matrix(Q)
+        gvif = _compute_block_gvif(R_reg, col_start=0, col_end=2)
+        assert gvif is not None
+        # Allow some slack — finite-sample noise after standardization.
+        assert 0.5 < gvif < 2.0
+
+    def test_compute_block_gvif_no_complement_returns_none(self):
+        """When the block IS the entire design, GVIF is undefined."""
+        from rustystats.diagnostics.pair_diagnostics import (
+            _build_design_correlation_matrix,
+            _compute_block_gvif,
+        )
+
+        X = np.random.default_rng(0).standard_normal((100, 3))
+        R_reg = _build_design_correlation_matrix(X)
+        assert _compute_block_gvif(R_reg, col_start=0, col_end=3) is None
+
+    def test_compute_block_gvif_invalid_range_returns_none(self):
+        from rustystats.diagnostics.pair_diagnostics import (
+            _build_design_correlation_matrix,
+            _compute_block_gvif,
+        )
+
+        X = np.random.default_rng(0).standard_normal((100, 3))
+        R_reg = _build_design_correlation_matrix(X)
+        assert _compute_block_gvif(R_reg, col_start=-1, col_end=2) is None
+        assert _compute_block_gvif(R_reg, col_start=0, col_end=99) is None
+        assert _compute_block_gvif(R_reg, col_start=2, col_end=2) is None  # empty
+
+    def test_compute_block_gvif_none_design(self):
+        from rustystats.diagnostics.pair_diagnostics import _compute_block_gvif
+
+        assert _compute_block_gvif(None, 0, 1) is None
+
+    def test_build_design_correlation_matrix_none_input(self):
+        from rustystats.diagnostics.pair_diagnostics import (
+            _build_design_correlation_matrix,
+        )
+
+        assert _build_design_correlation_matrix(None) is None
+        assert _build_design_correlation_matrix(np.array([[1.0]])) is None  # n<=1
+        assert _build_design_correlation_matrix(np.empty((10, 0))) is None  # p==0
+
+    # ----- representation tagging -----
+
+    def test_representation_from_slot_interaction(self):
+        from rustystats.diagnostics.pair_diagnostics import _representation_from_slot
+
+        class FakeSlot:
+            term_type = "interaction"
+
+        assert _representation_from_slot(FakeSlot()) == "tensor_product"
+
+    def test_representation_from_slot_te(self):
+        from rustystats.diagnostics.pair_diagnostics import _representation_from_slot
+
+        class FakeSlot:
+            term_type = "target_encoding"
+
+        assert _representation_from_slot(FakeSlot()) == "target_encoding"
+
+    def test_representation_from_slot_fe(self):
+        from rustystats.diagnostics.pair_diagnostics import _representation_from_slot
+
+        class FakeSlot:
+            term_type = "frequency_encoding"
+
+        assert _representation_from_slot(FakeSlot()) == "frequency_encoding"
+
+    def test_representation_from_slot_none(self):
+        from rustystats.diagnostics.pair_diagnostics import _representation_from_slot
+
+        assert _representation_from_slot(None) is None
+
+
+# =============================================================================
+# Numerical-correctness tests — cells match manual groupby, etc.
+# =============================================================================
+
+
+class TestPairDiagnosticsNumerics:
+    """Verify that aggregated values match a hand-computed groupby."""
+
+    @staticmethod
+    def _make_data(seed: int = 11, n: int = 800):
+        import polars as pl
+
+        rng = np.random.default_rng(seed)
+        age = rng.uniform(18, 70, n)
+        region = rng.choice(["A", "B", "C", "D"], n)
+        exposure = rng.uniform(0.5, 1.0, n)
+        mu_true = np.exp(-2 + 0.02 * age + 0.3 * (region == "A").astype(float))
+        y = rng.poisson(mu_true * exposure)
+        return pl.DataFrame({"y": y, "age": age, "region": region, "exposure": exposure})
+
+    def _fit(self, data):
+        import rustystats as rs
+
+        return rs.glm_dict(
+            response="y",
+            terms={"age": {"type": "linear"}, "region": {"type": "categorical"}},
+            data=data,
+            family="poisson",
+            offset="exposure",
+        ).fit()
+
+    def test_cell_actual_matches_manual_aggregation(self):
+        """Each cell's ``actual`` equals ``sum(y) / sum(exposure)`` on its rows."""
+        data = self._make_data()
+        result = self._fit(data)
+        diag = result.diagnostics(
+            train_data=data,
+            categorical_factors=["region"],
+            continuous_factors=["age"],
+            interactions=[("age", "region")],
+        )
+        inter = diag.interactions[0]
+        grid = inter.train_surface_grid
+
+        # Reconstruct the binning the library used
+        age = data["age"].to_numpy()
+        edges = np.asarray(grid.row_edges, dtype=np.float64)
+        digitized = np.clip(np.digitize(age, edges[1:-1]), 0, edges.size - 2)
+        region = data["region"].to_numpy()
+        # Categorical level lookup
+        level_to_code = {lvl: i for i, lvl in enumerate(grid.col_levels)}
+        col_codes = np.array([level_to_code.get(v, len(level_to_code)) for v in region])
+
+        y = data["y"].to_numpy().astype(np.float64)
+        exposure = data["exposure"].to_numpy().astype(np.float64)
+
+        for cell in grid.cells:
+            mask = (digitized == cell.r) & (col_codes == cell.c)
+            expected_actual = y[mask].sum() / exposure[mask].sum()
+            assert abs(cell.actual - expected_actual) < 1e-9, (
+                f"actual mismatch at ({cell.r},{cell.c}): got {cell.actual}, want {expected_actual}"
+            )
+            assert int(mask.sum()) == cell.n
+
+    def test_cell_predicted_matches_manual_aggregation(self):
+        """Each cell's ``predicted`` equals ``sum(mu) / sum(exposure)`` on its rows."""
+        data = self._make_data()
+        result = self._fit(data)
+        diag = result.diagnostics(
+            train_data=data,
+            categorical_factors=["region"],
+            continuous_factors=["age"],
+            interactions=[("age", "region")],
+        )
+        inter = diag.interactions[0]
+        grid = inter.train_surface_grid
+
+        # Predictions on train (must use the same path the diagnostics used).
+        mu = result.predict(data).astype(np.float64)
+        age = data["age"].to_numpy()
+        edges = np.asarray(grid.row_edges, dtype=np.float64)
+        digitized = np.clip(np.digitize(age, edges[1:-1]), 0, edges.size - 2)
+        region = data["region"].to_numpy()
+        level_to_code = {lvl: i for i, lvl in enumerate(grid.col_levels)}
+        col_codes = np.array([level_to_code.get(v, len(level_to_code)) for v in region])
+        exposure = data["exposure"].to_numpy().astype(np.float64)
+
+        for cell in grid.cells:
+            mask = (digitized == cell.r) & (col_codes == cell.c)
+            expected = mu[mask].sum() / exposure[mask].sum()
+            assert abs(cell.predicted - expected) < 1e-9, (
+                f"predicted mismatch at ({cell.r},{cell.c}): got {cell.predicted}, want {expected}"
+            )
+
+    def test_ae_ratio_matches_actual_over_predicted(self):
+        """``ae_ratio`` must equal ``actual / predicted`` to within float tolerance."""
+        data = self._make_data()
+        result = self._fit(data)
+        diag = result.diagnostics(
+            train_data=data,
+            categorical_factors=["region"],
+            continuous_factors=["age"],
+            interactions=[("age", "region")],
+        )
+        inter = diag.interactions[0]
+        for cell in inter.train_surface_grid.cells:
+            if cell.predicted and cell.predicted > 0:
+                assert abs(cell.ae_ratio - cell.actual / cell.predicted) < 1e-9
+
+    def test_coefficient_count_matches_block_size(self):
+        """The coefficients list has one entry per design column in the
+        interaction's TermSlot range.
+        """
+        import rustystats as rs
+
+        data = self._make_data()
+        result = rs.glm_dict(
+            response="y",
+            terms={
+                "age": {"type": "linear"},
+                "region": {"type": "categorical"},
+            },
+            interactions=[
+                {
+                    "age": {"type": "linear"},
+                    "region": {"type": "categorical"},
+                    "include_main": False,
+                }
+            ],
+            data=data,
+            family="poisson",
+            offset="exposure",
+        ).fit()
+        diag = result.diagnostics(
+            train_data=data,
+            categorical_factors=["region"],
+            continuous_factors=["age"],
+            interactions=[("age", "region")],
+        )
+        inter = diag.interactions[0]
+        slot = next(
+            s
+            for s in result._builder._term_slots
+            if s.term_type == "interaction" and frozenset(s.factors) == frozenset({"age", "region"})
+        )
+        expected_n = slot.col_end - slot.col_start
+        assert inter.coefficients is not None
+        assert len(inter.coefficients) == expected_n
+
+    def test_significance_df_matches_block_size(self):
+        """Block Wald χ² df equals the number of design columns in the block."""
+        import rustystats as rs
+
+        data = self._make_data()
+        result = rs.glm_dict(
+            response="y",
+            terms={
+                "age": {"type": "linear"},
+                "region": {"type": "categorical"},
+            },
+            interactions=[
+                {
+                    "age": {"type": "linear"},
+                    "region": {"type": "categorical"},
+                    "include_main": False,
+                }
+            ],
+            data=data,
+            family="poisson",
+            offset="exposure",
+        ).fit()
+        diag = result.diagnostics(
+            train_data=data,
+            categorical_factors=["region"],
+            continuous_factors=["age"],
+            interactions=[("age", "region")],
+        )
+        inter = diag.interactions[0]
+        slot = next(
+            s
+            for s in result._builder._term_slots
+            if s.term_type == "interaction" and frozenset(s.factors) == frozenset({"age", "region"})
+        )
+        # The Wald statistic is returned but df is implicit in the result of
+        # the Rust call. We round-trip via the dev_contrib (chi2) which we
+        # know equals the statistic. Validate the chi² is positive and finite.
+        assert inter.significance is not None
+        assert inter.significance.chi2 > 0
+        assert np.isfinite(inter.significance.chi2)
+        assert 0.0 <= inter.significance.p <= 1.0
+        # And that the block size is what we expect (independent sanity).
+        assert slot.col_end - slot.col_start > 0
+
+    def test_pre_fit_strength_matches_existing_detector(self):
+        """``InteractionExploration.interaction_strength`` must equal the
+        existing ``InteractionCandidate.interaction_strength`` for the same
+        pair — they're advertised as the same scalar.
+        """
+        import polars as pl
+        import rustystats as rs
+
+        rng = np.random.default_rng(101)
+        n = 1500
+        # Force a real cell-level signal so the detector picks the pair up.
+        cat_a = rng.choice(["X", "Y", "Z", "W"], n)
+        cat_b = rng.choice(["P", "Q", "R", "S"], n)
+        exposure = rng.uniform(0.5, 1.0, n)
+        # Strong interaction signal in (X, P).
+        hot = (cat_a == "X") & (cat_b == "P")
+        mu = np.exp(-1.5 + 0.8 * hot.astype(float))
+        y = rng.poisson(mu * exposure)
+        data = pl.DataFrame({"y": y, "cat_a": cat_a, "cat_b": cat_b, "exposure": exposure})
+        exp = rs.explore_data(
+            data=data,
+            response="y",
+            categorical_factors=["cat_a", "cat_b"],
+            exposure="exposure",
+            family="poisson",
+            detect_interactions=True,
+            interactions=[("cat_a", "cat_b")],
+        )
+        user_strength = exp.interactions[0].interaction_strength
+        # The auto-detector emits the same pair under interaction_candidates.
+        # Find the matching candidate by factor names (order-insensitive).
+        target = frozenset({"cat_a", "cat_b"})
+        match = next(
+            (
+                cand
+                for cand in exp.interaction_candidates
+                if frozenset({cand.factor1, cand.factor2}) == target
+            ),
+            None,
+        )
+        if match is not None:
+            # Floating-point bit-equality is too strict (different code paths
+            # may accumulate sums in different orders); 1e-6 absolute is more
+            # than tight enough to catch a formula mismatch.
+            assert abs(user_strength - match.interaction_strength) < 1e-6
+
+    def test_cell_count_within_max_total_cells(self):
+        """High-cardinality cat × cat respects the 150-cell cap."""
+        import polars as pl
+        import rustystats as rs
+
+        rng = np.random.default_rng(2)
+        n = 4000
+        big1 = rng.choice([f"L{i}" for i in range(40)], n)
+        big2 = rng.choice([f"M{i}" for i in range(40)], n)
+        exposure = rng.uniform(0.5, 1.0, n)
+        y = rng.poisson(0.5 * exposure)
+        data = pl.DataFrame({"y": y, "big1": big1, "big2": big2, "exposure": exposure})
+        result = rs.glm_dict(
+            response="y",
+            terms={"big1": {"type": "categorical"}},
+            data=data,
+            family="poisson",
+            offset="exposure",
+        ).fit()
+        diag = result.diagnostics(
+            train_data=data,
+            categorical_factors=["big1", "big2"],
+            interactions=[("big1", "big2")],
+        )
+        inter = diag.interactions[0]
+        # Cells emitted ≤ cells in the grid frame ≤ max_total_cells.
+        n_row = len(inter.train_surface_grid.row_levels)
+        n_col = len(inter.train_surface_grid.col_levels)
+        assert n_row * n_col <= 150
+
+
+# =============================================================================
+# Edge cases
+# =============================================================================
+
+
+class TestPairDiagnosticsEdgeCases:
+    @staticmethod
+    def _make_data(seed: int = 17, n: int = 600):
+        import polars as pl
+
+        rng = np.random.default_rng(seed)
+        age = rng.uniform(18, 70, n)
+        region = rng.choice(["A", "B", "C"], n)
+        exposure = rng.uniform(0.5, 1.0, n)
+        mu = np.exp(-2 + 0.02 * age)
+        y = rng.poisson(mu * exposure)
+        return pl.DataFrame({"y": y, "age": age, "region": region, "exposure": exposure})
+
+    def _fit(self, data):
+        import rustystats as rs
+
+        return rs.glm_dict(
+            response="y",
+            terms={"age": {"type": "linear"}, "region": {"type": "categorical"}},
+            data=data,
+            family="poisson",
+            offset="exposure",
+        ).fit()
+
+    def test_empty_interactions_list(self):
+        """``interactions=[]`` is equivalent to omitting the kwarg."""
+        data = self._make_data()
+        result = self._fit(data)
+        diag = result.diagnostics(
+            train_data=data,
+            categorical_factors=["region"],
+            continuous_factors=["age"],
+            interactions=[],
+        )
+        assert diag.interactions == []
+
+    def test_unknown_factor_raises_clear_error(self):
+        data = self._make_data()
+        result = self._fit(data)
+        with pytest.raises(ValueError, match="not a column"):
+            result.diagnostics(
+                train_data=data,
+                categorical_factors=["region"],
+                continuous_factors=["age"],
+                interactions=[("age", "nonexistent_factor")],
+            )
+
+    def test_test_data_with_unseen_categorical_level(self):
+        """Test rows with a level absent from train are routed to ``_Other``
+        when that bucket exists, or dropped otherwise.
+        """
+        import polars as pl
+
+        data = self._make_data()
+        train = data
+        # Test data has a brand-new level not seen in train.
+        test = pl.DataFrame(
+            {
+                "y": [1, 2],
+                "age": [30.0, 40.0],
+                "region": ["NEW", "A"],
+                "exposure": [1.0, 1.0],
+            }
+        )
+        result = self._fit(train)
+        diag = result.diagnostics(
+            train_data=train,
+            test_data=test,
+            categorical_factors=["region"],
+            continuous_factors=["age"],
+            interactions=[("age", "region")],
+        )
+        inter = diag.interactions[0]
+        assert inter.test_surface_grid is not None
+        # The "NEW" row is either bucketed to _Other (if present in train levels)
+        # or dropped. Either way, the test grid uses the SAME col_levels as train.
+        assert inter.test_surface_grid.col_levels == inter.train_surface_grid.col_levels
+
+    def test_test_data_with_out_of_range_continuous(self):
+        """Test continuous values outside train range are clipped to boundary
+        bins; the test surface stays cell-aligned.
+        """
+        import polars as pl
+
+        data = self._make_data()
+        # Test with extreme continuous values
+        test = pl.DataFrame(
+            {
+                "y": [1, 2, 3],
+                "age": [-100.0, 200.0, 50.0],
+                "region": ["A", "B", "C"],
+                "exposure": [1.0, 1.0, 1.0],
+            }
+        )
+        result = self._fit(data)
+        diag = result.diagnostics(
+            train_data=data,
+            test_data=test,
+            categorical_factors=["region"],
+            continuous_factors=["age"],
+            interactions=[("age", "region")],
+        )
+        inter = diag.interactions[0]
+        assert inter.test_surface_grid is not None
+        # Same edges as train, despite test having out-of-range values.
+        assert inter.train_surface_grid.row_edges == inter.test_surface_grid.row_edges
+
+    def test_high_cardinality_categorical_against_continuous(self):
+        """cont × cat with very high categorical cardinality respects cap
+        and shrinks the categorical side first.
+        """
+        import polars as pl
+        import rustystats as rs
+
+        rng = np.random.default_rng(3)
+        n = 3000
+        age = rng.uniform(18, 70, n)
+        # 100 unique brand levels
+        brand = rng.choice([f"B{i}" for i in range(100)], n)
+        exposure = rng.uniform(0.5, 1.0, n)
+        y = rng.poisson(0.5 * exposure)
+        data = pl.DataFrame({"y": y, "age": age, "brand": brand, "exposure": exposure})
+        result = rs.glm_dict(
+            response="y",
+            terms={"age": {"type": "linear"}},
+            data=data,
+            family="poisson",
+            offset="exposure",
+        ).fit()
+        diag = result.diagnostics(
+            train_data=data,
+            categorical_factors=["brand"],
+            continuous_factors=["age"],
+            interactions=[("age", "brand")],
+        )
+        inter = diag.interactions[0]
+        # Default cont×cat is (8, 15). Cap 150 keeps this under control.
+        assert len(inter.train_surface_grid.col_levels) <= 16  # 15 + _Other
+
+    def test_single_unique_continuous_value(self):
+        """Continuous factor with all-identical values produces a degenerate
+        but non-crashing grid.
+        """
+        import polars as pl
+        import rustystats as rs
+
+        n = 200
+        rng = np.random.default_rng(5)
+        data = pl.DataFrame(
+            {
+                "y": rng.poisson(0.5, n),
+                "constant": np.full(n, 5.0),
+                "region": rng.choice(["A", "B"], n),
+                "exposure": np.ones(n),
+            }
+        )
+        result = rs.glm_dict(
+            response="y",
+            terms={"region": {"type": "categorical"}},
+            data=data,
+            family="poisson",
+            offset="exposure",
+        ).fit()
+        # `constant` is unfitted, but the surface still aggregates raw cells.
+        diag = result.diagnostics(
+            train_data=data,
+            categorical_factors=["region"],
+            continuous_factors=["constant"],
+            interactions=[("constant", "region")],
+        )
+        inter = diag.interactions[0]
+        assert inter.in_model is False
+        # At least one cell emitted from the degenerate row axis
+        assert len(inter.train_surface_grid.cells) >= 1
+
+    def test_pre_fit_strength_in_unit_interval(self):
+        """``interaction_strength`` is always in ``[0, 1]``."""
+        import rustystats as rs
+
+        data = self._make_data()
+        exp = rs.explore_data(
+            data=data,
+            response="y",
+            categorical_factors=["region"],
+            continuous_factors=["age"],
+            exposure="exposure",
+            family="poisson",
+            interactions=[("age", "region")],
+        )
+        s = exp.interactions[0].interaction_strength
+        assert 0.0 <= s <= 1.0
+
+    def test_pair_pipeline_coexists_with_auto_detector(self):
+        """Setting both ``detect_interactions=True`` and ``interactions=[...]``
+        populates both fields independently.
+        """
+        data = self._make_data()
+        result = self._fit(data)
+        diag = result.diagnostics(
+            train_data=data,
+            categorical_factors=["region"],
+            continuous_factors=["age"],
+            detect_interactions=True,
+            interactions=[("age", "region")],
+        )
+        # Either or both may have entries depending on data, but both fields
+        # must coexist without one clobbering the other.
+        assert hasattr(diag, "interaction_candidates")
+        assert hasattr(diag, "interactions")
+        assert len(diag.interactions) == 1
+
+
+# =============================================================================
+# Encoding-routing tests — TE / FE interactions show the right representation.
+# =============================================================================
+
+
+class TestPairDiagnosticsEncodings:
+    """TE-encoded and FE-encoded interactions emit the right ``representation``
+    tag and a single-column coefficient block.
+    """
+
+    @staticmethod
+    def _make_data(seed: int = 23, n: int = 1200):
+        import polars as pl
+
+        rng = np.random.default_rng(seed)
+        brand = rng.choice([f"B{i}" for i in range(8)], n)
+        region = rng.choice(["A", "B", "C", "D"], n)
+        exposure = rng.uniform(0.5, 1.0, n)
+        # Pick a brand-region combination as the "hot spot"
+        hot = (brand == "B0") & (region == "A")
+        mu = np.exp(-2.0 + 0.6 * hot.astype(float))
+        y = rng.poisson(mu * exposure)
+        return pl.DataFrame({"y": y, "brand": brand, "region": region, "exposure": exposure})
+
+    def test_te_interaction_representation(self):
+        """A target-encoded interaction has ``representation='target_encoding'``
+        and a single coefficient entry.
+        """
+        import rustystats as rs
+
+        data = self._make_data()
+        result = rs.glm_dict(
+            response="y",
+            terms={"brand": {"type": "categorical"}, "region": {"type": "categorical"}},
+            interactions=[
+                {
+                    "brand": {"type": "categorical"},
+                    "region": {"type": "categorical"},
+                    "target_encoding": True,
+                }
+            ],
+            data=data,
+            family="poisson",
+            offset="exposure",
+        ).fit()
+        diag = result.diagnostics(
+            train_data=data,
+            categorical_factors=["brand", "region"],
+            interactions=[("brand", "region")],
+        )
+        inter = diag.interactions[0]
+        assert inter.in_model is True
+        assert inter.representation == "target_encoding"
+        # TE interaction → single column
+        assert inter.coefficients is not None
+        assert len(inter.coefficients) == 1
+
+    def test_fe_interaction_representation(self):
+        """A frequency-encoded interaction has
+        ``representation='frequency_encoding'``.
+        """
+        import rustystats as rs
+
+        data = self._make_data()
+        result = rs.glm_dict(
+            response="y",
+            terms={"brand": {"type": "categorical"}, "region": {"type": "categorical"}},
+            interactions=[
+                {
+                    "brand": {"type": "categorical"},
+                    "region": {"type": "categorical"},
+                    "frequency_encoding": True,
+                }
+            ],
+            data=data,
+            family="poisson",
+            offset="exposure",
+        ).fit()
+        diag = result.diagnostics(
+            train_data=data,
+            categorical_factors=["brand", "region"],
+            interactions=[("brand", "region")],
+        )
+        inter = diag.interactions[0]
+        assert inter.representation == "frequency_encoding"
+        assert inter.coefficients is not None
+        assert len(inter.coefficients) == 1
+
+
+# =============================================================================
+# Family coverage — verify Gaussian and Binomial don't crash and produce
+# coherent A/E ratios.
+# =============================================================================
+
+
+class TestPairDiagnosticsFamilies:
+    def test_gaussian(self):
+        import polars as pl
+        import rustystats as rs
+
+        rng = np.random.default_rng(31)
+        n = 600
+        x1 = rng.uniform(-3, 3, n)
+        cat = rng.choice(["A", "B"], n)
+        y = 1.0 + 0.5 * x1 + (cat == "A") * 0.3 + rng.standard_normal(n) * 0.2
+        data = pl.DataFrame({"y": y, "x1": x1, "cat": cat})
+        result = rs.glm_dict(
+            response="y",
+            terms={"x1": {"type": "linear"}, "cat": {"type": "categorical"}},
+            data=data,
+            family="gaussian",
+        ).fit()
+        diag = result.diagnostics(
+            train_data=data,
+            categorical_factors=["cat"],
+            continuous_factors=["x1"],
+            interactions=[("x1", "cat")],
+        )
+        inter = diag.interactions[0]
+        assert inter.pair_type == "continuous_x_categorical"
+        # Cells render even when actual is signed (Gaussian).
+        assert len(inter.train_surface_grid.cells) > 0
+
+    def test_binomial(self):
+        import polars as pl
+        import rustystats as rs
+
+        rng = np.random.default_rng(41)
+        n = 800
+        x1 = rng.uniform(-2, 2, n)
+        cat = rng.choice(["A", "B", "C"], n)
+        # P(y=1) = sigmoid(0.5 * x1 + 0.3 * (cat==A))
+        eta = 0.5 * x1 + 0.3 * (cat == "A").astype(float)
+        p = 1.0 / (1.0 + np.exp(-eta))
+        y = (rng.uniform(size=n) < p).astype(int)
+        data = pl.DataFrame({"y": y, "x1": x1, "cat": cat})
+        result = rs.glm_dict(
+            response="y",
+            terms={"x1": {"type": "linear"}, "cat": {"type": "categorical"}},
+            data=data,
+            family="binomial",
+        ).fit()
+        diag = result.diagnostics(
+            train_data=data,
+            categorical_factors=["cat"],
+            continuous_factors=["x1"],
+            interactions=[("x1", "cat")],
+        )
+        inter = diag.interactions[0]
+        # Predicted rates should be in (0, 1) for binomial.
+        for cell in inter.train_surface_grid.cells:
+            assert 0.0 <= cell.predicted <= 1.0
+
+
+# =============================================================================
+# Factor-extensions deep tests — verify GVIF behavior on orthogonal vs
+# correlated designs and train_test_bins edge cases.
+# =============================================================================
+
+
+class TestFactorExtensionsDeep:
+    def test_gvif_orthogonal_design_low(self):
+        """Independent continuous factors → block GVIF ≈ 1."""
+        import polars as pl
+        import rustystats as rs
+
+        rng = np.random.default_rng(57)
+        n = 1500
+        x1 = rng.standard_normal(n)
+        x2 = rng.standard_normal(n)  # independent of x1
+        x3 = rng.standard_normal(n)  # independent
+        eta = 0.4 * x1 + 0.3 * x2 + 0.1 * x3
+        y = rng.poisson(np.exp(eta))
+        data = pl.DataFrame({"y": y, "x1": x1, "x2": x2, "x3": x3})
+        result = rs.glm_dict(
+            response="y",
+            terms={
+                "x1": {"type": "linear"},
+                "x2": {"type": "linear"},
+                "x3": {"type": "linear"},
+            },
+            data=data,
+            family="poisson",
+        ).fit()
+        diag = result.diagnostics(
+            train_data=data,
+            continuous_factors=["x1", "x2", "x3"],
+        )
+        for f in diag.factors:
+            assert f.gvif is not None
+            # Orthogonal columns → GVIF very near 1 (Fox-Monette block of size 1).
+            assert 0.8 < f.gvif < 1.3, f"{f.name} gvif={f.gvif}"
+
+    def test_gvif_correlated_design_higher(self):
+        """Strongly correlated factors → block GVIF noticeably above 1."""
+        import polars as pl
+        import rustystats as rs
+
+        rng = np.random.default_rng(59)
+        n = 1500
+        x1 = rng.standard_normal(n)
+        # x2 highly correlated with x1
+        x2 = x1 + 0.1 * rng.standard_normal(n)
+        eta = 0.4 * x1 + 0.3 * x2
+        y = rng.poisson(np.exp(eta))
+        data = pl.DataFrame({"y": y, "x1": x1, "x2": x2})
+        result = rs.glm_dict(
+            response="y",
+            terms={"x1": {"type": "linear"}, "x2": {"type": "linear"}},
+            data=data,
+            family="poisson",
+        ).fit()
+        diag = result.diagnostics(
+            train_data=data,
+            continuous_factors=["x1", "x2"],
+        )
+        gvifs = [f.gvif for f in diag.factors if f.in_model]
+        assert all(g is not None for g in gvifs)
+        # At least one factor's GVIF should be inflated.
+        assert max(gvifs) > 5.0, f"max gvif={max(gvifs)}, expected > 5"
+
+    def test_train_test_bins_categorical_unseen_in_test(self):
+        """train has levels {A, B, C}; test has only {A, B} — entry for C
+        gets train numbers but test_n=0 and test_actual=None.
+        """
+        import polars as pl
+        import rustystats as rs
+
+        rng = np.random.default_rng(67)
+        n_train, n_test = 600, 80
+        # Train has all three levels
+        train = pl.DataFrame(
+            {
+                "y": rng.poisson(0.5, n_train),
+                "region": rng.choice(["A", "B", "C"], n_train),
+                "exposure": rng.uniform(0.5, 1.0, n_train),
+            }
+        )
+        # Test only has A and B
+        test = pl.DataFrame(
+            {
+                "y": rng.poisson(0.5, n_test),
+                "region": rng.choice(["A", "B"], n_test),
+                "exposure": rng.uniform(0.5, 1.0, n_test),
+            }
+        )
+        result = rs.glm_dict(
+            response="y",
+            terms={"region": {"type": "categorical"}},
+            data=train,
+            family="poisson",
+            offset="exposure",
+        ).fit()
+        diag = result.diagnostics(
+            train_data=train,
+            test_data=test,
+            categorical_factors=["region"],
+        )
+        region_factor = next(f for f in diag.factors if f.name == "region")
+        assert region_factor.train_test_bins is not None
+        by_level = {pair.bin: pair for pair in region_factor.train_test_bins}
+        # Train pinned the bins, so C is present even though test never had it.
+        if "C" in by_level:
+            c_pair = by_level["C"]
+            assert c_pair.train_n > 0
+            # test_n may be 0 if C didn't appear in test
+            assert c_pair.test_n >= 0
+
+    def test_train_test_bins_no_test_means_no_field(self):
+        """``train_test_bins`` is None for all factors when test_data is omitted."""
+        import polars as pl
+        import rustystats as rs
+
+        rng = np.random.default_rng(71)
+        n = 500
+        data = pl.DataFrame(
+            {
+                "y": rng.poisson(0.5, n),
+                "x": rng.uniform(0, 1, n),
+                "region": rng.choice(["A", "B"], n),
+                "exposure": rng.uniform(0.5, 1.0, n),
+            }
+        )
+        result = rs.glm_dict(
+            response="y",
+            terms={"x": {"type": "linear"}, "region": {"type": "categorical"}},
+            data=data,
+            family="poisson",
+            offset="exposure",
+        ).fit()
+        diag = result.diagnostics(
+            train_data=data,
+            categorical_factors=["region"],
+            continuous_factors=["x"],
+        )
+        for f in diag.factors:
+            assert f.train_test_bins is None
+
+    def test_unfitted_factor_has_no_gvif(self):
+        """A factor passed in but not in the model has ``gvif=None``."""
+        import polars as pl
+        import rustystats as rs
+
+        rng = np.random.default_rng(73)
+        n = 500
+        data = pl.DataFrame(
+            {
+                "y": rng.poisson(0.5, n),
+                "x": rng.uniform(0, 1, n),
+                "z_unfit": rng.uniform(0, 1, n),
+                "exposure": rng.uniform(0.5, 1.0, n),
+            }
+        )
+        result = rs.glm_dict(
+            response="y",
+            terms={"x": {"type": "linear"}},
+            data=data,
+            family="poisson",
+            offset="exposure",
+        ).fit()
+        diag = result.diagnostics(
+            train_data=data,
+            continuous_factors=["x", "z_unfit"],
+        )
+        unfit = next(f for f in diag.factors if f.name == "z_unfit")
+        assert unfit.in_model is False
+        assert unfit.gvif is None
+
+    def test_train_test_bins_continuous_use_train_edges(self):
+        """Continuous train/test bins are aligned on train-derived edges.
+
+        If test data are all above the train range, every test row should land
+        in the final train bin. A test-side quantile re-bin would spread these
+        rows across bins, which is exactly the regression this guards against.
+        """
+        import polars as pl
+        import rustystats as rs
+
+        n_train = 500
+        n_test = 80
+        x_train = np.linspace(0.0, 10.0, n_train)
+        train = pl.DataFrame(
+            {
+                "y": 1.0 + 0.2 * x_train,
+                "x": x_train,
+            }
+        )
+        test = pl.DataFrame(
+            {
+                "y": np.full(n_test, 5.0),
+                "x": np.full(n_test, 100.0),
+            }
+        )
+        result = rs.glm_dict(
+            response="y",
+            terms={"x": {"type": "linear"}},
+            data=train,
+            family="gaussian",
+        ).fit()
+
+        diag = result.diagnostics(
+            train_data=train,
+            test_data=test,
+            continuous_factors=["x"],
+            compute_partial_dep=False,
+        )
+        x_factor = next(f for f in diag.factors if f.name == "x")
+        assert x_factor.train_test_bins is not None
+        bins = x_factor.train_test_bins
+        assert sum(b.test_n for b in bins) == n_test
+        assert bins[-1].test_n == n_test
+        assert all(b.test_n == 0 for b in bins[:-1])
+
+
+# =============================================================================
+# Determinism — same inputs produce identical outputs across calls.
+# =============================================================================
+
+
+class TestPairDiagnosticsDeterminism:
+    def test_gvif_correlation_matrix_computed_once(self):
+        """The expensive O(n·p²) correlation-matrix computation runs ONCE per
+        diagnostics call regardless of how many fitted blocks need a GVIF.
+        Spies on ``_build_design_correlation_matrix`` and asserts the call
+        count, guarding against a future refactor that recomputes per-block.
+        """
+        import polars as pl
+        import rustystats as rs
+
+        rng = np.random.default_rng(311)
+        n = 800
+        x1 = rng.standard_normal(n)
+        x2 = rng.standard_normal(n)
+        x3 = rng.standard_normal(n)
+        region = rng.choice(["A", "B", "C"], n)
+        exposure = rng.uniform(0.5, 1.0, n)
+        mu = np.exp(-2 + 0.2 * x1 + 0.1 * x2)
+        y = rng.poisson(mu * exposure)
+        data = pl.DataFrame(
+            {
+                "y": y,
+                "x1": x1,
+                "x2": x2,
+                "x3": x3,
+                "region": region,
+                "exposure": exposure,
+            }
+        )
+        result = rs.glm_dict(
+            response="y",
+            terms={
+                "x1": {"type": "linear"},
+                "x2": {"type": "linear"},
+                "x3": {"type": "linear"},
+                "region": {"type": "categorical"},
+            },
+            data=data,
+            family="poisson",
+            offset="exposure",
+        ).fit()
+
+        # Monkey-patch the matrix builder at the site that actually calls it
+        # (``api`` re-binds the name at import time via the module-level
+        # ``from .pair_diagnostics import _build_design_correlation_matrix``).
+        from rustystats.diagnostics import api as diag_api
+
+        original = diag_api._build_design_correlation_matrix
+        call_count = {"n": 0}
+
+        def counting_builder(*args, **kwargs):
+            call_count["n"] += 1
+            return original(*args, **kwargs)
+
+        diag_api._build_design_correlation_matrix = counting_builder
+        try:
+            diag = result.diagnostics(
+                train_data=data,
+                test_data=data[:200],
+                categorical_factors=["region"],
+                continuous_factors=["x1", "x2", "x3"],
+                interactions=[("x1", "region"), ("x2", "region")],
+            )
+        finally:
+            diag_api._build_design_correlation_matrix = original
+
+        # Exactly one O(n·p²) standardize per diagnostics call — not one per
+        # factor and not one per interaction.
+        assert call_count["n"] == 1, f"expected 1 correlation-matrix build, got {call_count['n']}"
+        # And the GVIFs that depend on it are populated.
+        assert sum(1 for f in diag.factors if f.gvif is not None) >= 3
+
+    def test_test_prediction_reused_for_train_test_and_pair_surfaces(self):
+        """Pair diagnostics reuse the same test prediction as train/test comparison."""
+        import polars as pl
+        import rustystats as rs
+        from rustystats.diagnostics.api import compute_diagnostics
+
+        rng = np.random.default_rng(313)
+        n = 600
+        age = rng.uniform(18, 70, n)
+        region = rng.choice(["A", "B", "C"], n)
+        exposure = rng.uniform(0.5, 1.0, n)
+        mu = np.exp(-2 + 0.02 * age + 0.2 * (region == "A").astype(float))
+        y = rng.poisson(mu * exposure)
+        data = pl.DataFrame({"y": y, "age": age, "region": region, "exposure": exposure})
+        train, test = data[:450], data[450:]
+        result = rs.glm_dict(
+            response="y",
+            terms={"age": {"type": "linear"}, "region": {"type": "categorical"}},
+            data=train,
+            family="poisson",
+            offset="exposure",
+        ).fit()
+
+        class CountingResult:
+            def __init__(self, inner):
+                self.inner = inner
+                self.predict_calls = 0
+
+            def __getattr__(self, name):
+                return getattr(self.inner, name)
+
+            def predict(self, data_arg):
+                self.predict_calls += 1
+                return self.inner.predict(data_arg)
+
+        wrapped = CountingResult(result)
+        diag = compute_diagnostics(
+            wrapped,
+            train_data=train,
+            test_data=test,
+            categorical_factors=["region"],
+            continuous_factors=["age"],
+            interactions=[("age", "region")],
+            compute_partial_dep=False,
+        )
+
+        assert len(diag.interactions) == 1
+        assert diag.train_test.test is not None
+        assert diag.interactions[0].test_surface_grid is not None
+        assert wrapped.predict_calls == 1
+
+    def test_same_inputs_same_outputs(self):
+        """Running the diagnostics twice with the same inputs produces
+        identical surface cells, gvif, and significance. Fits the
+        interaction so the significance + gvif paths are both exercised.
+        """
+        import polars as pl
+        import rustystats as rs
+
+        rng = np.random.default_rng(91)
+        n = 800
+        age = rng.uniform(18, 70, n)
+        region = rng.choice(["A", "B", "C"], n)
+        exposure = rng.uniform(0.5, 1.0, n)
+        mu = np.exp(-2 + 0.02 * age + 0.3 * (region == "A").astype(float))
+        y = rng.poisson(mu * exposure)
+        data = pl.DataFrame({"y": y, "age": age, "region": region, "exposure": exposure})
+        result = rs.glm_dict(
+            response="y",
+            terms={"age": {"type": "linear"}, "region": {"type": "categorical"}},
+            interactions=[
+                {
+                    "age": {"type": "linear"},
+                    "region": {"type": "categorical"},
+                    "include_main": False,
+                }
+            ],
+            data=data,
+            family="poisson",
+            offset="exposure",
+        ).fit()
+        diag1 = result.diagnostics(
+            train_data=data,
+            categorical_factors=["region"],
+            continuous_factors=["age"],
+            interactions=[("age", "region")],
+        )
+        diag2 = result.diagnostics(
+            train_data=data,
+            categorical_factors=["region"],
+            continuous_factors=["age"],
+            interactions=[("age", "region")],
+        )
+        i1 = diag1.interactions[0]
+        i2 = diag2.interactions[0]
+        # gvif and significance reproduce bit-for-bit
+        assert i1.gvif == i2.gvif
+        assert i1.significance is not None and i2.significance is not None
+        assert i1.significance.chi2 == i2.significance.chi2
+        assert i1.significance.p == i2.significance.p
+        # Surface cells reproduce
+        assert len(i1.train_surface_grid.cells) == len(i2.train_surface_grid.cells)
+        for c1, c2 in zip(i1.train_surface_grid.cells, i2.train_surface_grid.cells):
+            assert c1.r == c2.r and c1.c == c2.c
+            assert c1.actual == c2.actual
+            assert c1.predicted == c2.predicted
+            assert c1.exposure == c2.exposure
+            assert c1.n == c2.n

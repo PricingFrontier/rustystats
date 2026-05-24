@@ -1,198 +1,498 @@
 {
   "data_summary": {
-    "n_rows": 2000,
-    "n_columns": 3,
+    "n_rows": 600,
+    "n_columns": 4,
     "response_column": "y",
-    "exposure_column": null,
-    "n_categorical_factors": 2,
-    "n_continuous_factors": 0
+    "exposure_column": "exposure",
+    "n_categorical_factors": 1,
+    "n_continuous_factors": 1
   },
   "factor_stats": [
     {
-      "name": "A",
+      "name": "age",
+      "type": "continuous",
+      "mean": 43.4456,
+      "std": 14.9017,
+      "min": 18.0031,
+      "max": 69.8837,
+      "missing_count": 0,
+      "missing_pct": 0.0,
+      "response_by_bin": [
+        {
+          "bin_index": 0,
+          "bin_lower": 18.0031,
+          "bin_upper": 23.4348,
+          "count": 60,
+          "exposure": 45.0758,
+          "response_sum": 10.0,
+          "response_rate": 0.221849
+        },
+        {
+          "bin_index": 1,
+          "bin_lower": 23.4348,
+          "bin_upper": 28.2358,
+          "count": 60,
+          "exposure": 44.179,
+          "response_sum": 8.0,
+          "response_rate": 0.181081
+        },
+        {
+          "bin_index": 2,
+          "bin_lower": 28.2358,
+          "bin_upper": 33.2354,
+          "count": 60,
+          "exposure": 43.6719,
+          "response_sum": 8.0,
+          "response_rate": 0.183184
+        },
+        {
+          "bin_index": 3,
+          "bin_lower": 33.2354,
+          "bin_upper": 38.195,
+          "count": 60,
+          "exposure": 45.283,
+          "response_sum": 9.0,
+          "response_rate": 0.19875
+        },
+        {
+          "bin_index": 4,
+          "bin_lower": 38.195,
+          "bin_upper": 42.9898,
+          "count": 60,
+          "exposure": 45.5031,
+          "response_sum": 13.0,
+          "response_rate": 0.285695
+        },
+        {
+          "bin_index": 5,
+          "bin_lower": 42.9898,
+          "bin_upper": 48.2062,
+          "count": 60,
+          "exposure": 43.8918,
+          "response_sum": 12.0,
+          "response_rate": 0.2734
+        },
+        {
+          "bin_index": 6,
+          "bin_lower": 48.2062,
+          "bin_upper": 53.0385,
+          "count": 60,
+          "exposure": 45.8103,
+          "response_sum": 22.0,
+          "response_rate": 0.480241
+        },
+        {
+          "bin_index": 7,
+          "bin_lower": 53.0385,
+          "bin_upper": 58.9042,
+          "count": 60,
+          "exposure": 44.9545,
+          "response_sum": 16.0,
+          "response_rate": 0.355916
+        },
+        {
+          "bin_index": 8,
+          "bin_lower": 58.9042,
+          "bin_upper": 64.9133,
+          "count": 60,
+          "exposure": 45.1355,
+          "response_sum": 28.0,
+          "response_rate": 0.620354
+        },
+        {
+          "bin_index": 9,
+          "bin_lower": 64.9133,
+          "bin_upper": 69.8837,
+          "count": 60,
+          "exposure": 44.3238,
+          "response_sum": 29.0,
+          "response_rate": 0.654277
+        }
+      ],
+      "modeling_hints": {
+        "shape": "step_function",
+        "recommendation": "banding or categorical",
+        "thin_cells": null,
+        "thin_cell_warning": null
+      }
+    },
+    {
+      "name": "region",
       "type": "categorical",
       "n_levels": 3,
       "n_levels_shown": 3,
       "levels": [
         {
-          "level": "A3",
-          "count": 693,
-          "exposure": 693.0,
-          "exposure_pct": 34.65,
-          "response_sum": 657.0,
-          "response_rate": 0.948052
+          "level": "C",
+          "count": 214,
+          "exposure": 161.86,
+          "exposure_pct": 36.1441,
+          "response_sum": 58.0,
+          "response_rate": 0.358327
         },
         {
-          "level": "A1",
-          "count": 654,
-          "exposure": 654.0,
-          "exposure_pct": 32.7,
-          "response_sum": 655.0,
-          "response_rate": 1.0015
+          "level": "B",
+          "count": 196,
+          "exposure": 144.03,
+          "exposure_pct": 32.1613,
+          "response_sum": 52.0,
+          "response_rate": 0.361042
         },
         {
-          "level": "A2",
-          "count": 653,
-          "exposure": 653.0,
-          "exposure_pct": 32.65,
-          "response_sum": 594.0,
-          "response_rate": 0.909648
+          "level": "A",
+          "count": 190,
+          "exposure": 141.94,
+          "exposure_pct": 31.6947,
+          "response_sum": 45.0,
+          "response_rate": 0.31704
         }
       ],
       "modeling_hints": {
-        "suggested_base_level": "A3",
+        "suggested_base_level": "C",
         "ordinal": true,
-        "ordinal_pattern": "prefix_numeric",
-        "thin_levels": null,
-        "thin_level_warning": null
-      }
-    },
-    {
-      "name": "B",
-      "type": "categorical",
-      "n_levels": 4,
-      "n_levels_shown": 4,
-      "levels": [
-        {
-          "level": "B2",
-          "count": 545,
-          "exposure": 545.0,
-          "exposure_pct": 27.25,
-          "response_sum": 513.0,
-          "response_rate": 0.941284
-        },
-        {
-          "level": "B4",
-          "count": 507,
-          "exposure": 507.0,
-          "exposure_pct": 25.35,
-          "response_sum": 471.0,
-          "response_rate": 0.928994
-        },
-        {
-          "level": "B3",
-          "count": 481,
-          "exposure": 481.0,
-          "exposure_pct": 24.05,
-          "response_sum": 450.0,
-          "response_rate": 0.935551
-        },
-        {
-          "level": "B1",
-          "count": 467,
-          "exposure": 467.0,
-          "exposure_pct": 23.35,
-          "response_sum": 472.0,
-          "response_rate": 1.0107
-        }
-      ],
-      "modeling_hints": {
-        "suggested_base_level": "B2",
-        "ordinal": true,
-        "ordinal_pattern": "prefix_numeric",
+        "ordinal_pattern": "alphabetic",
         "thin_levels": null,
         "thin_level_warning": null
       }
     }
   ],
   "missing_values": {
-    "total_rows": 2000,
+    "total_rows": 600,
     "factors_with_missing": [],
-    "n_complete_rows": 2000,
+    "n_complete_rows": 600,
     "summary": "No missing values"
   },
   "univariate_tests": [
     {
-      "factor": "A",
+      "factor": "age",
+      "type": "continuous",
+      "test": "correlation_f_test",
+      "correlation": 0.23115,
+      "r_squared": 0.05343,
+      "f_statistic": 33.7548,
+      "pvalue": 0.0,
+      "significant_01": true,
+      "significant_05": true
+    },
+    {
+      "factor": "region",
       "type": "categorical",
       "test": "anova_f_test",
       "n_levels": 3,
-      "eta_squared": 0.001457,
-      "f_statistic": 1.4566,
-      "pvalue": 0.233286,
-      "significant_01": false,
-      "significant_05": false
-    },
-    {
-      "factor": "B",
-      "type": "categorical",
-      "test": "anova_f_test",
-      "n_levels": 4,
-      "eta_squared": 0.001082,
-      "f_statistic": 0.720752,
-      "pvalue": 0.539546,
+      "eta_squared": 0.000879,
+      "f_statistic": 0.262722,
+      "pvalue": 0.769045,
       "significant_01": false,
       "significant_05": false
     }
   ],
   "correlations": {
-    "factors": [],
+    "factors": [
+      "age"
+    ],
     "matrix": [],
     "high_correlations": []
   },
   "cramers_v": {
     "factors": [
-      "A",
-      "B"
+      "region"
     ],
-    "matrix": [
-      [
-        1.0,
-        0.023209
-      ],
-      [
-        0.023209,
-        1.0
-      ]
-    ],
+    "matrix": [],
     "high_associations": []
   },
-  "vif": [],
+  "vif": [
+    {
+      "factor": "age",
+      "vif": 1.0,
+      "severity": "none"
+    }
+  ],
   "zero_inflation": {
-    "observed_zeros": 777,
-    "observed_zero_pct": 38.85,
-    "expected_zero_pct_poisson": 38.5583,
-    "excess_zero_pct": 0.291746,
+    "observed_zeros": 465,
+    "observed_zero_pct": 77.5,
+    "expected_zero_pct_poisson": 77.2338,
+    "excess_zero_pct": 0.266226,
     "severity": "none",
     "recommendation": "Standard Poisson/NegBin likely adequate"
   },
   "overdispersion": {
-    "mean_count": 0.953,
-    "var_count": 0.956269,
-    "dispersion_ratio": 1.0034,
+    "mean_count": 0.258333,
+    "var_count": 0.262034,
+    "dispersion_ratio": 1.0143,
     "severity": "none",
     "recommendation": "Poisson assumption reasonable"
   },
-  "interaction_candidates": [
-    {
-      "factor1": "A",
-      "factor2": "B",
-      "interaction_strength": 0.003119,
-      "pvalue": 0.858056,
-      "n_cells": 12,
-      "current_terms": null,
-      "recommendation": null
-    }
-  ],
+  "interaction_candidates": [],
   "response_stats": {
-    "n_observations": 2000,
-    "total_exposure": 2000.0,
-    "total_response": 1906.0,
-    "mean_response": 0.953,
-    "mean_rate": 0.953,
-    "std_rate": 0.977646,
+    "n_observations": 600,
+    "total_exposure": 447.83,
+    "total_response": 155.0,
+    "mean_response": 0.258333,
+    "mean_rate": 0.335083,
+    "std_rate": 0.672495,
     "min": 0.0,
-    "max": 6.0,
-    "zeros_count": 777,
-    "zeros_pct": 38.85,
+    "max": 3.0,
+    "zeros_count": 465,
+    "zeros_pct": 77.5,
     "p1": 0.0,
     "p5": 0.0,
     "p10": 0.0,
     "p25": 0.0,
-    "p50": 1.0,
-    "p75": 1.0,
-    "p90": 2.0,
-    "p95": 3.0,
-    "p99": 4.0
-  }
+    "p50": 0.0,
+    "p75": 0.0,
+    "p90": 1.3409,
+    "p95": 1.6799,
+    "p99": 2.5546
+  },
+  "interactions": [
+    {
+      "name": "age:region",
+      "factor1": "age",
+      "factor2": "region",
+      "pair_type": "continuous_x_categorical",
+      "surface_grid": {
+        "row_axis": "age",
+        "col_axis": "region",
+        "row_type": "quantile",
+        "col_type": "levels",
+        "cells": [
+          {
+            "r": 0,
+            "c": 0,
+            "n": 19,
+            "exposure": 15.5138,
+            "actual": 0.193376,
+            "predicted": null,
+            "ae_ratio": null
+          },
+          {
+            "r": 0,
+            "c": 1,
+            "n": 31,
+            "exposure": 22.5381,
+            "actual": 0.266215,
+            "predicted": null,
+            "ae_ratio": null
+          },
+          {
+            "r": 0,
+            "c": 2,
+            "n": 25,
+            "exposure": 18.0793,
+            "actual": 0.110624,
+            "predicted": null,
+            "ae_ratio": null
+          },
+          {
+            "r": 1,
+            "c": 0,
+            "n": 24,
+            "exposure": 17.6405,
+            "actual": 0.113375,
+            "predicted": null,
+            "ae_ratio": null
+          },
+          {
+            "r": 1,
+            "c": 1,
+            "n": 29,
+            "exposure": 21.0231,
+            "actual": 0.095134,
+            "predicted": null,
+            "ae_ratio": null
+          },
+          {
+            "r": 1,
+            "c": 2,
+            "n": 22,
+            "exposure": 15.9013,
+            "actual": 0.377328,
+            "predicted": null,
+            "ae_ratio": null
+          },
+          {
+            "r": 2,
+            "c": 0,
+            "n": 29,
+            "exposure": 22.1845,
+            "actual": 0.13523,
+            "predicted": null,
+            "ae_ratio": null
+          },
+          {
+            "r": 2,
+            "c": 1,
+            "n": 22,
+            "exposure": 15.151,
+            "actual": 0.198006,
+            "predicted": null,
+            "ae_ratio": null
+          },
+          {
+            "r": 2,
+            "c": 2,
+            "n": 24,
+            "exposure": 18.1519,
+            "actual": 0.165272,
+            "predicted": null,
+            "ae_ratio": null
+          },
+          {
+            "r": 3,
+            "c": 0,
+            "n": 28,
+            "exposure": 21.3599,
+            "actual": 0.2809,
+            "predicted": null,
+            "ae_ratio": null
+          },
+          {
+            "r": 3,
+            "c": 1,
+            "n": 24,
+            "exposure": 18.0325,
+            "actual": 0.443643,
+            "predicted": null,
+            "ae_ratio": null
+          },
+          {
+            "r": 3,
+            "c": 2,
+            "n": 23,
+            "exposure": 18.1367,
+            "actual": 0.220547,
+            "predicted": null,
+            "ae_ratio": null
+          },
+          {
+            "r": 4,
+            "c": 0,
+            "n": 26,
+            "exposure": 19.9484,
+            "actual": 0.451165,
+            "predicted": null,
+            "ae_ratio": null
+          },
+          {
+            "r": 4,
+            "c": 1,
+            "n": 23,
+            "exposure": 17.0808,
+            "actual": 0.351271,
+            "predicted": null,
+            "ae_ratio": null
+          },
+          {
+            "r": 4,
+            "c": 2,
+            "n": 26,
+            "exposure": 18.9717,
+            "actual": 0.316261,
+            "predicted": null,
+            "ae_ratio": null
+          },
+          {
+            "r": 5,
+            "c": 0,
+            "n": 30,
+            "exposure": 21.9206,
+            "actual": 0.501812,
+            "predicted": null,
+            "ae_ratio": null
+          },
+          {
+            "r": 5,
+            "c": 1,
+            "n": 20,
+            "exposure": 14.9573,
+            "actual": 0.401143,
+            "predicted": null,
+            "ae_ratio": null
+          },
+          {
+            "r": 5,
+            "c": 2,
+            "n": 25,
+            "exposure": 19.1071,
+            "actual": 0.15701,
+            "predicted": null,
+            "ae_ratio": null
+          },
+          {
+            "r": 6,
+            "c": 0,
+            "n": 26,
+            "exposure": 19.9843,
+            "actual": 0.450355,
+            "predicted": null,
+            "ae_ratio": null
+          },
+          {
+            "r": 6,
+            "c": 1,
+            "n": 21,
+            "exposure": 15.5423,
+            "actual": 0.772087,
+            "predicted": null,
+            "ae_ratio": null
+          },
+          {
+            "r": 6,
+            "c": 2,
+            "n": 28,
+            "exposure": 21.2164,
+            "actual": 0.471334,
+            "predicted": null,
+            "ae_ratio": null
+          },
+          {
+            "r": 7,
+            "c": 0,
+            "n": 32,
+            "exposure": 23.3114,
+            "actual": 0.643461,
+            "predicted": null,
+            "ae_ratio": null
+          },
+          {
+            "r": 7,
+            "c": 1,
+            "n": 26,
+            "exposure": 19.7022,
+            "actual": 0.456801,
+            "predicted": null,
+            "ae_ratio": null
+          },
+          {
+            "r": 7,
+            "c": 2,
+            "n": 17,
+            "exposure": 12.3734,
+            "actual": 0.889002,
+            "predicted": null,
+            "ae_ratio": null
+          }
+        ],
+        "row_edges": [
+          18.0031,
+          24.3076,
+          30.8918,
+          37.1991,
+          42.9898,
+          49.3299,
+          55.2776,
+          63.1711,
+          69.8837
+        ],
+        "row_levels": null,
+        "col_edges": null,
+        "col_levels": [
+          "C",
+          "B",
+          "A"
+        ]
+      },
+      "interaction_strength": 0.08524
+    }
+  ]
 }
