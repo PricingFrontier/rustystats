@@ -554,6 +554,30 @@ def compute_correlation_and_vif_py(
     """
     ...
 
+def aggregate_pair_cells_py(
+    codes1: npt.NDArray[np.uint32],
+    n_levels1: int,
+    codes2: npt.NDArray[np.uint32],
+    n_levels2: int,
+    y: npt.NDArray[np.float64],
+    exposure: npt.NDArray[np.float64],
+    mu: npt.NDArray[np.float64] | None = None,
+) -> list[tuple[int, int, int, float, float, float]]:
+    """Aggregate non-empty pair cells as (r, c, count, exposure_sum, y_sum, mu_sum)."""
+    ...
+
+def interaction_strength_from_codes_py(
+    codes1: npt.NDArray[np.uint32],
+    n_levels1: int,
+    codes2: npt.NDArray[np.uint32],
+    n_levels2: int,
+    y: npt.NDArray[np.float64],
+    exposure: npt.NDArray[np.float64],
+    min_cell_count: int = 0,
+) -> float:
+    """Compute the exploratory interaction-strength scalar for one coded pair."""
+    ...
+
 def compute_factor_deviance_py(
     factor_name: str,
     factor_values: npt.NDArray[np.float64],

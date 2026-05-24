@@ -1072,6 +1072,7 @@ def explore_data(
     max_categorical_levels: int = DEFAULT_MAX_CATEGORICAL_LEVELS,
     detect_interactions: bool = True,
     max_interaction_factors: int = DEFAULT_MAX_INTERACTION_FACTORS,
+    interactions: list | None = None,
 ) -> DataExploration:
     """
     Explore data before model fitting.
@@ -1102,9 +1103,16 @@ def explore_data(
     max_categorical_levels : int, default=20
         Maximum categorical levels to show.
     detect_interactions : bool, default=True
-        Whether to detect potential interactions.
+        Whether to detect potential interactions (top-K auto-discovery
+        producing ``interaction_candidates``).
     max_interaction_factors : int, default=10
         Maximum factors for interaction detection.
+    interactions : list, optional
+        Explicit list of variable pairs for per-pair pre-fit exploration.
+        Each entry: ``{"factor1": ..., "factor2": ...}``, ``(a, b)``, or
+        ``[a, b]``. Populates ``DataExploration.interactions`` with a
+        ``SurfaceGrid`` of observed cell rates plus a partial-R² style
+        ``interaction_strength``. Independent of ``detect_interactions=``.
 
     Returns
     -------
@@ -1227,7 +1235,7 @@ def explore_data(
     # Overdispersion check
     overdispersion = explorer.compute_overdispersion()
 
-    # Interaction detection
+    # Interaction detection (top-K auto-discovery)
     interaction_candidates = []
     if detect_interactions and len(categorical_factors) + len(continuous_factors) >= 2:
         all_factors = categorical_factors + continuous_factors
@@ -1239,6 +1247,24 @@ def explore_data(
             cat_column_cache=_cat_cache,
             cat_unique_cache=_cat_unique_cache,
             cont_column_cache=_cont_cache,
+        )
+
+    # User-specified interaction exploration (per-pair surface grids + strength)
+    user_interactions: list = []
+    if interactions:
+        from rustystats.diagnostics.pair_diagnostics import _PairDiagnosticsComputer
+
+        pair_computer = _PairDiagnosticsComputer(
+            y=y,
+            mu=None,
+            exposure=exp,
+            family=family,
+            feature_names=None,
+            link=None,
+        )
+        user_interactions = pair_computer.compute_pair_exploration(
+            pairs=list(interactions),
+            data=data,
         )
 
     # Data summary
@@ -1263,6 +1289,7 @@ def explore_data(
         overdispersion=overdispersion,
         interaction_candidates=interaction_candidates,
         response_stats=response_stats,
+        interactions=user_interactions,
     )
 
     # Auto-save JSON to analysis folder

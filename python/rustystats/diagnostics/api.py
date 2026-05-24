@@ -33,8 +33,14 @@ from rustystats.constants import (
     SIGNIFICANCE_THRESHOLD,
 )
 from rustystats.diagnostics.computer import DiagnosticsComputer
+from rustystats.diagnostics.pair_diagnostics import (
+    _build_design_correlation_matrix,
+    _compute_block_gvif,
+)
 from rustystats.diagnostics.types import (
+    FactorBinPair,
     FactorLevelMetrics,
+    InteractionDiagnostics,
     ModelDiagnostics,
     SmoothTermDiagnostics,
     TrainTestComparison,
@@ -403,6 +409,102 @@ def _maybe_compute_interactions(
     )
 
 
+def _compute_pair_diagnostics(
+    computer: DiagnosticsComputer,
+    interactions: list[Any],
+    train_data: pl.DataFrame,
+    result: Any,
+    response_col: str | None,
+    exposure_col: str | None,
+    score_test_design_matrix: np.ndarray | None,
+    score_test_bread_matrix: np.ndarray | None,
+    test_data: pl.DataFrame | None,
+    link: str | None,
+    correlation_matrix: np.ndarray | None = None,
+    test_y: np.ndarray | None = None,
+    test_mu: np.ndarray | None = None,
+    test_exposure: np.ndarray | None = None,
+) -> list[InteractionDiagnostics]:
+    """Compute per-pair (interaction) diagnostics for user-supplied pairs.
+
+    Reuses the test arrays, model ``params`` / ``bse``, score-test design /
+    bread matrices, and regularized correlation matrix that have already been
+    pulled upstream. That keeps pair diagnostics to one prediction pass over
+    test data and one O(n*p^2) design-correlation build per diagnostics call.
+    """
+    # Extract params / bse from the fitted model. Match the lookup pattern
+    # used by _FactorDiagnosticsComputer (factors.py:398-403): bse may be a
+    # property or a callable.
+    params_arr: np.ndarray | None = None
+    bse_arr: np.ndarray | None = None
+    try:
+        params_arr = np.asarray(result.params, dtype=np.float64)
+        bse_attr = result.bse
+        bse_arr = np.asarray(
+            bse_attr() if callable(bse_attr) else bse_attr,
+            dtype=np.float64,
+        )
+    except (AttributeError, TypeError):
+        # Deserialized / minimal models may not carry params/bse — proceed
+        # without coefficient-block significance and GVIF; the surface grid
+        # itself is still computable.
+        params_arr = None
+        bse_arr = None
+
+    # Fallback for direct internal calls. The orchestrator passes these arrays
+    # after extracting them once for both train/test comparison and pair grids.
+    test_y_arr = test_y
+    test_mu_arr = test_mu
+    test_exposure_arr = test_exposure
+    if test_data is not None and test_y_arr is None:
+        if response_col and response_col in test_data.columns:
+            test_y_arr = test_data[response_col].to_numpy().astype(np.float64)
+        if hasattr(result, "predict"):
+            test_mu_arr = np.asarray(result.predict(test_data), dtype=np.float64)
+        if exposure_col and exposure_col in test_data.columns:
+            test_exposure_arr = test_data[exposure_col].to_numpy().astype(np.float64)
+        elif test_y_arr is not None:
+            test_exposure_arr = np.ones(len(test_y_arr), dtype=np.float64)
+
+    return computer.compute_pair_diagnostics(
+        pairs=list(interactions),
+        data=train_data,
+        model=result,
+        design_matrix=score_test_design_matrix,
+        bread_matrix=score_test_bread_matrix,
+        params=params_arr,
+        bse=bse_arr,
+        correlation_matrix=correlation_matrix,
+        test_data=test_data,
+        test_y=test_y_arr,
+        test_mu=test_mu_arr,
+        test_exposure=test_exposure_arr,
+        link=link,
+    )
+
+
+def _extract_test_arrays(
+    test_data: pl.DataFrame | None,
+    result: Any,
+    response_col: str | None,
+    exposure_col: str | None,
+) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None, np.ndarray | None]:
+    """Extract test response, prediction, exposure, and prediction order once."""
+    if test_data is None or response_col is None:
+        return None, None, None, None
+    if response_col not in test_data.columns:
+        raise ValidationError(f"Response column '{response_col}' not found in test_data")
+    if not hasattr(result, "predict"):
+        raise ValidationError("Model does not support prediction on new data")
+
+    y_test = test_data[response_col].to_numpy().astype(np.float64)
+    mu_test = np.asarray(result.predict(test_data), dtype=np.float64)
+    exposure_test = np.ones(len(y_test), dtype=np.float64)
+    if exposure_col and exposure_col in test_data.columns:
+        exposure_test = test_data[exposure_col].to_numpy().astype(np.float64)
+    return y_test, mu_test, exposure_test, np.argsort(mu_test)
+
+
 def _maybe_compute_vif(
     compute_vif: bool,
     computer: DiagnosticsComputer,
@@ -421,16 +523,25 @@ def _maybe_compute_coefficients(
     computer: DiagnosticsComputer,
     result: Any,
     link: str,
+    warnings: list | None = None,
 ) -> tuple[Any, bool]:
-    """Build coefficient summary, optionally enriching with HC1 robust SEs."""
+    """Build coefficient summary, optionally enriching with HC1 robust SEs.
+
+    When ``compute_robust_se=True`` but robust SEs can't be computed (lean
+    model, regularized fit, etc.), append an informational warning to
+    ``warnings`` so the caller knows why ``robust_*`` fields are null —
+    rather than silently leaving them ``None``.
+    """
     if not compute_coefficients:
         return None, False
     coef_summary = computer.compute_coefficient_summary(result, link=link)
     robust_se_enriched = False
     if compute_robust_se:
-        robust_se_enriched = computer.enrich_coefficient_summary_with_robust(
+        robust_se_enriched, reason = computer.enrich_coefficient_summary_with_robust(
             coef_summary, result, cov_type="HC1"
         )
+        if not robust_se_enriched and reason is not None and warnings is not None:
+            warnings.append({"type": "robust_se_unavailable", "message": reason})
     return coef_summary, robust_se_enriched
 
 
@@ -535,29 +646,33 @@ def _build_train_test_comparison(
     categorical_factors: list[str],
     continuous_factors: list[str],
     warnings: list,
+    test_y: np.ndarray | None = None,
+    test_mu: np.ndarray | None = None,
+    test_exposure: np.ndarray | None = None,
+    test_mu_sort_idx: np.ndarray | None = None,
 ) -> TrainTestComparison:
     """Assemble the train/test comparison; populate test_diag and overfitting flags when test_data is supplied."""
     train_test = TrainTestComparison(train=train_diag)
     if test_data is None or response_col is None:
         return train_test
 
-    # Get test response
-    if response_col not in test_data.columns:
-        raise ValidationError(f"Response column '{response_col}' not found in test_data")
-    y_test = test_data[response_col].to_numpy().astype(np.float64)
+    if test_y is None or test_mu is None or test_exposure is None:
+        test_y, test_mu, test_exposure, test_mu_sort_idx = _extract_test_arrays(
+            test_data,
+            result,
+            response_col,
+            exposure_col,
+        )
+    if test_y is None or test_mu is None or test_exposure is None:
+        return train_test
 
-    # Get test predictions
-    if not hasattr(result, "predict"):
-        raise ValidationError("Model does not support prediction on new data")
-    mu_test = np.asarray(result.predict(test_data), dtype=np.float64)
+    y_test = test_y
+    mu_test = test_mu
+    exposure_test = test_exposure
     # Pre-compute argsort of mu_test once so compute_dataset_diagnostics
     # can skip the redundant sort inside _compute_ae_by_decile.
-    mu_test_sort_idx = np.argsort(mu_test)
-
-    # Get test exposure
-    exposure_test = np.ones(len(y_test))
-    if exposure_col and exposure_col in test_data.columns:
-        exposure_test = test_data[exposure_col].to_numpy().astype(np.float64)
+    if test_mu_sort_idx is None:
+        test_mu_sort_idx = np.argsort(mu_test)
 
     # Pre-cache test data columns (same pattern as the train-data cache loop).
     cat_cache_test, cat_unique_cache_test, cont_cache_test = _precompute_data_caches(
@@ -577,7 +692,7 @@ def _build_train_test_comparison(
         cat_column_cache=cat_cache_test,
         cont_column_cache=cont_cache_test,
         cat_unique_cache=cat_unique_cache_test,
-        sort_idx=mu_test_sort_idx,
+        sort_idx=test_mu_sort_idx,
     )
 
     # Compute comparison metrics
@@ -784,6 +899,237 @@ def _compute_base_comparison(
     return base_predictions_comparison
 
 
+# TermSlot term_type values that represent a *main effect* on a single
+# variable (not an interaction). A factor's design-column range comes from
+# the slot matching ``len(slot.factors) == 1``.
+_MAIN_EFFECT_TERM_TYPES: frozenset[str] = frozenset(
+    {
+        "linear",
+        "categorical",
+        "bs",
+        "ns",
+        "ms",
+        "expression",
+        "target_encoding",
+        "frequency_encoding",
+    }
+)
+
+
+def _find_main_effect_slot(model: Any, factor_name: str) -> Any | None:
+    """Return the single-variable main-effect ``TermSlot`` for ``factor_name``,
+    or ``None`` if the factor is not in the model.
+    """
+    builder = getattr(model, "_builder", None)
+    if builder is None:
+        return None
+    slots = getattr(builder, "_term_slots", None)
+    if slots is None:
+        return None
+    for slot in slots:
+        if slot.term_type not in _MAIN_EFFECT_TERM_TYPES:
+            continue
+        if len(slot.factors) == 1 and slot.factors[0] == factor_name:
+            return slot
+    return None
+
+
+def _build_factor_bin_pairs(
+    factor_name: str,
+    factor_type: str,
+    train_diag: Any,
+    test_diag: Any,
+    test_data: pl.DataFrame | None = None,
+    test_y: np.ndarray | None = None,
+    test_mu: np.ndarray | None = None,
+    test_exposure: np.ndarray | None = None,
+) -> list[FactorBinPair] | None:
+    """Construct ``train_test_bins`` for a factor by joining the per-bin
+    metrics that already exist on the train and test ``DatasetDiagnostics``.
+
+    Returns ``None`` when the factor has no per-bin metrics in either side
+    (typical for factors that were never passed in the ``categorical_factors``
+    / ``continuous_factors`` lists).
+    """
+    if factor_type == "categorical":
+        train_bins = train_diag.factor_diagnostics.get(factor_name, [])
+        test_bins = test_diag.factor_diagnostics.get(factor_name, []) if test_diag else []
+        if not train_bins and not test_bins:
+            return None
+        test_by_level: dict[str, Any] = {b.level: b for b in test_bins}
+        pairs: list[FactorBinPair] = []
+        for tb in train_bins:
+            te = test_by_level.get(tb.level)
+            pairs.append(
+                FactorBinPair(
+                    bin=tb.level,
+                    train_n=int(tb.n),
+                    train_exposure=float(tb.exposure),
+                    train_actual=float(tb.actual),
+                    train_predicted=float(tb.predicted),
+                    train_ae_ratio=float(tb.ae_ratio) if tb.ae_ratio is not None else None,
+                    test_n=int(te.n) if te is not None else 0,
+                    test_exposure=float(te.exposure) if te is not None else 0.0,
+                    test_actual=float(te.actual) if te is not None else None,
+                    test_predicted=float(te.predicted) if te is not None else None,
+                    test_ae_ratio=(
+                        float(te.ae_ratio) if te is not None and te.ae_ratio is not None else None
+                    ),
+                )
+            )
+        return pairs or None
+
+    # continuous
+    train_bands = train_diag.continuous_diagnostics.get(factor_name, [])
+    test_bands = test_diag.continuous_diagnostics.get(factor_name, []) if test_diag else []
+    if not train_bands and not test_bands:
+        return None
+    if (
+        test_data is not None
+        and test_y is not None
+        and test_mu is not None
+        and test_exposure is not None
+        and factor_name in test_data.columns
+    ):
+        return _build_continuous_train_test_bin_pairs(
+            factor_name,
+            train_bands,
+            test_data,
+            test_y,
+            test_mu,
+            test_exposure,
+        )
+    test_by_band: dict[int, Any] = {b.band: b for b in test_bands}
+    pairs2: list[FactorBinPair] = []
+    for tb in train_bands:
+        te = test_by_band.get(tb.band)
+        label = f"{tb.range_min:.4g}-{tb.range_max:.4g}"
+        pairs2.append(
+            FactorBinPair(
+                bin=label,
+                train_n=int(tb.n),
+                train_exposure=float(tb.exposure),
+                train_actual=float(tb.actual),
+                train_predicted=float(tb.predicted),
+                train_ae_ratio=float(tb.ae_ratio) if tb.ae_ratio is not None else None,
+                test_n=int(te.n) if te is not None else 0,
+                test_exposure=float(te.exposure) if te is not None else 0.0,
+                test_actual=float(te.actual) if te is not None else None,
+                test_predicted=float(te.predicted) if te is not None else None,
+                test_ae_ratio=(
+                    float(te.ae_ratio) if te is not None and te.ae_ratio is not None else None
+                ),
+            )
+        )
+    return pairs2 or None
+
+
+def _build_continuous_train_test_bin_pairs(
+    factor_name: str,
+    train_bands: list[Any],
+    test_data: pl.DataFrame,
+    test_y: np.ndarray,
+    test_mu: np.ndarray,
+    test_exposure: np.ndarray,
+) -> list[FactorBinPair] | None:
+    """Join continuous train bands to test aggregates using train band edges."""
+    if not train_bands:
+        return None
+
+    ordered_bands = sorted(train_bands, key=lambda b: b.band)
+    edges = np.asarray(
+        [float(ordered_bands[0].range_min)] + [float(b.range_max) for b in ordered_bands],
+        dtype=np.float64,
+    )
+    if edges.size < 2 or not np.all(np.isfinite(edges)):
+        return None
+
+    values = test_data[factor_name].to_numpy().astype(np.float64)
+    n_bins = len(ordered_bands)
+    valid = np.isfinite(values)
+    bin_idx = np.searchsorted(edges, values, side="right") - 1
+    bin_idx = np.clip(bin_idx, 0, n_bins - 1)
+    safe_idx = np.where(valid, bin_idx, n_bins)
+
+    counts = np.bincount(safe_idx, minlength=n_bins + 1)[:n_bins]
+    exp_sums = np.bincount(safe_idx, weights=test_exposure, minlength=n_bins + 1)[:n_bins]
+    y_sums = np.bincount(safe_idx, weights=test_y, minlength=n_bins + 1)[:n_bins]
+    mu_sums = np.bincount(safe_idx, weights=test_mu, minlength=n_bins + 1)[:n_bins]
+
+    pairs: list[FactorBinPair] = []
+    for i, tb in enumerate(ordered_bands):
+        test_n = int(counts[i])
+        test_exp = float(exp_sums[i])
+        if test_n > 0 and test_exp > 0.0:
+            test_actual = float(y_sums[i] / test_exp)
+            test_predicted = float(mu_sums[i] / test_exp)
+            test_ae_ratio = float(y_sums[i] / mu_sums[i]) if mu_sums[i] > 0.0 else None
+        else:
+            test_actual = None
+            test_predicted = None
+            test_ae_ratio = None
+
+        pairs.append(
+            FactorBinPair(
+                bin=f"{float(tb.range_min):.4g}-{float(tb.range_max):.4g}",
+                train_n=int(tb.n),
+                train_exposure=float(tb.exposure),
+                train_actual=float(tb.actual),
+                train_predicted=float(tb.predicted),
+                train_ae_ratio=float(tb.ae_ratio) if tb.ae_ratio is not None else None,
+                test_n=test_n,
+                test_exposure=test_exp,
+                test_actual=test_actual,
+                test_predicted=test_predicted,
+                test_ae_ratio=test_ae_ratio,
+            )
+        )
+    return pairs or None
+
+
+def _annotate_factor_extensions(
+    factors: list,
+    train_diag: Any,
+    test_diag: Any,
+    correlation_matrix: np.ndarray | None,
+    model: Any,
+    test_data: pl.DataFrame | None = None,
+    test_y: np.ndarray | None = None,
+    test_mu: np.ndarray | None = None,
+    test_exposure: np.ndarray | None = None,
+) -> None:
+    """Populate ``gvif`` and ``train_test_bins`` on each ``FactorDiagnostics``
+    in place. Both are no-refit and reuse data that's already in flight.
+
+    - ``gvif``: block GVIF (Fox-Monette) on the factor's design columns,
+      computed against the pre-built regularized correlation matrix
+      (one O(n·p²) standardize for the whole diagnostics call, then
+      O(p³) determinants per factor).
+    - ``train_test_bins``: per-bin train/test pairs joined from the
+      already computed per-dataset diagnostics.
+    """
+    for factor in factors:
+        # Block GVIF — only when the factor is fitted and we have the
+        # pre-computed correlation matrix.
+        if factor.in_model and correlation_matrix is not None:
+            slot = _find_main_effect_slot(model, factor.name)
+            if slot is not None and slot.col_end > slot.col_start:
+                factor.gvif = _compute_block_gvif(correlation_matrix, slot.col_start, slot.col_end)
+
+        # Train/test bin pairs — only when test side is present.
+        if test_diag is not None:
+            factor.train_test_bins = _build_factor_bin_pairs(
+                factor.name,
+                factor.factor_type,
+                train_diag,
+                test_diag,
+                test_data=test_data,
+                test_y=test_y,
+                test_mu=test_mu,
+                test_exposure=test_exposure,
+            )
+
+
 def _annotate_relative_importance(factors: list, model_deviance: float | None) -> None:
     """Mutate factors in-place: set relative_importance, dev_pct, expected_dev_pct."""
     fitted_with_sig = [
@@ -876,6 +1222,11 @@ def compute_diagnostics(
     max_categorical_levels: int = DEFAULT_MAX_CATEGORICAL_LEVELS,
     detect_interactions: bool = False,
     max_interaction_factors: int = DEFAULT_MAX_INTERACTION_FACTORS,
+    # User-specified interaction pairs for per-pair surface diagnostics.
+    # Each entry: {"factor1": ..., "factor2": ...} OR (a, b) OR [a, b]. Pairs
+    # do NOT need to appear in the fitted model — diagnostics work on raw
+    # columns; ``in_model`` is set from TermSlot membership.
+    interactions: list[Any] | None = None,
     # Test data for overfitting detection (response/exposure auto-inferred from model)
     test_data: pl.DataFrame | None = None,
     # Control which enhanced diagnostics to compute
@@ -919,6 +1270,16 @@ def compute_diagnostics(
         Pre-fit interaction detection is handled by explore().
     max_interaction_factors : int, default=10
         Maximum number of factors to consider for interaction detection.
+    interactions : list, optional
+        Explicit list of variable pairs for per-pair surface diagnostics
+        (separate from the auto-detector controlled by ``detect_interactions``).
+        Each entry: ``{"factor1": ..., "factor2": ...}``, ``(a, b)``, or
+        ``[a, b]``. Pairs do not need to appear in the fitted model;
+        ``InteractionDiagnostics.in_model`` is set from TermSlot membership.
+        When ``test_data`` is also supplied, each pair receives a
+        ``test_surface_grid`` cell-aligned with the train surface (same bin
+        edges / level lists), so the caller can compute element-wise
+        train/test divergence in a single subtraction.
     test_data : pl.DataFrame, optional
         Test/holdout data for overfitting detection. Response and exposure
         columns are automatically inferred from the model's formula.
@@ -1080,7 +1441,7 @@ def compute_diagnostics(
     # 5. Optional enhanced diagnostics for agentic workflows
     vif_results = _maybe_compute_vif(compute_vif, computer, score_test_design_matrix, feature_names)
     coef_summary, robust_se_enriched = _maybe_compute_coefficients(
-        compute_coefficients, compute_robust_se, computer, result, link
+        compute_coefficients, compute_robust_se, computer, result, link, warnings
     )
     factor_dev = _maybe_compute_factor_deviance(
         compute_deviance_by_level,
@@ -1106,6 +1467,13 @@ def compute_diagnostics(
         warnings,
     )
 
+    test_y_arr, test_mu_arr, test_exposure_arr, test_mu_sort_idx = _extract_test_arrays(
+        test_data,
+        result,
+        response_col,
+        exposure_col,
+    )
+
     # 6. Train/test comparison (test_diag built only if test_data provided)
     train_test = _build_train_test_comparison(
         train_diag,
@@ -1117,6 +1485,57 @@ def compute_diagnostics(
         categorical_factors,
         continuous_factors,
         warnings,
+        test_y=test_y_arr,
+        test_mu=test_mu_arr,
+        test_exposure=test_exposure_arr,
+        test_mu_sort_idx=test_mu_sort_idx,
+    )
+
+    # 6b. Pre-build the regularized design correlation matrix ONCE per
+    # diagnostics call. Both the per-factor GVIF (step 6d) and the
+    # per-pair GVIF (step 6c) reuse it. This amortizes the O(n·p²)
+    # standardize + ``Z.T @ Z`` work over all blocks rather than paying
+    # it per factor and per interaction. Uses the same Rust path as the
+    # existing per-column VIF computation (compute_correlation_and_vif).
+    block_gvif_correlation: np.ndarray | None = None
+    if score_test_design_matrix is not None and (interactions or any(f.in_model for f in factors)):
+        block_gvif_correlation = _build_design_correlation_matrix(score_test_design_matrix)
+
+    # 6c. User-specified pair (interaction) diagnostics. Only fires when the
+    # caller passed ``interactions=[...]``. Independent of the auto-detector
+    # at step 5 (interaction_candidates), which keeps populating itself.
+    interaction_diagnostics: list[InteractionDiagnostics] = []
+    if interactions:
+        interaction_diagnostics = _compute_pair_diagnostics(
+            computer=computer,
+            interactions=interactions,
+            train_data=train_data,
+            result=result,
+            response_col=response_col,
+            exposure_col=exposure_col,
+            score_test_design_matrix=score_test_design_matrix,
+            score_test_bread_matrix=score_test_bread_matrix,
+            test_data=test_data,
+            link=link,
+            correlation_matrix=block_gvif_correlation,
+            test_y=test_y_arr,
+            test_mu=test_mu_arr,
+            test_exposure=test_exposure_arr,
+        )
+
+    # 6d. Factor extensions: block GVIF (when fitted) and train/test bin
+    # pairs (when test_data is supplied). Both are post-processing — no
+    # extra prediction, no refit.
+    _annotate_factor_extensions(
+        factors=factors,
+        train_diag=train_test.train,
+        test_diag=train_test.test,
+        correlation_matrix=block_gvif_correlation,
+        model=result,
+        test_data=test_data,
+        test_y=test_y_arr,
+        test_mu=test_mu_arr,
+        test_exposure=test_exposure_arr,
     )
 
     # 7. Auxiliary diagnostics
@@ -1151,6 +1570,7 @@ def compute_diagnostics(
         spline_info=spline_info,
         smooth_terms=smooth_term_diagnostics,
         base_predictions_comparison=base_predictions_comparison,
+        interactions=interaction_diagnostics,
     )
 
     # Auto-save JSON to analysis folder

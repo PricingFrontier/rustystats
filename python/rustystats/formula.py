@@ -1457,6 +1457,8 @@ class GLMModel:
         max_categorical_levels: int = 20,
         detect_interactions: bool = False,
         max_interaction_factors: int = 10,
+        # User-specified interaction pairs for per-pair surface diagnostics.
+        interactions: list[Any] | None = None,
         # Test data for overfitting detection (response/exposure auto-inferred)
         test_data: pl.DataFrame | None = None,
         # Control enhanced diagnostics
@@ -1493,9 +1495,18 @@ class GLMModel:
             Whether to detect potential interactions.
         max_interaction_factors : int, default=10
             Maximum factors to consider for interaction detection.
+        interactions : list, optional
+            Explicit list of variable pairs for per-pair surface diagnostics.
+            Each entry: ``{"factor1": ..., "factor2": ...}``, ``(a, b)``, or
+            ``[a, b]``. Pairs do not need to appear in the fitted model;
+            ``InteractionDiagnostics.in_model`` is set from TermSlot membership.
+            Independent of ``detect_interactions=`` (which fills
+            ``interaction_candidates``); both can be used simultaneously.
         test_data : pl.DataFrame, optional
             Test/holdout data for overfitting detection. Response and exposure
-            columns are automatically inferred from the model's formula.
+            columns are automatically inferred from the model's formula. When
+            supplied alongside ``interactions=``, each pair also receives a
+            ``test_surface_grid`` cell-aligned with the train surface.
         compute_vif : bool, default=True
             Compute VIF/multicollinearity scores for design matrix (train-only).
         compute_coefficients : bool, default=True
@@ -1574,6 +1585,7 @@ class GLMModel:
             max_categorical_levels=max_categorical_levels,
             detect_interactions=detect_interactions,
             max_interaction_factors=max_interaction_factors,
+            interactions=interactions,
             test_data=test_data,
             compute_vif=compute_vif,
             compute_coefficients=compute_coefficients,
@@ -1596,6 +1608,7 @@ class GLMModel:
         max_categorical_levels: int = 20,
         detect_interactions: bool = False,
         max_interaction_factors: int = 10,
+        interactions: list[Any] | None = None,
         test_data: pl.DataFrame | None = None,
         compute_score_tests: bool = True,
         indent: int | None = None,
@@ -1636,6 +1649,7 @@ class GLMModel:
             max_categorical_levels=max_categorical_levels,
             detect_interactions=detect_interactions,
             max_interaction_factors=max_interaction_factors,
+            interactions=interactions,
             test_data=test_data,
             compute_score_tests=compute_score_tests,
         )

@@ -214,6 +214,14 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m
     )?)?;
     m.add_function(wrap_pyfunction!(
+        diagnostics_py::aggregate_pair_cells_py,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        diagnostics_py::interaction_strength_from_codes_py,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
         diagnostics_py::compute_lorenz_curve_py,
         m
     )?)?;

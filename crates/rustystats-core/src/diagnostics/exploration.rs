@@ -18,19 +18,32 @@ struct CellAgg {
     count: usize,
     y_sum: f64,
     exposure_sum: f64,
+    mu_sum: f64,
     weighted_rate_sq_sum: f64,
 }
 
 impl CellAgg {
-    fn add(&mut self, y: f64, exposure: f64) {
+    /// Accumulate an observation into the cell. ``mu`` is optional — the
+    /// pre-fit interaction detector path leaves it ``None`` (it never needs
+    /// the predicted-mean sum); the post-fit pair-diagnostics path passes
+    /// ``Some(mu_i)`` so each cell records its mean predicted rate.
+    fn add(&mut self, y: f64, exposure: f64, mu: Option<f64>) {
         self.count += 1;
         self.y_sum += y;
         self.exposure_sum += exposure;
+        if let Some(m) = mu {
+            self.mu_sum += m;
+        }
         if exposure > 0.0 {
             self.weighted_rate_sq_sum += y * y / exposure;
         }
     }
 }
+
+/// Per-cell aggregate exposed at the PyO3 boundary. Tuple layout:
+/// ``(r, c, count, exposure_sum, y_sum, mu_sum)``. Only non-empty cells
+/// are emitted. ``mu_sum`` is ``0.0`` when the caller did not supply ``mu``.
+pub type PairCellTuple = (u32, u32, u64, f64, f64, f64);
 
 /// Compute Cramer's V for a pair of pre-factorized categorical columns.
 pub fn cramers_v_from_codes(
@@ -365,7 +378,7 @@ fn eta_squared_from_codes(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn interaction_strength_from_codes(
+pub fn interaction_strength_from_codes(
     name1: &str,
     codes1: &[u32],
     n_levels1: usize,
@@ -381,10 +394,10 @@ fn interaction_strength_from_codes(
     }
 
     let cells = match n_levels1.checked_mul(n_levels2) {
-        Some(product) if product <= DENSE_CELL_LIMIT => {
-            aggregate_interaction_cells_dense(codes1, n_levels1, codes2, n_levels2, y, exposure)
-        }
-        _ => aggregate_interaction_cells_sparse(codes1, n_levels2, codes2, y, exposure),
+        Some(product) if product <= DENSE_CELL_LIMIT => aggregate_interaction_cells_dense(
+            codes1, n_levels1, codes2, n_levels2, y, exposure, None,
+        ),
+        _ => aggregate_interaction_cells_sparse(codes1, n_levels2, codes2, y, exposure, None),
     };
 
     finish_interaction_candidate(name1, name2, cells, min_cell_count)
@@ -397,18 +410,15 @@ fn aggregate_interaction_cells_dense(
     n_levels2: usize,
     y: &[f64],
     exposure: &[f64],
+    mu: Option<&[f64]>,
 ) -> Vec<CellAgg> {
     let mut cells = vec![CellAgg::default(); n_levels1 * n_levels2];
-    for (((&c1, &c2), &yi), &exp) in codes1
-        .iter()
-        .zip(codes2.iter())
-        .zip(y.iter())
-        .zip(exposure.iter())
-    {
-        let i = c1 as usize;
-        let j = c2 as usize;
-        if i < n_levels1 && j < n_levels2 {
-            cells[i * n_levels2 + j].add(yi, exp);
+    for idx in 0..codes1.len() {
+        let c1 = codes1[idx] as usize;
+        let c2 = codes2[idx] as usize;
+        if c1 < n_levels1 && c2 < n_levels2 {
+            let mui = mu.map(|m| m[idx]);
+            cells[c1 * n_levels2 + c2].add(y[idx], exposure[idx], mui);
         }
     }
     cells
@@ -420,19 +430,128 @@ fn aggregate_interaction_cells_sparse(
     codes2: &[u32],
     y: &[f64],
     exposure: &[f64],
+    mu: Option<&[f64]>,
 ) -> Vec<CellAgg> {
     let mut cells: HashMap<u64, CellAgg> = HashMap::with_capacity(codes1.len().min(65_536));
     let n_levels2_u64 = n_levels2 as u64;
-    for (((&c1, &c2), &yi), &exp) in codes1
-        .iter()
-        .zip(codes2.iter())
-        .zip(y.iter())
-        .zip(exposure.iter())
-    {
-        let key = c1 as u64 * n_levels2_u64 + c2 as u64;
-        cells.entry(key).or_default().add(yi, exp);
+    for idx in 0..codes1.len() {
+        let c1 = codes1[idx] as u64;
+        let c2 = codes2[idx] as u64;
+        let key = c1 * n_levels2_u64 + c2;
+        let mui = mu.map(|m| m[idx]);
+        cells
+            .entry(key)
+            .or_default()
+            .add(y[idx], exposure[idx], mui);
     }
     cells.into_values().collect()
+}
+
+/// Aggregate ``(y, exposure, optional mu, count)`` by ``(code1, code2)`` cell
+/// for an explicit pair of factor-code arrays. Returns only non-empty cells
+/// as ``(r, c, count, exposure_sum, y_sum, mu_sum)`` tuples.
+///
+/// This is the public entry point used by the post-fit pair diagnostics
+/// pipeline. The dense / sparse split mirrors the existing exploratory
+/// interaction detector: dense ``Vec`` indexing when the level product fits
+/// in ``DENSE_CELL_LIMIT``, hashmap-backed sparse aggregation otherwise.
+/// Rows whose codes fall outside ``[0, n_levels)`` on either side are
+/// silently dropped (matching the existing detector's contract).
+pub fn aggregate_pair_cells(
+    codes1: &[u32],
+    n_levels1: usize,
+    codes2: &[u32],
+    n_levels2: usize,
+    y: &[f64],
+    exposure: &[f64],
+    mu: Option<&[f64]>,
+) -> Result<Vec<PairCellTuple>, String> {
+    let n = codes1.len();
+    if codes2.len() != n || y.len() != n || exposure.len() != n {
+        return Err(format!(
+            "aggregate_pair_cells: length mismatch — codes1={}, codes2={}, y={}, exposure={}",
+            n,
+            codes2.len(),
+            y.len(),
+            exposure.len()
+        ));
+    }
+    if let Some(m) = mu {
+        if m.len() != n {
+            return Err(format!(
+                "aggregate_pair_cells: mu has length {} but codes1 has length {}",
+                m.len(),
+                n
+            ));
+        }
+    }
+    if n_levels1 == 0 || n_levels2 == 0 {
+        return Ok(Vec::new());
+    }
+
+    match n_levels1.checked_mul(n_levels2) {
+        Some(product) if product <= DENSE_CELL_LIMIT => {
+            let cells = aggregate_interaction_cells_dense(
+                codes1, n_levels1, codes2, n_levels2, y, exposure, mu,
+            );
+            // Emit only non-empty cells; decoding the linear index back to
+            // (r, c) is O(1) per non-empty cell.
+            let mut out: Vec<PairCellTuple> = Vec::new();
+            for (idx, cell) in cells.into_iter().enumerate() {
+                if cell.count == 0 {
+                    continue;
+                }
+                let r = (idx / n_levels2) as u32;
+                let c = (idx % n_levels2) as u32;
+                out.push((
+                    r,
+                    c,
+                    cell.count as u64,
+                    cell.exposure_sum,
+                    cell.y_sum,
+                    cell.mu_sum,
+                ));
+            }
+            Ok(out)
+        }
+        _ => {
+            // Sparse path: aggregate by hashed (r, c) key, then return the
+            // pairs directly. We re-walk the input to preserve the key,
+            // since the existing sparse helper drops it.
+            let mut cells: HashMap<u64, CellAgg> = HashMap::with_capacity(n.min(65_536));
+            let n_levels2_u64 = n_levels2 as u64;
+            for idx in 0..n {
+                let c1 = codes1[idx] as u64;
+                let c2 = codes2[idx] as u64;
+                if c1 >= n_levels1 as u64 || c2 >= n_levels2_u64 {
+                    continue;
+                }
+                let key = c1 * n_levels2_u64 + c2;
+                let mui = mu.map(|m| m[idx]);
+                cells
+                    .entry(key)
+                    .or_default()
+                    .add(y[idx], exposure[idx], mui);
+            }
+            let mut out: Vec<PairCellTuple> = Vec::with_capacity(cells.len());
+            for (key, cell) in cells {
+                if cell.count == 0 {
+                    continue;
+                }
+                let r = (key / n_levels2_u64) as u32;
+                let c = (key % n_levels2_u64) as u32;
+                out.push((
+                    r,
+                    c,
+                    cell.count as u64,
+                    cell.exposure_sum,
+                    cell.y_sum,
+                    cell.mu_sum,
+                ));
+            }
+            Ok(out)
+        }
+    }
 }
 
 fn finish_interaction_candidate(

@@ -80,7 +80,8 @@ pub use calibration::{
 pub use decile::{compute_ae_by_decile, DecileMetricsRaw};
 
 pub use exploration::{
-    cramers_v_from_codes, cramers_v_matrix_from_codes, detect_exploratory_interactions_from_codes,
+    aggregate_pair_cells, cramers_v_from_codes, cramers_v_matrix_from_codes,
+    detect_exploratory_interactions_from_codes, interaction_strength_from_codes, PairCellTuple,
 };
 
 pub use partial_dependence::partial_dependence_categorical_batch;

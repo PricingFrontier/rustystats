@@ -11,15 +11,15 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use rustystats_core::diagnostics::{
-    aic, compute_ae_by_decile, compute_ae_categorical, compute_ae_categorical_batch,
-    compute_ae_continuous, compute_ae_continuous_batch, compute_calibration_curve,
-    compute_discrimination_stats, compute_factor_significance_batch, compute_family_loss,
-    compute_lorenz_curve, compute_residual_pattern_continuous,
+    aggregate_pair_cells, aic, compute_ae_by_decile, compute_ae_categorical,
+    compute_ae_categorical_batch, compute_ae_continuous, compute_ae_continuous_batch,
+    compute_calibration_curve, compute_discrimination_stats, compute_factor_significance_batch,
+    compute_family_loss, compute_lorenz_curve, compute_residual_pattern_continuous,
     compute_residual_pattern_continuous_batch, correlation_and_vif, cramers_v_matrix_from_codes,
-    detect_exploratory_interactions_from_codes, detect_interactions, hosmer_lemeshow_test, mae,
-    mse, null_deviance, partial_dependence_categorical_batch, resid_deviance, resid_pearson, rmse,
-    ActualExpectedBin, DevianceByLevel, FactorData, FactorDevianceResult, InteractionConfig,
-    ResidualPattern,
+    detect_exploratory_interactions_from_codes, detect_interactions, hosmer_lemeshow_test,
+    interaction_strength_from_codes, mae, mse, null_deviance, partial_dependence_categorical_batch,
+    resid_deviance, resid_pearson, rmse, ActualExpectedBin, DevianceByLevel, FactorData,
+    FactorDevianceResult, InteractionConfig, ResidualPattern,
 };
 
 use crate::families_py::family_from_name;
@@ -869,6 +869,164 @@ pub fn detect_exploratory_interactions_py<'py>(
             Ok(dict.unbind().into())
         })
         .collect()
+}
+
+/// Aggregate ``(y, exposure, optional mu, count)`` by ``(code1, code2)`` cell
+/// for an explicit pair of factor-code arrays. Returns only non-empty cells
+/// as ``(r, c, count, exposure_sum, y_sum, mu_sum)`` tuples.
+///
+/// Used by the post-fit pair diagnostics pipeline so the O(n) bincount-style
+/// aggregation happens in Rust (without the GIL held) rather than via three
+/// or four sequential numpy bincount calls plus a Python dict assembly.
+#[pyfunction]
+#[pyo3(signature = (codes1, n_levels1, codes2, n_levels2, y, exposure, mu=None))]
+pub fn aggregate_pair_cells_py<'py>(
+    py: Python<'py>,
+    codes1: PyReadonlyArray1<'py, u32>,
+    n_levels1: usize,
+    codes2: PyReadonlyArray1<'py, u32>,
+    n_levels2: usize,
+    y: PyReadonlyArray1<'py, f64>,
+    exposure: PyReadonlyArray1<'py, f64>,
+    mu: Option<PyReadonlyArray1<'py, f64>>,
+) -> PyResult<Vec<(u32, u32, u64, f64, f64, f64)>> {
+    let n = y.as_array().len();
+    let codes1_slice = codes1.as_slice().map_err(|_| {
+        PyValueError::new_err(
+            "codes1 is not a contiguous numpy array; pass np.ascontiguousarray(codes1)",
+        )
+    })?;
+    let codes2_slice = codes2.as_slice().map_err(|_| {
+        PyValueError::new_err(
+            "codes2 is not a contiguous numpy array; pass np.ascontiguousarray(codes2)",
+        )
+    })?;
+    let y_slice = y.as_slice().map_err(|_| {
+        PyValueError::new_err("y is not a contiguous numpy array; pass np.ascontiguousarray(y)")
+    })?;
+    let exposure_slice = exposure.as_slice().map_err(|_| {
+        PyValueError::new_err(
+            "exposure is not a contiguous numpy array; pass np.ascontiguousarray(exposure)",
+        )
+    })?;
+    if codes1_slice.len() != n || codes2_slice.len() != n || exposure_slice.len() != n {
+        return Err(PyValueError::new_err(format!(
+            "length mismatch: y={}, codes1={}, codes2={}, exposure={}",
+            n,
+            codes1_slice.len(),
+            codes2_slice.len(),
+            exposure_slice.len()
+        )));
+    }
+    let mu_owned = mu
+        .as_ref()
+        .map(|m| {
+            m.as_slice().map_err(|_| {
+                PyValueError::new_err(
+                    "mu is not a contiguous numpy array; pass np.ascontiguousarray(mu)",
+                )
+            })
+        })
+        .transpose()?;
+    if let Some(m) = mu_owned {
+        if m.len() != n {
+            return Err(PyValueError::new_err(format!(
+                "mu has length {} but y has length {}",
+                m.len(),
+                n
+            )));
+        }
+    }
+
+    py.detach(|| {
+        aggregate_pair_cells(
+            codes1_slice,
+            n_levels1,
+            codes2_slice,
+            n_levels2,
+            y_slice,
+            exposure_slice,
+            mu_owned,
+        )
+    })
+    .map_err(PyValueError::new_err)
+}
+
+/// Compute the cell-grouping R² ("interaction strength") for a single
+/// pre-binned pair. Identical scalar to what
+/// ``detect_exploratory_interactions_py`` returns on
+/// ``InteractionCandidate.interaction_strength`` for the same pair —
+/// reuses the same core ``interaction_strength_from_codes`` function so
+/// no formula is duplicated on the Python side.
+///
+/// Raises ``ValueError`` when the strength cannot be computed: total
+/// exposure is zero, total variance is zero, fewer than 4 non-empty
+/// cells survive the ``min_cell_count`` filter, or ``n`` is smaller than
+/// ``4 * min_cell_count``. Callers requesting an explicit pair should
+/// see the error rather than a silently-defaulted scalar.
+#[pyfunction]
+#[pyo3(signature = (codes1, n_levels1, codes2, n_levels2, y, exposure, min_cell_count=0))]
+pub fn interaction_strength_from_codes_py<'py>(
+    py: Python<'py>,
+    codes1: PyReadonlyArray1<'py, u32>,
+    n_levels1: usize,
+    codes2: PyReadonlyArray1<'py, u32>,
+    n_levels2: usize,
+    y: PyReadonlyArray1<'py, f64>,
+    exposure: PyReadonlyArray1<'py, f64>,
+    min_cell_count: usize,
+) -> PyResult<f64> {
+    let n = y.as_array().len();
+    let codes1_slice = codes1.as_slice().map_err(|_| {
+        PyValueError::new_err(
+            "codes1 is not a contiguous numpy array; pass np.ascontiguousarray(codes1)",
+        )
+    })?;
+    let codes2_slice = codes2.as_slice().map_err(|_| {
+        PyValueError::new_err(
+            "codes2 is not a contiguous numpy array; pass np.ascontiguousarray(codes2)",
+        )
+    })?;
+    let y_slice = y.as_slice().map_err(|_| {
+        PyValueError::new_err("y is not a contiguous numpy array; pass np.ascontiguousarray(y)")
+    })?;
+    let exposure_slice = exposure.as_slice().map_err(|_| {
+        PyValueError::new_err(
+            "exposure is not a contiguous numpy array; pass np.ascontiguousarray(exposure)",
+        )
+    })?;
+    if codes1_slice.len() != n || codes2_slice.len() != n || exposure_slice.len() != n {
+        return Err(PyValueError::new_err(format!(
+            "length mismatch: y={}, codes1={}, codes2={}, exposure={}",
+            n,
+            codes1_slice.len(),
+            codes2_slice.len(),
+            exposure_slice.len()
+        )));
+    }
+
+    let candidate = py.detach(|| {
+        interaction_strength_from_codes(
+            "factor1",
+            codes1_slice,
+            n_levels1,
+            "factor2",
+            codes2_slice,
+            n_levels2,
+            y_slice,
+            exposure_slice,
+            min_cell_count,
+        )
+    });
+
+    candidate.map(|c| c.interaction_strength).ok_or_else(|| {
+        PyValueError::new_err(format!(
+            "interaction_strength_from_codes: cannot compute strength for this \
+                 pair (n={n}, n_levels=({n_levels1}, {n_levels2}), \
+                 min_cell_count={min_cell_count}). The pair has zero total exposure, \
+                 zero total variance, or fewer than 4 non-empty cells after filtering."
+        ))
+    })
 }
 
 /// Compute Lorenz curve from Rust
