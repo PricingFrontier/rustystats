@@ -19,6 +19,7 @@ __all__ = [
     "validate_design_matrix",
     "validate_glm_inputs",
     "validate_offset",
+    "validate_residual_inputs",
     "validate_response",
     "validate_weights",
 ]
@@ -97,6 +98,7 @@ def validate_response(
     y: np.ndarray,
     family: str,
     name: str = "response (y)",
+    require_variation: bool = True,
 ) -> np.ndarray:
     """
     Validate response variable for the specified GLM family.
@@ -109,6 +111,10 @@ def validate_response(
         GLM family name (gaussian, binomial, poisson, gamma, etc.)
     name : str
         Name for error messages.
+    require_variation : bool
+        If True, reject a constant response. Fitting a GLM needs variation in
+        ``y``; helper routines that only evaluate per-row formulas can disable
+        this while keeping family-domain validation.
 
     Returns
     -------
@@ -128,8 +134,8 @@ def validate_response(
     if n == 0:
         raise ValidationError(f"{name} is empty. Cannot fit model with no observations.")
 
-    # Check for constant response
-    if np.all(y == y[0]):
+    # Check for constant response when validating data for model fitting.
+    if require_variation and np.all(y == y[0]):
         raise ValidationError(
             f"{name} is constant (all values = {y[0]}). "
             "A GLM requires variation in the response variable."
@@ -513,3 +519,63 @@ def validate_glm_inputs(
     )
 
     return y, X, weights, offset
+
+
+def validate_residual_inputs(
+    y: np.ndarray,
+    eta: np.ndarray,
+    family: str,
+    weights: np.ndarray | None = None,
+    offset: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
+    """
+    Validate inputs to :func:`rustystats.working_response_weights`.
+
+    Mirrors :func:`validate_glm_inputs` but takes a linear predictor ``eta``
+    instead of a design matrix ``X``. Embedded family parameters such as
+    ``"tweedie(p=1.5)"`` or ``"negativebinomial(theta=2.5)"`` are stripped
+    before family-specific response validation; the parametric suffix is the
+    Rust parser's concern, not this function's.
+
+    Parameters
+    ----------
+    y : np.ndarray
+        Response variable.
+    eta : np.ndarray
+        Linear predictor (excluding offset).
+    family : str
+        GLM family name. May include an embedded parameter suffix.
+    weights : np.ndarray, optional
+        Observation prior weights.
+    offset : np.ndarray, optional
+        Offset on the linear predictor scale.
+
+    Returns
+    -------
+    tuple
+        ``(y, eta, weights, offset)`` all validated and coerced to float64.
+
+    Raises
+    ------
+    ValidationError
+        If any validation check fails.
+    """
+    # Strip "(theta=...)" / "(p=...)" suffix; family-specific response rules
+    # only care about the base family name.
+    family_base = family.split("(", 1)[0].strip()
+
+    y = validate_response(y, family_base, require_variation=False)
+    n_obs = len(y)
+
+    eta = coerce_to_float64(eta, "eta")
+    if eta.ndim != 1:
+        raise ValidationError(f"eta must be 1-dimensional (got shape {eta.shape}).")
+    if len(eta) != n_obs:
+        raise ValidationError(
+            f"eta length ({len(eta)}) does not match number of observations ({n_obs})."
+        )
+
+    weights = validate_weights(weights, n_obs)
+    offset = validate_offset(offset, n_obs, family_base, is_exposure=False, name="offset")
+
+    return y, eta, weights, offset

@@ -507,7 +507,7 @@ fn fit_glm_core(
             family,
             link,
             config.min_weight,
-        );
+        )?;
         let irls_weights = weight_result.irls_weights;
         let combined_weights = weight_result.combined_weights;
         let working_response = weight_result.working_response;

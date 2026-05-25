@@ -117,6 +117,9 @@ from rustystats.export_pmml import to_pmml
 from rustystats.formula import FormulaGLMDict, GLMModel, glm_dict
 from rustystats.glm import summary, summary_relativities
 
+# IRLS residual / working-response helper (e.g. for link-scale boosting loops)
+from rustystats.residuals import working_response_weights
+
 # Penalized spline utilities (for GAMs with automatic smoothness selection)
 from rustystats.smooth import compute_edf, difference_matrix, gcv_score, penalty_matrix
 
@@ -137,7 +140,7 @@ from rustystats.target_encoding import (
 )
 
 # Input validation (for advanced users who want to pre-validate)
-from rustystats.validation import validate_glm_inputs
+from rustystats.validation import validate_glm_inputs, validate_residual_inputs
 
 # What gets exported when someone does `from rustystats import *`
 __all__ = [
@@ -204,4 +207,7 @@ __all__ = [
     "SerializationError",
     # Input validation
     "validate_glm_inputs",
+    "validate_residual_inputs",
+    # IRLS residual helper
+    "working_response_weights",
 ]

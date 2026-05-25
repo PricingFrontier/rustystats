@@ -258,6 +258,21 @@ def fit_cv_path_py(
 ) -> dict: ...
 
 # =============================================================================
+# IRLS Residual Helpers
+# =============================================================================
+
+def working_response_weights_py(
+    y: npt.NDArray[np.float64],
+    eta: npt.NDArray[np.float64],
+    family: str,
+    link: str | None = None,
+    var_power: float = 1.5,
+    theta: float = 1.0,
+    offset: npt.NDArray[np.float64] | None = None,
+    weights: npt.NDArray[np.float64] | None = None,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]: ...
+
+# =============================================================================
 # Inference Functions
 # =============================================================================
 
