@@ -114,7 +114,11 @@ def working_response_weights(
     link_resolved = None if link in (None, "default") else link
 
     y_arr, eta_arr, weights_arr, offset_arr = validate_residual_inputs(
-        y, eta, family, weights=weights, offset=offset,
+        y,
+        eta,
+        family,
+        weights=weights,
+        offset=offset,
     )
 
     return _wrw_rust(
