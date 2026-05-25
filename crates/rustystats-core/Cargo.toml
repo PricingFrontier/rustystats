@@ -15,7 +15,7 @@
 
 [package]
 name = "rustystats-core"
-version = "0.8.0"
+version = "0.8.1"
 edition = "2021"
 description = "Core statistical algorithms for GLM fitting"
 license = "MIT"
