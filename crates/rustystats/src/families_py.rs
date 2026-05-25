@@ -20,50 +20,146 @@ use rustystats_core::links::{IdentityLink, Link, LogLink, LogitLink};
 // Family and Link Helper Functions
 // =============================================================================
 
+/// Split a family name into its base name and optional parenthesized parameter.
+///
+/// Accepts exact forms like `tweedie` or `tweedie(p=1.5)`. Anything with a
+/// dangling, nested, or trailing parenthesis is rejected instead of being
+/// silently interpreted as a valid family.
+fn split_family_name(name: &str) -> PyResult<(&str, Option<&str>)> {
+    let trimmed = name.trim();
+    let Some(open_idx) = trimmed.find('(') else {
+        if trimmed.contains(')') {
+            return Err(PyValueError::new_err(format!(
+                "Malformed family '{}'. Unexpected ')' without matching '('.",
+                name
+            )));
+        }
+        return Ok((trimmed, None));
+    };
+
+    if !trimmed.ends_with(')') {
+        return Err(PyValueError::new_err(format!(
+            "Malformed family '{}'. Expected embedded parameters to end with ')'.",
+            name
+        )));
+    }
+
+    let base = trimmed[..open_idx].trim();
+    let params = trimmed[open_idx + 1..trimmed.len() - 1].trim();
+    if base.is_empty() || params.is_empty() || params.contains('(') || params.contains(')') {
+        return Err(PyValueError::new_err(format!(
+            "Malformed family '{}'. Expected a form like 'tweedie(p=1.5)' or \
+             'negativebinomial(theta=1.5)'.",
+            name
+        )));
+    }
+
+    Ok((base, Some(params)))
+}
+
+/// Parse an embedded numeric parameter like `p=1.5` or `theta=2.0` from a
+/// parenthesized family-name suffix. Returns `Ok(Some(value))` if the suffix is
+/// present and uses the expected key, `Ok(None)` if no suffix is present, or a
+/// `PyValueError` if the suffix is malformed. Case-insensitive on the key.
+///
+/// Used to support equivalent forms like:
+///   `family="negativebinomial(theta=1.5)"` ≡ `family="negbinomial", theta=1.5`
+///   `family="tweedie(p=1.5)"`              ≡ `family="tweedie",     var_power=1.5`
+fn parse_embedded_param(name: &str, params: Option<&str>, key: &str) -> PyResult<Option<f64>> {
+    let Some(params) = params else {
+        return Ok(None);
+    };
+
+    let Some((param_key, value_str)) = params.split_once('=') else {
+        return Err(PyValueError::new_err(format!(
+            "Malformed parameter '{}' in family '{}'. Expected '{}=<number>'.",
+            params, name, key
+        )));
+    };
+    if !param_key.trim().eq_ignore_ascii_case(key) {
+        return Err(PyValueError::new_err(format!(
+            "Unexpected parameter '{}' in family '{}'. Expected '{}'.",
+            param_key.trim(),
+            name,
+            key
+        )));
+    }
+
+    let value_str = value_str.trim();
+    if value_str.is_empty() {
+        return Err(PyValueError::new_err(format!(
+            "Missing {} value in family '{}'. Expected a numeric value.",
+            key, name
+        )));
+    }
+
+    value_str.parse::<f64>().map(Some).map_err(|_| {
+        PyValueError::new_err(format!(
+            "Failed to parse {} value '{}' in family '{}'. Expected a numeric value.",
+            key, value_str, name
+        ))
+    })
+}
+
 /// Get a Family trait object from a family name string.
 ///
 /// Handles case-insensitive matching and common aliases.
 /// `var_power` is used only for Tweedie; `theta` only for NegativeBinomial.
+/// Parametric families accept an embedded form too — see
+/// [`parse_embedded_param`].
 /// Returns an error for unknown family names instead of silently defaulting.
 pub(crate) fn family_from_name(
     name: &str,
     var_power: f64,
     theta: f64,
 ) -> PyResult<Box<dyn Family>> {
-    let lower = name.to_lowercase();
+    let (base_name, params) = split_family_name(name)?;
+    let lower = base_name.to_lowercase();
 
-    // Handle negativebinomial with optional theta parameter like "negativebinomial(theta=1.38)"
-    if lower.starts_with("negativebinomial")
-        || lower.starts_with("negbinomial")
-        || lower.starts_with("negbin")
-        || lower == "nb"
-        || lower == "negative_binomial"
-        || lower == "neg_binomial"
-        || lower == "neg-binomial"
-    {
-        // Parse theta from name if present, otherwise use the `theta` arg
-        let parsed_theta = if let Some(start) = lower.find("theta=") {
-            let rest = &lower[start + 6..];
-            let end = rest.find(')').unwrap_or(rest.len());
-            let theta_str = &rest[..end];
-            theta_str.parse::<f64>().map_err(|_| {
-                PyValueError::new_err(format!(
-                    "Failed to parse theta value '{}' in family '{}'. Expected a numeric value like 'negativebinomial(theta=1.5)'",
-                    theta_str, name
-                ))
-            })?
-        } else {
-            theta
-        };
-        if parsed_theta <= 0.0 {
+    // Handle negativebinomial with optional embedded theta like "negativebinomial(theta=1.38)"
+    if matches!(
+        lower.as_str(),
+        "negativebinomial"
+            | "negbinomial"
+            | "negbin"
+            | "nb"
+            | "negative_binomial"
+            | "negative-binomial"
+            | "neg_binomial"
+            | "neg-binomial"
+    ) {
+        let resolved_theta = parse_embedded_param(name, params, "theta")?.unwrap_or(theta);
+        if !resolved_theta.is_finite() || resolved_theta <= 0.0 {
             return Err(PyValueError::new_err(format!(
-                "theta must be > 0 for Negative Binomial, got {}",
-                parsed_theta
+                "theta must be finite and > 0 for Negative Binomial, got {}",
+                resolved_theta
             )));
         }
         return Ok(Box::new(
-            NegativeBinomialFamily::new(parsed_theta).map_err(PyValueError::new_err)?,
+            NegativeBinomialFamily::new(resolved_theta).map_err(PyValueError::new_err)?,
         ));
+    }
+
+    // Handle tweedie with optional embedded variance power like "tweedie(p=1.5)".
+    if lower == "tweedie" {
+        let resolved_var_power = parse_embedded_param(name, params, "p")?.unwrap_or(var_power);
+        if !resolved_var_power.is_finite() || (resolved_var_power > 0.0 && resolved_var_power < 1.0)
+        {
+            return Err(PyValueError::new_err(format!(
+                "var_power must be finite and <= 0 or >= 1, got {}",
+                resolved_var_power
+            )));
+        }
+        return Ok(Box::new(
+            TweedieFamily::new(resolved_var_power).map_err(PyValueError::new_err)?,
+        ));
+    }
+
+    if params.is_some() {
+        return Err(PyValueError::new_err(format!(
+            "Family '{}' does not accept embedded parameters.",
+            base_name
+        )));
     }
 
     match lower.as_str() {
@@ -71,17 +167,6 @@ pub(crate) fn family_from_name(
         "poisson" => Ok(Box::new(PoissonFamily)),
         "binomial" => Ok(Box::new(BinomialFamily)),
         "gamma" => Ok(Box::new(GammaFamily)),
-        "tweedie" => {
-            if var_power > 0.0 && var_power < 1.0 {
-                return Err(PyValueError::new_err(format!(
-                    "var_power must be <= 0 or >= 1, got {}",
-                    var_power
-                )));
-            }
-            Ok(Box::new(
-                TweedieFamily::new(var_power).map_err(PyValueError::new_err)?,
-            ))
-        }
         "quasipoisson" | "quasi-poisson" | "quasi_poisson" => Ok(Box::new(QuasiPoissonFamily)),
         "quasibinomial" | "quasi-binomial" | "quasi_binomial" => Ok(Box::new(QuasiBinomialFamily)),
         _ => Err(PyValueError::new_err(format!(

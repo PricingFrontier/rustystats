@@ -24,6 +24,7 @@ mod export_onnx_py;
 mod families_py;
 mod fitting_py;
 mod inference_py;
+mod residuals_py;
 mod results_py;
 mod splines_py;
 mod target_encoding_py;
@@ -65,6 +66,12 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fitting_py::fit_negbinomial_py, m)?)?;
     m.add_function(wrap_pyfunction!(fitting_py::fit_smooth_glm_unified_py, m)?)?;
     m.add_function(wrap_pyfunction!(fitting_py::fit_cv_path_py, m)?)?;
+
+    // IRLS residual helpers
+    m.add_function(wrap_pyfunction!(
+        residuals_py::working_response_weights_py,
+        m
+    )?)?;
 
     // Inference (score tests + CDFs)
     m.add_function(wrap_pyfunction!(inference_py::score_test_continuous_py, m)?)?;

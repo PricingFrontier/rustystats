@@ -185,7 +185,7 @@ pub(crate) fn fit_glm_coordinate_descent(
             family,
             link,
             irls_config.min_weight,
-        );
+        )?;
         irls_weights = weight_result.irls_weights;
         let combined_weights = weight_result.combined_weights;
         let working_response = weight_result.working_response;
