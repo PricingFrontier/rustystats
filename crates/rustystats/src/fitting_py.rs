@@ -61,6 +61,12 @@ fn smooth_result_to_py<'py>(
         },
         irls_weights: result.irls_weights,
         offset: result.offset,
+        step_halving_used: false,
+        solver_status: if result.converged {
+            "converged".to_string()
+        } else {
+            "max_iterations".to_string()
+        },
     };
 
     let smooth_dict = pyo3::types::PyDict::new(py);
@@ -217,6 +223,8 @@ pub fn fit_glm_py(
         },
         irls_weights: result.irls_weights,
         offset: offset_array,
+        step_halving_used: result.step_halving_used,
+        solver_status: result.solver_status,
     })
 }
 
@@ -386,6 +394,8 @@ pub fn fit_negbinomial_py<'py>(
         },
         irls_weights: result.irls_weights,
         offset: offset_array,
+        step_halving_used: result.step_halving_used,
+        solver_status: result.solver_status,
     };
 
     // Honest theta-estimation metadata (RS-ACT-010): the profile loop's init,

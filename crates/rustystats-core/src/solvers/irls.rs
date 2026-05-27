@@ -326,6 +326,14 @@ pub struct IRLSResult {
 
     /// Warnings collected during fitting (replaces stderr printing).
     pub warnings: Vec<String>,
+
+    /// Whether step-halving was triggered at any accepted iteration.
+    pub step_halving_used: bool,
+
+    /// Terminal solver status: "converged", "max_iterations", or
+    /// "step_halving_no_improvement" (no step reduced the deviance, so the
+    /// previous iterate was retained). Consumed by the Python inference layer.
+    pub solver_status: String,
 }
 
 // =============================================================================
@@ -477,6 +485,10 @@ fn fit_glm_core(
     // -------------------------------------------------------------------------
     let mut converged = false;
     let mut iteration = 0;
+    let mut step_halving_used = false;
+    // Set when no full or halved step reduces the deviance: the previous iterate
+    // is retained rather than accepting a worse step (RS-ACT-007).
+    let mut step_halving_failed = false;
 
     // We'll store the final covariance matrix and coefficients from iteration
     let mut cov_unscaled = Array2::zeros((p, p));
@@ -566,79 +578,74 @@ fn fit_glm_core(
         // ---------------------------------------------------------------------
         deviance_old = deviance;
 
-        // Try full step first
-        let eta_base = x.dot(&new_coefficients);
-        let mut eta_new = &eta_base + &offset_vec;
-        let mut mu_new = link.inverse(&eta_new);
-        mu_new = family.clamp_mu(&mu_new);
+        // Acceptance threshold: a step may not worsen the deviance by more than a
+        // tiny relative tolerance (RS-ACT-007). Coefficient blending is used for
+        // both paths; for the unconstrained path it is algebraically identical to
+        // blending eta, but keeps coefficients and (eta, mu) consistent.
+        let accept_threshold = deviance_old * 1.0001;
+
+        let project = |coef: &mut Array1<f64>| {
+            for &idx in &config.nonneg_indices {
+                if idx < coef.len() && coef[idx] < 0.0 {
+                    coef[idx] = 0.0;
+                }
+            }
+            for &idx in &config.nonpos_indices {
+                if idx < coef.len() && coef[idx] > 0.0 {
+                    coef[idx] = 0.0;
+                }
+            }
+        };
+
+        // Try the full Newton step (with constraints projected).
+        let mut trial_coefficients = new_coefficients.clone();
+        project(&mut trial_coefficients);
+        let mut eta_new = &x.dot(&trial_coefficients) + &offset_vec;
+        let mut mu_new = family.clamp_mu(&link.inverse(&eta_new));
         let mut deviance_new = family.deviance(y, &mu_new, Some(&prior_weights_vec));
 
-        // Step-halving: if deviance increased, try smaller steps
-        if deviance_new > deviance_old * 1.0001 && iteration > 1 {
+        // The first iteration has no meaningful previous iterate to fall back to,
+        // so the full step is always taken there.
+        let mut step_accepted = iteration == 1
+            || (deviance_new.is_finite() && deviance_new <= accept_threshold);
+
+        // Step-halving: if the full step worsened the deviance, try smaller steps
+        // and accept the first one that meets the threshold.
+        if !step_accepted {
+            step_halving_used = true;
             let mut step_size = 0.5;
-
-            if has_constraints {
-                // For constrained problems: blend coefficients and re-apply projection
-                for _half_step in 0..8 {
-                    // Blend coefficients: β_blend = (1-step)*β_old + step*β_new
-                    let mut blended_coefficients: Array1<f64> = iter_coefficients
-                        .iter()
-                        .zip(new_coefficients.iter())
-                        .map(|(&old, &new)| (1.0 - step_size) * old + step_size * new)
-                        .collect();
-
-                    // Re-apply coefficient constraints after blending
-                    for &idx in &config.nonneg_indices {
-                        if idx < blended_coefficients.len() && blended_coefficients[idx] < 0.0 {
-                            blended_coefficients[idx] = 0.0;
-                        }
-                    }
-                    for &idx in &config.nonpos_indices {
-                        if idx < blended_coefficients.len() && blended_coefficients[idx] > 0.0 {
-                            blended_coefficients[idx] = 0.0;
-                        }
-                    }
-
-                    let eta_blend = x.dot(&blended_coefficients);
-                    eta_new = &eta_blend + &offset_vec;
-                    mu_new = link.inverse(&eta_new);
-                    mu_new = family.clamp_mu(&mu_new);
-                    deviance_new = family.deviance(y, &mu_new, Some(&prior_weights_vec));
-
-                    if deviance_new <= deviance_old * 1.0001 {
-                        // Accept this blended step - update new_coefficients
-                        new_coefficients = blended_coefficients;
-                        break;
-                    }
-                    step_size *= 0.5;
-                }
-            } else {
-                // For unconstrained problems: blend eta directly (faster)
-                let eta_old_base: Array1<f64> = eta
+            let max_half_steps = if has_constraints { 8 } else { 4 };
+            for _half_step in 0..max_half_steps {
+                let mut blended: Array1<f64> = iter_coefficients
                     .iter()
-                    .zip(offset_vec.iter())
-                    .map(|(&e, &o)| e - o)
+                    .zip(new_coefficients.iter())
+                    .map(|(&old, &new)| (1.0 - step_size) * old + step_size * new)
                     .collect();
-
-                for _half_step in 0..4 {
-                    let eta_blend: Array1<f64> = eta_old_base
-                        .iter()
-                        .zip(eta_base.iter())
-                        .map(|(&old, &new)| (1.0 - step_size) * old + step_size * new)
-                        .collect();
-                    eta_new = &eta_blend + &offset_vec;
-                    mu_new = link.inverse(&eta_new);
-                    mu_new = family.clamp_mu(&mu_new);
-                    deviance_new = family.deviance(y, &mu_new, Some(&prior_weights_vec));
-
-                    if deviance_new <= deviance_old * 1.0001 {
-                        break;
-                    }
-                    step_size *= 0.5;
+                project(&mut blended);
+                let e = &x.dot(&blended) + &offset_vec;
+                let m = family.clamp_mu(&link.inverse(&e));
+                let d = family.deviance(y, &m, Some(&prior_weights_vec));
+                if d.is_finite() && d <= accept_threshold {
+                    trial_coefficients = blended;
+                    eta_new = e;
+                    mu_new = m;
+                    deviance_new = d;
+                    step_accepted = true;
+                    break;
                 }
+                step_size *= 0.5;
             }
         }
 
+        if !step_accepted {
+            // No full or halved step reduced the deviance: retain the previous
+            // iterate (already held in iter_coefficients / eta / mu / deviance)
+            // instead of accepting a worse one, and stop (RS-ACT-007).
+            step_halving_failed = true;
+            break;
+        }
+
+        new_coefficients = trial_coefficients;
         eta = eta_new;
         mu = mu_new;
         deviance = deviance_new;
@@ -743,7 +750,7 @@ fn fit_glm_core(
                     .zip(offset_vec.iter())
                     .map(|(&e, &o)| e + o)
                     .collect();
-                let mu_check = link.inverse(&eta_full);
+                let mu_check = family.clamp_mu(&link.inverse(&eta_full));
                 let dev_check = family.deviance(y, &mu_check, Some(&prior_weights_vec));
                 if dev_check <= final_deviance {
                     proj_coef
@@ -751,7 +758,16 @@ fn fit_glm_core(
                     use_coefficients
                 }
             } else {
-                coef
+                // Unconstrained: guard against a final extraction that is worse
+                // than the loop's retained iterate (RS-ACT-007).
+                let eta_full = &x.dot(&coef) + &offset_vec;
+                let mu_check = family.clamp_mu(&link.inverse(&eta_full));
+                let dev_check = family.deviance(y, &mu_check, Some(&prior_weights_vec));
+                if dev_check.is_finite() && dev_check <= final_deviance {
+                    coef
+                } else {
+                    use_coefficients
+                }
             }
         }
         _ => {
@@ -800,8 +816,23 @@ fn fit_glm_core(
         .zip(offset_vec.iter())
         .map(|(&e, &o)| e + o)
         .collect();
-    let final_mu = link.inverse(&final_eta);
+    let final_mu = family.clamp_mu(&link.inverse(&final_eta));
     let final_deviance = family.deviance(y, &final_mu, Some(&prior_weights_vec));
+
+    let solver_status = if step_halving_failed {
+        "step_halving_no_improvement"
+    } else if converged {
+        "converged"
+    } else {
+        "max_iterations"
+    };
+    if !converged {
+        warnings.push(format!(
+            "IRLS did not converge (status: {solver_status}). Results may be \
+             unreliable; consider increasing max_iter, loosening tol, or rescaling \
+             predictors."
+        ));
+    }
 
     Ok(IRLSResult {
         coefficients: final_coefficients,
@@ -819,6 +850,8 @@ fn fit_glm_core(
         penalty,
         design_matrix: None, // Computed lazily in Python layer to avoid expensive copy
         warnings,
+        step_halving_used,
+        solver_status: solver_status.to_string(),
     })
 }
 
@@ -1210,9 +1243,59 @@ fn compute_working_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::families::{GaussianFamily, PoissonFamily};
-    use crate::links::{IdentityLink, LogLink};
+    use crate::families::{BinomialFamily, GaussianFamily, PoissonFamily};
+    use crate::links::{IdentityLink, LogLink, LogitLink};
     use ndarray::array;
+
+    #[test]
+    fn test_final_mu_clamped_for_separated_binomial() {
+        // RS-ACT-007: perfect separation drives eta to ±inf, so the final fitted
+        // mu must be clamped strictly inside (0, 1) rather than hitting 0 or 1.
+        let n = 40usize;
+        let mut xv = Vec::with_capacity(n * 2);
+        let mut yv = Vec::with_capacity(n);
+        for i in 0..n {
+            let xi = (i as f64) - (n as f64) / 2.0;
+            xv.push(1.0);
+            xv.push(xi);
+            yv.push(if xi > 0.0 { 1.0 } else { 0.0 }); // perfectly separated
+        }
+        let x = Array2::from_shape_vec((n, 2), xv).expect("test setup should be valid");
+        let y = Array1::from_vec(yv);
+        let config = FitConfig {
+            max_iterations: 100,
+            ..FitConfig::default()
+        };
+        let result =
+            fit_glm_unified(&y, x.view(), &BinomialFamily, &LogitLink, &config, None, None, None)
+                .expect("fit should not error");
+        assert!(
+            result.fitted_values.iter().all(|&m| m > 0.0 && m < 1.0),
+            "fitted mu must be strictly inside (0, 1), got {:?}",
+            result.fitted_values
+        );
+    }
+
+    #[test]
+    fn test_solver_status_reports_max_iterations() {
+        // RS-ACT-007: a budget-capped fit that has not converged reports the
+        // honest terminal status rather than silently claiming success.
+        let x = Array2::from_shape_vec(
+            (6, 2),
+            vec![1.0, 0.0, 1.0, 1.0, 1.0, 2.0, 1.0, 3.0, 1.0, 4.0, 1.0, 5.0],
+        )
+        .expect("test setup should be valid");
+        let y = array![2.0, 2.0, 3.0, 4.0, 5.0, 7.0];
+        let config = FitConfig {
+            max_iterations: 1,
+            ..FitConfig::default()
+        };
+        let result =
+            fit_glm_unified(&y, x.view(), &PoissonFamily, &LogLink, &config, None, None, None)
+                .expect("fit should not error");
+        assert!(!result.converged);
+        assert_eq!(result.solver_status, "max_iterations");
+    }
 
     #[test]
     fn test_gaussian_identity_is_ols() {

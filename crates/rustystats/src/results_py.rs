@@ -63,6 +63,11 @@ pub struct PyGLMResults {
     pub(crate) irls_weights: Array1<f64>,
     /// Offset values (e.g., log(exposure) for count models)
     pub(crate) offset: Option<Array1<f64>>,
+    /// Whether step-halving was triggered during fitting (RS-ACT-007).
+    pub(crate) step_halving_used: bool,
+    /// Terminal solver status: "converged", "max_iterations", or
+    /// "step_halving_no_improvement" (RS-ACT-007).
+    pub(crate) solver_status: String,
 }
 
 // =============================================================================
@@ -168,6 +173,19 @@ impl PyGLMResults {
     #[getter]
     fn converged(&self) -> bool {
         self.converged
+    }
+
+    /// Terminal solver status: "converged", "max_iterations", or
+    /// "step_halving_no_improvement" (RS-ACT-007).
+    #[getter]
+    fn solver_status(&self) -> String {
+        self.solver_status.clone()
+    }
+
+    /// Whether step-halving was triggered during fitting (RS-ACT-007).
+    #[getter]
+    fn step_halving_used(&self) -> bool {
+        self.step_halving_used
     }
 
     /// Number of observations.

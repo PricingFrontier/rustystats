@@ -441,6 +441,12 @@ pub(crate) fn fit_glm_coordinate_descent(
         penalty: reg_config.penalty.clone(),
         design_matrix: None, // Computed lazily in Python layer to avoid expensive copy
         warnings,
+        step_halving_used: false,
+        solver_status: if converged {
+            "converged".to_string()
+        } else {
+            "max_iterations".to_string()
+        },
     })
 }
 
