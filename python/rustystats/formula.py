@@ -25,6 +25,7 @@ Example
 
 from __future__ import annotations
 
+import warnings
 import weakref
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -214,6 +215,7 @@ def _extract_needed_columns(
     interactions: list[dict[str, Any]] | None = None,
     offset: str | np.ndarray | None = None,
     weights: str | np.ndarray | None = None,
+    exposure: str | np.ndarray | None = None,
     complement: Any = None,
     _seen_models: set[int] | None = None,
 ) -> set[str]:
@@ -258,6 +260,8 @@ def _extract_needed_columns(
 
     if isinstance(offset, str):
         cols.add(offset)
+    if isinstance(exposure, str):
+        cols.add(exposure)
     if isinstance(weights, str):
         cols.add(weights)
     if isinstance(complement, str):
@@ -752,7 +756,7 @@ class _GLMBase:
     def _process_complement(
         self,
         complement: str | np.ndarray | GLMModel | None,
-        offset_spec: str | np.ndarray | None,
+        raw_exposure: np.ndarray | None,
     ) -> np.ndarray | None:
         """Process complement of credibility and merge into offset.
 
@@ -768,9 +772,9 @@ class _GLMBase:
             Complement of credibility. If str, column name in data with values
             on response scale. If GLMModel, predictions are computed on this
             data (divided by exposure if applicable). If array, used directly.
-        offset_spec : str, array-like, or None
-            The offset specification (needed to extract exposure when complement
-            is a GLMModel).
+        raw_exposure : np.ndarray or None
+            Raw exposure values (needed to convert a GLMModel complement's
+            predicted counts back to a rate when the model uses exposure).
 
         Returns
         -------
@@ -783,10 +787,9 @@ class _GLMBase:
         # Extract response-scale complement values
         if isinstance(complement, GLMModel):
             comp_values = complement.predict(self.data)
-            # If model has exposure offset, divide by exposure to get rate
-            if isinstance(offset_spec, str) and self._uses_log_link():
-                exposure = _get_column(self.data, offset_spec)
-                comp_values = comp_values / exposure
+            # If the model has raw exposure, divide by it to recover the rate.
+            if raw_exposure is not None:
+                comp_values = comp_values / raw_exposure
         elif isinstance(complement, str):
             comp_values = _get_column(self.data, complement)
         else:
@@ -817,17 +820,44 @@ class _GLMBase:
         # Transform to link scale
         return apply_link(comp_values, link)
 
+    def _resolve_exposure_values(self, exposure: str | np.ndarray) -> np.ndarray:
+        """Resolve and validate a raw exposure spec to a positive float array."""
+        if isinstance(exposure, str):
+            vals = _get_column(self.data, exposure).astype(np.float64)
+        else:
+            vals = np.asarray(exposure, dtype=np.float64)
+            if vals.ndim != 1 or vals.shape[0] != self.data.height:
+                raise ValidationError(
+                    f"exposure array length {vals.shape[0]} does not match data "
+                    f"length {self.data.height}."
+                )
+        if not np.all(np.isfinite(vals)):
+            raise ValidationError("exposure must be finite.")
+        if np.any(vals <= 0):
+            raise ValidationError("exposure must be strictly positive.")
+        return vals
+
+    def _has_target_encoding(self) -> bool:
+        """True if any term or interaction requests target encoding."""
+        if any(spec.get("type") == "target_encoding" for spec in self.terms.values()):
+            return True
+        return any(ix.get("target_encoding") for ix in (self.interactions_spec or []))
+
     def _get_raw_exposure(
         self,
+        exposure: str | np.ndarray | None,
         offset: str | np.ndarray | None,
     ) -> np.ndarray | None:
-        """Get raw exposure values for target encoding (before log transform)."""
-        if offset is None:
-            return None
-        if isinstance(offset, str):
+        """Raw positive exposure for target encoding.
+
+        Comes only from an explicit ``exposure`` or a legacy string offset under a
+        log link -- never from a link-scale array offset (RS-ACT-002).
+        """
+        if exposure is not None:
+            return self._resolve_exposure_values(exposure)
+        if isinstance(offset, str) and self._uses_log_link():
             return _get_column(self.data, offset).astype(np.float64)
-        else:
-            return np.asarray(offset, dtype=np.float64)
+        return None
 
     def _resolve_cv_path(
         self,
@@ -2723,6 +2753,7 @@ class FormulaGLMDict(_GLMBase):
         link: str | None = None,
         var_power: float = 1.5,
         theta: float | None = None,
+        exposure: str | np.ndarray | None = None,
         offset: str | np.ndarray | None = None,
         weights: str | np.ndarray | None = None,
         seed: int | None = None,
@@ -2738,9 +2769,16 @@ class FormulaGLMDict(_GLMBase):
         self.link = link
         self.var_power = var_power
         self.theta = theta
+        self._exposure_spec = exposure
         self._offset_spec = offset
         self._weights_spec = weights
         self._seed = seed
+        # RS-ACT-002: a string offset under a log link has historically meant
+        # raw exposure; preserve that meaning only when no explicit exposure= is
+        # supplied.
+        self._offset_is_legacy_exposure_alias = (
+            exposure is None and isinstance(offset, str) and self._uses_log_link()
+        )
         self._complement_spec = complement if isinstance(complement, str | GLMModel) else None
         self._complement_values = None  # Set by _process_complement
 
@@ -2755,8 +2793,42 @@ class FormulaGLMDict(_GLMBase):
             intercept=intercept,
         )
 
-        # Extract raw exposure for target encoding
-        raw_exposure = self._get_raw_exposure(offset)
+        # RS-ACT-002: resolve the raw positive exposure (validated) and fold its
+        # log into the link-scale offset used for fitting. A string exposure with
+        # no separate offset is routed through the legacy string-offset machinery
+        # so fit, target encoding, and prediction match the historical
+        # offset="Exposure" spelling exactly.
+        raw_exposure = self._get_raw_exposure(exposure, offset)
+        if exposure is not None:
+            if not self._uses_log_link():
+                raise ValidationError(
+                    "`exposure=` is only supported for log-link rate models "
+                    f"(got family={self.family!r}, link={self.link!r}). Use "
+                    "`offset=` for a link-scale adjustment on other links."
+                )
+            if isinstance(exposure, str) and offset is None:
+                offset = exposure  # canonical rate model == legacy offset="Exposure"
+            else:
+                user_offset = self._process_offset(offset)
+                log_exposure = np.log(raw_exposure)
+                offset = log_exposure if user_offset is None else log_exposure + user_offset
+            self._offset_spec = offset
+        elif (
+            offset is not None
+            and not isinstance(offset, str)
+            and self._uses_log_link()
+            and self._has_target_encoding()
+        ):
+            # A link-scale array offset is not raw exposure (RS-ACT-002), so target
+            # encoding falls back to unweighted statistics. Warn and point to
+            # exposure= for exposure-weighted encoding.
+            warnings.warn(
+                "A link-scale array `offset` is not raw exposure, so target "
+                "encoding will use observation-weighted (unweighted) statistics. "
+                "Pass `exposure=` for exposure-weighted target encoding.",
+                UserWarning,
+                stacklevel=2,
+            )
 
         # Build design matrix using existing pipeline
         self._builder = InteractionBuilder(data)
@@ -2769,7 +2841,7 @@ class FormulaGLMDict(_GLMBase):
         # Process offset, weights, and complement
         self.offset = self._process_offset(offset)
         self.weights = self._process_weights(weights)
-        complement_link = self._process_complement(complement, offset)
+        complement_link = self._process_complement(complement, raw_exposure)
         if complement_link is not None:
             if self.offset is not None:
                 self.offset = self.offset + complement_link
@@ -3028,6 +3100,7 @@ def glm_dict(
     link: str | None = None,
     var_power: float = 1.5,
     theta: float | None = None,
+    exposure: str | np.ndarray | None = None,
     offset: str | np.ndarray | None = None,
     weights: str | np.ndarray | None = None,
     seed: int | None = None,
@@ -3074,8 +3147,15 @@ def glm_dict(
         Variance power for Tweedie family.
     theta : float, optional
         Dispersion for Negative Binomial.
+    exposure : str or array-like, optional
+        Raw positive exposure (the rate denominator) for log-link rate models.
+        Added to the linear predictor as ``log(exposure)`` and used as the
+        denominator for exposure-weighted target encoding. Prefer this over
+        ``offset="Exposure"`` (which remains accepted as a legacy alias).
     offset : str or array-like, optional
-        Offset term (e.g., exposure for rate models).
+        Link-scale additive offset. A string offset for a log-link family is
+        treated as raw exposure (a legacy alias for ``exposure=``); an array
+        offset is used on the link scale as-is.
     weights : str or array-like, optional
         Prior weights.
     seed : int, optional
@@ -3139,6 +3219,7 @@ def glm_dict(
         interactions=interactions,
         offset=offset,
         weights=weights,
+        exposure=exposure,
         complement=complement,
     )
     data = _collect_lazyframe(data, needed)
@@ -3153,6 +3234,7 @@ def glm_dict(
         link=link,
         var_power=var_power,
         theta=theta,
+        exposure=exposure,
         offset=offset,
         weights=weights,
         seed=seed,
