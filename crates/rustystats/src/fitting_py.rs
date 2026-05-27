@@ -674,7 +674,7 @@ mod tests {
 /// * `smooth_penalties` - List of penalty matrices (one per smooth term)
 /// * `smooth_monotonicity` - List of monotonicity constraints: None, "increasing", "decreasing"
 #[pyfunction]
-#[pyo3(signature = (y, x_full, smooth_col_ranges, smooth_penalties, family, link=None, offset=None, weights=None, max_iter=25, tol=1e-8, lambda_min=0.001, lambda_max=1000.0, smooth_monotonicity=None, store_design_matrix=false, nonneg_indices=None, nonpos_indices=None))]
+#[pyo3(signature = (y, x_full, smooth_col_ranges, smooth_penalties, family, link=None, offset=None, weights=None, max_iter=25, tol=1e-8, lambda_min=0.001, lambda_max=1000.0, smooth_monotonicity=None, store_design_matrix=false, nonneg_indices=None, nonpos_indices=None, var_power=1.5, theta=1.0))]
 pub fn fit_smooth_glm_unified_py<'py>(
     py: Python<'py>,
     y: PyReadonlyArray1<f64>,
@@ -693,13 +693,15 @@ pub fn fit_smooth_glm_unified_py<'py>(
     store_design_matrix: bool,
     nonneg_indices: Option<Vec<usize>>,
     nonpos_indices: Option<Vec<usize>>,
+    var_power: f64,
+    theta: f64,
 ) -> PyResult<Py<PyAny>> {
     let y_arr = y.as_array().to_owned();
     let x_view = x_full.as_array(); // Zero-copy view
     let offset_arr = offset.map(|o| o.as_array().to_owned());
     let weights_arr = weights.map(|w| w.as_array().to_owned());
 
-    let fam = family_from_name(family, 1.5, 1.0)?;
+    let fam = family_from_name(family, var_power, theta)?;
     let lnk = match link {
         Some(l) => link_from_name(l)?,
         None => link_from_name(default_link_name(family))?,

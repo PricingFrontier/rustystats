@@ -228,18 +228,23 @@ def fit_negbinomial_py(
 def fit_smooth_glm_unified_py(
     y: npt.NDArray[np.float64],
     x_full: npt.NDArray[np.float64],
+    smooth_col_ranges: list[tuple[int, int]],
+    smooth_penalties: list[npt.NDArray[np.float64]],
     family: str,
-    link: str,
-    smooth_specs: list[dict],
+    link: str | None = None,
     offset: npt.NDArray[np.float64] | None = None,
     weights: npt.NDArray[np.float64] | None = None,
     max_iter: int = 25,
     tol: float = 1e-8,
+    lambda_min: float = 0.001,
+    lambda_max: float = 1000.0,
+    smooth_monotonicity: list[str | None] | None = None,
+    store_design_matrix: bool = False,
+    nonneg_indices: list[int] | None = None,
+    nonpos_indices: list[int] | None = None,
     var_power: float = 1.5,
     theta: float = 1.0,
-    verbose: bool = False,
-    y_raw: npt.NDArray[np.float64] | None = None,
-) -> dict: ...
+) -> tuple[GLMResults, dict]: ...
 def fit_cv_path_py(
     y: npt.NDArray[np.float64],
     x: npt.NDArray[np.float64],

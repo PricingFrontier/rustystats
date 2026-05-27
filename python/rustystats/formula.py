@@ -422,6 +422,8 @@ def _fit_with_fixed_spline_penalties(
         alpha,  # lambda_min = lambda_max = alpha → fixed lambda
         monotonicity_specs if any(m is not None for m in monotonicity_specs) else None,
         store_design_matrix,
+        var_power=var_power,
+        theta=theta,
     )
 
     smooth_results = []
@@ -528,6 +530,8 @@ def _fit_with_smooth_penalties(
         store_design_matrix,
         nonneg_indices if nonneg_indices else None,
         nonpos_indices if nonpos_indices else None,
+        var_power=var_power,
+        theta=theta,
     )
 
     # Build smooth term results — coefficients are already in original column order
