@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 
-from rustystats.exceptions import PredictionError
+from rustystats.exceptions import PredictionError, ValidationError
 from rustystats.interactions import TermSlot
 
 if TYPE_CHECKING:
@@ -30,6 +30,7 @@ def compute_contributions(
     new_data: pl.DataFrame | pl.LazyFrame,
     *,
     offset: str | np.ndarray | None = None,
+    exposure: str | np.ndarray | None = None,
     complement: str | np.ndarray | GLMModel | None = None,
     group_terms: bool = True,
     include_design_columns: bool = False,
@@ -46,6 +47,7 @@ def compute_contributions(
         _collect_lazyframe,
         _extract_needed_columns,
         _resolve_predict_complement,
+        _resolve_predict_exposure,
         _resolve_predict_offset,
         apply_inverse_link,
     )
@@ -60,12 +62,17 @@ def compute_contributions(
     if return_format not in ("records", "dataframe"):
         raise ValueError(f"return_format must be 'records' or 'dataframe', got {return_format!r}")
 
+    exposure_to_use = exposure if exposure is not None else model._exposure_spec
+    offset_to_use = offset if offset is not None else model._offset_spec
+    complement_to_use = complement if complement is not None else model._complement_spec
+
     if model._terms_dict is not None:
         needed = _extract_needed_columns(
             terms=model._terms_dict,
             interactions=model._interactions_spec,
-            offset=offset if offset is not None else model._offset_spec,
-            complement=complement if complement is not None else model._complement_spec,
+            offset=offset_to_use,
+            exposure=exposure_to_use,
+            complement=complement_to_use,
         )
         new_data = _collect_lazyframe(new_data, needed)
     else:
@@ -77,15 +84,27 @@ def compute_contributions(
 
     X_new = model._builder.transform_new_data(new_data)
 
+    exposure_raw = None
+    exposure_link = None
+    exposure_name = None
+    if exposure_to_use is not None:
+        if model.link != "log":
+            raise ValidationError("exposure= is only meaningful for log-link rate models.")
+        exposure_raw, exposure_link, exposure_name = _resolve_predict_exposure(
+            new_data, exposure_to_use
+        )
+
+    offset_is_exposure = model._offset_is_exposure and exposure_to_use is None
     offset_raw, offset_link, offset_name = _resolve_predict_offset(
-        new_data, offset, model._offset_spec, model._offset_is_exposure
+        new_data, offset, model._offset_spec, offset_is_exposure
     )
     _, complement_link = _resolve_predict_complement(
         new_data,
         complement,
         model._complement_spec,
-        model._offset_is_exposure,
-        offset if offset is not None else model._offset_spec,
+        offset_is_exposure,
+        offset_to_use,
+        exposure_to_use,
         model.link,
     )
 
@@ -136,7 +155,25 @@ def compute_contributions(
                 contribs_per_slot.append(X_new[:, j] * params[j])
                 feature_values_per_slot.append(X_new[:, j].astype(np.float64, copy=False))
 
-    # --- offset contribution row (synthetic; not in term_slots) ----------------
+    # --- exposure/offset contribution rows (synthetic; not in term_slots) ------
+    if exposure_link is not None:
+        exposure_slot = TermSlot(
+            term_name="offset",
+            term_type="offset",
+            factors=[exposure_name] if exposure_name else [],
+            col_start=-1,
+            col_end=-1,
+            design_column_names=[],
+            extra={
+                "raw": exposure_raw,
+                "is_exposure": True,
+                "name": exposure_name,
+            },
+        )
+        emitted_slots.append(exposure_slot)
+        contribs_per_slot.append(exposure_link)
+        feature_values_per_slot.append(exposure_raw)
+
     offset_slot: TermSlot | None = None
     if offset_link is not None:
         offset_slot = TermSlot(
@@ -148,7 +185,7 @@ def compute_contributions(
             design_column_names=[],
             extra={
                 "raw": offset_raw,
-                "is_exposure": bool(model._offset_is_exposure),
+                "is_exposure": bool(offset_is_exposure),
                 "name": offset_name,
             },
         )
@@ -168,6 +205,8 @@ def compute_contributions(
 
     if validate:
         eta_actual = X_new @ params
+        if exposure_link is not None:
+            eta_actual = eta_actual + exposure_link
         if offset_link is not None:
             eta_actual = eta_actual + offset_link
         if complement_link is not None:

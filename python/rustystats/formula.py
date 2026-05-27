@@ -291,6 +291,7 @@ def _extract_model_needed_columns(model: Any, seen_models: set[int] | None = Non
         terms=terms,
         interactions=getattr(model, "_interactions_spec", None),
         offset=getattr(model, "_offset_spec", None),
+        exposure=getattr(model, "_exposure_spec", None),
         complement=getattr(model, "_complement_spec", None),
         _seen_models=seen,
     )
@@ -1041,18 +1042,29 @@ def _resolve_predict_offset(
     if offset_to_use is None:
         return None, None, None
     if isinstance(offset_to_use, str):
+        if offset_to_use not in new_data.columns:
+            raise PredictionError(
+                f"Model was fit with offset='{offset_to_use}', but column "
+                f"'{offset_to_use}' is not present in the prediction data. "
+                "Pass offset= explicitly to predict()."
+            )
         raw = new_data[offset_to_use].to_numpy().astype(np.float64)
         link = np.log(raw) if offset_is_exposure else raw
         return raw, link, offset_to_use
     arr = np.asarray(offset_to_use, dtype=np.float64)
+    if arr.ndim != 1 or arr.shape[0] != len(new_data):
+        raise PredictionError(
+            f"offset array length {arr.shape[0]} does not match prediction data "
+            f"length {len(new_data)}. Pass an offset= array for the new data."
+        )
     return arr, arr, None
 
 
-def _resolve_predict_exposure_link(
+def _resolve_predict_exposure(
     new_data: pl.DataFrame,
     exposure_spec: str | np.ndarray,
-) -> np.ndarray:
-    """Resolve a prediction-time raw exposure to its log-scale contribution.
+) -> tuple[np.ndarray, np.ndarray, str | None]:
+    """Resolve prediction-time raw exposure to raw and log-scale forms.
 
     Raises ``PredictionError`` when a stored exposure column is absent from the
     prediction data and no explicit exposure array is supplied.
@@ -1067,9 +1079,23 @@ def _resolve_predict_exposure_link(
         raw = new_data[exposure_spec].to_numpy().astype(np.float64)
     else:
         raw = np.asarray(exposure_spec, dtype=np.float64)
+    if raw.ndim != 1 or raw.shape[0] != len(new_data):
+        raise PredictionError(
+            f"exposure array length {raw.shape[0]} does not match prediction data "
+            f"length {len(new_data)}."
+        )
     if not np.all(np.isfinite(raw)) or np.any(raw <= 0):
         raise PredictionError("exposure must be finite and strictly positive.")
-    return np.log(raw)
+    return raw, np.log(raw), exposure_spec if isinstance(exposure_spec, str) else None
+
+
+def _resolve_predict_exposure_link(
+    new_data: pl.DataFrame,
+    exposure_spec: str | np.ndarray,
+) -> np.ndarray:
+    """Resolve a prediction-time raw exposure to its log-scale contribution."""
+    _, link, _ = _resolve_predict_exposure(new_data, exposure_spec)
+    return link
 
 
 def _resolve_predict_complement(
@@ -1078,6 +1104,7 @@ def _resolve_predict_complement(
     stored_complement_spec: Any,
     offset_is_exposure: bool,
     offset_spec_for_complement: str | np.ndarray | None,
+    exposure_spec_for_complement: str | np.ndarray | None,
     link: str,
 ) -> tuple[np.ndarray | None, np.ndarray | None]:
     """Resolve a prediction-time complement to its response and link scales.
@@ -1092,7 +1119,10 @@ def _resolve_predict_complement(
         return None, None
     if isinstance(comp_to_use, GLMModel):
         comp_response = comp_to_use.predict(new_data)
-        if offset_is_exposure and isinstance(offset_spec_for_complement, str):
+        if exposure_spec_for_complement is not None:
+            exposure, _, _ = _resolve_predict_exposure(new_data, exposure_spec_for_complement)
+            comp_response = comp_response / exposure
+        elif offset_is_exposure and isinstance(offset_spec_for_complement, str):
             exposure = new_data[offset_spec_for_complement].to_numpy().astype(np.float64)
             comp_response = comp_response / exposure
     elif isinstance(comp_to_use, str):
@@ -1257,6 +1287,7 @@ class GLMModel:
                 terms=self._terms_dict,
                 interactions=self._interactions_spec,
                 offset=self._offset_spec,
+                exposure=self._exposure_spec,
                 complement=self._complement_spec,
             )
         )
@@ -1786,9 +1817,8 @@ class GLMModel:
             For Poisson/Gamma with log link, log() is auto-applied to exposure.
         exposure : str or array-like, optional
             Raw positive exposure for new data (log-link rate models). Added to
-            the linear predictor as ``log(exposure)``. Mutually exclusive with
-            ``offset``. If None, exposure is taken from the column the model was
-            fit with (when present in ``new_data``).
+            the linear predictor as ``log(exposure)``. If None, exposure is taken
+            from the column the model was fit with (when present in ``new_data``).
         complement : str, array-like, or GLMModel, optional
             Complement of credibility for new data (response scale).
             If None and the model was fit with a complement column name,
@@ -1864,16 +1894,18 @@ class GLMModel:
                 linear_pred[start:stop] = X_chunk @ params
                 del X_chunk, chunk
 
-        if exposure is not None:
-            if offset is not None:
-                raise ValidationError("Provide exposure= or offset=, not both, to predict().")
+        exposure_to_use = exposure if exposure is not None else self._exposure_spec
+        exposure_link = None
+        if exposure_to_use is not None:
             if self.link != "log":
                 raise ValidationError("exposure= is only meaningful for log-link rate models.")
-            offset_link = _resolve_predict_exposure_link(new_data, exposure)
-        else:
-            _, offset_link, _ = _resolve_predict_offset(
-                new_data, offset, self._offset_spec, self._offset_is_exposure
-            )
+            exposure_link = _resolve_predict_exposure_link(new_data, exposure_to_use)
+            linear_pred = linear_pred + exposure_link
+
+        offset_is_exposure = self._offset_is_exposure and exposure_to_use is None
+        _, offset_link, _ = _resolve_predict_offset(
+            new_data, offset, self._offset_spec, offset_is_exposure
+        )
         if offset_link is not None:
             linear_pred = linear_pred + offset_link
 
@@ -1881,8 +1913,9 @@ class GLMModel:
             new_data,
             complement,
             self._complement_spec,
-            self._offset_is_exposure,
+            offset_is_exposure,
             offset if offset is not None else self._offset_spec,
+            exposure_to_use,
             self.link,
         )
         if complement_link is not None:
@@ -1899,6 +1932,7 @@ class GLMModel:
         new_data: pl.DataFrame | pl.LazyFrame,
         *,
         offset: str | np.ndarray | None = None,
+        exposure: str | np.ndarray | None = None,
         complement: str | np.ndarray | GLMModel | None = None,
         group_terms: bool = True,
         include_design_columns: bool = False,
@@ -1927,6 +1961,9 @@ class GLMModel:
             in ``new_data``; arrays are used directly. For log-link models with
             an exposure offset, ``log()`` is applied automatically when a
             string is given.
+        exposure : str or array-like, optional
+            Override raw positive exposure for log-link rate models. Added to
+            the contribution ladder as ``log(exposure)``.
         complement : str, array-like, or GLMModel, optional
             Override the complement of credibility. When set (here or at fit
             time), ``base_value`` becomes per-row equal to
@@ -1984,6 +2021,7 @@ class GLMModel:
             self,
             new_data,
             offset=offset,
+            exposure=exposure,
             complement=complement,
             group_terms=group_terms,
             include_design_columns=include_design_columns,
@@ -2207,6 +2245,14 @@ class GLMModel:
         if state["builder_state"] is not None:
             builder = _DeserializedBuilder(state["builder_state"])
 
+        offset_spec = state.get("offset_spec")
+        offset_is_exposure = state.get("offset_is_exposure", False)
+        exposure_spec = state.get("exposure_spec")
+        if exposure_spec is None and offset_is_exposure:
+            exposure_spec = offset_spec
+            offset_spec = None
+            offset_is_exposure = False
+
         return cls(
             result=result,
             feature_names=state["feature_names"],
@@ -2214,9 +2260,9 @@ class GLMModel:
             family=state["family"],
             link=state["link"],
             builder=builder,
-            offset_spec=state["offset_spec"],
-            offset_is_exposure=state["offset_is_exposure"],
-            exposure_spec=state.get("exposure_spec"),
+            offset_spec=offset_spec,
+            offset_is_exposure=offset_is_exposure,
+            exposure_spec=exposure_spec,
             regularization_path_info=None,
             smooth_results=state["smooth_results"],
             total_edf=state["total_edf"],
@@ -2894,12 +2940,12 @@ class FormulaGLMDict(_GLMBase):
             intercept=intercept,
         )
 
-        # RS-ACT-002: resolve the raw positive exposure (validated) and fold its
-        # log into the link-scale offset used for fitting. A string exposure with
-        # no separate offset is routed through the legacy string-offset machinery
-        # so fit, target encoding, and prediction match the historical
-        # offset="Exposure" spelling exactly.
+        # RS-ACT-002: keep model metadata split into raw exposure and link-scale
+        # offset specs, while constructing a fit-only combined link-scale offset
+        # for the Rust solver.
         raw_exposure = self._get_raw_exposure(exposure, offset)
+        fit_offset = offset
+        fit_offset_string_is_exposure: bool | None = None
         if exposure is not None:
             if not self._uses_log_link():
                 raise ValidationError(
@@ -2908,12 +2954,20 @@ class FormulaGLMDict(_GLMBase):
                     "`offset=` for a link-scale adjustment on other links."
                 )
             if isinstance(exposure, str) and offset is None:
-                offset = exposure  # canonical rate model == legacy offset="Exposure"
+                fit_offset = exposure
+                fit_offset_string_is_exposure = True
             else:
                 user_offset = self._process_offset(offset, string_is_exposure=False)
                 log_exposure = np.log(raw_exposure)
-                offset = log_exposure if user_offset is None else log_exposure + user_offset
+                fit_offset = log_exposure if user_offset is None else log_exposure + user_offset
             self._offset_spec = offset
+        elif self._offset_is_legacy_exposure_alias:
+            # Legacy offset="Exposure" is normalized to explicit exposure
+            # metadata; the string is used only to produce the fit-time log
+            # offset so fitted values remain identical to historical behavior.
+            fit_offset = offset
+            fit_offset_string_is_exposure = True
+            self._offset_spec = None
         elif (
             offset is not None
             and not isinstance(offset, str)
@@ -2940,7 +2994,9 @@ class FormulaGLMDict(_GLMBase):
         self.n_params = self.X.shape[1]
 
         # Process offset, weights, and complement
-        self.offset = self._process_offset(offset)
+        self.offset = self._process_offset(
+            fit_offset, string_is_exposure=fit_offset_string_is_exposure
+        )
         self.weights = self._process_weights(weights)
         complement_link = self._process_complement(complement, raw_exposure)
         if complement_link is not None:
@@ -3037,9 +3093,7 @@ class FormulaGLMDict(_GLMBase):
         """
         from rustystats.diagnostics import explore_data
 
-        exposure_col = None
-        if isinstance(self._offset_spec, str):
-            exposure_col = self._offset_spec
+        exposure_col = self._exposure_spec if isinstance(self._exposure_spec, str) else None
 
         return explore_data(
             data=self.data,
@@ -3164,13 +3218,6 @@ class FormulaGLMDict(_GLMBase):
 
         result_family = f"NegativeBinomial(theta={theta:.4f})" if is_negbinomial else self.family
 
-        # Wrap result with formula metadata
-        is_exposure_offset = self.family in (
-            "poisson",
-            "quasipoisson",
-            "negbinomial",
-            "gamma",
-        ) and self.link in (None, "log")
         return _build_results(
             result,
             self.feature_names,
@@ -3179,7 +3226,7 @@ class FormulaGLMDict(_GLMBase):
             self.link,
             self._builder,
             self._offset_spec,
-            is_exposure_offset,
+            False,
             self._exposure_spec,
             path_info,
             self._smooth_results,

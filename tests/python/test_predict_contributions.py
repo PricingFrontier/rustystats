@@ -355,6 +355,31 @@ class TestOffset:
             # identity link: offset contribution equals raw offset
             assert abs(offset_row["contribution"] - offset_arr[i]) < 1e-12
 
+    def test_explicit_exposure_plus_link_offset_rows(self, sample_data):
+        adjustment = np.linspace(-0.2, 0.2, len(sample_data))
+        data = sample_data.with_columns(pl.Series("adj", adjustment))
+        result = rs.glm_dict(
+            response="y",
+            terms={"x1": {"type": "linear"}},
+            data=data,
+            family="poisson",
+            exposure="exposure",
+            offset="adj",
+        ).fit()
+
+        new_d = data.head(3)
+        rows = result.predict_contributions(new_d)
+        preds = result.predict(new_d)
+        assert_additivity(rows, preds)
+        for i, row in enumerate(rows):
+            offset_rows = [c for c in row["contributions"] if c["term_type"] == "offset"]
+            raw = sample_data["exposure"].to_numpy()[i]
+            assert len(offset_rows) == 2
+            assert abs(offset_rows[0]["contribution"] - np.log(raw)) < 1e-12
+            assert abs(offset_rows[0]["feature_value"] - raw) < 1e-12
+            assert abs(offset_rows[1]["contribution"] - adjustment[i]) < 1e-12
+            assert abs(offset_rows[1]["feature_value"] - adjustment[i]) < 1e-12
+
 
 # ---------------------------------------------------------------------------
 # 6. Complement of credibility: per-row base

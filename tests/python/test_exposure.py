@@ -188,10 +188,54 @@ class TestExposurePrediction:
         """002.7: clear error when exposure is needed but unavailable."""
         df = make_freq_frame()
         result = self._fit(df, exposure="Exposure")
-        with pytest.raises(
-            (rs.PredictionError, rs.ValidationError, pl.exceptions.ColumnNotFoundError, KeyError)
-        ):
+        with pytest.raises(rs.PredictionError, match="exposure='Exposure'"):
             result.predict(df.head(20).drop("Exposure"))
+
+    def test_predict_with_stored_exposure_and_string_offset_on_row_subset(self):
+        """002.9: stored exposure+offset metadata resolves against prediction rows."""
+        df = make_freq_frame()
+        adjustment = np.linspace(-0.2, 0.2, df.height)
+        df = df.with_columns(pl.Series("Adj", adjustment))
+        result = self._fit(df, exposure="Exposure", offset="Adj")
+
+        head = df.head(20)
+        pred_stored = result.predict(head)
+        pred_override = result.predict(
+            head.drop(["Exposure", "Adj"]),
+            exposure=head["Exposure"].to_numpy(),
+            offset=head["Adj"].to_numpy(),
+        )
+        assert {"Exposure", "Adj"}.issubset(result.required_columns)
+        np.testing.assert_allclose(pred_stored, pred_override, rtol=1e-9, atol=1e-9)
+
+    def test_predict_accepts_exposure_and_offset_overrides_together(self):
+        """002.10: predict-time exposure and link-scale offset are additive."""
+        df = make_freq_frame()
+        result = self._fit(df, exposure="Exposure")
+        head = df.head(20)
+        offset = np.linspace(-0.1, 0.1, head.height)
+
+        pred_both = result.predict(
+            head.drop("Exposure"),
+            exposure=head["Exposure"].to_numpy(),
+            offset=offset,
+        )
+        pred_without_offset = result.predict(
+            head.drop("Exposure"),
+            exposure=head["Exposure"].to_numpy(),
+        )
+        np.testing.assert_allclose(
+            pred_both,
+            pred_without_offset * np.exp(offset),
+            rtol=1e-9,
+            atol=1e-9,
+        )
+
+    def test_predict_exposure_array_length_must_match_prediction_rows(self):
+        df = make_freq_frame()
+        result = self._fit(df, exposure="Exposure")
+        with pytest.raises(rs.PredictionError, match="exposure array length"):
+            result.predict(df.head(20).drop("Exposure"), exposure=np.ones(19))
 
     def test_exposure_plus_offset_combines_additively(self):
         """002.2: eta = eta_terms + log(exposure) + offset."""
@@ -228,18 +272,68 @@ class TestExposureSerialization:
         np.testing.assert_array_almost_equal(loaded.params, result.params)
         np.testing.assert_allclose(loaded.predict(df), result.predict(df), rtol=1e-9, atol=1e-9)
 
+    def test_serialization_roundtrips_split_exposure_and_offset_metadata(self):
+        df = make_freq_frame()
+        adjustment = np.linspace(-0.2, 0.2, df.height)
+        df = df.with_columns(pl.Series("Adj", adjustment))
+        terms = {"DrivAge": {"type": "linear"}, "Region": {"type": "categorical"}}
+        result = rs.glm_dict(
+            response="ClaimCount",
+            terms=terms,
+            data=df,
+            family="poisson",
+            exposure="Exposure",
+            offset="Adj",
+        ).fit()
+
+        loaded = rs.GLMModel.from_bytes(result.to_bytes())
+        assert loaded._exposure_spec == "Exposure"
+        assert loaded._offset_spec == "Adj"
+        np.testing.assert_allclose(
+            loaded.predict(df.head(20)),
+            result.predict(df.head(20)),
+            rtol=1e-9,
+            atol=1e-9,
+        )
+
+    def test_deserializes_legacy_offset_exposure_payload_as_exposure_model(self):
+        import pickle
+
+        df = make_freq_frame()
+        terms = {"DrivAge": {"type": "linear"}, "Region": {"type": "categorical"}}
+        result = rs.glm_dict(
+            response="ClaimCount", terms=terms, data=df, family="poisson", exposure="Exposure"
+        ).fit()
+        state = pickle.loads(result.to_bytes())
+        state.pop("exposure_spec", None)
+        state["offset_spec"] = "Exposure"
+        state["offset_is_exposure"] = True
+
+        loaded = rs.GLMModel.from_bytes(pickle.dumps(state))
+        assert loaded._exposure_spec == "Exposure"
+        assert loaded._offset_spec is None
+        assert not loaded._offset_is_exposure
+        np.testing.assert_allclose(
+            loaded.predict(df.head(20)),
+            result.predict(df.head(20)),
+            rtol=1e-9,
+            atol=1e-9,
+        )
+
 
 class TestExposureDiagnostics:
     def test_diagnostics_sources_exposure_from_exposure_spec(self):
         from rustystats.diagnostics.api import _resolve_offset_and_response
 
         df = make_freq_frame()
+        df = df.with_columns(pl.Series("Adj", np.linspace(-0.1, 0.1, df.height)))
         result = rs.glm_dict(
             response="ClaimCount",
             terms={"DrivAge": {"type": "linear"}},
             data=df,
             family="poisson",
             exposure="Exposure",
+            offset="Adj",
         ).fit()
         _response_col, exposure_col, exposure = _resolve_offset_and_response(result, df)
         assert exposure_col == "Exposure"

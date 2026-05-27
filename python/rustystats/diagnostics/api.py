@@ -269,12 +269,30 @@ def _resolve_offset_and_response(
         formula_parts = result.formula.split("~")
         if len(formula_parts) >= 1:
             response_col = formula_parts[0].strip()
-    if hasattr(result, "_offset_spec") and isinstance(result._offset_spec, str):
-        exposure_col = result._offset_spec
 
     exposure = None
-    if exposure_col and exposure_col in train_data.columns:
-        exposure = train_data[exposure_col].to_numpy().astype(np.float64)
+    exposure_spec = getattr(result, "_exposure_spec", None)
+    if isinstance(exposure_spec, str):
+        exposure_col = exposure_spec
+        if exposure_col in train_data.columns:
+            exposure = train_data[exposure_col].to_numpy().astype(np.float64)
+    elif exposure_spec is not None:
+        exposure = np.asarray(exposure_spec, dtype=np.float64)
+        if exposure.ndim != 1 or exposure.shape[0] != train_data.height:
+            raise ValidationError(
+                f"Stored exposure length {exposure.shape[0]} does not match "
+                f"train_data length {train_data.height}."
+            )
+
+    # Backward compatibility for models serialized before exposure metadata was
+    # split from legacy string offsets.
+    if exposure is None and getattr(result, "_offset_is_exposure", False):
+        offset_spec = getattr(result, "_offset_spec", None)
+        if isinstance(offset_spec, str):
+            exposure_col = offset_spec
+            if exposure_col in train_data.columns:
+                exposure = train_data[exposure_col].to_numpy().astype(np.float64)
+
     return response_col, exposure_col, exposure
 
 
