@@ -119,6 +119,7 @@ class RegularizationPathInfo:
     n_folds: int
     cv_max_iter: int = DEFAULT_MAX_ITER
     cv_tol: float = DEFAULT_TOLERANCE
+    fold_safe_target_encoding: bool = False
 
 
 def _apply_inverse_link(eta: np.ndarray, link: str) -> np.ndarray:
@@ -591,3 +592,198 @@ def fit_cv_regularization_path(
     )
 
     return path_info
+
+
+def build_fold_design_matrices(
+    data,
+    parsed,
+    train_idx: np.ndarray,
+    val_idx: np.ndarray,
+    raw_exposure: np.ndarray | None = None,
+    seed: int | None = None,
+) -> tuple[np.ndarray, np.ndarray, list[str]]:
+    """Build ``(X_train, X_val, names)`` with target encoding fit on training rows only.
+
+    A fresh :class:`InteractionBuilder` is fit on the held-in rows, so every
+    response-dependent encoding (target encoding, including interactions and the
+    exposure-weighted variant) sees only training targets. The held-out rows are
+    then transformed through that fold-training encoder, which maps any level
+    absent from training to the training prior. This is what makes cross-validated
+    alpha selection fold-safe for target-encoded terms (RS-ACT-001b): no
+    validation target ever enters the encoding used to score a fold.
+
+    Per-fold column counts may differ when a categorical level is absent from a
+    fold's training rows; that is harmless because each fold fits and scores in
+    its own column space and only the scalar validation deviance is aggregated.
+    """
+    from rustystats.interactions import InteractionBuilder
+
+    data_train = data[train_idx]
+    data_val = data[val_idx]
+    exposure_train = raw_exposure[train_idx] if raw_exposure is not None else None
+
+    builder = InteractionBuilder(data_train)
+    _y_train, x_train, names = builder.build_design_matrix_from_parsed(
+        parsed, exposure=exposure_train, seed=seed
+    )
+    x_val = builder.transform_new_data(data_val)
+    return x_train, x_val, names
+
+
+def fit_cv_te_regularization_path(
+    glm_instance,
+    cv: int = DEFAULT_CV_FOLDS,
+    selection: Literal["min", "1se"] = "min",
+    regularization: Literal["ridge", "lasso", "elastic_net"] = "ridge",
+    n_alphas: int = DEFAULT_N_ALPHAS,
+    alpha_min_ratio: float = DEFAULT_ALPHA_MIN_RATIO,
+    l1_ratio: float | None = None,
+    max_iter: int = DEFAULT_MAX_ITER,
+    tol: float = DEFAULT_TOLERANCE,
+    seed: int | None = None,
+    include_unregularized: bool = True,
+    verbose: bool = False,
+) -> RegularizationPathInfo:
+    """Fold-safe CV regularization path for models with target-encoded terms.
+
+    Unlike the fast Rust array path (:func:`fit_cv_regularization_path`, which
+    slices a design matrix built once on the full data), this rebuilds the design
+    matrix per fold via :func:`build_fold_design_matrices` so each fold's target
+    encoding is fit on its training rows only (RS-ACT-001b). Each candidate alpha
+    is fit on the fold-training design and scored on the fold-validation design,
+    mirroring the production fit -> predict pipeline. Non-target-encoded models
+    should use the fast path; this one is reserved for the target-encoding case.
+    """
+    from rustystats._rustystats import fit_glm_py as _fit_glm_rust
+
+    if regularization == "ridge":
+        effective_l1_ratio = 0.0
+    elif regularization == "lasso":
+        effective_l1_ratio = 1.0
+    elif regularization == "elastic_net":
+        effective_l1_ratio = l1_ratio if l1_ratio is not None else DEFAULT_ELASTIC_NET_L1_RATIO
+    else:
+        raise ValidationError(f"Unknown regularization type: {regularization}")
+
+    X = glm_instance.X
+    y = glm_instance.y
+    family = glm_instance.family
+    link = glm_instance.link
+    var_power = glm_instance.var_power
+    theta = glm_instance.theta if glm_instance.theta is not None else DEFAULT_NEGBINOMIAL_THETA
+    offset = glm_instance.offset
+    weights = glm_instance.weights
+
+    parsed = glm_instance._builder._parsed_formula
+    data = glm_instance.data
+    raw_exposure = getattr(glm_instance, "_raw_exposure", None)
+
+    # The full-data design only defines the alpha search range; folds rebuild it.
+    alpha_max = compute_alpha_max(X, y, effective_l1_ratio, weights)
+    alphas = list(generate_alpha_path(alpha_max, n_alphas, alpha_min_ratio))
+
+    # CV fold fits use the requested convergence settings (RS-ACT-001), never a
+    # silently relaxed mode that could change which alpha is selected.
+    cv_max_iter = max_iter
+    cv_tol = tol
+
+    if verbose:
+        print(f"Fold-safe target-encoding CV: {regularization}, {cv} folds, {n_alphas} alphas")
+
+    folds = create_cv_folds(len(y), cv, seed)
+
+    # alpha -> per-fold validation deviances; alpha == 0.0 is the unregularized fit.
+    candidate_alphas = list(alphas)
+    if include_unregularized:
+        candidate_alphas.append(0.0)
+    deviances: dict[float, list[float]] = {a: [] for a in candidate_alphas}
+
+    for train_idx, val_idx in folds:
+        x_train, x_val, _names = build_fold_design_matrices(
+            data, parsed, train_idx, val_idx, raw_exposure=raw_exposure, seed=seed
+        )
+        y_train = y[train_idx]
+        y_val = y[val_idx]
+        offset_train = offset[train_idx] if offset is not None else None
+        offset_val = offset[val_idx] if offset is not None else None
+        weights_train = weights[train_idx] if weights is not None else None
+        weights_val = weights[val_idx] if weights is not None else None
+
+        for alpha in candidate_alphas:
+            try:
+                result = _fit_glm_rust(
+                    y_train,
+                    x_train,
+                    family,
+                    link,
+                    var_power,
+                    theta,
+                    offset_train,
+                    weights_train,
+                    alpha,
+                    effective_l1_ratio,
+                    cv_max_iter,
+                    cv_tol,
+                )
+            except ValueError:
+                continue
+            linear_pred = x_val @ result.params
+            if offset_val is not None:
+                linear_pred = linear_pred + offset_val
+            mu_val = _apply_inverse_link(linear_pred, link)
+            dev = compute_deviance(
+                y_val, mu_val, family, theta=theta, weights=weights_val, var_power=var_power
+            )
+            if np.isfinite(dev):
+                deviances[alpha].append(dev)
+
+    n_nonzero = X.shape[1] - 1
+    path_results = []
+    for alpha in candidate_alphas:
+        fold_devs = deviances[alpha]
+        if not fold_devs:
+            continue
+        path_results.append(
+            RegularizationPathResult(
+                alpha=alpha,
+                l1_ratio=0.0 if alpha == 0.0 else effective_l1_ratio,
+                cv_deviance_mean=float(np.mean(fold_devs)),
+                cv_deviance_se=float(np.std(fold_devs) / np.sqrt(len(fold_devs))),
+                n_nonzero=n_nonzero,
+                max_coef=0.0,
+            )
+        )
+
+    if not path_results:
+        raise ValidationError(
+            "Fold-safe target-encoding CV produced no finite validation deviances; "
+            "check the data, family, and fold count."
+        )
+
+    best = select_optimal_alpha(path_results, selection)
+
+    if verbose:
+        print(f"\nSelected: alpha={best.alpha:.6f}, CV deviance={best.cv_deviance_mean:.6f}")
+
+    if best.alpha == 0.0:
+        reg_type = "none"
+    elif effective_l1_ratio >= 1.0:
+        reg_type = "lasso"
+    elif effective_l1_ratio <= 0.0:
+        reg_type = "ridge"
+    else:
+        reg_type = "elastic_net"
+
+    return RegularizationPathInfo(
+        selected_alpha=best.alpha,
+        selected_l1_ratio=best.l1_ratio,
+        cv_deviance=best.cv_deviance_mean,
+        cv_deviance_se=best.cv_deviance_se,
+        selection_method=selection,
+        regularization_type=reg_type,
+        path=path_results,
+        n_folds=cv,
+        cv_max_iter=cv_max_iter,
+        cv_tol=cv_tol,
+        fold_safe_target_encoding=True,
+    )

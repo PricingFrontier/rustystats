@@ -918,21 +918,14 @@ class _GLMBase:
                 "When cv is specified, 'regularization' must be set to 'ridge', 'lasso', or 'elastic_net'"
             )
 
-        # RS-ACT-001: CV is not yet fold-safe for target encoding. Fitting the
-        # encoder on the full dataset and slicing it into folds leaks validation
-        # targets into alpha selection, so fail closed until fold-safe CV lands
-        # (RS-ACT-001b). Fit with an explicit alpha (no cv) or drop the
-        # target-encoded term(s) to cross-validate the rest of the model.
-        if self._has_target_encoding():
-            raise ValidationError(
-                "Cross-validated regularization is not yet fold-safe for "
-                "target-encoded terms (RS-ACT-001): the encoding would be fit on "
-                "the full dataset and leak validation targets into alpha "
-                "selection. Use an explicit alpha (no cv), or remove the "
-                "target_encoding term(s) for CV."
-            )
-
-        from rustystats.regularization_path import fit_cv_regularization_path
+        # RS-ACT-001b: CV with target encoding is fold-safe. Models with a
+        # target-encoded term route through the per-fold fit/transform path
+        # (encoding fit on each fold's training rows only); everything else keeps
+        # using the fast Rust array path, which slices a single full-data design.
+        from rustystats.regularization_path import (
+            fit_cv_regularization_path,
+            fit_cv_te_regularization_path,
+        )
 
         if regularization == "ridge":
             cv_l1_ratio = 0.0
@@ -943,7 +936,13 @@ class _GLMBase:
         else:
             raise ValidationError(f"Unknown regularization type: {regularization}")
 
-        path_info = fit_cv_regularization_path(
+        cv_path_fn = (
+            fit_cv_te_regularization_path
+            if self._has_target_encoding()
+            else fit_cv_regularization_path
+        )
+
+        path_info = cv_path_fn(
             glm_instance=self,
             cv=cv,
             selection=selection,
@@ -2984,6 +2983,11 @@ class FormulaGLMDict(_GLMBase):
                 UserWarning,
                 stacklevel=2,
             )
+
+        # Keep the validated raw exposure for fold-safe CV (RS-ACT-001b), where
+        # each fold's exposure-weighted target encoding must use only its own
+        # training exposure.
+        self._raw_exposure = raw_exposure
 
         # Build design matrix using existing pipeline
         self._builder = InteractionBuilder(data)
