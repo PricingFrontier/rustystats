@@ -20,12 +20,26 @@ import numpy as np
 from rustystats._rustystats import GLMResults
 from rustystats.exceptions import FittingError, ValidationError
 
+_VALID_INFERENCE = frozenset({"valid_standard", "valid_robust"})
+
+_INFERENCE_CAVEATS = {
+    "naive_after_regularization": "ridge penalty shrinks coefficients",
+    "naive_after_selection": "lasso/elastic-net performs variable selection",
+    "naive_after_cv_selection": "alpha was chosen by cross-validation",
+    "constrained_boundary": "sign/monotonicity constraints are active",
+    "unavailable": "penalized smooth terms (use effective df)",
+}
+
 
 def summary(
     result: GLMResults,
     feature_names: list[str] | None = None,
     title: str = "GLM Results",
     alpha: float = 0.05,
+    inference_status: str | None = None,
+    solver_status: str | None = None,
+    optimizer_route: str | None = None,
+    effective_df: float | None = None,
 ) -> str:
     """
     Generate a summary table for GLM results (statsmodels-style).
@@ -67,6 +81,13 @@ def summary(
     conf_ints = result.conf_int(alpha)
     sig_codes = result.significance_codes()
 
+    # RS-ACT-011: standard inference is only trustworthy for an unpenalized,
+    # unselected, unconstrained, non-smooth fit. Otherwise suppress the
+    # significance machinery rather than present it as valid.
+    suppress_inference = inference_status is not None and inference_status not in _VALID_INFERENCE
+    if suppress_inference:
+        sig_codes = [""] * len(sig_codes)
+
     # Get diagnostics
     try:
         llf = result.llf()
@@ -79,6 +100,12 @@ def summary(
     except Exception as e:
         # Re-raise - summary diagnostics shouldn't fail silently
         raise FittingError(f"Failed to compute model summary diagnostics: {e}") from e
+
+    # RS-ACT-011: penalized smooth fits must be scored with their effective df,
+    # not the basis-column count, so AIC/BIC reflect the realized complexity.
+    if effective_df is not None:
+        aic_val = -2.0 * llf + 2.0 * effective_df
+        bic_val = -2.0 * llf + effective_df * np.log(result.nobs)
 
     # Build the table
     lines = []
@@ -118,6 +145,13 @@ def summary(
     lines.append(f"{'AIC:':<20} {aic_val:>15.4f} {'Null Deviance:':<20} {null_dev:>15.4f}")
     lines.append(f"{'BIC:':<20} {bic_val:>15.4f} {'Pearson chi2:':<20} {pearson_chi2:>15.2f}")
     lines.append(f"{'Converged:':<20} {result.converged!s:<15}")
+    if inference_status is not None:
+        lines.append(f"{'Inference:':<20} {inference_status:<15}")
+    if solver_status is not None:
+        route = f" / {optimizer_route}" if optimizer_route else ""
+        lines.append(f"{'Solver status:':<20} {solver_status + route:<15}")
+    if effective_df is not None:
+        lines.append(f"{'Effective df:':<20} {effective_df:<15.3f}")
     lines.append("")
     lines.append("-" * 78)
 
@@ -153,7 +187,16 @@ def summary(
         lines.append(row)
 
     lines.append("-" * 78)
-    lines.append("Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1")
+    if suppress_inference:
+        reason = _INFERENCE_CAVEATS.get(inference_status, "the fitting procedure")
+        lines.append(
+            f"WARNING: standard errors, p-values, and AIC/BIC are NOT valid here ({reason});"
+        )
+        lines.append(
+            f"         inference_status={inference_status}. Treat coefficients descriptively."
+        )
+    else:
+        lines.append("Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1")
     lines.append("=" * 78)
 
     return "\n".join(lines)

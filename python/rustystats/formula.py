@@ -1638,7 +1638,15 @@ class GLMModel:
                 elif isinstance(self._complement_spec, GLMModel):
                     title += " (complement: GLMModel)"
 
-        result = summary(self._result, feature_names=self.feature_names, title=title)
+        result = summary(
+            self._result,
+            feature_names=self.feature_names,
+            title=title,
+            inference_status=getattr(self, "inference_status", None),
+            solver_status=getattr(self, "solver_status", None),
+            optimizer_route=getattr(self, "optimizer_route", None),
+            effective_df=self._total_edf,
+        )
 
         if self.has_complement:
             n_zeroed = int(np.sum(np.abs(self.params[1:]) < 1e-10))
@@ -2210,6 +2218,10 @@ class GLMModel:
             "penalty_type": self._result.penalty_type,
             "theta": self.__dict__.get("theta"),
             "theta_metadata": self.__dict__.get("theta_metadata"),
+            "inference_status": self.__dict__.get("inference_status"),
+            "optimizer_route": self.__dict__.get("optimizer_route"),
+            "solver_status": self.__dict__.get("solver_status"),
+            "step_halving_used": self.__dict__.get("step_halving_used"),
         }
 
         # Extract builder state for prediction
@@ -2340,6 +2352,10 @@ class GLMModel:
         )
         model.theta = result_state.get("theta")
         model.theta_metadata = result_state.get("theta_metadata")
+        model.inference_status = result_state.get("inference_status")
+        model.optimizer_route = result_state.get("optimizer_route")
+        model.solver_status = result_state.get("solver_status")
+        model.step_halving_used = result_state.get("step_halving_used")
         return model
 
     def __repr__(self) -> str:
@@ -3225,6 +3241,47 @@ class FormulaGLMDict(_GLMBase):
             )
         return True, DEFAULT_NEGBINOMIAL_THETA  # placeholder; real theta from MLE
 
+    def _inference_status_and_route(
+        self,
+        requested_alpha: float,
+        requested_l1: float,
+        cv: int | None,
+        regularization: str | None,
+        path_info: RegularizationPathInfo | None,
+    ) -> tuple[str, str]:
+        """Classify inference validity and record the optimizer route (RS-ACT-011).
+
+        Ordinary standard errors / p-values / AIC / BIC are only valid for an
+        unpenalized, unselected, unconstrained, non-smooth fit. Anything else gets
+        a conservative non-``valid_standard`` status so the summary can suppress
+        the usual significance machinery rather than present it as trustworthy.
+        """
+        smooth = bool(self._builder.get_smooth_terms()[0])
+        nonneg, nonpos = _get_constraint_indices(self.feature_names)
+        constrained = bool(nonneg or nonpos)
+        used_cv = path_info is not None
+
+        if used_cv:
+            status = "naive_after_cv_selection"
+        elif requested_alpha > 0:
+            status = "naive_after_selection" if requested_l1 > 0 else "naive_after_regularization"
+        elif smooth:
+            status = "unavailable"
+        elif constrained:
+            status = "constrained_boundary"
+        else:
+            status = "valid_standard"
+
+        if smooth:
+            route = "gcv_penalized"
+        elif regularization in ("lasso", "elastic_net") or (
+            requested_alpha > 0 and requested_l1 > 0
+        ):
+            route = "coordinate_descent"
+        else:
+            route = "irls"
+        return status, route
+
     def fit(
         self,
         alpha: float = 0.0,
@@ -3291,6 +3348,9 @@ class FormulaGLMDict(_GLMBase):
             Fitted model results.
         """
         is_negbinomial = is_negbinomial_family(self.family)
+        # RS-ACT-011: capture the requested penalty before CV resolution rewrites
+        # alpha/l1_ratio, so inference honesty reflects what the user asked for.
+        requested_alpha, requested_l1 = alpha, l1_ratio
 
         # RS-ACT-010: resolve the Negative Binomial theta contract before any CV
         # work, so unsupported estimate combinations fail closed early and we
@@ -3385,6 +3445,12 @@ class FormulaGLMDict(_GLMBase):
         # RS-ACT-010: surface the theta actually used and its estimation provenance.
         results.theta = theta if is_negbinomial else None
         results.theta_metadata = theta_metadata
+        # RS-ACT-011: honest inference status + solver status surfacing.
+        results.inference_status, results.optimizer_route = self._inference_status_and_route(
+            requested_alpha, requested_l1, cv, regularization, path_info
+        )
+        results.solver_status = getattr(result, "solver_status", "converged")
+        results.step_halving_used = bool(getattr(result, "step_halving_used", False))
         return results
 
 
