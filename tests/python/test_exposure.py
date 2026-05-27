@@ -35,6 +35,35 @@ class TestExposureKwarg:
         np.testing.assert_array_equal(explicit.params, legacy.params)
         np.testing.assert_array_equal(explicit.fittedvalues, legacy.fittedvalues)
 
+    def test_explicit_exposure_plus_string_offset_treats_offset_as_link_scale(self):
+        """002.2: when exposure= is explicit, offset= remains link-scale."""
+        df = make_freq_frame()
+        adjustment = np.linspace(-0.2, 0.2, df.height)
+        df = df.with_columns(pl.Series("Adj", adjustment))
+        terms = {"DrivAge": {"type": "linear"}, "VehAge": {"type": "linear"}}
+
+        string_offset = rs.glm_dict(
+            response="ClaimCount",
+            terms=terms,
+            data=df,
+            family="poisson",
+            exposure="Exposure",
+            offset="Adj",
+        ).fit()
+        array_offset = rs.glm_dict(
+            response="ClaimCount",
+            terms=terms,
+            data=df,
+            family="poisson",
+            exposure="Exposure",
+            offset=adjustment,
+        ).fit()
+
+        np.testing.assert_allclose(string_offset.params, array_offset.params, rtol=0, atol=0)
+        np.testing.assert_allclose(
+            string_offset.fittedvalues, array_offset.fittedvalues, rtol=0, atol=0
+        )
+
 
 class TestExposureValidation:
     def test_non_positive_exposure_raises(self):

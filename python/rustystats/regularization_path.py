@@ -254,6 +254,7 @@ def compute_deviance(
     family: str,
     theta: float = 1.0,
     weights: np.ndarray | None = None,
+    var_power: float = 1.5,
 ) -> float:
     """
     Compute mean deviance for a GLM family.
@@ -276,11 +277,49 @@ def compute_deviance(
     float
         Mean deviance
     """
-    from rustystats._rustystats import compute_dataset_metrics_py as _rust_dataset_metrics
+    from rustystats._rustystats import (
+        BinomialFamily,
+        GammaFamily,
+        GaussianFamily,
+        NegativeBinomialFamily,
+        PoissonFamily,
+        QuasiBinomialFamily,
+        QuasiPoissonFamily,
+        TweedieFamily,
+    )
 
-    n_params = 1  # Placeholder, not used for deviance calculation
-    metrics = _rust_dataset_metrics(y, mu, family, n_params)
-    return metrics["mean_deviance"]
+    family_lower = family.lower()
+    if family_lower in ("gaussian", "normal"):
+        fam = GaussianFamily()
+    elif family_lower == "poisson":
+        fam = PoissonFamily()
+    elif family_lower == "quasipoisson":
+        fam = QuasiPoissonFamily()
+    elif family_lower == "gamma":
+        fam = GammaFamily()
+    elif family_lower == "binomial":
+        fam = BinomialFamily()
+    elif family_lower == "quasibinomial":
+        fam = QuasiBinomialFamily()
+    elif family_lower.startswith(("negativebinomial", "negbinomial")) or family_lower in (
+        "negative_binomial",
+        "nb",
+    ):
+        fam = NegativeBinomialFamily(theta)
+    elif family_lower.startswith("tweedie"):
+        fam = TweedieFamily(var_power)
+    else:
+        raise ValidationError(f"Unknown family: {family}")
+
+    unit_dev = np.asarray(fam.unit_deviance(y, mu), dtype=np.float64)
+    if weights is None:
+        return float(np.mean(unit_dev))
+
+    w = np.asarray(weights, dtype=np.float64)
+    denom = float(np.sum(w))
+    if denom <= 0 or not np.isfinite(denom):
+        return float("inf")
+    return float(np.sum(w * unit_dev) / denom)
 
 
 def select_optimal_alpha(
@@ -476,6 +515,7 @@ def fit_cv_regularization_path(
             offset_train = offset[train_idx] if offset is not None else None
             offset_val = offset[val_idx] if offset is not None else None
             weights_train = weights[train_idx] if weights is not None else None
+            weights_val = weights[val_idx] if weights is not None else None
 
             try:
                 result = _fit_glm_rust(
@@ -498,7 +538,14 @@ def fit_cv_regularization_path(
             if offset_val is not None:
                 linear_pred = linear_pred + offset_val
             mu_val = _apply_inverse_link(linear_pred, link)
-            dev = compute_deviance(y_val, mu_val, family)
+            dev = compute_deviance(
+                y_val,
+                mu_val,
+                family,
+                theta=theta,
+                weights=weights_val,
+                var_power=var_power,
+            )
             fold_deviances.append(dev)
 
         valid_deviances = [d for d in fold_deviances if np.isfinite(d)]

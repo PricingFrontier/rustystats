@@ -8,6 +8,7 @@ must also use the requested convergence settings, not hidden relaxed ones.
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 import rustystats as rs
 from _fixtures import make_freq_frame
@@ -47,6 +48,24 @@ class TestCVTargetEncodingGuard:
         with pytest.raises(rs.ValidationError, match=r"(?i)fold-safe|target"):
             model.fit(**CV_KW)
 
+    def test_cv_with_target_encoded_factor_inside_standard_interaction_raises(self):
+        df = make_freq_frame()
+        model = rs.glm_dict(
+            response="ClaimCount",
+            terms={"DrivAge": {"type": "linear"}},
+            interactions=[
+                {
+                    "DrivAge": {"type": "linear"},
+                    "Brand": {"type": "target_encoding"},
+                }
+            ],
+            data=df,
+            family="poisson",
+            exposure="Exposure",
+        )
+        with pytest.raises(rs.ValidationError, match=r"(?i)fold-safe|target"):
+            model.fit(**CV_KW)
+
     def test_cv_without_target_encoding_still_works(self):
         df = make_freq_frame()
         model = rs.glm_dict(
@@ -77,3 +96,21 @@ class TestCVExplicitConvergence:
         assert conv is not None
         assert conv["max_iter"] == 50  # not capped at 10
         assert conv["tol"] == pytest.approx(1e-7)  # not relaxed to 1e-4
+
+
+class TestCVWeightedScoring:
+    def test_compute_deviance_uses_validation_weights(self):
+        from rustystats._rustystats import PoissonFamily
+        from rustystats.regularization_path import compute_deviance
+
+        y = np.array([0.0, 3.0, 10.0])
+        mu = np.array([1.0, 1.0, 1.0])
+        weights = np.array([10.0, 1.0, 1.0])
+
+        unit_dev = PoissonFamily().unit_deviance(y, mu)
+        expected = np.sum(weights * unit_dev) / np.sum(weights)
+
+        assert compute_deviance(y, mu, "poisson", weights=weights) == pytest.approx(expected)
+        assert compute_deviance(y, mu, "poisson", weights=weights) != pytest.approx(
+            np.mean(unit_dev)
+        )

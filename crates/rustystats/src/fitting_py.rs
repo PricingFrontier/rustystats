@@ -398,6 +398,23 @@ struct CVPathPoint {
     cv_deviance_se: f64,
 }
 
+fn validation_deviance_score(unit_deviance: &Array1<f64>, weights: Option<&Array1<f64>>) -> f64 {
+    if let Some(w) = weights {
+        let denom = w.sum();
+        if denom <= 0.0 || !denom.is_finite() {
+            return f64::INFINITY;
+        }
+        unit_deviance
+            .iter()
+            .zip(w.iter())
+            .map(|(dev, weight)| dev * weight)
+            .sum::<f64>()
+            / denom
+    } else {
+        unit_deviance.mean().unwrap_or(f64::INFINITY)
+    }
+}
+
 #[pyfunction]
 #[pyo3(signature = (y, x, family, link=None, var_power=1.5, theta=1.0, offset=None, weights=None, alphas=None, l1_ratio=0.0, n_folds=5, max_iter=25, tol=1e-8, seed=None, nonneg_indices=None, nonpos_indices=None))]
 pub fn fit_cv_path_py<'py>(
@@ -471,6 +488,8 @@ pub fn fit_cv_path_py<'py>(
             let mut x_val = Array2::zeros((n_val, p));
             let mut offset_val: Option<Array1<f64>> =
                 offset_array.as_ref().map(|_| Array1::zeros(n_val));
+            let mut weights_val: Option<Array1<f64>> =
+                weights_array.as_ref().map(|_| Array1::zeros(n_val));
 
             let (mut ti, mut vi) = (0, 0);
             for i in 0..n {
@@ -489,6 +508,9 @@ pub fn fit_cv_path_py<'py>(
                     x_val.row_mut(vi).assign(&x_view.row(i));
                     if let (Some(ref o), Some(ref mut ov)) = (&offset_array, &mut offset_val) {
                         ov[vi] = o[i];
+                    }
+                    if let (Some(ref w), Some(ref mut wv)) = (&weights_array, &mut weights_val) {
+                        wv[vi] = w[i];
                     }
                     vi += 1;
                 }
@@ -554,7 +576,7 @@ pub fn fit_cv_path_py<'py>(
                 };
                 let mu_val = thread_link.inverse(&lp_off);
                 let unit_dev = thread_fam.unit_deviance(&y_val, &mu_val);
-                fold_deviances.push(unit_dev.mean().unwrap_or(f64::INFINITY));
+                fold_deviances.push(validation_deviance_score(&unit_dev, weights_val.as_ref()));
             }
             fold_deviances
         })
@@ -614,6 +636,31 @@ pub fn fit_cv_path_py<'py>(
     dict.set_item("best_alpha", path_results[best_idx].alpha)?;
     dict.set_item("best_cv_deviance", path_results[best_idx].cv_deviance_mean)?;
     Ok(dict.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validation_deviance_score;
+    use ndarray::array;
+
+    #[test]
+    fn validation_deviance_score_uses_validation_weights() {
+        let unit_deviance = array![1.0, 9.0, 25.0];
+        let weights = array![1.0, 3.0, 6.0];
+
+        let score = validation_deviance_score(&unit_deviance, Some(&weights));
+
+        assert!((score - 17.8).abs() < 1e-12);
+    }
+
+    #[test]
+    fn validation_deviance_score_defaults_to_unweighted_mean() {
+        let unit_deviance = array![1.0, 9.0, 26.0];
+
+        let score = validation_deviance_score(&unit_deviance, None);
+
+        assert!((score - 12.0).abs() < 1e-12);
+    }
 }
 
 /// Unified smooth GLM fitting: takes full design matrix + smooth specs.

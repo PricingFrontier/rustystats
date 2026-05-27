@@ -714,6 +714,8 @@ class _GLMBase:
     def _process_offset(
         self,
         offset: str | np.ndarray | None,
+        *,
+        string_is_exposure: bool | None = None,
     ) -> np.ndarray | None:
         """Process offset specification, applying log for log-link families.
 
@@ -725,9 +727,12 @@ class _GLMBase:
         if offset is None:
             return None
 
+        if string_is_exposure is None:
+            string_is_exposure = isinstance(offset, str) and self._uses_log_link()
+
         if isinstance(offset, str):
             offset_values = _get_column(self.data, offset)
-            if self._uses_log_link():
+            if string_is_exposure:
                 # Validate raw exposure before log-transform
                 n_invalid = np.sum(offset_values <= 0)
                 if n_invalid > 0:
@@ -839,9 +844,28 @@ class _GLMBase:
 
     def _has_target_encoding(self) -> bool:
         """True if any term or interaction requests target encoding."""
+        builder = getattr(self, "_builder", None)
+        parsed = getattr(builder, "_parsed_formula", None)
+        if parsed is not None and parsed.target_encoding_terms:
+            return True
         if any(spec.get("type") == "target_encoding" for spec in self.terms.values()):
             return True
-        return any(ix.get("target_encoding") for ix in (self.interactions_spec or []))
+        reserved_keys = {
+            "include_main",
+            "target_encoding",
+            "frequency_encoding",
+            "prior_weight",
+            "n_permutations",
+        }
+        for interaction in self.interactions_spec or []:
+            if interaction.get("target_encoding"):
+                return True
+            for key, spec in interaction.items():
+                if key in reserved_keys:
+                    continue
+                if isinstance(spec, dict) and spec.get("type") == "target_encoding":
+                    return True
+        return False
 
     def _get_raw_exposure(
         self,
@@ -856,7 +880,7 @@ class _GLMBase:
         if exposure is not None:
             return self._resolve_exposure_values(exposure)
         if isinstance(offset, str) and self._uses_log_link():
-            return _get_column(self.data, offset).astype(np.float64)
+            return self._resolve_exposure_values(offset)
         return None
 
     def _resolve_cv_path(
@@ -2837,7 +2861,7 @@ class FormulaGLMDict(_GLMBase):
             if isinstance(exposure, str) and offset is None:
                 offset = exposure  # canonical rate model == legacy offset="Exposure"
             else:
-                user_offset = self._process_offset(offset)
+                user_offset = self._process_offset(offset, string_is_exposure=False)
                 log_exposure = np.log(raw_exposure)
                 offset = log_exposure if user_offset is None else log_exposure + user_offset
             self._offset_spec = offset
