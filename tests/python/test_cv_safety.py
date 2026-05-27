@@ -189,6 +189,91 @@ class TestFoldSafeTargetEncodingCV:
         np.testing.assert_array_equal(r1.params, r2.params)
         assert r1.cv_deviance == pytest.approx(r2.cv_deviance)
 
+    def test_cv_te_alpha_grid_uses_fold_training_designs(self, monkeypatch):
+        """001.2: alpha candidates are derived after the fold split, not from full-data TE."""
+        from rustystats import regularization_path as rp
+
+        df = make_freq_frame()
+        seen_rows = []
+        original = rp.compute_alpha_max
+
+        def spy_compute_alpha_max(X, y, l1_ratio, weights=None):
+            seen_rows.append(X.shape[0])
+            return original(X, y, l1_ratio, weights)
+
+        monkeypatch.setattr(rp, "compute_alpha_max", spy_compute_alpha_max)
+        result = rs.glm_dict(
+            response="ClaimCount",
+            terms={"DrivAge": {"type": "linear"}, "Brand": {"type": "target_encoding"}},
+            data=df,
+            family="poisson",
+            exposure="Exposure",
+        ).fit(cv=3, regularization="ridge", n_alphas=3, cv_seed=7, verbose=False)
+
+        assert result.cv_deviance is not None
+        assert len(seen_rows) == 3
+        assert all(n_rows < df.height for n_rows in seen_rows)
+
+    def test_cv_te_fold_fits_receive_sign_constraints(self, monkeypatch):
+        import rustystats._rustystats as rust
+
+        rng = np.random.default_rng(0)
+        n = 180
+        x = rng.uniform(0, 5, n)
+        brand = rng.choice(["A", "B", "C", "D"], n)
+        y = rng.poisson(np.exp(0.2 + 0.1 * x)).astype(float)
+        data = pl.DataFrame({"y": y, "x": x, "Brand": brand})
+
+        original = rust.fit_glm_py
+        seen_nonneg = []
+
+        def spy_fit_glm_py(*args, **kwargs):
+            if len(args) >= 13:
+                seen_nonneg.append(args[12])
+            else:
+                seen_nonneg.append(kwargs.get("nonneg_indices"))
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(rust, "fit_glm_py", spy_fit_glm_py)
+        result = rs.glm_dict(
+            response="y",
+            terms={
+                "x": {"type": "linear", "monotonicity": "increasing"},
+                "Brand": {"type": "target_encoding"},
+            },
+            data=data,
+            family="poisson",
+        ).fit(cv=3, regularization="ridge", n_alphas=3, cv_seed=7, verbose=False)
+
+        assert result.cv_deviance is not None
+        assert sum(bool(indices) for indices in seen_nonneg) > 1
+
+    def test_cv_te_drops_alpha_when_any_fold_fit_fails(self, monkeypatch):
+        import rustystats._rustystats as rust
+
+        df = make_freq_frame()
+        original = rust.fit_glm_py
+        failed = {"alpha": None}
+
+        def spy_fit_glm_py(*args, **kwargs):
+            alpha = float(args[8])
+            if failed["alpha"] is None and alpha > 0:
+                failed["alpha"] = alpha
+                raise ValueError("forced fold failure")
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(rust, "fit_glm_py", spy_fit_glm_py)
+        result = rs.glm_dict(
+            response="ClaimCount",
+            terms={"DrivAge": {"type": "linear"}, "Brand": {"type": "target_encoding"}},
+            data=df,
+            family="poisson",
+            exposure="Exposure",
+        ).fit(cv=3, regularization="ridge", n_alphas=3, cv_seed=7, verbose=False)
+
+        assert failed["alpha"] is not None
+        assert all(row["alpha"] != failed["alpha"] for row in result.regularization_path)
+
     def test_cv_without_target_encoding_still_works(self):
         """001.5: non-TE models keep working (fast Rust array path)."""
         df = make_freq_frame()

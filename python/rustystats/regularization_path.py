@@ -678,10 +678,6 @@ def fit_cv_te_regularization_path(
     data = glm_instance.data
     raw_exposure = getattr(glm_instance, "_raw_exposure", None)
 
-    # The full-data design only defines the alpha search range; folds rebuild it.
-    alpha_max = compute_alpha_max(X, y, effective_l1_ratio, weights)
-    alphas = list(generate_alpha_path(alpha_max, n_alphas, alpha_min_ratio))
-
     # CV fold fits use the requested convergence settings (RS-ACT-001), never a
     # silently relaxed mode that could change which alpha is selected.
     cv_max_iter = max_iter
@@ -691,15 +687,34 @@ def fit_cv_te_regularization_path(
         print(f"Fold-safe target-encoding CV: {regularization}, {cv} folds, {n_alphas} alphas")
 
     folds = create_cv_folds(len(y), cv, seed)
+    from rustystats.formula import _get_constraint_indices
+
+    fold_alpha_maxes = []
+    for train_idx, val_idx in folds:
+        x_train, _x_val, _names = build_fold_design_matrices(
+            data, parsed, train_idx, val_idx, raw_exposure=raw_exposure, seed=seed
+        )
+        y_train = y[train_idx]
+        weights_train = weights[train_idx] if weights is not None else None
+        fold_alpha_maxes.append(
+            compute_alpha_max(x_train, y_train, effective_l1_ratio, weights_train)
+        )
+
+    # Build the alpha search range only from fold-training designs. Taking the
+    # maximum keeps the grid regularized enough for every fold without letting
+    # validation targets enter a full-data target-encoded design.
+    alpha_max = max(fold_alpha_maxes)
+    alphas = list(generate_alpha_path(alpha_max, n_alphas, alpha_min_ratio))
 
     # alpha -> per-fold validation deviances; alpha == 0.0 is the unregularized fit.
     candidate_alphas = list(alphas)
     if include_unregularized:
         candidate_alphas.append(0.0)
     deviances: dict[float, list[float]] = {a: [] for a in candidate_alphas}
+    failed_alphas: set[float] = set()
 
     for train_idx, val_idx in folds:
-        x_train, x_val, _names = build_fold_design_matrices(
+        x_train, x_val, names = build_fold_design_matrices(
             data, parsed, train_idx, val_idx, raw_exposure=raw_exposure, seed=seed
         )
         y_train = y[train_idx]
@@ -708,8 +723,11 @@ def fit_cv_te_regularization_path(
         offset_val = offset[val_idx] if offset is not None else None
         weights_train = weights[train_idx] if weights is not None else None
         weights_val = weights[val_idx] if weights is not None else None
+        nonneg_indices, nonpos_indices = _get_constraint_indices(names)
 
         for alpha in candidate_alphas:
+            if alpha in failed_alphas:
+                continue
             try:
                 result = _fit_glm_rust(
                     y_train,
@@ -724,24 +742,37 @@ def fit_cv_te_regularization_path(
                     effective_l1_ratio,
                     cv_max_iter,
                     cv_tol,
+                    nonneg_indices if nonneg_indices else None,
+                    nonpos_indices if nonpos_indices else None,
+                    False,
                 )
             except ValueError:
+                failed_alphas.add(alpha)
                 continue
             linear_pred = x_val @ result.params
             if offset_val is not None:
                 linear_pred = linear_pred + offset_val
             mu_val = _apply_inverse_link(linear_pred, link)
             dev = compute_deviance(
-                y_val, mu_val, family, theta=theta, weights=weights_val, var_power=var_power
+                y_val,
+                mu_val,
+                family,
+                theta=theta,
+                weights=weights_val,
+                var_power=var_power,
             )
             if np.isfinite(dev):
                 deviances[alpha].append(dev)
+            else:
+                failed_alphas.add(alpha)
 
     n_nonzero = X.shape[1] - 1
     path_results = []
     for alpha in candidate_alphas:
+        if alpha in failed_alphas:
+            continue
         fold_devs = deviances[alpha]
-        if not fold_devs:
+        if len(fold_devs) != len(folds):
             continue
         path_results.append(
             RegularizationPathResult(
