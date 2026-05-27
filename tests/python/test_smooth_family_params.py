@@ -69,6 +69,22 @@ class TestSmoothFamilyParams:
         high = _fit_smooth(data, "tweedie", var_power=1.8)
         assert not np.allclose(low.params, high.params)
 
+    def test_tweedie_family_string_records_var_power(self):
+        """003.3: Tweedie result metadata records the p actually used."""
+        data = _smooth_count_frame()
+        smooth = _fit_smooth(data, "tweedie", var_power=1.2)
+        plain = rs.glm_dict(
+            response="y",
+            terms={"x": {"type": "linear"}},
+            data=data,
+            family="tweedie",
+            var_power=1.8,
+        ).fit()
+
+        assert smooth.family == "Tweedie(p=1.2000)"
+        assert plain.family == "Tweedie(p=1.8000)"
+        assert np.isfinite(smooth.compute_loss(data))
+
     def test_smooth_negbinomial_family_string_is_honest(self):
         """003.3: the smooth NB result reports the theta it actually used, non-vacuously."""
         data = _smooth_count_frame()

@@ -53,7 +53,21 @@ from rustystats.exceptions import (
 
 def is_negbinomial_family(family: str) -> bool:
     """Check if the family string refers to a Negative Binomial distribution."""
-    return family.lower() in NEGBINOMIAL_ALIASES
+    return family.lower().split("(", 1)[0].strip() in NEGBINOMIAL_ALIASES
+
+
+def is_tweedie_family(family: str) -> bool:
+    """Check if the family string refers to a Tweedie distribution."""
+    return family.lower().split("(", 1)[0].strip() == "tweedie"
+
+
+def _format_result_family(family: str, var_power: float, theta: float) -> str:
+    """Format family metadata with the fitted parameters embedded."""
+    if is_negbinomial_family(family):
+        return f"NegativeBinomial(theta={theta:.4f})"
+    if is_tweedie_family(family):
+        return f"Tweedie(p={var_power:.4f})"
+    return family
 
 
 def get_default_link(family: str) -> str:
@@ -76,10 +90,11 @@ def get_default_link(family: str) -> str:
         If family is not recognized.
     """
     family_lower = family.lower()
-    # Handle NegativeBinomial(theta=...) format from result strings
-    if family_lower.startswith("negativebinomial"):
+    family_base = family_lower.split("(", 1)[0].strip()
+    # Handle embedded-parameter result strings such as NegativeBinomial(theta=...)
+    if family_base in NEGBINOMIAL_ALIASES:
         return "log"
-    link = DEFAULT_LINKS.get(family_lower)
+    link = DEFAULT_LINKS.get(family_base)
     if link is None:
         raise ValidationError(
             f"Unknown family '{family}'. Supported families: {sorted(DEFAULT_LINKS.keys())}"
@@ -2155,6 +2170,7 @@ class GLMModel:
         - Categorical encoding levels
         - Spline knot positions
         - Target encoding statistics
+        - Family parameter metadata such as Negative Binomial theta
 
         Returns
         -------
@@ -2192,6 +2208,8 @@ class GLMModel:
             "l1_ratio": self._result.l1_ratio,
             "is_regularized": self._result.is_regularized,
             "penalty_type": self._result.penalty_type,
+            "theta": self.__dict__.get("theta"),
+            "theta_metadata": self.__dict__.get("theta_metadata"),
         }
 
         # Extract builder state for prediction
@@ -2302,7 +2320,7 @@ class GLMModel:
             offset_spec = None
             offset_is_exposure = False
 
-        return cls(
+        model = cls(
             result=result,
             feature_names=state["feature_names"],
             formula=state["formula"],
@@ -2320,6 +2338,9 @@ class GLMModel:
             interactions_spec=state.get("interactions_spec"),
             complement_spec=state.get("complement_spec"),
         )
+        model.theta = result_state.get("theta")
+        model.theta_metadata = result_state.get("theta_metadata")
+        return model
 
     def __repr__(self) -> str:
         return (
@@ -3340,7 +3361,7 @@ class FormulaGLMDict(_GLMBase):
         self._total_edf = total_edf
         self._gcv = gcv
 
-        result_family = f"NegativeBinomial(theta={theta:.4f})" if is_negbinomial else self.family
+        result_family = _format_result_family(self.family, self.var_power, theta)
 
         results = _build_results(
             result,

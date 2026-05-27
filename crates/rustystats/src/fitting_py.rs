@@ -263,19 +263,15 @@ pub fn fit_negbinomial_py<'py>(
         RegularizationConfig::none()
     };
 
-    let config_loose = FitConfig {
+    let config = FitConfig {
         max_iterations: max_iter,
-        tolerance: 1e-4,
+        tolerance: tol,
         min_weight: 1e-10,
         verbose: false,
         nonneg_indices: nonneg_indices.unwrap_or_default(),
         nonpos_indices: nonpos_indices.unwrap_or_default(),
-        regularization: reg_config.clone(),
+        regularization: reg_config,
         skip_covariance: false,
-    };
-    let config_final = FitConfig {
-        tolerance: tol.max(1e-6),
-        ..config_loose.clone()
     };
 
     let link_name = link.unwrap_or("log");
@@ -299,7 +295,7 @@ pub fn fit_negbinomial_py<'py>(
             let poisson = PoissonFamily;
             let init_config = FitConfig {
                 regularization: RegularizationConfig::none(),
-                ..config_loose.clone()
+                ..config.clone()
             };
             let init_result = fit_glm_unified(
                 &y_array,
@@ -331,7 +327,7 @@ pub fn fit_negbinomial_py<'py>(
             x_view,
             &family,
             link_fn.as_ref(),
-            &config_loose,
+            &config,
             offset_array.as_ref(),
             weights_array.as_ref(),
             coefficients.as_ref(),
@@ -362,7 +358,7 @@ pub fn fit_negbinomial_py<'py>(
         x_view,
         &final_family,
         link_fn.as_ref(),
-        &config_final,
+        &config,
         offset_array.as_ref(),
         weights_array.as_ref(),
         coefficients.as_ref(),
@@ -402,6 +398,7 @@ pub fn fit_negbinomial_py<'py>(
     meta.set_item("theta_converged", theta_converged)?;
     meta.set_item("theta_tol", theta_tol)?;
     meta.set_item("max_theta_iter", max_theta_iter)?;
+    meta.set_item("glm_tol", tol)?;
 
     let tuple = pyo3::types::PyTuple::new(
         py,

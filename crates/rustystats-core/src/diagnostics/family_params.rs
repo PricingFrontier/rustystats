@@ -49,8 +49,20 @@ pub fn parse_family_params(
     default_theta: f64,
 ) -> Result<FamilyParams, String> {
     let lower = family.to_lowercase();
+    let base = lower.split('(').next().unwrap_or("").trim();
+    let is_negbinomial = matches!(
+        base,
+        "negativebinomial"
+            | "negbinomial"
+            | "negbin"
+            | "nb"
+            | "negative_binomial"
+            | "negative-binomial"
+            | "neg_binomial"
+            | "neg-binomial"
+    );
 
-    let theta = if lower.starts_with("negativebinomial") || lower.starts_with("negbinomial") {
+    let theta = if is_negbinomial {
         if let Some(start) = lower.find("theta=") {
             let rest = &lower[start + "theta=".len()..];
             let end = rest.find(')').unwrap_or(rest.len());
@@ -68,7 +80,7 @@ pub fn parse_family_params(
         default_theta
     };
 
-    let var_power = if lower.starts_with("tweedie") {
+    let var_power = if base == "tweedie" {
         if let Some(start) = lower.find("p=") {
             let rest = &lower[start + "p=".len()..];
             let end = rest.find(')').unwrap_or(rest.len());
@@ -122,6 +134,13 @@ mod tests {
     fn test_parse_negbinomial_alias() {
         let p = parse_family_params("negbinomial(theta=0.42)", 1.5, 1.0)
             .expect("test setup should be valid");
+        assert_abs_diff_eq!(p.theta, 0.42, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn test_parse_nb_short_alias() {
+        let p =
+            parse_family_params("nb(theta=0.42)", 1.5, 1.0).expect("test setup should be valid");
         assert_abs_diff_eq!(p.theta, 0.42, epsilon = 1e-12);
     }
 

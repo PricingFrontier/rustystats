@@ -65,6 +65,13 @@ class TestNegBinomialThetaContract:
         assert isinstance(meta["theta_converged"], bool)
         assert meta["init_theta"] > 0
         assert meta["theta_tol"] > 0
+        assert meta["glm_tol"] == pytest.approx(1e-8)
+
+    def test_estimate_records_requested_glm_tolerance(self):
+        """010.2: the NB estimator records and uses the requested GLM tolerance."""
+        data = _nb_frame(n=1200, true_theta=2.0)
+        result = _fit(data, theta="estimate", tol=1e-9)
+        assert result.theta_metadata["glm_tol"] == pytest.approx(1e-9)
 
     def test_numeric_theta_is_fixed(self):
         """010.3: numeric theta is recorded as fixed and shown in the family string."""
@@ -73,6 +80,22 @@ class TestNegBinomialThetaContract:
         assert result.theta == pytest.approx(1.5)
         assert result.theta_metadata["estimated"] is False
         assert result.family == "NegativeBinomial(theta=1.5000)"
+
+    def test_theta_metadata_survives_serialization(self):
+        """010.2/010.3: serialized NB models keep theta provenance."""
+        data = _nb_frame(n=1200, true_theta=2.0)
+
+        estimated = _fit(data, theta="estimate")
+        loaded_estimated = rs.GLMModel.from_bytes(estimated.to_bytes())
+        assert loaded_estimated.theta == pytest.approx(estimated.theta)
+        assert loaded_estimated.theta_metadata == estimated.theta_metadata
+        assert loaded_estimated.family == estimated.family
+
+        fixed = _fit(data, theta=1.5)
+        loaded_fixed = rs.GLMModel.from_bytes(fixed.to_bytes())
+        assert loaded_fixed.theta == pytest.approx(1.5)
+        assert loaded_fixed.theta_metadata == fixed.theta_metadata
+        assert loaded_fixed.family == "NegativeBinomial(theta=1.5000)"
 
     def test_numeric_theta_matches_statsmodels_coefficients(self):
         """010.3: at a fixed theta, coefficients match statsmodels NB GLM."""

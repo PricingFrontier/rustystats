@@ -367,13 +367,16 @@ pub fn negbinomial_deviance_loss(
 /// Get the default loss function name for a family.
 /// Returns an error for unknown family names.
 pub fn default_loss_name(family: &str) -> Result<&'static str, String> {
-    match family.to_lowercase().as_str() {
+    let lower = family.to_lowercase();
+    let base = lower.split('(').next().unwrap_or("").trim();
+    match base {
         "gaussian" | "normal" => Ok("mse"),
         "poisson" | "quasipoisson" => Ok("poisson_deviance"),
         "gamma" => Ok("gamma_deviance"),
         "binomial" | "quasibinomial" => Ok("log_loss"),
         "tweedie" => Ok("tweedie_deviance"),
-        "negativebinomial" | "negbinomial" | "nb" => Ok("negbinomial_deviance"),
+        "negativebinomial" | "negbinomial" | "negbin" | "nb" | "negative_binomial"
+        | "negative-binomial" | "neg_binomial" | "neg-binomial" => Ok("negbinomial_deviance"),
         other => Err(format!("Unknown family '{}' in default_loss_name", other)),
     }
 }
@@ -389,35 +392,20 @@ pub fn compute_family_loss(
     theta: Option<f64>,
 ) -> Result<f64, String> {
     let lower = family.to_lowercase();
+    let base = lower.split('(').next().unwrap_or("").trim();
+    let params =
+        super::parse_family_params(family, var_power.unwrap_or(1.5), theta.unwrap_or(1.0))?;
 
-    // Handle negativebinomial with optional theta parameter like "negativebinomial(theta=1.38)"
-    if lower.starts_with("negativebinomial")
-        || lower.starts_with("negbinomial")
-        || lower.starts_with("nb(")
-        || lower == "nb"
-    {
-        // Parse theta from family string if present, otherwise use provided theta
-        let parsed_theta = if let Some(start) = lower.find("theta=") {
-            let rest = &lower[start + 6..];
-            let end = rest.find(')').unwrap_or(rest.len());
-            rest[..end].parse::<f64>().unwrap_or(1.0)
-        } else {
-            theta.unwrap_or(1.0)
-        };
-        return Ok(negbinomial_deviance_loss(y, mu, parsed_theta, weights));
-    }
-
-    match lower.as_str() {
+    match base {
         "gaussian" | "normal" => Ok(mse(y, mu, weights)),
         "poisson" | "quasipoisson" => Ok(poisson_deviance_loss(y, mu, weights)),
         "gamma" => Ok(gamma_deviance_loss(y, mu, weights)),
         "binomial" | "quasibinomial" => Ok(log_loss(y, mu, weights)),
-        "tweedie" => Ok(tweedie_deviance_loss(
-            y,
-            mu,
-            var_power.unwrap_or(1.5),
-            weights,
-        )),
+        "tweedie" => Ok(tweedie_deviance_loss(y, mu, params.var_power, weights)),
+        "negativebinomial" | "negbinomial" | "negbin" | "nb" | "negative_binomial"
+        | "negative-binomial" | "neg_binomial" | "neg-binomial" => {
+            Ok(negbinomial_deviance_loss(y, mu, params.theta, weights))
+        }
         other => Err(format!("Unknown family '{}' in compute_family_loss", other)),
     }
 }
@@ -782,6 +770,10 @@ mod tests {
             "tweedie_deviance"
         );
         assert_eq!(
+            default_loss_name("Tweedie(p=1.7)").expect("test setup should be valid"),
+            "tweedie_deviance"
+        );
+        assert_eq!(
             default_loss_name("negativebinomial").expect("test setup should be valid"),
             "negbinomial_deviance"
         );
@@ -791,6 +783,10 @@ mod tests {
         );
         assert_eq!(
             default_loss_name("nb").expect("test setup should be valid"),
+            "negbinomial_deviance"
+        );
+        assert_eq!(
+            default_loss_name("negative_binomial(theta=2.5)").expect("test setup should be valid"),
             "negbinomial_deviance"
         );
         assert!(default_loss_name("unknown").is_err());
@@ -852,6 +848,17 @@ mod tests {
     }
 
     #[test]
+    fn test_compute_family_loss_tweedie_with_p_in_name() {
+        let y = array![0.0, 1.0, 2.0];
+        let mu = array![0.5, 1.0, 2.0];
+
+        let result = compute_family_loss("Tweedie(p=1.7)", &y, &mu, None, None, None)
+            .expect("test setup should be valid");
+        let expected = tweedie_deviance_loss(&y, &mu, 1.7, None);
+        assert_abs_diff_eq!(result, expected, epsilon = 1e-10);
+    }
+
+    #[test]
     fn test_compute_family_loss_negbinomial() {
         let y = array![1.0, 2.0, 3.0];
         let mu = array![1.0, 2.0, 3.0];
@@ -868,6 +875,17 @@ mod tests {
         let mu = array![1.0, 2.0, 3.0];
 
         let result = compute_family_loss("negativebinomial(theta=2.5)", &y, &mu, None, None, None)
+            .expect("test setup should be valid");
+        let expected = negbinomial_deviance_loss(&y, &mu, 2.5, None);
+        assert_abs_diff_eq!(result, expected, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_compute_family_loss_nb_alias_with_theta_in_name() {
+        let y = array![1.0, 2.0, 3.0];
+        let mu = array![1.0, 2.0, 3.0];
+
+        let result = compute_family_loss("nb(theta=2.5)", &y, &mu, None, None, None)
             .expect("test setup should be valid");
         let expected = negbinomial_deviance_loss(&y, &mu, 2.5, None);
         assert_abs_diff_eq!(result, expected, epsilon = 1e-10);
