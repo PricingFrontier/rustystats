@@ -77,6 +77,17 @@ pub struct CalibrationBin {
     pub ae_ci_upper: f64,
 }
 
+/// Predicted-rate ranking score (RS-ACT-004): `mu/exposure` when a positive
+/// exposure is present, else `mu`. Shared so the calibration curve and the
+/// discrimination stats rank observations identically.
+#[inline]
+fn predicted_rate(mu: &Array1<f64>, exposure: Option<&Array1<f64>>, i: usize) -> f64 {
+    match exposure {
+        Some(e) if e[i] > 0.0 => mu[i] / e[i],
+        _ => mu[i],
+    }
+}
+
 /// Compute calibration curve by prediction deciles (or other quantiles)
 pub fn compute_calibration_curve(
     y: &Array1<f64>,
@@ -89,11 +100,16 @@ pub fn compute_calibration_curve(
         return Vec::new();
     }
 
-    // Sort indices by predicted values. `sort_unstable_by` is in-place
-    // (vs. Timsort's O(n) scratch buffer); ties on `mu` end up in the same
-    // bin and are summed, so stability is irrelevant here.
+    // Sort indices by predicted RATE (mu/exposure), matching the discrimination
+    // stats and the decile table (RS-ACT-004). `sort_unstable_by` is in-place;
+    // ties break by index for determinism, and same-rate rows land in the same
+    // bin and are summed regardless.
     let mut indices: Vec<usize> = (0..n).collect();
-    indices.sort_unstable_by(|&a, &b| mu[a].total_cmp(&mu[b]));
+    indices.sort_unstable_by(|&a, &b| {
+        predicted_rate(mu, exposure, a)
+            .total_cmp(&predicted_rate(mu, exposure, b))
+            .then(a.cmp(&b))
+    });
 
     // Compute quantile boundaries based on exposure (if provided) or count
     let total_exposure: f64 = exposure.map_or(n as f64, |e| e.sum());
@@ -289,25 +305,8 @@ pub fn compute_discrimination_stats(
     // and lift accumulators regardless of their internal order.
     let mut indices: Vec<usize> = (0..n).collect();
     indices.sort_unstable_by(|&a, &b| {
-        let rate_a = if let Some(exp) = exposure {
-            if exp[a] > 0.0 {
-                mu[a] / exp[a]
-            } else {
-                mu[a]
-            }
-        } else {
-            mu[a]
-        };
-        let rate_b = if let Some(exp) = exposure {
-            if exp[b] > 0.0 {
-                mu[b] / exp[b]
-            } else {
-                mu[b]
-            }
-        } else {
-            mu[b]
-        };
-        rate_b.total_cmp(&rate_a)
+        // Descending: highest predicted rate first (RS-ACT-004 shared helper).
+        predicted_rate(mu, exposure, b).total_cmp(&predicted_rate(mu, exposure, a))
     });
 
     let total_exposure: f64 = exposure.map_or(n as f64, |e| e.sum());

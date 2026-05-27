@@ -126,6 +126,7 @@ class DiagnosticsComputer:
         self.n_params = n_params
         self.deviance = deviance
         self._null_deviance_override = null_deviance  # From model result
+        self._has_exposure = exposure is not None
         self.exposure = (
             np.asarray(exposure, dtype=np.float64) if exposure is not None else np.ones_like(y)
         )
@@ -849,8 +850,28 @@ class DiagnosticsComputer:
 
         return results
 
+    def _rank_sort_idx(self, ranking: str = "auto") -> np.ndarray:
+        """Ascending argsort of the rate-ranking score (RS-ACT-004).
+
+        ``ranking``:
+        - ``"auto"`` — rank by ``mu/exposure`` when exposure was supplied, else ``mu``;
+        - ``"rate"`` — rank by ``mu/exposure`` (requires exposure);
+        - ``"mean"`` — rank by raw ``mu``.
+        """
+        if ranking == "mean":
+            key = self.mu
+        elif ranking == "rate":
+            if not self._has_exposure:
+                raise ValidationError("ranking='rate' requires exposure to be supplied.")
+            key = self.mu / self.exposure
+        elif ranking == "auto":
+            key = self.mu / self.exposure if self._has_exposure else self.mu
+        else:
+            raise ValidationError(f"ranking must be 'auto', 'mean', or 'rate', got {ranking!r}.")
+        return np.argsort(key)
+
     def compute_lift_chart(
-        self, n_deciles: int = 10, sort_idx: np.ndarray | None = None
+        self, n_deciles: int = 10, sort_idx: np.ndarray | None = None, ranking: str = "auto"
     ) -> LiftChart:
         """
         Compute full lift chart with all deciles.
@@ -871,9 +892,11 @@ class DiagnosticsComputer:
         LiftChart
             Complete lift chart with discrimination metrics
         """
-        # Sort by predicted values (reuse pre-computed argsort when provided)
+        # Rank by predicted rate (mu/exposure) when exposure is present, matching
+        # the decile/calibration/discrimination diagnostics (RS-ACT-004). Reuse a
+        # pre-computed sort when provided.
         if sort_idx is None:
-            sort_idx = np.argsort(self.mu)
+            sort_idx = self._rank_sort_idx(ranking)
         y_sorted = self.y[sort_idx]
         mu_sorted = self.mu[sort_idx]
         exp_sorted = self.exposure[sort_idx]

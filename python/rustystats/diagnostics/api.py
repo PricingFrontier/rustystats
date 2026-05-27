@@ -687,10 +687,12 @@ def _build_train_test_comparison(
     y_test = test_y
     mu_test = test_mu
     exposure_test = test_exposure
-    # Pre-compute argsort of mu_test once so compute_dataset_diagnostics
-    # can skip the redundant sort inside _compute_ae_by_decile.
+    # Pre-compute the rank index of the test predictions once. RS-ACT-004: rank
+    # by predicted rate (mu/exposure); exposure_test is ones when absent, so this
+    # reduces to argsort(mu) for non-exposure models.
     if test_mu_sort_idx is None:
-        test_mu_sort_idx = np.argsort(mu_test)
+        safe_exp = np.where(exposure_test > 0.0, exposure_test, 1.0)
+        test_mu_sort_idx = np.argsort(mu_test / safe_exp)
 
     # Pre-cache test data columns (same pattern as the train-data cache loop).
     cat_cache_test, cat_unique_cache_test, cont_cache_test = _precompute_data_caches(
@@ -1379,12 +1381,13 @@ def compute_diagnostics(
         null_deviance=null_deviance,
     )
 
-    # Pre-compute sort index of mu once. compute_lift_chart and
-    # _compute_ae_by_decile (called from compute_dataset_diagnostics) both need
-    # an argsort of `mu` to bin predictions by decile; sharing the index here
-    # saves ~200ms of redundant O(n log n) work at 1M rows. (Rust's calibration
-    # sort is internal to FFI and not addressed here.)
-    mu_sort_idx = np.argsort(mu)
+    # Pre-compute the rank index once. compute_lift_chart and
+    # _compute_ae_by_decile (called from compute_dataset_diagnostics) both bin
+    # predictions by decile; sharing the index saves ~200ms of redundant
+    # O(n log n) work at 1M rows. RS-ACT-004: rank by predicted rate
+    # (mu/exposure) when exposure is present, else by mu, so the decile table and
+    # lift chart agree with the rate-ranked calibration/discrimination stats.
+    mu_sort_idx = computer._rank_sort_idx()
 
     # 3. Pre-cache columns + extract score-test matrices
     cat_cache_train, cat_unique_cache_train, cont_cache_train = _precompute_data_caches(
