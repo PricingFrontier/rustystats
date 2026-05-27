@@ -650,6 +650,7 @@ def _build_results(
     builder: InteractionBuilder,
     offset_spec: str | np.ndarray | None,
     is_exposure_offset: bool,
+    exposure_spec: str | np.ndarray | None,
     path_info: RegularizationPathInfo | None,
     smooth_results: list[SmoothTermResult] | None,
     total_edf: float | None,
@@ -673,6 +674,7 @@ def _build_results(
         builder=builder,
         offset_spec=offset_spec,
         offset_is_exposure=is_exposure_offset,
+        exposure_spec=exposure_spec,
         regularization_path_info=path_info,
         smooth_results=smooth_results,
         total_edf=total_edf,
@@ -1046,6 +1048,30 @@ def _resolve_predict_offset(
     return arr, arr, None
 
 
+def _resolve_predict_exposure_link(
+    new_data: pl.DataFrame,
+    exposure_spec: str | np.ndarray,
+) -> np.ndarray:
+    """Resolve a prediction-time raw exposure to its log-scale contribution.
+
+    Raises ``PredictionError`` when a stored exposure column is absent from the
+    prediction data and no explicit exposure array is supplied.
+    """
+    if isinstance(exposure_spec, str):
+        if exposure_spec not in new_data.columns:
+            raise PredictionError(
+                f"Model was fit with exposure='{exposure_spec}', but column "
+                f"'{exposure_spec}' is not present in the prediction data. "
+                "Pass exposure= explicitly to predict()."
+            )
+        raw = new_data[exposure_spec].to_numpy().astype(np.float64)
+    else:
+        raw = np.asarray(exposure_spec, dtype=np.float64)
+    if not np.all(np.isfinite(raw)) or np.any(raw <= 0):
+        raise PredictionError("exposure must be finite and strictly positive.")
+    return np.log(raw)
+
+
 def _resolve_predict_complement(
     new_data: pl.DataFrame,
     complement_override: Any,
@@ -1104,6 +1130,7 @@ class GLMModel:
         builder: InteractionBuilder | None = None,
         offset_spec: str | np.ndarray | None = None,
         offset_is_exposure: bool = False,
+        exposure_spec: str | np.ndarray | None = None,
         regularization_path_info: RegularizationPathInfo | None = None,
         smooth_results: list[SmoothTermResult] | None = None,
         total_edf: float | None = None,
@@ -1126,6 +1153,7 @@ class GLMModel:
         self._builder = builder
         self._offset_spec = offset_spec
         self._offset_is_exposure = offset_is_exposure
+        self._exposure_spec = exposure_spec
         self._terms_dict = terms_dict
         self._interactions_spec = interactions_spec
         self._complement_spec = complement_spec
@@ -1742,6 +1770,7 @@ class GLMModel:
         new_data: pl.DataFrame | pl.LazyFrame,
         offset: str | np.ndarray | None = None,
         complement: str | np.ndarray | GLMModel | None = None,
+        exposure: str | np.ndarray | None = None,
     ) -> np.ndarray:
         """
         Predict on new data using the fitted model.
@@ -1755,6 +1784,11 @@ class GLMModel:
             Offset for new data. If None and the model was fit with an offset
             column name, that column will be extracted from new_data.
             For Poisson/Gamma with log link, log() is auto-applied to exposure.
+        exposure : str or array-like, optional
+            Raw positive exposure for new data (log-link rate models). Added to
+            the linear predictor as ``log(exposure)``. Mutually exclusive with
+            ``offset``. If None, exposure is taken from the column the model was
+            fit with (when present in ``new_data``).
         complement : str, array-like, or GLMModel, optional
             Complement of credibility for new data (response scale).
             If None and the model was fit with a complement column name,
@@ -1788,6 +1822,7 @@ class GLMModel:
                 terms=self._terms_dict,
                 interactions=self._interactions_spec,
                 offset=offset if offset is not None else self._offset_spec,
+                exposure=exposure if exposure is not None else self._exposure_spec,
                 complement=complement if complement is not None else self._complement_spec,
             )
             new_data = _collect_lazyframe(new_data, needed)
@@ -1829,9 +1864,16 @@ class GLMModel:
                 linear_pred[start:stop] = X_chunk @ params
                 del X_chunk, chunk
 
-        _, offset_link, _ = _resolve_predict_offset(
-            new_data, offset, self._offset_spec, self._offset_is_exposure
-        )
+        if exposure is not None:
+            if offset is not None:
+                raise ValidationError("Provide exposure= or offset=, not both, to predict().")
+            if self.link != "log":
+                raise ValidationError("exposure= is only meaningful for log-link rate models.")
+            offset_link = _resolve_predict_exposure_link(new_data, exposure)
+        else:
+            _, offset_link, _ = _resolve_predict_offset(
+                new_data, offset, self._offset_spec, self._offset_is_exposure
+            )
         if offset_link is not None:
             linear_pred = linear_pred + offset_link
 
@@ -2094,6 +2136,7 @@ class GLMModel:
                     }
 
         state = {
+            "schema_version": 2,
             "result_state": result_state,
             "feature_names": self.feature_names,
             "formula": self.formula,
@@ -2102,6 +2145,7 @@ class GLMModel:
             "builder_state": builder_state,
             "offset_spec": self._offset_spec,
             "offset_is_exposure": self._offset_is_exposure,
+            "exposure_spec": self._exposure_spec,
             "smooth_results": self._smooth_results,
             "total_edf": self._total_edf,
             "gcv": self._gcv,
@@ -2172,6 +2216,7 @@ class GLMModel:
             builder=builder,
             offset_spec=state["offset_spec"],
             offset_is_exposure=state["offset_is_exposure"],
+            exposure_spec=state.get("exposure_spec"),
             regularization_path_info=None,
             smooth_results=state["smooth_results"],
             total_edf=state["total_edf"],
@@ -2831,6 +2876,10 @@ class FormulaGLMDict(_GLMBase):
         self._offset_is_legacy_exposure_alias = (
             exposure is None and isinstance(offset, str) and self._uses_log_link()
         )
+        if self._offset_is_legacy_exposure_alias:
+            # The legacy string offset *is* raw exposure; record it as such so
+            # prediction, diagnostics, and serialization treat it uniformly.
+            self._exposure_spec = offset
         self._complement_spec = complement if isinstance(complement, str | GLMModel) else None
         self._complement_values = None  # Set by _process_complement
 
@@ -3131,6 +3180,7 @@ class FormulaGLMDict(_GLMBase):
             self._builder,
             self._offset_spec,
             is_exposure_offset,
+            self._exposure_spec,
             path_info,
             self._smooth_results,
             self._total_edf,

@@ -1,8 +1,8 @@
 """RS-ACT-002: explicit raw exposure vs link-scale offset.
 
-PR2a scope: the `exposure=` keyword, validation, and the rule that a link-scale
-array offset must never be used as the target-encoding denominator. Prediction,
-diagnostics and serialization parity for exposure models are covered in PR4.
+Covers the `exposure=` keyword and validation plus the rule that a link-scale
+array offset is never used as the target-encoding denominator (PR2a), and
+prediction, serialization, and diagnostics threading for exposure models (PR4).
 """
 
 from __future__ import annotations
@@ -159,3 +159,103 @@ class TestTargetEncodingExposureSource:
             seed=42,
         )
         assert not np.allclose(_te_column(m_exposure), _te_column(m_unweighted))
+
+
+class TestExposurePrediction:
+    def _fit(self, df, **kw):
+        terms = {"DrivAge": {"type": "linear"}, "Region": {"type": "categorical"}}
+        return rs.glm_dict(
+            response="ClaimCount", terms=terms, data=df, family="poisson", **kw
+        ).fit()
+
+    def test_predict_with_stored_exposure_column(self):
+        """002.5: predict re-derives log(exposure) from the stored column."""
+        df = make_freq_frame()
+        result = self._fit(df, exposure="Exposure")
+        np.testing.assert_allclose(result.predict(df), result.fittedvalues, rtol=1e-9, atol=1e-9)
+
+    def test_predict_with_new_exposure_array(self):
+        """002.6: exposure may be supplied at predict time."""
+        df = make_freq_frame()
+        result = self._fit(df, exposure="Exposure")
+        head = df.head(20)
+        new_exp = head["Exposure"].to_numpy()
+        pred_array = result.predict(head.drop("Exposure"), exposure=new_exp)
+        pred_col = result.predict(head)
+        np.testing.assert_allclose(pred_array, pred_col, rtol=1e-9, atol=1e-9)
+
+    def test_predict_errors_when_exposure_required_but_missing(self):
+        """002.7: clear error when exposure is needed but unavailable."""
+        df = make_freq_frame()
+        result = self._fit(df, exposure="Exposure")
+        with pytest.raises(
+            (rs.PredictionError, rs.ValidationError, pl.exceptions.ColumnNotFoundError, KeyError)
+        ):
+            result.predict(df.head(20).drop("Exposure"))
+
+    def test_exposure_plus_offset_combines_additively(self):
+        """002.2: eta = eta_terms + log(exposure) + offset."""
+        df = make_freq_frame()
+        adj = np.linspace(-0.2, 0.2, df.height)
+        terms = {"DrivAge": {"type": "linear"}, "VehAge": {"type": "linear"}}
+        combined = rs.glm_dict(
+            response="ClaimCount",
+            terms=terms,
+            data=df,
+            family="poisson",
+            exposure="Exposure",
+            offset=adj,
+        ).fit()
+        single = rs.glm_dict(
+            response="ClaimCount",
+            terms=terms,
+            data=df,
+            family="poisson",
+            offset=np.log(df["Exposure"].to_numpy()) + adj,
+        ).fit()
+        np.testing.assert_allclose(combined.params, single.params, rtol=0, atol=0)
+
+
+class TestExposureSerialization:
+    def test_serialization_roundtrips_exposure_model(self):
+        """002.8: exposure_spec round-trips and predictions match after load."""
+        df = make_freq_frame()
+        terms = {"DrivAge": {"type": "linear"}, "Region": {"type": "categorical"}}
+        result = rs.glm_dict(
+            response="ClaimCount", terms=terms, data=df, family="poisson", exposure="Exposure"
+        ).fit()
+        loaded = rs.GLMModel.from_bytes(result.to_bytes())
+        np.testing.assert_array_almost_equal(loaded.params, result.params)
+        np.testing.assert_allclose(loaded.predict(df), result.predict(df), rtol=1e-9, atol=1e-9)
+
+
+class TestExposureDiagnostics:
+    def test_diagnostics_sources_exposure_from_exposure_spec(self):
+        from rustystats.diagnostics.api import _resolve_offset_and_response
+
+        df = make_freq_frame()
+        result = rs.glm_dict(
+            response="ClaimCount",
+            terms={"DrivAge": {"type": "linear"}},
+            data=df,
+            family="poisson",
+            exposure="Exposure",
+        ).fit()
+        _response_col, exposure_col, exposure = _resolve_offset_and_response(result, df)
+        assert exposure_col == "Exposure"
+        assert exposure is not None
+        np.testing.assert_array_equal(exposure, df["Exposure"].to_numpy())
+
+    def test_diagnostics_runs_for_exposure_model(self):
+        df = make_freq_frame()
+        result = rs.glm_dict(
+            response="ClaimCount",
+            terms={"DrivAge": {"type": "linear"}, "Region": {"type": "categorical"}},
+            data=df,
+            family="poisson",
+            exposure="Exposure",
+        ).fit()
+        diag = result.diagnostics(
+            train_data=df, categorical_factors=["Region"], continuous_factors=["DrivAge"]
+        )
+        assert diag.calibration is not None
