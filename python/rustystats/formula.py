@@ -1457,6 +1457,26 @@ class GLMModel:
             return self._total_edf - 1
         return self._result.df_model
 
+    def aic(self) -> float:
+        """Akaike Information Criterion.
+
+        For penalized smooth models, use effective degrees of freedom instead of
+        the raw basis-column count.
+        """
+        if self._total_edf is not None:
+            return -2.0 * self._result.llf() + 2.0 * self._total_edf
+        return self._result.aic()
+
+    def bic(self) -> float:
+        """Bayesian Information Criterion.
+
+        For penalized smooth models, use effective degrees of freedom instead of
+        the raw basis-column count.
+        """
+        if self._total_edf is not None:
+            return -2.0 * self._result.llf() + self._total_edf * np.log(self._result.nobs)
+        return self._result.bic()
+
     def compute_loss(
         self,
         data: pl.DataFrame,
@@ -2253,7 +2273,7 @@ class GLMModel:
                     }
 
         state = {
-            "schema_version": 2,
+            "schema_version": 3,
             "result_state": result_state,
             "feature_names": self.feature_names,
             "formula": self.formula,

@@ -9,6 +9,8 @@ The result also surfaces the solver status and optimizer route from RS-ACT-007.
 
 from __future__ import annotations
 
+import pickle
+
 import numpy as np
 import polars as pl
 import rustystats as rs
@@ -44,6 +46,17 @@ class TestInferenceStatus:
         summary = result.summary()
         assert "WARNING" in summary
         assert "Signif. codes" not in summary
+        assert "Std.Err" not in summary
+        assert "P>|z|" not in summary
+        assert "<0.0001" not in summary
+        assert (
+            next(line for line in summary.splitlines() if line.startswith("AIC:")).split()[1]
+            == "NA"
+        )
+        assert (
+            next(line for line in summary.splitlines() if line.startswith("BIC:")).split()[1]
+            == "NA"
+        )
 
     def test_ridge_is_naive_after_regularization(self):
         result = _fit(_frame(), alpha=0.1, l1_ratio=0.0)
@@ -65,7 +78,16 @@ class TestInferenceStatus:
         result = _fit(_frame(), terms={"x": {"type": "bs", "k": 8}})
         assert result.inference_status == "unavailable"
         assert result.optimizer_route == "gcv_penalized"
-        assert "Effective df:" in result.summary()
+        expected_aic = -2.0 * result.llf() + 2.0 * result.total_edf
+        expected_bic = -2.0 * result.llf() + result.total_edf * np.log(result.nobs)
+        assert np.isclose(result.aic(), expected_aic)
+        assert np.isclose(result.bic(), expected_bic)
+        summary = result.summary()
+        assert "Effective df:" in summary
+        assert "AIC (edf):" in summary
+        assert "BIC (edf):" in summary
+        assert "Std.Err" not in summary
+        assert "P>|z|" not in summary
 
 
 class TestSolverStatusSurfacing:
@@ -81,6 +103,8 @@ class TestInferenceSerialization:
     def test_inference_and_solver_status_round_trip(self):
         """011.7: serialization preserves inference + solver-status metadata."""
         result = _fit(_frame(), cv=3, regularization="ridge", n_alphas=3)
+        state = pickle.loads(result.to_bytes())
+        assert state["schema_version"] == 3
         loaded = rs.GLMModel.from_bytes(result.to_bytes())
         assert loaded.inference_status == result.inference_status
         assert loaded.solver_status == result.solver_status

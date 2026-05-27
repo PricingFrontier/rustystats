@@ -59,6 +59,20 @@ class TestSolverStatus:
 
 
 class TestStepHalvingAcceptance:
+    def test_first_iteration_never_accepts_catastrophic_full_step(self):
+        """007.1b: iteration one is subject to the same deviance acceptance gate."""
+        rng = np.random.default_rng(123)
+        y = rng.poisson(np.exp(rng.normal(0.0, 2.0, 50))).astype(float)
+        x = rng.normal(0.0, 10.0, 50)
+        data = pl.DataFrame({"y": y, "x": x})
+
+        result = rs.glm_dict(
+            response="y", terms={"x": {"type": "linear"}}, data=data, family="poisson"
+        ).fit(max_iter=1)
+
+        assert result.step_halving_used
+        assert result.deviance < 1392.5
+
     def test_overshooting_gamma_fit_step_halves_and_converges(self):
         """007.1: when the full Newton step overshoots, a half step is accepted and
         the fit still converges to a valid (finite, monotone) solution."""

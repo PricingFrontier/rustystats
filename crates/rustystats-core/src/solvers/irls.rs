@@ -438,6 +438,8 @@ fn fit_glm_core(
     let prior_weights_vec = validated.prior_weights;
     let mut warnings: Vec<String> = Vec::new();
 
+    let mut iter_coefficients = Array1::zeros(p);
+
     // -------------------------------------------------------------------------
     // Step 1: Initialize μ (from coefficients if warm-starting, else from family)
     // -------------------------------------------------------------------------
@@ -449,6 +451,7 @@ fn fit_glm_core(
                 "init_coefficients length vs X columns",
             ));
         }
+        iter_coefficients = init.clone();
         let eta_init = x.dot(init) + &offset_vec;
         let mu_init = link.inverse(&eta_init);
         family.clamp_mu(&mu_init)
@@ -468,11 +471,45 @@ fn fit_glm_core(
     };
 
     // -------------------------------------------------------------------------
-    // Step 2: Initialize linear predictor η = g(μ)
+    // Step 2: Initialize linear predictor η = Xβ + offset
     // -------------------------------------------------------------------------
-    // Note: We store η without offset for coefficient estimation
-    // The full linear predictor is η + offset
+    // Family initializers often produce a near-saturated μ that is not exactly
+    // representable by the model matrix. Project it into coefficient space first
+    // so the retained iterate, step-halving baseline, and returned coefficients
+    // all describe the same fitted state (RS-ACT-007).
     let mut eta = link.link(&mu);
+    if init_coefficients.is_none() {
+        let eta_no_offset = &eta - &offset_vec;
+        match solve_weighted_least_squares_penalized(
+            x,
+            &eta_no_offset,
+            &prior_weights_vec,
+            l2_penalty,
+            penalize_intercept,
+        ) {
+            Ok((mut coef, _)) if !coef.iter().any(|&c| c.is_nan() || c.is_infinite()) => {
+                for &idx in &config.nonneg_indices {
+                    if idx < coef.len() && coef[idx] < 0.0 {
+                        coef[idx] = 0.0;
+                    }
+                }
+                for &idx in &config.nonpos_indices {
+                    if idx < coef.len() && coef[idx] > 0.0 {
+                        coef[idx] = 0.0;
+                    }
+                }
+                iter_coefficients = coef;
+            }
+            _ => {
+                warnings.push(
+                    "Initial coefficient projection failed. Starting IRLS from zero coefficients."
+                        .to_string(),
+                );
+            }
+        }
+        eta = &x.dot(&iter_coefficients) + &offset_vec;
+        mu = family.clamp_mu(&link.inverse(&eta));
+    }
 
     // -------------------------------------------------------------------------
     // Step 3: Calculate initial deviance
@@ -493,7 +530,6 @@ fn fit_glm_core(
     // We'll store the final covariance matrix and coefficients from iteration
     let mut cov_unscaled = Array2::zeros((p, p));
     let mut final_weights = Array1::zeros(n);
-    let mut iter_coefficients = Array1::zeros(p); // Store coefficients from iteration
 
     // For constrained problems, track best solution seen (deviance can increase due to projection)
     let has_constraints = !config.nonneg_indices.is_empty() || !config.nonpos_indices.is_empty();
@@ -604,17 +640,14 @@ fn fit_glm_core(
         let mut mu_new = family.clamp_mu(&link.inverse(&eta_new));
         let mut deviance_new = family.deviance(y, &mu_new, Some(&prior_weights_vec));
 
-        // The first iteration has no meaningful previous iterate to fall back to,
-        // so the full step is always taken there.
-        let mut step_accepted = iteration == 1
-            || (deviance_new.is_finite() && deviance_new <= accept_threshold);
+        let mut step_accepted = deviance_new.is_finite() && deviance_new <= accept_threshold;
 
         // Step-halving: if the full step worsened the deviance, try smaller steps
         // and accept the first one that meets the threshold.
         if !step_accepted {
             step_halving_used = true;
             let mut step_size = 0.5;
-            let max_half_steps = if has_constraints { 8 } else { 4 };
+            let max_half_steps = 25;
             for _half_step in 0..max_half_steps {
                 let mut blended: Array1<f64> = iter_coefficients
                     .iter()
@@ -642,6 +675,8 @@ fn fit_glm_core(
             // iterate (already held in iter_coefficients / eta / mu / deviance)
             // instead of accepting a worse one, and stop (RS-ACT-007).
             step_halving_failed = true;
+            cov_unscaled = xtwinv.clone();
+            final_weights = irls_weights.clone();
             break;
         }
 
@@ -673,8 +708,8 @@ fn fit_glm_core(
             best_coefficients = iter_coefficients.clone();
             best_mu = mu.clone();
             best_eta = eta.clone();
-            best_cov = cov_unscaled.clone();
-            best_weights = final_weights.clone();
+            best_cov = xtwinv.clone();
+            best_weights = irls_weights.clone();
         }
 
         if rel_change < config.tolerance {
@@ -1266,9 +1301,17 @@ mod tests {
             max_iterations: 100,
             ..FitConfig::default()
         };
-        let result =
-            fit_glm_unified(&y, x.view(), &BinomialFamily, &LogitLink, &config, None, None, None)
-                .expect("fit should not error");
+        let result = fit_glm_unified(
+            &y,
+            x.view(),
+            &BinomialFamily,
+            &LogitLink,
+            &config,
+            None,
+            None,
+            None,
+        )
+        .expect("fit should not error");
         assert!(
             result.fitted_values.iter().all(|&m| m > 0.0 && m < 1.0),
             "fitted mu must be strictly inside (0, 1), got {:?}",
@@ -1290,11 +1333,128 @@ mod tests {
             max_iterations: 1,
             ..FitConfig::default()
         };
-        let result =
-            fit_glm_unified(&y, x.view(), &PoissonFamily, &LogLink, &config, None, None, None)
-                .expect("fit should not error");
+        let result = fit_glm_unified(
+            &y,
+            x.view(),
+            &PoissonFamily,
+            &LogLink,
+            &config,
+            None,
+            None,
+            None,
+        )
+        .expect("fit should not error");
         assert!(!result.converged);
         assert_eq!(result.solver_status, "max_iterations");
+    }
+
+    #[test]
+    fn test_first_iteration_does_not_accept_worse_full_step() {
+        // RS-ACT-007: the first IRLS update used to bypass step acceptance and
+        // take a catastrophic full Newton step. The starting μ is projected into
+        // coefficient space, and even iteration one must retain or improve that
+        // model-space state.
+        let slope = vec![
+            1.50216891456,
+            -1.5886661306,
+            -10.9303180964,
+            4.63779755206,
+            -16.5846282977,
+            -9.37066765182,
+            -8.09338144726,
+            -4.12131687693,
+            8.41092596272,
+            16.5668043175,
+            17.2229532456,
+            8.06259378466,
+            4.3969386775,
+            -23.3654886682,
+            11.30119646,
+            26.2894656688,
+            4.52876432659,
+            2.34039314763,
+            6.98695826853,
+            7.28628585473,
+            1.34916334847,
+            -3.73815866047,
+            3.61759209669,
+            -13.7178920955,
+            -18.824265433,
+            13.6093864072,
+            -4.58061330336,
+            7.15955476441,
+            15.5459398945,
+            12.2028034961,
+            -5.53392708658,
+            3.24754029511,
+            -11.6608697799,
+            -1.04573101417,
+            10.4601695101,
+            0.320262403627,
+            -28.5136929773,
+            -22.5126340704,
+            -8.0158557057,
+            13.332416593,
+            1.99085261163,
+            1.41273124012,
+            -13.1596718357,
+            1.46431651468,
+            -22.7517231178,
+            3.41832183287,
+            11.7924037162,
+            -8.17587327,
+            10.843960777,
+            -7.19895381705,
+        ];
+        let mut xv = Vec::with_capacity(slope.len() * 2);
+        for value in slope {
+            xv.push(1.0);
+            xv.push(value);
+        }
+        let x = Array2::from_shape_vec((50, 2), xv).expect("test setup should be valid");
+        let y = array![
+            0.0, 0.0, 14.0, 2.0, 6.0, 5.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 14.0, 0.0, 10.0, 1.0,
+            28.0, 0.0, 0.0, 2.0, 0.0, 6.0, 18.0, 11.0, 4.0, 1.0, 15.0, 4.0, 2.0, 2.0, 0.0, 0.0,
+            13.0, 0.0, 1.0, 0.0, 6.0, 39.0, 8.0, 1.0, 5.0, 0.0, 21.0, 0.0, 1.0, 0.0, 3.0, 0.0,
+            78.0, 0.0
+        ];
+
+        let initial_mu = PoissonFamily.initialize_mu(&y);
+        let initial_eta = LogLink.link(&initial_mu);
+        let weights = Array1::ones(y.len());
+        let (initial_coef, _) =
+            solve_weighted_least_squares_penalized(x.view(), &initial_eta, &weights, 0.0, true)
+                .expect("initial projection should be valid");
+        let initial_fit_eta = x.dot(&initial_coef);
+        let initial_fit_mu = PoissonFamily.clamp_mu(&LogLink.inverse(&initial_fit_eta));
+        let initial_model_deviance = PoissonFamily.deviance(&y, &initial_fit_mu, None);
+
+        let config = FitConfig {
+            max_iterations: 1,
+            ..FitConfig::default()
+        };
+        let result = fit_glm_unified(
+            &y,
+            x.view(),
+            &PoissonFamily,
+            &LogLink,
+            &config,
+            None,
+            None,
+            None,
+        )
+        .expect("fit should not error");
+
+        assert!(result.step_halving_used);
+        assert!(
+            result.deviance <= initial_model_deviance * 1.0001,
+            "first iteration accepted a worse state: initial={initial_model_deviance}, result={}",
+            result.deviance
+        );
+        assert!(
+            result.deviance < 1392.5,
+            "regression guard for the historical full-step deviance"
+        );
     }
 
     #[test]

@@ -73,26 +73,23 @@ def summary(
             f"feature_names has {len(feature_names)} elements but model has {n_params} parameters"
         )
 
-    # Get statistics
-    coefs = result.params
-    std_errs = result.bse()
-    z_vals = result.tvalues()
-    p_vals = result.pvalues()
-    conf_ints = result.conf_int(alpha)
-    sig_codes = result.significance_codes()
-
     # RS-ACT-011: standard inference is only trustworthy for an unpenalized,
     # unselected, unconstrained, non-smooth fit. Otherwise suppress the
     # significance machinery rather than present it as valid.
     suppress_inference = inference_status is not None and inference_status not in _VALID_INFERENCE
-    if suppress_inference:
-        sig_codes = [""] * len(sig_codes)
+
+    # Get statistics
+    coefs = result.params
+    if not suppress_inference:
+        std_errs = result.bse()
+        z_vals = result.tvalues()
+        p_vals = result.pvalues()
+        conf_ints = result.conf_int(alpha)
+        sig_codes = result.significance_codes()
 
     # Get diagnostics
     try:
         llf = result.llf()
-        aic_val = result.aic()
-        bic_val = result.bic()
         pearson_chi2 = result.pearson_chi2()
         null_dev = result.null_deviance()
         family_name = result.family
@@ -101,11 +98,24 @@ def summary(
         # Re-raise - summary diagnostics shouldn't fail silently
         raise FittingError(f"Failed to compute model summary diagnostics: {e}") from e
 
+    aic_label = "AIC:"
+    bic_label = "BIC:"
+    aic_val: float | None = None
+    bic_val: float | None = None
+
     # RS-ACT-011: penalized smooth fits must be scored with their effective df,
     # not the basis-column count, so AIC/BIC reflect the realized complexity.
     if effective_df is not None:
+        aic_label = "AIC (edf):"
+        bic_label = "BIC (edf):"
         aic_val = -2.0 * llf + 2.0 * effective_df
         bic_val = -2.0 * llf + effective_df * np.log(result.nobs)
+    elif not suppress_inference:
+        aic_val = result.aic()
+        bic_val = result.bic()
+
+    aic_text = "NA" if aic_val is None else f"{aic_val:.4f}"
+    bic_text = "NA" if bic_val is None else f"{bic_val:.4f}"
 
     # Build the table
     lines = []
@@ -142,8 +152,8 @@ def summary(
 
     # Goodness of fit
     lines.append(f"{'Log-Likelihood:':<20} {llf:>15.4f} {'Deviance:':<20} {result.deviance:>15.4f}")
-    lines.append(f"{'AIC:':<20} {aic_val:>15.4f} {'Null Deviance:':<20} {null_dev:>15.4f}")
-    lines.append(f"{'BIC:':<20} {bic_val:>15.4f} {'Pearson chi2:':<20} {pearson_chi2:>15.2f}")
+    lines.append(f"{aic_label:<20} {aic_text:>15} {'Null Deviance:':<20} {null_dev:>15.4f}")
+    lines.append(f"{bic_label:<20} {bic_text:>15} {'Pearson chi2:':<20} {pearson_chi2:>15.2f}")
     lines.append(f"{'Converged:':<20} {result.converged!s:<15}")
     if inference_status is not None:
         lines.append(f"{'Inference:':<20} {inference_status:<15}")
@@ -161,8 +171,11 @@ def summary(
     name_width = min(max(16, max_name_len), 30)
 
     # Coefficient table header
-    ci_label = f"{int((1 - alpha) * 100)}% CI"
-    header = f"{'Variable':<{name_width}} {'Coef':>10} {'Std.Err':>10} {'z':>8} {'P>|z|':>8} {ci_label:>22} {'':>4}"
+    if suppress_inference:
+        header = f"{'Variable':<{name_width}} {'Coef':>10}"
+    else:
+        ci_label = f"{int((1 - alpha) * 100)}% CI"
+        header = f"{'Variable':<{name_width}} {'Coef':>10} {'Std.Err':>10} {'z':>8} {'P>|z|':>8} {ci_label:>22} {'':>4}"
     lines.append(header)
     lines.append("-" * 78)
 
@@ -170,28 +183,35 @@ def summary(
     for i in range(n_params):
         name = feature_names[i][:name_width]  # Truncate only if exceeds max
         coef = coefs[i]
-        se = std_errs[i]
-        z = z_vals[i]
-        p = p_vals[i]
-        ci_low, ci_high = conf_ints[i]
-        sig = sig_codes[i]
-
-        # Format p-value
-        if p < 0.0001:
-            p_str = "<0.0001"
+        if suppress_inference:
+            row = f"{name:<{name_width}} {coef:>10.4f}"
         else:
-            p_str = f"{p:.4f}"
+            se = std_errs[i]
+            z = z_vals[i]
+            p = p_vals[i]
+            ci_low, ci_high = conf_ints[i]
+            sig = sig_codes[i]
 
-        ci_str = f"[{ci_low:>8.4f}, {ci_high:>8.4f}]"
-        row = f"{name:<{name_width}} {coef:>10.4f} {se:>10.4f} {z:>8.3f} {p_str:>8} {ci_str:>22} {sig:>4}"
+            # Format p-value
+            if p < 0.0001:
+                p_str = "<0.0001"
+            else:
+                p_str = f"{p:.4f}"
+
+            ci_str = f"[{ci_low:>8.4f}, {ci_high:>8.4f}]"
+            row = f"{name:<{name_width}} {coef:>10.4f} {se:>10.4f} {z:>8.3f} {p_str:>8} {ci_str:>22} {sig:>4}"
         lines.append(row)
 
     lines.append("-" * 78)
     if suppress_inference:
         reason = _INFERENCE_CAVEATS.get(inference_status, "the fitting procedure")
-        lines.append(
-            f"WARNING: standard errors, p-values, and AIC/BIC are NOT valid here ({reason});"
-        )
+        if effective_df is None:
+            lines.append(
+                f"WARNING: standard errors, p-values, and AIC/BIC are NOT valid here ({reason});"
+            )
+        else:
+            lines.append(f"WARNING: standard errors and p-values are NOT valid here ({reason});")
+            lines.append("         AIC/BIC are shown with effective df, not raw parameter count.")
         lines.append(
             f"         inference_status={inference_status}. Treat coefficients descriptively."
         )
