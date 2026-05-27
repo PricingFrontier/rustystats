@@ -117,6 +117,8 @@ class RegularizationPathInfo:
     regularization_type: str
     path: list[RegularizationPathResult]
     n_folds: int
+    cv_max_iter: int = DEFAULT_MAX_ITER
+    cv_tol: float = DEFAULT_TOLERANCE
 
 
 def _apply_inverse_link(eta: np.ndarray, link: str) -> np.ndarray:
@@ -419,10 +421,11 @@ def fit_cv_regularization_path(
     if verbose:
         print("  Using Rust parallel CV")
 
-    # Use relaxed settings for CV fold fits: full convergence is unnecessary
-    # since we only need approximate coefficients to estimate validation deviance.
-    cv_max_iter = min(max_iter, 10)
-    cv_tol = max(tol, 1e-4)
+    # CV fold fits use the requested convergence settings (RS-ACT-001). Silently
+    # relaxing them can change which alpha is selected; a faster approximate mode,
+    # if ever added, must be explicit and recorded in the path metadata below.
+    cv_max_iter = max_iter
+    cv_tol = tol
 
     # Pass sign constraints so CV folds respect monotonicity/pos/neg
     nonneg_indices, nonpos_indices = _get_constraint_indices(glm_instance.feature_names)
@@ -536,6 +539,8 @@ def fit_cv_regularization_path(
         regularization_type=reg_type,
         path=path_results,
         n_folds=cv,
+        cv_max_iter=cv_max_iter,
+        cv_tol=cv_tol,
     )
 
     return path_info
