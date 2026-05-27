@@ -82,6 +82,11 @@ fn nb_loglik_single(y: f64, mu: f64, theta: f64) -> f64 {
     term1 + term2 + term3
 }
 
+/// Above this theta the NegBin log-likelihood is replaced by the (theta-free)
+/// Poisson limit to avoid lgamma instability. The objective is therefore flat
+/// for larger theta, so the profile search must not enter this region.
+const POISSON_THETA_THRESHOLD: f64 = 100.0;
+
 /// Compute the Negative Binomial log-likelihood for all observations.
 ///
 /// # Arguments
@@ -100,7 +105,7 @@ pub fn nb_loglikelihood(
 ) -> f64 {
     // For very large theta, NegBin converges to Poisson
     // Use Poisson log-likelihood to avoid numerical instability from lgamma of large values
-    if theta > 100.0 {
+    if theta > POISSON_THETA_THRESHOLD {
         return poisson_loglikelihood(y, mu, weights);
     }
 
@@ -173,8 +178,12 @@ pub fn estimate_theta_profile(
     // Objective: maximize log-likelihood = minimize negative log-likelihood
     let objective = |theta: f64| -> f64 { -nb_loglikelihood(y, mu, theta, weights) };
 
-    // Brent's method for minimization
-    brent_minimize(objective, min_theta, max_theta, tol)
+    // Restrict the search to the region where theta is identifiable. Above
+    // POISSON_THETA_THRESHOLD the objective is flat (Poisson limit), which would
+    // trap the optimizer; an optimum at this cap means "effectively Poisson"
+    // (very low overdispersion / very large theta).
+    let hi = max_theta.min(POISSON_THETA_THRESHOLD);
+    brent_minimize(objective, min_theta, hi, tol)
 }
 
 /// Brent's method for finding minimum of a univariate function.
@@ -360,6 +369,23 @@ mod tests {
         // Should return a reasonable positive value
         assert!(theta > 0.0);
         assert!(theta < 100.0);
+    }
+
+    #[test]
+    fn test_estimate_theta_profile_does_not_stick_at_upper_bound() {
+        // RS-ACT-010 regression: above POISSON_THETA_THRESHOLD the objective is
+        // flat (Poisson limit), so a search with a large max_theta must not get
+        // trapped at the bound on genuinely overdispersed data (var >> mean).
+        let y = array![0.0, 5.0, 0.0, 8.0, 1.0, 12.0, 0.0, 3.0, 0.0, 9.0, 1.0, 7.0];
+        let mu = array![4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0];
+
+        // Production passes max_theta = 1000.0; the old code returned ~1000 here.
+        let theta = estimate_theta_profile(&y, &mu, None, 0.01, 1000.0, 1e-5);
+        assert!(theta > 0.0, "theta must be positive, got {theta}");
+        assert!(
+            theta < POISSON_THETA_THRESHOLD,
+            "overdispersed data must yield an identifiable theta below the Poisson cap, got {theta}"
+        );
     }
 
     #[test]

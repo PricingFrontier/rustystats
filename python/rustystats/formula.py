@@ -646,6 +646,52 @@ def _fit_glm_core(
     return result, None, None, None
 
 
+def _estimate_negbinomial(
+    y: np.ndarray,
+    X: np.ndarray,
+    link: str | None,
+    offset: np.ndarray | None,
+    weights: np.ndarray | None,
+    feature_names: list[str],
+    max_iter: int = DEFAULT_MAX_ITER,
+    tol: float = DEFAULT_TOLERANCE,
+    init_theta: float | None = None,
+    store_design_matrix: bool = False,
+) -> tuple[Any, dict]:
+    """Estimate Negative Binomial theta by profile likelihood (RS-ACT-010).
+
+    Wires the offset/weights-aware Rust estimator ``fit_negbinomial_py`` and
+    returns ``(rust_result, theta_metadata)``. Only valid for the plain GLM path
+    (no smooth terms, no regularization, no sign constraints); callers enforce
+    that before invoking. The returned result's family string carries the
+    estimated theta; the metadata records the estimation provenance.
+    """
+    from rustystats._rustystats import fit_negbinomial_py as _fit_nb_rust
+    from rustystats.validation import validate_glm_inputs
+
+    y, X, weights, offset = validate_glm_inputs(
+        y, X, "negbinomial", weights, offset, feature_names, is_exposure_offset=False
+    )
+    result, theta_meta = _fit_nb_rust(
+        y,
+        X,
+        link or "log",
+        init_theta,  # init_theta (None -> moment estimate)
+        1e-5,  # theta_tol
+        25,  # max_theta_iter
+        offset,
+        weights,
+        max_iter,
+        tol,
+        0.0,  # alpha (plain path only)
+        0.0,  # l1_ratio
+        None,  # nonneg_indices
+        None,  # nonpos_indices
+        store_design_matrix,
+    )
+    return result, dict(theta_meta)
+
+
 def _build_results(
     result: Any,
     feature_names: list[str],
@@ -2898,7 +2944,7 @@ class FormulaGLMDict(_GLMBase):
         family: str = "gaussian",
         link: str | None = None,
         var_power: float = 1.5,
-        theta: float | None = None,
+        theta: float | str | None = None,
         exposure: str | np.ndarray | None = None,
         offset: str | np.ndarray | None = None,
         weights: str | np.ndarray | None = None,
@@ -3117,6 +3163,47 @@ class FormulaGLMDict(_GLMBase):
             max_interaction_factors=max_interaction_factors,
         )
 
+    def _resolve_negbinomial_theta(
+        self, alpha: float, cv: int | None, regularization: str | None
+    ) -> tuple[bool, float]:
+        """Resolve the Negative Binomial theta contract (RS-ACT-010).
+
+        Returns ``(estimate, theta)``. When ``estimate`` is True the profile MLE
+        runs later and ``theta`` is an unused placeholder; otherwise ``theta`` is
+        the fixed value to use. ``theta="estimate"`` and an unspecified
+        ``theta=None`` both request estimation, which is only defined for the
+        plain GLM path -- smooth, regularized, or sign-constrained models raise
+        and must be given an explicit numeric theta.
+        """
+        spec = self.theta
+        if isinstance(spec, str):
+            if spec != "estimate":
+                raise ValidationError(
+                    f"theta must be a positive number or 'estimate', got {spec!r}."
+                )
+        elif spec is not None:
+            if spec <= 0:
+                raise ValidationError(f"theta must be > 0 for negative binomial, got {spec}.")
+            return False, float(spec)
+
+        # spec is None or "estimate": estimation is plain-path only.
+        unsupported = []
+        if self._builder.get_smooth_terms()[0]:
+            unsupported.append("smooth")
+        if regularization is not None or cv is not None or alpha != 0.0:
+            unsupported.append("regularized")
+        nonneg, nonpos = _get_constraint_indices(self.feature_names)
+        if nonneg or nonpos:
+            unsupported.append("sign-constrained")
+        if unsupported:
+            raise ValidationError(
+                "Negative Binomial theta estimation is not supported for "
+                f"{'/'.join(unsupported)} models (the profile loop is defined only "
+                "for the plain GLM path). Pass an explicit numeric theta= "
+                "(e.g. theta=1.0) for these models."
+            )
+        return True, DEFAULT_NEGBINOMIAL_THETA  # placeholder; real theta from MLE
+
     def fit(
         self,
         alpha: float = 0.0,
@@ -3184,6 +3271,18 @@ class FormulaGLMDict(_GLMBase):
         """
         is_negbinomial = is_negbinomial_family(self.family)
 
+        # RS-ACT-010: resolve the Negative Binomial theta contract before any CV
+        # work, so unsupported estimate combinations fail closed early and we
+        # never silently fall back to theta=1.0.
+        nb_estimate = False
+        theta_metadata: dict | None = None
+        if is_negbinomial:
+            nb_estimate, theta = self._resolve_negbinomial_theta(alpha, cv, regularization)
+        else:
+            theta = (
+                self.theta if isinstance(self.theta, (int, float)) else DEFAULT_NEGBINOMIAL_THETA
+            )
+
         # Handle CV-based regularization path (shared logic in _GLMBase)
         alpha, l1_ratio, path_info = self._resolve_cv_path(
             alpha,
@@ -3200,33 +3299,50 @@ class FormulaGLMDict(_GLMBase):
             verbose,
         )
 
-        theta = self.theta if self.theta is not None else DEFAULT_NEGBINOMIAL_THETA
+        if nb_estimate:
+            # Profile-likelihood theta estimation (plain path only, RS-ACT-010).
+            result, theta_metadata = _estimate_negbinomial(
+                self.y,
+                self.X,
+                self.link,
+                self.offset,
+                self.weights,
+                self.feature_names,
+                max_iter=max_iter,
+                tol=tol,
+                store_design_matrix=store_design_matrix,
+            )
+            theta = theta_metadata["theta"]
+            smooth_results = total_edf = gcv = None
+        else:
+            # Use shared core fitting logic
+            result, smooth_results, total_edf, gcv = _fit_glm_core(
+                self.y,
+                self.X,
+                self.family,
+                self.link,
+                self.var_power,
+                theta,
+                self.offset,
+                self.weights,
+                alpha,
+                l1_ratio,
+                max_iter,
+                tol,
+                self.feature_names,
+                self._builder,
+                store_design_matrix=store_design_matrix,
+            )
+            if is_negbinomial:
+                theta_metadata = {"estimated": False, "theta": theta}
 
-        # Use shared core fitting logic
-        result, smooth_results, total_edf, gcv = _fit_glm_core(
-            self.y,
-            self.X,
-            self.family,
-            self.link,
-            self.var_power,
-            theta,
-            self.offset,
-            self.weights,
-            alpha,
-            l1_ratio,
-            max_iter,
-            tol,
-            self.feature_names,
-            self._builder,
-            store_design_matrix=store_design_matrix,
-        )
         self._smooth_results = smooth_results
         self._total_edf = total_edf
         self._gcv = gcv
 
         result_family = f"NegativeBinomial(theta={theta:.4f})" if is_negbinomial else self.family
 
-        return _build_results(
+        results = _build_results(
             result,
             self.feature_names,
             self.formula,
@@ -3245,6 +3361,10 @@ class FormulaGLMDict(_GLMBase):
             complement_spec=self._complement_spec,
             complement_values=self._complement_values,
         )
+        # RS-ACT-010: surface the theta actually used and its estimation provenance.
+        results.theta = theta if is_negbinomial else None
+        results.theta_metadata = theta_metadata
+        return results
 
 
 def glm_dict(
@@ -3256,7 +3376,7 @@ def glm_dict(
     family: str = "gaussian",
     link: str | None = None,
     var_power: float = 1.5,
-    theta: float | None = None,
+    theta: float | str | None = None,
     exposure: str | np.ndarray | None = None,
     offset: str | np.ndarray | None = None,
     weights: str | np.ndarray | None = None,

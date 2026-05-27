@@ -1,0 +1,126 @@
+"""RS-ACT-010: Negative Binomial theta contract.
+
+Previously ``family="negbinomial"`` silently fell back to ``theta=1.0`` and the
+profile-likelihood estimator (``fit_negbinomial_py``) had zero Python callers.
+The contract now is:
+
+* ``theta=<number>``  -> fixed theta (every fit path).
+* ``theta="estimate"`` -> profile MLE (explicit opt-in).
+* ``theta=None`` (unspecified) -> auto-estimate for a plain NB; estimation is
+  unsupported for smooth / regularized / sign-constrained NB and raises asking
+  for an explicit numeric theta.
+
+Estimation must respect offset/weights and record honest metadata.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import polars as pl
+import pytest
+import rustystats as rs
+
+
+def _nb_frame(n: int = 3000, true_theta: float = 2.0, seed: int = 0, with_exposure: bool = False):
+    """Negative-Binomial counts via a Gamma-Poisson mixture (Var = mu + mu^2/theta)."""
+    rng = np.random.default_rng(seed)
+    x = rng.normal(0.0, 1.0, n)
+    mu = np.exp(0.5 + 0.4 * x)
+    lam = rng.gamma(shape=true_theta, scale=mu / true_theta)
+    y = rng.poisson(lam).astype(float)
+    cols: dict[str, np.ndarray] = {"y": y, "x": x}
+    if with_exposure:
+        cols["Exposure"] = rng.uniform(0.5, 2.0, n)
+    return pl.DataFrame(cols)
+
+
+def _fit(data, terms=None, **fit_kwargs):
+    terms = terms or {"x": {"type": "linear"}}
+    glm_kwargs = {}
+    for key in ("theta", "exposure"):
+        if key in fit_kwargs:
+            glm_kwargs[key] = fit_kwargs.pop(key)
+    return rs.glm_dict(
+        response="y", terms=terms, data=data, family="negbinomial", **glm_kwargs
+    ).fit(**fit_kwargs)
+
+
+class TestNegBinomialThetaContract:
+    def test_unspecified_theta_auto_estimates_not_silent_one(self):
+        """010.1: no theta -> estimate, never the silent 1.0 default."""
+        data = _nb_frame(true_theta=2.0)
+        result = _fit(data)
+        assert result.theta is not None
+        assert result.theta != pytest.approx(1.0, abs=0.1)
+        assert result.theta_metadata["estimated"] is True
+
+    def test_estimate_keyword_records_metadata(self):
+        """010.2: theta='estimate' records estimated flag, value, init, iterations, tol."""
+        data = _nb_frame(true_theta=2.0)
+        result = _fit(data, theta="estimate")
+        meta = result.theta_metadata
+        assert meta["estimated"] is True
+        assert meta["theta"] == pytest.approx(result.theta)
+        assert meta["theta_iterations"] >= 1
+        assert isinstance(meta["theta_converged"], bool)
+        assert meta["init_theta"] > 0
+        assert meta["theta_tol"] > 0
+
+    def test_numeric_theta_is_fixed(self):
+        """010.3: numeric theta is recorded as fixed and shown in the family string."""
+        data = _nb_frame(true_theta=2.0)
+        result = _fit(data, theta=1.5)
+        assert result.theta == pytest.approx(1.5)
+        assert result.theta_metadata["estimated"] is False
+        assert result.family == "NegativeBinomial(theta=1.5000)"
+
+    def test_numeric_theta_matches_statsmodels_coefficients(self):
+        """010.3: at a fixed theta, coefficients match statsmodels NB GLM."""
+        sm = pytest.importorskip("statsmodels.api")
+        data = _nb_frame(true_theta=2.0)
+        result = _fit(data, theta=2.0)
+
+        y = data["y"].to_numpy()
+        X = sm.add_constant(data["x"].to_numpy())
+        # statsmodels NB2 variance = mu + alpha*mu^2, so alpha = 1/theta.
+        sm_res = sm.GLM(y, X, family=sm.families.NegativeBinomial(alpha=0.5)).fit()
+        np.testing.assert_allclose(result.params, sm_res.params, atol=0.02, rtol=0.01)
+
+    def test_estimated_theta_in_statsmodels_ballpark(self):
+        """010.4: estimated theta cross-checks against statsmodels' NB MLE."""
+        sm = pytest.importorskip("statsmodels.api")
+        data = _nb_frame(true_theta=2.0)
+        result = _fit(data, theta="estimate")
+
+        y = data["y"].to_numpy()
+        X = sm.add_constant(data["x"].to_numpy())
+        sm_nb = sm.NegativeBinomial(y, X).fit(disp=0)
+        sm_theta = 1.0 / sm_nb.params[-1]  # last param is the dispersion alpha
+        # NB theta estimators vary between methods; require the same ballpark.
+        assert 0.5 * sm_theta < result.theta < 2.0 * sm_theta
+
+    def test_offset_respected_in_estimation(self):
+        """010.4: exposure offset is threaded into the estimator."""
+        data = _nb_frame(true_theta=2.0, with_exposure=True)
+        result = _fit(data, theta="estimate", exposure="Exposure")
+        assert result.theta is not None
+        assert result.theta_metadata["estimated"] is True
+
+    def test_estimate_with_regularization_raises(self):
+        """010.5/010.6: regularized NB + estimate fails closed, asking for explicit theta."""
+        data = _nb_frame(true_theta=2.0)
+        with pytest.raises(rs.ValidationError, match=r"(?i)theta"):
+            _fit(data, cv=3, regularization="ridge", n_alphas=3, verbose=False)
+
+    def test_estimate_with_smooth_raises(self):
+        """010.5: smooth NB + estimate fails closed (smooth solver has no theta loop)."""
+        data = _nb_frame(true_theta=2.0)
+        with pytest.raises(rs.ValidationError, match=r"(?i)theta"):
+            _fit(data, terms={"x": {"type": "bs", "k": 6}}, theta="estimate")
+
+    def test_regularized_negbinomial_with_fixed_theta_works(self):
+        """010.6: an explicit numeric theta permits regularized NB."""
+        data = _nb_frame(true_theta=2.0)
+        result = _fit(data, theta=1.5, cv=3, regularization="ridge", n_alphas=3, verbose=False)
+        assert result.cv_deviance is not None
+        assert "theta=1.5000" in result.family

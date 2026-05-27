@@ -226,7 +226,8 @@ pub fn fit_glm_py(
 
 #[pyfunction]
 #[pyo3(signature = (y, x, link=None, init_theta=None, theta_tol=1e-5, max_theta_iter=10, offset=None, weights=None, max_iter=25, tol=1e-8, alpha=0.0, l1_ratio=0.0, nonneg_indices=None, nonpos_indices=None, store_design_matrix=false))]
-pub fn fit_negbinomial_py(
+pub fn fit_negbinomial_py<'py>(
+    py: Python<'py>,
     y: PyReadonlyArray1<f64>,
     x: PyReadonlyArray2<f64>,
     link: Option<&str>,
@@ -242,7 +243,7 @@ pub fn fit_negbinomial_py(
     nonneg_indices: Option<Vec<usize>>,
     nonpos_indices: Option<Vec<usize>>,
     store_design_matrix: bool,
-) -> PyResult<PyGLMResults> {
+) -> PyResult<Py<PyAny>> {
     let y_array: Array1<f64> = y.as_array().to_owned();
     let x_view = x.as_array(); // Zero-copy view
     let n_obs = y_array.len();
@@ -314,11 +315,15 @@ pub fn fit_negbinomial_py(
             estimate_theta_moments(&y_array, &init_result.fitted_values)
         }
     };
+    let init_theta_used = theta;
 
     let mut result: IRLSResult;
     let mut coefficients: Option<Array1<f64>> = None;
+    let mut theta_iterations: usize = 0;
+    let mut theta_converged = false;
 
     for _iter in 0..max_theta_iter {
+        theta_iterations += 1;
         let family = NegativeBinomialFamily::new(theta)
             .map_err(|e| PyValueError::new_err(format!("Invalid NB theta: {}", e)))?;
         result = fit_glm_unified(
@@ -344,6 +349,7 @@ pub fn fit_negbinomial_py(
         );
         if (new_theta - theta).abs() < theta_tol {
             theta = new_theta;
+            theta_converged = true;
             break;
         }
         theta = new_theta;
@@ -363,7 +369,7 @@ pub fn fit_negbinomial_py(
     )
     .map_err(|e| PyValueError::new_err(format!("Final GLM fit failed: {}", e)))?;
 
-    Ok(PyGLMResults {
+    let glm_result = PyGLMResults {
         coefficients: result.coefficients,
         fitted_values: result.fitted_values,
         linear_predictor: result.linear_predictor,
@@ -384,7 +390,24 @@ pub fn fit_negbinomial_py(
         },
         irls_weights: result.irls_weights,
         offset: offset_array,
-    })
+    };
+
+    // Honest theta-estimation metadata (RS-ACT-010): the profile loop's init,
+    // iteration count, convergence flag, tolerance, and final theta.
+    let meta = pyo3::types::PyDict::new(py);
+    meta.set_item("estimated", true)?;
+    meta.set_item("theta", theta)?;
+    meta.set_item("init_theta", init_theta_used)?;
+    meta.set_item("theta_iterations", theta_iterations)?;
+    meta.set_item("theta_converged", theta_converged)?;
+    meta.set_item("theta_tol", theta_tol)?;
+    meta.set_item("max_theta_iter", max_theta_iter)?;
+
+    let tuple = pyo3::types::PyTuple::new(
+        py,
+        &[Bound::new(py, glm_result)?.into_any(), meta.into_any()],
+    )?;
+    Ok(tuple.unbind().into())
 }
 
 // =============================================================================
