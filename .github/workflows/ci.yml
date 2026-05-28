@@ -54,11 +54,16 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # Pin ruff exactly to the version pre-commit uses (see
+      # .pre-commit-config.yaml). Without the pin, `uvx ruff` resolves to the
+      # latest release and silently drifts away from pre-commit's style — so a
+      # clean local commit can fail CI (or vice versa). Bump both files
+      # together when upgrading ruff.
       - name: Ruff lint
-        run: uvx ruff check python/
+        run: uvx ruff@0.15.14 check python/ tests/ examples/
 
       - name: Ruff format
-        run: uvx ruff format --check python/
+        run: uvx ruff@0.15.14 format --check python/ tests/ examples/
 
       - name: Run tests
         run: uv run --extra dev pytest -x -q

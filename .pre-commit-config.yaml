@@ -1,6 +1,11 @@
 repos:
+  # NOTE: keep this `rev:` in lock-step with the `uvx ruff@<version>` pin in
+  # .github/workflows/ci.yml. The two tools format differently across ruff
+  # releases (long `assert` messages have shifted style at least twice), so
+  # any version skew means pre-commit and CI fight each other and a clean
+  # local commit fails CI (or vice versa). Bump both files together.
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.0
+    rev: v0.15.14
     hooks:
       - id: ruff
         args: [--fix]

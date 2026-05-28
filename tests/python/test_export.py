@@ -423,6 +423,6 @@ class TestPMMLStructure:
             ns = root.tag.split("}")[0] + "}"
 
         parameters = root.findall(f".//{ns}Parameter")
-        assert len(parameters) == len(
-            simple_model.params
-        ), f"Expected {len(simple_model.params)} Parameter elements, got {len(parameters)}"
+        assert len(parameters) == len(simple_model.params), (
+            f"Expected {len(simple_model.params)} Parameter elements, got {len(parameters)}"
+        )

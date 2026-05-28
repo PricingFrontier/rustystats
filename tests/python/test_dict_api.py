@@ -2026,9 +2026,9 @@ class TestMonotonicSplineBoundary:
         assert len(spline_mask_inc) > 0, "No increasing-constrained features found"
         spline_coefs_inc = np.array(result_inc.params)[spline_mask_inc]
         coef_diffs = np.diff(spline_coefs_inc)
-        assert np.all(
-            coef_diffs >= -1e-4
-        ), f"Increasing monotonic spline has non-monotone coefficients: diffs = {coef_diffs}"
+        assert np.all(coef_diffs >= -1e-4), (
+            f"Increasing monotonic spline has non-monotone coefficients: diffs = {coef_diffs}"
+        )
 
         # --- Decreasing: verify B-spline coefficients are non-increasing ---
         np.random.seed(42)
@@ -2050,9 +2050,9 @@ class TestMonotonicSplineBoundary:
         assert len(spline_mask_dec) > 0, "No decreasing-constrained features found"
         spline_coefs_dec = np.array(result_dec.params)[spline_mask_dec]
         coef_diffs_dec = np.diff(spline_coefs_dec)
-        assert np.all(
-            coef_diffs_dec <= 1e-4
-        ), f"Decreasing monotonic spline has non-monotone coefficients: diffs = {coef_diffs_dec}"
+        assert np.all(coef_diffs_dec <= 1e-4), (
+            f"Decreasing monotonic spline has non-monotone coefficients: diffs = {coef_diffs_dec}"
+        )
 
     def test_ms_type_via_glm_dict(self):
         """Verify that type='ms' works through glm_dict() and produces a
@@ -2080,9 +2080,9 @@ class TestMonotonicSplineBoundary:
 
         # ms() defaults to increasing — predictions must be non-decreasing
         diffs = np.diff(preds)
-        assert np.all(
-            diffs >= -1e-10
-        ), f"ms() monotonic spline produced decreasing predictions: min diff = {diffs.min():.6f}"
+        assert np.all(diffs >= -1e-10), (
+            f"ms() monotonic spline produced decreasing predictions: min diff = {diffs.min():.6f}"
+        )
 
 
 # =============================================================================
@@ -2738,9 +2738,9 @@ class TestConstraintEnforcement:
         ]
         assert len(spline_indices) > 0, "Expected monotonic spline feature names"
         spline_coefs = result.params[spline_indices]
-        assert np.all(
-            spline_coefs >= -1e-10
-        ), f"Coordinate descent violated non-negative constraint: {spline_coefs}"
+        assert np.all(spline_coefs >= -1e-10), (
+            f"Coordinate descent violated non-negative constraint: {spline_coefs}"
+        )
 
     def test_smooth_plus_constrained_linear(self):
         """A model with both a smooth term and a constrained linear term must enforce the linear constraint."""
@@ -2766,9 +2766,9 @@ class TestConstraintEnforcement:
         # The constrained linear term has feature name "pos(x2)"
         pos_indices = [i for i, name in enumerate(result.feature_names) if name == "pos(x2)"]
         assert len(pos_indices) == 1, f"Expected pos(x2) in feature names: {result.feature_names}"
-        assert (
-            result.params[pos_indices[0]] >= -1e-10
-        ), f"Linear constraint violated: pos(x2) coefficient = {result.params[pos_indices[0]]}"
+        assert result.params[pos_indices[0]] >= -1e-10, (
+            f"Linear constraint violated: pos(x2) coefficient = {result.params[pos_indices[0]]}"
+        )
 
     def test_ns_monotonicity_rejected(self):
         """Natural splines (ns) must reject monotonicity constraints."""
@@ -2814,9 +2814,9 @@ class TestConstraintEnforcement:
         ]
         assert len(spline_indices) > 0, "Expected monotonic spline feature names"
         spline_coefs = result.params[spline_indices]
-        assert np.all(
-            spline_coefs >= -1e-10
-        ), f"CV path violated non-negative constraint: {spline_coefs}"
+        assert np.all(spline_coefs >= -1e-10), (
+            f"CV path violated non-negative constraint: {spline_coefs}"
+        )
 
 
 # =============================================================================
@@ -3232,9 +3232,9 @@ class TestPredictAdaptiveChunk:
         # is a rough upper bound — if the budget is ~200 MB we'd expect
         # chunk ≤ 25_000, but we leave headroom for implementation choice.
         per_chunk_bytes = chunk * 1000 * 8
-        assert (
-            per_chunk_bytes <= 1_000_000_000
-        ), f"per-chunk allocation too large: {per_chunk_bytes:,} bytes"
+        assert per_chunk_bytes <= 1_000_000_000, (
+            f"per-chunk allocation too large: {per_chunk_bytes:,} bytes"
+        )
 
     def test_compute_predict_chunk_size_very_wide_model_positive(self):
         """Very wide models get a small but strictly positive chunk size.
@@ -3277,9 +3277,9 @@ class TestPredictAdaptiveChunk:
         for p in (100, 500, 1_000, 5_000, 10_000):
             chunk = _compute_predict_chunk_size(p)
             per_chunk_bytes = chunk * p * 8
-            assert (
-                per_chunk_bytes <= 1_000_000_000
-            ), f"p={p}: per-chunk {per_chunk_bytes:,} bytes exceeds 1 GB"
+            assert per_chunk_bytes <= 1_000_000_000, (
+                f"p={p}: per-chunk {per_chunk_bytes:,} bytes exceeds 1 GB"
+            )
 
     # ---- Test 3b: Observable chunk-count scaling (integration) ----------
 
@@ -3392,9 +3392,9 @@ class TestPredictAdaptiveChunk:
         with patch.object(InteractionBuilder, "transform_new_data", counting_transform):
             preds = result.predict(pred_df)
 
-        assert (
-            counter["n"] == 1
-        ), f"small-n should use single-shot path, got {counter['n']} calls to transform_new_data"
+        assert counter["n"] == 1, (
+            f"small-n should use single-shot path, got {counter['n']} calls to transform_new_data"
+        )
         assert preds.shape == (n_pred,)
         assert np.all(np.isfinite(preds))
 
