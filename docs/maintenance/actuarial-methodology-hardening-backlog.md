@@ -1,6 +1,6 @@
 # Actuarial Methodology Hardening — Backlog
 
-Status: open
+Status: **all items implemented** (2026-05-28)
 Scope: RustyStats only
 Created: 2026-05-28
 Companion to: [`actuarial-methodology-hardening.md`](./actuarial-methodology-hardening.md),
@@ -8,11 +8,22 @@ Companion to: [`actuarial-methodology-hardening.md`](./actuarial-methodology-har
 Branch context: `actuarial-hardening`
 
 Deferred follow-ups identified during the multi-agent review remediation (the
-fix/test commits on `actuarial-hardening`). **None are correctness bugs** — the
-shipped behaviour is correct and all gates (`cargo test`, `clippy`,
-`ruff`, `pytest`) are green. These are consistency, feature, and
-methodological-enhancement items intentionally left out of scope so the
-remediation stayed proportionate and low-risk.
+fix/test commits on `actuarial-hardening`). **None were correctness bugs** — the
+shipped behaviour was already correct; these were consistency, feature, and
+methodological-enhancement items.
+
+All five have since been implemented:
+
+| # | Item | Commit |
+| --- | --- | --- |
+| 1 | Weighted decile/lift aggregates in diagnostics | `d54edea` |
+| 2 | Releveled-intercept inference in the diagnostics coefficient summary | `b7a04c6` |
+| 3 | Robust-SE intercept after relevel | `b7a04c6` |
+| 4 | Propagate calibration uncertainty into the releveled intercept SE | `b7a04c6` |
+| 5 | Hand-computed per-fold oracle for the weighted Rust CV scorer | `f950f33` |
+
+The per-item sections below are retained as the design record (the "Deferred"
+paragraphs describe what was subsequently built).
 
 Priority is rough: **P1** = a real feature worth doing; **P2** = niche
 consistency; **P3** = methodological enhancement / very low marginal value.
