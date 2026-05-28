@@ -197,9 +197,9 @@ class TestFoldSafeTargetEncodingCV:
         seen_rows = []
         original = rp.compute_alpha_max
 
-        def spy_compute_alpha_max(X, y, l1_ratio, weights=None):
+        def spy_compute_alpha_max(X, y, l1_ratio, **kwargs):
             seen_rows.append(X.shape[0])
-            return original(X, y, l1_ratio, weights)
+            return original(X, y, l1_ratio, **kwargs)
 
         monkeypatch.setattr(rp, "compute_alpha_max", spy_compute_alpha_max)
         result = rs.glm_dict(

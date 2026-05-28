@@ -133,54 +133,218 @@ def _apply_inverse_link(eta: np.ndarray, link: str) -> np.ndarray:
     return apply_inverse_link(eta, link)
 
 
+def _glm_score_gradient_factor(
+    y: np.ndarray,
+    mu: np.ndarray,
+    family: str,
+    link: str,
+    var_power: float,
+    theta: float,
+    weights: np.ndarray,
+) -> np.ndarray:
+    """Per-observation factor for the GLM log-likelihood score at the null model.
+
+    Returns ``f`` such that ``score_j = sum_i x_ij * f_i``. For canonical link
+    families (Gaussian/identity, Poisson/log, Binomial/logit) this collapses
+    to ``w_i * (y_i - μ_i)`` because ``(∂μ/∂η) / V(μ) ≡ 1`` along the
+    canonical link. For non-canonical links (e.g. Gamma + log) the chain factor
+    ``(∂μ/∂η) / V(μ)`` is included explicitly.
+
+    Notes
+    -----
+    The IRLS solver minimises the deviance/-loglik using the same gradient,
+    so matching this expression here is what makes ``alpha_max`` *tight* (i.e.
+    soft-thresholds every penalised coefficient to zero) on the solver's own
+    objective rather than on a centred-``y`` proxy that drifts by a factor of
+    ``n`` (the bug RS-ACT-005 closes).
+    """
+    if link == "identity":
+        dmu_deta = np.ones_like(mu)
+    elif link == "log":
+        dmu_deta = mu
+    elif link == "logit":
+        dmu_deta = mu * (1.0 - mu)
+    else:
+        raise ValidationError(f"alpha_max: unsupported link {link!r}")
+
+    if family in ("gaussian",):
+        variance = np.ones_like(mu)
+    elif family in ("poisson", "quasipoisson"):
+        variance = mu
+    elif family in ("gamma",):
+        variance = mu * mu
+    elif family in ("binomial", "quasibinomial"):
+        variance = mu * (1.0 - mu)
+    elif family in ("tweedie",):
+        variance = np.power(mu, var_power)
+    elif family in ("negbinomial",):
+        variance = mu + mu * mu / theta
+    else:
+        raise ValidationError(f"alpha_max: unsupported family {family!r}")
+
+    # Guard against zero variance (e.g. Poisson mu=0); the score contribution
+    # vanishes there because y must also be 0 with non-zero probability.
+    safe_variance = np.where(variance > 0.0, variance, 1.0)
+    return weights * (y - mu) * dmu_deta / safe_variance
+
+
+def _fit_null_intercept(
+    y: np.ndarray,
+    family: str,
+    link: str,
+    offset: np.ndarray,
+    weights: np.ndarray,
+    var_power: float,
+    theta: float,
+) -> float:
+    """Fit the intercept-only GLM (``η = β_0 + offset``).
+
+    Closed-form for the two most common offset+canonical-link cases (the only
+    ones where alpha_max would otherwise be needed on the very first IRLS
+    step, where a Rust round-trip would be the bottleneck). All other families
+    or non-zero offsets fall back to a single Rust ``fit_glm_py`` call on a
+    width-1 design — same code path as a normal fit, so anything that
+    converges in production converges here.
+    """
+    # Closed-form: log-link with linear offset → β_0 = log(Σwy / Σw·exp(offset)).
+    # Works uniformly for Poisson, Gamma, Tweedie, NegBin (all log-link) and
+    # avoids a Rust call inside the alpha-path inner loop.
+    if link == "log":
+        denom = float(np.sum(weights * np.exp(offset)))
+        if denom > 0.0:
+            num = float(np.sum(weights * y))
+            if num > 0.0:
+                return float(np.log(num / denom))
+    # Identity link with offset: β_0 minimises Σ w (y - β_0 - offset)² →
+    # β_0 = Σw(y - offset) / Σw.
+    if link == "identity":
+        return float(np.sum(weights * (y - offset)) / np.sum(weights))
+
+    # Fall back to a one-feature Rust fit for non-closed-form combinations.
+    from rustystats._rustystats import fit_glm_py
+
+    x_intercept = np.ones((y.shape[0], 1), dtype=np.float64)
+    null_res = fit_glm_py(
+        y,
+        x_intercept,
+        family,
+        link,
+        var_power,
+        theta,
+        offset if not np.all(offset == 0.0) else None,
+        weights if not np.allclose(weights, 1.0) else None,
+        0.0,
+        0.0,
+        200,
+        1e-12,
+        None,
+        None,
+        False,
+    )
+    return float(np.asarray(null_res.params)[0])
+
+
 def compute_alpha_max(
     X: np.ndarray,
     y: np.ndarray,
     l1_ratio: float,
+    *,
+    family: str,
+    link: str,
+    offset: np.ndarray | None = None,
     weights: np.ndarray | None = None,
+    var_power: float = 1.5,
+    theta: float = 1.0,
+    intercept_col: int | None = 0,
 ) -> float:
-    """
-    Compute the maximum alpha that would zero out all coefficients.
+    """Maximum alpha that zeroes every penalised coefficient (RS-ACT-005).
 
-    For Lasso/Elastic Net, this is based on the maximum gradient at beta=0.
-    For Ridge, we use a heuristic based on the data scale.
+    For an elastic-net objective with ``l1_ratio > 0`` this is
+
+    .. math::
+
+        \\alpha_{\\max} = \\frac{\\max_j |\\,X_j' \\, f(y, \\mu_0)\\,|}{l_1}
+
+    where ``μ_0`` is the offset/weight-aware intercept-only fit and
+    ``f(y, μ_0)`` is the GLM-score residual produced by
+    :func:`_glm_score_gradient_factor`. The intercept column and any other
+    unpenalised columns are excluded from the max.
+
+    The scaling intentionally matches the solver's (raw weighted sums, no
+    implicit ``1/n``) — the legacy formula divided by ``n``, which under-sized
+    the grid by roughly that factor and left penalised coefficients non-zero
+    at ``alpha_max``.
+
+    For pure ridge (``l1_ratio == 0``) the KKT condition does not produce a
+    finite ``alpha_max``; we return a documented heuristic anchored on the
+    median diagonal of the weighted Gram matrix (``Σ w X_j²``), preserved
+    from the pre-RS-ACT-005 implementation but now correctly weight-aware.
 
     Parameters
     ----------
-    X : np.ndarray
-        Design matrix (n, p)
-    y : np.ndarray
-        Response vector (n,)
-    l1_ratio : float
-        L1 ratio (0=Ridge, 1=Lasso)
-    weights : np.ndarray, optional
-        Observation weights
-
-    Returns
-    -------
-    float
-        Maximum alpha value
+    X : ndarray, shape (n, p)
+        Design matrix. Column ``intercept_col`` (default 0) is treated as the
+        intercept and excluded from the score maximisation.
+    y : ndarray, shape (n,)
+        Response, on the data scale (counts for Poisson, etc.).
+    l1_ratio : float in [0, 1]
+        Elastic-net mix. ``0`` → pure ridge (heuristic grid); ``> 0`` → KKT
+        formula above.
+    family, link : str
+        GLM family and link names; must match the fit you will run at the
+        returned alpha for the result to be a tight upper bound.
+    offset : ndarray, optional
+        Link-scale offset that the fit will also use.
+    weights : ndarray, optional
+        Prior weights; defaults to ones. Treated as a strict weighting (no
+        renormalisation by ``n``), matching the solver.
+    var_power, theta : float
+        Tweedie ``var_power`` and Negative-Binomial ``theta`` — required for
+        the variance function on those families; ignored otherwise.
+    intercept_col : int or None
+        Column index of the intercept (excluded from the score). Pass ``None``
+        if the design has no intercept (rare for GLMs).
     """
-    n, _p = X.shape
+    # Resolve link to the family default when the caller passed None / "" —
+    # ``FormulaGLMDict.link`` is allowed to stay unset until fit time, and we
+    # used to break with ``unsupported link None`` for CV-regularised fits on
+    # those models. Mirrors ``formula.py``'s ``link or get_default_link()`` idiom.
+    if not link:
+        from rustystats.formula import get_default_link
 
-    if weights is not None:
-        w = weights / weights.sum() * n
-    else:
+        link = get_default_link(family)
+
+    n, p = X.shape
+    if weights is None:
         w = np.ones(n)
+    else:
+        w = np.asarray(weights, dtype=np.float64)
+    off = np.zeros(n) if offset is None else np.asarray(offset, dtype=np.float64)
 
-    # Center y for gradient calculation
-    y_centered = y - np.average(y, weights=w)
+    pen_mask = np.ones(p, dtype=bool)
+    if intercept_col is not None and 0 <= intercept_col < p:
+        pen_mask[intercept_col] = False
 
     if l1_ratio > 0:
-        # For Lasso/Elastic Net: max |X'Wy| / (n * l1_ratio)
-        # Skip intercept column (usually first)
-        gradients = np.abs(X[:, 1:].T @ (w * y_centered)) / n
-        alpha_max = np.max(gradients) / max(l1_ratio, L1_RATIO_MIN_CLAMP)
+        beta_0 = _fit_null_intercept(y, family, link, off, w, var_power, theta)
+        eta_0 = beta_0 + off
+        mu_0 = _apply_inverse_link(eta_0, link)
+        score_factor = _glm_score_gradient_factor(y, mu_0, family, link, var_power, theta, w)
+        # Per-feature unpenalised gradient magnitudes.
+        scores = X.T @ score_factor
+        if not np.any(pen_mask):
+            return ALPHA_MAX_FLOOR
+        max_score = float(np.max(np.abs(scores[pen_mask])))
+        alpha_max = max_score / max(l1_ratio, L1_RATIO_MIN_CLAMP)
     else:
-        # For pure Ridge: use heuristic based on coefficient scale
-        # Start with alpha that gives ~50% shrinkage on largest coefficient
-        XtX_diag = np.sum(X[:, 1:] ** 2, axis=0) / n
-        alpha_max = np.median(XtX_diag) * 10
+        # Ridge has no all-zero KKT; use the median weighted column norm as a
+        # documented heuristic. Same shape as the pre-RS-ACT-005 fallback but
+        # weight-aware and intercept-excluding, with no division by ``n`` so
+        # the magnitude matches the solver's loss scale.
+        if not np.any(pen_mask):
+            return ALPHA_MAX_FLOOR
+        XtX_diag = np.sum((X[:, pen_mask] ** 2) * w[:, None], axis=0)
+        alpha_max = float(np.median(XtX_diag)) * 10.0 if XtX_diag.size > 0 else ALPHA_MAX_FLOOR
 
     return max(alpha_max, ALPHA_MAX_FLOOR)
 
@@ -444,8 +608,18 @@ def fit_cv_regularization_path(
     offset = glm_instance.offset
     weights = glm_instance.weights
 
-    # Compute alpha path
-    alpha_max = compute_alpha_max(X, y, effective_l1_ratio, weights)
+    # Compute alpha path: GLM-score-aware, offset+weight+family+link aware.
+    alpha_max = compute_alpha_max(
+        X,
+        y,
+        effective_l1_ratio,
+        family=family,
+        link=link,
+        offset=offset,
+        weights=weights,
+        var_power=var_power,
+        theta=theta,
+    )
     alphas = generate_alpha_path(alpha_max, n_alphas, alpha_min_ratio)
 
     if verbose:
@@ -696,8 +870,19 @@ def fit_cv_te_regularization_path(
         )
         y_train = y[train_idx]
         weights_train = weights[train_idx] if weights is not None else None
+        offset_train = offset[train_idx] if offset is not None else None
         fold_alpha_maxes.append(
-            compute_alpha_max(x_train, y_train, effective_l1_ratio, weights_train)
+            compute_alpha_max(
+                x_train,
+                y_train,
+                effective_l1_ratio,
+                family=family,
+                link=link,
+                offset=offset_train,
+                weights=weights_train,
+                var_power=var_power,
+                theta=theta,
+            )
         )
 
     # Build the alpha search range only from fold-training designs. Taking the

@@ -473,14 +473,23 @@ pub fn fit_cv_path_py<'py>(
     let offset_array: Option<Array1<f64>> = offset.map(|o| o.as_array().to_owned());
     let weights_array: Option<Array1<f64>> = weights.map(|w| w.as_array().to_owned());
 
-    let alpha_vec = alphas.unwrap_or_else(|| {
-        (0..20)
-            .map(|i| {
-                let t = i as f64 / 19.0;
-                10.0 * (0.0001f64 / 10.0).powf(t)
-            })
-            .collect()
-    });
+    // RS-ACT-005: the previous fallback here was a hard-coded geometric grid
+    // (10 -> 1e-4, 20 points) that was completely blind to family, link,
+    // offset, weights and n. It under-shot ``alpha_max`` by roughly a factor of
+    // ``n`` (e.g. 0.799 vs the correct 479.6 on 600 rows), which left penalised
+    // coefficients non-zero at the grid endpoint and biased CV alpha selection
+    // toward over-shrinkage. The Python helper
+    // ``rustystats.regularization_path.compute_alpha_max`` now derives the
+    // grid from the GLM score at the offset/weight-aware null; route through
+    // it instead of silently shipping a bad grid here.
+    let alpha_vec = alphas.ok_or_else(|| {
+        PyValueError::new_err(
+            "fit_cv_path_py requires an explicit `alphas=` grid. Build one with \
+             rustystats.regularization_path.compute_alpha_max + generate_alpha_path \
+             (RS-ACT-005); the previous silent geometric fallback was score-blind and \
+             under-sized the grid by roughly a factor of n.",
+        )
+    })?;
 
     let fold_assignments: Vec<usize> = {
         use std::collections::hash_map::DefaultHasher;
