@@ -1442,6 +1442,21 @@ class GLMModel:
         except Exception:
             return self._result.llf()
 
+    def _intercept_inference_invalid(self) -> bool:
+        """Whether the intercept's standard inference has been invalidated.
+
+        After :meth:`relevel`, the intercept carries an externally-estimated
+        ``log(c)`` calibration shift whose uncertainty is *not* in the model
+        covariance, so the original SE / z / p / CI no longer describe the
+        displayed intercept. They are withheld (NaN) rather than shown stale;
+        every other coefficient's inference and the relativities are unchanged.
+        """
+        return (
+            bool(self._intercept_delta)
+            and bool(self.feature_names)
+            and self.feature_names[0] == "Intercept"
+        )
+
     def __getattr__(self, name: str) -> Any:
         """Delegate attribute access to the underlying result object.
 
@@ -1844,10 +1859,15 @@ class GLMModel:
         show_standard_inference = status is None or status in {"valid_standard", "valid_robust"}
         n = len(self.feature_names)
         if show_standard_inference:
-            se = self.bse()
-            z = self.tvalues()
-            p = self.pvalues()
-            signif = self.significance_codes()
+            se = np.asarray(self.bse(), dtype=np.float64)
+            z = np.asarray(self.tvalues(), dtype=np.float64)
+            p = np.asarray(self.pvalues(), dtype=np.float64)
+            signif = list(self.significance_codes())
+            if self._intercept_inference_invalid():
+                # relevel() shifted the intercept; its stale inference is withheld.
+                se, z, p = se.copy(), z.copy(), p.copy()
+                se[0] = z[0] = p[0] = np.nan
+                signif[0] = ""
         else:
             se = np.full(n, np.nan)
             z = np.full(n, np.nan)
@@ -1888,6 +1908,10 @@ class GLMModel:
             ci = self.conf_int()
             ci_lower = np.exp(ci[:, 0])
             ci_upper = np.exp(ci[:, 1])
+            if self._intercept_inference_invalid():
+                # relevel() shifted the intercept; its stale CI is withheld.
+                ci_lower, ci_upper = ci_lower.copy(), ci_upper.copy()
+                ci_lower[0] = ci_upper[0] = np.nan
         else:
             n = len(self.feature_names)
             ci_lower = np.full(n, np.nan)
@@ -1993,6 +2017,7 @@ class GLMModel:
             optimizer_route=getattr(self, "optimizer_route", None),
             effective_df=self._total_edf,
             is_quasi_likelihood=self.is_quasi_likelihood,
+            withhold_intercept_inference=self._intercept_inference_invalid(),
         )
 
         if self.has_complement:
@@ -2002,6 +2027,14 @@ class GLMModel:
                 f"\nNote: Coefficients are deviations from the complement of credibility.\n"
                 f"      {n_zeroed}/{n_total} non-intercept terms zeroed "
                 f"(complement fully trusted).\n"
+            )
+
+        if self._intercept_delta:
+            result += (
+                "\nNote: intercept standard inference (SE/z/p/CI) is withheld after "
+                "relevel() —\n      the calibration factor adds uncertainty not in the "
+                "model covariance.\n      Relativities and non-intercept inference are "
+                "unchanged.\n"
             )
 
         return result

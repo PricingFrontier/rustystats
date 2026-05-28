@@ -329,6 +329,24 @@ class TestExposureSerialization:
             loaded.predict(df, exposure=exposure), result.fittedvalues, rtol=1e-9, atol=1e-9
         )
 
+    def test_array_exposure_requires_override_in_predict_contributions(self):
+        """RS-ACT-002b: predict_contributions mirrors predict()'s array-exposure guard.
+
+        Without it a fit-time array exposure would be silently reused as the
+        prediction default, producing a wrong contribution ladder.
+        """
+        df = make_freq_frame()
+        exposure = df["Exposure"].to_numpy()
+        terms = {"DrivAge": {"type": "linear"}, "Region": {"type": "categorical"}}
+        result = rs.glm_dict(
+            response="ClaimCount", terms=terms, data=df, family="poisson", exposure=exposure
+        ).fit()
+
+        with pytest.raises(rs.PredictionError, match="array exposure"):
+            result.predict_contributions(df)
+        rows = result.predict_contributions(df, exposure=exposure)
+        assert len(rows) == len(df)
+
     def test_deserializes_legacy_offset_exposure_payload_as_exposure_model(self):
         import pickle
 

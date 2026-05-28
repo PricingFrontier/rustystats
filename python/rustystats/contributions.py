@@ -63,6 +63,16 @@ def compute_contributions(
         raise ValueError(f"return_format must be 'records' or 'dataframe', got {return_format!r}")
 
     exposure_to_use = exposure if exposure is not None else model._exposure_spec
+    # Mirror predict(): an array exposure is fit-time data and must not be
+    # silently reused as a prediction default (it would produce a wrong
+    # contribution ladder whenever new_data is not row-aligned with the fit).
+    if exposure is None and getattr(model, "_array_exposure_requires_prediction_override", False):
+        raise PredictionError(
+            "This model was fit with an array exposure, which is fit-time data and "
+            "cannot be reused as a prediction default. Pass exposure= for the "
+            "prediction data, or fit with exposure='<column>' so the column can be "
+            "resolved from new_data."
+        )
     offset_to_use = offset if offset is not None else model._offset_spec
     complement_to_use = complement if complement is not None else model._complement_spec
 

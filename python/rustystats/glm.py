@@ -41,6 +41,7 @@ def summary(
     optimizer_route: str | None = None,
     effective_df: float | None = None,
     is_quasi_likelihood: bool = False,
+    withhold_intercept_inference: bool = False,
 ) -> str:
     """
     Generate a summary table for GLM results (statsmodels-style).
@@ -87,6 +88,16 @@ def summary(
         p_vals = result.pvalues()
         conf_ints = result.conf_int(alpha)
         sig_codes = result.significance_codes()
+        if withhold_intercept_inference and len(std_errs):
+            # relevel() shifted the intercept: its stale SE/z/p/CI are withheld.
+            std_errs = np.array(std_errs, dtype=np.float64)
+            z_vals = np.array(z_vals, dtype=np.float64)
+            p_vals = np.array(p_vals, dtype=np.float64)
+            conf_ints = np.array(conf_ints, dtype=np.float64)
+            sig_codes = list(sig_codes)
+            std_errs[0] = z_vals[0] = p_vals[0] = np.nan
+            conf_ints[0, :] = np.nan
+            sig_codes[0] = ""
 
     # Get diagnostics
     try:

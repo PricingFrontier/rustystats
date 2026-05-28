@@ -312,6 +312,37 @@ class TestReleveLogLink:
             rel_new["Relativity"].to_numpy()[1:],
         )
 
+    def test_relevel_withholds_intercept_inference(self):
+        """PR11: after relevel the intercept's stale SE/z/p/CI are withheld (NaN).
+
+        The point relativity reflects the shifted intercept, but the original
+        covariance does not include the calibration uncertainty, so showing the
+        old-intercept CI/z/p would silently disagree with the displayed level.
+        Non-intercept inference and relativities stay intact.
+        """
+        _df_train, result = _fit_log_link_poisson(seed=5)
+        df_holdout = make_freq_frame(n=2000, seed=505)
+        releveled = result.relevel(data=df_holdout)
+
+        # coef_table: intercept row blanked, others finite.
+        ct = releveled.coef_table()
+        assert np.isnan(ct["Std.Error"][0])
+        assert np.isnan(ct["z"][0])
+        assert np.isnan(ct["Pr(>|z|)"][0])
+        assert ct["Signif"][0] == ""
+        assert np.all(np.isfinite(ct["Std.Error"].to_numpy()[1:]))
+
+        # relativities: point relativity kept, intercept CI blanked, others finite.
+        rel = releveled.relativities()
+        assert np.isfinite(rel["Relativity"][0])
+        assert np.isnan(rel["CI_Lower"][0])
+        assert np.isnan(rel["CI_Upper"][0])
+        assert np.all(np.isfinite(rel["CI_Lower"].to_numpy()[1:]))
+
+        # Over-suppression guard: the un-releveled model is unaffected.
+        assert np.isfinite(result.coef_table()["Std.Error"][0])
+        assert "withheld after relevel" in releveled.summary()
+
     def test_intercept_shifted_by_log_factor(self):
         """Intercept moves by exactly log(c) where c = Σy/Σμ on the calibration data.
 
