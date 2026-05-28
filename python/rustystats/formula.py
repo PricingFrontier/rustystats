@@ -25,6 +25,7 @@ Example
 
 from __future__ import annotations
 
+import copy
 import warnings
 import weakref
 from dataclasses import dataclass
@@ -1252,6 +1253,46 @@ class GLMModel:
         self._interactions_spec = interactions_spec
         self._complement_spec = complement_spec
         self._complement_values = complement_values
+        # Post-fit intercept shift applied by ``relevel()``; zero for ordinary
+        # fits. Stored Python-side rather than mutating the Rust result so the
+        # underlying ``self._result`` stays the original immutable fit.
+        self._intercept_delta: float = 0.0
+        self._relevel_history: list[dict[str, Any]] = []
+
+    @property
+    def params(self) -> np.ndarray:
+        """Fitted coefficients with any post-fit intercept relevel applied.
+
+        For un-releveled models this is the underlying Rust coefficient array;
+        after :meth:`relevel`, the intercept (column 0, named ``"Intercept"``)
+        carries the accumulated ``log(c)`` shift while every other entry is
+        bit-identical to the original fit.
+        """
+        raw = self._result.params
+        if (
+            not self._intercept_delta
+            or not self.feature_names
+            or self.feature_names[0] != "Intercept"
+        ):
+            return raw
+        shifted = np.array(raw, dtype=np.float64, copy=True)
+        shifted[0] = shifted[0] + self._intercept_delta
+        return shifted
+
+    @property
+    def intercept_delta(self) -> float:
+        """Accumulated ``log(c)`` intercept shift applied by ``relevel()``."""
+        return self._intercept_delta
+
+    @property
+    def relevel_history(self) -> list[dict[str, Any]]:
+        """Per-call metadata for every ``relevel()`` applied to this model.
+
+        Each entry records the calibration factor, intercept before/after,
+        ``log_shift``, ``n_obs`` and ``total_weight``; the list is empty for
+        un-releveled models.
+        """
+        return [dict(entry) for entry in self._relevel_history]
 
     def __getattr__(self, name: str) -> Any:
         """Delegate attribute access to the underlying result object.
@@ -2132,6 +2173,232 @@ class GLMModel:
             rtol=rtol,
         )
 
+    # ------------------------------------------------------------------
+    # Calibration primitives (RS-ACT-009 / PR11)
+    # ------------------------------------------------------------------
+
+    def _calibration_response_column(self) -> str:
+        """Return the response column name, parsed from ``self.formula``."""
+        response = self.formula.split("~", 1)[0].strip()
+        if not response:
+            raise ValidationError(
+                "Cannot infer response column from formula; "
+                "calibration / relevel requires a fitted model with a known response."
+            )
+        return response
+
+    def _calibration_extract_arrays(
+        self,
+        data: pl.DataFrame | pl.LazyFrame,
+        exposure: str | np.ndarray | None,
+        weights: str | np.ndarray | None,
+    ) -> tuple[pl.DataFrame, np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
+        """Materialize ``y``, ``μ = predict(data)``, exposure and weights.
+
+        ``exposure`` defaults to the spec the model was fit with (so log-link
+        rate models pass the exposure through to ``predict``). ``weights``
+        defaults to ``None`` — the spec is deliberate that ``relevel``'s
+        denominator is ``Σ(w·μ)``, with ``exposure`` already inside ``μ``.
+        """
+        response = self._calibration_response_column()
+        # Collect LazyFrame; we keep all columns because we don't yet know which
+        # ``by=``/``weights=`` columns the caller will reference.
+        data = _collect_lazyframe(data, set())
+        if response not in data.columns:
+            raise ValidationError(f"response column '{response}' not found in calibration data.")
+        y = data[response].to_numpy().astype(np.float64)
+
+        exposure_to_use: str | np.ndarray | None = exposure
+        if exposure_to_use is None and self._exposure_spec is not None:
+            exposure_to_use = self._exposure_spec
+        elif (
+            exposure_to_use is None
+            and self._offset_is_exposure
+            and isinstance(self._offset_spec, str)
+        ):
+            exposure_to_use = self._offset_spec
+
+        mu = np.asarray(self.predict(data, exposure=exposure), dtype=np.float64)
+
+        exposure_arr: np.ndarray | None
+        if exposure_to_use is None:
+            exposure_arr = None
+        elif isinstance(exposure_to_use, str):
+            if exposure_to_use in data.columns:
+                exposure_arr = data[exposure_to_use].to_numpy().astype(np.float64)
+            else:
+                exposure_arr = None
+        else:
+            exposure_arr = np.asarray(exposure_to_use, dtype=np.float64)
+
+        if weights is None:
+            weights_arr: np.ndarray | None = None
+        elif isinstance(weights, str):
+            if weights not in data.columns:
+                raise ValidationError(f"weights column '{weights}' not found in calibration data.")
+            weights_arr = data[weights].to_numpy().astype(np.float64)
+        else:
+            weights_arr = np.asarray(weights, dtype=np.float64)
+
+        return data, y, mu, exposure_arr, weights_arr
+
+    def calibration_summary(
+        self,
+        data: pl.DataFrame | pl.LazyFrame,
+        *,
+        exposure: str | np.ndarray | None = None,
+        weights: str | np.ndarray | None = None,
+        by: str | list[str] | None = None,
+        n_bins: int = 10,
+        ranking: str = "auto",
+        min_exposure: float = 0.0,
+    ) -> dict[str, Any]:
+        """Compute calibration diagnostics for ``self.predict(data)`` (RS-ACT-009).
+
+        Returns the same structure as the standalone
+        :func:`rustystats.calibration_summary`, but resolves response, exposure
+        and weights through the fitted model. ``by=`` may be a single column
+        name or a list of names; each named factor produces an aggregated
+        per-level table with ``suppressed=True`` for cells below
+        ``min_exposure``.
+
+        See :mod:`rustystats.calibration` for the in-sample-optimism caveat.
+        """
+        from rustystats.calibration import calibration_summary as _cs
+
+        resolved, y, mu, exposure_arr, weights_arr = self._calibration_extract_arrays(
+            data, exposure, weights
+        )
+        by_dict: dict[str, np.ndarray] | None = None
+        if by is not None:
+            names = [by] if isinstance(by, str) else list(by)
+            missing = [n for n in names if n not in resolved.columns]
+            if missing:
+                raise ValidationError(f"by= columns not present in calibration data: {missing}")
+            by_dict = {n: resolved[n].to_numpy() for n in names}
+        return _cs(
+            y,
+            mu,
+            exposure=exposure_arr,
+            weights=weights_arr,
+            by=by_dict,
+            n_bins=n_bins,
+            ranking=ranking,
+            min_exposure=min_exposure,
+        )
+
+    def fit_calibration(
+        self,
+        data: pl.DataFrame | pl.LazyFrame,
+        *,
+        method: str = "global",
+        exposure: str | np.ndarray | None = None,
+        weights: str | np.ndarray | None = None,
+        increasing: bool = True,
+    ):
+        """Fit a separate calibration object on this model's predictions.
+
+        ``method="global"`` returns a :class:`~rustystats.GlobalCalibration`;
+        ``method="isotonic"`` returns an :class:`~rustystats.IsotonicCalibration`.
+        The returned object is *not* attached to the model and must be applied
+        explicitly by the caller — raw and calibrated predictions remain
+        separately accessible.
+        """
+        from rustystats.calibration import (
+            fit_global_calibration,
+            fit_isotonic_calibration,
+        )
+
+        _, y, mu, _exposure_arr, weights_arr = self._calibration_extract_arrays(
+            data, exposure, weights
+        )
+        if method == "global":
+            return fit_global_calibration(y, mu, weights=weights_arr)
+        if method == "isotonic":
+            return fit_isotonic_calibration(y, mu, weights=weights_arr, increasing=increasing)
+        raise ValidationError(
+            f"unknown calibration method {method!r}; expected 'global' or 'isotonic'."
+        )
+
+    def relevel(
+        self,
+        data: pl.DataFrame | pl.LazyFrame,
+        *,
+        exposure: str | np.ndarray | None = None,
+        weights: str | np.ndarray | None = None,
+        inplace: bool = False,
+    ) -> GLMModel:
+        """Apply a global multiplicative calibration as a log-link intercept shift.
+
+        For a log-link GLM with predictions ``μ`` on ``data``, computes the
+        calibration factor
+
+        .. math:: c = \\frac{\\sum_i w_i\\, y_i}{\\sum_i w_i\\, \\mu_i}
+
+        and updates the intercept by ``+log(c)``. Every other coefficient is
+        bit-identical, so multiplicative relativities (``exp(β_j)``) are
+        preserved — the rate table keeps its shape and only the model level
+        changes.
+
+        Notes
+        -----
+        ``exposure=`` is only used by the prediction that builds ``μ``; it is
+        *never* a denominator in ``c``. Under a log link, exposure already
+        lives inside ``μ`` via the ``log(exposure)`` offset.
+
+        Calibrating on the same rows used to fit the model overstates the
+        calibration quality — see :mod:`rustystats.calibration`.
+
+        Returns a new :class:`GLMModel` by default; pass ``inplace=True`` to
+        mutate this object instead.
+        """
+        from rustystats.calibration import fit_global_calibration
+
+        if self.link != "log":
+            raise ValidationError(
+                f"relevel(method='global') is only supported for log-link models, "
+                f"got link='{self.link}'. Use fit_calibration(method='global') to "
+                f"attach a multiplicative calibration object instead."
+            )
+        if not self.feature_names or self.feature_names[0] != "Intercept":
+            raise ValidationError(
+                "relevel() requires a model fitted with an intercept "
+                "(first feature must be 'Intercept')."
+            )
+
+        _, y, mu, _exposure_arr, weights_arr = self._calibration_extract_arrays(
+            data, exposure, weights
+        )
+        cal = fit_global_calibration(y, mu, weights=weights_arr)
+        c = cal.factor
+        if not np.isfinite(c) or c <= 0.0:
+            raise ValidationError(
+                f"relevel factor c={c!r} is not finite/positive; cannot apply log-shift."
+            )
+        log_shift = float(np.log(c))
+
+        target = self if inplace else copy.copy(self)
+        intercept_before = float(target.params[0])
+        intercept_after = float(intercept_before + log_shift)
+        # Lists are shared by ``copy.copy``; rebuild on the target so the
+        # original's history is not mutated.
+        history = list(target._relevel_history)
+        history.append(
+            {
+                "factor": float(c),
+                "original_intercept": intercept_before,
+                "new_intercept": intercept_after,
+                "log_shift": log_shift,
+                "n_obs": int(y.shape[0]),
+                "total_weight": float(
+                    np.sum(weights_arr) if weights_arr is not None else y.shape[0]
+                ),
+            }
+        )
+        target._relevel_history = history
+        target._intercept_delta = target._intercept_delta + log_shift
+        return target
+
     def to_pmml(
         self,
         path: str | None = None,
@@ -2208,6 +2475,7 @@ class GLMModel:
         - Spline knot positions
         - Target encoding statistics
         - Family parameter metadata such as Negative Binomial theta
+        - Relevel intercept shifts and metadata
 
         Returns
         -------
@@ -2298,6 +2566,8 @@ class GLMModel:
             "terms_dict": self._terms_dict,
             "interactions_spec": self._interactions_spec,
             "complement_spec": self._complement_spec,
+            "intercept_delta": float(self._intercept_delta),
+            "relevel_history": self.relevel_history,
             "basis_impl": spline_basis_impl,
         }
 
@@ -2385,6 +2655,8 @@ class GLMModel:
         model.optimizer_route = result_state.get("optimizer_route")
         model.solver_status = result_state.get("solver_status")
         model.step_halving_used = result_state.get("step_halving_used")
+        model._intercept_delta = float(state.get("intercept_delta", 0.0))
+        model._relevel_history = [dict(entry) for entry in state.get("relevel_history", [])]
         return model
 
     def __repr__(self) -> str:

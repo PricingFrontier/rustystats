@@ -79,10 +79,14 @@ class _CalibrationComputer:
         self.exposure = exposure
 
     def compute(self, n_bins: int = DEFAULT_N_CALIBRATION_BINS) -> dict[str, Any]:
-        actual_total = float(np.sum(self.y))
-        predicted_total = float(np.sum(self.mu))
-        float(np.sum(self.exposure))
-        ae_ratio = actual_total / predicted_total if predicted_total > 0 else float("nan")
+        # Route through the single weighted A/E primitive (RS-ACT-009): even
+        # the legacy no-weight call path now resolves the overall ratio through
+        # the same `_overall_ae` helper that `rs.calibration_summary` uses,
+        # so the two stay numerically identical.
+        from rustystats.calibration import _overall_ae
+
+        overall = _overall_ae(self.y, self.mu, weights=None)
+        ae_ratio = overall["ae_ratio"]
 
         bins = self._compute_bins(n_bins)
         _hl_stat, hl_pvalue = self._hosmer_lemeshow(n_bins)

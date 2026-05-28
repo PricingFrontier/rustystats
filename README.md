@@ -520,6 +520,44 @@ The comparison includes:
 
 ---
 
+## Calibration Primitives
+
+Explicit calibration tools for assessing and adjusting model balance, kept
+separate from the GLM coefficients so the underlying fit stays untouched.
+
+```python
+# Standalone summary on arrays (overall A/E, per-bin, optional per-factor)
+summary = rs.calibration_summary(
+    y, mu,
+    exposure=exposure,
+    weights=weights,         # optional; weighted Σwy/Σwμ
+    by={"Region": region},   # optional per-factor breakdown
+    n_bins=10,
+    ranking="auto",          # rate-rank when exposure is present
+    min_exposure=10.0,       # flag low-exposure cells as suppressed
+)
+
+# From a fitted GLM (response/exposure resolved automatically)
+result.calibration_summary(data, by="Region")
+
+# Multiplicative or monotone calibration objects (opt-in, serialized separately)
+cal = result.fit_calibration(holdout, method="global")     # GlobalCalibration
+iso = result.fit_calibration(holdout, method="isotonic")   # IsotonicCalibration
+calibrated_pred = cal.predict(result.predict(new_data))
+
+# Log-link intercept relevel — same factor c = Σ(w·y)/Σ(w·μ), updates only the
+# intercept. Every other coefficient is bit-identical, relativities preserved.
+releveled = result.relevel(holdout)
+assert all(releveled.params[1:] == result.params[1:])
+```
+
+Calibration is **never applied silently** to `result.predict()`. Calibration
+objects are separate, serializable (`to_dict`/`from_dict`), and not folded into
+GLM coefficients. Fitting calibration on the same rows used to fit the model
+overstates calibration quality — prefer a held-out fold.
+
+---
+
 ## Per-Prediction Contributions
 
 Decompose each row's prediction into per-term contributions for trace explainability:
