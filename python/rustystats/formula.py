@@ -1704,6 +1704,7 @@ class GLMModel:
         compute_score_tests: bool = True,
         # Base predictions comparison
         base_predictions: str | None = None,
+        ranking: str = "auto",
     ) -> ModelDiagnostics:
         """
         Compute comprehensive model diagnostics.
@@ -1756,6 +1757,9 @@ class GLMModel:
             - A/E ratio, loss, Gini for base predictions
             - Model vs base decile analysis sorted by model/base ratio
             - Summary of which model performs better in each decile
+        ranking : {"auto", "mean", "rate"}, default="auto"
+            Decile/lift ranking mode. ``"auto"`` ranks by predicted rate when
+            exposure is present and by raw predicted mean otherwise.
 
         Returns
         -------
@@ -1828,6 +1832,7 @@ class GLMModel:
             compute_robust_se=compute_robust_se,
             compute_score_tests=compute_score_tests,
             base_predictions=base_predictions,
+            ranking=ranking,
         )
 
     def diagnostics_json(
@@ -1844,6 +1849,7 @@ class GLMModel:
         interactions: list[Any] | None = None,
         test_data: pl.DataFrame | None = None,
         compute_score_tests: bool = True,
+        ranking: str = "auto",
         indent: int | None = None,
     ) -> str:
         """
@@ -1864,6 +1870,8 @@ class GLMModel:
             Test data for overfitting detection.
         compute_score_tests : bool, default=True
             Whether to compute Rao score tests for unfitted factors. Default True.
+        ranking : {"auto", "mean", "rate"}, default="auto"
+            Decile/lift ranking mode.
         indent : int, optional
             JSON indentation. None for compact output.
 
@@ -1885,6 +1893,7 @@ class GLMModel:
             interactions=interactions,
             test_data=test_data,
             compute_score_tests=compute_score_tests,
+            ranking=ranking,
         )
         return diag.to_json(indent=indent)
 

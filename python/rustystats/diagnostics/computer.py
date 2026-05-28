@@ -97,6 +97,40 @@ if TYPE_CHECKING:
     import polars as pl
 
 
+def rank_sort_idx(
+    mu: np.ndarray,
+    exposure: np.ndarray | None = None,
+    *,
+    has_exposure: bool | None = None,
+    ranking: str = "auto",
+) -> np.ndarray:
+    """Ascending argsort for actuarial diagnostics ranking.
+
+    ``ranking``:
+    - ``"auto"`` — rank by ``mu/exposure`` when exposure was supplied, else ``mu``;
+    - ``"rate"`` — rank by ``mu/exposure`` (requires exposure);
+    - ``"mean"`` — rank by raw ``mu``.
+
+    Stable sorting preserves original row order for equal risk scores, matching
+    Rust's `(score, index)` tie-breaker in the default diagnostics sort.
+    """
+    mu_arr = np.asarray(mu, dtype=np.float64)
+    exposure_arr = None if exposure is None else np.asarray(exposure, dtype=np.float64)
+    exposure_supplied = exposure_arr is not None if has_exposure is None else has_exposure
+
+    if ranking == "mean":
+        key = mu_arr
+    elif ranking == "rate":
+        if not exposure_supplied or exposure_arr is None:
+            raise ValidationError("ranking='rate' requires exposure to be supplied.")
+        key = mu_arr / exposure_arr
+    elif ranking == "auto":
+        key = mu_arr / exposure_arr if exposure_supplied and exposure_arr is not None else mu_arr
+    else:
+        raise ValidationError(f"ranking must be 'auto', 'mean', or 'rate', got {ranking!r}.")
+    return np.argsort(key, kind="stable")
+
+
 class DiagnosticsComputer:
     """
     Computes comprehensive model diagnostics.
@@ -851,24 +885,40 @@ class DiagnosticsComputer:
         return results
 
     def _rank_sort_idx(self, ranking: str = "auto") -> np.ndarray:
-        """Ascending argsort of the rate-ranking score (RS-ACT-004).
+        return rank_sort_idx(
+            self.mu,
+            self.exposure,
+            has_exposure=self._has_exposure,
+            ranking=ranking,
+        )
 
-        ``ranking``:
-        - ``"auto"`` — rank by ``mu/exposure`` when exposure was supplied, else ``mu``;
-        - ``"rate"`` — rank by ``mu/exposure`` (requires exposure);
-        - ``"mean"`` — rank by raw ``mu``.
-        """
-        if ranking == "mean":
-            key = self.mu
-        elif ranking == "rate":
-            if not self._has_exposure:
-                raise ValidationError("ranking='rate' requires exposure to be supplied.")
-            key = self.mu / self.exposure
-        elif ranking == "auto":
-            key = self.mu / self.exposure if self._has_exposure else self.mu
-        else:
-            raise ValidationError(f"ranking must be 'auto', 'mean', or 'rate', got {ranking!r}.")
-        return np.argsort(key)
+    def _gini_for_sort_idx(self, sort_idx: np.ndarray) -> float:
+        """Compute exposure-weighted Gini using the same rank order as deciles."""
+        total_exposure = float(np.sum(self.exposure))
+        total_actual = float(np.sum(self.y))
+        if total_actual == 0.0 or total_exposure == 0.0:
+            return 0.0
+
+        cum_exposure = 0.0
+        cum_actual = 0.0
+        gini_area = 0.0
+        prev_cum_exposure_pct = 0.0
+        prev_cum_actual_pct = 0.0
+
+        for idx in sort_idx[::-1]:
+            cum_exposure += float(self.exposure[idx])
+            cum_actual += float(self.y[idx])
+            cum_exposure_pct = cum_exposure / total_exposure
+            cum_actual_pct = cum_actual / total_actual
+            gini_area += (
+                (cum_exposure_pct - prev_cum_exposure_pct)
+                * (cum_actual_pct + prev_cum_actual_pct)
+                / 2.0
+            )
+            prev_cum_exposure_pct = cum_exposure_pct
+            prev_cum_actual_pct = cum_actual_pct
+
+        return 2.0 * gini_area - 1.0
 
     def compute_lift_chart(
         self, n_deciles: int = 10, sort_idx: np.ndarray | None = None, ranking: str = "auto"
@@ -895,6 +945,10 @@ class DiagnosticsComputer:
         # Rank by predicted rate (mu/exposure) when exposure is present, matching
         # the decile/calibration/discrimination diagnostics (RS-ACT-004). Reuse a
         # pre-computed sort when provided.
+        if ranking not in {"auto", "mean", "rate"}:
+            raise ValidationError(f"ranking must be 'auto', 'mean', or 'rate', got {ranking!r}.")
+        if ranking == "rate" and not self._has_exposure:
+            raise ValidationError("ranking='rate' requires exposure to be supplied.")
         if sort_idx is None:
             sort_idx = self._rank_sort_idx(ranking)
         y_sorted = self.y[sort_idx]
@@ -977,10 +1031,7 @@ class DiagnosticsComputer:
                 )
             )
 
-        # Compute Gini
-        gini = 2 * max_ks / 100  # Approximate from KS
-        stats = _rust_discrimination_stats(self.y, self.mu, self.exposure)
-        gini = float(stats["gini"])
+        gini = self._gini_for_sort_idx(sort_idx)
 
         return LiftChart(
             deciles=deciles,

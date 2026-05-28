@@ -32,7 +32,7 @@ from rustystats.constants import (
     OVERFITTING_GINI_GAP_THRESHOLD,
     SIGNIFICANCE_THRESHOLD,
 )
-from rustystats.diagnostics.computer import DiagnosticsComputer
+from rustystats.diagnostics.computer import DiagnosticsComputer, rank_sort_idx
 from rustystats.diagnostics.pair_diagnostics import (
     _build_design_correlation_matrix,
     _compute_block_gvif,
@@ -506,6 +506,7 @@ def _extract_test_arrays(
     result: Any,
     response_col: str | None,
     exposure_col: str | None,
+    ranking: str = "auto",
 ) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None, np.ndarray | None]:
     """Extract test response, prediction, exposure, and prediction order once."""
     if test_data is None or response_col is None:
@@ -518,9 +519,16 @@ def _extract_test_arrays(
     y_test = test_data[response_col].to_numpy().astype(np.float64)
     mu_test = np.asarray(result.predict(test_data), dtype=np.float64)
     exposure_test = np.ones(len(y_test), dtype=np.float64)
+    has_exposure = False
     if exposure_col and exposure_col in test_data.columns:
         exposure_test = test_data[exposure_col].to_numpy().astype(np.float64)
-    return y_test, mu_test, exposure_test, np.argsort(mu_test)
+        has_exposure = True
+    return (
+        y_test,
+        mu_test,
+        exposure_test,
+        rank_sort_idx(mu_test, exposure_test, has_exposure=has_exposure, ranking=ranking),
+    )
 
 
 def _maybe_compute_vif(
@@ -598,11 +606,12 @@ def _maybe_compute_lift(
     computer: DiagnosticsComputer,
     mu_sort_idx: np.ndarray,
     warnings: list,
+    ranking: str,
 ) -> Any:
     """Compute the full lift chart and warn on weak deciles."""
     if not compute_lift:
         return None
-    lift_chart = computer.compute_lift_chart(n_deciles=10, sort_idx=mu_sort_idx)
+    lift_chart = computer.compute_lift_chart(n_deciles=10, sort_idx=mu_sort_idx, ranking=ranking)
     if lift_chart.weak_deciles:
         warnings.append(
             {
@@ -668,6 +677,7 @@ def _build_train_test_comparison(
     test_mu: np.ndarray | None = None,
     test_exposure: np.ndarray | None = None,
     test_mu_sort_idx: np.ndarray | None = None,
+    ranking: str = "auto",
 ) -> TrainTestComparison:
     """Assemble the train/test comparison; populate test_diag and overfitting flags when test_data is supplied."""
     train_test = TrainTestComparison(train=train_diag)
@@ -680,6 +690,7 @@ def _build_train_test_comparison(
             result,
             response_col,
             exposure_col,
+            ranking,
         )
     if test_y is None or test_mu is None or test_exposure is None:
         return train_test
@@ -691,8 +702,13 @@ def _build_train_test_comparison(
     # by predicted rate (mu/exposure); exposure_test is ones when absent, so this
     # reduces to argsort(mu) for non-exposure models.
     if test_mu_sort_idx is None:
-        safe_exp = np.where(exposure_test > 0.0, exposure_test, 1.0)
-        test_mu_sort_idx = np.argsort(mu_test / safe_exp)
+        has_exposure = exposure_col is not None and exposure_col in test_data.columns
+        test_mu_sort_idx = rank_sort_idx(
+            mu_test,
+            exposure_test,
+            has_exposure=has_exposure,
+            ranking=ranking,
+        )
 
     # Pre-cache test data columns (same pattern as the train-data cache loop).
     cat_cache_test, cat_unique_cache_test, cont_cache_test = _precompute_data_caches(
@@ -1261,6 +1277,7 @@ def compute_diagnostics(
     compute_score_tests: bool = True,
     # Base predictions comparison (column name in train_data with predictions from another model)
     base_predictions: str | None = None,
+    ranking: str = "auto",
 ) -> ModelDiagnostics:
     """
     Compute comprehensive model diagnostics.
@@ -1322,6 +1339,9 @@ def compute_diagnostics(
         - A/E ratio, loss, Gini for base predictions
         - Model vs base decile analysis sorted by model/base ratio
         - Summary of which model performs better in each decile
+    ranking : {"auto", "mean", "rate"}, default="auto"
+        Decile/lift ranking mode. ``"auto"`` ranks by predicted rate when
+        exposure is present and by raw predicted mean otherwise.
 
     Returns
     -------
@@ -1387,7 +1407,7 @@ def compute_diagnostics(
     # O(n log n) work at 1M rows. RS-ACT-004: rank by predicted rate
     # (mu/exposure) when exposure is present, else by mu, so the decile table and
     # lift chart agree with the rate-ranked calibration/discrimination stats.
-    mu_sort_idx = computer._rank_sort_idx()
+    mu_sort_idx = computer._rank_sort_idx(ranking)
 
     # 3. Pre-cache columns + extract score-test matrices
     cat_cache_train, cat_unique_cache_train, cont_cache_train = _precompute_data_caches(
@@ -1473,7 +1493,7 @@ def compute_diagnostics(
         cat_unique_cache_train,
         warnings,
     )
-    lift_chart = _maybe_compute_lift(compute_lift, computer, mu_sort_idx, warnings)
+    lift_chart = _maybe_compute_lift(compute_lift, computer, mu_sort_idx, warnings, ranking)
     partial_dep = _maybe_compute_partial_dependence(
         compute_partial_dep,
         computer,
@@ -1493,6 +1513,7 @@ def compute_diagnostics(
         result,
         response_col,
         exposure_col,
+        ranking,
     )
 
     # 6. Train/test comparison (test_diag built only if test_data provided)
@@ -1510,6 +1531,7 @@ def compute_diagnostics(
         test_mu=test_mu_arr,
         test_exposure=test_exposure_arr,
         test_mu_sort_idx=test_mu_sort_idx,
+        ranking=ranking,
     )
 
     # 6b. Pre-build the regularized design correlation matrix ONCE per
