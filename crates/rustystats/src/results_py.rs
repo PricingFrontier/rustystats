@@ -21,7 +21,7 @@ use rustystats_core::inference::{
 };
 use rustystats_core::regularization::Penalty;
 
-use crate::families_py::family_from_name;
+use crate::families_py::family_from_name_with_tweedie_support;
 
 /// Results from fitting a GLM.
 ///
@@ -79,7 +79,7 @@ impl PyGLMResults {
     /// Used internally by diagnostics and robust SE methods.
     /// Note: family_name is validated at model creation, so this should never fail.
     fn get_family(&self) -> Box<dyn Family> {
-        family_from_name(&self.family_name, 1.5, 1.0)
+        family_from_name_with_tweedie_support(&self.family_name, 1.5, 1.0, true)
             .expect("Invalid family name stored in results - this is a bug")
     }
 

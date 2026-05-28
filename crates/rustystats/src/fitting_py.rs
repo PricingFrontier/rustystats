@@ -24,7 +24,10 @@ use rustystats_core::solvers::{
     SmoothGLMConfig, SmoothTermSpec,
 };
 
-use crate::families_py::{default_link_name, family_from_name, link_from_name};
+use crate::families_py::{
+    default_link_name, family_from_name_with_tweedie_support, link_from_name,
+    validate_tweedie_fit_response,
+};
 use crate::results_py::PyGLMResults;
 
 // =============================================================================
@@ -115,7 +118,7 @@ fn build_smooth_config(
 // =============================================================================
 
 #[pyfunction]
-#[pyo3(signature = (y, x, family, link=None, var_power=1.5, theta=1.0, offset=None, weights=None, alpha=0.0, l1_ratio=0.0, max_iter=25, tol=1e-8, nonneg_indices=None, nonpos_indices=None, store_design_matrix=false))]
+#[pyo3(signature = (y, x, family, link=None, var_power=1.5, theta=1.0, offset=None, weights=None, alpha=0.0, l1_ratio=0.0, max_iter=25, tol=1e-8, nonneg_indices=None, nonpos_indices=None, store_design_matrix=false, allow_extended_tweedie=false))]
 pub fn fit_glm_py(
     y: PyReadonlyArray1<f64>,
     x: PyReadonlyArray2<f64>,
@@ -132,6 +135,7 @@ pub fn fit_glm_py(
     nonneg_indices: Option<Vec<usize>>,
     nonpos_indices: Option<Vec<usize>>,
     store_design_matrix: bool,
+    allow_extended_tweedie: bool,
 ) -> PyResult<PyGLMResults> {
     let y_array: Array1<f64> = y.as_array().to_owned();
     let x_view = x.as_array(); // Zero-copy view of numpy array
@@ -176,7 +180,10 @@ pub fn fit_glm_py(
         }
     }
 
-    let fam = family_from_name(family, var_power, theta)?;
+    validate_tweedie_fit_response(family, &y_array, var_power, allow_extended_tweedie)?;
+
+    let fam =
+        family_from_name_with_tweedie_support(family, var_power, theta, allow_extended_tweedie)?;
     let lnk = link_from_name(link.unwrap_or(default_link_name(family)))?;
 
     let result: IRLSResult = fit_glm_unified(
@@ -446,7 +453,7 @@ fn validation_deviance_score(unit_deviance: &Array1<f64>, weights: Option<&Array
 }
 
 #[pyfunction]
-#[pyo3(signature = (y, x, family, link=None, var_power=1.5, theta=1.0, offset=None, weights=None, alphas=None, l1_ratio=0.0, n_folds=5, max_iter=25, tol=1e-8, seed=None, nonneg_indices=None, nonpos_indices=None))]
+#[pyo3(signature = (y, x, family, link=None, var_power=1.5, theta=1.0, offset=None, weights=None, alphas=None, l1_ratio=0.0, n_folds=5, max_iter=25, tol=1e-8, seed=None, nonneg_indices=None, nonpos_indices=None, allow_extended_tweedie=false))]
 pub fn fit_cv_path_py<'py>(
     py: Python<'py>,
     y: PyReadonlyArray1<f64>,
@@ -465,6 +472,7 @@ pub fn fit_cv_path_py<'py>(
     seed: Option<u64>,
     nonneg_indices: Option<Vec<usize>>,
     nonpos_indices: Option<Vec<usize>>,
+    allow_extended_tweedie: bool,
 ) -> PyResult<Py<PyAny>> {
     let y_array: Array1<f64> = y.as_array().to_owned();
     let x_view = x.as_array(); // Zero-copy view
@@ -503,7 +511,9 @@ pub fn fit_cv_path_py<'py>(
             .collect()
     };
 
-    let _fam = family_from_name(family, var_power, theta)?;
+    validate_tweedie_fit_response(family, &y_array, var_power, allow_extended_tweedie)?;
+    let _fam =
+        family_from_name_with_tweedie_support(family, var_power, theta, allow_extended_tweedie)?;
     let default_link = default_link_name(family);
     let _link_fn = link_from_name(link.unwrap_or(default_link))?;
 
@@ -556,8 +566,13 @@ pub fn fit_cv_path_py<'py>(
             }
 
             // Safe: family/link were validated before entering the parallel loop
-            let thread_fam = family_from_name(family, var_power, theta)
-                .expect("family pre-validated before parallel loop");
+            let thread_fam = family_from_name_with_tweedie_support(
+                family,
+                var_power,
+                theta,
+                allow_extended_tweedie,
+            )
+            .expect("family pre-validated before parallel loop");
             let link_name = link.unwrap_or(default_link);
             let thread_link =
                 link_from_name(link_name).expect("link pre-validated before parallel loop");
@@ -713,7 +728,7 @@ mod tests {
 /// * `smooth_penalties` - List of penalty matrices (one per smooth term)
 /// * `smooth_monotonicity` - List of monotonicity constraints: None, "increasing", "decreasing"
 #[pyfunction]
-#[pyo3(signature = (y, x_full, smooth_col_ranges, smooth_penalties, family, link=None, offset=None, weights=None, max_iter=25, tol=1e-8, lambda_min=0.001, lambda_max=1000.0, smooth_monotonicity=None, store_design_matrix=false, nonneg_indices=None, nonpos_indices=None, var_power=1.5, theta=1.0))]
+#[pyo3(signature = (y, x_full, smooth_col_ranges, smooth_penalties, family, link=None, offset=None, weights=None, max_iter=25, tol=1e-8, lambda_min=0.001, lambda_max=1000.0, smooth_monotonicity=None, store_design_matrix=false, nonneg_indices=None, nonpos_indices=None, var_power=1.5, theta=1.0, allow_extended_tweedie=false))]
 pub fn fit_smooth_glm_unified_py<'py>(
     py: Python<'py>,
     y: PyReadonlyArray1<f64>,
@@ -734,13 +749,16 @@ pub fn fit_smooth_glm_unified_py<'py>(
     nonpos_indices: Option<Vec<usize>>,
     var_power: f64,
     theta: f64,
+    allow_extended_tweedie: bool,
 ) -> PyResult<Py<PyAny>> {
     let y_arr = y.as_array().to_owned();
     let x_view = x_full.as_array(); // Zero-copy view
     let offset_arr = offset.map(|o| o.as_array().to_owned());
     let weights_arr = weights.map(|w| w.as_array().to_owned());
 
-    let fam = family_from_name(family, var_power, theta)?;
+    validate_tweedie_fit_response(family, &y_arr, var_power, allow_extended_tweedie)?;
+    let fam =
+        family_from_name_with_tweedie_support(family, var_power, theta, allow_extended_tweedie)?;
     let lnk = match link {
         Some(l) => link_from_name(l)?,
         None => link_from_name(default_link_name(family))?,

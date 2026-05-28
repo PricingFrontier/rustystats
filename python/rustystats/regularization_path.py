@@ -208,6 +208,7 @@ def _fit_null_intercept(
     weights: np.ndarray,
     var_power: float,
     theta: float,
+    allow_extended_tweedie: bool = False,
 ) -> float:
     """Fit the intercept-only GLM (``η = β_0 + offset``).
 
@@ -251,6 +252,7 @@ def _fit_null_intercept(
         None,
         None,
         False,
+        allow_extended_tweedie,
     )
     return float(np.asarray(null_res.params)[0])
 
@@ -267,6 +269,7 @@ def compute_alpha_max(
     var_power: float = 1.5,
     theta: float = 1.0,
     intercept_col: int | None = 0,
+    allow_extended_tweedie: bool = False,
 ) -> float:
     """Maximum alpha that zeroes every penalised coefficient (RS-ACT-005).
 
@@ -339,7 +342,16 @@ def compute_alpha_max(
         pen_mask[intercept_col] = False
 
     if l1_ratio > 0:
-        beta_0 = _fit_null_intercept(y, family, link, off, w, var_power, theta)
+        beta_0 = _fit_null_intercept(
+            y,
+            family,
+            link,
+            off,
+            w,
+            var_power,
+            theta,
+            allow_extended_tweedie=allow_extended_tweedie,
+        )
         eta_0 = beta_0 + off
         mu_0 = _apply_inverse_link(eta_0, link)
         score_factor = _glm_score_gradient_factor(y, mu_0, family, link, var_power, theta, w)
@@ -433,6 +445,7 @@ def compute_deviance(
     theta: float = 1.0,
     weights: np.ndarray | None = None,
     var_power: float = 1.5,
+    allow_extended_tweedie: bool = False,
 ) -> float:
     """
     Compute mean deviance for a GLM family.
@@ -485,7 +498,7 @@ def compute_deviance(
     ):
         fam = NegativeBinomialFamily(theta)
     elif family_lower.startswith("tweedie"):
-        fam = TweedieFamily(var_power)
+        fam = TweedieFamily(var_power, allow_extended_tweedie=allow_extended_tweedie)
     else:
         raise ValidationError(f"Unknown family: {family}")
 
@@ -620,6 +633,7 @@ def fit_cv_regularization_path(
     theta = glm_instance.theta if glm_instance.theta is not None else DEFAULT_NEGBINOMIAL_THETA
     offset = glm_instance.offset
     weights = glm_instance.weights
+    allow_extended_tweedie = bool(getattr(glm_instance, "allow_extended_tweedie", False))
 
     # Compute alpha path: GLM-score-aware, offset+weight+family+link aware.
     alpha_max = compute_alpha_max(
@@ -632,6 +646,7 @@ def fit_cv_regularization_path(
         weights=weights,
         var_power=var_power,
         theta=theta,
+        allow_extended_tweedie=allow_extended_tweedie,
     )
     alphas = generate_alpha_path(alpha_max, n_alphas, alpha_min_ratio)
 
@@ -674,6 +689,7 @@ def fit_cv_regularization_path(
         seed if seed is not None else DEFAULT_CV_SEED,
         nonneg_indices=nonneg_indices if nonneg_indices else None,
         nonpos_indices=nonpos_indices if nonpos_indices else None,
+        allow_extended_tweedie=allow_extended_tweedie,
     )
 
     # Convert Rust result to path_results format
@@ -719,6 +735,10 @@ def fit_cv_regularization_path(
                     0.0,
                     max_iter,
                     tol,
+                    None,
+                    None,
+                    False,
+                    allow_extended_tweedie,
                 )
             except ValueError:
                 continue
@@ -733,6 +753,7 @@ def fit_cv_regularization_path(
                 theta=theta,
                 weights=weights_val,
                 var_power=var_power,
+                allow_extended_tweedie=allow_extended_tweedie,
             )
             fold_deviances.append(dev)
 
@@ -860,6 +881,7 @@ def fit_cv_te_regularization_path(
     theta = glm_instance.theta if glm_instance.theta is not None else DEFAULT_NEGBINOMIAL_THETA
     offset = glm_instance.offset
     weights = glm_instance.weights
+    allow_extended_tweedie = bool(getattr(glm_instance, "allow_extended_tweedie", False))
 
     parsed = glm_instance._builder._parsed_formula
     data = glm_instance.data
@@ -895,6 +917,7 @@ def fit_cv_te_regularization_path(
                 weights=weights_train,
                 var_power=var_power,
                 theta=theta,
+                allow_extended_tweedie=allow_extended_tweedie,
             )
         )
 
@@ -943,6 +966,7 @@ def fit_cv_te_regularization_path(
                     nonneg_indices if nonneg_indices else None,
                     nonpos_indices if nonpos_indices else None,
                     False,
+                    allow_extended_tweedie,
                 )
             except ValueError:
                 failed_alphas.add(alpha)
@@ -958,6 +982,7 @@ def fit_cv_te_regularization_path(
                 theta=theta,
                 weights=weights_val,
                 var_power=var_power,
+                allow_extended_tweedie=allow_extended_tweedie,
             )
             if np.isfinite(dev):
                 deviances[alpha].append(dev)

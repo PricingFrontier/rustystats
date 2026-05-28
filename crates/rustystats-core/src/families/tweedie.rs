@@ -134,8 +134,14 @@ impl Family for TweedieFamily {
                 2.0 * (yi_safe * (yi_safe / mui_safe).ln() - (yi_safe - mui_safe))
             }
         } else if (p - 2.0).abs() < ZERO_TOL {
+            if yi <= 0.0 {
+                return f64::INFINITY;
+            }
             2.0 * ((yi_safe - mui_safe) / mui_safe - (yi_safe / mui_safe).ln())
         } else {
+            if p > 2.0 && yi <= 0.0 {
+                return f64::INFINITY;
+            }
             let term1 = if yi_safe > 0.0 {
                 yi_safe.powf(2.0 - p) / ((1.0 - p) * (2.0 - p))
             } else {
@@ -319,6 +325,18 @@ mod tests {
     fn test_tweedie_invalid_power() {
         // p in (0, 1) is not valid for Tweedie
         assert!(TweedieFamily::new(0.5).is_err());
+    }
+
+    #[test]
+    fn test_high_power_zero_deviance_is_not_negative() {
+        let family = TweedieFamily::new(2.5).expect("test setup should be valid");
+        let y = array![0.0];
+        let mu = array![1.0];
+
+        let deviance = family.unit_deviance(&y, &mu);
+
+        assert!(deviance[0].is_infinite());
+        assert!(deviance[0].is_sign_positive());
     }
 
     #[test]

@@ -93,7 +93,7 @@ class QuasiBinomialFamily:
     def default_link(self) -> LogitLink: ...
 
 class TweedieFamily:
-    def __init__(self, var_power: float = 1.5) -> None: ...
+    def __init__(self, var_power: float = 1.5, allow_extended_tweedie: bool = False) -> None: ...
     def name(self) -> str: ...
     @property
     def var_power(self) -> float: ...
@@ -197,20 +197,19 @@ def fit_glm_py(
     y: npt.NDArray[np.float64],
     x: npt.NDArray[np.float64],
     family: str,
-    link: str,
+    link: str | None = None,
+    var_power: float = 1.5,
+    theta: float = 1.0,
     offset: npt.NDArray[np.float64] | None = None,
     weights: npt.NDArray[np.float64] | None = None,
     alpha: float = 0.0,
     l1_ratio: float = 0.0,
     max_iter: int = 25,
     tol: float = 1e-8,
-    var_power: float = 1.5,
-    theta: float = 1.0,
-    verbose: bool = False,
-    init_coefficients: npt.NDArray[np.float64] | None = None,
-    design_matrix: npt.NDArray[np.float64] | None = None,
-    y_raw: npt.NDArray[np.float64] | None = None,
-    irls_weights_out: bool = False,
+    nonneg_indices: list[int] | None = None,
+    nonpos_indices: list[int] | None = None,
+    store_design_matrix: bool = False,
+    allow_extended_tweedie: bool = False,
 ) -> GLMResults: ...
 def fit_negbinomial_py(
     y: npt.NDArray[np.float64],
@@ -248,22 +247,26 @@ def fit_smooth_glm_unified_py(
     nonpos_indices: list[int] | None = None,
     var_power: float = 1.5,
     theta: float = 1.0,
+    allow_extended_tweedie: bool = False,
 ) -> tuple[GLMResults, dict]: ...
 def fit_cv_path_py(
     y: npt.NDArray[np.float64],
     x: npt.NDArray[np.float64],
     family: str,
-    link: str,
-    fold_ids: npt.NDArray[np.int64],
-    alphas: npt.NDArray[np.float64],
-    l1_ratio: float = 0.0,
-    offset: npt.NDArray[np.float64] | None = None,
-    weights: npt.NDArray[np.float64] | None = None,
-    max_iter: int = 25,
-    tol: float = 1e-8,
+    link: str | None = None,
     var_power: float = 1.5,
     theta: float = 1.0,
-    verbose: bool = False,
+    offset: npt.NDArray[np.float64] | None = None,
+    weights: npt.NDArray[np.float64] | None = None,
+    alphas: list[float] | None = None,
+    l1_ratio: float = 0.0,
+    n_folds: int = 5,
+    max_iter: int = 25,
+    tol: float = 1e-8,
+    seed: int | None = None,
+    nonneg_indices: list[int] | None = None,
+    nonpos_indices: list[int] | None = None,
+    allow_extended_tweedie: bool = False,
 ) -> dict: ...
 
 # =============================================================================

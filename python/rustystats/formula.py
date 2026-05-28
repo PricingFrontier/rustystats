@@ -400,6 +400,7 @@ def _fit_with_fixed_spline_penalties(
     max_iter: int = DEFAULT_MAX_ITER,
     tol: float = DEFAULT_TOLERANCE,
     store_design_matrix: bool = False,
+    allow_extended_tweedie: bool = False,
 ) -> tuple:
     """
     Fit GLM with fixed-df splines using D'D penalty scaled by alpha.
@@ -440,6 +441,7 @@ def _fit_with_fixed_spline_penalties(
         store_design_matrix,
         var_power=var_power,
         theta=theta,
+        allow_extended_tweedie=allow_extended_tweedie,
     )
 
     smooth_results = []
@@ -481,6 +483,7 @@ def _fit_with_smooth_penalties(
     store_design_matrix: bool = False,
     nonneg_indices: list[int] | None = None,
     nonpos_indices: list[int] | None = None,
+    allow_extended_tweedie: bool = False,
 ) -> tuple:
     """
     Fit GLM with penalized smooth terms using fast GCV optimization.
@@ -548,6 +551,7 @@ def _fit_with_smooth_penalties(
         nonpos_indices if nonpos_indices else None,
         var_power=var_power,
         theta=theta,
+        allow_extended_tweedie=allow_extended_tweedie,
     )
 
     # Build smooth term results — coefficients are already in original column order
@@ -650,6 +654,7 @@ def _fit_glm_core(
             store_design_matrix=store_design_matrix,
             nonneg_indices=nonneg_indices if nonneg_indices else None,
             nonpos_indices=nonpos_indices if nonpos_indices else None,
+            allow_extended_tweedie=allow_extended_tweedie,
         )
         return result, smooth_results, total_edf, gcv
 
@@ -669,6 +674,7 @@ def _fit_glm_core(
         nonneg_indices if nonneg_indices else None,
         nonpos_indices if nonpos_indices else None,
         store_design_matrix,
+        allow_extended_tweedie,
     )
     return result, None, None, None
 
@@ -3713,6 +3719,23 @@ class FormulaGLMDict(_GLMBase):
             theta = (
                 self.theta if isinstance(self.theta, (int, float)) else DEFAULT_NEGBINOMIAL_THETA
             )
+
+        # RS-ACT-006: fail before CV/regularization path work starts. The final
+        # core fit validates again after CV selects alpha, but unsupported
+        # Tweedie regimes must not reach fold fitting or deviance scoring first.
+        from rustystats.validation import validate_glm_inputs
+
+        validate_glm_inputs(
+            self.y,
+            self.X,
+            self.family,
+            self.weights,
+            self.offset,
+            self.feature_names,
+            is_exposure_offset=False,
+            var_power=self.var_power,
+            allow_extended_tweedie=self.allow_extended_tweedie,
+        )
 
         # Handle CV-based regularization path (shared logic in _GLMBase)
         alpha, l1_ratio, path_info = self._resolve_cv_path(

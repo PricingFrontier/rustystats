@@ -6,6 +6,7 @@
 // Helper functions consolidate family/link dispatch logic used across the crate.
 // =============================================================================
 
+use ndarray::Array1;
 use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -101,6 +102,100 @@ fn parse_embedded_param(name: &str, params: Option<&str>, key: &str) -> PyResult
     })
 }
 
+fn tweedie_alternative_hint(var_power: f64) -> Option<&'static str> {
+    if (var_power - 0.0).abs() < 1e-12 {
+        Some("rs.GaussianFamily()")
+    } else if (var_power - 1.0).abs() < 1e-12 {
+        Some("rs.PoissonFamily()")
+    } else if (var_power - 2.0).abs() < 1e-12 {
+        Some("rs.GammaFamily()")
+    } else {
+        None
+    }
+}
+
+pub(crate) fn validate_tweedie_power(var_power: f64, allow_extended_tweedie: bool) -> PyResult<()> {
+    if !var_power.is_finite() {
+        return Err(PyValueError::new_err(format!(
+            "var_power must be finite, got {}",
+            var_power
+        )));
+    }
+    if var_power > 0.0 && var_power < 1.0 {
+        return Err(PyValueError::new_err(format!(
+            "Tweedie var_power={} is in the open interval (0, 1) — no \
+             Tweedie distribution exists for these powers. Allowed: \
+             p <= 0, p == 1 (Poisson), 1 < p < 2 (compound Poisson-Gamma), \
+             p == 2 (Gamma), p > 2.",
+            var_power
+        )));
+    }
+
+    let in_interior = var_power > 1.0 && var_power < 2.0;
+    if !in_interior && !allow_extended_tweedie {
+        let hint = tweedie_alternative_hint(var_power)
+            .map(|s| format!(" Use {} directly.", s))
+            .unwrap_or_default();
+        return Err(PyValueError::new_err(format!(
+            "Tweedie var_power={} is outside the default compound \
+             Poisson-Gamma interior (1 < p < 2). Pass \
+             allow_extended_tweedie=True to opt in to the extended regime \
+             (and its per-regime support rules).{}",
+            var_power, hint
+        )));
+    }
+
+    Ok(())
+}
+
+pub(crate) fn validate_tweedie_response(y: &Array1<f64>, var_power: f64) -> PyResult<()> {
+    if var_power >= 2.0 {
+        let n_invalid = y.iter().filter(|&&v| v <= 0.0).count();
+        if n_invalid > 0 {
+            return Err(PyValueError::new_err(format!(
+                "Extended Tweedie with p={} requires strictly positive response \
+                 values (y > 0). Found {} values <= 0. The Tweedie unit deviance \
+                 at y == 0 diverges for p >= 2; filter or cap your zeros before fitting.",
+                var_power, n_invalid
+            )));
+        }
+    } else {
+        let n_neg = y.iter().filter(|&&v| v < 0.0).count();
+        if n_neg > 0 {
+            return Err(PyValueError::new_err(format!(
+                "Tweedie family requires non-negative response values (y >= 0). \
+                 Found {} negative values.",
+                n_neg
+            )));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn resolve_tweedie_var_power(name: &str, var_power: f64) -> PyResult<Option<f64>> {
+    let (base_name, params) = split_family_name(name)?;
+    let lower = base_name.to_lowercase();
+    if lower != "tweedie" {
+        return Ok(None);
+    }
+    Ok(Some(
+        parse_embedded_param(name, params, "p")?.unwrap_or(var_power),
+    ))
+}
+
+pub(crate) fn validate_tweedie_fit_response(
+    name: &str,
+    y: &Array1<f64>,
+    var_power: f64,
+    allow_extended_tweedie: bool,
+) -> PyResult<()> {
+    if let Some(resolved_var_power) = resolve_tweedie_var_power(name, var_power)? {
+        validate_tweedie_power(resolved_var_power, allow_extended_tweedie)?;
+        validate_tweedie_response(y, resolved_var_power)?;
+    }
+    Ok(())
+}
+
 /// Get a Family trait object from a family name string.
 ///
 /// Handles case-insensitive matching and common aliases.
@@ -112,6 +207,15 @@ pub(crate) fn family_from_name(
     name: &str,
     var_power: f64,
     theta: f64,
+) -> PyResult<Box<dyn Family>> {
+    family_from_name_with_tweedie_support(name, var_power, theta, false)
+}
+
+pub(crate) fn family_from_name_with_tweedie_support(
+    name: &str,
+    var_power: f64,
+    theta: f64,
+    allow_extended_tweedie: bool,
 ) -> PyResult<Box<dyn Family>> {
     let (base_name, params) = split_family_name(name)?;
     let lower = base_name.to_lowercase();
@@ -143,13 +247,7 @@ pub(crate) fn family_from_name(
     // Handle tweedie with optional embedded variance power like "tweedie(p=1.5)".
     if lower == "tweedie" {
         let resolved_var_power = parse_embedded_param(name, params, "p")?.unwrap_or(var_power);
-        if !resolved_var_power.is_finite() || (resolved_var_power > 0.0 && resolved_var_power < 1.0)
-        {
-            return Err(PyValueError::new_err(format!(
-                "var_power must be finite and <= 0 or >= 1, got {}",
-                resolved_var_power
-            )));
-        }
+        validate_tweedie_power(resolved_var_power, allow_extended_tweedie)?;
         return Ok(Box::new(
             TweedieFamily::new(resolved_var_power).map_err(PyValueError::new_err)?,
         ));
@@ -428,45 +526,7 @@ impl PyTweedieFamily {
     #[new]
     #[pyo3(signature = (var_power=1.5, allow_extended_tweedie=false))]
     fn new(var_power: f64, allow_extended_tweedie: bool) -> PyResult<Self> {
-        if !var_power.is_finite() {
-            return Err(PyValueError::new_err(format!(
-                "var_power must be finite, got {}",
-                var_power
-            )));
-        }
-        // RS-ACT-006: the open interval (0, 1) is mathematically invalid (no
-        // Tweedie distribution exists there); reject always, even under
-        // allow_extended_tweedie=True.
-        if var_power > 0.0 && var_power < 1.0 {
-            return Err(PyValueError::new_err(format!(
-                "Tweedie var_power={} is in the open interval (0, 1) — no \
-                 Tweedie distribution exists for these powers. Allowed: \
-                 p <= 0, p == 1 (Poisson), 1 < p < 2 (compound Poisson-Gamma), \
-                 p == 2 (Gamma), p > 2.",
-                var_power
-            )));
-        }
-        // Anything outside the default compound Poisson-Gamma interior needs
-        // the explicit opt-in; matches the Python glm_dict gate.
-        let in_interior = var_power > 1.0 && var_power < 2.0;
-        if !in_interior && !allow_extended_tweedie {
-            let suggestion = match var_power {
-                p if (p - 0.0).abs() < 1e-12 => Some("rs.GaussianFamily()"),
-                p if (p - 1.0).abs() < 1e-12 => Some("rs.PoissonFamily()"),
-                p if (p - 2.0).abs() < 1e-12 => Some("rs.GammaFamily()"),
-                _ => None,
-            };
-            let hint = suggestion
-                .map(|s| format!(" Use {} directly.", s))
-                .unwrap_or_default();
-            return Err(PyValueError::new_err(format!(
-                "Tweedie var_power={} is outside the default compound \
-                 Poisson-Gamma interior (1 < p < 2). Pass \
-                 allow_extended_tweedie=True to opt in to the extended regime \
-                 (and its per-regime support rules).{}",
-                var_power, hint
-            )));
-        }
+        validate_tweedie_power(var_power, allow_extended_tweedie)?;
         Ok(Self {
             inner: TweedieFamily::new(var_power).map_err(PyValueError::new_err)?,
         })
@@ -497,17 +557,19 @@ impl PyTweedieFamily {
         py: Python<'py>,
         y: PyReadonlyArray1<f64>,
         mu: PyReadonlyArray1<f64>,
-    ) -> Bound<'py, PyArray1<f64>> {
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
         let y_array = y.as_array().to_owned();
+        validate_tweedie_response(&y_array, self.inner.var_power)?;
         let mu_array = mu.as_array().to_owned();
         let result = self.inner.unit_deviance(&y_array, &mu_array);
-        result.into_pyarray(py)
+        Ok(result.into_pyarray(py))
     }
 
-    fn deviance(&self, y: PyReadonlyArray1<f64>, mu: PyReadonlyArray1<f64>) -> f64 {
+    fn deviance(&self, y: PyReadonlyArray1<f64>, mu: PyReadonlyArray1<f64>) -> PyResult<f64> {
         let y_array = y.as_array().to_owned();
+        validate_tweedie_response(&y_array, self.inner.var_power)?;
         let mu_array = mu.as_array().to_owned();
-        self.inner.deviance(&y_array, &mu_array, None)
+        Ok(self.inner.deviance(&y_array, &mu_array, None))
     }
 
     fn default_link(&self) -> PyLogLink {

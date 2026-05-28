@@ -97,8 +97,41 @@ class TestExtendedRegimeGating:
         else:
             allow = True
         result = _fit(y, p, allow_extended_tweedie=allow)
-        # Numerics may be unstable for extreme p; just check the fit ran.
-        assert np.isfinite(result.deviance) or np.isnan(result.deviance) or True
+        assert np.isfinite(result.deviance)
+
+    @pytest.mark.parametrize("p", [2.0, 2.5])
+    def test_direct_tweedie_unit_deviance_rejects_zero_for_high_p(self, p):
+        """Direct family methods enforce the p >= 2 support too."""
+        fam = rs.TweedieFamily(p, allow_extended_tweedie=True)
+        with pytest.raises(ValueError, match=r"strictly positive|y > 0"):
+            fam.unit_deviance(np.array([0.0]), np.array([1.0]))
+
+    @pytest.mark.parametrize("p", [2.0, 2.5])
+    def test_low_level_fit_rejects_extended_p_without_opt_in(self, p):
+        """The direct Rust binding follows the same default support contract."""
+        from rustystats._rustystats import fit_glm_py
+
+        y = np.array([1.0, 2.0, 3.0, 4.0])
+        x = np.ones((y.size, 1), dtype=np.float64)
+        with pytest.raises(ValueError, match="allow_extended_tweedie"):
+            fit_glm_py(y, x, "tweedie", "log", p, 1.0)
+
+    @pytest.mark.parametrize("p", [2.0, 2.5])
+    def test_low_level_fit_accepts_extended_p_with_opt_in(self, p):
+        from rustystats._rustystats import fit_glm_py
+
+        y = np.array([1.0, 2.0, 3.0, 4.0])
+        x = np.ones((y.size, 1), dtype=np.float64)
+        result = fit_glm_py(
+            y,
+            x,
+            "tweedie",
+            "log",
+            p,
+            1.0,
+            allow_extended_tweedie=True,
+        )
+        assert np.isfinite(result.deviance)
 
 
 # --------------------------------------------------------------------------
@@ -158,6 +191,58 @@ class TestGammaBoundary:
         assert np.isfinite(result.deviance), (
             f"p=2 with positive y produced non-finite deviance: {result.deviance}"
         )
+
+    def test_p_equals_2_extended_regularized_cv_runs_with_positive_y(self):
+        """The extended opt-in is threaded through alpha search and CV scoring."""
+        rng = np.random.default_rng(123)
+        y = rng.gamma(3.0, 1.0, 120)
+        df = _frame(y, x_seed=3)
+        result = rs.glm_dict(
+            response="y",
+            terms={"x1": {"type": "linear"}, "x2": {"type": "linear"}},
+            data=df,
+            family="tweedie",
+            var_power=2.0,
+            allow_extended_tweedie=True,
+        ).fit(regularization="lasso", cv=3, n_alphas=4)
+        assert np.isfinite(result.deviance)
+
+    def test_p_equals_2_extended_diagnostics_work_after_opt_in(self):
+        """A fitted extended Tweedie result keeps diagnostics usable."""
+        rng = np.random.default_rng(321)
+        y = rng.gamma(3.0, 1.0, 100)
+        df = _frame(y, x_seed=5)
+        result = rs.glm_dict(
+            response="y",
+            terms={"x1": {"type": "linear"}},
+            data=df,
+            family="tweedie",
+            var_power=2.0,
+            allow_extended_tweedie=True,
+        ).fit()
+
+        assert np.isfinite(result.compute_loss(df))
+        diagnostics = result.diagnostics(df)
+        assert np.isfinite(diagnostics.train_test.train.deviance)
+
+    def test_default_p_equals_2_regularized_cv_fails_before_cv(self, monkeypatch):
+        """Unsupported default regimes fail before CV starts fitting folds."""
+        import rustystats.regularization_path as rp
+
+        def should_not_start_cv(*args, **kwargs):  # pragma: no cover - should never run
+            raise AssertionError("CV path should not start before Tweedie support validation")
+
+        monkeypatch.setattr(rp, "fit_cv_regularization_path", should_not_start_cv)
+        y = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        df = _frame(y, x_seed=4)
+        with pytest.raises(ValidationError, match="allow_extended_tweedie"):
+            rs.glm_dict(
+                response="y",
+                terms={"x1": {"type": "linear"}},
+                data=df,
+                family="tweedie",
+                var_power=2.0,
+            ).fit(regularization="lasso", cv=3, n_alphas=3)
 
 
 # --------------------------------------------------------------------------
