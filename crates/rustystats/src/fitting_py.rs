@@ -694,6 +694,10 @@ pub fn fit_cv_path_py<'py>(
         })
         .collect();
     dict.set_item("cv_fold_scores", cv_fold_scores)?;
+    // Surface the per-row fold assignment so callers can reproduce the split
+    // (the seeded DefaultHasher partition is not reproducible outside Rust) and
+    // hand-verify the per-fold weighted deviance (RS-ACT-001 backlog #5).
+    dict.set_item("fold_assignments", fold_assignments)?;
 
     let best_idx = path_results
         .iter()

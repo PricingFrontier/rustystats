@@ -403,6 +403,79 @@ class TestCVWeightedScoring:
         # ...but heterogeneous weights genuinely change the score.
         assert not np.allclose(base["cv_fold_scores"][0], hetero["cv_fold_scores"][0])
 
+    def test_per_fold_weighted_deviance_matches_hand_computation(self):
+        """RS-ACT-001 backlog #5: each fold's reported CV deviance equals a
+        hand-computed Σ(w·dev)/Σw.
+
+        Uses the exposed ``fold_assignments`` (the seeded DefaultHasher split is
+        not reproducible outside Rust) to refit each fold with ``fit_glm_py`` —
+        the same single-fit entry point ``fit_cv_path_py`` uses internally — at a
+        fixed unpenalized alpha, then scores the held-out rows with the
+        closed-form Poisson unit deviance.
+        """
+        from rustystats._rustystats import fit_cv_path_py, fit_glm_py
+
+        rng = np.random.default_rng(0)
+        n, p = 240, 3
+        X = np.column_stack([np.ones(n), rng.normal(size=(n, p))])
+        offset = np.log(np.linspace(0.5, 2.0, n))
+        eta = 0.2 + X[:, 1] * 0.3 - X[:, 2] * 0.2 + offset
+        y = rng.poisson(np.exp(eta)).astype(float)
+        w = rng.uniform(0.2, 3.0, n)
+        alpha, l1, n_folds, max_iter, tol, seed = 0.0, 0.0, 4, 25, 1e-8, 7
+
+        res = fit_cv_path_py(
+            y,
+            X,
+            "poisson",
+            "log",
+            offset=offset,
+            weights=w,
+            alphas=[alpha],
+            l1_ratio=l1,
+            n_folds=n_folds,
+            max_iter=max_iter,
+            tol=tol,
+            seed=seed,
+        )
+        folds = np.asarray(res["fold_assignments"])
+        scores = res["cv_fold_scores"][0]  # one entry per fold (single alpha)
+        assert folds.shape == (n,)
+
+        def poisson_unit_dev(yv, muv):
+            # 2*(y*log(y/mu) - (y-mu)); the y*log(y/mu) term is 0 at y=0.
+            d = 2.0 * (muv - yv)
+            pos = yv > 0
+            d[pos] = d[pos] + 2.0 * yv[pos] * np.log(yv[pos] / muv[pos])
+            return d
+
+        for f in range(n_folds):
+            tr, va = folds != f, folds == f
+            fit = fit_glm_py(
+                y[tr],
+                X[tr],
+                "poisson",
+                "log",
+                1.5,
+                1.0,
+                offset[tr],
+                w[tr],
+                alpha,
+                l1,
+                max_iter,
+                tol,
+                None,
+                None,
+                True,
+            )
+            coefs = np.asarray(fit.params)
+            mu_va = np.exp(X[va] @ coefs + offset[va])
+            d = poisson_unit_dev(y[va], mu_va)
+            expected = float(np.sum(w[va] * d) / np.sum(w[va]))
+            assert expected == pytest.approx(scores[f], rel=1e-6, abs=1e-9), (
+                f"fold {f}: hand={expected}, reported={scores[f]}"
+            )
+
     def test_validation_deviance_excludes_regularization_penalty(self):
         """001.7: validation deviance is unit deviance only — the α·||β||² penalty
         must NOT contribute to the CV score.
