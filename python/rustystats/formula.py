@@ -1442,14 +1442,14 @@ class GLMModel:
         except Exception:
             return self._result.llf()
 
-    def _intercept_inference_invalid(self) -> bool:
-        """Whether the intercept's standard inference has been invalidated.
+    def _intercept_releveled(self) -> bool:
+        """Whether :meth:`relevel` has shifted the intercept.
 
-        After :meth:`relevel`, the intercept carries an externally-estimated
-        ``log(c)`` calibration shift whose uncertainty is *not* in the model
-        covariance, so the original SE / z / p / CI no longer describe the
-        displayed intercept. They are withheld (NaN) rather than shown stale;
-        every other coefficient's inference and the relativities are unchanged.
+        When true, the intercept's Wald inference is recentred on the shifted
+        estimate: the relevel ``log(c)`` is treated as a known additive offset,
+        so the standard error is unchanged and the CI / z / p slide with the
+        point estimate. (The SE therefore excludes the calibration factor's own
+        uncertainty — see :meth:`summary`.) Other coefficients are untouched.
         """
         return (
             bool(self._intercept_delta)
@@ -1863,11 +1863,16 @@ class GLMModel:
             z = np.asarray(self.tvalues(), dtype=np.float64)
             p = np.asarray(self.pvalues(), dtype=np.float64)
             signif = list(self.significance_codes())
-            if self._intercept_inference_invalid():
-                # relevel() shifted the intercept; its stale inference is withheld.
-                se, z, p = se.copy(), z.copy(), p.copy()
-                se[0] = z[0] = p[0] = np.nan
-                signif[0] = ""
+            if self._intercept_releveled() and se[0] > 1e-10:
+                # relevel() shifted the intercept by a known log(c); SE is
+                # unchanged, so z/p track the new estimate (the CI lives in
+                # relativities()/summary()).
+                from rustystats.glm import _normal_two_sided_p, _significance_code
+
+                z, p, signif = z.copy(), p.copy(), list(signif)
+                z[0] = float(self.params[0]) / se[0]
+                p[0] = _normal_two_sided_p(z[0])
+                signif[0] = _significance_code(p[0])
         else:
             se = np.full(n, np.nan)
             z = np.full(n, np.nan)
@@ -1906,12 +1911,13 @@ class GLMModel:
         show_standard_inference = status is None or status in {"valid_standard", "valid_robust"}
         if show_standard_inference:
             ci = self.conf_int()
+            if self._intercept_releveled():
+                # Slide the intercept CI by the relevel log(c) so it brackets the
+                # shifted relativity (width/SE unchanged).
+                ci = ci.copy()
+                ci[0, :] = ci[0, :] + self._intercept_delta
             ci_lower = np.exp(ci[:, 0])
             ci_upper = np.exp(ci[:, 1])
-            if self._intercept_inference_invalid():
-                # relevel() shifted the intercept; its stale CI is withheld.
-                ci_lower, ci_upper = ci_lower.copy(), ci_upper.copy()
-                ci_lower[0] = ci_upper[0] = np.nan
         else:
             n = len(self.feature_names)
             ci_lower = np.full(n, np.nan)
@@ -2017,7 +2023,7 @@ class GLMModel:
             optimizer_route=getattr(self, "optimizer_route", None),
             effective_df=self._total_edf,
             is_quasi_likelihood=self.is_quasi_likelihood,
-            withhold_intercept_inference=self._intercept_inference_invalid(),
+            intercept_delta=(self._intercept_delta if self._intercept_releveled() else 0.0),
         )
 
         if self.has_complement:
@@ -2029,12 +2035,12 @@ class GLMModel:
                 f"(complement fully trusted).\n"
             )
 
-        if self._intercept_delta:
+        if self._intercept_releveled():
             result += (
-                "\nNote: intercept standard inference (SE/z/p/CI) is withheld after "
-                "relevel() —\n      the calibration factor adds uncertainty not in the "
-                "model covariance.\n      Relativities and non-intercept inference are "
-                "unchanged.\n"
+                "\nNote: the intercept reflects relevel(); its CI/z/p are recentred on the\n"
+                "      shifted estimate, treating log(c) as a known offset (SE unchanged), so\n"
+                "      they exclude the calibration factor's own uncertainty. Other\n"
+                "      coefficients and relativities are unchanged.\n"
             )
 
         return result

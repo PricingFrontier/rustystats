@@ -312,36 +312,48 @@ class TestReleveLogLink:
             rel_new["Relativity"].to_numpy()[1:],
         )
 
-    def test_relevel_withholds_intercept_inference(self):
-        """PR11: after relevel the intercept's stale SE/z/p/CI are withheld (NaN).
+    def test_relevel_shifts_intercept_inference_with_estimate(self):
+        """PR11: after relevel the intercept CI/z/p track the shifted estimate.
 
-        The point relativity reflects the shifted intercept, but the original
-        covariance does not include the calibration uncertainty, so showing the
-        old-intercept CI/z/p would silently disagree with the displayed level.
-        Non-intercept inference and relativities stay intact.
+        The relevel log(c) is treated as a known additive offset: the SE is
+        unchanged, the CI slides with the point estimate (so it still brackets
+        the displayed relativity), and z/p are recentred. Non-intercept
+        inference is untouched.
         """
         _df_train, result = _fit_log_link_poisson(seed=5)
         df_holdout = make_freq_frame(n=2000, seed=505)
         releveled = result.relevel(data=df_holdout)
+        delta = releveled.intercept_delta
+        assert abs(delta) > 1e-6  # the holdout actually moves the intercept
 
-        # coef_table: intercept row blanked, others finite.
+        # coef_table: SE is shift-invariant (unchanged); z recentred on the new
+        # estimate; non-intercept rows untouched.
+        ct_old = result.coef_table()
         ct = releveled.coef_table()
-        assert np.isnan(ct["Std.Error"][0])
-        assert np.isnan(ct["z"][0])
-        assert np.isnan(ct["Pr(>|z|)"][0])
-        assert ct["Signif"][0] == ""
-        assert np.all(np.isfinite(ct["Std.Error"].to_numpy()[1:]))
+        assert np.all(np.isfinite(ct["Std.Error"].to_numpy()))
+        np.testing.assert_allclose(
+            ct["Std.Error"].to_numpy(), ct_old["Std.Error"].to_numpy(), rtol=1e-12
+        )
+        np.testing.assert_allclose(ct["z"][0], releveled.params[0] / ct["Std.Error"][0], rtol=1e-9)
+        np.testing.assert_allclose(ct["z"].to_numpy()[1:], ct_old["z"].to_numpy()[1:], rtol=1e-12)
 
-        # relativities: point relativity kept, intercept CI blanked, others finite.
+        # relativities: the intercept CI slides by exp(delta) and still brackets
+        # the shifted relativity; non-intercept CIs unchanged.
+        rel_old = result.relativities()
         rel = releveled.relativities()
-        assert np.isfinite(rel["Relativity"][0])
-        assert np.isnan(rel["CI_Lower"][0])
-        assert np.isnan(rel["CI_Upper"][0])
-        assert np.all(np.isfinite(rel["CI_Lower"].to_numpy()[1:]))
+        assert rel["CI_Lower"][0] <= rel["Relativity"][0] <= rel["CI_Upper"][0]
+        np.testing.assert_allclose(
+            rel["CI_Lower"][0], rel_old["CI_Lower"][0] * np.exp(delta), rtol=1e-9
+        )
+        np.testing.assert_allclose(
+            rel["CI_Upper"][0], rel_old["CI_Upper"][0] * np.exp(delta), rtol=1e-9
+        )
+        np.testing.assert_array_equal(
+            rel["CI_Lower"].to_numpy()[1:], rel_old["CI_Lower"].to_numpy()[1:]
+        )
 
-        # Over-suppression guard: the un-releveled model is unaffected.
-        assert np.isfinite(result.coef_table()["Std.Error"][0])
-        assert "withheld after relevel" in releveled.summary()
+        # summary explains the relevel recentering.
+        assert "reflects relevel()" in releveled.summary()
 
     def test_intercept_shifted_by_log_factor(self):
         """Intercept moves by exactly log(c) where c = Σy/Σμ on the calibration data.

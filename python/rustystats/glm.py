@@ -15,12 +15,34 @@ Use the formula-based API instead:
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 from rustystats._rustystats import GLMResults
 from rustystats.exceptions import FittingError, ValidationError
 
 _VALID_INFERENCE = frozenset({"valid_standard", "valid_robust"})
+
+
+def _normal_two_sided_p(z: float) -> float:
+    """Two-sided Wald p-value under the standard normal — matches the Rust
+    ``pvalue_z`` (``2·(1 − Φ(|z|))``) without a SciPy dependency."""
+    return math.erfc(abs(z) / math.sqrt(2.0))
+
+
+def _significance_code(p: float) -> str:
+    """R-style significance code, matching the Rust ``significance_codes``."""
+    if p < 0.001:
+        return "***"
+    if p < 0.01:
+        return "**"
+    if p < 0.05:
+        return "*"
+    if p < 0.1:
+        return "."
+    return ""
+
 
 _INFERENCE_CAVEATS = {
     "naive_after_regularization": "ridge penalty shrinks coefficients",
@@ -41,7 +63,7 @@ def summary(
     optimizer_route: str | None = None,
     effective_df: float | None = None,
     is_quasi_likelihood: bool = False,
-    withhold_intercept_inference: bool = False,
+    intercept_delta: float = 0.0,
 ) -> str:
     """
     Generate a summary table for GLM results (statsmodels-style).
@@ -88,16 +110,19 @@ def summary(
         p_vals = result.pvalues()
         conf_ints = result.conf_int(alpha)
         sig_codes = result.significance_codes()
-        if withhold_intercept_inference and len(std_errs):
-            # relevel() shifted the intercept: its stale SE/z/p/CI are withheld.
-            std_errs = np.array(std_errs, dtype=np.float64)
+        if intercept_delta and len(std_errs):
+            # relevel() shifted the intercept by a known log(c). SE is unchanged
+            # by an additive shift, so the CI slides with the estimate and z/p
+            # track the new intercept (coefs[0] is already the shifted value).
             z_vals = np.array(z_vals, dtype=np.float64)
             p_vals = np.array(p_vals, dtype=np.float64)
             conf_ints = np.array(conf_ints, dtype=np.float64)
             sig_codes = list(sig_codes)
-            std_errs[0] = z_vals[0] = p_vals[0] = np.nan
-            conf_ints[0, :] = np.nan
-            sig_codes[0] = ""
+            conf_ints[0, :] = conf_ints[0, :] + intercept_delta
+            if std_errs[0] > 1e-10:
+                z_vals[0] = coefs[0] / std_errs[0]
+                p_vals[0] = _normal_two_sided_p(z_vals[0])
+                sig_codes[0] = _significance_code(p_vals[0])
 
     # Get diagnostics
     try:
