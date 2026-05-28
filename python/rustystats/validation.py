@@ -118,6 +118,17 @@ def validate_response(
         If True, reject a constant response. Fitting a GLM needs variation in
         ``y``; helper routines that only evaluate per-row formulas can disable
         this while keeping family-domain validation.
+    var_power : float, optional
+        Tweedie variance power ``p``. When ``None`` the Tweedie response check
+        intentionally degrades to the weakest universally-safe form (``y >= 0``)
+        because the per-regime support rules (``y > 0`` for ``p >= 2``, the
+        ``0 < p < 1`` rejection, etc.) cannot be applied without knowing ``p``.
+        Callers that *do* know ``p`` (i.e. anyone in the GLM fit pipeline)
+        **must** pass it so the full regime table is enforced; this weak form
+        is for parameter-agnostic helpers only.
+    allow_extended_tweedie : bool
+        Whether the extended Tweedie regimes (``p <= 0``, ``p == 1``, ``p == 2``,
+        ``p > 2``) are unlocked. Ignored unless ``var_power`` is supplied.
 
     Returns
     -------
@@ -131,7 +142,12 @@ def validate_response(
     """
     y = coerce_to_float64(y, name)
     n = len(y)
-    family_lower = family.lower()
+    # Canonicalise the family name by stripping any embedded parameter suffix
+    # (e.g. ``"tweedie(p=2.0)"`` -> ``"tweedie"``). Without this the dispatch
+    # below silently skips the family-specific check for embedded forms and
+    # the Rust layer is the only thing catching them. Mirrors
+    # ``is_tweedie_family`` / ``is_negbinomial_family`` in ``formula.py``.
+    family_lower = family.lower().split("(", 1)[0].strip()
 
     # Check for empty response
     if n == 0:
@@ -254,6 +270,14 @@ def _validate_tweedie_response(
     ``var_power=None`` skips the regime check; callers that don't yet know
     ``p`` (e.g. ``validate_response`` invoked without parameters) just get
     the basic ``y >= 0`` check.
+
+    .. note::
+       The regime table here mirrors ``validate_tweedie_power`` /
+       ``validate_tweedie_response`` in
+       ``crates/rustystats/src/families_py.rs`` (Rust binding layer). These
+       two implementations enforce the same contract in two languages and
+       **must stay in sync**: a change in one almost always needs the same
+       change in the other.
     """
     if var_power is None:
         if np.any(y < 0):

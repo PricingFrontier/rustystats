@@ -6,13 +6,15 @@
 // that should hold for ALL valid inputs, not just hand-picked examples.
 // =============================================================================
 
-use ndarray::Array1;
+use ndarray::{Array1, Array2};
 use proptest::prelude::*;
 
+use rustystats_core::constants::ZERO_TOL;
 use rustystats_core::families::{
     BinomialFamily, Family, GammaFamily, GaussianFamily, PoissonFamily, TweedieFamily,
 };
 use rustystats_core::links::{IdentityLink, Link, LogLink, LogitLink};
+use rustystats_core::solvers::{fit_glm_unified, FitConfig};
 
 // =============================================================================
 // Helper Strategies
@@ -246,5 +248,186 @@ proptest! {
             prop_assert!(d.is_finite(), "Logit derivative not finite: {}", d);
             prop_assert!(d != 0.0, "Logit derivative is zero");
         }
+    }
+}
+
+// =============================================================================
+// IRLS Deviance-Monotone Sweep (RS-ACT-007)
+// =============================================================================
+//
+// Across multiple deterministic fixtures and families, the deviance at the
+// accepted terminal iterate must be non-increasing as the iteration budget
+// grows (within ZERO_TOL slack). The orchestrator hardened convergence to
+// require signed non-worsening (irls.rs:715), so the terminal deviance of a
+// fit with budget `k+1` cannot exceed that of a fit with budget `k`. We
+// exercise that contract here by stepping max_iterations up and asserting
+// monotone non-increasing deviance across a small seed × family sweep.
+
+/// Minimal linear congruential generator for deterministic fixture data.
+/// We avoid pulling in `rand` as a dev-dep; the sequence is reproducible.
+fn lcg_next(state: &mut u64) -> f64 {
+    *state = state
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    ((*state >> 11) as f64) / ((1u64 << 53) as f64)
+}
+
+/// Standard-normal sample via Box-Muller on two LCG draws.
+fn standard_normal(state: &mut u64) -> f64 {
+    let u1 = lcg_next(state).max(1e-12);
+    let u2 = lcg_next(state);
+    (-2.0_f64 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
+}
+
+fn make_design(n: usize, seed: u64) -> (Array2<f64>, Array1<f64>) {
+    let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    let mut xv = Vec::with_capacity(n * 2);
+    let mut x_col = Vec::with_capacity(n);
+    for _ in 0..n {
+        let xi = standard_normal(&mut state);
+        xv.push(1.0);
+        xv.push(xi);
+        x_col.push(xi);
+    }
+    let x = Array2::from_shape_vec((n, 2), xv).expect("design shape ok");
+    (x, Array1::from_vec(x_col))
+}
+
+fn assert_monotone_in_budget(
+    y: &Array1<f64>,
+    x: &Array2<f64>,
+    family: &dyn Family,
+    link: &dyn Link,
+    budgets: &[usize],
+    seed: u64,
+    label: &str,
+) {
+    let mut prev_deviance: Option<f64> = None;
+    for &budget in budgets {
+        let config = FitConfig {
+            max_iterations: budget,
+            ..FitConfig::default()
+        };
+        let result = match fit_glm_unified(y, x.view(), family, link, &config, None, None, None) {
+            Ok(r) => r,
+            Err(e) => panic!("[{label} seed={seed} budget={budget}] fit_glm_unified failed: {e}"),
+        };
+        assert!(
+            result.deviance.is_finite(),
+            "[{label} seed={seed} budget={budget}] deviance is non-finite: {}",
+            result.deviance
+        );
+        if let Some(prev) = prev_deviance {
+            // Absolute + relative slack for float noise.
+            let slack = ZERO_TOL + prev.abs() * 1e-10;
+            assert!(
+                result.deviance <= prev + slack,
+                "[{label} seed={seed}] deviance increased with budget: \
+                 prev={prev} (smaller budget) vs current={} (budget={budget}, slack={slack})",
+                result.deviance
+            );
+        }
+        prev_deviance = Some(result.deviance);
+    }
+}
+
+#[test]
+fn irls_deviance_non_increasing_in_budget_across_families() {
+    let budgets = [1usize, 2, 3, 5, 10, 25];
+    let seeds = [42u64, 7, 2026];
+    let n = 80;
+
+    for &seed in &seeds {
+        let (x, x_col) = make_design(n, seed);
+
+        // Gaussian / Identity
+        let mut state = seed.wrapping_add(1);
+        let y_gauss: Array1<f64> = (0..n)
+            .map(|i| 1.5 + 0.7 * x_col[i] + 0.5 * standard_normal(&mut state))
+            .collect();
+        assert_monotone_in_budget(
+            &y_gauss,
+            &x,
+            &GaussianFamily,
+            &IdentityLink,
+            &budgets,
+            seed,
+            "gaussian/identity",
+        );
+
+        // Poisson / Log (mu kept moderate so synthetic y is sensible)
+        let mut state = seed.wrapping_add(2);
+        let y_pois: Array1<f64> = (0..n)
+            .map(|i| {
+                let eta = (0.3 + 0.4 * x_col[i]).clamp(-5.0, 5.0);
+                let mu = eta.exp();
+                (mu + 0.5 * standard_normal(&mut state)).max(0.0).round()
+            })
+            .collect();
+        assert_monotone_in_budget(
+            &y_pois,
+            &x,
+            &PoissonFamily,
+            &LogLink,
+            &budgets,
+            seed,
+            "poisson/log",
+        );
+
+        // Gamma / Log (strictly positive response)
+        let mut state = seed.wrapping_add(3);
+        let y_gamma: Array1<f64> = (0..n)
+            .map(|i| {
+                let eta = (0.5 + 0.3 * x_col[i]).clamp(-3.0, 3.0);
+                let mu = eta.exp();
+                let noise = (0.3 * standard_normal(&mut state)).exp();
+                (mu * noise).max(1e-3)
+            })
+            .collect();
+        assert_monotone_in_budget(
+            &y_gamma,
+            &x,
+            &GammaFamily,
+            &LogLink,
+            &budgets,
+            seed,
+            "gamma/log",
+        );
+
+        // Binomial / Logit
+        let mut state = seed.wrapping_add(4);
+        let y_bin: Array1<f64> = (0..n)
+            .map(|i| {
+                let eta = (-0.2 + 0.6 * x_col[i]).clamp(-4.0, 4.0);
+                let p = 1.0 / (1.0 + (-eta).exp());
+                let u = lcg_next(&mut state);
+                if u < p {
+                    1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        assert_monotone_in_budget(
+            &y_bin,
+            &x,
+            &BinomialFamily,
+            &LogitLink,
+            &budgets,
+            seed,
+            "binomial/logit",
+        );
+
+        // Tweedie p=1.5 / Log: reuse Gamma-like positive response.
+        let tweedie = TweedieFamily::new(1.5).expect("p=1.5 valid");
+        assert_monotone_in_budget(
+            &y_gamma,
+            &x,
+            &tweedie,
+            &LogLink,
+            &budgets,
+            seed,
+            "tweedie p=1.5/log",
+        );
     }
 }

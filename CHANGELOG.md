@@ -3,7 +3,8 @@
 All notable user-visible changes to RustyStats.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/) and the
-project tracks the [Actuarial Methodology Hardening Spec](docs/maintenance/actuarial-methodology-hardening.md)
+project tracks the
+[Actuarial Methodology Hardening Spec](https://github.com/PricingFrontier/rustystats/blob/main/docs/maintenance/actuarial-methodology-hardening.md)
 via `RS-ACT-NNN` IDs.
 
 ## [Unreleased] — Actuarial Methodology Hardening (RS-ACT-001 to 011)

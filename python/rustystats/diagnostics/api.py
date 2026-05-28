@@ -284,15 +284,6 @@ def _resolve_offset_and_response(
                 f"train_data length {train_data.height}."
             )
 
-    # Backward compatibility for models serialized before exposure metadata was
-    # split from legacy string offsets.
-    if exposure is None and getattr(result, "_offset_is_exposure", False):
-        offset_spec = getattr(result, "_offset_spec", None)
-        if isinstance(offset_spec, str):
-            exposure_col = offset_spec
-            if exposure_col in train_data.columns:
-                exposure = train_data[exposure_col].to_numpy().astype(np.float64)
-
     return response_col, exposure_col, exposure
 
 

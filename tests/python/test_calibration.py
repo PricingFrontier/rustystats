@@ -487,3 +487,170 @@ class TestResultCalibrationSummary:
         assert "Region" in summary["by_factor"]
         levels = {row["level"] for row in summary["by_factor"]["Region"]}
         assert levels == set(df["Region"].unique().to_list())
+
+
+# --------------------------------------------------------------------------
+# PR11 review — extended coverage.
+# --------------------------------------------------------------------------
+
+
+class TestReleveComposition:
+    def test_relevel_twice_accumulates_delta_and_history(self):
+        """Composition: applying relevel() twice accumulates intercept_delta
+        and grows relevel_history; the cumulative shift is reflected in
+        predict(); β[1:] stays bit-identical to the original.
+        """
+        _df_train, result = _fit_log_link_poisson(seed=31)
+        original_params = result.params.copy()
+
+        # Two distinct holdout frames force two non-trivial calibration shifts.
+        df_cal1 = make_freq_frame(n=2000, seed=331)
+        df_cal2 = make_freq_frame(n=2000, seed=332)
+
+        first = result.relevel(data=df_cal1)
+        delta1 = first.intercept_delta
+        assert len(first.relevel_history) == 1
+        assert first.relevel_history[0]["log_shift"] == pytest.approx(delta1, rel=1e-12)
+
+        second = first.relevel(data=df_cal2)
+        delta2 = second.relevel_history[-1]["log_shift"]
+
+        # Cumulative delta == delta1 + delta2 (float-add isn't bit-exact
+        # vs. the running accumulator inside relevel, so rtol=1e-10).
+        np.testing.assert_allclose(second.intercept_delta, delta1 + delta2, rtol=1e-10)
+        # History has length 2 with the correct factor recorded each step.
+        assert len(second.relevel_history) == 2
+        assert second.relevel_history[0]["log_shift"] == pytest.approx(delta1, rel=1e-12)
+        assert second.relevel_history[1]["log_shift"] == pytest.approx(delta2, rel=1e-12)
+        # Original is untouched.
+        np.testing.assert_array_equal(result.params, original_params)
+        # β[1:] still bit-identical to original on both reliveled models.
+        np.testing.assert_array_equal(first.params[1:], original_params[1:])
+        np.testing.assert_array_equal(second.params[1:], original_params[1:])
+        # The intercept on ``second`` reflects the cumulative shift.
+        np.testing.assert_allclose(
+            second.params[0] - original_params[0],
+            delta1 + delta2,
+            rtol=1e-10,
+        )
+        # And predict() on a third frame reflects that cumulative shift.
+        df_eval = make_freq_frame(n=500, seed=999)
+        mu_orig = result.predict(df_eval)
+        mu_second = second.predict(df_eval)
+        np.testing.assert_allclose(mu_second, mu_orig * np.exp(delta1 + delta2), rtol=1e-10)
+
+
+class TestReleveInvariantProperty:
+    @pytest.mark.parametrize("seed", [101, 202, 303, 404, 505])
+    def test_weighted_balance_invariant_per_seed(self, seed):
+        """Property: Σ(w·μ_new) ≈ Σ(w·y) on the calibration frame, for 5 seeds.
+
+        Uses non-uniform weights so the invariant exercises the weighted
+        balance rather than the unweighted reduction case.
+        """
+        df_train, result = _fit_log_link_poisson(seed=seed)
+        rng = np.random.default_rng(seed + 1)
+        weights = rng.uniform(0.5, 2.0, df_train.height)
+        releveled = result.relevel(data=df_train, weights=weights)
+        y = df_train["ClaimCount"].to_numpy()
+        mu_new = releveled.predict(df_train)
+        np.testing.assert_allclose(np.sum(weights * mu_new), np.sum(weights * y), rtol=1e-10)
+
+
+class TestIsotonicDecreasing:
+    def test_decreasing_predictions_are_monotone_non_increasing(self):
+        """``IsotonicCalibration(increasing=False)`` produces non-increasing
+        predictions over the input range.
+        """
+        rng = np.random.default_rng(41)
+        n = 500
+        pred = rng.uniform(0.0, 5.0, n)
+        # y trends DOWN with pred: large pred → small y on average.
+        y = (5.0 - pred) + rng.normal(0.0, 0.5, n)
+        cal = rs.fit_isotonic_calibration(y, pred, increasing=False)
+        assert cal.increasing is False
+        # Predictions at increasing input must be non-increasing in output.
+        xs = np.linspace(pred.min(), pred.max(), 100)
+        ys = cal.predict(xs)
+        diffs = np.diff(ys)
+        assert np.all(diffs <= 1e-9), (
+            f"isotonic(increasing=False) not monotone non-increasing: max diff = {diffs.max()}"
+        )
+
+
+class TestGlobalCalibrationPredict:
+    def test_fit_calibration_global_predict_matches_factor(self):
+        """``result.fit_calibration(method="global").predict(raw)`` ==
+        (Σy/Σmu) * raw, within numerical tolerance."""
+        df, result = _fit_log_link_poisson(seed=51)
+        cal = result.fit_calibration(df, method="global")
+        # Predict on raw model predictions.
+        raw = result.predict(df)
+        calibrated = cal.predict(raw)
+        y = df["ClaimCount"].to_numpy()
+        expected_factor = float(np.sum(y) / np.sum(raw))
+        np.testing.assert_allclose(cal.factor, expected_factor, rtol=1e-12)
+        np.testing.assert_allclose(calibrated, expected_factor * raw, rtol=1e-12)
+
+
+class TestGlobalCalibrationScaleMetadata:
+    def test_to_dict_includes_scale_response(self):
+        """``to_dict()`` carries ``scale="response"`` (forward-compatibility)."""
+        cal = rs.fit_global_calibration(np.array([2.0, 4.0]), np.array([1.0, 2.0]))
+        state = cal.to_dict()
+        assert state["scale"] == "response"
+        # Round-trip preserves the predictions.
+        cal2 = rs.GlobalCalibration.from_dict(state)
+        np.testing.assert_allclose(
+            cal2.predict(np.linspace(0, 5, 20)),
+            cal.predict(np.linspace(0, 5, 20)),
+            rtol=1e-12,
+        )
+
+    def test_from_dict_rejects_unknown_scale(self):
+        """Unknown ``scale`` values are rejected with a clear error."""
+        state = {
+            "method": "global",
+            "scale": "link",  # future variant, not yet supported
+            "factor": 1.5,
+            "n_obs": 100,
+            "total_weight": 100.0,
+        }
+        with pytest.raises(ValidationError, match="scale"):
+            rs.GlobalCalibration.from_dict(state)
+
+
+class TestNoExposureBinKeys:
+    def test_no_exposure_bins_emit_predicted_score_not_predicted_rate(self):
+        """Without exposure, bin keys are ``predicted_score_*`` (raw mu),
+        not ``predicted_rate_*`` — there is no rate denominator to honour
+        (RS-ACT-009 review).
+        """
+        rng = np.random.default_rng(81)
+        n = 200
+        mu = rng.uniform(0.1, 5.0, n)
+        y = rng.poisson(mu).astype(float)
+        s = rs.calibration_summary(y, mu, n_bins=4)
+        for b in s["bins"]:
+            assert "predicted_rate_min" not in b
+            assert "predicted_rate_max" not in b
+            assert "predicted_rate_mean" not in b
+            assert "predicted_score_min" in b
+            assert "predicted_score_max" in b
+            assert "predicted_score_mean" in b
+
+    def test_with_exposure_bins_emit_predicted_rate(self):
+        """With exposure, bin keys retain the ``predicted_rate_*`` set so
+        downstream readers keep working unchanged.
+        """
+        rng = np.random.default_rng(82)
+        n = 200
+        mu = rng.uniform(0.1, 5.0, n)
+        exposure = rng.uniform(0.1, 2.0, n)
+        y = rng.poisson(mu).astype(float)
+        s = rs.calibration_summary(y, mu, exposure=exposure, n_bins=4)
+        for b in s["bins"]:
+            assert "predicted_rate_min" in b
+            assert "predicted_rate_max" in b
+            assert "predicted_rate_mean" in b
+            assert "predicted_score_min" not in b

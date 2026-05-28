@@ -77,7 +77,18 @@ impl TweedieFamily {
     ///   - p = 1.6-1.9: More Gamma-like, fewer zeros
     ///
     /// # Errors
-    /// Returns an error if var_power is in (0, 1) as this range is not supported.
+    /// Returns an error if `var_power` is in the open interval `(0, 1)` — no
+    /// Tweedie distribution exists there. **All other extended powers
+    /// (`p <= 0`, `p == 1`, `p == 2`, `p > 2`) are accepted by this core
+    /// constructor**; the default-vs-extended gate (the requirement that
+    /// callers explicitly opt in to anything outside the compound
+    /// Poisson-Gamma interior `1 < p < 2`) lives at the **binding layer** —
+    /// see `validate_tweedie_power` in `crates/rustystats/src/families_py.rs`
+    /// and the matching Python-side `_validate_tweedie_response` in
+    /// `python/rustystats/validation.py`. Direct Rust callers therefore opt
+    /// themselves in by construction and must enforce per-regime support
+    /// (e.g. `y > 0` for `p >= 2`) before calling `unit_deviance` /
+    /// `unit_deviance_at` themselves.
     pub fn new(var_power: f64) -> Result<Self, String> {
         // Tweedie is not defined for 0 < p < 1
         if var_power > 0.0 && var_power < 1.0 {

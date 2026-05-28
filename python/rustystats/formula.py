@@ -733,7 +733,6 @@ def _build_results(
     link: str | None,
     builder: InteractionBuilder,
     offset_spec: str | np.ndarray | None,
-    is_exposure_offset: bool,
     exposure_spec: str | np.ndarray | None,
     path_info: RegularizationPathInfo | None,
     smooth_results: list[SmoothTermResult] | None,
@@ -757,7 +756,6 @@ def _build_results(
         link=link,
         builder=builder,
         offset_spec=offset_spec,
-        offset_is_exposure=is_exposure_offset,
         exposure_spec=exposure_spec,
         regularization_path_info=path_info,
         smooth_results=smooth_results,
@@ -790,11 +788,21 @@ class _GLMBase:
         return d
 
     def _uses_log_link(self) -> bool:
-        """Check if model uses log link (explicit or canonical)."""
+        """Check if model uses log link (explicit or canonical).
+
+        For ``link=None``, falls back to ``get_default_link`` so family aliases
+        whose default is "log" (Tweedie's ``tweedie``; the
+        ``negativebinomial``/``nb`` aliases that resolve through
+        ``NEGBINOMIAL_ALIASES``) are recognized without having to enumerate
+        each spelling here.
+        """
         if self.link == "log":
             return True
-        if self.link is None and self.family in ("poisson", "quasipoisson", "negbinomial", "gamma"):
-            return True
+        if self.link is None:
+            try:
+                return get_default_link(self.family) == "log"
+            except ValidationError:
+                return False
         return False
 
     def _process_offset(
@@ -929,7 +937,15 @@ class _GLMBase:
         return vals
 
     def _has_target_encoding(self) -> bool:
-        """True if any term or interaction requests target encoding."""
+        """True if any term or interaction requests target encoding.
+
+        Called twice in the fit lifecycle: once during ``__init__`` (before the
+        ``InteractionBuilder`` has been constructed, so ``self._builder`` is
+        ``None`` and we must inspect the raw ``self.terms`` / ``self.interactions_spec``
+        the caller passed in) and again after the builder has produced its
+        ``_parsed_formula`` (where the parsed view is canonical). Both code
+        paths must agree; this method keeps them in sync.
+        """
         builder = getattr(self, "_builder", None)
         parsed = getattr(builder, "_parsed_formula", None)
         if parsed is not None and parsed.target_encoding_terms:
@@ -1111,14 +1127,14 @@ def _resolve_predict_offset(
     new_data: pl.DataFrame,
     offset_override: str | np.ndarray | None,
     stored_offset_spec: str | np.ndarray | None,
-    offset_is_exposure: bool,
 ) -> tuple[np.ndarray | None, np.ndarray | None, str | None]:
     """Resolve a prediction-time offset to its raw and link-scale forms.
 
     Returns ``(raw, link_scale, column_name)`` or all-``None`` when no
-    offset applies. ``raw`` and ``link_scale`` differ only for log-link
-    exposure offsets (raw = exposure, link_scale = ``log(exposure)``);
-    otherwise they share the same array.
+    offset applies. After RS-ACT-002b normalization (legacy exposure aliases
+    are stored on ``_exposure_spec``, never on ``_offset_spec``), the offset
+    column is always already on the link scale; ``raw`` and ``link_scale``
+    share the same array.
     """
     offset_to_use = offset_override if offset_override is not None else stored_offset_spec
     if offset_to_use is None:
@@ -1131,8 +1147,7 @@ def _resolve_predict_offset(
                 "Pass offset= explicitly to predict()."
             )
         raw = new_data[offset_to_use].to_numpy().astype(np.float64)
-        link = np.log(raw) if offset_is_exposure else raw
-        return raw, link, offset_to_use
+        return raw, raw, offset_to_use
     arr = np.asarray(offset_to_use, dtype=np.float64)
     if arr.ndim != 1 or arr.shape[0] != len(new_data):
         raise PredictionError(
@@ -1184,8 +1199,6 @@ def _resolve_predict_complement(
     new_data: pl.DataFrame,
     complement_override: Any,
     stored_complement_spec: Any,
-    offset_is_exposure: bool,
-    offset_spec_for_complement: str | np.ndarray | None,
     exposure_spec_for_complement: str | np.ndarray | None,
     link: str,
 ) -> tuple[np.ndarray | None, np.ndarray | None]:
@@ -1193,7 +1206,7 @@ def _resolve_predict_complement(
 
     Returns ``(response_scale, link_scale)`` or both ``None`` when no
     complement applies. When the complement is a fitted ``GLMModel`` and the
-    current model uses an exposure offset, the prior's response is divided by
+    current model carries an exposure spec, the prior's response is divided by
     exposure to recover the rate before being passed through the link.
     """
     comp_to_use = complement_override if complement_override is not None else stored_complement_spec
@@ -1203,9 +1216,6 @@ def _resolve_predict_complement(
         comp_response = comp_to_use.predict(new_data)
         if exposure_spec_for_complement is not None:
             exposure, _, _ = _resolve_predict_exposure(new_data, exposure_spec_for_complement)
-            comp_response = comp_response / exposure
-        elif offset_is_exposure and isinstance(offset_spec_for_complement, str):
-            exposure = new_data[offset_spec_for_complement].to_numpy().astype(np.float64)
             comp_response = comp_response / exposure
     elif isinstance(comp_to_use, str):
         comp_response = new_data[comp_to_use].to_numpy().astype(np.float64)
@@ -1241,7 +1251,6 @@ class GLMModel:
         link: str | None,
         builder: InteractionBuilder | None = None,
         offset_spec: str | np.ndarray | None = None,
-        offset_is_exposure: bool = False,
         exposure_spec: str | np.ndarray | None = None,
         regularization_path_info: RegularizationPathInfo | None = None,
         smooth_results: list[SmoothTermResult] | None = None,
@@ -1264,7 +1273,11 @@ class GLMModel:
         self.link = link or get_default_link(family)
         self._builder = builder
         self._offset_spec = offset_spec
-        self._offset_is_exposure = offset_is_exposure
+        # RS-ACT-002b retired the runtime semantics of ``_offset_is_exposure``;
+        # the attribute is kept as an always-False legacy field so external
+        # consumers (PMML export, pickled-state introspection in tests) don't
+        # blow up. Nothing reads it for branching anymore.
+        self._offset_is_exposure = False
         self._exposure_spec = exposure_spec
         self._terms_dict = terms_dict
         self._interactions_spec = interactions_spec
@@ -1539,32 +1552,62 @@ class GLMModel:
             "quasi_binomial",
         }
 
+    def _raw_information_criteria_are_valid(self) -> bool:
+        """Whether the raw (parameter-count) AIC/BIC are methodologically valid.
+
+        ``False`` after regularization, post-selection / post-CV fits, or
+        active sign constraints — the effective degrees of freedom are not
+        the raw parameter count, and the summary already hides Std.Err/
+        p-value columns for these statuses. The penalized-smooth path is
+        unaffected because it uses effective df directly (computed in
+        :meth:`aic` / :meth:`bic`), not ``self._result.aic()`` /
+        ``self._result.bic()``. Mirrors the gate used by ``summary()`` so
+        the public accessors do not emit numbers the summary would refuse
+        to display (RS-ACT-011).
+        """
+        status = getattr(self, "inference_status", None)
+        # An unknown status (None) preserves the historical default of
+        # returning a number, so unpenalized GLMs that pre-date inference
+        # gating still behave as before. The summary also defaults to
+        # showing standard inference when status is None.
+        return status is None or status in {"valid_standard", "valid_robust"}
+
     def aic(self) -> float | None:
         """Akaike Information Criterion.
 
-        Returns ``None`` for quasi-likelihood families (RS-ACT-008): quasi
-        models do not have a proper log-likelihood, so a Poisson- or
-        Binomial-style AIC is methodologically wrong here. For penalized
-        smooth models, uses effective degrees of freedom in place of the raw
-        basis-column count.
+        Returns ``None`` for quasi-likelihood families (RS-ACT-008) and for
+        regularized / post-selection / constrained fits where the raw
+        parameter count is not the effective df (RS-ACT-011). For penalized
+        smooth models, uses effective degrees of freedom (``total_edf``) in
+        place of the raw basis-column count.
         """
         if self.is_quasi_likelihood:
             return None
         if self._total_edf is not None:
+            # Penalized smooth: EDF-based AIC is the correct measure here,
+            # regardless of inference_status (which is "unavailable" for
+            # smooth fits but for an orthogonal reason — model-based SEs
+            # need the smoothed bread, not because the parameter count is
+            # wrong).
             return -2.0 * self._result.llf() + 2.0 * self._total_edf
+        if not self._raw_information_criteria_are_valid():
+            return None
         return self._result.aic()
 
     def bic(self) -> float | None:
         """Bayesian Information Criterion.
 
-        Returns ``None`` for quasi-likelihood families (RS-ACT-008); see
-        :meth:`aic` for the rationale. For penalized smooth models, uses
-        effective degrees of freedom in place of the raw basis-column count.
+        Returns ``None`` for quasi-likelihood families (RS-ACT-008) and for
+        regularized / post-selection / constrained fits where the raw
+        parameter count is not the effective df (RS-ACT-011); see
+        :meth:`aic` for the EDF rationale.
         """
         if self.is_quasi_likelihood:
             return None
         if self._total_edf is not None:
             return -2.0 * self._result.llf() + self._total_edf * np.log(self._result.nobs)
+        if not self._raw_information_criteria_are_valid():
+            return None
         return self._result.bic()
 
     def compute_loss(
@@ -2004,9 +2047,11 @@ class GLMModel:
             New data to predict on. Must have the same columns as training data.
             If a LazyFrame, only needed columns are collected.
         offset : str or array-like, optional
-            Offset for new data. If None and the model was fit with an offset
-            column name, that column will be extracted from new_data.
-            For Poisson/Gamma with log link, log() is auto-applied to exposure.
+            Link-scale offset for new data. If ``None`` and the model was fit
+            with an offset column name, that column is extracted from
+            ``new_data``. The values are added to the linear predictor as-is;
+            no ``log()`` is applied. For raw positive exposure, pass
+            ``exposure=`` instead.
         exposure : str or array-like, optional
             Raw positive exposure for new data (log-link rate models). Added to
             the linear predictor as ``log(exposure)``. If None, exposure is taken
@@ -2023,14 +2068,14 @@ class GLMModel:
 
         Examples
         --------
-        >>> model = rs.glm_dict(response="ClaimNb", terms={"Age": {"type": "linear"}, "Region": {"type": "categorical"}}, data=data, family="poisson", offset="Exposure")
+        >>> model = rs.glm_dict(response="ClaimNb", terms={"Age": {"type": "linear"}, "Region": {"type": "categorical"}}, data=data, family="poisson", exposure="Exposure")
         >>> result = model.fit()
         >>>
         >>> # Predict on new data
         >>> predictions = result.predict(new_data)
         >>>
-        >>> # Predict with custom offset
-        >>> predictions = result.predict(new_data, offset=np.log(new_exposures))
+        >>> # Predict with custom exposure
+        >>> predictions = result.predict(new_data, exposure=new_exposures)
         """
         if self._builder is None:
             raise PredictionError(
@@ -2094,10 +2139,7 @@ class GLMModel:
             exposure_link = _resolve_predict_exposure_link(new_data, exposure_to_use)
             linear_pred = linear_pred + exposure_link
 
-        offset_is_exposure = self._offset_is_exposure and exposure_to_use is None
-        _, offset_link, _ = _resolve_predict_offset(
-            new_data, offset, self._offset_spec, offset_is_exposure
-        )
+        _, offset_link, _ = _resolve_predict_offset(new_data, offset, self._offset_spec)
         if offset_link is not None:
             linear_pred = linear_pred + offset_link
 
@@ -2105,8 +2147,6 @@ class GLMModel:
             new_data,
             complement,
             self._complement_spec,
-            offset_is_exposure,
-            offset if offset is not None else self._offset_spec,
             exposure_to_use,
             self.link,
         )
@@ -2149,10 +2189,10 @@ class GLMModel:
         new_data : pl.DataFrame or pl.LazyFrame
             Data to decompose. Must contain every column the model needs.
         offset : str or array-like, optional
-            Override the offset used during fitting. ``str`` resolves a column
-            in ``new_data``; arrays are used directly. For log-link models with
-            an exposure offset, ``log()`` is applied automatically when a
-            string is given.
+            Override the link-scale offset used during fitting. ``str`` resolves
+            a column in ``new_data``; arrays are used directly. The values are
+            added to the contribution ladder verbatim; no ``log()`` is applied.
+            For raw positive exposure, pass ``exposure=`` instead.
         exposure : str or array-like, optional
             Override raw positive exposure for log-link rate models. Added to
             the contribution ladder as ``log(exposure)``.
@@ -2261,12 +2301,6 @@ class GLMModel:
         exposure_to_use: str | np.ndarray | None = exposure
         if exposure_to_use is None and self._exposure_spec is not None:
             exposure_to_use = self._exposure_spec
-        elif (
-            exposure_to_use is None
-            and self._offset_is_exposure
-            and isinstance(self._offset_spec, str)
-        ):
-            exposure_to_use = self._offset_spec
 
         mu = np.asarray(self.predict(data, exposure=exposure), dtype=np.float64)
 
@@ -2608,7 +2642,13 @@ class GLMModel:
             "link": self.link,
             "builder_state": builder_state,
             "offset_spec": self._offset_spec,
-            "offset_is_exposure": self._offset_is_exposure,
+            # Always False post-RS-ACT-002b: the attribute was retired from the
+            # model, but the key stays in the schema so legacy readers don't
+            # explode looking for it. ``from_bytes`` no longer uses it for
+            # fresh-fit pickles; it only matters when loading legacy v0/v1/v2
+            # payloads where ``offset_is_exposure=True`` flagged the legacy
+            # ``offset="Exposure"`` alias.
+            "offset_is_exposure": False,
             "exposure_spec": self._exposure_spec,
             "smooth_results": self._smooth_results,
             "total_edf": self._total_edf,
@@ -2673,13 +2713,25 @@ class GLMModel:
         if state["builder_state"] is not None:
             builder = _DeserializedBuilder(state["builder_state"])
 
+        # Back-compat: exposure/offset schema has evolved across PRs. Whenever
+        # `offset_is_exposure=True` is on the pickle, the offset column was
+        # the raw exposure denominator. Three legacy shapes need to load
+        # cleanly:
+        #   v0/v1 — only `offset_spec` set; `exposure_spec` absent.
+        #   v2    — both `exposure_spec` and `offset_spec` set to the same
+        #           column; predict would have double-counted log(exposure).
+        #   later — `offset_is_exposure` should always be cleared so the
+        #           rest of the codebase sees a uniform shape.
+        # Collapsing whenever the flag is True handles all three uniformly.
+        # The migrated model carries the exposure on ``_exposure_spec`` only;
+        # the runtime attribute ``_offset_is_exposure`` survives as an
+        # always-False legacy field (see ``GLMModel.__init__``).
         offset_spec = state.get("offset_spec")
         offset_is_exposure = state.get("offset_is_exposure", False)
         exposure_spec = state.get("exposure_spec")
-        if exposure_spec is None and offset_is_exposure:
-            exposure_spec = offset_spec
+        if offset_is_exposure:
+            exposure_spec = exposure_spec if exposure_spec is not None else offset_spec
             offset_spec = None
-            offset_is_exposure = False
 
         model = cls(
             result=result,
@@ -2689,7 +2741,6 @@ class GLMModel:
             link=state["link"],
             builder=builder,
             offset_spec=offset_spec,
-            offset_is_exposure=offset_is_exposure,
             exposure_spec=exposure_spec,
             regularization_path_info=None,
             smooth_results=state["smooth_results"],
@@ -3424,7 +3475,7 @@ class FormulaGLMDict(_GLMBase):
                 "encoding will use observation-weighted (unweighted) statistics. "
                 "Pass `exposure=` for exposure-weighted target encoding.",
                 UserWarning,
-                stacklevel=2,
+                stacklevel=3,
             )
 
         # Keep the validated raw exposure for fold-safe CV (RS-ACT-001b), where
@@ -3805,7 +3856,6 @@ class FormulaGLMDict(_GLMBase):
             self.link,
             self._builder,
             self._offset_spec,
-            False,
             self._exposure_spec,
             path_info,
             self._smooth_results,

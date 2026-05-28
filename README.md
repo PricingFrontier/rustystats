@@ -9,6 +9,8 @@
 
 **Codebase Documentation**: [pricingfrontier.github.io/rustystats/](https://pricingfrontier.github.io/rustystats/)
 
+See [CHANGELOG.md](CHANGELOG.md) for release notes.
+
 ## Features
 
 - **Dict-First API** - Programmatic model building ideal for automated workflows and agents
@@ -49,7 +51,7 @@ result = rs.glm_dict(
     },
     data=data,
     family="poisson",
-    offset="Exposure",
+    exposure="Exposure",
 ).fit()
 
 # View results
@@ -256,7 +258,7 @@ result = rs.glm_dict(
         "Age": {"type": "linear"},
         "Region": {"type": "categorical"},
     },
-    data=data, family="poisson", offset="Exposure",
+    data=data, family="poisson", exposure="Exposure",
 ).fit()
 
 # Sklearn-style API
@@ -269,7 +271,7 @@ test_encoded = encoder.transform(test_categories)
 - **No target leakage**: Ordered target statistics
 - **Regularization**: Prior weight controls shrinkage toward global mean
 - **High-cardinality**: Single column instead of thousands of dummies
-- **Exposure-aware**: For frequency models with `offset="Exposure"`, automatically uses claim rate (ClaimCount/Exposure) instead of raw counts
+- **Exposure-aware**: For frequency models with `exposure="Exposure"`, automatically uses claim rate (ClaimCount/Exposure) instead of raw counts. Pre-RS-ACT-002 users with `offset="Exposure"` get the same behaviour via the legacy alias, but array `offset=` no longer feeds the encoder — pass `exposure=` explicitly for exposure-weighted target encoding.
 - **Interactions**: Use `target_encoding: True` in interactions to encode variable combinations
 
 ---

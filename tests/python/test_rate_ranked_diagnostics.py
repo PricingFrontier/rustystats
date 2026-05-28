@@ -206,3 +206,135 @@ class TestRateRankedDiagnosticsEndToEnd:
         assert mean_diag.lift_chart is not None
         assert rate_diag.lift_chart is not None
         assert _decile_keys(mean_diag.lift_chart) != _decile_keys(rate_diag.lift_chart)
+
+
+# --------------------------------------------------------------------------
+# 004.5 — weighted-aggregates: bin sums match Σy / Σmu / Σexposure (treating
+# exposure as the prior weight per the spec convention).
+# --------------------------------------------------------------------------
+
+
+class TestWeightedAggregates:
+    def test_bins_aggregate_to_hand_computed_sums(self):
+        """004.5: per-bin actual/expected/exposure sums to Σy / Σmu / Σexposure.
+
+        We don't pass ``weights=`` explicitly because :mod:`calibration` treats
+        exposure as the prior weight (per the spec note: "the implementation
+        does not thread prior weights; treat exposure as the weight"). The
+        invariant is that the bin partitions the rows, so summing each
+        column over all bins recovers the totals.
+        """
+        rng = np.random.default_rng(123)
+        n = 200
+        # Non-uniform exposure to ensure exposure-balanced binning is doing
+        # actual work.
+        exposure = rng.uniform(0.05, 5.0, n)
+        # mu independent of exposure so rate (mu/exposure) is well-spread.
+        mu = rng.uniform(0.1, 10.0, n)
+        y = rng.poisson(mu).astype(np.float64)
+
+        summary = rs.calibration_summary(y, mu, exposure=exposure, n_bins=10)
+        bins = summary["bins"]
+        assert len(bins) >= 1
+
+        total_actual = sum(b["actual"] for b in bins)
+        total_expected = sum(b["expected"] for b in bins)
+        total_exposure = sum(b["exposure"] for b in bins)
+
+        # Sums reconcile with Σy, Σmu, Σexposure — every row is placed in
+        # exactly one bin and aggregates stay on the count scale.
+        np.testing.assert_allclose(total_actual, float(np.sum(y)), rtol=1e-12)
+        np.testing.assert_allclose(total_expected, float(np.sum(mu)), rtol=1e-12)
+        np.testing.assert_allclose(total_exposure, float(np.sum(exposure)), rtol=1e-12)
+
+        # Overall A/E ratio is also Σy / Σmu (exposure-weighted under the
+        # convention).
+        overall = summary["overall"]
+        np.testing.assert_allclose(overall["actual"], float(np.sum(y)), rtol=1e-12)
+        np.testing.assert_allclose(overall["expected"], float(np.sum(mu)), rtol=1e-12)
+        np.testing.assert_allclose(overall["ae_ratio"], float(np.sum(y) / np.sum(mu)), rtol=1e-12)
+
+
+# --------------------------------------------------------------------------
+# 004.3 — Lorenz curve rate-ranking. compute_lorenz_curve historically sorted
+# on raw mu; with RS-ACT-004 it sorts on mu/exposure when exposure is present.
+# --------------------------------------------------------------------------
+
+
+class TestLorenzRateRanking:
+    def test_lorenz_curve_uses_rate_with_exposure(self):
+        """004.3: Lorenz curve sorts ascending by mu/exposure when exposure is
+        supplied — so its path through (cumulative_exposure_pct,
+        cumulative_actual_pct) space differs from the raw-mu ordering.
+        """
+        from rustystats._rustystats import compute_lorenz_curve_py
+
+        # High-exposure rows have large mu but low rate; low-exposure rows
+        # have small mu but high rate (rate-ranking inverts mu-ranking).
+        y, mu, exposure = _conflicting_mu_exposure()
+
+        rate_curve = compute_lorenz_curve_py(y, mu, exposure, 10)
+        # Pass exposure=None to force the mean-ranking baseline.
+        mean_curve = compute_lorenz_curve_py(y, mu, None, 10)
+
+        # Both must close at (1, 1, 1); but the path differs because the
+        # ordering of rows along the cumulative exposure axis is reversed.
+        assert rate_curve[-1]["cumulative_exposure_pct"] == pytest.approx(1.0, abs=1e-9)
+        assert mean_curve[-1]["cumulative_exposure_pct"] == pytest.approx(1.0, abs=1e-9)
+
+        # Pick a mid-point and confirm divergence: under rate ranking the
+        # high-exposure rows come first (cumulative_exposure_pct grows fast
+        # but cumulative_actual_pct stays low); under mean ranking the small
+        # mu rows come first (cumulative_actual_pct stays low *and*
+        # cumulative_exposure_pct stays low, since each row has exposure 1).
+        rate_predicted = [p["cumulative_predicted_pct"] for p in rate_curve]
+        mean_predicted = [p["cumulative_predicted_pct"] for p in mean_curve]
+        assert rate_predicted != mean_predicted, (
+            "Lorenz curve should respond to exposure-vs-mean ranking; "
+            "if these match, the rate ranking is not being applied."
+        )
+
+    def test_lorenz_curve_falls_back_to_mu_without_exposure(self):
+        """Sanity: without exposure, the Lorenz curve uses raw mu (rate == mu)."""
+        from rustystats._rustystats import compute_lorenz_curve_py
+
+        y = np.array([1.0, 2.0, 3.0, 4.0, 5.0], dtype=np.float64)
+        mu = np.array([5.0, 4.0, 3.0, 2.0, 1.0], dtype=np.float64)
+
+        curve = compute_lorenz_curve_py(y, mu, None, 5)
+        # Endpoints are (0,0,0) and (1,1,1).
+        assert curve[0]["cumulative_exposure_pct"] == pytest.approx(0.0, abs=1e-9)
+        assert curve[-1]["cumulative_exposure_pct"] == pytest.approx(1.0, abs=1e-9)
+        assert curve[-1]["cumulative_actual_pct"] == pytest.approx(1.0, abs=1e-9)
+        assert curve[-1]["cumulative_predicted_pct"] == pytest.approx(1.0, abs=1e-9)
+
+
+# --------------------------------------------------------------------------
+# 004 review: zero-exposure guard. ``rank_sort_idx`` must not produce inf/nan
+# rank keys when an exposure row is zero (or non-positive); it should fall
+# back to mu[i] for those rows, mirroring the Rust ``predicted_rate`` helper.
+# --------------------------------------------------------------------------
+
+
+class TestZeroExposureGuard:
+    def test_zero_exposure_falls_back_to_mu(self):
+        """e[i] <= 0 → rank key uses mu[i] instead of inf/nan."""
+        mu = np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float64)
+        exposure = np.array([1.0, 0.0, 2.0, 1.0], dtype=np.float64)
+        # Should not raise (no division-by-zero warning, no inf/nan).
+        idx = rank_sort_idx(mu, exposure, has_exposure=True, ranking="auto")
+        # Resulting order must be a permutation of [0..n).
+        assert sorted(idx.tolist()) == [0, 1, 2, 3]
+        # And the rank keys are finite — verify by reconstructing the key.
+        safe_exp = np.where(exposure > 0.0, exposure, 1.0)
+        key = np.where(exposure > 0.0, mu / safe_exp, mu)
+        assert np.all(np.isfinite(key))
+        # Sorted-by-key reproduces ``idx``.
+        np.testing.assert_array_equal(idx, np.argsort(key, kind="stable"))
+
+    def test_rate_ranking_with_zero_exposure_is_finite(self):
+        """ranking='rate' with a zero-exposure row stays finite."""
+        mu = np.array([1.0, 2.0, 3.0], dtype=np.float64)
+        exposure = np.array([1.0, 0.0, 2.0], dtype=np.float64)
+        idx = rank_sort_idx(mu, exposure, has_exposure=True, ranking="rate")
+        assert sorted(idx.tolist()) == [0, 1, 2]

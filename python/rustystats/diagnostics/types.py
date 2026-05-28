@@ -592,8 +592,8 @@ class DatasetDiagnostics:
     loss: float
     deviance: float
     log_likelihood: float
-    aic: float
-    bic: float
+    aic: float | None
+    bic: float | None
     gini: float
     auc: float
     ae_ratio: float

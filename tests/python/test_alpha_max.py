@@ -22,6 +22,7 @@ import numpy as np
 import pytest
 from rustystats._rustystats import fit_glm_py
 from rustystats.constants import ALPHA_MAX_FLOOR
+from rustystats.exceptions import ValidationError
 from rustystats.regularization_path import compute_alpha_max
 
 
@@ -134,7 +135,12 @@ class TestAlphaMaxZeroesPenalizedCoefs:
         assert np.max(np.abs(params[1:])) < 1e-6
 
     def test_just_below_alpha_max_keeps_at_least_one(self):
-        """alpha_max is *tight*: a hair below it, at least one penalized coef should be nonzero."""
+        """alpha_max is *tight*: a hair below it, at least one penalized coef should be nonzero.
+
+        The threshold is set well above floating-point noise (1e-3) so this
+        catches an under-sized grid rather than rubber-stamping any tiny
+        ``> 0.0`` from rounding (RS-ACT-005 review).
+        """
         X, X_feat = _design(n=500, seed=3)
         offset = np.log(np.linspace(0.5, 2.0, 500))
         y = _poisson_response(X_feat, offset, seed=33)
@@ -142,8 +148,8 @@ class TestAlphaMaxZeroesPenalizedCoefs:
             X, y, l1_ratio=1.0, family="poisson", link="log", offset=offset
         )
         params = _fit_at_alpha(y, X, "poisson", "log", alpha_max * 0.5, offset=offset)
-        assert np.max(np.abs(params[1:])) > 0.0, (
-            "alpha_max is not tight — even at half of it, all coefs are still zero"
+        assert np.max(np.abs(params[1:])) > 1e-3, (
+            "alpha_max is not tight — even at half of it, all coefs are still ~zero"
         )
 
 
@@ -358,3 +364,34 @@ class TestGlumCrossCheck:
         glum_in_our_units = glum_alpha_max * X.shape[0]
         # Allow modest slack for glum's internal centering / scaling choices.
         np.testing.assert_allclose(ours, glum_in_our_units, rtol=0.05)
+
+
+# --------------------------------------------------------------------------
+# Gaussian-identity intercept solve: sum-of-weights guard (RS-ACT-005 review).
+# --------------------------------------------------------------------------
+
+
+class TestGaussianIdentityWeightsGuard:
+    """The Gaussian/identity closed-form intercept divides by ``sum(weights)`` —
+    zero-/negative-/non-finite-weight inputs must raise instead of silently
+    producing inf/nan in the alpha grid.
+    """
+
+    def test_zero_sum_weights_raises(self):
+        X, X_feat = _design(n=100, seed=42)
+        y = _gaussian_response(X_feat, offset=np.zeros(100), seed=43)
+        weights = np.zeros(100)
+        with pytest.raises(ValidationError, match=r"(?i)sum\(weights\)"):
+            compute_alpha_max(
+                X, y, l1_ratio=1.0, family="gaussian", link="identity", weights=weights
+            )
+
+    def test_nonfinite_sum_weights_raises(self):
+        X, X_feat = _design(n=100, seed=42)
+        y = _gaussian_response(X_feat, offset=np.zeros(100), seed=43)
+        weights = np.ones(100)
+        weights[0] = np.inf
+        with pytest.raises(ValidationError, match=r"(?i)sum\(weights\)"):
+            compute_alpha_max(
+                X, y, l1_ratio=1.0, family="gaussian", link="identity", weights=weights
+            )

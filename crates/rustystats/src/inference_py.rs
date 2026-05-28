@@ -10,7 +10,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-use crate::families_py::family_from_name;
+use crate::families_py::family_from_name_with_tweedie_support;
 use rustystats_core::diagnostics::{chi2_cdf, f_cdf, t_cdf};
 use rustystats_core::inference::{
     score_test_categorical, score_test_continuous, score_test_continuous_batch, ScoreTestResult,
@@ -111,7 +111,10 @@ pub fn score_test_continuous_py<'py>(
         )));
     }
 
-    let family_obj = family_from_name(family, 1.5, 1.0)?;
+    // Accept the extended Tweedie regime: a fitted model already opted in at
+    // fit time, and the family string here may carry an embedded `p=` outside
+    // the default (1, 2) interior.
+    let family_obj = family_from_name_with_tweedie_support(family, 1.5, 1.0, true)?;
 
     let result = score_test_continuous(
         &z_arr,
@@ -200,7 +203,8 @@ pub fn score_test_continuous_batch_py<'py>(
         )));
     }
 
-    let family_obj = family_from_name(family, 1.5, 1.0)?;
+    // Accept extended Tweedie — see `score_test_continuous_py` for rationale.
+    let family_obj = family_from_name_with_tweedie_support(family, 1.5, 1.0, true)?;
 
     let results = score_test_continuous_batch(
         &zs_arr,
@@ -247,7 +251,8 @@ pub fn score_test_categorical_py<'py>(
     bread: PyReadonlyArray2<'py, f64>,
     family: &str,
 ) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
-    let family_obj = family_from_name(family, 1.5, 1.0)?;
+    // Accept extended Tweedie — see `score_test_continuous_py` for rationale.
+    let family_obj = family_from_name_with_tweedie_support(family, 1.5, 1.0, true)?;
 
     let z_arr = z_matrix.as_array().to_owned();
     let x_arr = x.as_array().to_owned();

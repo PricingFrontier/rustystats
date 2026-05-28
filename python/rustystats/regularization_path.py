@@ -11,6 +11,12 @@ Key features:
 - Warm starting for performance
 - Support for Ridge, Lasso, and Elastic Net
 
+NB theta policy (RS-ACT-010): the CV path is fixed-theta only — every fit on
+the path uses the ``theta`` resolved by
+:func:`rustystats.formula.FormulaGLMDict._resolve_negbinomial_theta`, which
+fails closed and refuses to estimate theta on regularized fits. Callers must
+pass an explicit numeric ``theta=`` for regularized Negative Binomial models.
+
 Example
 -------
 >>> import rustystats as rs
@@ -107,6 +113,16 @@ class RegularizationPathInfo:
         Full path results for all alpha values tried
     n_folds : int
         Number of CV folds used
+    cv_max_iter : int
+        Maximum IRLS iterations actually used for every per-fold fit on the
+        regularization path (RS-ACT-001: pinned to the caller's ``max_iter``,
+        never silently relaxed).
+    cv_tol : float
+        Convergence tolerance actually used for every per-fold fit on the
+        regularization path (RS-ACT-001: pinned to the caller's ``tol``,
+        never silently relaxed).
+    fold_safe_target_encoding : bool
+        Whether the fold-safe target-encoding CV path was used (RS-ACT-001b).
     """
 
     selected_alpha: float
@@ -222,15 +238,25 @@ def _fit_null_intercept(
     # Closed-form for Poisson-family log links:
     # score = Σw(y - exp(β0 + offset)) = 0.
     if family in ("poisson", "quasipoisson") and link == "log":
+        # Guard against inf from large offsets — Σ w exp(offset) overflows
+        # silently to inf and the log(num/inf) = -inf branch would poison the
+        # alpha grid. When the closed form is unusable, fall through to the
+        # Rust IRLS path below intentionally.
         denom = float(np.sum(weights * np.exp(offset)))
-        if denom > 0.0:
+        if np.isfinite(denom) and denom > 0.0:
             num = float(np.sum(weights * y))
             if num > 0.0:
                 return float(np.log(num / denom))
     # Gaussian identity with offset: β_0 minimises Σ w (y - β_0 - offset)² →
     # β_0 = Σw(y - offset) / Σw.
     if family == "gaussian" and link == "identity":
-        return float(np.sum(weights * (y - offset)) / np.sum(weights))
+        sum_w = float(np.sum(weights))
+        if not np.isfinite(sum_w) or sum_w <= 0.0:
+            raise ValidationError(
+                "Gaussian-identity intercept solve requires sum(weights) > 0 and finite, "
+                f"got {sum_w}."
+            )
+        return float(np.sum(weights * (y - offset)) / sum_w)
 
     # Fall back to a one-feature Rust fit for non-closed-form combinations.
     from rustystats._rustystats import fit_glm_py
@@ -895,14 +921,27 @@ def fit_cv_te_regularization_path(
     if verbose:
         print(f"Fold-safe target-encoding CV: {regularization}, {cv} folds, {n_alphas} alphas")
 
-    folds = create_cv_folds(len(y), cv, seed)
+    # Default the CV seed to DEFAULT_CV_SEED so the fold-safe path has the same
+    # deterministic fold assignment as the fast Rust array path (see the
+    # ``seed if seed is not None else DEFAULT_CV_SEED`` map at the
+    # ``_fit_cv_path_rust`` call site).
+    cv_seed = seed if seed is not None else DEFAULT_CV_SEED
+    folds = create_cv_folds(len(y), cv, cv_seed)
     from rustystats.formula import _get_constraint_indices
 
+    # Cache the per-fold designs from the alpha-grid pass so the fit pass below
+    # can reuse them — building TE designs is the expensive step (sort + per-
+    # level shrinkage), and recomputing them once per fold roughly halves the
+    # builder workload on TE CV fits. ``build_fold_design_matrices`` is
+    # deterministic in ``(data, parsed, train_idx, val_idx, raw_exposure, seed)``,
+    # so caching is behaviour-preserving.
+    fold_designs: list[tuple[np.ndarray, np.ndarray, list[str]]] = []
     fold_alpha_maxes = []
     for train_idx, val_idx in folds:
-        x_train, _x_val, _names = build_fold_design_matrices(
-            data, parsed, train_idx, val_idx, raw_exposure=raw_exposure, seed=seed
+        x_train, x_val, names = build_fold_design_matrices(
+            data, parsed, train_idx, val_idx, raw_exposure=raw_exposure, seed=cv_seed
         )
+        fold_designs.append((x_train, x_val, names))
         y_train = y[train_idx]
         weights_train = weights[train_idx] if weights is not None else None
         offset_train = offset[train_idx] if offset is not None else None
@@ -934,10 +973,7 @@ def fit_cv_te_regularization_path(
     deviances: dict[float, list[float]] = {a: [] for a in candidate_alphas}
     failed_alphas: set[float] = set()
 
-    for train_idx, val_idx in folds:
-        x_train, x_val, names = build_fold_design_matrices(
-            data, parsed, train_idx, val_idx, raw_exposure=raw_exposure, seed=seed
-        )
+    for (train_idx, val_idx), (x_train, x_val, names) in zip(folds, fold_designs, strict=True):
         y_train = y[train_idx]
         y_val = y[val_idx]
         offset_train = offset[train_idx] if offset is not None else None
@@ -989,6 +1025,12 @@ def fit_cv_te_regularization_path(
             else:
                 failed_alphas.add(alpha)
 
+    # ``n_nonzero`` is approximated from the full-data design column count
+    # (minus intercept). Per-fold target-encoded designs can have a slightly
+    # different column count when a categorical level is absent from a fold's
+    # training rows; we report the full-data column count for stability rather
+    # than averaging across folds. The penalised refit on the full data after
+    # alpha selection always has the full-data column count.
     n_nonzero = X.shape[1] - 1
     path_results = []
     for alpha in candidate_alphas:
@@ -1003,6 +1045,7 @@ def fit_cv_te_regularization_path(
                 l1_ratio=0.0 if alpha == 0.0 else effective_l1_ratio,
                 cv_deviance_mean=float(np.mean(fold_devs)),
                 cv_deviance_se=float(np.std(fold_devs) / np.sqrt(len(fold_devs))),
+                # See n_nonzero comment above — approximate from full-data design.
                 n_nonzero=n_nonzero,
                 max_coef=0.0,
             )

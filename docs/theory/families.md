@@ -1025,9 +1025,16 @@ Negative Binomial fitting is numerically challenging due to:
 RustyStats applies **minimum ridge regularization** (α ≥ 1e-6) automatically for NegBin models:
 
 ```python
-# The formula API automatically applies minimum regularization
-result = rs.glm_dict("claims ~ ns(age, df=5) + TE(region)", 
-                data, family="negbinomial").fit()
+# The dict API automatically applies minimum regularization for NegBin fits
+result = rs.glm_dict(
+    response="claims",
+    terms={
+        "age": {"type": "ns", "df": 5},
+        "region": {"type": "target_encoding"},
+    },
+    data=data,
+    family="negbinomial",
+).fit()
 
 # You'll see "Method: IRLS + Ridge" in the summary
 ```

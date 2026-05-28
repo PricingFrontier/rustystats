@@ -463,12 +463,17 @@ df = result.relativities_table()
 
 ### predict()
 
-Predict on new data.
+Predict on new data (response scale, ``μ = E[Y]``).
 
 ```python
 predictions = result.predict(new_data)
-predictions_link = result.predict(new_data, type="link")
 ```
+
+`result.predict` accepts `offset=`, `exposure=` and `complement=` overrides
+to swap in alternative values without refitting. The linear predictor on
+new data is exposed via `predict_contributions` — its
+`prediction_from_contributions` field is the per-row linear predictor on the
+link scale. For training-data fitted values use `result.linear_predictor`.
 
 ---
 

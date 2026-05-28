@@ -67,6 +67,18 @@ pub const MAX_IRLS_WEIGHT: f64 = 1e10;
 /// Default maximum iterations for IRLS algorithm.
 pub const DEFAULT_MAX_ITER: usize = 25;
 
+/// Relative slack on the IRLS step-acceptance threshold.
+/// A trial step is accepted when `deviance_new <= deviance_old * IRLS_ACCEPT_REL_SLACK`.
+/// The tiny excess (1.0001) absorbs benign floating-point jitter without admitting a
+/// materially worse step (RS-ACT-007).
+pub const IRLS_ACCEPT_REL_SLACK: f64 = 1.0001;
+
+/// Maximum number of step-halving attempts when an IRLS trial step worsens the
+/// deviance. After this budget is exhausted with no improvement, the previous
+/// iterate is retained and the solver terminates with
+/// `step_halving_no_improvement` (RS-ACT-007).
+pub const IRLS_MAX_HALF_STEPS: usize = 25;
+
 /// Default maximum iterations for theta estimation in Negative Binomial.
 pub const DEFAULT_MAX_THETA_ITER: usize = 10;
 

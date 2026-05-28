@@ -11,17 +11,18 @@ rustystats.glm_dict(
     response,
     terms,
     data,
+    interactions=None,
+    intercept=True,
     family="gaussian",
     link=None,
+    var_power=1.5,
+    theta=None,
     exposure=None,
     offset=None,
     weights=None,
-    interactions=None,
-    theta=None,
-    var_power=1.5,
-    allow_extended_tweedie=False,
-    complement=None,
     seed=None,
+    complement=None,
+    allow_extended_tweedie=False,
 )
 ```
 
@@ -32,17 +33,18 @@ rustystats.glm_dict(
 | `response` | str | Column name for response variable |
 | `terms` | dict | Term specifications (see below) |
 | `data` | DataFrame | Polars DataFrame or LazyFrame |
+| `interactions` | list | Interaction specifications (see below) |
+| `intercept` | bool | Include an intercept term. Default `True`. |
 | `family` | str | Distribution family |
 | `link` | str | Link function (optional) |
+| `var_power` | float | Tweedie variance power, default 1.5 (compound Poisson-Gamma interior) |
+| `theta` | float | Negative Binomial dispersion (`"estimate"` for profile estimation) |
 | `exposure` | str or array | **Preferred** raw positive denominator for rate models. Added as `log(exposure)` to the linear predictor under log link, and used as the rate denominator for exposure-weighted target encoding. |
 | `offset` | str or array | Link-scale additive offset. A string offset under a log-link family is treated as a legacy alias for `exposure=` when `exposure` is not set. |
 | `weights` | str or array | Prior weights |
-| `interactions` | list | Interaction specifications (see below) |
-| `theta` | float | Negative Binomial dispersion (`"estimate"` for profile estimation) |
-| `var_power` | float | Tweedie variance power, default 1.5 (compound Poisson-Gamma interior) |
-| `allow_extended_tweedie` | bool | Opt-in for Tweedie powers outside the default `1 < p < 2` interior. Default `False`. See [Distribution Families: Tweedie support contract](../theory/families.md#66-support-contract-rs-act-006). |
-| `complement` | str, array, or `GLMModel` | Complement-of-credibility prior (response scale). Used by lasso shrinkage. |
 | `seed` | int | Random seed for reproducibility |
+| `complement` | str, array, or `GLMModel` | Complement-of-credibility prior (response scale). Used by lasso shrinkage. |
+| `allow_extended_tweedie` | bool | Opt-in for Tweedie powers outside the default `1 < p < 2` interior. Default `False`. See [Distribution Families: Tweedie support contract](../theory/families.md#66-support-contract-rs-act-006). |
 
 ### exposure= vs offset= (RS-ACT-002)
 
@@ -342,7 +344,7 @@ result = rs.glm_dict(
     ],
     data=data,
     family="poisson",
-    offset="Exposure",
+    exposure="Exposure",
     seed=42,
 ).fit()
 
@@ -387,7 +389,7 @@ result = rs.glm_dict(
     ],
     data=data,
     family="poisson",
-    offset="Exposure",
+    exposure="Exposure",
 ).fit()
 ```
 

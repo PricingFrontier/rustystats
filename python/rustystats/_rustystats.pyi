@@ -258,7 +258,7 @@ def fit_cv_path_py(
     theta: float = 1.0,
     offset: npt.NDArray[np.float64] | None = None,
     weights: npt.NDArray[np.float64] | None = None,
-    alphas: list[float] | None = None,
+    alphas: list[float] = ...,
     l1_ratio: float = 0.0,
     n_folds: int = 5,
     max_iter: int = 25,
@@ -282,6 +282,7 @@ def working_response_weights_py(
     theta: float = 1.0,
     offset: npt.NDArray[np.float64] | None = None,
     weights: npt.NDArray[np.float64] | None = None,
+    allow_extended_tweedie: bool = False,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]: ...
 
 # =============================================================================
@@ -667,7 +668,9 @@ def detect_interactions_py(
 def compute_lorenz_curve_py(
     y: npt.NDArray[np.float64],
     mu: npt.NDArray[np.float64],
-) -> dict: ...
+    exposure: npt.NDArray[np.float64] | None = None,
+    n_points: int = 20,
+) -> list[dict]: ...
 def hosmer_lemeshow_test_py(
     y: npt.NDArray[np.float64],
     mu: npt.NDArray[np.float64],

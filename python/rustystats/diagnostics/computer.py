@@ -113,6 +113,10 @@ def rank_sort_idx(
 
     Stable sorting preserves original row order for equal risk scores, matching
     Rust's `(score, index)` tie-breaker in the default diagnostics sort.
+
+    Zero-exposure rows (``e[i] <= 0``) fall back to ``mu[i]`` as the rank key
+    so the sort never produces ``inf`` / ``nan`` and lines up with the Rust
+    ``predicted_rate`` helper (RS-ACT-004 review).
     """
     mu_arr = np.asarray(mu, dtype=np.float64)
     exposure_arr = None if exposure is None else np.asarray(exposure, dtype=np.float64)
@@ -123,9 +127,16 @@ def rank_sort_idx(
     elif ranking == "rate":
         if not exposure_supplied or exposure_arr is None:
             raise ValidationError("ranking='rate' requires exposure to be supplied.")
-        key = mu_arr / exposure_arr
+        # Mirror Rust's predicted_rate fallback: for e[i] <= 0, use mu[i]
+        # directly to avoid inf/nan rank keys.
+        safe_exp = np.where(exposure_arr > 0.0, exposure_arr, 1.0)
+        key = np.where(exposure_arr > 0.0, mu_arr / safe_exp, mu_arr)
     elif ranking == "auto":
-        key = mu_arr / exposure_arr if exposure_supplied and exposure_arr is not None else mu_arr
+        if exposure_supplied and exposure_arr is not None:
+            safe_exp = np.where(exposure_arr > 0.0, exposure_arr, 1.0)
+            key = np.where(exposure_arr > 0.0, mu_arr / safe_exp, mu_arr)
+        else:
+            key = mu_arr
     else:
         raise ValidationError(f"ranking must be 'auto', 'mean', or 'rate', got {ranking!r}.")
     return np.argsort(key, kind="stable")
@@ -167,6 +178,18 @@ class DiagnosticsComputer:
         self.feature_names = feature_names or []
         self.var_power = var_power
         self.theta = theta
+        # Quasi families lack ordinary full likelihoods; suppress AIC/BIC in
+        # downstream dataset diagnostics (matches GLMModel.is_quasi_likelihood
+        # surfaced in formula.py — see RS-ACT-008).
+        _base = self.family.lower().split("(", 1)[0].strip()
+        self.is_quasi_likelihood = _base in {
+            "quasipoisson",
+            "quasi_poisson",
+            "quasi-poisson",
+            "quasibinomial",
+            "quasi_binomial",
+            "quasi-binomial",
+        }
 
         self.n_obs = len(y)
         self.df_resid = self.n_obs - n_params
@@ -357,7 +380,7 @@ class DiagnosticsComputer:
             cont_column_cache=cont_column_cache,
         )
 
-    def compute_model_comparison(self) -> dict[str, float]:
+    def compute_model_comparison(self) -> dict[str, float | None]:
         """Compute model comparison statistics vs null model."""
         null_dev = self.null_deviance
 
@@ -370,17 +393,22 @@ class DiagnosticsComputer:
 
         deviance_reduction_pct = 100 * (1 - self.deviance / null_dev) if null_dev > 0 else 0
 
-        # AIC improvement
-        null_aic = null_dev + 2  # Null model has 1 parameter
-        model_aic = self.deviance + 2 * self.n_params
-        aic_improvement = null_aic - model_aic
+        # AIC improvement — not meaningful under quasi-likelihood, so suppress
+        # rather than emit a number indistinguishable from a proper-likelihood
+        # improvement (RS-ACT-008).
+        if self.is_quasi_likelihood:
+            aic_improvement: float | None = None
+        else:
+            null_aic = null_dev + 2  # Null model has 1 parameter
+            model_aic = self.deviance + 2 * self.n_params
+            aic_improvement = float(null_aic - model_aic)
 
         return {
             "likelihood_ratio_chi2": float(lr_chi2),
             "likelihood_ratio_df": lr_df,
             "likelihood_ratio_pvalue": float(lr_pvalue),
             "deviance_reduction_pct": float(deviance_reduction_pct),
-            "aic_improvement": float(aic_improvement),
+            "aic_improvement": aic_improvement,
         }
 
     def generate_warnings(
@@ -934,8 +962,10 @@ class DiagnosticsComputer:
         n_deciles : int, default=10
             Number of deciles for binning.
         sort_idx : np.ndarray, optional
-            Pre-computed argsort of self.mu. Pass this when multiple downstream
-            consumers need the same sort to avoid redundant O(n log n) work.
+            Pre-computed rate-rank index (see :func:`rank_sort_idx`): ascending
+            on ``mu/exposure`` when exposure is present (RS-ACT-004), else on
+            ``mu``. Pass this when multiple downstream consumers need the same
+            sort to avoid redundant O(n log n) work.
 
         Returns
         -------
@@ -1487,10 +1517,20 @@ class DiagnosticsComputer:
         deviance = float(dataset_metrics["deviance"])
         mean_deviance = float(dataset_metrics["mean_deviance"])
         log_likelihood = float(dataset_metrics["log_likelihood"])
-        aic_val = float(dataset_metrics["aic"])
-        bic_val = (
-            -2.0 * log_likelihood + self.n_params * math.log(n_obs) if n_obs > 0 else float("nan")
-        )
+        # Quasi families: the family loglik stays available for convergence
+        # but AIC/BIC are not ordinary-likelihood values (RS-ACT-008). Surface
+        # them as None in the dataset diagnostics rather than printing a
+        # number indistinguishable from a proper-likelihood AIC.
+        if self.is_quasi_likelihood:
+            aic_val: float | None = None
+            bic_val: float | None = None
+        else:
+            aic_val = float(dataset_metrics["aic"])
+            bic_val = (
+                -2.0 * log_likelihood + self.n_params * math.log(n_obs)
+                if n_obs > 0
+                else float("nan")
+            )
 
         # Discrimination metrics
         stats = _rust_discrimination_stats(y, mu, exposure)
@@ -1547,8 +1587,8 @@ class DiagnosticsComputer:
             loss=round(mean_deviance, 6),
             deviance=round(deviance, 2),
             log_likelihood=round(log_likelihood, 2),
-            aic=round(aic_val, 2),
-            bic=round(bic_val, 2),
+            aic=round(aic_val, 2) if aic_val is not None else None,
+            bic=round(bic_val, 2) if bic_val is not None else None,
             gini=round(gini, 4),
             auc=round(auc, 4),
             ae_ratio=round(ae_ratio, 4),
@@ -1565,10 +1605,12 @@ class DiagnosticsComputer:
         n_deciles: int = 10,
         sort_idx: np.ndarray | None = None,
     ) -> list[DecileMetrics]:
-        """Compute A/E by decile sorted by predicted value.
+        """Compute A/E by decile sorted by predicted rate (or predicted mean).
 
-        Pass `sort_idx` (a pre-computed `np.argsort(mu)`) when the caller already
-        has it, to skip a redundant O(n log n) sort on the prediction array.
+        Pass `sort_idx` (a pre-computed rate-rank index from :func:`rank_sort_idx`
+        — ascending on ``mu/exposure`` when exposure is present per RS-ACT-004,
+        else on ``mu``) when the caller already has it, to skip a redundant
+        O(n log n) sort on the prediction array.
 
         Per-decile sums (`actual_sum`, `predicted_sum`, `exposure_sum`) are
         computed in Rust via `compute_ae_by_decile_py`; the trivial divisions

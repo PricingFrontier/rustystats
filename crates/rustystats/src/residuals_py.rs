@@ -21,7 +21,9 @@ use rustystats_core::solvers::{
     compute_irls_weights, validate_residual_inputs, IRLSWeightResult, ValidatedInputs,
 };
 
-use crate::families_py::{default_link_name, family_from_name, link_from_name};
+use crate::families_py::{
+    default_link_name, family_from_name_with_tweedie_support, link_from_name,
+};
 
 /// Compute IRLS working response z and combined working weight w.
 ///
@@ -36,7 +38,7 @@ use crate::families_py::{default_link_name, family_from_name, link_from_name};
 ///
 /// Returns a tuple `(z, w)` of f64 numpy arrays of length n.
 #[pyfunction]
-#[pyo3(signature = (y, eta, family, link=None, var_power=1.5, theta=1.0, offset=None, weights=None))]
+#[pyo3(signature = (y, eta, family, link=None, var_power=1.5, theta=1.0, offset=None, weights=None, allow_extended_tweedie=false))]
 pub fn working_response_weights_py<'py>(
     py: Python<'py>,
     y: PyReadonlyArray1<f64>,
@@ -47,8 +49,10 @@ pub fn working_response_weights_py<'py>(
     theta: f64,
     offset: Option<PyReadonlyArray1<f64>>,
     weights: Option<PyReadonlyArray1<f64>>,
+    allow_extended_tweedie: bool,
 ) -> PyResult<(Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<f64>>)> {
-    let fam = family_from_name(family, var_power, theta)?;
+    let fam =
+        family_from_name_with_tweedie_support(family, var_power, theta, allow_extended_tweedie)?;
     let lnk = link_from_name(link.unwrap_or(default_link_name(family)))?;
 
     let y_arr = y.as_array().to_owned();

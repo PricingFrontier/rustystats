@@ -94,16 +94,13 @@ def compute_contributions(
             new_data, exposure_to_use
         )
 
-    offset_is_exposure = model._offset_is_exposure and exposure_to_use is None
     offset_raw, offset_link, offset_name = _resolve_predict_offset(
-        new_data, offset, model._offset_spec, offset_is_exposure
+        new_data, offset, model._offset_spec
     )
     _, complement_link = _resolve_predict_complement(
         new_data,
         complement,
         model._complement_spec,
-        offset_is_exposure,
-        offset_to_use,
         exposure_to_use,
         model.link,
     )
@@ -155,18 +152,21 @@ def compute_contributions(
                 contribs_per_slot.append(X_new[:, j] * params[j])
                 feature_values_per_slot.append(X_new[:, j].astype(np.float64, copy=False))
 
-    # --- exposure/offset contribution rows (synthetic; not in term_slots) ------
+    # --- exposure / offset contribution rows (synthetic; not in term_slots) ----
+    # The two are distinguished by ``term_name``/``term_type`` so consumers
+    # don't need to rely on positional order. After RS-ACT-002b the model
+    # carries them on separate specs (``_exposure_spec`` vs ``_offset_spec``),
+    # so a single ladder may contain both rows when callers pass both.
     if exposure_link is not None:
         exposure_slot = TermSlot(
-            term_name="offset",
-            term_type="offset",
+            term_name="exposure",
+            term_type="exposure",
             factors=[exposure_name] if exposure_name else [],
             col_start=-1,
             col_end=-1,
             design_column_names=[],
             extra={
                 "raw": exposure_raw,
-                "is_exposure": True,
                 "name": exposure_name,
             },
         )
@@ -185,7 +185,6 @@ def compute_contributions(
             design_column_names=[],
             extra={
                 "raw": offset_raw,
-                "is_exposure": bool(offset_is_exposure),
                 "name": offset_name,
             },
         )
@@ -352,7 +351,7 @@ def _extract_feature_values(slot: TermSlot, new_data: pl.DataFrame, X_new: np.nd
     if slot.term_type == "categorical_indicator":
         return new_data[slot.factors[0]].cast(pl.Utf8).to_numpy()
 
-    if slot.term_type == "offset":
+    if slot.term_type in ("offset", "exposure"):
         raw = slot.extra.get("raw")
         if raw is not None:
             return np.asarray(raw)

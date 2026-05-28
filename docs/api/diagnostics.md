@@ -26,6 +26,7 @@ diagnostics = result.diagnostics(
     compute_robust_se=True,
     compute_score_tests=True,
     base_predictions=None,
+    ranking="auto",
 )
 ```
 
@@ -55,6 +56,7 @@ formula, so you do not pass them again. Results are auto-saved to
 | `compute_robust_se` | bool | `True` | Enrich coefficient summary with HC1 robust SEs |
 | `compute_score_tests` | bool | `True` | Rao score tests for unfitted factors |
 | `base_predictions` | str | `None` | Column in `train_data` with predictions from another model |
+| `ranking` | str | `"auto"` | Decile/lift ranking mode. `"auto"` ranks by predicted rate when an exposure is in scope, otherwise by the raw mean prediction. `"mean"` and `"rate"` force the corresponding mode. |
 
 ### Returns
 
@@ -413,7 +415,7 @@ result = rs.glm_dict(
     },
     data=train_data,
     family="poisson",
-    offset="Exposure",
+    exposure="Exposure",
 ).fit()
 
 # Compute diagnostics, including factors not in the model

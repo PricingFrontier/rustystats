@@ -17,6 +17,7 @@ from __future__ import annotations
 import numpy as np
 import polars as pl
 import rustystats as rs
+from _fixtures import make_freq_frame
 
 
 def _smooth_count_frame(seed: int = 0, n: int = 800) -> pl.DataFrame:
@@ -94,3 +95,60 @@ class TestSmoothFamilyParams:
         # Not vacuous: the fit at theta=3.0 must differ from theta=1.0.
         other = _fit_smooth(data, "negbinomial", theta=1.0)
         assert not np.allclose(result.params, other.params)
+
+
+class TestSmoothNonSmoothFamilyParity:
+    """Spec 003.4: a smooth fit and a non-smooth fit at the matching
+    ``var_power`` / ``theta`` carry the same family string.
+
+    The family string contains the parameter (``"Tweedie(p=1.7000)"`` /
+    ``"NegativeBinomial(theta=2.5000)"``), so equality here proves both paths
+    actually dispatched to the same parameterised family. Before RS-ACT-003
+    the smooth solver hard-coded ``p=1.5`` / ``theta=1.0`` and this would
+    have failed for any non-default parameter.
+    """
+
+    def _freq_frame_for_smooth(self):
+        # The shared fixture exposes a continuous regressor ``DrivAge`` that
+        # routes through both the linear path and the bs() penalized smooth.
+        return make_freq_frame(n=1500, seed=11)
+
+    def test_tweedie_smooth_matches_nonsmooth_family_string(self):
+        df = self._freq_frame_for_smooth()
+        var_power = 1.7
+        smooth = rs.glm_dict(
+            response="ClaimCount",
+            terms={"DrivAge": {"type": "bs", "k": 6}},
+            data=df,
+            family="tweedie",
+            var_power=var_power,
+        ).fit()
+        plain = rs.glm_dict(
+            response="ClaimCount",
+            terms={"DrivAge": {"type": "linear"}},
+            data=df,
+            family="tweedie",
+            var_power=var_power,
+        ).fit()
+        assert smooth.family == plain.family
+        assert smooth.family == "Tweedie(p=1.7000)"
+
+    def test_negbinomial_smooth_matches_nonsmooth_family_string(self):
+        df = self._freq_frame_for_smooth()
+        theta = 2.5
+        smooth = rs.glm_dict(
+            response="ClaimCount",
+            terms={"DrivAge": {"type": "bs", "k": 6}},
+            data=df,
+            family="negbinomial",
+            theta=theta,
+        ).fit()
+        plain = rs.glm_dict(
+            response="ClaimCount",
+            terms={"DrivAge": {"type": "linear"}},
+            data=df,
+            family="negbinomial",
+            theta=theta,
+        ).fit()
+        assert smooth.family == plain.family
+        assert smooth.family == "NegativeBinomial(theta=2.5000)"

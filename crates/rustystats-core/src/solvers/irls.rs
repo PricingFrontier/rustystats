@@ -53,7 +53,10 @@ use nalgebra::{DMatrix, DVector};
 use ndarray::{Array1, Array2, ArrayView2};
 use rayon::prelude::*;
 
-use crate::constants::{CONVERGENCE_TOL, DEFAULT_MAX_ITER, MIN_IRLS_WEIGHT, ZERO_TOL};
+use crate::constants::{
+    CONVERGENCE_TOL, DEFAULT_MAX_ITER, IRLS_ACCEPT_REL_SLACK, IRLS_MAX_HALF_STEPS, MIN_IRLS_WEIGHT,
+    ZERO_TOL,
+};
 use crate::error::{Result, RustyStatsError};
 use crate::families::Family;
 use crate::links::Link;
@@ -327,7 +330,10 @@ pub struct IRLSResult {
     /// Warnings collected during fitting (replaces stderr printing).
     pub warnings: Vec<String>,
 
-    /// Whether step-halving was triggered at any accepted iteration.
+    /// Whether step-halving produced the accepted step at any iteration.
+    /// Set only when a halved step (not the full Newton step) was accepted.
+    /// Stays false if every accepted step was the full step, even if the halving
+    /// budget was exhausted on a rejected iteration (RS-ACT-007).
     pub step_halving_used: bool,
 
     /// Terminal solver status: "converged", "max_iterations", or
@@ -618,7 +624,7 @@ fn fit_glm_core(
         // tiny relative tolerance (RS-ACT-007). Coefficient blending is used for
         // both paths; for the unconstrained path it is algebraically identical to
         // blending eta, but keeps coefficients and (eta, mu) consistent.
-        let accept_threshold = deviance_old * 1.0001;
+        let accept_threshold = deviance_old * IRLS_ACCEPT_REL_SLACK;
 
         let project = |coef: &mut Array1<f64>| {
             for &idx in &config.nonneg_indices {
@@ -643,12 +649,12 @@ fn fit_glm_core(
         let mut step_accepted = deviance_new.is_finite() && deviance_new <= accept_threshold;
 
         // Step-halving: if the full step worsened the deviance, try smaller steps
-        // and accept the first one that meets the threshold.
+        // and accept the first one that meets the threshold. The
+        // `step_halving_used` flag is set only when a halved step is the one
+        // ultimately accepted (RS-ACT-007), not merely when halving was attempted.
         if !step_accepted {
-            step_halving_used = true;
             let mut step_size = 0.5;
-            let max_half_steps = 25;
-            for _half_step in 0..max_half_steps {
+            for _half_step in 0..IRLS_MAX_HALF_STEPS {
                 let mut blended: Array1<f64> = iter_coefficients
                     .iter()
                     .zip(new_coefficients.iter())
@@ -664,6 +670,7 @@ fn fit_glm_core(
                     mu_new = m;
                     deviance_new = d;
                     step_accepted = true;
+                    step_halving_used = true;
                     break;
                 }
                 step_size *= 0.5;
@@ -712,7 +719,12 @@ fn fit_glm_core(
             best_weights = irls_weights.clone();
         }
 
-        if rel_change < config.tolerance {
+        // Convergence requires the accepted step to be non-worsening (signed
+        // change ≤ 0) AND small. A worse-but-close step is not converged.
+        // The accept loop above already enforces the slack on the signed
+        // change; the final convergence flag must also.
+        let signed_change = deviance_old - deviance;
+        if signed_change >= -ZERO_TOL && rel_change < config.tolerance {
             converged = true;
             cov_unscaled = xtwinv;
             final_weights = irls_weights;
@@ -1454,6 +1466,102 @@ mod tests {
         assert!(
             result.deviance < 1392.5,
             "regression guard for the historical full-step deviance"
+        );
+    }
+
+    #[test]
+    fn test_step_halving_no_improvement_retains_previous_iterate() {
+        // RS-ACT-007 (007.2): when every full and halved trial step produces an
+        // infinite/worse deviance, IRLS must retain the previous accepted iterate
+        // (NOT take a bad step) and report `step_halving_no_improvement`. We
+        // construct a Poisson/log fixture where the WLS solver returns a
+        // catastrophic slope and the blended step blows past the float ceiling
+        // even at the smallest budgeted half-step, so the halving budget exhausts.
+        //
+        // The fixture: y is mostly small with a single extreme value, paired with
+        // x values that span ~30 orders of magnitude. The WLS step jumps to a
+        // slope whose product with the extreme x overflows the log link, leaving
+        // the family deviance non-finite at every halved blend.
+        let n = 6;
+        let xv = vec![
+            1.0, 0.0, 1.0, 1.0, 1.0, 2.0, 1.0, 1.0e6, 1.0, 1.0e6, 1.0, 1.0e6,
+        ];
+        let x = Array2::from_shape_vec((n, 2), xv).expect("test setup should be valid");
+        // y has a huge spike at the extreme-x rows, which makes the WLS solve
+        // return a slope close to log(1e300)/1e6 — products with x[3..6] then
+        // blow up to infinity in mu = exp(eta).
+        let y = array![1.0, 1.0, 1.0, 1.0e300, 1.0e300, 1.0e300];
+
+        let config = FitConfig {
+            max_iterations: 5,
+            ..FitConfig::default()
+        };
+        let result = fit_glm_unified(
+            &y,
+            x.view(),
+            &PoissonFamily,
+            &LogLink,
+            &config,
+            None,
+            None,
+            None,
+        )
+        .expect("fit should not error");
+
+        assert_eq!(
+            result.solver_status, "step_halving_no_improvement",
+            "expected halving exhaustion; got {} (deviance={}, iters={})",
+            result.solver_status, result.deviance, result.iterations
+        );
+        assert!(!result.converged, "exhausted halving must not be converged");
+        // Retained coefficients are the previous iterate's, not the last failed
+        // trial. The previous iterate corresponds to the projected initial fit
+        // (iteration 1's "previous" state), so the returned coefficients must
+        // produce a finite deviance — the failed trial's coefs would not.
+        assert!(
+            result.coefficients.iter().all(|c| c.is_finite()),
+            "retained coefs must be finite (previous iterate), got {:?}",
+            result.coefficients
+        );
+        assert!(
+            result.deviance.is_finite(),
+            "retained deviance must be finite (previous iterate's deviance)"
+        );
+    }
+
+    #[test]
+    fn test_plateau_full_step_inside_tol_is_converged() {
+        // RS-ACT-007 (plateau guard): a fit that reaches its converged solution
+        // via a clean full Newton step (no halving) whose relative deviance
+        // change drops below `tol` is reported as converged, not failed. This
+        // guards against a regression where the signed-change guard would
+        // wrongly reject benign plateau steps.
+        let x = Array2::from_shape_vec(
+            (5, 2),
+            vec![1.0, 1.0, 1.0, 2.0, 1.0, 3.0, 1.0, 4.0, 1.0, 5.0],
+        )
+        .expect("test setup should be valid");
+        let y = array![2.0, 4.0, 6.0, 8.0, 10.0]; // perfect linear, OLS hits a plateau
+
+        let config = FitConfig::default().with_max_iterations(50);
+        let result = fit_glm_unified(
+            &y,
+            x.view(),
+            &GaussianFamily,
+            &IdentityLink,
+            &config,
+            None,
+            None,
+            None,
+        )
+        .expect("fit should not error");
+
+        assert!(result.converged, "plateau full-step fit must converge");
+        assert_eq!(result.solver_status, "converged");
+        assert!(
+            !result.step_halving_used,
+            "no halving expected on a clean Gaussian/identity fit; flag stayed: {}",
+            result.step_halving_used
         );
     }
 

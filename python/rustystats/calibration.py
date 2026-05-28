@@ -188,24 +188,32 @@ def _aggregate_bin(
     else:
         exposure_sum = float(np.sum(weights[members] * exposure[members]))
     ae_ratio = actual / expected if expected != 0.0 else float("nan")
-    # Score-space stats (rate when exposure present, else raw mu).
-    if exposure is not None:
-        rate = mu[members] / exposure[members]
-    else:
-        rate = mu[members]
-    return {
+    # Score-space stats. When exposure is present we have a true rate
+    # (μ/exposure) and emit ``predicted_rate_*``; without exposure the
+    # underlying value is the raw predicted mean (μ), so we emit
+    # ``predicted_score_*`` to avoid implying a rate exists (RS-ACT-009
+    # review).
+    row: dict[str, Any] = {
         "bin_index": int(bin_index),
         "count": int(members.size),
         "actual": actual,
         "expected": expected,
         "ae_ratio": ae_ratio,
         "exposure": exposure_sum,
-        "predicted_rate_min": float(np.min(rate)),
-        "predicted_rate_max": float(np.max(rate)),
-        "predicted_rate_mean": float(np.mean(rate)),
         "actual_rate": actual / exposure_sum if exposure_sum > 0.0 else float("nan"),
         "expected_rate": expected / exposure_sum if exposure_sum > 0.0 else float("nan"),
     }
+    if exposure is not None:
+        rate = mu[members] / exposure[members]
+        row["predicted_rate_min"] = float(np.min(rate))
+        row["predicted_rate_max"] = float(np.max(rate))
+        row["predicted_rate_mean"] = float(np.mean(rate))
+    else:
+        score = mu[members]
+        row["predicted_score_min"] = float(np.min(score))
+        row["predicted_score_max"] = float(np.max(score))
+        row["predicted_score_mean"] = float(np.mean(score))
+    return row
 
 
 # ---------------------------------------------------------------------------
@@ -343,8 +351,11 @@ class GlobalCalibration:
         return self.factor * arr
 
     def to_dict(self) -> dict[str, Any]:
+        # ``scale="response"`` makes the prediction scale explicit and reserves
+        # room for future ``scale="link"`` variants (e.g. logit calibration).
         return {
             "method": self.method,
+            "scale": "response",
             "factor": float(self.factor),
             "n_obs": int(self.n_obs),
             "total_weight": float(self.total_weight),
@@ -356,6 +367,11 @@ class GlobalCalibration:
         if method != "global":
             raise ValidationError(
                 f"GlobalCalibration.from_dict expected method='global', got {method!r}"
+            )
+        scale = str(state.get("scale", "response"))
+        if scale != "response":
+            raise ValidationError(
+                f"GlobalCalibration.from_dict only supports scale='response', got {scale!r}"
             )
         return cls(
             factor=float(state["factor"]),

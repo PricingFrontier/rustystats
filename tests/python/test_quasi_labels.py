@@ -131,12 +131,81 @@ class TestQuasiBinomial:
         result = _fit(_quasibinomial_frame(), "quasibinomial")
         assert result.bic() is None
 
+    def test_summary_labels_quasi_likelihood(self):
+        """008.2: summary text labels the loglik-like value as quasi and
+        prints AIC/BIC as NA (mirrors the quasi-Poisson assertion)."""
+        result = _fit(_quasibinomial_frame(), "quasibinomial")
+        text = result.summary()
+        assert "Quasi-Log-Likelihood" in text or "Quasi-Likelihood" in text, (
+            "summary should relabel the loglik-like value as quasi"
+        )
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("AIC"):
+                assert "NA" in line, f"AIC line should be NA for quasi: {line!r}"
+            if stripped.startswith("BIC"):
+                assert "NA" in line, f"BIC line should be NA for quasi: {line!r}"
+
     def test_non_quasi_binomial_still_reports_aic(self):
         df = _quasibinomial_frame()
         result = _fit(df, "binomial")
         assert result.is_quasi_likelihood is False
         assert result.aic() is not None
         assert result.bic() is not None
+
+
+# --------------------------------------------------------------------------
+# PR14 review: quasi llf still callable + ModelDiagnostics aic=None/bic=None.
+# --------------------------------------------------------------------------
+
+
+class TestQuasiLoglikStillCallable:
+    @pytest.mark.parametrize(
+        "family,frame_fn",
+        [
+            ("quasipoisson", _quasipoisson_frame),
+            ("quasibinomial", _quasibinomial_frame),
+        ],
+    )
+    def test_llf_is_finite(self, family, frame_fn):
+        """The family loglik must stay available even when AIC/BIC are gone:
+        convergence checks and dispersion estimation rely on it.
+        """
+        result = _fit(frame_fn(), family)
+        llf_attr = result._result.llf
+        llf_val = float(llf_attr() if callable(llf_attr) else llf_attr)
+        assert np.isfinite(llf_val), f"{family} llf should be finite, got {llf_val}"
+
+
+class TestQuasiDiagnosticsSuppressAicBic:
+    @pytest.mark.parametrize(
+        "family,frame_fn",
+        [
+            ("quasipoisson", _quasipoisson_frame),
+            ("quasibinomial", _quasibinomial_frame),
+        ],
+    )
+    def test_train_dataset_aic_bic_none(self, family, frame_fn):
+        """``result.diagnostics(...).train_test.train.aic`` is None for a
+        quasi fit (and likewise for bic). This is the orchestrator's plumbing
+        end of the quasi-likelihood honesty story: even if a number could be
+        computed numerically, we don't surface one that would compare against
+        proper-likelihood AIC/BIC from a non-quasi model.
+        """
+        df = frame_fn()
+        result = _fit(df, family)
+        diag = result.diagnostics(
+            df,
+            compute_vif=False,
+            compute_coefficients=False,
+            compute_deviance_by_level=False,
+            compute_partial_dep=False,
+            compute_robust_se=False,
+            compute_score_tests=False,
+            compute_lift=False,
+        )
+        assert diag.train_test.train.aic is None
+        assert diag.train_test.train.bic is None
 
 
 # --------------------------------------------------------------------------

@@ -202,15 +202,12 @@ pub(crate) fn validate_tweedie_fit_response(
 /// `var_power` is used only for Tweedie; `theta` only for NegativeBinomial.
 /// Parametric families accept an embedded form too — see
 /// [`parse_embedded_param`].
+///
+/// Tweedie powers outside the default compound Poisson-Gamma interior
+/// (`1 < p < 2`) require `allow_extended_tweedie=true` and are validated
+/// against the per-regime support rules — see [`validate_tweedie_power`].
+///
 /// Returns an error for unknown family names instead of silently defaulting.
-pub(crate) fn family_from_name(
-    name: &str,
-    var_power: f64,
-    theta: f64,
-) -> PyResult<Box<dyn Family>> {
-    family_from_name_with_tweedie_support(name, var_power, theta, false)
-}
-
 pub(crate) fn family_from_name_with_tweedie_support(
     name: &str,
     var_power: f64,

@@ -64,12 +64,21 @@ fn smooth_result_to_py<'py>(
         },
         irls_weights: result.irls_weights,
         offset: result.offset,
+        // SmoothGLMResult does not carry step-halving telemetry from the inner
+        // IRLS loop (the smooth solver wraps lambda/EDF iteration around IRLS
+        // and currently exposes only the outer fit summary). We hardcode
+        // `step_halving_used = false` here rather than fabricating a value —
+        // a smooth fit may have triggered halving internally and the field is
+        // simply unobservable at this layer (RS-ACT-007). The same caveat
+        // applies to `warnings`: the smooth solver does not surface its
+        // internal warning vector, so we pass an empty Vec.
         step_halving_used: false,
         solver_status: if result.converged {
             "converged".to_string()
         } else {
             "max_iterations".to_string()
         },
+        warnings: Vec::new(),
     };
 
     let smooth_dict = pyo3::types::PyDict::new(py);
@@ -232,6 +241,7 @@ pub fn fit_glm_py(
         offset: offset_array,
         step_halving_used: result.step_halving_used,
         solver_status: result.solver_status,
+        warnings: result.warnings,
     })
 }
 
@@ -403,6 +413,7 @@ pub fn fit_negbinomial_py<'py>(
         offset: offset_array,
         step_halving_used: result.step_halving_used,
         solver_status: result.solver_status,
+        warnings: result.warnings,
     };
 
     // Honest theta-estimation metadata (RS-ACT-010): the profile loop's init,

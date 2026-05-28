@@ -129,6 +129,37 @@ class TestNegBinomialThetaContract:
         assert result.theta is not None
         assert result.theta_metadata["estimated"] is True
 
+    def test_weights_respected_in_estimation(self):
+        """010.4: non-uniform observation weights are threaded into the estimator.
+
+        Spec 010.4 explicitly says "Offset and weights are respected in theta
+        estimation". The matching offset case is already covered above; this
+        pins the weights branch. We assert the fit runs without error and
+        records ``estimated=True``, and that the estimated theta differs from
+        the unweighted estimate (so the weights aren't silently ignored).
+        """
+        data = _nb_frame(true_theta=2.0)
+        rng = np.random.default_rng(99)
+        weights = rng.uniform(0.2, 5.0, len(data))
+
+        weighted = rs.glm_dict(
+            response="y",
+            terms={"x": {"type": "linear"}},
+            data=data,
+            family="negbinomial",
+            theta="estimate",
+            weights=weights,
+        ).fit()
+        unweighted = _fit(data, theta="estimate")
+
+        assert weighted.theta is not None
+        assert np.isfinite(weighted.theta)
+        assert weighted.theta_metadata["estimated"] is True
+        # Different weights -> different estimated theta. If they came out
+        # bit-identical the weights vector would not have reached the
+        # profile-MLE inner loop (the regression we're guarding against).
+        assert weighted.theta != pytest.approx(unweighted.theta, rel=1e-6, abs=1e-9)
+
     def test_estimate_with_regularization_raises(self):
         """010.5/010.6: regularized NB + estimate fails closed, asking for explicit theta."""
         data = _nb_frame(true_theta=2.0)
@@ -141,9 +172,53 @@ class TestNegBinomialThetaContract:
         with pytest.raises(rs.ValidationError, match=r"(?i)theta"):
             _fit(data, terms={"x": {"type": "bs", "k": 6}}, theta="estimate")
 
+    def test_estimate_with_sign_constraint_raises(self):
+        """010.5: sign-constrained NB + estimate fails closed, naming the
+        constraint and the ``theta="estimate"`` request.
+
+        The other two unsupported-combo branches (smooth, regularized) already
+        have coverage above; the sign-constrained branch is exercised here.
+        A linear term with ``"monotonicity": "increasing"`` is rendered as
+        ``pos(x)`` in the feature names, which ``_get_constraint_indices``
+        recognises as a non-negative coefficient constraint.
+        """
+        data = _nb_frame(true_theta=2.0)
+        with pytest.raises(rs.ValidationError) as excinfo:
+            rs.glm_dict(
+                response="y",
+                terms={"x": {"type": "linear", "monotonicity": "increasing"}},
+                data=data,
+                family="negbinomial",
+                theta="estimate",
+            ).fit()
+        msg = str(excinfo.value)
+        # The error must name the constraint type so the user knows why
+        # estimation is refused.
+        assert "sign-constrained" in msg
+        # And it must point at the theta knob that needs to be fixed.
+        assert "theta" in msg
+
     def test_regularized_negbinomial_with_fixed_theta_works(self):
         """010.6: an explicit numeric theta permits regularized NB."""
         data = _nb_frame(true_theta=2.0)
         result = _fit(data, theta=1.5, cv=3, regularization="ridge", n_alphas=3, verbose=False)
         assert result.cv_deviance is not None
         assert "theta=1.5000" in result.family
+
+    def test_regularization_module_docstring_records_nb_theta_policy(self):
+        """010 (review): the regularization-path module docstring must record
+        the fixed-theta-only contract and point at the caller in formula.py.
+
+        Pins the doc against a silent drop of the policy note — if the module
+        docstring stops mentioning the contract, this test catches it.
+        """
+        import rustystats.regularization_path as rp
+
+        doc = rp.__doc__ or ""
+        assert "RS-ACT-010" in doc, "regularization_path module docstring lost the RS-ACT-010 tag"
+        assert "fixed" in doc.lower() and "theta" in doc.lower(), (
+            "regularization_path module docstring lost the fixed-theta policy note"
+        )
+        assert "_resolve_negbinomial_theta" in doc, (
+            "regularization_path docstring must point at the policy resolver"
+        )

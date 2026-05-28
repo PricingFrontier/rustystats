@@ -268,6 +268,74 @@ class TestExtendedHighPowerSupport:
 
 
 # --------------------------------------------------------------------------
+# 006.6: extended Tweedie threads through the score-test / inference path.
+# --------------------------------------------------------------------------
+
+
+class TestExtendedTweedieInference:
+    """Regression for the inference call sites (PR13 review).
+
+    The fix is in ``inference_py.rs`` / ``residuals_py.rs``: those entry
+    points now construct families via
+    ``family_from_name_with_tweedie_support(..., true)`` so a fitted extended
+    Tweedie model's family string (e.g. ``"Tweedie(p=2.5)"``) no longer trips
+    the default-regime gate when diagnostics / score tests rebuild the family.
+    """
+
+    def test_extended_tweedie_diagnostics_with_score_tests(self):
+        """A fitted ``p=2.5`` Tweedie model runs diagnostics + score tests
+        without re-raising the default-regime ``ValueError``."""
+        rng = np.random.default_rng(2025)
+        n = 250
+        x_fitted = rng.normal(size=n)
+        x_unfitted = rng.normal(size=n)  # candidate continuous factor
+        mu = np.exp(1.0 + 0.3 * x_fitted)
+        # Gamma-shaped strictly-positive response (p >= 2 requires y > 0).
+        y = rng.gamma(2.0, mu / 2.0)
+        df = pl.DataFrame({"y": y, "x_fitted": x_fitted, "x_unfitted": x_unfitted})
+
+        result = rs.glm_dict(
+            response="y",
+            terms={"x_fitted": {"type": "linear"}},
+            data=df,
+            family="tweedie",
+            var_power=2.5,
+            allow_extended_tweedie=True,
+        ).fit()
+        assert np.isfinite(result.deviance)
+        # The family string carries the extended ``p`` and is what the
+        # inference call sites see when they reconstruct the family.
+        assert result.family == "Tweedie(p=2.5000)"
+
+        # diagnostics() with an unfitted continuous factor exercises
+        # score_test_continuous_py — this is what would have failed before
+        # the inference_py.rs / residuals_py.rs fix.
+        diagnostics = result.diagnostics(
+            df,
+            continuous_factors=["x_unfitted"],
+            compute_score_tests=True,
+        )
+        assert np.isfinite(diagnostics.train_test.train.deviance)
+
+    def test_extended_tweedie_score_test_continuous_py_direct(self):
+        """Direct rs binding accepts the extended Tweedie family string."""
+        from rustystats._rustystats import score_test_continuous_py
+
+        rng = np.random.default_rng(7)
+        n = 120
+        mu = np.full(n, 2.0)
+        y = rng.gamma(2.0, mu / 2.0)
+        x = np.ones((n, 1), dtype=np.float64)
+        z = rng.normal(size=n)
+        weights = np.ones(n)
+        bread = np.array([[1.0]])
+
+        # No ValidationError despite p=2.5 > 2 (extended regime).
+        out = score_test_continuous_py(z, x, y, mu, weights, bread, "tweedie(p=2.5)")
+        assert "pvalue" in out
+
+
+# --------------------------------------------------------------------------
 # Backward compatibility: existing var_power=1.5 (the default) still works.
 # --------------------------------------------------------------------------
 

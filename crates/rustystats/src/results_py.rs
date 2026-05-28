@@ -68,6 +68,11 @@ pub struct PyGLMResults {
     /// Terminal solver status: "converged", "max_iterations", or
     /// "step_halving_no_improvement" (RS-ACT-007).
     pub(crate) solver_status: String,
+    /// User-facing warnings collected during fitting (e.g. non-convergence,
+    /// fallback initialisation, final-extraction instability). Surfaced so the
+    /// solver can communicate diagnostic context beyond the terminal status
+    /// string (RS-ACT-007).
+    pub(crate) warnings: Vec<String>,
 }
 
 // =============================================================================
@@ -186,6 +191,18 @@ impl PyGLMResults {
     #[getter]
     fn step_halving_used(&self) -> bool {
         self.step_halving_used
+    }
+
+    /// Warnings collected during fitting (RS-ACT-007).
+    ///
+    /// Empty when the fit completed without diagnostic concerns. Common
+    /// messages include "IRLS did not converge ...", "Family ... initial μ
+    /// values were invalid ...", and final-coefficient extraction fallbacks.
+    /// The terminal `solver_status` is the primary signal — `warnings`
+    /// carries the additional human-readable context.
+    #[getter]
+    fn warnings(&self) -> Vec<String> {
+        self.warnings.clone()
     }
 
     /// Number of observations.

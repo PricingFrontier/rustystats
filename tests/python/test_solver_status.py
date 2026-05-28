@@ -90,3 +90,37 @@ class TestStepHalvingAcceptance:
         assert result.converged
         assert result.solver_status == "converged"
         assert np.isfinite(result.deviance)
+
+
+class TestStepHalvingNoImprovement:
+    """007.2: when every halved trial step still worsens the deviance, IRLS
+    retains the previous iterate and reports `step_halving_no_improvement`."""
+
+    def test_status_step_halving_no_improvement_when_budget_exhausts(self):
+        # Mirror of the Rust test:
+        # `test_step_halving_no_improvement_retains_previous_iterate`. The
+        # fixture pairs huge x with a huge y so the WLS slope sends mu = exp(eta)
+        # to +inf at every halved blend, making the deviance non-finite and
+        # never acceptable. IRLS must retain the previous iterate's coefficients
+        # rather than take a worse step.
+        x = np.array([0.0, 1.0, 2.0, 1.0e6, 1.0e6, 1.0e6])
+        y = np.array([1.0, 1.0, 1.0, 1.0e300, 1.0e300, 1.0e300])
+        data = pl.DataFrame({"y": y, "x": x})
+
+        result = rs.glm_dict(
+            response="y", terms={"x": {"type": "linear"}}, data=data, family="poisson"
+        ).fit(max_iter=5)
+
+        assert result.solver_status == "step_halving_no_improvement", (
+            f"expected halving-exhaustion status, got {result.solver_status!r} "
+            f"(deviance={result.deviance}, iters={result.iterations})"
+        )
+        assert not result.converged
+        # Retained coefficients are the previous iterate's: they must be finite
+        # (a successful trial would have given a finite deviance too, but the
+        # failed full/halved trials would have given inf coefficients).
+        coefs = np.asarray(result.coefficients)
+        assert np.all(np.isfinite(coefs)), (
+            f"retained coefs must be finite (previous iterate), got {coefs}"
+        )
+        assert np.isfinite(result.deviance)
