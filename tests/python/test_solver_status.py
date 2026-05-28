@@ -124,3 +124,23 @@ class TestStepHalvingNoImprovement:
             f"retained coefs must be finite (previous iterate), got {coefs}"
         )
         assert np.isfinite(result.deviance)
+
+
+class TestSmoothSolverStatus:
+    """RS-ACT-007 extended into the smooth (PIRLS) solver: the smooth path also
+    emits a terminal solver_status and a step_halving_used flag (previously
+    untested — the spec's RS-ACT-007 'Relevant code' listed only irls.rs)."""
+
+    def test_smooth_fit_reports_converged_status_and_halving_flag(self):
+        rng = np.random.default_rng(2)
+        n = 800
+        x = rng.uniform(0.0, 4.0, n)
+        y = rng.poisson(np.exp(0.3 + 0.6 * np.sin(x))).astype(float)
+        data = pl.DataFrame({"y": y, "x": x})
+        result = rs.glm_dict(
+            response="y", terms={"x": {"type": "bs", "k": 8}}, data=data, family="poisson"
+        ).fit()
+        assert result.optimizer_route == "gcv_penalized"  # really routed through the smooth solver
+        assert result.solver_status == "converged"
+        assert isinstance(result.step_halving_used, bool)
+        assert np.isfinite(result.deviance)

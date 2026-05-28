@@ -96,10 +96,40 @@ class TestInferenceStatus:
         assert "WARNING" in result.summary()
 
     def test_constrained_fit_is_constrained_boundary(self):
-        """011.4: a sign/monotonicity-constrained fit flags constrained inference."""
+        """011.4: a sign/monotonicity-constrained fit flags constrained inference
+        and the summary suppresses the ordinary significance machinery."""
         result = _fit(_frame(), terms={"x": {"type": "bs", "df": 5, "monotonicity": "increasing"}})
         assert result.inference_status == "constrained_boundary"
         assert isinstance(result.boundary_active_coefficients, list)
+        summary = result.summary()
+        assert "Std.Err" not in summary
+        assert "P>|z|" not in summary
+
+    def test_constrained_boundary_marks_clamped_coefficients(self):
+        """011.4: coefficients clamped to their constraint boundary are reported.
+
+        A *decreasing* constraint on a strongly increasing effect forces the
+        basis coefficients to their boundary, so the marked set is non-empty and
+        each entry is genuinely at/above the nonpositive boundary.
+        """
+        rng = np.random.default_rng(3)
+        n = 600
+        x = rng.uniform(0.0, 1.0, n)
+        y = rng.poisson(np.exp(0.2 + 1.5 * x)).astype(float)
+        data = pl.DataFrame({"y": y, "x": x})
+        result = rs.glm_dict(
+            response="y",
+            terms={"x": {"type": "bs", "df": 6, "monotonicity": "decreasing"}},
+            data=data,
+            family="poisson",
+        ).fit()
+        assert result.inference_status == "constrained_boundary"
+        boundary = result.boundary_active_coefficients
+        assert len(boundary) >= 1
+        for entry in boundary:
+            assert set(entry) >= {"feature", "constraint", "coefficient"}
+            assert entry["constraint"] == "nonpositive"
+            assert entry["coefficient"] >= -1e-10
 
     def test_diagnostics_suppresses_nonstandard_coefficient_summary(self):
         df = _frame()
@@ -154,3 +184,21 @@ class TestInferenceSerialization:
         assert loaded.solver_status == result.solver_status
         assert loaded.optimizer_route == result.optimizer_route
         assert loaded.step_halving_used == result.step_halving_used
+
+    def test_legacy_pickle_without_inference_fields_loads(self):
+        """011.7 back-compat: a pre-RS-ACT-011 payload (no inference/solver keys)
+        deserializes cleanly with None defaults and still predicts."""
+        df = _frame()
+        result = _fit(df)
+        state = pickle.loads(result.to_bytes())
+        # Simulate an old schema: drop the four fields and the version bump.
+        for key in ("inference_status", "optimizer_route", "solver_status", "step_halving_used"):
+            state["result_state"].pop(key, None)
+        state["schema_version"] = 2
+        loaded = rs.GLMModel.from_bytes(pickle.dumps(state))
+        assert loaded.inference_status is None
+        assert loaded.solver_status is None
+        assert loaded.optimizer_route is None
+        assert loaded.step_halving_used is None
+        preds = loaded.predict(df)
+        assert len(preds) == len(df)

@@ -363,6 +363,46 @@ class TestCVWeightedScoring:
             f"hetero α={r_hetero.alpha} dev={r_hetero.cv_deviance}"
         )
 
+    def test_weighted_cv_score_is_normalized_by_sum_of_weights(self):
+        """001.4 (Rust array-path oracle): the scorer computes Σ(w·dev)/Σw, not Σ(w·dev).
+
+        Calls ``fit_cv_path_py`` directly with a fixed *unpenalized* alpha so each
+        fold's fit is invariant to a uniform weight rescale. A correct ``/Σw``
+        normaliser then makes a uniform weight cancel (scores unchanged), whereas
+        a dropped denominator would scale every fold score by the weight.
+        Heterogeneous weights must still move the score (weights reach the
+        scorer). The end-to-end test above only checks "something moved"; this
+        pins the normalisation that the wrong-denominator class of bug would break.
+        """
+        from rustystats._rustystats import fit_cv_path_py
+
+        rng = np.random.default_rng(0)
+        n, p = 240, 3
+        X = np.column_stack([np.ones(n), rng.normal(size=(n, p))])
+        offset = np.log(np.linspace(0.5, 2.0, n))
+        eta = 0.2 + X[:, 1] * 0.3 - X[:, 2] * 0.2 + offset
+        y = rng.poisson(np.exp(eta)).astype(float)
+
+        common = {
+            "family": "poisson",
+            "link": "log",
+            "offset": offset,
+            "alphas": [0.0],  # unpenalized -> fit invariant to uniform weight rescale
+            "l1_ratio": 0.0,
+            "n_folds": 4,
+            "seed": 7,
+        }
+        base = fit_cv_path_py(y, X, weights=None, **common)
+        uniform = fit_cv_path_py(y, X, weights=np.full(n, 5.0), **common)
+        hetero = fit_cv_path_py(y, X, weights=rng.uniform(0.2, 3.0, n), **common)
+
+        # Uniform weight cancels in Σ(w·dev)/Σw -> per-fold scores unchanged.
+        np.testing.assert_allclose(
+            base["cv_fold_scores"][0], uniform["cv_fold_scores"][0], rtol=1e-9
+        )
+        # ...but heterogeneous weights genuinely change the score.
+        assert not np.allclose(base["cv_fold_scores"][0], hetero["cv_fold_scores"][0])
+
     def test_validation_deviance_excludes_regularization_penalty(self):
         """001.7: validation deviance is unit deviance only — the α·||β||² penalty
         must NOT contribute to the CV score.

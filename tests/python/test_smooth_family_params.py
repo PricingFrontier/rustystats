@@ -101,11 +101,12 @@ class TestSmoothNonSmoothFamilyParity:
     """Spec 003.4: a smooth fit and a non-smooth fit at the matching
     ``var_power`` / ``theta`` carry the same family string.
 
-    The family string contains the parameter (``"Tweedie(p=1.7000)"`` /
-    ``"NegativeBinomial(theta=2.5000)"``), so equality here proves both paths
-    actually dispatched to the same parameterised family. Before RS-ACT-003
-    the smooth solver hard-coded ``p=1.5`` / ``theta=1.0`` and this would
-    have failed for any non-default parameter.
+    The family string is built from the *requested* parameter before the solver
+    runs, so string equality alone does not prove the smooth solver consumed it.
+    Each test therefore also pins solver behaviour numerically: a smooth fit at
+    the requested parameter must differ from a smooth fit at the default — the
+    exact RS-ACT-003 regression, where the smooth solver hard-coded ``p=1.5`` /
+    ``theta=1.0`` regardless of the request.
     """
 
     def _freq_frame_for_smooth(self):
@@ -132,6 +133,16 @@ class TestSmoothNonSmoothFamilyParity:
         ).fit()
         assert smooth.family == plain.family
         assert smooth.family == "Tweedie(p=1.7000)"
+        # The family string is pre-solver; pin that the smooth solver actually
+        # consumed var_power=1.7 (differs from a smooth fit at the default 1.5).
+        smooth_default = rs.glm_dict(
+            response="ClaimCount",
+            terms={"DrivAge": {"type": "bs", "k": 6}},
+            data=df,
+            family="tweedie",
+            var_power=1.5,
+        ).fit()
+        assert not np.allclose(smooth.params, smooth_default.params)
 
     def test_negbinomial_smooth_matches_nonsmooth_family_string(self):
         df = self._freq_frame_for_smooth()
@@ -152,3 +163,13 @@ class TestSmoothNonSmoothFamilyParity:
         ).fit()
         assert smooth.family == plain.family
         assert smooth.family == "NegativeBinomial(theta=2.5000)"
+        # Pin that the smooth solver actually consumed theta=2.5 (differs from a
+        # smooth fit at the default 1.0).
+        smooth_default = rs.glm_dict(
+            response="ClaimCount",
+            terms={"DrivAge": {"type": "bs", "k": 6}},
+            data=df,
+            family="negbinomial",
+            theta=1.0,
+        ).fit()
+        assert not np.allclose(smooth.params, smooth_default.params)

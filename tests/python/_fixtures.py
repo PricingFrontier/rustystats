@@ -10,9 +10,10 @@ Designed properties (asserted in ``test_characterization.py``):
   is uncorrelated with the true risk rate. Ranking policies by predicted count
   ``mu`` and by predicted rate ``mu / Exposure`` therefore genuinely disagree
   (needed by RS-ACT-004 / RS-ACT-009). It also contains a deliberately rare
-  ``Brand`` level (:data:`RARE_BRAND`) confined to a contiguous tail block, so a
-  CV split can be constructed in which the level is unseen in training
-  (needed by RS-ACT-001).
+  ``Brand`` level (:data:`RARE_BRAND`) for exercising low-frequency / unseen
+  category handling. Note: the production CV splitter shuffles, so the tail
+  placement does not by itself isolate the level to a single fold — the
+  RS-ACT-001 leakage tests construct their own contiguous train/val splits.
 * ``make_severity_frame`` -- strictly positive Gamma severity with no exposure
   (RS-ACT-004 negative case / RS-ACT-006).
 * ``make_overdispersed_counts`` -- Negative-Binomial counts with a known
@@ -56,7 +57,8 @@ def make_freq_frame(n: int = 4000, seed: int = 0, n_rare: int = 8) -> pl.DataFra
     region = rng.choice(["A", "B", "C", "D"], size=n)
     brand = rng.choice([f"B{i}" for i in range(1, 6)], size=n).astype(object)
 
-    # Confine a rare level to the tail so a single CV fold can hold it out.
+    # Inject a rare level (tail placement is incidental — the leakage tests
+    # build their own contiguous splits rather than relying on it).
     if n_rare > 0:
         brand[-n_rare:] = RARE_BRAND
 

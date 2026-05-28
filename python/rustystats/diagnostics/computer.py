@@ -1008,6 +1008,14 @@ class DiagnosticsComputer:
         -------
         LiftChart
             Complete lift chart with discrimination metrics
+
+        Notes
+        -----
+        Per-decile aggregates (actual / expected / exposure) are **unweighted**
+        sums; exposure enters only as the rate denominator and for rate-ranking
+        (RS-ACT-004), never as a prior-weight (Σw) multiplier. For prior-weighted
+        A/E (Σw·y / Σw·μ) use :func:`rustystats.calibration_summary`, which
+        accepts ``weights=``.
         """
         # Rank by predicted rate (mu/exposure) when exposure is present, matching
         # the decile/calibration/discrimination diagnostics (RS-ACT-004). Reuse a

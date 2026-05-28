@@ -216,13 +216,16 @@ class TestRateRankedDiagnosticsEndToEnd:
 
 class TestWeightedAggregates:
     def test_bins_aggregate_to_hand_computed_sums(self):
-        """004.5: per-bin actual/expected/exposure sums to Σy / Σmu / Σexposure.
+        """004.5 (via the PR11 ``calibration_summary`` primitive): per-bin
+        actual/expected/exposure sums to Σy / Σmu / Σexposure.
 
-        We don't pass ``weights=`` explicitly because :mod:`calibration` treats
-        exposure as the prior weight (per the spec note: "the implementation
-        does not thread prior weights; treat exposure as the weight"). The
-        invariant is that the bin partitions the rows, so summing each
-        column over all bins recovers the totals.
+        This exercises ``rs.calibration_summary`` (RS-ACT-009), the
+        weighted-aware primitive — *not* the diagnostics decile/lift path, whose
+        aggregates are unweighted by design (see
+        ``DiagnosticsComputer.compute_lift_chart``). We don't pass ``weights=``
+        here; calibration treats exposure as the rate denominator. The invariant
+        is that the bins partition the rows, so summing each column over all bins
+        recovers the totals.
         """
         rng = np.random.default_rng(123)
         n = 200

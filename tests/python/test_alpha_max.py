@@ -48,6 +48,24 @@ def _gaussian_response(X_features: np.ndarray, offset: np.ndarray, seed: int) ->
     return X_features @ beta_true + offset + rng.normal(0.0, 0.5, X_features.shape[0])
 
 
+def _gamma_response(X_features: np.ndarray, offset: np.ndarray, seed: int) -> np.ndarray:
+    """Strictly positive Gamma response (log link)."""
+    rng = np.random.default_rng(seed)
+    beta_true = np.array([0.3, -0.2, 0.0, 0.1, 0.0])[: X_features.shape[1]]
+    mu = np.exp(0.1 + X_features @ beta_true + offset)
+    return rng.gamma(shape=2.0, scale=mu / 2.0)
+
+
+def _tweedie_response(X_features: np.ndarray, offset: np.ndarray, seed: int) -> np.ndarray:
+    """Tweedie-domain response (1<p<2): a point mass at zero plus positive Gamma."""
+    rng = np.random.default_rng(seed)
+    beta_true = np.array([0.3, -0.2, 0.0, 0.1, 0.0])[: X_features.shape[1]]
+    mu = np.exp(0.1 + X_features @ beta_true + offset)
+    y = rng.gamma(shape=1.5, scale=mu / 1.5)
+    y[rng.random(X_features.shape[0]) < 0.3] = 0.0
+    return y
+
+
 def _fit_at_alpha(
     y: np.ndarray,
     X: np.ndarray,
@@ -92,6 +110,39 @@ class TestAlphaMaxZeroesPenalizedCoefs:
         )
         params = _fit_at_alpha(y, X, "gaussian", "identity", alpha_max, offset=offset)
         assert np.max(np.abs(params[1:])) < 1e-6
+
+    def test_tweedie_log_link(self):
+        """At alpha_max, penalized Tweedie (1<p<2) lasso coefs all vanish.
+
+        Tweedie is the pure-premium workhorse and the only family whose IRLS
+        path uses true-Hessian (mu^(2-p)) weights, so its variance branch in
+        compute_alpha_max must match the solver end-to-end (RS-ACT-005 review).
+        """
+        X, X_feat = _design(n=600, seed=4)
+        offset = np.log(np.linspace(0.5, 2.0, 600))
+        y = _tweedie_response(X_feat, offset, seed=44)
+        alpha_max = compute_alpha_max(
+            X, y, l1_ratio=1.0, family="tweedie", link="log", offset=offset, var_power=1.5
+        )
+        params = _fit_at_alpha(y, X, "tweedie", "log", alpha_max, offset=offset)
+        assert np.max(np.abs(params[1:])) < 1e-6, (
+            f"non-zero penalized Tweedie coefs at alpha_max={alpha_max}: {params[1:]}"
+        )
+        below = _fit_at_alpha(y, X, "tweedie", "log", alpha_max * 0.1, offset=offset)
+        assert np.max(np.abs(below[1:])) > 1e-3
+
+    def test_gamma_log_link(self):
+        """At alpha_max, penalized Gamma (mu^2 variance branch) lasso coefs all vanish."""
+        X, X_feat = _design(n=600, seed=5)
+        offset = np.log(np.linspace(0.5, 2.0, 600))
+        y = _gamma_response(X_feat, offset, seed=55)
+        alpha_max = compute_alpha_max(X, y, l1_ratio=1.0, family="gamma", link="log", offset=offset)
+        params = _fit_at_alpha(y, X, "gamma", "log", alpha_max, offset=offset)
+        assert np.max(np.abs(params[1:])) < 1e-6, (
+            f"non-zero penalized Gamma coefs at alpha_max={alpha_max}: {params[1:]}"
+        )
+        below = _fit_at_alpha(y, X, "gamma", "log", alpha_max * 0.1, offset=offset)
+        assert np.max(np.abs(below[1:])) > 1e-3
 
     def test_gaussian_log_link_uses_fitted_null(self):
         """Non-Poisson log links need a true null fit, not the Poisson shortcut."""
