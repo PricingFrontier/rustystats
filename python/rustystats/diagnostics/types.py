@@ -600,6 +600,8 @@ class DatasetDiagnostics:
     ae_by_decile: list[DecileMetrics]
     factor_diagnostics: dict[str, list[FactorLevelMetrics]]
     continuous_diagnostics: dict[str, list[ContinuousBandMetrics]]
+    log_likelihood_label: str = "log_likelihood"
+    is_quasi_likelihood: bool = False
 
 
 @dataclass

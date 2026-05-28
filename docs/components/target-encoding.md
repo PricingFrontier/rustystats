@@ -244,9 +244,10 @@ result = rs.glm_dict(
 ```
 
 Production prediction uses the final full-training encoder state — only the
-*fold* encoders are rebuilt per CV iteration. The result object records the
-fold-safe flag on its `regularization_path_info` so callers can verify the
-guard fired.
+*fold* encoders are rebuilt per CV iteration. The result object exposes
+`result.fold_safe_target_encoding`, `result.cv_fold_scores`, and
+`result.cv_scoring_objective` so callers can audit the selected alpha without
+reaching into private path metadata.
 
 CV validation deviances use weighted scoring: `score = Σ w·dev / Σ w`, with
 `w ≡ 1` when no prior weights are supplied. Fold fits use the requested
@@ -410,7 +411,7 @@ result = rs.glm_dict(
     ],
     data=data,
     family="poisson",
-    offset="Exposure",
+    exposure="Exposure",
 ).fit()
 ```
 

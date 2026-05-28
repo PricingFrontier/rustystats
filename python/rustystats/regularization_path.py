@@ -38,6 +38,7 @@ Example
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -53,7 +54,6 @@ from rustystats.constants import (
     DEFAULT_N_ALPHAS,
     DEFAULT_NEGBINOMIAL_THETA,
     DEFAULT_TOLERANCE,
-    L1_RATIO_MIN_CLAMP,
 )
 from rustystats.exceptions import FittingError, ValidationError
 
@@ -136,6 +136,8 @@ class RegularizationPathInfo:
     cv_max_iter: int = DEFAULT_MAX_ITER
     cv_tol: float = DEFAULT_TOLERANCE
     fold_safe_target_encoding: bool = False
+    cv_fold_scores: dict[float, list[float]] | None = None
+    cv_scoring_objective: str = "weighted_mean_unit_deviance"
 
 
 def _apply_inverse_link(eta: np.ndarray, link: str) -> np.ndarray:
@@ -279,6 +281,7 @@ def _fit_null_intercept(
         None,
         False,
         allow_extended_tweedie,
+        True,
     )
     return float(np.asarray(null_res.params)[0])
 
@@ -386,7 +389,7 @@ def compute_alpha_max(
         if not np.any(pen_mask):
             return ALPHA_MAX_FLOOR
         max_score = float(np.max(np.abs(scores[pen_mask])))
-        alpha_max = max_score / max(l1_ratio, L1_RATIO_MIN_CLAMP)
+        alpha_max = max_score / l1_ratio
     else:
         # Ridge has no all-zero KKT; use the median weighted column norm as a
         # documented heuristic. Same shape as the pre-RS-ACT-005 fallback but
@@ -639,8 +642,6 @@ def fit_cv_regularization_path(
     tuple[result, RegularizationPathInfo]
         The fitted result at optimal alpha and the path info
     """
-    from rustystats._rustystats import fit_glm_py as _fit_glm_rust
-
     # Determine l1_ratio based on regularization type
     if regularization == "ridge":
         effective_l1_ratio = 0.0
@@ -672,9 +673,14 @@ def fit_cv_regularization_path(
         weights=weights,
         var_power=var_power,
         theta=theta,
+        intercept_col=0 if getattr(glm_instance, "intercept", True) else None,
         allow_extended_tweedie=allow_extended_tweedie,
     )
     alphas = generate_alpha_path(alpha_max, n_alphas, alpha_min_ratio)
+    if include_unregularized and (alphas.size == 0 or not np.any(alphas == 0.0)):
+        # Score alpha=0 inside the Rust CV path so it uses the same fold
+        # assignment as every regularized candidate.
+        alphas = np.concatenate([alphas, np.array([0.0], dtype=np.float64)])
 
     if verbose:
         print(f"Fitting regularization path: {regularization}")
@@ -716,6 +722,7 @@ def fit_cv_regularization_path(
         nonneg_indices=nonneg_indices if nonneg_indices else None,
         nonpos_indices=nonpos_indices if nonpos_indices else None,
         allow_extended_tweedie=allow_extended_tweedie,
+        fit_intercept=bool(getattr(glm_instance, "intercept", True)),
     )
 
     # Convert Rust result to path_results format
@@ -730,70 +737,6 @@ def fit_cv_regularization_path(
         )
         for i in range(len(rust_result["alphas"]))
     ]
-
-    # Optionally include unregularized fit
-    if include_unregularized:
-        if verbose:
-            print("  Fitting unregularized model for comparison...")
-
-        folds = create_cv_folds(len(y), cv, seed)
-        fold_deviances = []
-
-        for train_idx, val_idx in folds:
-            X_train, X_val = X[train_idx], X[val_idx]
-            y_train, y_val = y[train_idx], y[val_idx]
-            offset_train = offset[train_idx] if offset is not None else None
-            offset_val = offset[val_idx] if offset is not None else None
-            weights_train = weights[train_idx] if weights is not None else None
-            weights_val = weights[val_idx] if weights is not None else None
-
-            try:
-                result = _fit_glm_rust(
-                    y_train,
-                    X_train,
-                    family,
-                    link,
-                    var_power,
-                    theta,
-                    offset_train,
-                    weights_train,
-                    0.0,
-                    0.0,
-                    max_iter,
-                    tol,
-                    None,
-                    None,
-                    False,
-                    allow_extended_tweedie,
-                )
-            except ValueError:
-                continue
-            linear_pred = X_val @ result.params
-            if offset_val is not None:
-                linear_pred = linear_pred + offset_val
-            mu_val = _apply_inverse_link(linear_pred, link)
-            dev = compute_deviance(
-                y_val,
-                mu_val,
-                family,
-                theta=theta,
-                weights=weights_val,
-                var_power=var_power,
-                allow_extended_tweedie=allow_extended_tweedie,
-            )
-            fold_deviances.append(dev)
-
-        valid_deviances = [d for d in fold_deviances if np.isfinite(d)]
-        if valid_deviances:
-            unreg_result = RegularizationPathResult(
-                alpha=0.0,
-                l1_ratio=0.0,
-                cv_deviance_mean=np.mean(valid_deviances),
-                cv_deviance_se=np.std(valid_deviances) / np.sqrt(len(valid_deviances)),
-                n_nonzero=X.shape[1] - 1,
-                max_coef=0.0,  # Will be updated after final fit
-            )
-            path_results.append(unreg_result)
 
     # Select optimal alpha
     best = select_optimal_alpha(path_results, selection)
@@ -823,6 +766,12 @@ def fit_cv_regularization_path(
         n_folds=cv,
         cv_max_iter=cv_max_iter,
         cv_tol=cv_tol,
+        cv_fold_scores={
+            float(rust_result["alphas"][i]): list(map(float, scores))
+            for i, scores in enumerate(rust_result.get("cv_fold_scores", []))
+        }
+        or None,
+        cv_scoring_objective="weighted_mean_unit_deviance",
     )
 
     return path_info
@@ -856,9 +805,24 @@ def build_fold_design_matrices(
     data_val = data[val_idx]
     exposure_train = raw_exposure[train_idx] if raw_exposure is not None else None
 
+    parsed_fold = copy.deepcopy(parsed)
+    # ``ParsedFormula`` carries mutable ``SplineTerm`` objects. The full-data
+    # model has already transformed them once before CV, so their computed
+    # knots may contain validation-only values. Reset fold copies so spline
+    # state is fit from fold-training rows only, just like target encoders.
+    for spline in getattr(parsed_fold, "spline_terms", []):
+        spline._computed_boundary_knots = None
+        spline._computed_internal_knots = None
+        spline._penalty_matrix = None
+        spline._lambda = None
+        spline._edf = None
+    for attr in ("_spline_by_var", "_te_by_var"):
+        if hasattr(parsed_fold, attr):
+            setattr(parsed_fold, attr, None)
+
     builder = InteractionBuilder(data_train)
     _y_train, x_train, names = builder.build_design_matrix_from_parsed(
-        parsed, exposure=exposure_train, seed=seed
+        parsed_fold, exposure=exposure_train, seed=seed
     )
     x_val = builder.transform_new_data(data_val)
     return x_train, x_val, names
@@ -956,6 +920,7 @@ def fit_cv_te_regularization_path(
                 weights=weights_train,
                 var_power=var_power,
                 theta=theta,
+                intercept_col=0 if getattr(glm_instance, "intercept", True) else None,
                 allow_extended_tweedie=allow_extended_tweedie,
             )
         )
@@ -1003,6 +968,7 @@ def fit_cv_te_regularization_path(
                     nonpos_indices if nonpos_indices else None,
                     False,
                     allow_extended_tweedie,
+                    bool(getattr(glm_instance, "intercept", True)),
                 )
             except ValueError:
                 failed_alphas.add(alpha)
@@ -1044,7 +1010,11 @@ def fit_cv_te_regularization_path(
                 alpha=alpha,
                 l1_ratio=0.0 if alpha == 0.0 else effective_l1_ratio,
                 cv_deviance_mean=float(np.mean(fold_devs)),
-                cv_deviance_se=float(np.std(fold_devs) / np.sqrt(len(fold_devs))),
+                cv_deviance_se=float(
+                    np.std(fold_devs, ddof=1) / np.sqrt(len(fold_devs))
+                    if len(fold_devs) > 1
+                    else 0.0
+                ),
                 # See n_nonzero comment above — approximate from full-data design.
                 n_nonzero=n_nonzero,
                 max_coef=0.0,
@@ -1083,4 +1053,6 @@ def fit_cv_te_regularization_path(
         cv_max_iter=cv_max_iter,
         cv_tol=cv_tol,
         fold_safe_target_encoding=True,
+        cv_fold_scores={float(a): list(map(float, ds)) for a, ds in deviances.items()},
+        cv_scoring_objective="weighted_mean_unit_deviance",
     )

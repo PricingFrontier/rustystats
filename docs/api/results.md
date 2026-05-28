@@ -294,7 +294,7 @@ ll = result.llf()
 Akaike Information Criterion.
 
 ```python
-aic = result.aic()  # float, or None for quasi families (RS-ACT-008)
+aic = result.aic()  # float, or None when no ordinary likelihood AIC is available
 ```
 
 **Formula**: AIC = −2 × loglik + 2p (or `2 × total_edf` for penalised smooth
@@ -302,18 +302,20 @@ fits, RS-ACT-011).
 
 **Returns `None`** when `result.is_quasi_likelihood` is `True` —
 quasi-Poisson / quasi-Binomial have no proper full likelihood; surfacing an
-ordinary-likelihood AIC for them would be misleading.
+ordinary-likelihood AIC for them would be misleading. Lean/deserialized models
+may also return `None` when the persisted state does not include enough raw fit
+statistics to recompute the criterion honestly.
 
 ### bic()
 
 Bayesian Information Criterion.
 
 ```python
-bic = result.bic()  # float, or None for quasi families
+bic = result.bic()  # float, or None when no ordinary likelihood BIC is available
 ```
 
 **Formula**: BIC = −2 × loglik + p × log(n) (or `total_edf × log(n)` for
-penalised smooth fits). Same `None`-for-quasi rule as `aic()`.
+penalised smooth fits). Same `None` rules as `aic()`.
 
 ### is_quasi_likelihood
 
@@ -397,7 +399,7 @@ Compute comprehensive diagnostics.
 
 ```python
 diag = result.diagnostics(
-    data=data,
+    train_data=data,
     categorical_factors=["region"],
     continuous_factors=["age"],
 )
@@ -409,7 +411,7 @@ Get diagnostics as JSON string.
 
 ```python
 json_str = result.diagnostics_json(
-    data=data,
+    train_data=data,
     categorical_factors=["region"],
 )
 ```
@@ -508,15 +510,15 @@ near the bottom of the summary table so the caller knows why.
 ### solver_status
 
 ```python
-result.solver_status        # "converged" | "max_iterations" | "step_halved_no_improvement"
+result.solver_status        # "converged" | "max_iterations" | "step_halving_no_improvement"
 result.step_halving_used    # bool
-result.optimizer_route      # "irls" | "coordinate_descent" | "nnls" | "gcv_penalized"
+result.optimizer_route      # "irls" | "coordinate_descent" | "gcv_penalized"
 result.iterations           # final IRLS iteration count
 result.converged            # bool
 ```
 
 The status reports the *terminal* state of the solver — a
-`step_halved_no_improvement` fit retained the previous accepted coefficients
+`step_halving_no_improvement` fit retained the previous accepted coefficients
 and `converged == False`. Step-halving accepts only non-worsening steps, and
 the final $\mu$ is clamped through each family's `clamp_mu`, so
 `fittedvalues` never sits outside the family's support.

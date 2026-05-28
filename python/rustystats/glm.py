@@ -98,6 +98,16 @@ def summary(
     except Exception as e:
         # Re-raise - summary diagnostics shouldn't fail silently
         raise FittingError(f"Failed to compute model summary diagnostics: {e}") from e
+    if not is_quasi_likelihood:
+        family_base = str(family_name).lower().split("(", 1)[0].strip()
+        is_quasi_likelihood = family_base in {
+            "quasipoisson",
+            "quasi-poisson",
+            "quasi_poisson",
+            "quasibinomial",
+            "quasi-binomial",
+            "quasi_binomial",
+        }
 
     aic_label = "AIC:"
     bic_label = "BIC:"

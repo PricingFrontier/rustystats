@@ -73,8 +73,8 @@ even with the same call shape.
   is rejected always.
 
 * **RS-ACT-007 — solver status surfaces.** `result.solver_status`,
-  `result.step_halving_used`, `result.optimizer_route`, plus a flag for
-  retained-previous-coefficients on budget exhaustion.
+  `result.step_halving_used`, `result.optimizer_route`, and solver warnings
+  now expose when budget exhaustion retained the previous coefficients.
 
 * **RS-ACT-008 — quasi-likelihood flag + summary labels.**
   `result.is_quasi_likelihood` is `True` for `quasipoisson` /
@@ -99,11 +99,12 @@ even with the same call shape.
 
 * **RS-ACT-010 — explicit Negative Binomial `theta` contract.**
   `theta=` accepts a numeric value (recorded as fixed), the string
-  `"estimate"` (profile-likelihood estimation on the plain path), or `None`
-  (default on the plain path is estimation; regularised / smooth /
-  constrained paths raise unless a numeric theta is given). `theta_metadata`
-  on the result records estimated-vs-fixed, initial theta, iterations,
-  convergence, and tolerance.
+  `"estimate"` (profile-likelihood estimation on the plain path), or an
+  embedded family parameter such as `family="negbinomial(theta=2.0)"`.
+  Leaving `theta` unspecified now raises; regularised / smooth / constrained
+  paths also raise for `theta="estimate"` and require a numeric theta.
+  `theta_metadata` on the result records estimated-vs-fixed, initial theta,
+  iterations, convergence, and tolerance.
 
 * **RS-ACT-011 — honest inference + solver-status surfacing.**
   `result.inference_status` is one of `valid_standard`, `valid_robust`,

@@ -142,6 +142,8 @@ class GLMResults:
     @property
     def step_halving_used(self) -> bool: ...
     @property
+    def warnings(self) -> list[str]: ...
+    @property
     def nobs(self) -> int: ...
     @property
     def df_resid(self) -> int: ...
@@ -183,8 +185,8 @@ class GLMResults:
     def pearson_chi2(self) -> float: ...
     def scale_pearson(self) -> float: ...
     def llf(self) -> float: ...
-    def aic(self) -> float: ...
-    def bic(self) -> float: ...
+    def aic(self) -> float | None: ...
+    def bic(self) -> float | None: ...
     def null_deviance(self) -> float: ...
     def n_nonzero(self) -> int: ...
     def selected_features(self) -> list[int]: ...
@@ -210,6 +212,7 @@ def fit_glm_py(
     nonpos_indices: list[int] | None = None,
     store_design_matrix: bool = False,
     allow_extended_tweedie: bool = False,
+    fit_intercept: bool = True,
 ) -> GLMResults: ...
 def fit_negbinomial_py(
     y: npt.NDArray[np.float64],
@@ -267,6 +270,7 @@ def fit_cv_path_py(
     nonneg_indices: list[int] | None = None,
     nonpos_indices: list[int] | None = None,
     allow_extended_tweedie: bool = False,
+    fit_intercept: bool = True,
 ) -> dict: ...
 
 # =============================================================================
@@ -489,11 +493,13 @@ def target_encode_interaction_with_exposure_py(
 def compute_calibration_curve_py(
     y: npt.NDArray[np.float64],
     mu: npt.NDArray[np.float64],
+    exposure: npt.NDArray[np.float64] | None = None,
     n_bins: int = 10,
-) -> dict: ...
+) -> list[dict]: ...
 def compute_discrimination_stats_py(
     y: npt.NDArray[np.float64],
     mu: npt.NDArray[np.float64],
+    exposure: npt.NDArray[np.float64] | None = None,
 ) -> dict: ...
 def compute_ae_continuous_py(
     values: npt.NDArray[np.float64],
@@ -686,23 +692,16 @@ def compute_fit_statistics_py(
     theta: float | None = None,
 ) -> dict: ...
 def compute_dataset_metrics_py(
-    y_train: npt.NDArray[np.float64],
-    mu_train: npt.NDArray[np.float64],
-    y_test: npt.NDArray[np.float64],
-    mu_test: npt.NDArray[np.float64],
-    family: str,
-    weights_train: npt.NDArray[np.float64] | None = None,
-    weights_test: npt.NDArray[np.float64] | None = None,
-    var_power: float | None = None,
-    theta: float | None = None,
-) -> dict: ...
-def compute_residual_summary_py(
     y: npt.NDArray[np.float64],
     mu: npt.NDArray[np.float64],
     family: str,
-    link: str,
-    var_power: float | None = None,
-    theta: float | None = None,
+    n_params: int,
+    var_power: float = 1.5,
+    theta: float = 1.0,
+    scale: float | None = None,
+) -> dict: ...
+def compute_residual_summary_py(
+    residuals: npt.NDArray[np.float64],
 ) -> dict: ...
 def compute_residual_pattern_py(
     y: npt.NDArray[np.float64],

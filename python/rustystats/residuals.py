@@ -124,6 +124,8 @@ def working_response_weights(
         family,
         weights=weights,
         offset=offset,
+        var_power=var_power,
+        allow_extended_tweedie=allow_extended_tweedie,
     )
 
     return _wrw_rust(

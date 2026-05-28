@@ -91,6 +91,17 @@ class TestExposureValidation:
                 exposure=np.ones(df.height - 1),
             )
 
+    def test_scalar_array_exposure_raises_validation_error(self):
+        df = make_freq_frame()
+        with pytest.raises(rs.ValidationError, match="one-dimensional"):
+            rs.glm_dict(
+                response="ClaimCount",
+                terms={"DrivAge": {"type": "linear"}},
+                data=df,
+                family="poisson",
+                exposure=np.asarray(1.0),
+            )
+
     def test_non_finite_exposure_raises(self):
         df = make_freq_frame()
         exp = df["Exposure"].to_numpy().copy()
@@ -296,6 +307,28 @@ class TestExposureSerialization:
             atol=1e-9,
         )
 
+    def test_array_exposure_requires_prediction_override_and_is_not_serialized(self):
+        df = make_freq_frame()
+        exposure = df["Exposure"].to_numpy()
+        terms = {"DrivAge": {"type": "linear"}, "Region": {"type": "categorical"}}
+        result = rs.glm_dict(
+            response="ClaimCount", terms=terms, data=df, family="poisson", exposure=exposure
+        ).fit()
+
+        with pytest.raises(rs.PredictionError, match="array exposure"):
+            result.predict(df)
+        np.testing.assert_allclose(
+            result.predict(df, exposure=exposure), result.fittedvalues, rtol=1e-9, atol=1e-9
+        )
+
+        loaded = rs.GLMModel.from_bytes(result.to_bytes())
+        assert loaded._exposure_spec is None
+        with pytest.raises(rs.PredictionError, match="array exposure"):
+            loaded.predict(df)
+        np.testing.assert_allclose(
+            loaded.predict(df, exposure=exposure), result.fittedvalues, rtol=1e-9, atol=1e-9
+        )
+
     def test_deserializes_legacy_offset_exposure_payload_as_exposure_model(self):
         import pickle
 
@@ -353,3 +386,42 @@ class TestExposureDiagnostics:
             train_data=df, categorical_factors=["Region"], continuous_factors=["DrivAge"]
         )
         assert diag.calibration is not None
+
+    def test_loaded_array_exposure_diagnostics_requires_override(self):
+        df = make_freq_frame()
+        exposure = df["Exposure"].to_numpy()
+        result = rs.glm_dict(
+            response="ClaimCount",
+            terms={"DrivAge": {"type": "linear"}},
+            data=df,
+            family="poisson",
+            exposure=exposure,
+        ).fit()
+        loaded = rs.GLMModel.from_bytes(result.to_bytes())
+        with pytest.raises(rs.ValidationError, match="exposure"):
+            loaded.diagnostics(
+                df,
+                continuous_factors=["DrivAge"],
+                compute_vif=False,
+                compute_coefficients=False,
+                compute_deviance_by_level=False,
+                compute_lift=False,
+                compute_partial_dep=False,
+                compute_robust_se=False,
+                compute_score_tests=False,
+            )
+        diag = loaded.diagnostics(
+            df,
+            continuous_factors=["DrivAge"],
+            exposure=exposure,
+            compute_vif=False,
+            compute_coefficients=False,
+            compute_deviance_by_level=False,
+            compute_lift=False,
+            compute_partial_dep=False,
+            compute_robust_se=False,
+            compute_score_tests=False,
+        )
+        assert diag.train_test.train.total_exposure == pytest.approx(
+            float(np.sum(exposure)), abs=0.01
+        )

@@ -101,6 +101,17 @@ class TestQuasiPoisson:
             if stripped.startswith("BIC"):
                 assert "NA" in line, f"BIC line should be NA for quasi: {line!r}"
 
+    def test_raw_result_summary_also_labels_quasi(self):
+        """Calling rs.summary(result._result) must not leak ordinary AIC/BIC labels."""
+        from rustystats.glm import summary
+
+        result = _fit(_quasipoisson_frame(), "quasipoisson")
+        text = summary(result._result, feature_names=result.feature_names)
+        assert "Quasi-Log-Likelihood" in text
+        assert "AIC:" in text and "NA" in next(
+            line for line in text.splitlines() if line.strip().startswith("AIC")
+        )
+
     def test_non_quasi_poisson_still_reports_aic(self):
         """Guard: the suppression is *only* for quasi families."""
         df = _quasipoisson_frame()
@@ -206,6 +217,12 @@ class TestQuasiDiagnosticsSuppressAicBic:
         )
         assert diag.train_test.train.aic is None
         assert diag.train_test.train.bic is None
+        assert diag.train_test.train.log_likelihood_label == "quasi_log_likelihood"
+        assert diag.train_test.train.is_quasi_likelihood is True
+        assert diag.model_comparison["likelihood_ratio_chi2"] is None
+        assert (
+            diag.model_comparison["likelihood_ratio_label"] == "not_available_for_quasi_likelihood"
+        )
 
 
 # --------------------------------------------------------------------------

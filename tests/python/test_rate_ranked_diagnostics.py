@@ -143,7 +143,7 @@ class TestRankingModes:
         test_data = pl.DataFrame({"y": y, "Exposure": exposure})
 
         class _PredictOnly:
-            def predict(self, data):
+            def predict(self, data, **kwargs):
                 return mu
 
         _, _, _, sort_idx = _extract_test_arrays(

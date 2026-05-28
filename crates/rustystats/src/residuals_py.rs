@@ -23,6 +23,7 @@ use rustystats_core::solvers::{
 
 use crate::families_py::{
     default_link_name, family_from_name_with_tweedie_support, link_from_name,
+    validate_tweedie_fit_response,
 };
 
 /// Compute IRLS working response z and combined working weight w.
@@ -51,11 +52,12 @@ pub fn working_response_weights_py<'py>(
     weights: Option<PyReadonlyArray1<f64>>,
     allow_extended_tweedie: bool,
 ) -> PyResult<(Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<f64>>)> {
+    let y_arr = y.as_array().to_owned();
+    validate_tweedie_fit_response(family, &y_arr, var_power, allow_extended_tweedie)?;
     let fam =
         family_from_name_with_tweedie_support(family, var_power, theta, allow_extended_tweedie)?;
     let lnk = link_from_name(link.unwrap_or(default_link_name(family)))?;
 
-    let y_arr = y.as_array().to_owned();
     let eta_arr = eta.as_array().to_owned();
     let offset_owned = offset.map(|o| o.as_array().to_owned());
     let weights_owned = weights.map(|w| w.as_array().to_owned());

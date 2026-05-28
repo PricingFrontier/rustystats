@@ -26,7 +26,7 @@ use rustystats_core::solvers::{
 
 use crate::families_py::{
     default_link_name, family_from_name_with_tweedie_support, link_from_name,
-    validate_tweedie_fit_response,
+    resolve_negbinomial_theta, resolve_tweedie_var_power, validate_tweedie_fit_response,
 };
 use crate::results_py::PyGLMResults;
 
@@ -37,12 +37,14 @@ use crate::results_py::PyGLMResults;
 /// Convert SmoothGLMResult → (PyGLMResults, smooth_metadata_dict) Python tuple.
 fn smooth_result_to_py<'py>(
     py: Python<'py>,
-    result: rustystats_core::solvers::SmoothGLMResult,
+    mut result: rustystats_core::solvers::SmoothGLMResult,
     store_design_matrix: bool,
+    family_name: String,
 ) -> PyResult<Py<PyAny>> {
     let n_obs = result.y.len();
     let n_params = result.coefficients.len();
 
+    result.family_name = family_name;
     let glm_result = PyGLMResults {
         coefficients: result.coefficients,
         fitted_values: result.fitted_values,
@@ -64,21 +66,9 @@ fn smooth_result_to_py<'py>(
         },
         irls_weights: result.irls_weights,
         offset: result.offset,
-        // SmoothGLMResult does not carry step-halving telemetry from the inner
-        // IRLS loop (the smooth solver wraps lambda/EDF iteration around IRLS
-        // and currently exposes only the outer fit summary). We hardcode
-        // `step_halving_used = false` here rather than fabricating a value —
-        // a smooth fit may have triggered halving internally and the field is
-        // simply unobservable at this layer (RS-ACT-007). The same caveat
-        // applies to `warnings`: the smooth solver does not surface its
-        // internal warning vector, so we pass an empty Vec.
-        step_halving_used: false,
-        solver_status: if result.converged {
-            "converged".to_string()
-        } else {
-            "max_iterations".to_string()
-        },
-        warnings: Vec::new(),
+        step_halving_used: result.step_halving_used,
+        solver_status: result.solver_status,
+        warnings: result.warnings,
     };
 
     let smooth_dict = pyo3::types::PyDict::new(py);
@@ -127,7 +117,7 @@ fn build_smooth_config(
 // =============================================================================
 
 #[pyfunction]
-#[pyo3(signature = (y, x, family, link=None, var_power=1.5, theta=1.0, offset=None, weights=None, alpha=0.0, l1_ratio=0.0, max_iter=25, tol=1e-8, nonneg_indices=None, nonpos_indices=None, store_design_matrix=false, allow_extended_tweedie=false))]
+#[pyo3(signature = (y, x, family, link=None, var_power=1.5, theta=1.0, offset=None, weights=None, alpha=0.0, l1_ratio=0.0, max_iter=25, tol=1e-8, nonneg_indices=None, nonpos_indices=None, store_design_matrix=false, allow_extended_tweedie=false, fit_intercept=true))]
 pub fn fit_glm_py(
     y: PyReadonlyArray1<f64>,
     x: PyReadonlyArray2<f64>,
@@ -145,6 +135,7 @@ pub fn fit_glm_py(
     nonpos_indices: Option<Vec<usize>>,
     store_design_matrix: bool,
     allow_extended_tweedie: bool,
+    fit_intercept: bool,
 ) -> PyResult<PyGLMResults> {
     let y_array: Array1<f64> = y.as_array().to_owned();
     let x_view = x.as_array(); // Zero-copy view of numpy array
@@ -163,7 +154,8 @@ pub fn fit_glm_py(
         }
     } else {
         RegularizationConfig::none()
-    };
+    }
+    .with_intercept(fit_intercept);
 
     let config = FitConfig {
         max_iterations: max_iter,
@@ -207,13 +199,10 @@ pub fn fit_glm_py(
     )
     .map_err(|e| PyValueError::new_err(format!("GLM fitting failed: {}", e)))?;
 
-    let family_name = if result
-        .family_name
-        .to_lowercase()
-        .contains("negativebinomial")
-        || result.family_name.to_lowercase().contains("negbinomial")
-    {
-        format!("NegativeBinomial(theta={:.4})", theta)
+    let family_name = if let Some(resolved_theta) = resolve_negbinomial_theta(family, theta)? {
+        format!("NegativeBinomial(theta={:.4})", resolved_theta)
+    } else if let Some(resolved_var_power) = resolve_tweedie_var_power(family, var_power)? {
+        format!("Tweedie(p={:.4})", resolved_var_power)
     } else {
         result.family_name
     };
@@ -464,7 +453,7 @@ fn validation_deviance_score(unit_deviance: &Array1<f64>, weights: Option<&Array
 }
 
 #[pyfunction]
-#[pyo3(signature = (y, x, family, link=None, var_power=1.5, theta=1.0, offset=None, weights=None, alphas=None, l1_ratio=0.0, n_folds=5, max_iter=25, tol=1e-8, seed=None, nonneg_indices=None, nonpos_indices=None, allow_extended_tweedie=false))]
+#[pyo3(signature = (y, x, family, link=None, var_power=1.5, theta=1.0, offset=None, weights=None, alphas=None, l1_ratio=0.0, n_folds=5, max_iter=25, tol=1e-8, seed=None, nonneg_indices=None, nonpos_indices=None, allow_extended_tweedie=false, fit_intercept=true))]
 pub fn fit_cv_path_py<'py>(
     py: Python<'py>,
     y: PyReadonlyArray1<f64>,
@@ -484,6 +473,7 @@ pub fn fit_cv_path_py<'py>(
     nonneg_indices: Option<Vec<usize>>,
     nonpos_indices: Option<Vec<usize>>,
     allow_extended_tweedie: bool,
+    fit_intercept: bool,
 ) -> PyResult<Py<PyAny>> {
     let y_array: Array1<f64> = y.as_array().to_owned();
     let x_view = x.as_array(); // Zero-copy view
@@ -602,7 +592,8 @@ pub fn fit_cv_path_py<'py>(
                     }
                 } else {
                     RegularizationConfig::none()
-                };
+                }
+                .with_intercept(fit_intercept);
 
                 let cv_config = FitConfig {
                     max_iterations: max_iter,
@@ -691,6 +682,15 @@ pub fn fit_cv_path_py<'py>(
             .map(|r| r.cv_deviance_se)
             .collect::<Vec<_>>(),
     )?;
+    let cv_fold_scores: Vec<Vec<f64>> = (0..alpha_vec.len())
+        .map(|ai| {
+            fold_all_results
+                .iter()
+                .map(|fr| fr.get(ai).copied().unwrap_or(f64::INFINITY))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    dict.set_item("cv_fold_scores", cv_fold_scores)?;
 
     let best_idx = path_results
         .iter()
@@ -832,5 +832,13 @@ pub fn fit_smooth_glm_unified_py<'py>(
     )
     .map_err(|e| PyValueError::new_err(format!("Smooth GLM fitting failed: {}", e)))?;
 
-    smooth_result_to_py(py, result, store_design_matrix)
+    let family_name = if let Some(resolved_theta) = resolve_negbinomial_theta(family, theta)? {
+        format!("NegativeBinomial(theta={:.4})", resolved_theta)
+    } else if let Some(resolved_var_power) = resolve_tweedie_var_power(family, var_power)? {
+        format!("Tweedie(p={:.4})", resolved_var_power)
+    } else {
+        fam.name().to_string()
+    };
+
+    smooth_result_to_py(py, result, store_design_matrix, family_name)
 }

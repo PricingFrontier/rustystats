@@ -17,7 +17,7 @@ result = rs.glm_dict(
     },
     data=data,
     family="poisson",
-    offset="Exposure",
+    exposure="Exposure",
 ).fit()
 ```
 
@@ -124,7 +124,7 @@ result = rs.glm_dict(
     },
     data=data,
     family="poisson",
-    offset="Exposure",
+    exposure="Exposure",
 ).fit()
 ```
 

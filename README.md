@@ -71,7 +71,7 @@ print(result.summary())
 | `tweedie` | log | Pure premium (var_power=1.5) |
 | `quasipoisson` | log | Overdispersed counts |
 | `quasibinomial` | logit | Overdispersed binary |
-| `negbinomial` | log | Overdispersed counts (proper distribution) |
+| `negbinomial` | log | Overdispersed counts (requires `theta=` or `theta="estimate"`) |
 
 ---
 
@@ -100,7 +100,7 @@ result = rs.glm_dict(
     ],
     data=data,
     family="poisson",
-    offset="Exposure",
+    exposure="Exposure",
     seed=42,
 ).fit(regularization="elastic_net")
 ```
@@ -169,7 +169,7 @@ result = rs.glm_dict(
         "VehPower": {"type": "ns"},      # Natural spline (auto-tuned)
         "Region": {"type": "categorical"},
     },
-    data=data, family="poisson", offset="Exposure",
+    data=data, family="poisson", exposure="Exposure",
 ).fit()
 
 # Fixed degrees of freedom (no penalty)
@@ -180,7 +180,7 @@ result = rs.glm_dict(
         "VehPower": {"type": "ns", "df": 4},  # Fixed 4 df
         "Region": {"type": "categorical"},
     },
-    data=data, family="poisson", offset="Exposure",
+    data=data, family="poisson", exposure="Exposure",
 ).fit()
 ```
 
@@ -208,7 +208,7 @@ result = rs.glm_dict(
         "Age": {"type": "bs", "monotonicity": "increasing"},
         "Region": {"type": "categorical"},
     },
-    data=data, family="poisson", offset="Exposure",
+    data=data, family="poisson", exposure="Exposure",
 ).fit()
 
 # Monotonically decreasing effect (e.g., vehicle value with age)
@@ -340,7 +340,7 @@ cw_result = rs.glm_dict(
     terms={"VehAge": {"type": "bs"}, "DrivAge": {"type": "bs"}},
     data=countrywide_data,
     family="poisson",
-    offset="Exposure",
+    exposure="Exposure",
 ).fit()
 
 # 2. Fit a state model with lasso, shrinking toward countrywide rates
@@ -353,7 +353,7 @@ state_result = rs.glm_dict(
     },
     data=state_data,
     family="poisson",
-    offset="Exposure",
+    exposure="Exposure",
     complement="countrywide_rate",  # Column with prior rates (response scale)
 ).fit(regularization="lasso")
 
@@ -402,7 +402,7 @@ if not results['valid']:
 ```python
 # Compute all diagnostics at once
 diagnostics = result.diagnostics(
-    data=data,
+    train_data=data,
     categorical_factors=["Region", "VehBrand", "Area"],  # Including non-fitted
     continuous_factors=["Age", "Income", "VehPower"],    # Including non-fitted
 )

@@ -62,6 +62,47 @@ def is_tweedie_family(family: str) -> bool:
     return family.lower().split("(", 1)[0].strip() == "tweedie"
 
 
+def _split_embedded_family_param(family: str) -> tuple[str, str | None]:
+    """Return ``(base_family, parameter_text)`` for strings like ``tweedie(p=1.5)``."""
+    raw = family.strip()
+    if "(" not in raw:
+        return raw, None
+    if not raw.endswith(")"):
+        raise ValidationError(f"Malformed family parameter string {family!r}.")
+    base, params = raw.split("(", 1)
+    return base.strip(), params[:-1].strip()
+
+
+def _parse_embedded_numeric_param(family: str, expected_key: str) -> tuple[str, float | None]:
+    """Parse a single embedded numeric family parameter.
+
+    Examples
+    --------
+    ``tweedie(p=1.7)`` -> ``("tweedie", 1.7)``.
+    """
+    base, params = _split_embedded_family_param(family)
+    if params is None:
+        return base, None
+    if "=" not in params:
+        raise ValidationError(
+            f"Malformed family parameter string {family!r}; expected {expected_key}=<number>."
+        )
+    key, value = [part.strip() for part in params.split("=", 1)]
+    if key != expected_key:
+        raise ValidationError(
+            f"Family {family!r} uses unsupported parameter {key!r}; expected {expected_key!r}."
+        )
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise ValidationError(
+            f"Family {family!r} has non-numeric {expected_key}={value!r}."
+        ) from exc
+    if not np.isfinite(parsed):
+        raise ValidationError(f"Family {family!r} has non-finite {expected_key}.")
+    return base, parsed
+
+
 def _format_result_family(family: str, var_power: float, theta: float) -> str:
     """Format family metadata with the fitted parameters embedded."""
     if is_negbinomial_family(family):
@@ -590,6 +631,7 @@ def _fit_glm_core(
     tol: float,
     feature_names: list[str],
     builder: InteractionBuilder,
+    fit_intercept: bool = True,
     store_design_matrix: bool = False,
     allow_extended_tweedie: bool = False,
 ) -> tuple:
@@ -675,6 +717,7 @@ def _fit_glm_core(
         nonpos_indices if nonpos_indices else None,
         store_design_matrix,
         allow_extended_tweedie,
+        fit_intercept,
     )
     return result, None, None, None
 
@@ -742,6 +785,7 @@ def _build_results(
     interactions_spec: list[dict[str, Any]] | None = None,
     complement_spec: str | GLMModel | None = None,
     complement_values: np.ndarray | None = None,
+    array_exposure_requires_prediction_override: bool = False,
 ) -> GLMModel:
     """Build GLMModel with all metadata."""
     # Clear builder caches to free memory (keep TE stats for prediction)
@@ -765,6 +809,7 @@ def _build_results(
         interactions_spec=interactions_spec,
         complement_spec=complement_spec,
         complement_values=complement_values,
+        array_exposure_requires_prediction_override=array_exposure_requires_prediction_override,
     )
 
 
@@ -925,7 +970,12 @@ class _GLMBase:
             vals = _get_column(self.data, exposure).astype(np.float64)
         else:
             vals = np.asarray(exposure, dtype=np.float64)
-            if vals.ndim != 1 or vals.shape[0] != self.data.height:
+            if vals.ndim != 1:
+                raise ValidationError(
+                    f"exposure must be a one-dimensional array of length "
+                    f"{self.data.height}; got shape {vals.shape}."
+                )
+            if vals.shape[0] != self.data.height:
                 raise ValidationError(
                     f"exposure array length {vals.shape[0]} does not match data "
                     f"length {self.data.height}."
@@ -1176,7 +1226,12 @@ def _resolve_predict_exposure(
         raw = new_data[exposure_spec].to_numpy().astype(np.float64)
     else:
         raw = np.asarray(exposure_spec, dtype=np.float64)
-    if raw.ndim != 1 or raw.shape[0] != len(new_data):
+    if raw.ndim != 1:
+        raise PredictionError(
+            f"exposure must be a one-dimensional array of length {len(new_data)}; "
+            f"got shape {raw.shape}."
+        )
+    if raw.shape[0] != len(new_data):
         raise PredictionError(
             f"exposure array length {raw.shape[0]} does not match prediction data "
             f"length {len(new_data)}."
@@ -1260,6 +1315,7 @@ class GLMModel:
         interactions_spec: list[dict[str, Any]] | None = None,
         complement_spec: str | GLMModel | None = None,
         complement_values: np.ndarray | None = None,
+        array_exposure_requires_prediction_override: bool = False,
     ):
         self._result = result
         self._is_deserialized = isinstance(result, _DeserializedResult)
@@ -1279,6 +1335,9 @@ class GLMModel:
         # blow up. Nothing reads it for branching anymore.
         self._offset_is_exposure = False
         self._exposure_spec = exposure_spec
+        self._array_exposure_requires_prediction_override = bool(
+            array_exposure_requires_prediction_override
+        )
         self._terms_dict = terms_dict
         self._interactions_spec = interactions_spec
         self._complement_spec = complement_spec
@@ -1323,6 +1382,65 @@ class GLMModel:
         un-releveled models.
         """
         return [dict(entry) for entry in self._relevel_history]
+
+    @property
+    def linear_predictor(self) -> np.ndarray:
+        raw = np.asarray(self._result.linear_predictor, dtype=np.float64)
+        if self._intercept_delta and self.link == "log":
+            return raw + self._intercept_delta
+        return raw
+
+    @property
+    def fittedvalues(self) -> np.ndarray:
+        raw = np.asarray(self._result.fittedvalues, dtype=np.float64)
+        if self._intercept_delta and self.link == "log":
+            return raw * float(np.exp(self._intercept_delta))
+        return raw
+
+    @property
+    def deviance(self) -> float:
+        if not self._intercept_delta:
+            return self._result.deviance
+        try:
+            from rustystats.regularization_path import compute_deviance
+
+            y = np.asarray(self._result.fittedvalues, dtype=np.float64) + np.asarray(
+                self._result.resid_response(), dtype=np.float64
+            )
+            return float(
+                compute_deviance(
+                    y,
+                    self.fittedvalues,
+                    self.family,
+                    var_power=getattr(self, "var_power", 1.5),
+                    theta=getattr(self, "theta", 1.0) or 1.0,
+                    allow_extended_tweedie=getattr(self, "allow_extended_tweedie", True),
+                )
+            )
+        except Exception:
+            return self._result.deviance
+
+    def llf(self) -> float:
+        if not self._intercept_delta:
+            return self._result.llf()
+        try:
+            from rustystats._rustystats import compute_dataset_metrics_py
+
+            y = np.asarray(self._result.fittedvalues, dtype=np.float64) + np.asarray(
+                self._result.resid_response(), dtype=np.float64
+            )
+            metrics = compute_dataset_metrics_py(
+                y,
+                self.fittedvalues,
+                self.family,
+                len(self.params),
+                getattr(self, "var_power", 1.5),
+                getattr(self, "theta", 1.0) or 1.0,
+                self._result.scale(),
+            )
+            return float(metrics["log_likelihood"])
+        except Exception:
+            return self._result.llf()
 
     def __getattr__(self, name: str) -> Any:
         """Delegate attribute access to the underlying result object.
@@ -1501,6 +1619,53 @@ class GLMModel:
         }
 
     @property
+    def cv_fold_scores(self) -> dict[float, list[float]] | None:
+        """Per-alpha validation fold scores when retained by the CV path."""
+        if self._regularization_path_info is None:
+            return None
+        return self._regularization_path_info.cv_fold_scores
+
+    @property
+    def cv_scoring_objective(self) -> str | None:
+        """Name of the CV scoring objective."""
+        if self._regularization_path_info is None:
+            return None
+        return self._regularization_path_info.cv_scoring_objective
+
+    @property
+    def fold_safe_target_encoding(self) -> bool | None:
+        """Whether CV used fold-specific stateful transforms for target encoding."""
+        if self._regularization_path_info is None:
+            return None
+        return self._regularization_path_info.fold_safe_target_encoding
+
+    @property
+    def boundary_active_coefficients(self) -> list[dict[str, Any]]:
+        """Constrained coefficients that are active at their boundary."""
+        nonneg, nonpos = _get_constraint_indices(self.feature_names)
+        rows: list[dict[str, Any]] = []
+        params = np.asarray(self.params, dtype=np.float64)
+        for idx in nonneg:
+            if idx < len(params) and params[idx] <= 1e-10:
+                rows.append(
+                    {
+                        "feature": self.feature_names[idx],
+                        "constraint": "nonnegative",
+                        "coefficient": float(params[idx]),
+                    }
+                )
+        for idx in nonpos:
+            if idx < len(params) and params[idx] >= -1e-10:
+                rows.append(
+                    {
+                        "feature": self.feature_names[idx],
+                        "constraint": "nonpositive",
+                        "coefficient": float(params[idx]),
+                    }
+                )
+        return rows
+
+    @property
     def nobs(self) -> int:
         """Number of observations."""
         return self._result.nobs
@@ -1589,10 +1754,11 @@ class GLMModel:
             # smooth fits but for an orthogonal reason — model-based SEs
             # need the smoothed bread, not because the parameter count is
             # wrong).
-            return -2.0 * self._result.llf() + 2.0 * self._total_edf
+            return -2.0 * self.llf() + 2.0 * self._total_edf
         if not self._raw_information_criteria_are_valid():
             return None
-        return self._result.aic()
+        raw_aic = getattr(self._result, "aic", None)
+        return raw_aic() if callable(raw_aic) else None
 
     def bic(self) -> float | None:
         """Bayesian Information Criterion.
@@ -1605,10 +1771,11 @@ class GLMModel:
         if self.is_quasi_likelihood:
             return None
         if self._total_edf is not None:
-            return -2.0 * self._result.llf() + self._total_edf * np.log(self._result.nobs)
+            return -2.0 * self.llf() + self._total_edf * np.log(self._result.nobs)
         if not self._raw_information_criteria_are_valid():
             return None
-        return self._result.bic()
+        raw_bic = getattr(self._result, "bic", None)
+        return raw_bic() if callable(raw_bic) else None
 
     def compute_loss(
         self,
@@ -1673,14 +1840,28 @@ class GLMModel:
         """
         import polars as pl
 
+        status = getattr(self, "inference_status", None)
+        show_standard_inference = status is None or status in {"valid_standard", "valid_robust"}
+        n = len(self.feature_names)
+        if show_standard_inference:
+            se = self.bse()
+            z = self.tvalues()
+            p = self.pvalues()
+            signif = self.significance_codes()
+        else:
+            se = np.full(n, np.nan)
+            z = np.full(n, np.nan)
+            p = np.full(n, np.nan)
+            signif = [""] * n
+
         return pl.DataFrame(
             {
                 "Feature": self.feature_names,
                 "Estimate": self.params,
-                "Std.Error": self.bse(),
-                "z": self.tvalues(),
-                "Pr(>|z|)": self.pvalues(),
-                "Signif": self.significance_codes(),
+                "Std.Error": se,
+                "z": z,
+                "Pr(>|z|)": p,
+                "Signif": signif,
             }
         )
 
@@ -1792,7 +1973,7 @@ class GLMModel:
                     title += " (complement: GLMModel)"
 
         result = summary(
-            self._result,
+            self,
             feature_names=self.feature_names,
             title=title,
             inference_status=getattr(self, "inference_status", None),
@@ -1839,6 +2020,7 @@ class GLMModel:
         # Base predictions comparison
         base_predictions: str | None = None,
         ranking: str = "auto",
+        exposure: str | np.ndarray | None = None,
     ) -> ModelDiagnostics:
         """
         Compute comprehensive model diagnostics.
@@ -1967,6 +2149,7 @@ class GLMModel:
             compute_score_tests=compute_score_tests,
             base_predictions=base_predictions,
             ranking=ranking,
+            exposure=exposure,
         )
 
     def diagnostics_json(
@@ -1984,6 +2167,7 @@ class GLMModel:
         test_data: pl.DataFrame | None = None,
         compute_score_tests: bool = True,
         ranking: str = "auto",
+        exposure: str | np.ndarray | None = None,
         indent: int | None = None,
     ) -> str:
         """
@@ -2028,6 +2212,7 @@ class GLMModel:
             test_data=test_data,
             compute_score_tests=compute_score_tests,
             ranking=ranking,
+            exposure=exposure,
         )
         return diag.to_json(indent=indent)
 
@@ -2085,11 +2270,14 @@ class GLMModel:
 
         # Resolve LazyFrame: select only columns needed for prediction
         if self._terms_dict is not None:
+            exposure_needed = exposure if exposure is not None else self._exposure_spec
+            if exposure_needed is not None and not isinstance(exposure_needed, str):
+                exposure_needed = None
             needed = _extract_needed_columns(
                 terms=self._terms_dict,
                 interactions=self._interactions_spec,
                 offset=offset if offset is not None else self._offset_spec,
-                exposure=exposure if exposure is not None else self._exposure_spec,
+                exposure=exposure_needed,
                 complement=complement if complement is not None else self._complement_spec,
             )
             new_data = _collect_lazyframe(new_data, needed)
@@ -2132,6 +2320,15 @@ class GLMModel:
                 del X_chunk, chunk
 
         exposure_to_use = exposure if exposure is not None else self._exposure_spec
+        if exposure is None and getattr(
+            self, "_array_exposure_requires_prediction_override", False
+        ):
+            raise PredictionError(
+                "This model was fit with an array exposure, which is fit-time data and "
+                "cannot be reused as a prediction default. Pass exposure= for the "
+                "prediction data, or fit with exposure='<column>' so the column can be "
+                "resolved from new_data."
+            )
         exposure_link = None
         if exposure_to_use is not None:
             if self.link != "log":
@@ -2633,6 +2830,13 @@ class GLMModel:
                         "monotonicity": getattr(spline_term, "monotonicity", None),
                     }
 
+        array_exposure_requires_override = bool(
+            getattr(self, "_array_exposure_requires_prediction_override", False)
+        )
+        serializable_exposure_spec = (
+            None if array_exposure_requires_override else self._exposure_spec
+        )
+
         state = {
             "schema_version": 3,
             "result_state": result_state,
@@ -2649,7 +2853,11 @@ class GLMModel:
             # payloads where ``offset_is_exposure=True`` flagged the legacy
             # ``offset="Exposure"`` alias.
             "offset_is_exposure": False,
-            "exposure_spec": self._exposure_spec,
+            # Raw array exposure is fit-time data, not reusable prediction
+            # metadata. Persist only column specs; array-exposure models require
+            # callers to supply prediction-time exposure explicitly after load.
+            "exposure_spec": serializable_exposure_spec,
+            "array_exposure_requires_prediction_override": array_exposure_requires_override,
             "smooth_results": self._smooth_results,
             "total_edf": self._total_edf,
             "gcv": self._gcv,
@@ -2729,6 +2937,9 @@ class GLMModel:
         offset_spec = state.get("offset_spec")
         offset_is_exposure = state.get("offset_is_exposure", False)
         exposure_spec = state.get("exposure_spec")
+        array_exposure_requires_prediction_override = bool(
+            state.get("array_exposure_requires_prediction_override", False)
+        )
         if offset_is_exposure:
             exposure_spec = exposure_spec if exposure_spec is not None else offset_spec
             offset_spec = None
@@ -2749,6 +2960,7 @@ class GLMModel:
             terms_dict=state.get("terms_dict"),
             interactions_spec=state.get("interactions_spec"),
             complement_spec=state.get("complement_spec"),
+            array_exposure_requires_prediction_override=array_exposure_requires_prediction_override,
         )
         model.theta = result_state.get("theta")
         model.theta_metadata = result_state.get("theta_metadata")
@@ -3397,8 +3609,37 @@ class FormulaGLMDict(_GLMBase):
         self.intercept = intercept
         # Store weak reference to data to allow garbage collection
         self._data_ref = weakref.ref(data)
-        self.family = family.lower()
+        raw_family_base, _embedded_params = _split_embedded_family_param(family)
+        if raw_family_base.lower() == "tweedie":
+            family_base, tweedie_p = _parse_embedded_numeric_param(family, "p")
+            embedded_theta = None
+        elif raw_family_base.lower() in NEGBINOMIAL_ALIASES:
+            family_base, embedded_theta = _parse_embedded_numeric_param(family, "theta")
+            tweedie_p = None
+        else:
+            family_base = raw_family_base
+            tweedie_p = None
+            embedded_theta = None
+        self.family = family_base.lower()
         self.link = link
+        if tweedie_p is not None:
+            if var_power != 1.5 and not np.isclose(var_power, tweedie_p):
+                raise ValidationError(
+                    f"Conflicting Tweedie variance powers: family={family!r} "
+                    f"but var_power={var_power}."
+                )
+            var_power = tweedie_p
+        if embedded_theta is not None:
+            if (
+                theta is not None
+                and theta != "estimate"
+                and not np.isclose(float(theta), embedded_theta)
+            ):
+                raise ValidationError(
+                    f"Conflicting Negative Binomial theta values: family={family!r} "
+                    f"but theta={theta}."
+                )
+            theta = embedded_theta
         self.var_power = var_power
         self.theta = theta
         # RS-ACT-006: opt-in flag for the extended Tweedie regimes (p outside
@@ -3591,10 +3832,22 @@ class FormulaGLMDict(_GLMBase):
         """
         from rustystats.diagnostics import explore_data
 
+        data = self.data
         exposure_col = self._exposure_spec if isinstance(self._exposure_spec, str) else None
+        if self._exposure_spec is not None and not isinstance(self._exposure_spec, str):
+            exposure_values = np.asarray(self._exposure_spec, dtype=np.float64)
+            if exposure_values.ndim != 1 or exposure_values.shape[0] != len(data):
+                raise ValidationError(
+                    "array exposure must be one-dimensional and match the training data length "
+                    "to use explore()."
+                )
+            exposure_col = "__rustystats_exposure__"
+            while exposure_col in data.columns:
+                exposure_col = f"_{exposure_col}"
+            data = data.with_columns(pl.Series(exposure_col, exposure_values))
 
         return explore_data(
-            data=self.data,
+            data=data,
             response=self.response,
             categorical_factors=categorical_factors,
             continuous_factors=continuous_factors,
@@ -3614,12 +3867,19 @@ class FormulaGLMDict(_GLMBase):
 
         Returns ``(estimate, theta)``. When ``estimate`` is True the profile MLE
         runs later and ``theta`` is an unused placeholder; otherwise ``theta`` is
-        the fixed value to use. ``theta="estimate"`` and an unspecified
-        ``theta=None`` both request estimation, which is only defined for the
-        plain GLM path -- smooth, regularized, or sign-constrained models raise
-        and must be given an explicit numeric theta.
+        the fixed value to use. ``theta="estimate"`` requests profile-MLE
+        estimation, which is only defined for the plain GLM path -- smooth,
+        regularized, or sign-constrained models raise and must be given an
+        explicit numeric theta. ``theta=None`` is rejected so Negative Binomial
+        fits never silently choose either theta=1.0 or profile estimation.
         """
         spec = self.theta
+        if spec is None:
+            raise ValidationError(
+                "Negative Binomial requires an explicit theta. Pass a positive numeric "
+                "theta= for a fixed-dispersion fit, or theta='estimate' to opt in to "
+                "profile-likelihood estimation on the plain GLM path."
+            )
         if isinstance(spec, str):
             if spec != "estimate":
                 raise ValidationError(
@@ -3630,7 +3890,7 @@ class FormulaGLMDict(_GLMBase):
                 raise ValidationError(f"theta must be > 0 for negative binomial, got {spec}.")
             return False, float(spec)
 
-        # spec is None or "estimate": estimation is plain-path only.
+        # spec is "estimate": estimation is plain-path only.
         unsupported = []
         if self._builder.get_smooth_terms()[0]:
             unsupported.append("smooth")
@@ -3836,11 +4096,21 @@ class FormulaGLMDict(_GLMBase):
                 tol,
                 self.feature_names,
                 self._builder,
+                fit_intercept=self.intercept,
                 store_design_matrix=store_design_matrix,
                 allow_extended_tweedie=self.allow_extended_tweedie,
             )
             if is_negbinomial:
-                theta_metadata = {"estimated": False, "theta": theta}
+                theta_metadata = {
+                    "estimated": False,
+                    "theta": float(theta),
+                    "init_theta": None,
+                    "theta_iterations": 0,
+                    "theta_converged": None,
+                    "theta_tol": None,
+                    "max_theta_iter": None,
+                    "fallback_reason": None,
+                }
 
         self._smooth_results = smooth_results
         self._total_edf = total_edf
@@ -3865,6 +4135,9 @@ class FormulaGLMDict(_GLMBase):
             interactions_spec=self.interactions_spec,
             complement_spec=self._complement_spec,
             complement_values=self._complement_values,
+            array_exposure_requires_prediction_override=(
+                self._exposure_spec is not None and not isinstance(self._exposure_spec, str)
+            ),
         )
         # RS-ACT-010: surface the theta actually used and its estimation provenance.
         results.theta = theta if is_negbinomial else None

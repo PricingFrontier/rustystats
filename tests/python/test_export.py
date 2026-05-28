@@ -144,6 +144,43 @@ class TestPMMLExport:
         assert isinstance(xml, str)
         assert "<?xml" in xml
 
+    def test_pmml_uses_log_exposure_offset_variable(self, simple_poisson_data):
+        model = rs.glm_dict(
+            response="y",
+            terms={"x1": {"type": "linear"}},
+            data=simple_poisson_data,
+            family="poisson",
+            exposure="exposure",
+        ).fit()
+        xml = model.to_pmml()
+        assert 'offsetVariable="ln_exposure"' in xml
+        assert 'function="ln"' in xml
+
+    def test_pmml_combines_explicit_exposure_and_link_offset(self, simple_poisson_data):
+        data = simple_poisson_data.with_columns(pl.Series("adj", np.linspace(-0.1, 0.1, 300)))
+        model = rs.glm_dict(
+            response="y",
+            terms={"x1": {"type": "linear"}},
+            data=data,
+            family="poisson",
+            exposure="exposure",
+            offset="adj",
+        ).fit()
+        xml = model.to_pmml()
+        assert 'offsetVariable="adj_plus_ln_exposure"' in xml
+        assert 'function="+"' in xml
+
+    def test_pmml_rejects_array_exposure(self, simple_poisson_data):
+        model = rs.glm_dict(
+            response="y",
+            terms={"x1": {"type": "linear"}},
+            data=simple_poisson_data,
+            family="poisson",
+            exposure=simple_poisson_data["exposure"].to_numpy(),
+        ).fit()
+        with pytest.raises(rs.ValidationError, match="exposure"):
+            model.to_pmml()
+
 
 # ── ONNX Tests ───────────────────────────────────────────────────────────────
 

@@ -17,6 +17,7 @@ diagnostics = result.diagnostics(
     max_categorical_levels=20,
     detect_interactions=False,
     max_interaction_factors=10,
+    interactions=None,
     test_data=None,
     compute_vif=True,
     compute_coefficients=True,
@@ -27,12 +28,15 @@ diagnostics = result.diagnostics(
     compute_score_tests=True,
     base_predictions=None,
     ranking="auto",
+    exposure=None,
 )
 ```
 
-The response and exposure (offset) columns are inferred from the model's
-formula, so you do not pass them again. Results are auto-saved to
-`analysis/diagnostics.json` as a side effect of the call.
+The response and stored exposure column are inferred from the model's formula
+when possible. If the model was fit with an exposure array, or scoring data
+does not contain the stored exposure column, pass `exposure=` explicitly.
+Results are auto-saved to `analysis/diagnostics.json` as a side effect of the
+call.
 
 ### Parameters
 
@@ -47,6 +51,7 @@ formula, so you do not pass them again. Results are auto-saved to
 | `max_categorical_levels` | int | `20` | Maximum categorical levels to show |
 | `detect_interactions` | bool | `False` | Run residual-based interaction detection |
 | `max_interaction_factors` | int | `10` | Max factors for interaction search |
+| `interactions` | list | `None` | Explicit factor pairs for per-pair surface diagnostics |
 | `test_data` | `pl.DataFrame` | `None` | Holdout data for overfitting checks |
 | `compute_vif` | bool | `True` | Compute VIF / multicollinearity scores |
 | `compute_coefficients` | bool | `True` | Compute coefficient summary |
@@ -57,6 +62,7 @@ formula, so you do not pass them again. Results are auto-saved to
 | `compute_score_tests` | bool | `True` | Rao score tests for unfitted factors |
 | `base_predictions` | str | `None` | Column in `train_data` with predictions from another model |
 | `ranking` | str | `"auto"` | Decile/lift ranking mode. `"auto"` ranks by predicted rate when an exposure is in scope, otherwise by the raw mean prediction. `"mean"` and `"rate"` force the corresponding mode. |
+| `exposure` | str or array | `None` | Override exposure for diagnostics. Required for models fit with array exposure after serialization, because the array is not embedded in the model state. |
 
 ### Returns
 
@@ -80,7 +86,7 @@ fitted model and `train_data`; optional fields are populated according to the
 | `residual_summary` | `dict[str, ResidualSummary]` | Mean / std / skew per residual type |
 | `factors` | `list[FactorDiagnostics]` | Per-factor A/E, residual pattern, significance, score tests |
 | `interaction_candidates` | `list[InteractionCandidate]` | Detected interactions (empty unless `detect_interactions=True`) |
-| `model_comparison` | `dict[str, float]` | Aggregate comparison metrics (e.g. AIC, BIC) |
+| `model_comparison` | dict | Aggregate comparison metrics (e.g. AIC, BIC). Quasi-likelihood models label likelihood-ratio fields as unavailable rather than reporting ordinary-likelihood p-values. |
 | `warnings` | `list[dict[str, str]]` | Auto-generated alerts (overfitting, drift, overdispersion, ...) |
 
 ### Optional fields
@@ -232,8 +238,10 @@ for c in diagnostics.coefficient_summary:    # CoefficientSummary
     print(c.robust_std_error, c.robust_z_value, c.robust_p_value, c.robust_significant)
 ```
 
-Robust SE fields are `None` when `store_design_matrix=False` (lean mode) or
-for deserialized models.
+Coefficient summaries are suppressed when `result.inference_status` is not a
+standard valid inference state (for example lasso selection or active
+constraints). Robust SE fields are `None` when `store_design_matrix=False`
+(lean mode) or for deserialized models.
 
 ### factor_deviance
 
@@ -533,7 +541,7 @@ result = rs.glm_dict(
     },
     data=data,
     family="poisson",
-    offset="Exposure",
+    exposure="Exposure",
 ).fit()
 
 diagnostics = result.diagnostics(

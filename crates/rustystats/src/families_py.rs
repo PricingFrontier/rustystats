@@ -183,6 +183,32 @@ pub(crate) fn resolve_tweedie_var_power(name: &str, var_power: f64) -> PyResult<
     ))
 }
 
+pub(crate) fn resolve_negbinomial_theta(name: &str, theta: f64) -> PyResult<Option<f64>> {
+    let (base_name, params) = split_family_name(name)?;
+    let lower = base_name.to_lowercase();
+    if !matches!(
+        lower.as_str(),
+        "negativebinomial"
+            | "negbinomial"
+            | "negbin"
+            | "nb"
+            | "negative_binomial"
+            | "negative-binomial"
+            | "neg_binomial"
+            | "neg-binomial"
+    ) {
+        return Ok(None);
+    }
+    let resolved_theta = parse_embedded_param(name, params, "theta")?.unwrap_or(theta);
+    if !resolved_theta.is_finite() || resolved_theta <= 0.0 {
+        return Err(PyValueError::new_err(format!(
+            "theta must be finite and > 0 for Negative Binomial, got {}",
+            resolved_theta
+        )));
+    }
+    Ok(Some(resolved_theta))
+}
+
 pub(crate) fn validate_tweedie_fit_response(
     name: &str,
     y: &Array1<f64>,
@@ -229,13 +255,8 @@ pub(crate) fn family_from_name_with_tweedie_support(
             | "neg_binomial"
             | "neg-binomial"
     ) {
-        let resolved_theta = parse_embedded_param(name, params, "theta")?.unwrap_or(theta);
-        if !resolved_theta.is_finite() || resolved_theta <= 0.0 {
-            return Err(PyValueError::new_err(format!(
-                "theta must be finite and > 0 for Negative Binomial, got {}",
-                resolved_theta
-            )));
-        }
+        let resolved_theta = resolve_negbinomial_theta(name, theta)?
+            .expect("negative binomial family should resolve theta");
         return Ok(Box::new(
             NegativeBinomialFamily::new(resolved_theta).map_err(PyValueError::new_err)?,
         ));

@@ -57,6 +57,9 @@ class TestInferenceStatus:
             next(line for line in summary.splitlines() if line.startswith("BIC:")).split()[1]
             == "NA"
         )
+        coef_table = result.coef_table()
+        assert np.all(np.isnan(coef_table["Std.Error"].to_numpy()))
+        assert set(coef_table["Signif"].to_list()) == {""}
 
     def test_ridge_is_naive_after_regularization(self):
         result = _fit(_frame(), alpha=0.1, l1_ratio=0.0)
@@ -72,6 +75,23 @@ class TestInferenceStatus:
         """011.4: a sign/monotonicity-constrained fit flags constrained inference."""
         result = _fit(_frame(), terms={"x": {"type": "bs", "df": 5, "monotonicity": "increasing"}})
         assert result.inference_status == "constrained_boundary"
+        assert isinstance(result.boundary_active_coefficients, list)
+
+    def test_diagnostics_suppresses_nonstandard_coefficient_summary(self):
+        df = _frame()
+        result = _fit(df, alpha=0.1, l1_ratio=1.0)
+        diag = result.diagnostics(
+            df,
+            continuous_factors=["x"],
+            compute_vif=False,
+            compute_deviance_by_level=False,
+            compute_lift=False,
+            compute_partial_dep=False,
+            compute_robust_se=True,
+            compute_score_tests=False,
+        )
+        assert diag.coefficient_summary is None
+        assert any(w["type"] == "coefficient_inference_unavailable" for w in diag.warnings)
 
     def test_smooth_uses_effective_df_and_is_unavailable(self):
         """011.5: a penalized smooth fit is non-standard and reports effective df."""

@@ -1203,8 +1203,8 @@ pub fn compute_dataset_metrics_py<'py>(
     let estimated_scale = deviance / df_resid as f64;
 
     // Use trait dispatch for scale and log-likelihood
-    validate_tweedie_fit_response(family, &y_arr, 1.5, true)?;
-    let fam = family_from_name_with_tweedie_support(family, 1.5, 1.0, true)?;
+    validate_tweedie_fit_response(family, &y_arr, parsed_var_power, true)?;
+    let fam = family_from_name_with_tweedie_support(family, parsed_var_power, parsed_theta, true)?;
     let effective_scale = if fam.fixed_dispersion() {
         1.0
     } else {

@@ -5,10 +5,9 @@ profile-likelihood estimator (``fit_negbinomial_py``) had zero Python callers.
 The contract now is:
 
 * ``theta=<number>``  -> fixed theta (every fit path).
-* ``theta="estimate"`` -> profile MLE (explicit opt-in).
-* ``theta=None`` (unspecified) -> auto-estimate for a plain NB; estimation is
-  unsupported for smooth / regularized / sign-constrained NB and raises asking
-  for an explicit numeric theta.
+* ``theta="estimate"`` -> profile MLE (explicit opt-in, plain GLM only).
+* ``theta=None`` (unspecified) -> rejected, so NB never silently chooses a
+  dispersion policy.
 
 Estimation must respect offset/weights and record honest metadata.
 """
@@ -46,13 +45,11 @@ def _fit(data, terms=None, **fit_kwargs):
 
 
 class TestNegBinomialThetaContract:
-    def test_unspecified_theta_auto_estimates_not_silent_one(self):
-        """010.1: no theta -> estimate, never the silent 1.0 default."""
+    def test_unspecified_theta_requires_explicit_policy(self):
+        """010.1: no theta raises instead of silently choosing 1.0 or estimation."""
         data = _nb_frame(true_theta=2.0)
-        result = _fit(data)
-        assert result.theta is not None
-        assert result.theta != pytest.approx(1.0, abs=0.1)
-        assert result.theta_metadata["estimated"] is True
+        with pytest.raises(rs.ValidationError, match=r"(?i)theta"):
+            _fit(data)
 
     def test_estimate_keyword_records_metadata(self):
         """010.2: theta='estimate' records estimated flag, value, init, iterations, tol."""
@@ -164,7 +161,7 @@ class TestNegBinomialThetaContract:
         """010.5/010.6: regularized NB + estimate fails closed, asking for explicit theta."""
         data = _nb_frame(true_theta=2.0)
         with pytest.raises(rs.ValidationError, match=r"(?i)theta"):
-            _fit(data, cv=3, regularization="ridge", n_alphas=3, verbose=False)
+            _fit(data, theta="estimate", cv=3, regularization="ridge", n_alphas=3, verbose=False)
 
     def test_estimate_with_smooth_raises(self):
         """010.5: smooth NB + estimate fails closed (smooth solver has no theta loop)."""

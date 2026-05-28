@@ -98,6 +98,42 @@ def _overall_ae(
     }
 
 
+def _calibration_line(
+    y: np.ndarray,
+    mu: np.ndarray,
+    exposure: np.ndarray | None,
+    weights: np.ndarray | None,
+) -> dict[str, float]:
+    """Weighted response-scale calibration intercept/slope.
+
+    With exposure, the line is fit on rates (``y/exposure`` against
+    ``mu/exposure``) and weighted by exposure, so the statistic is a rate-line
+    diagnostic rather than a second exposure denominator.
+    """
+    if exposure is None:
+        x = mu
+        target = y
+        line_w = np.ones_like(y)
+    else:
+        x = mu / exposure
+        target = y / exposure
+        line_w = exposure.astype(np.float64, copy=True)
+    if weights is not None:
+        line_w = line_w * weights
+    total_w = float(np.sum(line_w))
+    if total_w <= 0.0:
+        return {"intercept": float("nan"), "slope": float("nan")}
+    x_mean = float(np.sum(line_w * x) / total_w)
+    y_mean = float(np.sum(line_w * target) / total_w)
+    x_centered = x - x_mean
+    var_x = float(np.sum(line_w * x_centered * x_centered))
+    if var_x <= 0.0:
+        return {"intercept": float("nan"), "slope": float("nan")}
+    slope = float(np.sum(line_w * x_centered * (target - y_mean)) / var_x)
+    intercept = y_mean - slope * x_mean
+    return {"intercept": intercept, "slope": slope}
+
+
 def _validate_response_pred(y: Any, pred: Any) -> tuple[np.ndarray, np.ndarray]:
     y_arr = _as_1d(y, "y")
     mu_arr = _as_1d(pred, "pred")
@@ -314,11 +350,14 @@ def calibration_summary(
         raise ValidationError("ranking='rate' requires exposure to be supplied.")
 
     overall = _overall_ae(y_arr, mu_arr, weights_arr)
+    line = _calibration_line(y_arr, mu_arr, exposure_arr, weights_arr)
     bins = _compute_bins(y_arr, mu_arr, exposure_arr, weights_arr, n_bins, ranking)
     factor_rows = _by_factor(y_arr, mu_arr, exposure_arr, weights_arr, by, min_exposure)
 
     return {
         "overall": overall,
+        "calibration_intercept": line["intercept"],
+        "calibration_slope": line["slope"],
         "bins": bins,
         "by_factor": factor_rows,
         "ranking": ranking,
@@ -478,6 +517,7 @@ class IsotonicCalibration:
             "increasing": bool(self.increasing),
             "n_obs": int(self.n_obs),
             "total_weight": float(self.total_weight),
+            "scale": "response",
         }
 
     @classmethod
@@ -524,25 +564,33 @@ def fit_isotonic_calibration(
         signed_pred = -mu_arr
 
     order = np.argsort(signed_pred, kind="stable")
-    sorted_y = y_arr[order]
-    sorted_w = weights_arr[order]
+    sorted_signed_pred = signed_pred[order]
+    sorted_y_raw = y_arr[order]
+    sorted_w_raw = weights_arr[order]
+    # Pool exact ties before PAV. Repeated predictions are common in rating
+    # tables; without pooling, duplicate thresholds make the fit depend on row
+    # order inside the tie.
+    unique_signed_pred, first_idx = np.unique(sorted_signed_pred, return_index=True)
+    sorted_w = np.add.reduceat(sorted_w_raw, first_idx)
+    sorted_wy = np.add.reduceat(sorted_w_raw * sorted_y_raw, first_idx)
+    sorted_y = np.divide(
+        sorted_wy,
+        sorted_w,
+        out=np.zeros_like(sorted_wy, dtype=np.float64),
+        where=sorted_w > 0.0,
+    )
     fitted_sorted = _pav_increasing(sorted_y, sorted_w)
 
     # Recover original-space pred values; when ``increasing=False`` the signed
     # sort is ascending in ``-pred`` (i.e. descending in ``pred``), so reverse
     # to keep ``thresholds_`` ascending in ``pred``.
-    sorted_pred = mu_arr[order]
+    sorted_pred = unique_signed_pred if increasing else -unique_signed_pred
     if not increasing:
         sorted_pred = sorted_pred[::-1]
         fitted_sorted = fitted_sorted[::-1]
 
-    # Deduplicate equal pred values: keep the weighted average of fitted
-    # values inside ties (within a PAV block, all `fitted_sorted` entries are
-    # equal; across ties at boundary, prefer the rightmost so monotonicity
-    # holds).
-    unique_pred, first_idx = np.unique(sorted_pred, return_index=True)
-    last_idx = np.r_[first_idx[1:] - 1, sorted_pred.shape[0] - 1]
-    unique_values = fitted_sorted[last_idx]
+    unique_pred = sorted_pred
+    unique_values = fitted_sorted
 
     # Defensive monotonicity enforcement (handles ties at PAV block boundaries
     # that could leave the dedup'd values slightly out of order).

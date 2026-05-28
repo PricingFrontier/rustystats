@@ -205,6 +205,7 @@ pub struct CalibrationResult {
 pub fn compute_calibration_curve(
     y: &Array1<f64>,
     mu: &Array1<f64>,
+    exposure: Option<&Array1<f64>>,
     weights: Option<&Array1<f64>>,
     n_bins: usize,
 ) -> CalibrationResult {
@@ -221,9 +222,14 @@ pub fn compute_calibration_curve(
     };
     let overall_ae = total_actual / total_expected;
     
-    // Sort by predicted risk
+    // Sort by predicted risk. With exposure in scope and ranking="auto",
+    // this score is μ / exposure; otherwise it is μ.
+    let rank_score = match exposure {
+        Some(e) => mu / e,
+        None => mu.clone(),
+    };
     let mut indices: Vec<usize> = (0..n).collect();
-    indices.sort_by(|&a, &b| mu[a].partial_cmp(&mu[b]).unwrap());
+    indices.sort_by(|&a, &b| rank_score[a].partial_cmp(&rank_score[b]).unwrap());
     
     // Compute A/E by decile
     let bin_size = n / n_bins;
@@ -448,7 +454,7 @@ class ModelDiagnostics:
 result = rs.glm_dict(response="y", terms={"x1": {"type": "linear"}, "region": {"type": "categorical"}}, data=data, family="poisson").fit()
 
 diagnostics = result.diagnostics(
-    data=data,
+    train_data=data,
     categorical_factors=["region", "brand"],
     continuous_factors=["age", "income"],
 )

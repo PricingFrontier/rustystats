@@ -238,6 +238,7 @@ class TestDictFitting:
             terms={"x": {"type": "linear"}},
             data=data,
             family="negbinomial",
+            theta=2.0,
         ).fit()
 
         assert result.converged

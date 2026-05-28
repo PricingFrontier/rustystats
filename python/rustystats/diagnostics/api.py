@@ -202,6 +202,7 @@ def _normalize_factor_lists(
 def _extract_response_and_predictions(
     result: Any,
     train_data: pl.DataFrame,
+    exposure: str | np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return (y, mu, lp) for the training data.
 
@@ -210,14 +211,21 @@ def _extract_response_and_predictions(
     would be LOO-handicapped). For non-TE models, fittedvalues equals
     predict(train_data) and is reused for free.
     """
+    if exposure is None and getattr(result, "_array_exposure_requires_prediction_override", False):
+        raise ValidationError(
+            "This model was fit with an array exposure that is not reusable diagnostics "
+            "metadata. Pass exposure= explicitly to diagnostics()."
+        )
     formula_parts = result.formula.split("~") if hasattr(result, "formula") else []
     response_col_temp = formula_parts[0].strip() if formula_parts else None
 
     if response_col_temp and response_col_temp in train_data.columns:
         y = train_data[response_col_temp].to_numpy().astype(np.float64)
         has_te = any(fn.startswith("TE(") for fn in getattr(result, "feature_names", []))
-        if has_te and hasattr(result, "predict"):
-            mu = np.asarray(result.predict(train_data), dtype=np.float64)
+        if (
+            has_te or getattr(result, "_is_deserialized", False) or exposure is not None
+        ) and hasattr(result, "predict"):
+            mu = np.asarray(result.predict(train_data, exposure=exposure), dtype=np.float64)
         else:
             mu = np.asarray(result.fittedvalues, dtype=np.float64)
         lp = np.log(mu) if np.all(mu > 0) else mu
@@ -261,6 +269,7 @@ def _extract_model_metadata(result: Any) -> tuple[str, str, int, float, list[str
 def _resolve_offset_and_response(
     result: Any,
     train_data: pl.DataFrame,
+    exposure_override: str | np.ndarray | None = None,
 ) -> tuple[str | None, str | None, np.ndarray | None]:
     """Auto-infer response and exposure column names from the model formula."""
     response_col = None
@@ -271,14 +280,29 @@ def _resolve_offset_and_response(
             response_col = formula_parts[0].strip()
 
     exposure = None
-    exposure_spec = getattr(result, "_exposure_spec", None)
+    exposure_spec = exposure_override
+    if exposure_spec is None:
+        exposure_spec = getattr(result, "_exposure_spec", None)
+    if exposure_spec is None and getattr(
+        result, "_array_exposure_requires_prediction_override", False
+    ):
+        raise ValidationError(
+            "This model was fit with an array exposure that is not reusable diagnostics "
+            "metadata. Pass exposure= explicitly to diagnostics()."
+        )
     if isinstance(exposure_spec, str):
         exposure_col = exposure_spec
-        if exposure_col in train_data.columns:
-            exposure = train_data[exposure_col].to_numpy().astype(np.float64)
+        if exposure_col not in train_data.columns:
+            raise ValidationError(
+                f"Model requires exposure column '{exposure_col}', but it is not "
+                "present in train_data. Pass exposure= explicitly to diagnostics()."
+            )
+        exposure = train_data[exposure_col].to_numpy().astype(np.float64)
     elif exposure_spec is not None:
         exposure = np.asarray(exposure_spec, dtype=np.float64)
-        if exposure.ndim != 1 or exposure.shape[0] != train_data.height:
+        if exposure.ndim != 1:
+            raise ValidationError(f"exposure must be one-dimensional; got shape {exposure.shape}.")
+        if exposure.shape[0] != train_data.height:
             raise ValidationError(
                 f"Stored exposure length {exposure.shape[0]} does not match "
                 f"train_data length {train_data.height}."
@@ -498,6 +522,7 @@ def _extract_test_arrays(
     response_col: str | None,
     exposure_col: str | None,
     ranking: str = "auto",
+    exposure_override: str | np.ndarray | None = None,
 ) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None, np.ndarray | None]:
     """Extract test response, prediction, exposure, and prediction order once."""
     if test_data is None or response_col is None:
@@ -508,11 +533,40 @@ def _extract_test_arrays(
         raise ValidationError("Model does not support prediction on new data")
 
     y_test = test_data[response_col].to_numpy().astype(np.float64)
-    mu_test = np.asarray(result.predict(test_data), dtype=np.float64)
+    override_arr = None
+    if exposure_override is not None and not isinstance(exposure_override, str):
+        override_arr = np.asarray(exposure_override, dtype=np.float64)
+        if override_arr.ndim != 1:
+            raise ValidationError(
+                f"exposure must be one-dimensional; got shape {override_arr.shape}."
+            )
+
+    predict_exposure: str | np.ndarray | None
+    if isinstance(exposure_override, str):
+        predict_exposure = exposure_override
+    elif override_arr is not None and override_arr.shape[0] == len(test_data):
+        predict_exposure = override_arr
+    elif override_arr is not None:
+        predict_exposure = None
+    elif getattr(result, "_exposure_spec", None) is not None and not isinstance(
+        getattr(result, "_exposure_spec", None), str
+    ):
+        raise ValidationError(
+            "test_data diagnostics for a model fit with array exposure require "
+            "an explicit exposure= array for the test data."
+        )
+    else:
+        predict_exposure = None
+    mu_test = np.asarray(result.predict(test_data, exposure=predict_exposure), dtype=np.float64)
     exposure_test = np.ones(len(y_test), dtype=np.float64)
     has_exposure = False
+    if isinstance(exposure_override, str):
+        exposure_col = exposure_override
     if exposure_col and exposure_col in test_data.columns:
         exposure_test = test_data[exposure_col].to_numpy().astype(np.float64)
+        has_exposure = True
+    elif override_arr is not None and override_arr.shape[0] == len(y_test):
+        exposure_test = override_arr.astype(np.float64)
         has_exposure = True
     return (
         y_test,
@@ -550,6 +604,19 @@ def _maybe_compute_coefficients(
     rather than silently leaving them ``None``.
     """
     if not compute_coefficients:
+        return None, False
+    inference_status = getattr(result, "inference_status", None)
+    if inference_status is not None and inference_status not in {"valid_standard", "valid_robust"}:
+        if warnings is not None:
+            warnings.append(
+                {
+                    "type": "coefficient_inference_unavailable",
+                    "message": (
+                        "Coefficient p-values and standard errors are suppressed because "
+                        f"inference_status={inference_status}."
+                    ),
+                }
+            )
         return None, False
     coef_summary = computer.compute_coefficient_summary(result, link=link)
     robust_se_enriched = False
@@ -1234,6 +1301,11 @@ def _build_model_summary(
 
     if robust_se_enriched:
         model_summary["robust_se_type"] = "HC1"
+    boundary_active = getattr(result, "boundary_active_coefficients", None)
+    if boundary_active is not None:
+        active = boundary_active() if callable(boundary_active) else boundary_active
+        if active:
+            model_summary["boundary_active_coefficients"] = active
 
     return model_summary
 
@@ -1269,6 +1341,7 @@ def compute_diagnostics(
     # Base predictions comparison (column name in train_data with predictions from another model)
     base_predictions: str | None = None,
     ranking: str = "auto",
+    exposure: str | np.ndarray | None = None,
 ) -> ModelDiagnostics:
     """
     Compute comprehensive model diagnostics.
@@ -1370,10 +1443,12 @@ def compute_diagnostics(
     categorical_factors, continuous_factors = _normalize_factor_lists(
         categorical_factors, continuous_factors
     )
-    y, mu, lp = _extract_response_and_predictions(result, train_data)
+    y, mu, lp = _extract_response_and_predictions(result, train_data, exposure=exposure)
     _validate_data_length(train_data, mu)
     family, link, n_params, deviance, feature_names = _extract_model_metadata(result)
-    response_col, exposure_col, exposure = _resolve_offset_and_response(result, train_data)
+    response_col, exposure_col, exposure_arr = _resolve_offset_and_response(
+        result, train_data, exposure_override=exposure
+    )
     var_power, theta = _parse_family_params(family)
     null_deviance = _resolve_null_deviance(result)
 
@@ -1385,7 +1460,7 @@ def compute_diagnostics(
         family=family,
         n_params=n_params,
         deviance=deviance,
-        exposure=exposure,
+        exposure=exposure_arr,
         feature_names=feature_names,
         var_power=var_power,
         theta=theta,
@@ -1409,7 +1484,7 @@ def compute_diagnostics(
     )
 
     # 4. Compute core diagnostics
-    calibration = computer.compute_calibration(n_calibration_bins)
+    calibration = computer.compute_calibration(n_calibration_bins, ranking=ranking)
     residual_summary = computer.compute_residual_summary()
 
     factors = computer.compute_factor_diagnostics(
@@ -1505,6 +1580,7 @@ def compute_diagnostics(
         response_col,
         exposure_col,
         ranking,
+        exposure,
     )
 
     # 6. Train/test comparison (test_diag built only if test_data provided)

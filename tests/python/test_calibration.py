@@ -69,6 +69,13 @@ class TestOverallAE:
             s_unw["overall"]["ae_ratio"], s_w1["overall"]["ae_ratio"], rtol=1e-12
         )
 
+    def test_calibration_line_reports_intercept_and_slope(self):
+        pred = np.linspace(1.0, 10.0, 200)
+        y = 0.25 + 1.5 * pred
+        summary = rs.calibration_summary(y, pred)
+        np.testing.assert_allclose(summary["calibration_intercept"], 0.25, rtol=1e-12)
+        np.testing.assert_allclose(summary["calibration_slope"], 1.5, rtol=1e-12)
+
 
 class TestCalibrationValidation:
     @pytest.mark.parametrize(
@@ -367,6 +374,15 @@ class TestReleveLogLink:
         assert returned is result
         assert result.params[0] != intercept_before
 
+    def test_relevel_updates_cached_fit_evidence(self):
+        df, result = _fit_log_link_poisson(seed=6)
+        calibration_df = df.with_columns((pl.col("ClaimCount") * 1.2).alias("ClaimCount"))
+        releveled = result.relevel(data=calibration_df)
+        np.testing.assert_allclose(releveled.fittedvalues, result.fittedvalues * 1.2, rtol=1e-7)
+        assert releveled.deviance != pytest.approx(result.deviance)
+        assert releveled.llf() != pytest.approx(result.llf())
+        assert f"{releveled.deviance:.4f}" in releveled.summary()
+
 
 # --------------------------------------------------------------------------
 # 009.8: non-log link → relevel raises.
@@ -419,6 +435,19 @@ class TestIsotonicCalibration:
         xs = np.linspace(0.0, 5.0, 50)
         np.testing.assert_allclose(cal.predict(xs), cal2.predict(xs), rtol=1e-12)
         assert cal2.method == "isotonic"
+        assert cal.to_dict()["scale"] == "response"
+
+    def test_duplicate_predictions_are_order_invariant(self):
+        """Duplicate prediction scores are pooled before PAV, so row order does not matter."""
+        pred = np.array([1.0, 1.0, 2.0, 2.0, 3.0, 3.0])
+        y = np.array([0.5, 1.5, 1.0, 3.0, 2.0, 4.0])
+        order = np.array([1, 0, 3, 2, 5, 4])
+
+        cal_a = rs.fit_isotonic_calibration(y, pred)
+        cal_b = rs.fit_isotonic_calibration(y[order], pred[order])
+
+        xs = np.array([1.0, 1.5, 2.0, 2.5, 3.0])
+        np.testing.assert_allclose(cal_a.predict(xs), cal_b.predict(xs), rtol=1e-12)
 
     def test_not_applied_implicitly_raw_and_calibrated_both_accessible(self):
         """009.10: fitting a calibration does not modify model.predict()."""

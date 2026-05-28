@@ -88,6 +88,26 @@ impl PyGLMResults {
             .expect("Invalid family name stored in results - this is a bug")
     }
 
+    fn is_quasi_likelihood(&self) -> bool {
+        let base = self
+            .family_name
+            .to_lowercase()
+            .split('(')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        matches!(
+            base.as_str(),
+            "quasipoisson"
+                | "quasi_poisson"
+                | "quasi-poisson"
+                | "quasibinomial"
+                | "quasi_binomial"
+                | "quasi-binomial"
+        )
+    }
+
     /// Get prior weights as Option, returning None if all weights are 1.0.
     /// Many functions accept Option<&Array1<f64>> for weights.
     fn maybe_weights(&self) -> Option<&Array1<f64>> {
@@ -717,8 +737,12 @@ impl PyGLMResults {
     /// AIC = -2ℓ + 2p
     ///
     /// Lower is better. Use for model comparison.
-    fn aic(&self) -> f64 {
-        aic(self.llf(), self.n_params)
+    fn aic(&self) -> Option<f64> {
+        if self.is_quasi_likelihood() {
+            None
+        } else {
+            Some(aic(self.llf(), self.n_params))
+        }
     }
 
     /// Get the Bayesian Information Criterion.
@@ -726,8 +750,12 @@ impl PyGLMResults {
     /// BIC = -2ℓ + p×log(n)
     ///
     /// Lower is better. Penalizes complexity more than AIC for large n.
-    fn bic(&self) -> f64 {
-        bic(self.llf(), self.n_params, self.n_obs)
+    fn bic(&self) -> Option<f64> {
+        if self.is_quasi_likelihood() {
+            None
+        } else {
+            Some(bic(self.llf(), self.n_params, self.n_obs))
+        }
     }
 
     /// Get the null deviance (deviance of intercept-only model).

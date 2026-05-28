@@ -646,7 +646,10 @@ fn fit_glm_core(
         let mut mu_new = family.clamp_mu(&link.inverse(&eta_new));
         let mut deviance_new = family.deviance(y, &mu_new, Some(&prior_weights_vec));
 
-        let mut step_accepted = deviance_new.is_finite() && deviance_new <= accept_threshold;
+        let mut step_accepted = eta_new.iter().all(|v| v.is_finite())
+            && mu_new.iter().all(|v| v.is_finite())
+            && deviance_new.is_finite()
+            && deviance_new <= accept_threshold;
 
         // Step-halving: if the full step worsened the deviance, try smaller steps
         // and accept the first one that meets the threshold. The
@@ -664,7 +667,11 @@ fn fit_glm_core(
                 let e = &x.dot(&blended) + &offset_vec;
                 let m = family.clamp_mu(&link.inverse(&e));
                 let d = family.deviance(y, &m, Some(&prior_weights_vec));
-                if d.is_finite() && d <= accept_threshold {
+                if e.iter().all(|v| v.is_finite())
+                    && m.iter().all(|v| v.is_finite())
+                    && d.is_finite()
+                    && d <= accept_threshold
+                {
                     trial_coefficients = blended;
                     eta_new = e;
                     mu_new = m;

@@ -38,7 +38,7 @@ rustystats.glm_dict(
 | `family` | str | Distribution family |
 | `link` | str | Link function (optional) |
 | `var_power` | float | Tweedie variance power, default 1.5 (compound Poisson-Gamma interior) |
-| `theta` | float | Negative Binomial dispersion (`"estimate"` for profile estimation) |
+| `theta` | float or `"estimate"` | Negative Binomial dispersion. Pass a positive number for a fixed-theta fit, or `"estimate"` for profile estimation on the plain unpenalized path. For Negative Binomial, leaving `theta` unspecified raises. Embedded forms such as `family="negbinomial(theta=2.0)"` are also accepted. |
 | `exposure` | str or array | **Preferred** raw positive denominator for rate models. Added as `log(exposure)` to the linear predictor under log link, and used as the rate denominator for exposure-weighted target encoding. |
 | `offset` | str or array | Link-scale additive offset. A string offset under a log-link family is treated as a legacy alias for `exposure=` when `exposure` is not set. |
 | `weights` | str or array | Prior weights |

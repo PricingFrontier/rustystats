@@ -989,9 +989,8 @@ rs.glm_dict(..., family="negbinomial", theta=2.0)
 #    and tolerance on the result.
 rs.glm_dict(..., family="negbinomial", theta="estimate")
 
-# 3. No theta passed → no silent default. The plain (non-smooth /
-#    non-regularised / non-constrained) path defaults to estimation; other
-#    paths raise a clear error directing you to pass a numeric theta.
+# 3. No theta passed → rejected. There is no silent theta=1.0 fallback
+#    and no implicit profile estimation.
 ```
 
 Regularised, constrained, or smooth NB combinations require a fixed numeric
@@ -1001,8 +1000,7 @@ estimator's provenance when applicable.
 
 #### Estimation algorithm
 
-When `theta="estimate"` (or the default on the plain path), RustyStats uses
-the profile estimator:
+When `theta="estimate"`, RustyStats uses the profile estimator:
 
 1. **Initial fit**: Fit a Poisson GLM to get starting $\hat{\mu}$.
 2. **Moment seed**: Initialise $\theta$ from residuals:
@@ -1034,6 +1032,7 @@ result = rs.glm_dict(
     },
     data=data,
     family="negbinomial",
+    theta=1.0,
 ).fit()
 
 # You'll see "Method: IRLS + Ridge" in the summary

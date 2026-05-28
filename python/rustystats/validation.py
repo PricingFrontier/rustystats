@@ -646,6 +646,8 @@ def validate_residual_inputs(
     family: str,
     weights: np.ndarray | None = None,
     offset: np.ndarray | None = None,
+    var_power: float | None = None,
+    allow_extended_tweedie: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
     """
     Validate inputs to :func:`rustystats.working_response_weights`.
@@ -683,7 +685,13 @@ def validate_residual_inputs(
     # only care about the base family name.
     family_base = family.split("(", 1)[0].strip()
 
-    y = validate_response(y, family_base, require_variation=False)
+    y = validate_response(
+        y,
+        family_base,
+        require_variation=False,
+        var_power=var_power,
+        allow_extended_tweedie=allow_extended_tweedie,
+    )
     n_obs = len(y)
 
     eta = coerce_to_float64(eta, "eta")

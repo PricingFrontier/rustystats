@@ -142,6 +142,33 @@ def rank_sort_idx(
     return np.argsort(key, kind="stable")
 
 
+def _gini_for_arrays(y: np.ndarray, exposure: np.ndarray, sort_idx: np.ndarray) -> float:
+    """Exposure-weighted Gini using a caller-supplied rank order."""
+    total_exposure = float(np.sum(exposure))
+    total_actual = float(np.sum(y))
+    if total_actual == 0.0 or total_exposure == 0.0:
+        return 0.0
+
+    cum_exposure = 0.0
+    cum_actual = 0.0
+    gini_area = 0.0
+    prev_cum_exposure_pct = 0.0
+    prev_cum_actual_pct = 0.0
+    for idx in sort_idx[::-1]:
+        cum_exposure += float(exposure[idx])
+        cum_actual += float(y[idx])
+        cum_exposure_pct = cum_exposure / total_exposure
+        cum_actual_pct = cum_actual / total_actual
+        gini_area += (
+            (cum_exposure_pct - prev_cum_exposure_pct)
+            * (cum_actual_pct + prev_cum_actual_pct)
+            / 2.0
+        )
+        prev_cum_exposure_pct = cum_exposure_pct
+        prev_cum_actual_pct = cum_actual_pct
+    return 2.0 * gini_area - 1.0
+
+
 class DiagnosticsComputer:
     """
     Computes comprehensive model diagnostics.
@@ -261,9 +288,11 @@ class DiagnosticsComputer:
             "rmse": rust_loss["rmse"],
         }
 
-    def compute_calibration(self, n_bins: int = DEFAULT_N_CALIBRATION_BINS) -> dict[str, Any]:
+    def compute_calibration(
+        self, n_bins: int = DEFAULT_N_CALIBRATION_BINS, ranking: str = "auto"
+    ) -> dict[str, Any]:
         """Compute calibration metrics using focused component."""
-        return self._calibration.compute(n_bins)
+        return self._calibration.compute(n_bins, ranking=ranking)
 
     def compute_discrimination(self) -> dict[str, Any | None]:
         """Compute discrimination metrics using focused component."""
@@ -380,16 +409,23 @@ class DiagnosticsComputer:
             cont_column_cache=cont_column_cache,
         )
 
-    def compute_model_comparison(self) -> dict[str, float | None]:
+    def compute_model_comparison(self) -> dict[str, float | str | None]:
         """Compute model comparison statistics vs null model."""
         null_dev = self.null_deviance
 
-        # Likelihood ratio test
-        lr_chi2 = null_dev - self.deviance
-        lr_df = self.n_params - 1
+        if self.is_quasi_likelihood:
+            lr_chi2: float | None = None
+            lr_df: int | None = None
+            lr_pvalue: float | None = None
+            likelihood_ratio_label = "not_available_for_quasi_likelihood"
+        else:
+            # Likelihood ratio test
+            lr_chi2 = null_dev - self.deviance
+            lr_df = self.n_params - 1
 
-        # P-value from chi-square distribution (using Rust CDF)
-        lr_pvalue = 1 - _chi2_cdf(lr_chi2, float(lr_df)) if lr_df > 0 else float("nan")
+            # P-value from chi-square distribution (using Rust CDF)
+            lr_pvalue = 1 - _chi2_cdf(lr_chi2, float(lr_df)) if lr_df > 0 else float("nan")
+            likelihood_ratio_label = "likelihood_ratio"
 
         deviance_reduction_pct = 100 * (1 - self.deviance / null_dev) if null_dev > 0 else 0
 
@@ -404,9 +440,10 @@ class DiagnosticsComputer:
             aic_improvement = float(null_aic - model_aic)
 
         return {
-            "likelihood_ratio_chi2": float(lr_chi2),
+            "likelihood_ratio_label": likelihood_ratio_label,
+            "likelihood_ratio_chi2": float(lr_chi2) if lr_chi2 is not None else None,
             "likelihood_ratio_df": lr_df,
-            "likelihood_ratio_pvalue": float(lr_pvalue),
+            "likelihood_ratio_pvalue": float(lr_pvalue) if lr_pvalue is not None else None,
             "deviance_reduction_pct": float(deviance_reduction_pct),
             "aic_improvement": aic_improvement,
         }
@@ -1512,8 +1549,20 @@ class DiagnosticsComputer:
         total_actual = float(np.sum(y))
         total_predicted = float(np.sum(mu))
 
+        result_scale = None
+        if result is not None and hasattr(result, "scale") and callable(result.scale):
+            result_scale = result.scale()
+
         # Family deviance metrics (same as GBM loss) using Rust backend
-        dataset_metrics = _rust_dataset_metrics(y, mu, self.family, self.n_params)
+        dataset_metrics = _rust_dataset_metrics(
+            y,
+            mu,
+            self.family,
+            self.n_params,
+            self.var_power,
+            self.theta,
+            result_scale,
+        )
         deviance = float(dataset_metrics["deviance"])
         mean_deviance = float(dataset_metrics["mean_deviance"])
         log_likelihood = float(dataset_metrics["log_likelihood"])
@@ -1521,9 +1570,16 @@ class DiagnosticsComputer:
         # but AIC/BIC are not ordinary-likelihood values (RS-ACT-008). Surface
         # them as None in the dataset diagnostics rather than printing a
         # number indistinguishable from a proper-likelihood AIC.
-        if self.is_quasi_likelihood:
+        result_aic = result.aic() if result is not None and hasattr(result, "aic") else None
+        result_bic = result.bic() if result is not None and hasattr(result, "bic") else None
+        if self.is_quasi_likelihood or (
+            result is not None and hasattr(result, "aic") and result_aic is None
+        ):
             aic_val: float | None = None
             bic_val: float | None = None
+        elif result_aic is not None and dataset_name == "train":
+            aic_val = float(result_aic)
+            bic_val = float(result_bic) if result_bic is not None else None
         else:
             aic_val = float(dataset_metrics["aic"])
             bic_val = (
@@ -1534,7 +1590,10 @@ class DiagnosticsComputer:
 
         # Discrimination metrics
         stats = _rust_discrimination_stats(y, mu, exposure)
-        gini = float(stats["gini"])
+        if sort_idx is not None:
+            gini = _gini_for_arrays(y, exposure, sort_idx)
+        else:
+            gini = float(stats["gini"])
         auc = float(stats["auc"])
 
         # Overall A/E
@@ -1595,6 +1654,10 @@ class DiagnosticsComputer:
             ae_by_decile=ae_by_decile,
             factor_diagnostics=factor_diag,
             continuous_diagnostics=continuous_diag,
+            log_likelihood_label="quasi_log_likelihood"
+            if self.is_quasi_likelihood
+            else "log_likelihood",
+            is_quasi_likelihood=self.is_quasi_likelihood,
         )
 
     def _compute_ae_by_decile(

@@ -17,7 +17,7 @@ result = rs.glm_dict(
     },
     data=train_data,
     family="poisson",
-    offset="Exposure",
+    exposure="Exposure",
 ).fit()
 
 # Serialize to bytes
