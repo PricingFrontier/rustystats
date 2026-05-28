@@ -2771,7 +2771,10 @@ class GLMModel:
         standard error is inflated by an approximate ``Var(log c)`` (delta
         method, ``φ·Σ(w·V(μ)) / (Σ w·y)²``), accumulated in
         :attr:`intercept_delta_var`, so its CI/z/p are not falsely tight. Every
-        other coefficient and all relativities are unchanged.
+        other coefficient and all relativities are unchanged. The variance
+        treats the calibration actuals as independent of the fit — exact for an
+        out-of-sample calibration fold (the recommended workflow above) and
+        optimistic if you calibrate in-sample.
 
         Returns a new :class:`GLMModel` by default; pass ``inplace=True`` to
         mutate this object instead.
