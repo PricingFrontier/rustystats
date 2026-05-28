@@ -406,13 +406,65 @@ pub struct PyTweedieFamily {
 
 #[pymethods]
 impl PyTweedieFamily {
+    /// Construct a Tweedie family.
+    ///
+    /// Parameters
+    /// ----------
+    /// var_power : float, default 1.5
+    ///     Variance power ``p``. The default ``1 < p < 2`` interior covers the
+    ///     compound Poisson-Gamma actuarial pure-premium regime.
+    /// allow_extended_tweedie : bool, default False
+    ///     Set ``True`` to opt in to the extended regimes ``p <= 0``,
+    ///     ``p == 1``, ``p == 2``, and ``p > 2``. The genuinely invalid band
+    ///     ``0 < p < 1`` (no Tweedie distribution exists) is rejected always.
+    ///
+    /// Notes
+    /// -----
+    /// Per-regime support rules on the response (``y >= 0`` for the interior
+    /// and the low-p extended regimes; ``y > 0`` for ``p >= 2`` because the
+    /// Tweedie unit deviance at ``y == 0`` diverges) are enforced at fit time
+    /// by ``rustystats.glm_dict``. Constructing a ``TweedieFamily`` here only
+    /// gates the ``var_power`` itself.
     #[new]
-    #[pyo3(signature = (var_power=1.5))]
-    fn new(var_power: f64) -> PyResult<Self> {
+    #[pyo3(signature = (var_power=1.5, allow_extended_tweedie=false))]
+    fn new(var_power: f64, allow_extended_tweedie: bool) -> PyResult<Self> {
+        if !var_power.is_finite() {
+            return Err(PyValueError::new_err(format!(
+                "var_power must be finite, got {}",
+                var_power
+            )));
+        }
+        // RS-ACT-006: the open interval (0, 1) is mathematically invalid (no
+        // Tweedie distribution exists there); reject always, even under
+        // allow_extended_tweedie=True.
         if var_power > 0.0 && var_power < 1.0 {
             return Err(PyValueError::new_err(format!(
-                "var_power must be <= 0 or >= 1, got {}",
+                "Tweedie var_power={} is in the open interval (0, 1) — no \
+                 Tweedie distribution exists for these powers. Allowed: \
+                 p <= 0, p == 1 (Poisson), 1 < p < 2 (compound Poisson-Gamma), \
+                 p == 2 (Gamma), p > 2.",
                 var_power
+            )));
+        }
+        // Anything outside the default compound Poisson-Gamma interior needs
+        // the explicit opt-in; matches the Python glm_dict gate.
+        let in_interior = var_power > 1.0 && var_power < 2.0;
+        if !in_interior && !allow_extended_tweedie {
+            let suggestion = match var_power {
+                p if (p - 0.0).abs() < 1e-12 => Some("rs.GaussianFamily()"),
+                p if (p - 1.0).abs() < 1e-12 => Some("rs.PoissonFamily()"),
+                p if (p - 2.0).abs() < 1e-12 => Some("rs.GammaFamily()"),
+                _ => None,
+            };
+            let hint = suggestion
+                .map(|s| format!(" Use {} directly.", s))
+                .unwrap_or_default();
+            return Err(PyValueError::new_err(format!(
+                "Tweedie var_power={} is outside the default compound \
+                 Poisson-Gamma interior (1 < p < 2). Pass \
+                 allow_extended_tweedie=True to opt in to the extended regime \
+                 (and its per-regime support rules).{}",
+                var_power, hint
             )));
         }
         Ok(Self {

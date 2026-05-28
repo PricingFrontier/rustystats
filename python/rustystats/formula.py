@@ -587,6 +587,7 @@ def _fit_glm_core(
     feature_names: list[str],
     builder: InteractionBuilder,
     store_design_matrix: bool = False,
+    allow_extended_tweedie: bool = False,
 ) -> tuple:
     """
     Core GLM fitting logic for FormulaGLMDict.
@@ -610,9 +611,19 @@ def _fit_glm_core(
 
     # Validate inputs before fitting - catches NaN, Inf, invalid response values, etc.
     # Note: is_exposure_offset=False because offset is already log-transformed by _process_offset
-    # (raw exposure validation happens there before log-transform)
+    # (raw exposure validation happens there before log-transform).
+    # RS-ACT-006: thread var_power + allow_extended_tweedie so the Tweedie
+    # regime table is enforced before any deviance is evaluated.
     y, X, weights, offset = validate_glm_inputs(
-        y, X, family, weights, offset, feature_names, is_exposure_offset=False
+        y,
+        X,
+        family,
+        weights,
+        offset,
+        feature_names,
+        is_exposure_offset=False,
+        var_power=var_power,
+        allow_extended_tweedie=allow_extended_tweedie,
     )
 
     # Check for smooth terms (s() terms with automatic lambda selection)
@@ -3288,6 +3299,7 @@ class FormulaGLMDict(_GLMBase):
         weights: str | np.ndarray | None = None,
         seed: int | None = None,
         complement: str | np.ndarray | GLMModel | None = None,
+        allow_extended_tweedie: bool = False,
     ):
         self.response = response
         self.terms = terms
@@ -3299,6 +3311,10 @@ class FormulaGLMDict(_GLMBase):
         self.link = link
         self.var_power = var_power
         self.theta = theta
+        # RS-ACT-006: opt-in flag for the extended Tweedie regimes (p outside
+        # the default compound Poisson-Gamma interior 1 < p < 2). Defaults off;
+        # the per-regime support rules are enforced in validate_glm_inputs.
+        self.allow_extended_tweedie = bool(allow_extended_tweedie)
         self._exposure_spec = exposure
         self._offset_spec = offset
         self._weights_spec = weights
@@ -3714,6 +3730,7 @@ class FormulaGLMDict(_GLMBase):
                 self.feature_names,
                 self._builder,
                 store_design_matrix=store_design_matrix,
+                allow_extended_tweedie=self.allow_extended_tweedie,
             )
             if is_negbinomial:
                 theta_metadata = {"estimated": False, "theta": theta}
@@ -3770,6 +3787,7 @@ def glm_dict(
     weights: str | np.ndarray | None = None,
     seed: int | None = None,
     complement: str | np.ndarray | GLMModel | None = None,
+    allow_extended_tweedie: bool = False,
 ) -> FormulaGLMDict:
     """
     Create a GLM model from a dict specification.
@@ -3904,4 +3922,5 @@ def glm_dict(
         weights=weights,
         seed=seed,
         complement=complement,
+        allow_extended_tweedie=allow_extended_tweedie,
     )
