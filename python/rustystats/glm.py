@@ -40,6 +40,7 @@ def summary(
     solver_status: str | None = None,
     optimizer_route: str | None = None,
     effective_df: float | None = None,
+    is_quasi_likelihood: bool = False,
 ) -> str:
     """
     Generate a summary table for GLM results (statsmodels-style).
@@ -103,9 +104,16 @@ def summary(
     aic_val: float | None = None
     bic_val: float | None = None
 
+    # RS-ACT-008: quasi-likelihood families (quasi-Poisson, quasi-Binomial) do
+    # not have a proper likelihood — print AIC/BIC as NA and never compute the
+    # ordinary-likelihood value that would be silently misleading.
+    if is_quasi_likelihood:
+        aic_label = "AIC:"
+        bic_label = "BIC:"
+        # aic_val / bic_val stay None → printed as "NA" below.
     # RS-ACT-011: penalized smooth fits must be scored with their effective df,
     # not the basis-column count, so AIC/BIC reflect the realized complexity.
-    if effective_df is not None:
+    elif effective_df is not None:
         aic_label = "AIC (edf):"
         bic_label = "BIC (edf):"
         aic_val = -2.0 * llf + 2.0 * effective_df
@@ -150,8 +158,14 @@ def summary(
         lines.append(f"{'Scale:':<20} {scale:<15.4f} {'Iterations:':<20} {result.iterations:>10}")
     lines.append("")
 
-    # Goodness of fit
-    lines.append(f"{'Log-Likelihood:':<20} {llf:>15.4f} {'Deviance:':<20} {result.deviance:>15.4f}")
+    # Goodness of fit — relabel for quasi (RS-ACT-008): the value returned by
+    # the family's loglik helper is the underlying Poisson / Binomial loglik,
+    # but for quasi families it is *not* a true log-likelihood for the model
+    # being fitted (dispersion φ is estimated separately). Showing the same
+    # "Log-Likelihood:" label as for proper-likelihood families invites users
+    # to compare it across non-nested models, which is invalid here.
+    loglik_label = "Quasi-Log-Likelihood:" if is_quasi_likelihood else "Log-Likelihood:"
+    lines.append(f"{loglik_label:<20} {llf:>15.4f} {'Deviance:':<20} {result.deviance:>15.4f}")
     lines.append(f"{aic_label:<20} {aic_text:>15} {'Null Deviance:':<20} {null_dev:>15.4f}")
     lines.append(f"{bic_label:<20} {bic_text:>15} {'Pearson chi2:':<20} {pearson_chi2:>15.2f}")
     lines.append(f"{'Converged:':<20} {result.converged!s:<15}")

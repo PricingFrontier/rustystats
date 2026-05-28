@@ -1509,22 +1509,54 @@ class GLMModel:
             return self._total_edf - 1
         return self._result.df_model
 
-    def aic(self) -> float:
+    @property
+    def is_quasi_likelihood(self) -> bool:
+        """Whether the fit is a quasi-likelihood family (RS-ACT-008).
+
+        ``True`` for quasi-Poisson and quasi-Binomial — neither has a proper
+        log-likelihood, so AIC/BIC are not meaningful in the ordinary sense
+        and ``aic()`` / ``bic()`` return ``None`` for these fits. The summary
+        labels the loglik-like value as "Quasi-Log-Likelihood".
+
+        Derived from ``self.family`` so it survives a ``to_bytes`` /
+        ``from_bytes`` round-trip without any extra serialisation state.
+        """
+        family_lower = (self.family or "").lower()
+        family_base = family_lower.split("(", 1)[0].strip()
+        # Match the same alias forms as families_py.rs / default_link_name.
+        return family_base in {
+            "quasipoisson",
+            "quasi-poisson",
+            "quasi_poisson",
+            "quasibinomial",
+            "quasi-binomial",
+            "quasi_binomial",
+        }
+
+    def aic(self) -> float | None:
         """Akaike Information Criterion.
 
-        For penalized smooth models, use effective degrees of freedom instead of
-        the raw basis-column count.
+        Returns ``None`` for quasi-likelihood families (RS-ACT-008): quasi
+        models do not have a proper log-likelihood, so a Poisson- or
+        Binomial-style AIC is methodologically wrong here. For penalized
+        smooth models, uses effective degrees of freedom in place of the raw
+        basis-column count.
         """
+        if self.is_quasi_likelihood:
+            return None
         if self._total_edf is not None:
             return -2.0 * self._result.llf() + 2.0 * self._total_edf
         return self._result.aic()
 
-    def bic(self) -> float:
+    def bic(self) -> float | None:
         """Bayesian Information Criterion.
 
-        For penalized smooth models, use effective degrees of freedom instead of
-        the raw basis-column count.
+        Returns ``None`` for quasi-likelihood families (RS-ACT-008); see
+        :meth:`aic` for the rationale. For penalized smooth models, uses
+        effective degrees of freedom in place of the raw basis-column count.
         """
+        if self.is_quasi_likelihood:
+            return None
         if self._total_edf is not None:
             return -2.0 * self._result.llf() + self._total_edf * np.log(self._result.nobs)
         return self._result.bic()
@@ -1718,6 +1750,7 @@ class GLMModel:
             solver_status=getattr(self, "solver_status", None),
             optimizer_route=getattr(self, "optimizer_route", None),
             effective_df=self._total_edf,
+            is_quasi_likelihood=self.is_quasi_likelihood,
         )
 
         if self.has_complement:
