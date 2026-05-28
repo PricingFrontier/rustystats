@@ -133,6 +133,16 @@ def _apply_inverse_link(eta: np.ndarray, link: str) -> np.ndarray:
     return apply_inverse_link(eta, link)
 
 
+def _alpha_family_base(family: str) -> str:
+    """Normalize family strings used by alpha_max helpers."""
+    family_base = family.lower().split("(", 1)[0].strip()
+    if family_base == "normal":
+        return "gaussian"
+    if family_base in ("negativebinomial", "negative_binomial", "nb"):
+        return "negbinomial"
+    return family_base
+
+
 def _glm_score_gradient_factor(
     y: np.ndarray,
     mu: np.ndarray,
@@ -167,6 +177,8 @@ def _glm_score_gradient_factor(
     else:
         raise ValidationError(f"alpha_max: unsupported link {link!r}")
 
+    family = _alpha_family_base(family)
+
     if family in ("gaussian",):
         variance = np.ones_like(mu)
     elif family in ("poisson", "quasipoisson"):
@@ -199,25 +211,24 @@ def _fit_null_intercept(
 ) -> float:
     """Fit the intercept-only GLM (``η = β_0 + offset``).
 
-    Closed-form for the two most common offset+canonical-link cases (the only
-    ones where alpha_max would otherwise be needed on the very first IRLS
-    step, where a Rust round-trip would be the bottleneck). All other families
-    or non-zero offsets fall back to a single Rust ``fit_glm_py`` call on a
-    width-1 design — same code path as a normal fit, so anything that
-    converges in production converges here.
+    Closed-form for score equations where the intercept solve is exact; all
+    other family/link combinations fall back to a single Rust ``fit_glm_py``
+    call on a width-1 design — same code path as a normal fit, so anything
+    that converges in production converges here.
     """
-    # Closed-form: log-link with linear offset → β_0 = log(Σwy / Σw·exp(offset)).
-    # Works uniformly for Poisson, Gamma, Tweedie, NegBin (all log-link) and
-    # avoids a Rust call inside the alpha-path inner loop.
-    if link == "log":
+    family = _alpha_family_base(family)
+
+    # Closed-form for Poisson-family log links:
+    # score = Σw(y - exp(β0 + offset)) = 0.
+    if family in ("poisson", "quasipoisson") and link == "log":
         denom = float(np.sum(weights * np.exp(offset)))
         if denom > 0.0:
             num = float(np.sum(weights * y))
             if num > 0.0:
                 return float(np.log(num / denom))
-    # Identity link with offset: β_0 minimises Σ w (y - β_0 - offset)² →
+    # Gaussian identity with offset: β_0 minimises Σ w (y - β_0 - offset)² →
     # β_0 = Σw(y - offset) / Σw.
-    if link == "identity":
+    if family == "gaussian" and link == "identity":
         return float(np.sum(weights * (y - offset)) / np.sum(weights))
 
     # Fall back to a one-feature Rust fit for non-closed-form combinations.
@@ -305,6 +316,8 @@ def compute_alpha_max(
         Column index of the intercept (excluded from the score). Pass ``None``
         if the design has no intercept (rare for GLMs).
     """
+    family = _alpha_family_base(family)
+
     # Resolve link to the family default when the caller passed None / "" —
     # ``FormulaGLMDict.link`` is allowed to stay unset until fit time, and we
     # used to break with ``unsupported link None`` for CV-regularised fits on

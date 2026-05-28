@@ -92,6 +92,47 @@ class TestAlphaMaxZeroesPenalizedCoefs:
         params = _fit_at_alpha(y, X, "gaussian", "identity", alpha_max, offset=offset)
         assert np.max(np.abs(params[1:])) < 1e-6
 
+    def test_gaussian_log_link_uses_fitted_null(self):
+        """Non-Poisson log links need a true null fit, not the Poisson shortcut."""
+        rng = np.random.default_rng(189)
+        n = 250
+        X_feat = rng.normal(size=(n, 4))
+        X = np.column_stack([np.ones(n), X_feat])
+        offset = np.log(rng.lognormal(mean=0.0, sigma=2.5, size=n))
+        eta = -0.5 + X_feat @ np.array([0.2, -0.1, 0.4, 0.0]) + offset
+        mu = np.exp(eta)
+        y = np.maximum(mu + rng.normal(scale=np.maximum(1.0, 1.2 * mu), size=n), 0.01)
+
+        alpha_max = compute_alpha_max(
+            X, y, l1_ratio=1.0, family="gaussian", link="log", offset=offset
+        )
+
+        x_int = np.ones((n, 1))
+        null_res = fit_glm_py(
+            y,
+            x_int,
+            "gaussian",
+            "log",
+            1.5,
+            1.0,
+            offset,
+            None,
+            0.0,
+            0.0,
+            300,
+            1e-12,
+            None,
+            None,
+            False,
+        )
+        beta_0 = float(np.asarray(null_res.params)[0])
+        mu_0 = np.exp(beta_0 + offset)
+        expected_score = float(np.max(np.abs((X.T @ ((y - mu_0) * mu_0))[1:])))
+
+        np.testing.assert_allclose(alpha_max, expected_score, rtol=1e-10)
+        params = _fit_at_alpha(y, X, "gaussian", "log", alpha_max, offset=offset)
+        assert np.max(np.abs(params[1:])) < 1e-6
+
     def test_just_below_alpha_max_keeps_at_least_one(self):
         """alpha_max is *tight*: a hair below it, at least one penalized coef should be nonzero."""
         X, X_feat = _design(n=500, seed=3)
