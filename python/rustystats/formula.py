@@ -1879,14 +1879,26 @@ class GLMModel:
         if self.link not in ("log",):
             raise ValidationError(f"Relativities only meaningful for log link, not '{self.link}'")
 
-        ci = self.conf_int()
+        # RS-ACT-011: ordinary confidence intervals are not valid after
+        # regularization / CV selection / constraints. Keep the point relativity
+        # (always meaningful) but null the CI, mirroring coef_table().
+        status = getattr(self, "inference_status", None)
+        show_standard_inference = status is None or status in {"valid_standard", "valid_robust"}
+        if show_standard_inference:
+            ci = self.conf_int()
+            ci_lower = np.exp(ci[:, 0])
+            ci_upper = np.exp(ci[:, 1])
+        else:
+            n = len(self.feature_names)
+            ci_lower = np.full(n, np.nan)
+            ci_upper = np.full(n, np.nan)
 
         return pl.DataFrame(
             {
                 "Feature": self.feature_names,
                 "Relativity": np.exp(self.params),
-                "CI_Lower": np.exp(ci[:, 0]),
-                "CI_Upper": np.exp(ci[:, 1]),
+                "CI_Lower": ci_lower,
+                "CI_Upper": ci_upper,
             }
         )
 

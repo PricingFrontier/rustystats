@@ -251,6 +251,7 @@ def summary_relativities(
     feature_names: list[str] | None = None,
     title: str = "GLM Relativities (Log Link)",
     alpha: float = 0.05,
+    inference_status: str | None = None,
 ) -> str:
     """
     Generate a summary table showing relativities (exp of coefficients).
@@ -272,6 +273,14 @@ def summary_relativities(
     alpha : float, optional
         Significance level for confidence intervals.
 
+    inference_status : str, optional
+        Inference validity of the fit. When omitted it is read from
+        ``result.inference_status``. If it is anything other than
+        ``valid_standard`` / ``valid_robust`` (e.g. after regularization, CV
+        selection, or constraints), confidence intervals and p-values are
+        suppressed because they are not valid for the fitted objective; the
+        point relativities are still shown.
+
     Returns
     -------
     str
@@ -291,10 +300,17 @@ def summary_relativities(
             f"feature_names has {len(feature_names)} elements but model has {n_params} parameters"
         )
 
+    # RS-ACT-011: suppress CIs/p-values when inference is not valid for the
+    # fitted objective (regularization / CV selection / constraints).
+    if inference_status is None:
+        inference_status = getattr(result, "inference_status", None)
+    show_inference = inference_status is None or inference_status in _VALID_INFERENCE
+
     coefs = result.params
-    conf_ints = result.conf_int(alpha)
-    p_vals = result.pvalues()
-    sig_codes = result.significance_codes()
+    if show_inference:
+        conf_ints = result.conf_int(alpha)
+        p_vals = result.pvalues()
+        sig_codes = result.significance_codes()
 
     # Build the table
     lines = []
@@ -317,22 +333,26 @@ def summary_relativities(
         name = feature_names[i][:15]
         coef = coefs[i]
         rel = np.exp(coef)
-        ci_low_rel = np.exp(conf_ints[i, 0])
-        ci_high_rel = np.exp(conf_ints[i, 1])
-        p = p_vals[i]
-        sig = sig_codes[i]
-
-        if p < 0.0001:
-            p_str = "<0.0001"
+        if show_inference:
+            ci_low_rel = np.exp(conf_ints[i, 0])
+            ci_high_rel = np.exp(conf_ints[i, 1])
+            p = p_vals[i]
+            sig = sig_codes[i]
+            p_str = "<0.0001" if p < 0.0001 else f"{p:.4f}"
+            ci_str = f"[{ci_low_rel:>8.4f}, {ci_high_rel:>8.4f}]"
+            row = f"{name:<15} {coef:>10.4f} {rel:>12.4f} {ci_str:>24} {p_str:>8} {sig}"
         else:
-            p_str = f"{p:.4f}"
-
-        ci_str = f"[{ci_low_rel:>8.4f}, {ci_high_rel:>8.4f}]"
-        row = f"{name:<15} {coef:>10.4f} {rel:>12.4f} {ci_str:>24} {p_str:>8} {sig}"
+            row = f"{name:<15} {coef:>10.4f} {rel:>12.4f} {'n/a':>24} {'n/a':>8}"
         lines.append(row)
 
     lines.append("-" * 70)
     lines.append("Relativity = exp(Coef). Values > 1 increase the response.")
+    if not show_inference:
+        reason = _INFERENCE_CAVEATS.get(inference_status, "the fitting procedure")
+        lines.append(
+            f"Inference suppressed (inference_status={inference_status}): "
+            f"CIs and p-values are not valid here ({reason})."
+        )
     lines.append("=" * 70)
 
     return "\n".join(lines)

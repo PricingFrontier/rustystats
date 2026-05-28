@@ -61,6 +61,30 @@ class TestInferenceStatus:
         assert np.all(np.isnan(coef_table["Std.Error"].to_numpy()))
         assert set(coef_table["Signif"].to_list()) == {""}
 
+    def test_lasso_relativities_and_summary_relativities_suppress_inference(self):
+        """011.2: relativities() and summary_relativities() also suppress invalid inference."""
+        result = _fit(_frame(), alpha=0.1, l1_ratio=1.0)
+        assert result.inference_status == "naive_after_selection"
+
+        # relativities(): keep the point relativity, null the confidence interval.
+        rel = result.relativities()
+        assert np.all(np.isfinite(rel["Relativity"].to_numpy()))
+        assert np.all(np.isnan(rel["CI_Lower"].to_numpy()))
+        assert np.all(np.isnan(rel["CI_Upper"].to_numpy()))
+
+        # summary_relativities(): reads inference_status off the result and caveats.
+        text = rs.summary_relativities(result)
+        assert "Inference suppressed" in text
+        assert "naive_after_selection" in text
+        assert "<0.0001" not in text
+
+    def test_plain_glm_relativities_keep_inference(self):
+        """Guard against over-suppression: a plain GLM keeps CIs/p-values in both paths."""
+        result = _fit(_frame())
+        rel = result.relativities()
+        assert np.all(np.isfinite(rel["CI_Lower"].to_numpy()))
+        assert "Inference suppressed" not in rs.summary_relativities(result)
+
     def test_ridge_is_naive_after_regularization(self):
         result = _fit(_frame(), alpha=0.1, l1_ratio=0.0)
         assert result.inference_status == "naive_after_regularization"
