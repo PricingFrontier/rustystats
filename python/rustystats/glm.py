@@ -63,7 +63,6 @@ def summary(
     optimizer_route: str | None = None,
     effective_df: float | None = None,
     is_quasi_likelihood: bool = False,
-    intercept_delta: float = 0.0,
 ) -> str:
     """
     Generate a summary table for GLM results (statsmodels-style).
@@ -110,19 +109,28 @@ def summary(
         p_vals = result.pvalues()
         conf_ints = result.conf_int(alpha)
         sig_codes = result.significance_codes()
-        if intercept_delta and len(std_errs):
-            # relevel() shifted the intercept by a known log(c). SE is unchanged
-            # by an additive shift, so the CI slides with the estimate and z/p
-            # track the new intercept (coefs[0] is already the shifted value).
+        # relevel() recentres + inflates the intercept's Wald row; the model
+        # owns the correction (single source of truth across coef_table /
+        # relativities / summary / diagnostics).
+        _relevel_corr = getattr(result, "_releveled_intercept_inference", None)
+        corr = (
+            _relevel_corr(std_errs[0], (conf_ints[0, 0], conf_ints[0, 1]))
+            if _relevel_corr is not None and len(std_errs)
+            else None
+        )
+        if corr is not None:
+            std_errs = np.array(std_errs, dtype=np.float64)
             z_vals = np.array(z_vals, dtype=np.float64)
             p_vals = np.array(p_vals, dtype=np.float64)
             conf_ints = np.array(conf_ints, dtype=np.float64)
             sig_codes = list(sig_codes)
-            conf_ints[0, :] = conf_ints[0, :] + intercept_delta
-            if std_errs[0] > 1e-10:
-                z_vals[0] = coefs[0] / std_errs[0]
-                p_vals[0] = _normal_two_sided_p(z_vals[0])
-                sig_codes[0] = _significance_code(p_vals[0])
+            std_errs[0], z_vals[0], p_vals[0], sig_codes[0] = (
+                corr["se"],
+                corr["z"],
+                corr["p"],
+                corr["signif"],
+            )
+            conf_ints[0, 0], conf_ints[0, 1] = corr["ci_lo"], corr["ci_hi"]
 
     # Get diagnostics
     try:

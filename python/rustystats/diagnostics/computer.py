@@ -749,6 +749,21 @@ class DiagnosticsComputer:
                 rel = round(float(np.exp(coef_val)), 4)
                 rel_ci = [round(float(np.exp(ci[i, 0])), 4), round(float(np.exp(ci[i, 1])), 4)]
 
+            # RS-ACT-009: recentre + inflate the releveled intercept's inference
+            # so the diagnostics summary matches coef_table()/relativities().
+            if name == "Intercept":
+                corr_fn = getattr(result, "_releveled_intercept_inference", None)
+                corr = corr_fn(se_val, (float(ci[i, 0]), float(ci[i, 1]))) if corr_fn else None
+                if corr is not None:
+                    se_val, z_val, p_val = corr["se"], corr["z"], corr["p"]
+                    ci_low = round(float(corr["ci_lo"]), 6)
+                    ci_high = round(float(corr["ci_hi"]), 6)
+                    if link == "log":
+                        rel_ci = [
+                            round(float(np.exp(corr["ci_lo"])), 4),
+                            round(float(np.exp(corr["ci_hi"])), 4),
+                        ]
+
             summaries.append(
                 CoefficientSummary(
                     feature=name,
@@ -808,13 +823,25 @@ class DiagnosticsComputer:
         # Build a lookup by feature name since summaries may be reordered
         feature_to_idx = {name: i for i, name in enumerate(self.feature_names)}
 
+        corr_fn = getattr(result, "_releveled_intercept_inference", None)
         for s in summaries:
             idx = feature_to_idx.get(s.feature)
-            if idx is not None and idx < len(robust_bse):
-                s.robust_std_error = round(float(robust_bse[idx]), 6)
-                s.robust_z_value = round(float(robust_tvalues[idx]), 3)
-                s.robust_p_value = round(float(robust_pvalues[idx]), 4)
-                s.robust_significant = float(robust_pvalues[idx]) < 0.05
+            if idx is None or idx >= len(robust_bse):
+                continue
+            r_se = float(robust_bse[idx])
+            r_z = float(robust_tvalues[idx])
+            r_p = float(robust_pvalues[idx])
+            # RS-ACT-009: a releveled intercept's robust SE is inflated by the
+            # calibration variance and its z/p recentred, mirroring the
+            # model-based path (no robust CI field to shift).
+            if s.feature == "Intercept" and corr_fn is not None:
+                corr = corr_fn(r_se)
+                if corr is not None:
+                    r_se, r_z, r_p = corr["se"], corr["z"], corr["p"]
+            s.robust_std_error = round(r_se, 6)
+            s.robust_z_value = round(r_z, 3)
+            s.robust_p_value = round(r_p, 4)
+            s.robust_significant = r_p < 0.05
 
         return True, None
 

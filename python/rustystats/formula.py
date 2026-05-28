@@ -1346,6 +1346,7 @@ class GLMModel:
         # fits. Stored Python-side rather than mutating the Rust result so the
         # underlying ``self._result`` stays the original immutable fit.
         self._intercept_delta: float = 0.0
+        self._intercept_delta_var: float = 0.0
         self._relevel_history: list[dict[str, Any]] = []
 
     @property
@@ -1372,6 +1373,16 @@ class GLMModel:
     def intercept_delta(self) -> float:
         """Accumulated ``log(c)`` intercept shift applied by ``relevel()``."""
         return self._intercept_delta
+
+    @property
+    def intercept_delta_var(self) -> float:
+        """Accumulated approximate ``Var(log c)`` from ``relevel()``.
+
+        Folded into the intercept's standard error so its CI/z/p reflect the
+        calibration step's own uncertainty (delta method; ``0.0`` for
+        un-releveled models). See :meth:`relevel`.
+        """
+        return self._intercept_delta_var
 
     @property
     def relevel_history(self) -> list[dict[str, Any]]:
@@ -1446,16 +1457,89 @@ class GLMModel:
         """Whether :meth:`relevel` has shifted the intercept.
 
         When true, the intercept's Wald inference is recentred on the shifted
-        estimate: the relevel ``log(c)`` is treated as a known additive offset,
-        so the standard error is unchanged and the CI / z / p slide with the
-        point estimate. (The SE therefore excludes the calibration factor's own
-        uncertainty — see :meth:`summary`.) Other coefficients are untouched.
+        estimate and its standard error is inflated by the relevel calibration
+        variance (``sqrt(se² + Var(log c))``), so the CI / z / p reflect both
+        the shift and the calibration step's own uncertainty. Other coefficients
+        are untouched. See :meth:`_releveled_intercept_inference`.
         """
         return (
             bool(self._intercept_delta)
             and bool(self.feature_names)
             and self.feature_names[0] == "Intercept"
         )
+
+    def _releveled_intercept_inference(
+        self, raw_se0: float, raw_ci0: tuple[float, float] | None = None
+    ) -> dict[str, Any] | None:
+        """Corrected intercept Wald row for a releveled model (else ``None``).
+
+        Given the *raw* (model-based or robust) intercept SE — and optionally its
+        raw CI bounds on the link scale — recentre on the shifted estimate
+        ``params[0]``, inflate the SE by the relevel calibration variance, and
+        rebuild ``z``/``p``/``signif`` (normal Wald) and the CI (preserving the
+        raw critical multiplier). Pass robust ``raw_se0``/``raw_ci0`` to get the
+        robust-flavoured correction.
+        """
+        if not self._intercept_releveled():
+            return None
+        from rustystats.glm import _normal_two_sided_p, _significance_code
+
+        est = float(self.params[0])
+        raw_se0 = float(raw_se0)
+        se = float(np.sqrt(raw_se0**2 + self._intercept_delta_var)) if raw_se0 > 0 else raw_se0
+        if se > 1e-10:
+            z = est / se
+            p = _normal_two_sided_p(z)
+            signif = _significance_code(p)
+        else:
+            z, p, signif = float("nan"), float("nan"), ""
+        out: dict[str, Any] = {"se": se, "z": z, "p": p, "signif": signif}
+        if raw_ci0 is not None and raw_se0 > 1e-10:
+            z_crit = 0.5 * (float(raw_ci0[1]) - float(raw_ci0[0])) / raw_se0
+            out["ci_lo"] = est - z_crit * se
+            out["ci_hi"] = est + z_crit * se
+        return out
+
+    def _family_unit_variance(self, mu: np.ndarray) -> np.ndarray:
+        """Family variance function ``V(mu)`` for the log-link families relevel
+        supports — used only for the relevel calibration-variance estimate."""
+        base = self.family.lower().split("(", 1)[0].strip()
+        mu = np.asarray(mu, dtype=np.float64)
+        if base in ("poisson", "quasipoisson"):
+            return mu
+        if base == "gamma":
+            return mu * mu
+        from rustystats.diagnostics.api import _parse_family_params
+
+        var_power, theta = _parse_family_params(self.family)
+        if base == "tweedie":
+            return np.power(mu, var_power)
+        if base in ("negativebinomial", "negbinomial"):
+            t = theta if theta and theta > 0 else 1.0
+            return mu + mu * mu / t
+        return np.ones_like(mu)  # gaussian (log link) and any other
+
+    def _relevel_log_factor_variance(
+        self, y: np.ndarray, mu: np.ndarray, weights_arr: np.ndarray | None
+    ) -> float:
+        """Delta-method ``Var(log c)`` for one relevel call (0.0 if not finite).
+
+        Treats the expected total ``Σ(w·mu)`` as known and the actual total
+        ``A = Σ(w·y)`` as random with ``Var(y_i) = phi·V(mu_i)/w_i``, giving
+        ``Var(log c) ≈ phi·Σ(w_i·V(mu_i)) / A²``.
+        """
+        w = np.ones_like(mu) if weights_arr is None else np.asarray(weights_arr, dtype=np.float64)
+        a = float(np.sum(w * y))
+        if a <= 0.0:
+            return 0.0
+        try:
+            phi = float(self._result.scale())
+        except Exception:
+            phi = 1.0
+        if not np.isfinite(phi) or phi <= 0.0:
+            phi = 1.0
+        var = phi * float(np.sum(w * self._family_unit_variance(mu))) / (a * a)
+        return var if np.isfinite(var) and var >= 0.0 else 0.0
 
     def __getattr__(self, name: str) -> Any:
         """Delegate attribute access to the underlying result object.
@@ -1863,16 +1947,11 @@ class GLMModel:
             z = np.asarray(self.tvalues(), dtype=np.float64)
             p = np.asarray(self.pvalues(), dtype=np.float64)
             signif = list(self.significance_codes())
-            if self._intercept_releveled() and se[0] > 1e-10:
-                # relevel() shifted the intercept by a known log(c); SE is
-                # unchanged, so z/p track the new estimate (the CI lives in
-                # relativities()/summary()).
-                from rustystats.glm import _normal_two_sided_p, _significance_code
-
-                z, p, signif = z.copy(), p.copy(), list(signif)
-                z[0] = float(self.params[0]) / se[0]
-                p[0] = _normal_two_sided_p(z[0])
-                signif[0] = _significance_code(p[0])
+            corr = self._releveled_intercept_inference(se[0])
+            if corr is not None:
+                # relevel() recentres + inflates the intercept's inference.
+                se, z, p, signif = se.copy(), z.copy(), p.copy(), list(signif)
+                se[0], z[0], p[0], signif[0] = corr["se"], corr["z"], corr["p"], corr["signif"]
         else:
             se = np.full(n, np.nan)
             z = np.full(n, np.nan)
@@ -1911,11 +1990,12 @@ class GLMModel:
         show_standard_inference = status is None or status in {"valid_standard", "valid_robust"}
         if show_standard_inference:
             ci = self.conf_int()
-            if self._intercept_releveled():
-                # Slide the intercept CI by the relevel log(c) so it brackets the
-                # shifted relativity (width/SE unchanged).
+            corr = self._releveled_intercept_inference(self.bse()[0], (ci[0, 0], ci[0, 1]))
+            if corr is not None:
+                # Recentre + inflate the intercept CI so it brackets the shifted
+                # relativity and reflects the calibration uncertainty.
                 ci = ci.copy()
-                ci[0, :] = ci[0, :] + self._intercept_delta
+                ci[0, 0], ci[0, 1] = corr["ci_lo"], corr["ci_hi"]
             ci_lower = np.exp(ci[:, 0])
             ci_upper = np.exp(ci[:, 1])
         else:
@@ -2023,7 +2103,6 @@ class GLMModel:
             optimizer_route=getattr(self, "optimizer_route", None),
             effective_df=self._total_edf,
             is_quasi_likelihood=self.is_quasi_likelihood,
-            intercept_delta=(self._intercept_delta if self._intercept_releveled() else 0.0),
         )
 
         if self.has_complement:
@@ -2038,9 +2117,8 @@ class GLMModel:
         if self._intercept_releveled():
             result += (
                 "\nNote: the intercept reflects relevel(); its CI/z/p are recentred on the\n"
-                "      shifted estimate, treating log(c) as a known offset (SE unchanged), so\n"
-                "      they exclude the calibration factor's own uncertainty. Other\n"
-                "      coefficients and relativities are unchanged.\n"
+                "      shifted estimate and its SE is inflated by the calibration variance\n"
+                "      Var(log c). Other coefficients and relativities are unchanged.\n"
             )
 
         return result
@@ -2689,6 +2767,12 @@ class GLMModel:
         Calibrating on the same rows used to fit the model overstates the
         calibration quality — see :mod:`rustystats.calibration`.
 
+        The intercept's inference is recentred on the shifted estimate and its
+        standard error is inflated by an approximate ``Var(log c)`` (delta
+        method, ``φ·Σ(w·V(μ)) / (Σ w·y)²``), accumulated in
+        :attr:`intercept_delta_var`, so its CI/z/p are not falsely tight. Every
+        other coefficient and all relativities are unchanged.
+
         Returns a new :class:`GLMModel` by default; pass ``inplace=True`` to
         mutate this object instead.
         """
@@ -2716,6 +2800,9 @@ class GLMModel:
                 f"relevel factor c={c!r} is not finite/positive; cannot apply log-shift."
             )
         log_shift = float(np.log(c))
+        # RS-ACT-009 backlog #4: fold the calibration factor's own (delta-method)
+        # variance into the intercept SE so its CI/z/p are not falsely tight.
+        log_factor_var = self._relevel_log_factor_variance(y, mu, weights_arr)
 
         target = self if inplace else copy.copy(self)
         intercept_before = float(target.params[0])
@@ -2729,6 +2816,7 @@ class GLMModel:
                 "original_intercept": intercept_before,
                 "new_intercept": intercept_after,
                 "log_shift": log_shift,
+                "log_factor_var": log_factor_var,
                 "n_obs": int(y.shape[0]),
                 "total_weight": float(
                     np.sum(weights_arr) if weights_arr is not None else y.shape[0]
@@ -2737,6 +2825,7 @@ class GLMModel:
         )
         target._relevel_history = history
         target._intercept_delta = target._intercept_delta + log_shift
+        target._intercept_delta_var = target._intercept_delta_var + log_factor_var
         return target
 
     def to_pmml(
@@ -2924,6 +3013,7 @@ class GLMModel:
             "interactions_spec": self._interactions_spec,
             "complement_spec": self._complement_spec,
             "intercept_delta": float(self._intercept_delta),
+            "intercept_delta_var": float(self._intercept_delta_var),
             "relevel_history": self.relevel_history,
             "basis_impl": spline_basis_impl,
         }
@@ -3028,6 +3118,7 @@ class GLMModel:
         model.solver_status = result_state.get("solver_status")
         model.step_halving_used = result_state.get("step_halving_used")
         model._intercept_delta = float(state.get("intercept_delta", 0.0))
+        model._intercept_delta_var = float(state.get("intercept_delta_var", 0.0))
         model._relevel_history = [dict(entry) for entry in state.get("relevel_history", [])]
         return model
 

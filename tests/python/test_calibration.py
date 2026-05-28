@@ -312,48 +312,72 @@ class TestReleveLogLink:
             rel_new["Relativity"].to_numpy()[1:],
         )
 
-    def test_relevel_shifts_intercept_inference_with_estimate(self):
-        """PR11: after relevel the intercept CI/z/p track the shifted estimate.
-
-        The relevel log(c) is treated as a known additive offset: the SE is
-        unchanged, the CI slides with the point estimate (so it still brackets
-        the displayed relativity), and z/p are recentred. Non-intercept
-        inference is untouched.
+    def test_relevel_inflates_and_recenters_intercept_inference(self):
+        """PR11 + backlog #4: after relevel the intercept inference is recentred
+        on the shifted estimate AND its SE is inflated by the calibration
+        variance Var(log c); non-intercept inference is untouched.
         """
         _df_train, result = _fit_log_link_poisson(seed=5)
         df_holdout = make_freq_frame(n=2000, seed=505)
         releveled = result.relevel(data=df_holdout)
         delta = releveled.intercept_delta
+        var = releveled.intercept_delta_var
         assert abs(delta) > 1e-6  # the holdout actually moves the intercept
+        assert var > 0.0  # calibration variance is folded in
 
-        # coef_table: SE is shift-invariant (unchanged); z recentred on the new
-        # estimate; non-intercept rows untouched.
         ct_old = result.coef_table()
         ct = releveled.coef_table()
-        assert np.all(np.isfinite(ct["Std.Error"].to_numpy()))
+        # intercept SE inflated to sqrt(se^2 + Var(log c)); strictly larger.
+        se_old0 = ct_old["Std.Error"][0]
+        np.testing.assert_allclose(ct["Std.Error"][0], np.sqrt(se_old0**2 + var), rtol=1e-9)
+        assert ct["Std.Error"][0] > se_old0
+        # non-intercept SE untouched; z recentred on the shifted estimate.
         np.testing.assert_allclose(
-            ct["Std.Error"].to_numpy(), ct_old["Std.Error"].to_numpy(), rtol=1e-12
+            ct["Std.Error"].to_numpy()[1:], ct_old["Std.Error"].to_numpy()[1:], rtol=1e-12
         )
         np.testing.assert_allclose(ct["z"][0], releveled.params[0] / ct["Std.Error"][0], rtol=1e-9)
         np.testing.assert_allclose(ct["z"].to_numpy()[1:], ct_old["z"].to_numpy()[1:], rtol=1e-12)
 
-        # relativities: the intercept CI slides by exp(delta) and still brackets
-        # the shifted relativity; non-intercept CIs unchanged.
+        # relativities: intercept CI brackets the shifted relativity and is wider
+        # than the original (inflation); non-intercept CIs unchanged.
         rel_old = result.relativities()
         rel = releveled.relativities()
         assert rel["CI_Lower"][0] <= rel["Relativity"][0] <= rel["CI_Upper"][0]
-        np.testing.assert_allclose(
-            rel["CI_Lower"][0], rel_old["CI_Lower"][0] * np.exp(delta), rtol=1e-9
-        )
-        np.testing.assert_allclose(
-            rel["CI_Upper"][0], rel_old["CI_Upper"][0] * np.exp(delta), rtol=1e-9
-        )
+        old_logwidth = np.log(rel_old["CI_Upper"][0]) - np.log(rel_old["CI_Lower"][0])
+        new_logwidth = np.log(rel["CI_Upper"][0]) - np.log(rel["CI_Lower"][0])
+        assert new_logwidth > old_logwidth
         np.testing.assert_array_equal(
             rel["CI_Lower"].to_numpy()[1:], rel_old["CI_Lower"].to_numpy()[1:]
         )
-
-        # summary explains the relevel recentering.
         assert "reflects relevel()" in releveled.summary()
+
+    def test_relevel_intercept_inference_consistent_in_diagnostics(self):
+        """Backlog #2/#3: diagnostics coefficient_summary matches coef_table for
+        the releveled intercept, for both model-based and robust SEs."""
+        df, result = _fit_log_link_poisson(seed=6)
+        df_hold = make_freq_frame(n=2000, seed=606)
+        releveled = result.relevel(data=df_hold)
+        ct = releveled.coef_table()
+        i0 = list(ct["Feature"]).index("Intercept")
+        diag = releveled.diagnostics(
+            df,
+            continuous_factors=["DrivAge"],
+            compute_vif=False,
+            compute_deviance_by_level=False,
+            compute_lift=False,
+            compute_partial_dep=False,
+            compute_robust_se=True,
+            compute_score_tests=False,
+        )
+        ic = next(c for c in diag.coefficient_summary if c.feature == "Intercept")
+        # model-based intercept matches the (corrected) coef_table row.
+        assert ic.std_error == pytest.approx(round(float(ct["Std.Error"][i0]), 6), abs=1e-6)
+        assert ic.z_value == pytest.approx(round(float(ct["z"][i0]), 3), abs=2e-3)
+        # robust intercept is also recentred on the shifted estimate.
+        if ic.robust_std_error:
+            np.testing.assert_allclose(
+                ic.robust_z_value, releveled.params[i0] / ic.robust_std_error, rtol=2e-2
+            )
 
     def test_intercept_shifted_by_log_factor(self):
         """Intercept moves by exactly log(c) where c = Σy/Σμ on the calibration data.
