@@ -416,6 +416,9 @@ pub fn fit_negbinomial_py<'py>(
     meta.set_item("theta_tol", theta_tol)?;
     meta.set_item("max_theta_iter", max_theta_iter)?;
     meta.set_item("glm_tol", tol)?;
+    // Schema parity with the fixed-theta path (RS-ACT-010): estimation never
+    // falls back, but the key is always present so consumers can rely on it.
+    meta.set_item("fallback_reason", py.None())?;
 
     let tuple = pyo3::types::PyTuple::new(
         py,

@@ -489,7 +489,7 @@ def _pav_increasing(sorted_y: np.ndarray, sorted_w: np.ndarray) -> np.ndarray:
     return fitted
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class IsotonicCalibration:
     """Monotone calibration map fit by the Pool-Adjacent-Violators algorithm.
 
@@ -504,6 +504,24 @@ class IsotonicCalibration:
     n_obs: int = 0
     total_weight: float = 0.0
     method: str = "isotonic"
+
+    # The default frozen-dataclass __eq__/__hash__ compare field tuples, which
+    # raises on the ndarray fields ("truth value of an array is ambiguous" /
+    # "unhashable type: ndarray"). Compare by content instead, and stay
+    # unhashable (array-valued value type).
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, IsotonicCalibration):
+            return NotImplemented
+        return (
+            self.increasing == other.increasing
+            and self.n_obs == other.n_obs
+            and self.total_weight == other.total_weight
+            and self.method == other.method
+            and np.array_equal(self.thresholds_, other.thresholds_)
+            and np.array_equal(self.values_, other.values_)
+        )
+
+    __hash__ = None
 
     def predict(self, pred: Any) -> np.ndarray:
         arr = np.asarray(pred, dtype=np.float64)

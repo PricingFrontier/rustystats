@@ -4154,6 +4154,7 @@ class FormulaGLMDict(_GLMBase):
                     "theta_converged": None,
                     "theta_tol": None,
                     "max_theta_iter": None,
+                    "glm_tol": float(tol),
                     "fallback_reason": None,
                 }
 
@@ -4252,8 +4253,19 @@ def glm_dict(
         Link function. If None, uses canonical link.
     var_power : float, default=1.5
         Variance power for Tweedie family.
-    theta : float, optional
-        Dispersion for Negative Binomial.
+    theta : float or {"estimate"}, optional
+        Negative Binomial dispersion/shape. One of:
+
+        - a positive number — used as a fixed theta (recorded as fixed);
+        - ``"estimate"`` — profile-likelihood estimation, available only on the
+          plain GLM path (smooth / regularized / sign-constrained NB fits raise
+          unless a numeric theta is given);
+        - unspecified / ``None`` — raises for ``family="negbinomial"``; there is
+          no silent ``theta=1.0`` and no implicit estimation.
+
+        NB results expose ``result.theta`` and ``result.theta_metadata``
+        (estimated-vs-fixed, init theta, iterations, convergence, tolerances,
+        fallback reason).
     exposure : str or array-like, optional
         Raw positive exposure (the rate denominator) for log-link rate models.
         Added to the linear predictor as ``log(exposure)`` and used as the

@@ -468,6 +468,21 @@ class TestIsotonicCalibration:
         assert cal2.method == "isotonic"
         assert cal.to_dict()["scale"] == "response"
 
+    def test_equality_by_content_and_unhashable(self):
+        """The frozen dataclass compares by array content (no ValueError) and is
+        unhashable, instead of the broken default tuple __eq__/__hash__."""
+        rng = np.random.default_rng(7)
+        pred = rng.uniform(0.0, 5.0, 200)
+        y = pred + rng.normal(0.0, 1.0, 200)
+        cal = rs.fit_isotonic_calibration(y, pred)
+        cal_same = rs.IsotonicCalibration.from_dict(cal.to_dict())
+        cal_diff = rs.fit_isotonic_calibration(y + 1.0, pred)
+        assert cal == cal_same  # value equality, no array-ambiguity ValueError
+        assert cal != cal_diff
+        assert cal != "not a calibration"
+        with pytest.raises(TypeError):
+            hash(cal)
+
     def test_duplicate_predictions_are_order_invariant(self):
         """Duplicate prediction scores are pooled before PAV, so row order does not matter."""
         pred = np.array([1.0, 1.0, 2.0, 2.0, 3.0, 3.0])

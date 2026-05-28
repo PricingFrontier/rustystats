@@ -78,6 +78,17 @@ class TestNegBinomialThetaContract:
         assert result.theta_metadata["estimated"] is False
         assert result.family == "NegativeBinomial(theta=1.5000)"
 
+    def test_estimate_and_fixed_metadata_share_one_schema(self):
+        """RS-ACT-010: both theta_metadata dicts carry the same keys (incl.
+        fallback_reason and glm_tol) so consumers can rely on the schema."""
+        data = _nb_frame(n=1200, true_theta=2.0)
+        estimated = _fit(data, theta="estimate").theta_metadata
+        fixed = _fit(data, theta=1.5).theta_metadata
+        assert set(estimated) == set(fixed)
+        assert "fallback_reason" in estimated
+        assert "glm_tol" in fixed
+        assert estimated["fallback_reason"] is None
+
     def test_theta_metadata_survives_serialization(self):
         """010.2/010.3: serialized NB models keep theta provenance."""
         data = _nb_frame(n=1200, true_theta=2.0)
