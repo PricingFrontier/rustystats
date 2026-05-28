@@ -1220,6 +1220,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#choosing-alpha_max-the-glm-score-endpoint-rs-act-005" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Choosing alpha_max: the GLM-score endpoint (RS-ACT-005)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#the-1-se-rule" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2833,6 +2844,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#choosing-alpha_max-the-glm-score-endpoint-rs-act-005" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Choosing alpha_max: the GLM-score endpoint (RS-ACT-005)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#the-1-se-rule" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3123,6 +3145,35 @@ P_{\text{EN}}(\boldsymbol{\beta}) = \rho \|\boldsymbol{\beta}\|_1 + \frac{1-\rho
 </span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>    <span class="p">)</span>
 </span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;α=</span><span class="si">{</span><span class="n">alpha</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">result</span><span class="o">.</span><span class="n">n_nonzero</span><span class="p">()</span><span class="si">}</span><span class="s2"> features, deviance=</span><span class="si">{</span><span class="n">result</span><span class="o">.</span><span class="n">deviance</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
 </span></code></pre></div>
+<h3 id="choosing-alpha_max-the-glm-score-endpoint-rs-act-005">Choosing <code>alpha_max</code>: the GLM-score endpoint (RS-ACT-005)<a class="headerlink" href="#choosing-alpha_max-the-glm-score-endpoint-rs-act-005" title="Permanent link">&para;</a></h3>
+<p>For elastic-net with <code>l1_ratio &gt; 0</code>, the largest meaningful penalty is the
+smallest <code>α</code> that <em>zeroes</em> every penalised coefficient. RustyStats derives this
+from the KKT condition at the <strong>offset / weight-aware intercept-only null
+model</strong> <code>μ_0</code>:</p>
+<div class="arithmatex">\[
+\alpha_{\max} = \frac{\max_j \,\bigl|\sum_i x_{ij}\, w_i\,(y_i - \mu_{0,i})\,(\partial\mu/\partial\eta)_i \big/ V(\mu_{0,i})\bigr|}{l_1}
+\]</div>
+<p>For canonical-link families (Gaussian/identity, Poisson/log, Binomial/logit)
+this collapses to <code>X' diag(w) (y - μ_0)</code> because the chain factor
+<code>(∂μ/∂η)/V(μ)</code> is identically 1. For non-canonical links (e.g. Gamma/log) the
+chain factor is included explicitly.</p>
+<p><strong>Scaling matches the solver.</strong> RustyStats' coordinate descent works with raw
+weighted sums (no <code>1/n</code>), so the alpha-max formula does too. The intercept
+column and any other unpenalised columns are excluded from the maximum.</p>
+<p><strong>Ridge fallback.</strong> With <code>l1_ratio == 0</code> the all-zero KKT does not define a
+finite <code>alpha_max</code>. We fall back to a documented heuristic anchored on the
+median weighted Gram diagonal <code>Σ_i w_i x_{ij}^2</code>, scaled by 10. Tune with
+<code>alpha_min_ratio</code> and <code>n_alphas</code> if you want a finer grid.</p>
+<div class="admonition warning">
+<p class="admonition-title">Behaviour change vs pre-RS-ACT-005 versions</p>
+<p>The legacy formula divided the score by <code>n</code> and used a centred-<code>y</code> proxy
+with no family/link/offset awareness, which under-sized <code>alpha_max</code> by
+roughly a factor of <code>n</code>. On a 600-row Poisson fit it returned ~0.799
+versus the correct ~479.6, leaving penalised coefficients non-zero at
+the grid endpoint and biasing CV selection toward over-shrinkage. If you
+were tuning <code>alpha_min_ratio</code> to compensate, you can now drop that
+workaround.</p>
+</div>
 <h3 id="the-1-se-rule">The 1-SE Rule<a class="headerlink" href="#the-1-se-rule" title="Permanent link">&para;</a></h3>
 <p>Choose the largest λ within one standard error of the minimum CV error:</p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>λ_1se: largest λ such that CV_error(λ) ≤ CV_error(λ_min) + SE(λ_min)

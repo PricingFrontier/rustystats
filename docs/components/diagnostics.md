@@ -163,6 +163,34 @@ pub fn null_deviance(
 }
 ```
 
+## Ranking Policy (RS-ACT-004)
+
+Decile / calibration / lift / Lorenz / Gini all need a single risk score to
+sort by. For rate models with positive exposure, the right score is
+$\mu / \text{exposure}$, not raw $\mu$: ranking by $\mu$ alone confuses
+high-exposure cells with high-risk cells.
+
+```python
+result.diagnostics(
+    train_data=data,
+    categorical_factors=["Region"],
+    continuous_factors=["Age"],
+    ranking="auto",   # default; rate when exposure present, mean otherwise
+    # ranking="rate"  # explicit rate ranking — errors if no exposure
+    # ranking="mean"  # legacy mean ranking
+)
+```
+
+| `ranking` | Sort key | Notes |
+|---|---|---|
+| `"auto"` (default) | $\mu / \text{exposure}$ when exposure was supplied, else $\mu$ | Recommended for actuarial diagnostics. |
+| `"rate"` | $\mu / \text{exposure}$ | Requires exposure; raises otherwise. |
+| `"mean"` | $\mu$ | Pre-RS-ACT-004 behaviour. Useful for severity / non-exposure models. |
+
+**Aggregates stay on the count scale.** Bin totals report
+`Σ y`, `Σ μ`, `Σ exposure`, and `actual / expected`, regardless of the
+ranking choice — only the bin *assignment* changes.
+
 ## Calibration Metrics
 
 ### Actual vs Expected

@@ -561,3 +561,112 @@ for d in bc.model_vs_base_deciles:
         f"model_ae={d.model_ae_ratio:.2f}  base_ae={d.base_ae_ratio:.2f}"
     )
 ```
+
+---
+
+## Calibration Primitives (RS-ACT-009)
+
+Stand-alone calibration primitives sit alongside the model — they never silently
+fold into the GLM coefficients. Use them to *measure* calibration (`A/E` overall,
+by bin, by factor) and to *fit* an explicit calibration object (global or
+isotonic) that callers apply on top of `result.predict()`.
+
+!!! warning "In-sample optimism"
+    Fitting calibration on the same rows used to fit the model overstates
+    calibration quality. Prefer a held-out calibration fold, out-of-fold
+    predictions, or untouched holdout data.
+
+### rs.calibration_summary
+
+Standalone array-level summary. Returns overall, per-bin and (optional)
+per-factor aggregates.
+
+```python
+summary = rs.calibration_summary(
+    y,
+    pred,
+    exposure=None,     # bins are rate-ranked when exposure is present
+    weights=None,      # Σ(w·y) / Σ(w·μ) when supplied
+    by=None,           # mapping {factor_name: array} or None
+    n_bins=10,
+    ranking="auto",    # "auto" | "mean" | "rate"
+    min_exposure=0.0,  # per-factor cells below this are flagged suppressed
+)
+```
+
+`summary["overall"]` carries `actual`, `expected`, `ae_ratio`, `n_obs`,
+`total_weight`. `summary["bins"]` is a list of per-bin dicts with
+`bin_index`, `count`, `actual`, `expected`, `ae_ratio`, `exposure`,
+`predicted_rate_min/max/mean`, `actual_rate`, `expected_rate`.
+`summary["by_factor"]` (when `by=` is given) groups the same per-bin shape by
+factor level with a boolean `suppressed` flag.
+
+### Result-bound wrappers
+
+`GLMModel.calibration_summary(data, ...)` resolves response / exposure / weights
+through the fitted model and delegates to `rs.calibration_summary`.
+`GLMModel.fit_calibration(data, method=...)` returns a `GlobalCalibration` (for
+`method="global"`) or an `IsotonicCalibration` (for `method="isotonic"`):
+
+```python
+result.calibration_summary(holdout, by="Region", min_exposure=10.0)
+
+global_cal = result.fit_calibration(holdout, method="global")
+iso_cal    = result.fit_calibration(holdout, method="isotonic")
+
+calibrated = global_cal.predict(result.predict(new_data))
+```
+
+### rs.GlobalCalibration
+
+Scalar multiplicative map `y_hat = factor * pred`, with
+`factor = Σ(w·y) / Σ(w·μ)`.
+
+```python
+cal = rs.fit_global_calibration(y, pred, weights=None)
+cal.factor                       # the multiplicative factor
+cal.predict(np.array([...]))     # = factor * pred
+state = cal.to_dict()
+cal2  = rs.GlobalCalibration.from_dict(state)
+```
+
+### rs.IsotonicCalibration
+
+Monotone Pool-Adjacent-Violators (PAV) map with optional per-observation
+weights. Predictions outside the fitted threshold range are clamped to the
+nearest knot (`numpy.interp` semantics).
+
+```python
+iso = rs.fit_isotonic_calibration(y, pred, weights=None, increasing=True)
+iso.thresholds_   # ascending pred-space knot positions
+iso.values_       # monotone calibrated values at those knots
+iso.predict(np.linspace(...))
+iso.to_dict()
+```
+
+Isotonic calibration is **opt-in only** and **serialised separately** from the
+GLM. Use it explicitly on top of `result.predict()`; it is never applied
+implicitly inside `predict()`.
+
+### result.relevel — log-link intercept shift
+
+For log-link GLMs, a global calibration can be applied as an intercept shift —
+preserving every relativity exactly:
+
+```python
+releveled = result.relevel(holdout, weights=None, inplace=False)
+```
+
+Computes `c = Σ(w·y) / Σ(w·μ)` on the calibration data and updates the
+intercept by `+log(c)`. The non-intercept coefficients `β[1:]` are
+**bit-identical**, so every `exp(β_j)` relativity is unchanged — only the
+model's overall level shifts. Returns a new `GLMModel` by default; pass
+`inplace=True` to mutate the current object.
+
+`releveled.intercept_delta` and `releveled.relevel_history` expose the
+accumulated shift and per-call provenance (original/new intercept, factor,
+log shift, n_obs, total_weight). Relevel state round-trips through
+`to_bytes`/`from_bytes`.
+
+For non-log links `relevel()` raises `ValidationError`; attach a
+`GlobalCalibration` via `fit_calibration(method="global")` instead.

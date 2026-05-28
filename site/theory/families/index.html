@@ -1322,10 +1322,21 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#66-implementation" class="md-nav__link">
+  <a href="#66-support-contract-rs-act-006" class="md-nav__link">
     <span class="md-ellipsis">
       
-        6.6 Implementation
+        6.6 Support contract (RS-ACT-006)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#67-implementation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.7 Implementation
       
     </span>
   </a>
@@ -1404,6 +1415,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#76-honest-aicbic-labelling-rs-act-008" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.6 Honest AIC/BIC labelling (RS-ACT-008)
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -1466,13 +1488,30 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#85-estimating-theta" class="md-nav__link">
+  <a href="#85-the-theta-contract-rs-act-010" class="md-nav__link">
     <span class="md-ellipsis">
       
-        8.5 Estimating \(\theta\)
+        8.5 The \(\theta\) Contract (RS-ACT-010)
       
     </span>
   </a>
+  
+    <nav class="md-nav" aria-label="8.5 The \(\theta\) Contract (RS-ACT-010)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#estimation-algorithm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Estimation algorithm
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
         
@@ -3517,10 +3556,21 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#66-implementation" class="md-nav__link">
+  <a href="#66-support-contract-rs-act-006" class="md-nav__link">
     <span class="md-ellipsis">
       
-        6.6 Implementation
+        6.6 Support contract (RS-ACT-006)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#67-implementation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.7 Implementation
       
     </span>
   </a>
@@ -3599,6 +3649,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#76-honest-aicbic-labelling-rs-act-008" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.6 Honest AIC/BIC labelling (RS-ACT-008)
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -3661,13 +3722,30 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#85-estimating-theta" class="md-nav__link">
+  <a href="#85-the-theta-contract-rs-act-010" class="md-nav__link">
     <span class="md-ellipsis">
       
-        8.5 Estimating \(\theta\)
+        8.5 The \(\theta\) Contract (RS-ACT-010)
       
     </span>
   </a>
+  
+    <nav class="md-nav" aria-label="8.5 The \(\theta\) Contract (RS-ACT-010)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#estimation-algorithm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Estimation algorithm
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
         
@@ -4599,34 +4677,94 @@ $$</p>
 <li><span class="arithmatex">\(p \to 2\)</span>: More Gamma-like (severity dominates)</li>
 </ul>
 <p><strong>Estimating <span class="arithmatex">\(p\)</span></strong>: Profile the likelihood over a grid of <span class="arithmatex">\(p\)</span> values.</p>
-<h3 id="66-implementation">6.6 Implementation<a class="headerlink" href="#66-implementation" title="Permanent link">&para;</a></h3>
-<div class="language-rust highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">TweedieFamily</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="n">var_power</span><span class="p">:</span><span class="w"> </span><span class="kt">f64</span><span class="p">,</span><span class="w">  </span><span class="c1">// p in V(μ) = μ^p</span>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="p">}</span>
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>
-</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="k">impl</span><span class="w"> </span><span class="n">Family</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">TweedieFamily</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">variance</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">mu</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="w">        </span><span class="n">mu</span><span class="p">.</span><span class="n">mapv</span><span class="p">(</span><span class="o">|</span><span class="n">m</span><span class="o">|</span><span class="w"> </span><span class="n">m</span><span class="p">.</span><span class="n">powf</span><span class="p">(</span><span class="bp">self</span><span class="p">.</span><span class="n">var_power</span><span class="p">))</span>
-</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="w">    </span><span class="p">}</span>
-</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>
-</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">unit_deviance</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">y</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">,</span><span class="w"> </span><span class="n">mu</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">p</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">var_power</span><span class="p">;</span>
-</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a><span class="w">        </span><span class="n">Zip</span><span class="p">::</span><span class="n">from</span><span class="p">(</span><span class="n">y</span><span class="p">).</span><span class="n">and</span><span class="p">(</span><span class="n">mu</span><span class="p">).</span><span class="n">map_collect</span><span class="p">(</span><span class="o">|&amp;</span><span class="n">yi</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">mui</span><span class="o">|</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-5-13"><a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a><span class="w">            </span><span class="k">if</span><span class="w"> </span><span class="n">yi</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="mf">0.0</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-5-14"><a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a><span class="w">                </span><span class="mf">2.0</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">mui</span><span class="p">.</span><span class="n">powf</span><span class="p">(</span><span class="mf">2.0</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">p</span><span class="p">)</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="p">(</span><span class="mf">2.0</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">p</span><span class="p">)</span>
-</span><span id="__span-5-15"><a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a><span class="w">            </span><span class="p">}</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-5-16"><a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a><span class="w">                </span><span class="kd">let</span><span class="w"> </span><span class="n">t1</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">yi</span><span class="p">.</span><span class="n">powf</span><span class="p">(</span><span class="mf">2.0</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">p</span><span class="p">)</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="p">((</span><span class="mf">1.0</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">p</span><span class="p">)</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="p">(</span><span class="mf">2.0</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">p</span><span class="p">));</span>
-</span><span id="__span-5-17"><a id="__codelineno-5-17" name="__codelineno-5-17" href="#__codelineno-5-17"></a><span class="w">                </span><span class="kd">let</span><span class="w"> </span><span class="n">t2</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">yi</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">mui</span><span class="p">.</span><span class="n">powf</span><span class="p">(</span><span class="mf">1.0</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">p</span><span class="p">)</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="p">(</span><span class="mf">1.0</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">p</span><span class="p">);</span>
-</span><span id="__span-5-18"><a id="__codelineno-5-18" name="__codelineno-5-18" href="#__codelineno-5-18"></a><span class="w">                </span><span class="kd">let</span><span class="w"> </span><span class="n">t3</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mui</span><span class="p">.</span><span class="n">powf</span><span class="p">(</span><span class="mf">2.0</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">p</span><span class="p">)</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="p">(</span><span class="mf">2.0</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">p</span><span class="p">);</span>
-</span><span id="__span-5-19"><a id="__codelineno-5-19" name="__codelineno-5-19" href="#__codelineno-5-19"></a><span class="w">                </span><span class="mf">2.0</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="p">(</span><span class="n">t1</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">t2</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">t3</span><span class="p">)</span>
-</span><span id="__span-5-20"><a id="__codelineno-5-20" name="__codelineno-5-20" href="#__codelineno-5-20"></a><span class="w">            </span><span class="p">}</span>
-</span><span id="__span-5-21"><a id="__codelineno-5-21" name="__codelineno-5-21" href="#__codelineno-5-21"></a><span class="w">        </span><span class="p">})</span>
-</span><span id="__span-5-22"><a id="__codelineno-5-22" name="__codelineno-5-22" href="#__codelineno-5-22"></a><span class="w">    </span><span class="p">}</span>
-</span><span id="__span-5-23"><a id="__codelineno-5-23" name="__codelineno-5-23" href="#__codelineno-5-23"></a>
-</span><span id="__span-5-24"><a id="__codelineno-5-24" name="__codelineno-5-24" href="#__codelineno-5-24"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">default_link</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Box</span><span class="o">&lt;</span><span class="k">dyn</span><span class="w"> </span><span class="n">Link</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-5-25"><a id="__codelineno-5-25" name="__codelineno-5-25" href="#__codelineno-5-25"></a><span class="w">        </span><span class="nb">Box</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">LogLink</span><span class="p">)</span>
-</span><span id="__span-5-26"><a id="__codelineno-5-26" name="__codelineno-5-26" href="#__codelineno-5-26"></a><span class="w">    </span><span class="p">}</span>
-</span><span id="__span-5-27"><a id="__codelineno-5-27" name="__codelineno-5-27" href="#__codelineno-5-27"></a><span class="p">}</span>
+<h3 id="66-support-contract-rs-act-006">6.6 Support contract (RS-ACT-006)<a class="headerlink" href="#66-support-contract-rs-act-006" title="Permanent link">&para;</a></h3>
+<p>RustyStats defaults to the actuarial pure-premium interior <code>1 &lt; p &lt; 2</code>.
+Other powers are valid Tweedie distributions but live outside that interior,
+so they require an explicit opt-in plus per-regime support rules on the
+response:</p>
+<table>
+<thead>
+<tr>
+<th><code>var_power</code></th>
+<th>Default behaviour</th>
+<th>With <code>allow_extended_tweedie=True</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>0 &lt; p &lt; 1</code></td>
+<td>❌ rejected — no Tweedie distribution exists here</td>
+<td>❌ still rejected</td>
+</tr>
+<tr>
+<td><code>1 &lt; p &lt; 2</code></td>
+<td>✅ compound Poisson-Gamma; requires <code>y ≥ 0</code></td>
+<td>(no-op)</td>
+</tr>
+<tr>
+<td><code>p ≤ 0</code></td>
+<td>❌ rejected (use <code>family="gaussian"</code> if <code>p == 0</code>)</td>
+<td>✅ requires <code>y ≥ 0</code></td>
+</tr>
+<tr>
+<td><code>p == 1</code></td>
+<td>❌ rejected (use <code>family="poisson"</code>)</td>
+<td>✅ requires <code>y ≥ 0</code></td>
+</tr>
+<tr>
+<td><code>p == 2</code></td>
+<td>❌ rejected (use <code>family="gamma"</code>)</td>
+<td>✅ requires <code>y &gt; 0</code></td>
+</tr>
+<tr>
+<td><code>p &gt; 2</code></td>
+<td>❌ rejected</td>
+<td>✅ requires <code>y &gt; 0</code></td>
+</tr>
+</tbody>
+</table>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># Default — actuarial pure premium.</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">rs</span><span class="o">.</span><span class="n">glm_dict</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">family</span><span class="o">=</span><span class="s2">&quot;tweedie&quot;</span><span class="p">,</span> <span class="n">var_power</span><span class="o">=</span><span class="mf">1.5</span><span class="p">)</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="c1"># Opt in to extended Tweedie; per-regime y rules still apply.</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="n">rs</span><span class="o">.</span><span class="n">glm_dict</span><span class="p">(</span>
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>    <span class="o">...</span><span class="p">,</span> <span class="n">family</span><span class="o">=</span><span class="s2">&quot;tweedie&quot;</span><span class="p">,</span> <span class="n">var_power</span><span class="o">=</span><span class="mf">2.5</span><span class="p">,</span>
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>    <span class="n">allow_extended_tweedie</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="p">)</span>
+</span></code></pre></div>
+<p>Per-regime support is enforced <strong>before</strong> any deviance is evaluated. The
+legacy behaviour silently produced <code>deviance = inf</code> for <code>p == 2</code> with <code>y == 0</code>
+and <em>negative</em> deviances for <code>p &gt; 2</code> with <code>y == 0</code>; both now raise
+<code>ValidationError</code> upfront with a clear message naming the canonical alternative
+where one exists.</p>
+<h3 id="67-implementation">6.7 Implementation<a class="headerlink" href="#67-implementation" title="Permanent link">&para;</a></h3>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">TweedieFamily</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="n">var_power</span><span class="p">:</span><span class="w"> </span><span class="kt">f64</span><span class="p">,</span><span class="w">  </span><span class="c1">// p in V(μ) = μ^p</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="p">}</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="k">impl</span><span class="w"> </span><span class="n">Family</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">TweedieFamily</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">variance</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">mu</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="w">        </span><span class="n">mu</span><span class="p">.</span><span class="n">mapv</span><span class="p">(</span><span class="o">|</span><span class="n">m</span><span class="o">|</span><span class="w"> </span><span class="n">m</span><span class="p">.</span><span class="n">powf</span><span class="p">(</span><span class="bp">self</span><span class="p">.</span><span class="n">var_power</span><span class="p">))</span>
+</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>
+</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">unit_deviance</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">y</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">,</span><span class="w"> </span><span class="n">mu</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">p</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">var_power</span><span class="p">;</span>
+</span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a><span class="w">        </span><span class="n">Zip</span><span class="p">::</span><span class="n">from</span><span class="p">(</span><span class="n">y</span><span class="p">).</span><span class="n">and</span><span class="p">(</span><span class="n">mu</span><span class="p">).</span><span class="n">map_collect</span><span class="p">(</span><span class="o">|&amp;</span><span class="n">yi</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">mui</span><span class="o">|</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-6-13"><a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a><span class="w">            </span><span class="k">if</span><span class="w"> </span><span class="n">yi</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="mf">0.0</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-6-14"><a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a><span class="w">                </span><span class="mf">2.0</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">mui</span><span class="p">.</span><span class="n">powf</span><span class="p">(</span><span class="mf">2.0</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">p</span><span class="p">)</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="p">(</span><span class="mf">2.0</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">p</span><span class="p">)</span>
+</span><span id="__span-6-15"><a id="__codelineno-6-15" name="__codelineno-6-15" href="#__codelineno-6-15"></a><span class="w">            </span><span class="p">}</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-6-16"><a id="__codelineno-6-16" name="__codelineno-6-16" href="#__codelineno-6-16"></a><span class="w">                </span><span class="kd">let</span><span class="w"> </span><span class="n">t1</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">yi</span><span class="p">.</span><span class="n">powf</span><span class="p">(</span><span class="mf">2.0</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">p</span><span class="p">)</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="p">((</span><span class="mf">1.0</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">p</span><span class="p">)</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="p">(</span><span class="mf">2.0</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">p</span><span class="p">));</span>
+</span><span id="__span-6-17"><a id="__codelineno-6-17" name="__codelineno-6-17" href="#__codelineno-6-17"></a><span class="w">                </span><span class="kd">let</span><span class="w"> </span><span class="n">t2</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">yi</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">mui</span><span class="p">.</span><span class="n">powf</span><span class="p">(</span><span class="mf">1.0</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">p</span><span class="p">)</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="p">(</span><span class="mf">1.0</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">p</span><span class="p">);</span>
+</span><span id="__span-6-18"><a id="__codelineno-6-18" name="__codelineno-6-18" href="#__codelineno-6-18"></a><span class="w">                </span><span class="kd">let</span><span class="w"> </span><span class="n">t3</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mui</span><span class="p">.</span><span class="n">powf</span><span class="p">(</span><span class="mf">2.0</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">p</span><span class="p">)</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="p">(</span><span class="mf">2.0</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">p</span><span class="p">);</span>
+</span><span id="__span-6-19"><a id="__codelineno-6-19" name="__codelineno-6-19" href="#__codelineno-6-19"></a><span class="w">                </span><span class="mf">2.0</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="p">(</span><span class="n">t1</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">t2</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">t3</span><span class="p">)</span>
+</span><span id="__span-6-20"><a id="__codelineno-6-20" name="__codelineno-6-20" href="#__codelineno-6-20"></a><span class="w">            </span><span class="p">}</span>
+</span><span id="__span-6-21"><a id="__codelineno-6-21" name="__codelineno-6-21" href="#__codelineno-6-21"></a><span class="w">        </span><span class="p">})</span>
+</span><span id="__span-6-22"><a id="__codelineno-6-22" name="__codelineno-6-22" href="#__codelineno-6-22"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-6-23"><a id="__codelineno-6-23" name="__codelineno-6-23" href="#__codelineno-6-23"></a>
+</span><span id="__span-6-24"><a id="__codelineno-6-24" name="__codelineno-6-24" href="#__codelineno-6-24"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">default_link</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Box</span><span class="o">&lt;</span><span class="k">dyn</span><span class="w"> </span><span class="n">Link</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-6-25"><a id="__codelineno-6-25" name="__codelineno-6-25" href="#__codelineno-6-25"></a><span class="w">        </span><span class="nb">Box</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">LogLink</span><span class="p">)</span>
+</span><span id="__span-6-26"><a id="__codelineno-6-26" name="__codelineno-6-26" href="#__codelineno-6-26"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-6-27"><a id="__codelineno-6-27" name="__codelineno-6-27" href="#__codelineno-6-27"></a><span class="p">}</span>
 </span></code></pre></div>
 <hr />
 <h2 id="part-7-quasi-families">Part 7: Quasi-Families<a class="headerlink" href="#part-7-quasi-families" title="Permanent link">&para;</a></h2>
@@ -4661,6 +4799,19 @@ V(\mu) = \mu(1-\mu), \quad \phi \text{ estimated}
 <li>When AIC/BIC aren't the primary concern</li>
 </ul>
 <p><strong>Caution</strong>: Quasi-likelihood inference is valid for large samples. AIC/BIC interpretation is murky.</p>
+<h3 id="76-honest-aicbic-labelling-rs-act-008">7.6 Honest AIC/BIC labelling (RS-ACT-008)<a class="headerlink" href="#76-honest-aicbic-labelling-rs-act-008" title="Permanent link">&para;</a></h3>
+<p>Quasi families do not have a proper full likelihood — only a quasi-likelihood
+with an estimated dispersion <span class="arithmatex">\(\phi\)</span>. To stop these values being compared as if
+they were ordinary likelihood AICs, RustyStats:</p>
+<ul>
+<li>Flags the fit with <code>result.is_quasi_likelihood == True</code>.</li>
+<li>Returns <code>None</code> from <code>result.aic()</code> and <code>result.bic()</code> (no documented QIC
+  ships yet; we don't surface a fake value).</li>
+<li>Relabels <code>summary()</code>'s log-likelihood-like line as
+  <code>Quasi-Log-Likelihood:</code> and prints <code>AIC</code> / <code>BIC</code> as <code>NA</code>.</li>
+</ul>
+<p><code>result.deviance</code>, <code>result.scale()</code> (estimated <span class="arithmatex">\(\phi\)</span>), and the Pearson chi²
+remain available unchanged.</p>
 <hr />
 <h2 id="part-8-the-negative-binomial-family">Part 8: The Negative Binomial Family<a class="headerlink" href="#part-8-the-negative-binomial-family" title="Permanent link">&para;</a></h2>
 <h3 id="81-the-distribution">8.1 The Distribution<a class="headerlink" href="#81-the-distribution" title="Permanent link">&para;</a></h3>
@@ -4715,13 +4866,33 @@ V(\mu) = \mu + \frac{\mu^2}{\theta}
 </tbody>
 </table>
 <p><strong>Rule of thumb</strong>: Use NegBin when overdispersion increases with the mean.</p>
-<h3 id="85-estimating-theta">8.5 Estimating <span class="arithmatex">\(\theta\)</span><a class="headerlink" href="#85-estimating-theta" title="Permanent link">&para;</a></h3>
-<p>RustyStats estimates <span class="arithmatex">\(\theta\)</span> using an iterative moment-based approach:</p>
+<h3 id="85-the-theta-contract-rs-act-010">8.5 The <span class="arithmatex">\(\theta\)</span> Contract (RS-ACT-010)<a class="headerlink" href="#85-the-theta-contract-rs-act-010" title="Permanent link">&para;</a></h3>
+<p><code>theta</code> is an <strong>explicit opt-in</strong>. Three call shapes:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># 1. Fixed numeric theta — recorded as fixed in result metadata.</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="n">rs</span><span class="o">.</span><span class="n">glm_dict</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">family</span><span class="o">=</span><span class="s2">&quot;negbinomial&quot;</span><span class="p">,</span> <span class="n">theta</span><span class="o">=</span><span class="mf">2.0</span><span class="p">)</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="c1"># 2. Profile-likelihood estimation — fit alongside β via Rust&#39;s</span>
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="c1">#    fit_negbinomial_py. Records initial theta, iterations, convergence,</span>
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="c1">#    and tolerance on the result.</span>
+</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="n">rs</span><span class="o">.</span><span class="n">glm_dict</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">family</span><span class="o">=</span><span class="s2">&quot;negbinomial&quot;</span><span class="p">,</span> <span class="n">theta</span><span class="o">=</span><span class="s2">&quot;estimate&quot;</span><span class="p">)</span>
+</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>
+</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="c1"># 3. No theta passed → no silent default. The plain (non-smooth /</span>
+</span><span id="__span-7-10"><a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a><span class="c1">#    non-regularised / non-constrained) path defaults to estimation; other</span>
+</span><span id="__span-7-11"><a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a><span class="c1">#    paths raise a clear error directing you to pass a numeric theta.</span>
+</span></code></pre></div>
+<p>Regularised, constrained, or smooth NB combinations require a fixed numeric
+theta — the profile estimator only ships for the plain path. The result's
+<code>theta_metadata</code> records whether theta was estimated or fixed, plus the
+estimator's provenance when applicable.</p>
+<h4 id="estimation-algorithm">Estimation algorithm<a class="headerlink" href="#estimation-algorithm" title="Permanent link">&para;</a></h4>
+<p>When <code>theta="estimate"</code> (or the default on the plain path), RustyStats uses
+the profile estimator:</p>
 <ol>
-<li><strong>Initial fit</strong>: Fit a Poisson GLM to get starting <span class="arithmatex">\(\hat{\mu}\)</span></li>
-<li><strong>Moment estimation</strong>: Estimate <span class="arithmatex">\(\theta\)</span> from residuals:
+<li><strong>Initial fit</strong>: Fit a Poisson GLM to get starting <span class="arithmatex">\(\hat{\mu}\)</span>.</li>
+<li><strong>Moment seed</strong>: Initialise <span class="arithmatex">\(\theta\)</span> from residuals:
    $<span class="arithmatex">\(\hat{\theta} = \frac{\bar{\mu}^2}{\text{Var}(Y - \mu) - \bar{\mu}}\)</span>$</li>
-<li><strong>Iterate</strong>: Fit NegBin GLM with current <span class="arithmatex">\(\theta\)</span>, re-estimate <span class="arithmatex">\(\theta\)</span>, repeat until convergence</li>
+<li><strong>Iterate</strong>: Fit NegBin GLM with current <span class="arithmatex">\(\theta\)</span>, re-estimate <span class="arithmatex">\(\theta\)</span>,
+   repeat until convergence.</li>
 </ol>
 <p><strong>Bounds</strong>: <span class="arithmatex">\(\theta\)</span> is constrained to <span class="arithmatex">\([0.01, 1000]\)</span> to prevent numerical issues.</p>
 <h3 id="86-numerical-stability">8.6 Numerical Stability<a class="headerlink" href="#86-numerical-stability" title="Permanent link">&para;</a></h3>
@@ -4733,11 +4904,11 @@ V(\mu) = \mu + \frac{\mu^2}{\theta}
 </ol>
 <p><strong>RustyStats Solution</strong>:</p>
 <p>RustyStats applies <strong>minimum ridge regularization</strong> (α ≥ 1e-6) automatically for NegBin models:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># The formula API automatically applies minimum regularization</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="n">result</span> <span class="o">=</span> <span class="n">rs</span><span class="o">.</span><span class="n">glm_dict</span><span class="p">(</span><span class="s2">&quot;claims ~ ns(age, df=5) + TE(region)&quot;</span><span class="p">,</span> 
-</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>                <span class="n">data</span><span class="p">,</span> <span class="n">family</span><span class="o">=</span><span class="s2">&quot;negbinomial&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">fit</span><span class="p">()</span>
-</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>
-</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="c1"># You&#39;ll see &quot;Method: IRLS + Ridge&quot; in the summary</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># The formula API automatically applies minimum regularization</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="n">result</span> <span class="o">=</span> <span class="n">rs</span><span class="o">.</span><span class="n">glm_dict</span><span class="p">(</span><span class="s2">&quot;claims ~ ns(age, df=5) + TE(region)&quot;</span><span class="p">,</span> 
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>                <span class="n">data</span><span class="p">,</span> <span class="n">family</span><span class="o">=</span><span class="s2">&quot;negbinomial&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">fit</span><span class="p">()</span>
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>
+</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="c1"># You&#39;ll see &quot;Method: IRLS + Ridge&quot; in the summary</span>
 </span></code></pre></div>
 <div class="admonition warning">
 <p class="admonition-title">Coefficient Interpretation</p>
@@ -4776,31 +4947,31 @@ V(\mu) = \mu + \frac{\mu^2}{\theta}
 </tr>
 </tbody>
 </table>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># Access warnings via diagnostics</span>
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="n">diag</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">diagnostics</span><span class="p">(</span><span class="n">data</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
-</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="k">for</span> <span class="n">w</span> <span class="ow">in</span> <span class="n">diag</span><span class="o">.</span><span class="n">warnings</span><span class="p">:</span>
-</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;[</span><span class="si">{</span><span class="n">w</span><span class="p">[</span><span class="s1">&#39;type&#39;</span><span class="p">]</span><span class="si">}</span><span class="s2">]: </span><span class="si">{</span><span class="n">w</span><span class="p">[</span><span class="s1">&#39;message&#39;</span><span class="p">]</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># Access warnings via diagnostics</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="n">diag</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">diagnostics</span><span class="p">(</span><span class="n">data</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="k">for</span> <span class="n">w</span> <span class="ow">in</span> <span class="n">diag</span><span class="o">.</span><span class="n">warnings</span><span class="p">:</span>
+</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;[</span><span class="si">{</span><span class="n">w</span><span class="p">[</span><span class="s1">&#39;type&#39;</span><span class="p">]</span><span class="si">}</span><span class="s2">]: </span><span class="si">{</span><span class="n">w</span><span class="p">[</span><span class="s1">&#39;message&#39;</span><span class="p">]</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
 </span></code></pre></div>
 <hr />
 <h2 id="part-9-summary-and-selection-guide">Part 9: Summary and Selection Guide<a class="headerlink" href="#part-9-summary-and-selection-guide" title="Permanent link">&para;</a></h2>
 <h3 id="91-decision-tree">9.1 Decision Tree<a class="headerlink" href="#91-decision-tree" title="Permanent link">&para;</a></h3>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>Response type?
-</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>│
-</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>├── Continuous
-</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>│   ├── Can be negative → Gaussian
-</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>│   └── Always positive
-</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>│       ├── Has exact zeros → Tweedie (p ∈ (1,2))
-</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>│       └── No zeros → Gamma
-</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>│
-</span><span id="__span-8-9"><a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>└── Discrete
-</span><span id="__span-8-10"><a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>    ├── Binary (0/1) → Binomial
-</span><span id="__span-8-11"><a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>    │   └── Overdispersed? → QuasiBinomial
-</span><span id="__span-8-12"><a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a>    │
-</span><span id="__span-8-13"><a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a>    └── Counts (0, 1, 2, ...)
-</span><span id="__span-8-14"><a id="__codelineno-8-14" name="__codelineno-8-14" href="#__codelineno-8-14"></a>        ├── Var ≈ Mean → Poisson
-</span><span id="__span-8-15"><a id="__codelineno-8-15" name="__codelineno-8-15" href="#__codelineno-8-15"></a>        └── Var &gt; Mean (overdispersion)
-</span><span id="__span-8-16"><a id="__codelineno-8-16" name="__codelineno-8-16" href="#__codelineno-8-16"></a>            ├── Quick fix → QuasiPoisson
-</span><span id="__span-8-17"><a id="__codelineno-8-17" name="__codelineno-8-17" href="#__codelineno-8-17"></a>            └── Better model → Negative Binomial
+<div class="language-text highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>Response type?
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>│
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>├── Continuous
+</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>│   ├── Can be negative → Gaussian
+</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>│   └── Always positive
+</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a>│       ├── Has exact zeros → Tweedie (p ∈ (1,2))
+</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a>│       └── No zeros → Gamma
+</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a>│
+</span><span id="__span-10-9"><a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a>└── Discrete
+</span><span id="__span-10-10"><a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a>    ├── Binary (0/1) → Binomial
+</span><span id="__span-10-11"><a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a>    │   └── Overdispersed? → QuasiBinomial
+</span><span id="__span-10-12"><a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a>    │
+</span><span id="__span-10-13"><a id="__codelineno-10-13" name="__codelineno-10-13" href="#__codelineno-10-13"></a>    └── Counts (0, 1, 2, ...)
+</span><span id="__span-10-14"><a id="__codelineno-10-14" name="__codelineno-10-14" href="#__codelineno-10-14"></a>        ├── Var ≈ Mean → Poisson
+</span><span id="__span-10-15"><a id="__codelineno-10-15" name="__codelineno-10-15" href="#__codelineno-10-15"></a>        └── Var &gt; Mean (overdispersion)
+</span><span id="__span-10-16"><a id="__codelineno-10-16" name="__codelineno-10-16" href="#__codelineno-10-16"></a>            ├── Quick fix → QuasiPoisson
+</span><span id="__span-10-17"><a id="__codelineno-10-17" name="__codelineno-10-17" href="#__codelineno-10-17"></a>            └── Better model → Negative Binomial
 </span></code></pre></div>
 <h3 id="92-key-formulas-summary">9.2 Key Formulas Summary<a class="headerlink" href="#92-key-formulas-summary" title="Permanent link">&para;</a></h3>
 <table>

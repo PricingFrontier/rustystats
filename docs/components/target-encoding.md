@@ -220,9 +220,58 @@ result = rs.glm_dict(
     },
     data=data,
     family="poisson",
-    offset="Exposure"
+    exposure="Exposure",  # preferred; `offset="Exposure"` is a legacy alias
 ).fit()
 ```
+
+## Cross-Validation Safety (RS-ACT-001)
+
+When a model containing target-encoded terms is fitted with `cv=` /
+`regularization=`, RustyStats **rebuilds the target-encoding state inside each
+CV fold from the fold-training rows only**. Validation targets never enter the
+encoder. The same fold-safe transform is used to score unseen levels, which
+fall back to the fold-training prior.
+
+```python
+# Fold-safe TE under CV — no leakage from validation rows into the encoder.
+result = rs.glm_dict(
+    response="claim_count",
+    terms={"brand": {"type": "target_encoding"}, "age": {"type": "linear"}},
+    data=df,
+    family="poisson",
+    exposure="exposure",
+).fit(regularization="lasso", cv=5)
+```
+
+Production prediction uses the final full-training encoder state — only the
+*fold* encoders are rebuilt per CV iteration. The result object records the
+fold-safe flag on its `regularization_path_info` so callers can verify the
+guard fired.
+
+CV validation deviances use weighted scoring: `score = Σ w·dev / Σ w`, with
+`w ≡ 1` when no prior weights are supplied. Fold fits use the requested
+convergence settings (`max_iter`, `tol`); a relaxed mode, if introduced,
+would have to be explicit and recorded in the path metadata.
+
+## Exposure-Weighted Encoding (RS-ACT-002)
+
+When the model has an explicit `exposure=` spec, target-encoded columns use
+exposure as the rate denominator:
+
+$$
+\text{encoded}(k) = \frac{\sum_{i \in \text{level } k} y_i}{\sum_{i \in \text{level } k} \text{exposure}_i}
+$$
+
+regularised toward the global rate using `prior_weight`.
+
+!!! warning "Array offsets are not raw exposure"
+    An array `offset=` is a link-scale additive adjustment, *not* a rate
+    denominator. RustyStats no longer silently uses `exp(offset)` as the TE
+    denominator (the legacy behaviour produced degenerate encodings when
+    `offset` carried any per-row adjustment beyond `log(exposure)`).
+    Set `exposure=` explicitly when you want exposure-weighted encoding —
+    the unweighted fallback fires with a warning and the model records
+    `used_exposure_weighted=False`.
 
 ## Data Structures
 

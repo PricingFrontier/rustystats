@@ -13,11 +13,14 @@ rustystats.glm_dict(
     data,
     family="gaussian",
     link=None,
+    exposure=None,
     offset=None,
     weights=None,
     interactions=None,
     theta=None,
     var_power=1.5,
+    allow_extended_tweedie=False,
+    complement=None,
     seed=None,
 )
 ```
@@ -28,15 +31,52 @@ rustystats.glm_dict(
 |-----------|------|-------------|
 | `response` | str | Column name for response variable |
 | `terms` | dict | Term specifications (see below) |
-| `data` | DataFrame | Polars or Pandas DataFrame |
+| `data` | DataFrame | Polars DataFrame or LazyFrame |
 | `family` | str | Distribution family |
 | `link` | str | Link function (optional) |
-| `offset` | str | Column name for offset |
-| `weights` | str | Column name for weights |
+| `exposure` | str or array | **Preferred** raw positive denominator for rate models. Added as `log(exposure)` to the linear predictor under log link, and used as the rate denominator for exposure-weighted target encoding. |
+| `offset` | str or array | Link-scale additive offset. A string offset under a log-link family is treated as a legacy alias for `exposure=` when `exposure` is not set. |
+| `weights` | str or array | Prior weights |
 | `interactions` | list | Interaction specifications (see below) |
-| `theta` | float | Negative Binomial dispersion |
-| `var_power` | float | Tweedie variance power |
+| `theta` | float | Negative Binomial dispersion (`"estimate"` for profile estimation) |
+| `var_power` | float | Tweedie variance power, default 1.5 (compound Poisson-Gamma interior) |
+| `allow_extended_tweedie` | bool | Opt-in for Tweedie powers outside the default `1 < p < 2` interior. Default `False`. See [Distribution Families: Tweedie support contract](../theory/families.md#66-support-contract-rs-act-006). |
+| `complement` | str, array, or `GLMModel` | Complement-of-credibility prior (response scale). Used by lasso shrinkage. |
 | `seed` | int | Random seed for reproducibility |
+
+### exposure= vs offset= (RS-ACT-002)
+
+These are *separate* concepts in RustyStats:
+
+* **`exposure=`** — a raw positive denominator (units, person-years, vehicle-years).
+  Validates as finite and strictly positive. Under log link, contributes
+  `log(exposure)` to the linear predictor. Also flows into rate-ranked
+  diagnostics and exposure-weighted target encoding denominators.
+* **`offset=`** — an arbitrary link-scale adjustment (e.g. a fixed coefficient
+  estimated elsewhere). Treated verbatim on the link scale; never used as a
+  rate denominator for target encoding.
+
+If both are supplied, both contribute additively:
+`η_total = η_terms + log(exposure) + offset`.
+
+#### Three migration spellings
+
+```python
+# Preferred — explicit raw exposure.
+rs.glm_dict(..., family="poisson", exposure="Exposure")
+
+# Already-log-transformed exposure + a separate exposure column for
+# diagnostics / target encoding.
+rs.glm_dict(..., family="poisson", offset=np.log(exposure), exposure=exposure)
+
+# Legacy alias — `offset="Exposure"` under a log-link family is still accepted
+# and treated as `exposure="Exposure"` when no explicit `exposure=` is given.
+rs.glm_dict(..., family="poisson", offset="Exposure")
+```
+
+A subtle but **deliberate behaviour change**: an array `offset=np.log(...)`
+no longer feeds exposure-weighted target encoding as if it were raw exposure.
+Set `exposure=` explicitly to recover that behaviour.
 
 ### Returns
 
