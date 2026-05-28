@@ -341,3 +341,92 @@ class TestZeroExposureGuard:
         exposure = np.array([1.0, 0.0, 2.0], dtype=np.float64)
         idx = rank_sort_idx(mu, exposure, has_exposure=True, ranking="rate")
         assert sorted(idx.tolist()) == [0, 1, 2]
+
+
+class TestWeightedDecileLiftAggregates:
+    """Backlog #1 (RS-ACT-004): prior weights give Σw·y / Σw·μ / Σw·exposure
+    decile/lift aggregates; uniform weights reproduce the unweighted path."""
+
+    def _comp(self, weights, seed: int = 0, n: int = 600) -> DiagnosticsComputer:
+        rng = np.random.default_rng(seed)
+        mu = rng.uniform(0.5, 10.0, n)
+        exposure = rng.uniform(0.1, 20.0, n)
+        y = rng.poisson(mu).astype(float)
+        return DiagnosticsComputer(
+            y=y,
+            mu=mu,
+            linear_predictor=np.log(mu),
+            family="poisson",
+            n_params=2,
+            deviance=100.0,
+            exposure=exposure,
+            weights=weights,
+        )
+
+    def test_uniform_weights_match_unweighted(self):
+        # Same seed -> identical y/mu/exposure; weights=ones must reproduce the
+        # unweighted lift chart, gini, and (Python vs Rust) A/E-by-decile.
+        unw = self._comp(None)
+        ones = self._comp(np.ones(600))
+        l0, l1 = unw.compute_lift_chart(), ones.compute_lift_chart()
+        assert _decile_keys(l0) == _decile_keys(l1)
+        assert l0.gini == pytest.approx(l1.gini)
+        idx = unw._rank_sort_idx("auto")
+        d0 = unw._compute_ae_by_decile(unw.y, unw.mu, unw.exposure, sort_idx=idx)
+        d1 = ones._compute_ae_by_decile(
+            ones.y, ones.mu, ones.exposure, sort_idx=idx, weights=np.ones(600)
+        )
+        for a, b in zip(d0, d1):
+            assert a.actual == pytest.approx(b.actual)
+            assert a.predicted == pytest.approx(b.predicted)
+            assert a.exposure == pytest.approx(b.exposure)
+
+    def test_weights_change_aggregates_to_hand_computed(self):
+        rng = np.random.default_rng(1)
+        w = rng.uniform(0.1, 5.0, 600)
+        comp = self._comp(w)
+        lift = comp.compute_lift_chart()
+        # First decile's weighted exposure on the same equal-count bins.
+        idx = comp._rank_sort_idx("auto")
+        first = idx[: 600 // 10]
+        exp_hand = float(np.sum((w * comp.exposure)[first]))
+        assert lift.deciles[0].exposure == pytest.approx(round(exp_hand, 2))
+        # ...and the weighted chart differs from the unweighted one.
+        unw = self._comp(None)
+        assert any(
+            abs(a.exposure - b.exposure) > 1e-6
+            for a, b in zip(lift.deciles, unw.compute_lift_chart().deciles)
+        )
+
+    def test_fitted_weights_auto_propagate_through_diagnostics(self):
+        rng = np.random.default_rng(2)
+        df = make_freq_frame(n=2000, seed=7)
+        w = rng.uniform(0.1, 5.0, df.height)
+        df = df.with_columns(pl.Series("w", w))
+        result = rs.glm_dict(
+            response="ClaimCount",
+            terms={"DrivAge": {"type": "linear"}, "Region": {"type": "categorical"}},
+            data=df,
+            family="poisson",
+            exposure="Exposure",
+            weights="w",
+        ).fit()
+        common = dict(
+            continuous_factors=["DrivAge"],
+            compute_vif=False,
+            compute_deviance_by_level=False,
+            compute_partial_dep=False,
+            compute_robust_se=False,
+            compute_score_tests=False,
+            compute_coefficients=False,
+        )
+        auto = result.diagnostics(df, **common)  # fitted "w" auto-propagates
+        explicit = result.diagnostics(df, weights=w, **common)  # same weights, explicit
+        forced_unit = result.diagnostics(df, weights=np.ones(df.height), **common)  # override
+        for a, b in zip(auto.lift_chart.deciles, explicit.lift_chart.deciles):
+            assert a.actual == pytest.approx(b.actual)
+            assert a.exposure == pytest.approx(b.exposure)
+        assert any(
+            abs(a.exposure - b.exposure) > 1e-6
+            for a, b in zip(auto.lift_chart.deciles, forced_unit.lift_chart.deciles)
+        )

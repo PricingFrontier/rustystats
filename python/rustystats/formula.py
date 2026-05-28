@@ -2072,6 +2072,7 @@ class GLMModel:
         base_predictions: str | None = None,
         ranking: str = "auto",
         exposure: str | np.ndarray | None = None,
+        weights: str | np.ndarray | None = None,
     ) -> ModelDiagnostics:
         """
         Compute comprehensive model diagnostics.
@@ -2127,6 +2128,12 @@ class GLMModel:
         ranking : {"auto", "mean", "rate"}, default="auto"
             Decile/lift ranking mode. ``"auto"`` ranks by predicted rate when
             exposure is present and by raw predicted mean otherwise.
+        weights : str or array-like, optional
+            Prior weights for the decile/lift aggregates, which then report
+            Σw·y / Σw·μ / Σw·exposure (RS-ACT-004). When omitted, the model's
+            fitted prior weights are auto-propagated; pass an explicit array (or
+            ``np.ones(n)`` to force unweighted) to override. Ranking is
+            unaffected — weights scale the aggregates, not the per-row rate.
 
         Returns
         -------
@@ -2201,6 +2208,7 @@ class GLMModel:
             base_predictions=base_predictions,
             ranking=ranking,
             exposure=exposure,
+            weights=weights,
         )
 
     def diagnostics_json(
@@ -4200,6 +4208,10 @@ class FormulaGLMDict(_GLMBase):
         )
         results.solver_status = getattr(result, "solver_status", "converged")
         results.step_halving_used = bool(getattr(result, "step_halving_used", False))
+        # RS-ACT-004 backlog #1: carry the fitted prior-weights spec so
+        # result.diagnostics() can auto-propagate it into weighted decile/lift
+        # aggregates (mirrors how _exposure_spec is surfaced on the result).
+        results._weights_spec = getattr(self, "_weights_spec", None)
         return results
 
 

@@ -190,6 +190,7 @@ class DiagnosticsComputer:
         var_power: float = 1.5,
         theta: float = 1.0,
         null_deviance: float | None = None,
+        weights: np.ndarray | None = None,
     ):
         self.y = np.asarray(y, dtype=np.float64)
         self.mu = np.asarray(mu, dtype=np.float64)
@@ -201,6 +202,13 @@ class DiagnosticsComputer:
         self._has_exposure = exposure is not None
         self.exposure = (
             np.asarray(exposure, dtype=np.float64) if exposure is not None else np.ones_like(y)
+        )
+        # RS-ACT-004: optional prior weights for decile/lift aggregates. When
+        # absent (the default) every aggregate is a plain Σ, so behaviour is
+        # byte-identical to the unweighted path.
+        self._has_weights = weights is not None
+        self.weights = (
+            np.asarray(weights, dtype=np.float64) if weights is not None else np.ones_like(self.y)
         )
         self.feature_names = feature_names or []
         self.var_power = var_power
@@ -958,9 +966,15 @@ class DiagnosticsComputer:
         )
 
     def _gini_for_sort_idx(self, sort_idx: np.ndarray) -> float:
-        """Compute exposure-weighted Gini using the same rank order as deciles."""
-        total_exposure = float(np.sum(self.exposure))
-        total_actual = float(np.sum(self.y))
+        """Exposure-weighted Gini using the same rank order as deciles.
+
+        Prior weights (when supplied) scale both the actual and the exposure,
+        so w ≡ 1 reproduces the unweighted curve exactly.
+        """
+        w_exposure = self.weights * self.exposure
+        w_actual = self.weights * self.y
+        total_exposure = float(np.sum(w_exposure))
+        total_actual = float(np.sum(w_actual))
         if total_actual == 0.0 or total_exposure == 0.0:
             return 0.0
 
@@ -971,8 +985,8 @@ class DiagnosticsComputer:
         prev_cum_actual_pct = 0.0
 
         for idx in sort_idx[::-1]:
-            cum_exposure += float(self.exposure[idx])
-            cum_actual += float(self.y[idx])
+            cum_exposure += float(w_exposure[idx])
+            cum_actual += float(w_actual[idx])
             cum_exposure_pct = cum_exposure / total_exposure
             cum_actual_pct = cum_actual / total_actual
             gini_area += (
@@ -1029,9 +1043,11 @@ class DiagnosticsComputer:
         y_sorted = self.y[sort_idx]
         mu_sorted = self.mu[sort_idx]
         exp_sorted = self.exposure[sort_idx]
+        w_sorted = self.weights[sort_idx]
+        wexp_sorted = w_sorted * exp_sorted  # weighted exposure (w ≡ 1 ⇒ exp)
 
-        # Overall rate
-        overall_rate = np.sum(self.y) / np.sum(self.exposure)
+        # Overall rate (weighted; reduces to Σy/Σexposure when w ≡ 1)
+        overall_rate = np.sum(self.weights * self.y) / np.sum(self.weights * self.exposure)
 
         # Compute deciles
         n = len(self.y)
@@ -1040,8 +1056,8 @@ class DiagnosticsComputer:
         deciles = []
         cumulative_actual = 0
         cumulative_predicted = 0
-        total_actual = np.sum(self.y)
-        total_predicted = np.sum(self.mu)
+        total_actual = np.sum(self.weights * self.y)
+        total_predicted = np.sum(self.weights * self.mu)
 
         max_ks = 0
         ks_decile = 1
@@ -1051,13 +1067,14 @@ class DiagnosticsComputer:
             start = d * decile_size
             end = (d + 1) * decile_size if d < n_deciles - 1 else n
 
+            w_d = w_sorted[start:end]
             y_d = y_sorted[start:end]
             mu_d = mu_sorted[start:end]
             exp_d = exp_sorted[start:end]
 
-            actual = float(np.sum(y_d))
-            predicted = float(np.sum(mu_d))
-            exposure = float(np.sum(exp_d))
+            actual = float(np.sum(w_d * y_d))
+            predicted = float(np.sum(w_d * mu_d))
+            exposure = float(np.sum(w_d * exp_d))
             n_d = len(y_d)
 
             ae_ratio = actual / predicted if predicted > 0 else float("nan")
@@ -1075,9 +1092,8 @@ class DiagnosticsComputer:
             lift = decile_rate / overall_rate if overall_rate > 0 else 1.0
 
             # Cumulative lift
-            cum_rate = (
-                cumulative_actual / np.sum(exp_sorted[:end]) if np.sum(exp_sorted[:end]) > 0 else 0
-            )
+            cum_wexp = np.sum(wexp_sorted[:end])
+            cum_rate = cumulative_actual / cum_wexp if cum_wexp > 0 else 0
             cum_lift = cum_rate / overall_rate if overall_rate > 0 else 1.0
 
             # KS statistic
@@ -1609,7 +1625,14 @@ class DiagnosticsComputer:
 
         # A/E by decile (sorted by predicted value). Forward `sort_idx` so we
         # don't re-sort the same `mu` array the orchestrator already sorted.
-        ae_by_decile = self._compute_ae_by_decile(y, mu, exposure, n_deciles=10, sort_idx=sort_idx)
+        ae_by_decile = self._compute_ae_by_decile(
+            y,
+            mu,
+            exposure,
+            n_deciles=10,
+            sort_idx=sort_idx,
+            weights=(self.weights if self._has_weights else None),
+        )
 
         # Compute deviance residuals once for all factor/continuous diagnostics
         dev_resids = (
@@ -1675,6 +1698,7 @@ class DiagnosticsComputer:
         exposure: np.ndarray,
         n_deciles: int = 10,
         sort_idx: np.ndarray | None = None,
+        weights: np.ndarray | None = None,
     ) -> list[DecileMetrics]:
         """Compute A/E by decile sorted by predicted rate (or predicted mean).
 
@@ -1685,8 +1709,14 @@ class DiagnosticsComputer:
 
         Per-decile sums (`actual_sum`, `predicted_sum`, `exposure_sum`) are
         computed in Rust via `compute_ae_by_decile_py`; the trivial divisions
-        that produce frequencies and the A/E ratio stay Python-side.
+        that produce frequencies and the A/E ratio stay Python-side. When prior
+        ``weights`` are supplied (RS-ACT-004) the sums become Σw·y / Σw·μ /
+        Σw·exposure and are computed in Python on the same equal-count bins;
+        the unweighted call keeps the fast Rust path unchanged.
         """
+        if weights is not None:
+            return self._weighted_ae_by_decile(y, mu, exposure, weights, n_deciles, sort_idx)
+
         # Hand the pre-computed sort index to Rust as native uintp so the FFI
         # layer can reuse it directly. `np.argsort` returns intp, so this is a
         # no-op on 64-bit platforms but normalises the dtype on 32-bit.
@@ -1715,6 +1745,49 @@ class DiagnosticsComputer:
                 )
             )
 
+        return deciles
+
+    def _weighted_ae_by_decile(
+        self,
+        y: np.ndarray,
+        mu: np.ndarray,
+        exposure: np.ndarray,
+        weights: np.ndarray,
+        n_deciles: int,
+        sort_idx: np.ndarray | None,
+    ) -> list[DecileMetrics]:
+        """Prior-weighted A/E by decile (Σw·y / Σw·μ / Σw·exposure) on the same
+        equal-count, rate-ranked bins the Rust path uses. With uniform weights
+        this reproduces the unweighted decile rates exactly."""
+        if sort_idx is None:
+            sort_idx = self._rank_sort_idx("auto")
+        ys = y[sort_idx]
+        mus = mu[sort_idx]
+        es = exposure[sort_idx]
+        ws = np.asarray(weights, dtype=np.float64)[sort_idx]
+        n = len(ys)
+        decile_size = n // n_deciles
+        deciles: list[DecileMetrics] = []
+        for d in range(n_deciles):
+            start = d * decile_size
+            end = (d + 1) * decile_size if d < n_deciles - 1 else n
+            w_d = ws[start:end]
+            actual = float(np.sum(w_d * ys[start:end]))
+            predicted = float(np.sum(w_d * mus[start:end]))
+            exp_sum = float(np.sum(w_d * es[start:end]))
+            ae = actual / predicted if predicted > 0 else float("nan")
+            actual_freq = actual / exp_sum if exp_sum > 0 else 0.0
+            predicted_freq = predicted / exp_sum if exp_sum > 0 else 0.0
+            deciles.append(
+                DecileMetrics(
+                    decile=d + 1,
+                    n=end - start,
+                    exposure=round(exp_sum, 2),
+                    actual=round(actual_freq, 6),
+                    predicted=round(predicted_freq, 6),
+                    ae_ratio=round(ae, 4) if not np.isnan(ae) else None,
+                )
+            )
         return deciles
 
     def _compute_factor_level_metrics(

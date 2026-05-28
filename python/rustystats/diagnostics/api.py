@@ -1310,6 +1310,38 @@ def _build_model_summary(
     return model_summary
 
 
+def _resolve_weights(
+    result: Any,
+    train_data: pl.DataFrame,
+    weights_override: str | np.ndarray | None,
+) -> np.ndarray | None:
+    """Resolve prior weights for decile/lift aggregates (RS-ACT-004).
+
+    An explicit ``weights_override`` wins and is validated strictly; otherwise
+    the model's fitted ``_weights_spec`` is auto-propagated, but leniently — if
+    that column/array can't be matched to ``train_data`` we fall back to
+    unweighted rather than raising, since diagnostics data need not carry it.
+    """
+    explicit = weights_override is not None
+    spec = weights_override if explicit else getattr(result, "_weights_spec", None)
+    if spec is None:
+        return None
+    if isinstance(spec, str):
+        if spec not in train_data.columns:
+            if explicit:
+                raise ValidationError(f"weights column '{spec}' is not present in train_data.")
+            return None
+        return train_data[spec].to_numpy().astype(np.float64)
+    arr = np.asarray(spec, dtype=np.float64)
+    if arr.ndim != 1 or arr.shape[0] != train_data.height:
+        if explicit:
+            raise ValidationError(
+                f"weights length {arr.shape} does not match train_data length {train_data.height}."
+            )
+        return None
+    return arr
+
+
 def compute_diagnostics(
     result: Any,  # GLMResults or GLMModel
     train_data: pl.DataFrame,
@@ -1342,6 +1374,7 @@ def compute_diagnostics(
     base_predictions: str | None = None,
     ranking: str = "auto",
     exposure: str | np.ndarray | None = None,
+    weights: str | np.ndarray | None = None,
 ) -> ModelDiagnostics:
     """
     Compute comprehensive model diagnostics.
@@ -1451,6 +1484,7 @@ def compute_diagnostics(
     )
     var_power, theta = _parse_family_params(family)
     null_deviance = _resolve_null_deviance(result)
+    weights_arr = _resolve_weights(result, train_data, weights)
 
     # 2. Build computer
     computer = DiagnosticsComputer(
@@ -1465,6 +1499,7 @@ def compute_diagnostics(
         var_power=var_power,
         theta=theta,
         null_deviance=null_deviance,
+        weights=weights_arr,
     )
 
     # Pre-compute the rank index once. compute_lift_chart and
