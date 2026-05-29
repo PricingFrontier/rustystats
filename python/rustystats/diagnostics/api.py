@@ -735,6 +735,7 @@ def _build_train_test_comparison(
     test_mu: np.ndarray | None = None,
     test_exposure: np.ndarray | None = None,
     test_mu_sort_idx: np.ndarray | None = None,
+    test_weights: np.ndarray | None = None,
     ranking: str = "auto",
 ) -> TrainTestComparison:
     """Assemble the train/test comparison; populate test_diag and overfitting flags when test_data is supplied."""
@@ -787,6 +788,7 @@ def _build_train_test_comparison(
         cont_column_cache=cont_cache_test,
         cat_unique_cache=cat_unique_cache_test,
         sort_idx=test_mu_sort_idx,
+        weights=test_weights,
     )
 
     # Compute comparison metrics
@@ -1342,6 +1344,54 @@ def _resolve_weights(
     return arr
 
 
+def _resolve_test_weights(
+    result: Any,
+    test_data: pl.DataFrame | None,
+    weights_override: str | np.ndarray | None,
+    warnings: list,
+) -> np.ndarray | None:
+    """Resolve held-out prior weights without reusing training arrays.
+
+    A named weights column can be propagated to ``test_data``. Array weights are
+    train-row aligned, so they cannot safely describe held-out rows through the
+    existing public API; use a column name present in both datasets for weighted
+    train/test diagnostics.
+    """
+    if test_data is None:
+        return None
+    explicit = weights_override is not None
+    spec = weights_override if explicit else getattr(result, "_weights_spec", None)
+    if spec is None:
+        return None
+    if isinstance(spec, str):
+        if spec not in test_data.columns:
+            if explicit:
+                raise ValidationError(f"weights column '{spec}' is not present in test_data.")
+            warnings.append(
+                {
+                    "type": "test_weights_unavailable",
+                    "message": (
+                        f"Fitted weights column '{spec}' is not present in test_data; "
+                        "held-out decile and Gini diagnostics are unweighted."
+                    ),
+                }
+            )
+            return None
+        return test_data[spec].to_numpy().astype(np.float64)
+
+    warnings.append(
+        {
+            "type": "test_weights_unavailable",
+            "message": (
+                "Array weights are aligned to train_data and are not reused for "
+                "test_data diagnostics; pass weights as a column name present in "
+                "both datasets to weight held-out diagnostics."
+            ),
+        }
+    )
+    return None
+
+
 def compute_diagnostics(
     result: Any,  # GLMResults or GLMModel
     train_data: pl.DataFrame,
@@ -1566,6 +1616,7 @@ def compute_diagnostics(
         cont_column_cache=cont_cache_train,
         cat_unique_cache=cat_unique_cache_train,
         sort_idx=mu_sort_idx,
+        weights=weights_arr,
     )
 
     # Generate warnings (use train_diag for fit stats)
@@ -1617,6 +1668,7 @@ def compute_diagnostics(
         ranking,
         exposure,
     )
+    test_weights_arr = _resolve_test_weights(result, test_data, weights, warnings)
 
     # 6. Train/test comparison (test_diag built only if test_data provided)
     train_test = _build_train_test_comparison(
@@ -1633,6 +1685,7 @@ def compute_diagnostics(
         test_mu=test_mu_arr,
         test_exposure=test_exposure_arr,
         test_mu_sort_idx=test_mu_sort_idx,
+        test_weights=test_weights_arr,
         ranking=ranking,
     )
 

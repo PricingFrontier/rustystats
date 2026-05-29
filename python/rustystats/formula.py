@@ -1500,6 +1500,108 @@ class GLMModel:
             out["ci_hi"] = est + z_crit * se
         return out
 
+    def bse(self) -> np.ndarray:
+        """Model-based standard errors with relevel calibration variance applied."""
+        se = np.asarray(self._result.bse(), dtype=np.float64)
+        corr = self._releveled_intercept_inference(se[0]) if len(se) else None
+        if corr is None:
+            return se
+        out = se.copy()
+        out[0] = corr["se"]
+        return out
+
+    def tvalues(self) -> np.ndarray:
+        """Wald z/t values with a releveled intercept recentred when applicable."""
+        z = np.asarray(self._result.tvalues(), dtype=np.float64)
+        raw_se = np.asarray(self._result.bse(), dtype=np.float64)
+        corr = self._releveled_intercept_inference(raw_se[0]) if len(raw_se) else None
+        if corr is None:
+            return z
+        out = z.copy()
+        out[0] = corr["z"]
+        return out
+
+    def pvalues(self) -> np.ndarray:
+        """Two-sided Wald p-values with a releveled intercept recentred when applicable."""
+        p = np.asarray(self._result.pvalues(), dtype=np.float64)
+        raw_se = np.asarray(self._result.bse(), dtype=np.float64)
+        corr = self._releveled_intercept_inference(raw_se[0]) if len(raw_se) else None
+        if corr is None:
+            return p
+        out = p.copy()
+        out[0] = corr["p"]
+        return out
+
+    def significance_codes(self) -> list[str]:
+        """Significance codes aligned to :meth:`pvalues`."""
+        codes = list(self._result.significance_codes())
+        raw_se = np.asarray(self._result.bse(), dtype=np.float64)
+        corr = self._releveled_intercept_inference(raw_se[0]) if len(raw_se) else None
+        if corr is not None and codes:
+            codes[0] = corr["signif"]
+        return codes
+
+    def conf_int(self, alpha: float = 0.05) -> np.ndarray:
+        """Model-based confidence intervals with a releveled intercept recentred."""
+        ci = np.asarray(self._result.conf_int(alpha), dtype=np.float64)
+        raw_se = np.asarray(self._result.bse(), dtype=np.float64)
+        if len(raw_se) and ci.shape[0] > 0:
+            corr = self._releveled_intercept_inference(raw_se[0], (ci[0, 0], ci[0, 1]))
+            if corr is not None:
+                out = ci.copy()
+                out[0, 0] = corr["ci_lo"]
+                out[0, 1] = corr["ci_hi"]
+                return out
+        return ci
+
+    def bse_robust(self, hc_type: str = "HC1") -> np.ndarray:
+        """Robust standard errors with relevel calibration variance applied."""
+        se = np.asarray(self._result.bse_robust(hc_type), dtype=np.float64)
+        corr = self._releveled_intercept_inference(se[0]) if len(se) else None
+        if corr is None:
+            return se
+        out = se.copy()
+        out[0] = corr["se"]
+        return out
+
+    def tvalues_robust(self, hc_type: str = "HC1") -> np.ndarray:
+        """Robust Wald z/t values with a releveled intercept recentred."""
+        z = np.asarray(self._result.tvalues_robust(hc_type), dtype=np.float64)
+        raw_se = np.asarray(self._result.bse_robust(hc_type), dtype=np.float64)
+        corr = self._releveled_intercept_inference(raw_se[0]) if len(raw_se) else None
+        if corr is None:
+            return z
+        out = z.copy()
+        out[0] = corr["z"]
+        return out
+
+    def pvalues_robust(self, hc_type: str = "HC1") -> np.ndarray:
+        """Robust two-sided Wald p-values with a releveled intercept recentred."""
+        p = np.asarray(self._result.pvalues_robust(hc_type), dtype=np.float64)
+        raw_se = np.asarray(self._result.bse_robust(hc_type), dtype=np.float64)
+        corr = self._releveled_intercept_inference(raw_se[0]) if len(raw_se) else None
+        if corr is None:
+            return p
+        out = p.copy()
+        out[0] = corr["p"]
+        return out
+
+    def conf_int_robust(self, alpha: float = 0.05, cov_type: str = "HC1") -> np.ndarray:
+        """Robust confidence intervals with a releveled intercept recentred."""
+        ci = np.asarray(
+            self._result.conf_int_robust(alpha=alpha, cov_type=cov_type),
+            dtype=np.float64,
+        )
+        raw_se = np.asarray(self._result.bse_robust(cov_type), dtype=np.float64)
+        if len(raw_se) and ci.shape[0] > 0:
+            corr = self._releveled_intercept_inference(raw_se[0], (ci[0, 0], ci[0, 1]))
+            if corr is not None:
+                out = ci.copy()
+                out[0, 0] = corr["ci_lo"]
+                out[0, 1] = corr["ci_hi"]
+                return out
+        return ci
+
     def _family_unit_variance(self, mu: np.ndarray) -> np.ndarray:
         """Family variance function ``V(mu)`` for the log-link families relevel
         supports — used only for the relevel calibration-variance estimate."""
@@ -1545,9 +1647,9 @@ class GLMModel:
         """Delegate attribute access to the underlying result object.
 
         This handles all properties and methods from PyGLMResults that are
-        not explicitly defined on GLMModel (params, fittedvalues, deviance,
-        bse, tvalues, pvalues, conf_int, resid_*, llf, aic, bic, scale,
-        robust SEs, regularization properties, etc.).
+        not explicitly defined on GLMModel (resid_*, llf, aic, bic, scale,
+        regularization properties, etc.). Public inference accessors are
+        defined above so relevel() can recentre the intercept consistently.
         """
         if name.startswith("_"):
             raise AttributeError(name)
@@ -1947,11 +2049,6 @@ class GLMModel:
             z = np.asarray(self.tvalues(), dtype=np.float64)
             p = np.asarray(self.pvalues(), dtype=np.float64)
             signif = list(self.significance_codes())
-            corr = self._releveled_intercept_inference(se[0])
-            if corr is not None:
-                # relevel() recentres + inflates the intercept's inference.
-                se, z, p, signif = se.copy(), z.copy(), p.copy(), list(signif)
-                se[0], z[0], p[0], signif[0] = corr["se"], corr["z"], corr["p"], corr["signif"]
         else:
             se = np.full(n, np.nan)
             z = np.full(n, np.nan)
@@ -1990,12 +2087,6 @@ class GLMModel:
         show_standard_inference = status is None or status in {"valid_standard", "valid_robust"}
         if show_standard_inference:
             ci = self.conf_int()
-            corr = self._releveled_intercept_inference(self.bse()[0], (ci[0, 0], ci[0, 1]))
-            if corr is not None:
-                # Recentre + inflate the intercept CI so it brackets the shifted
-                # relativity and reflects the calibration uncertainty.
-                ci = ci.copy()
-                ci[0, 0], ci[0, 1] = corr["ci_lo"], corr["ci_hi"]
             ci_lower = np.exp(ci[:, 0])
             ci_upper = np.exp(ci[:, 1])
         else:

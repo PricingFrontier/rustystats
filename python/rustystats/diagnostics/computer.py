@@ -142,10 +142,27 @@ def rank_sort_idx(
     return np.argsort(key, kind="stable")
 
 
-def _gini_for_arrays(y: np.ndarray, exposure: np.ndarray, sort_idx: np.ndarray) -> float:
-    """Exposure-weighted Gini using a caller-supplied rank order."""
-    total_exposure = float(np.sum(exposure))
-    total_actual = float(np.sum(y))
+def _gini_for_arrays(
+    y: np.ndarray,
+    exposure: np.ndarray,
+    sort_idx: np.ndarray,
+    weights: np.ndarray | None = None,
+) -> float:
+    """Exposure/prior-weighted Gini using a caller-supplied rank order."""
+    if weights is None:
+        w_exposure = exposure
+        w_actual = y
+    else:
+        weights_arr = np.asarray(weights, dtype=np.float64)
+        if weights_arr.ndim != 1 or weights_arr.shape[0] != len(y):
+            raise ValidationError(
+                f"weights length {weights_arr.shape} does not match dataset length {len(y)}."
+            )
+        w_exposure = weights_arr * exposure
+        w_actual = weights_arr * y
+
+    total_exposure = float(np.sum(w_exposure))
+    total_actual = float(np.sum(w_actual))
     if total_actual == 0.0 or total_exposure == 0.0:
         return 0.0
 
@@ -155,8 +172,8 @@ def _gini_for_arrays(y: np.ndarray, exposure: np.ndarray, sort_idx: np.ndarray) 
     prev_cum_exposure_pct = 0.0
     prev_cum_actual_pct = 0.0
     for idx in sort_idx[::-1]:
-        cum_exposure += float(exposure[idx])
-        cum_actual += float(y[idx])
+        cum_exposure += float(w_exposure[idx])
+        cum_actual += float(w_actual[idx])
         cum_exposure_pct = cum_exposure / total_exposure
         cum_actual_pct = cum_actual / total_actual
         gini_area += (
@@ -749,21 +766,6 @@ class DiagnosticsComputer:
                 rel = round(float(np.exp(coef_val)), 4)
                 rel_ci = [round(float(np.exp(ci[i, 0])), 4), round(float(np.exp(ci[i, 1])), 4)]
 
-            # RS-ACT-009: recentre + inflate the releveled intercept's inference
-            # so the diagnostics summary matches coef_table()/relativities().
-            if name == "Intercept":
-                corr_fn = getattr(result, "_releveled_intercept_inference", None)
-                corr = corr_fn(se_val, (float(ci[i, 0]), float(ci[i, 1]))) if corr_fn else None
-                if corr is not None:
-                    se_val, z_val, p_val = corr["se"], corr["z"], corr["p"]
-                    ci_low = round(float(corr["ci_lo"]), 6)
-                    ci_high = round(float(corr["ci_hi"]), 6)
-                    if link == "log":
-                        rel_ci = [
-                            round(float(np.exp(corr["ci_lo"])), 4),
-                            round(float(np.exp(corr["ci_hi"])), 4),
-                        ]
-
             summaries.append(
                 CoefficientSummary(
                     feature=name,
@@ -823,7 +825,6 @@ class DiagnosticsComputer:
         # Build a lookup by feature name since summaries may be reordered
         feature_to_idx = {name: i for i, name in enumerate(self.feature_names)}
 
-        corr_fn = getattr(result, "_releveled_intercept_inference", None)
         for s in summaries:
             idx = feature_to_idx.get(s.feature)
             if idx is None or idx >= len(robust_bse):
@@ -831,13 +832,6 @@ class DiagnosticsComputer:
             r_se = float(robust_bse[idx])
             r_z = float(robust_tvalues[idx])
             r_p = float(robust_pvalues[idx])
-            # RS-ACT-009: a releveled intercept's robust SE is inflated by the
-            # calibration variance and its z/p recentred, mirroring the
-            # model-based path (no robust CI field to shift).
-            if s.feature == "Intercept" and corr_fn is not None:
-                corr = corr_fn(r_se)
-                if corr is not None:
-                    r_se, r_z, r_p = corr["se"], corr["z"], corr["p"]
             s.robust_std_error = round(r_se, 6)
             s.robust_z_value = round(r_z, 3)
             s.robust_p_value = round(r_p, 4)
@@ -998,33 +992,12 @@ class DiagnosticsComputer:
         Prior weights (when supplied) scale both the actual and the exposure,
         so w ≡ 1 reproduces the unweighted curve exactly.
         """
-        w_exposure = self.weights * self.exposure
-        w_actual = self.weights * self.y
-        total_exposure = float(np.sum(w_exposure))
-        total_actual = float(np.sum(w_actual))
-        if total_actual == 0.0 or total_exposure == 0.0:
-            return 0.0
-
-        cum_exposure = 0.0
-        cum_actual = 0.0
-        gini_area = 0.0
-        prev_cum_exposure_pct = 0.0
-        prev_cum_actual_pct = 0.0
-
-        for idx in sort_idx[::-1]:
-            cum_exposure += float(w_exposure[idx])
-            cum_actual += float(w_actual[idx])
-            cum_exposure_pct = cum_exposure / total_exposure
-            cum_actual_pct = cum_actual / total_actual
-            gini_area += (
-                (cum_exposure_pct - prev_cum_exposure_pct)
-                * (cum_actual_pct + prev_cum_actual_pct)
-                / 2.0
-            )
-            prev_cum_exposure_pct = cum_exposure_pct
-            prev_cum_actual_pct = cum_actual_pct
-
-        return 2.0 * gini_area - 1.0
+        return _gini_for_arrays(
+            self.y,
+            self.exposure,
+            sort_idx,
+            weights=(self.weights if self._has_weights else None),
+        )
 
     def compute_lift_chart(
         self, n_deciles: int = 10, sort_idx: np.ndarray | None = None, ranking: str = "auto"
@@ -1052,11 +1025,10 @@ class DiagnosticsComputer:
 
         Notes
         -----
-        Per-decile aggregates (actual / expected / exposure) are **unweighted**
-        sums; exposure enters only as the rate denominator and for rate-ranking
-        (RS-ACT-004), never as a prior-weight (Σw) multiplier. For prior-weighted
-        A/E (Σw·y / Σw·μ) use :func:`rustystats.calibration_summary`, which
-        accepts ``weights=``.
+        Per-decile aggregates (actual / expected / exposure) use prior weights
+        when supplied, reporting Σw·y / Σw·μ / Σw·exposure. Exposure still
+        remains distinct from prior weights: it is the rate denominator and
+        rank-scale normalizer, not the ``weights=`` multiplier.
         """
         # Rank by predicted rate (mu/exposure) when exposure is present, matching
         # the decile/calibration/discrimination diagnostics (RS-ACT-004). Reuse a
@@ -1593,9 +1565,18 @@ class DiagnosticsComputer:
         cont_column_cache: dict[str, np.ndarray | None] | None = None,
         cat_unique_cache: dict[str, tuple | None] | None = None,
         sort_idx: np.ndarray | None = None,
+        weights: np.ndarray | None = None,
     ) -> DatasetDiagnostics:
         """Compute comprehensive diagnostics for a single dataset."""
         n_obs = len(y)
+        weights_arr = None
+        if weights is not None:
+            weights_arr = np.asarray(weights, dtype=np.float64)
+            if weights_arr.ndim != 1 or weights_arr.shape[0] != n_obs:
+                raise ValidationError(
+                    f"weights length {weights_arr.shape} does not match {dataset_name} "
+                    f"dataset length {n_obs}."
+                )
         total_exposure = float(np.sum(exposure))
         total_actual = float(np.sum(y))
         total_predicted = float(np.sum(mu))
@@ -1641,7 +1622,16 @@ class DiagnosticsComputer:
 
         # Discrimination metrics
         stats = _rust_discrimination_stats(y, mu, exposure)
-        if sort_idx is not None:
+        if weights_arr is not None:
+            if sort_idx is None:
+                sort_idx = rank_sort_idx(
+                    mu,
+                    exposure,
+                    has_exposure=self._has_exposure,
+                    ranking="auto",
+                )
+            gini = _gini_for_arrays(y, exposure, sort_idx, weights_arr)
+        elif sort_idx is not None:
             gini = _gini_for_arrays(y, exposure, sort_idx)
         else:
             gini = float(stats["gini"])
@@ -1658,7 +1648,7 @@ class DiagnosticsComputer:
             exposure,
             n_deciles=10,
             sort_idx=sort_idx,
-            weights=(self.weights if self._has_weights else None),
+            weights=weights_arr,
         )
 
         # Compute deviance residuals once for all factor/continuous diagnostics
@@ -1787,7 +1777,12 @@ class DiagnosticsComputer:
         equal-count, rate-ranked bins the Rust path uses. With uniform weights
         this reproduces the unweighted decile rates exactly."""
         if sort_idx is None:
-            sort_idx = self._rank_sort_idx("auto")
+            sort_idx = rank_sort_idx(
+                mu,
+                exposure,
+                has_exposure=self._has_exposure,
+                ranking="auto",
+            )
         ys = y[sort_idx]
         mus = mu[sort_idx]
         es = exposure[sort_idx]
@@ -2258,6 +2253,9 @@ class DiagnosticsComputer:
             Complete comparison with per-set diagnostics and flags
         """
         # Compute diagnostics for each dataset
+        train_weights = (
+            self.weights if self._has_weights and self.weights.shape[0] == len(y_train) else None
+        )
         train_diag = self.compute_dataset_diagnostics(
             y_train,
             mu_train,
@@ -2267,6 +2265,7 @@ class DiagnosticsComputer:
             continuous_factors,
             "train",
             result,
+            weights=train_weights,
         )
         test_diag = self.compute_dataset_diagnostics(
             y_test,

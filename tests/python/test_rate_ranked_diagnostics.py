@@ -51,18 +51,22 @@ def _conflicting_mu_exposure() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
 
 def _manual_exposure_weighted_gini(
-    y: np.ndarray, exposure: np.ndarray, sort_idx: np.ndarray
+    y: np.ndarray,
+    exposure: np.ndarray,
+    sort_idx: np.ndarray,
+    weights: np.ndarray | None = None,
 ) -> float:
-    total_actual = float(np.sum(y))
-    total_exposure = float(np.sum(exposure))
+    w = np.ones_like(y) if weights is None else np.asarray(weights, dtype=np.float64)
+    total_actual = float(np.sum(w * y))
+    total_exposure = float(np.sum(w * exposure))
     cum_actual = 0.0
     cum_exposure = 0.0
     prev_actual_pct = 0.0
     prev_exposure_pct = 0.0
     area = 0.0
     for idx in sort_idx[::-1]:
-        cum_actual += float(y[idx])
-        cum_exposure += float(exposure[idx])
+        cum_actual += float(w[idx] * y[idx])
+        cum_exposure += float(w[idx] * exposure[idx])
         actual_pct = cum_actual / total_actual
         exposure_pct = cum_exposure / total_exposure
         area += (exposure_pct - prev_exposure_pct) * (actual_pct + prev_actual_pct) / 2.0
@@ -220,12 +224,10 @@ class TestWeightedAggregates:
         actual/expected/exposure sums to Σy / Σmu / Σexposure.
 
         This exercises ``rs.calibration_summary`` (RS-ACT-009), the
-        weighted-aware primitive — *not* the diagnostics decile/lift path, whose
-        aggregates are unweighted by design (see
-        ``DiagnosticsComputer.compute_lift_chart``). We don't pass ``weights=``
-        here; calibration treats exposure as the rate denominator. The invariant
-        is that the bins partition the rows, so summing each column over all bins
-        recovers the totals.
+        weighted-aware primitive. We don't pass ``weights=`` here; calibration
+        treats exposure as the rate denominator. The invariant is that the bins
+        partition the rows, so summing each column over all bins recovers the
+        totals.
         """
         rng = np.random.default_rng(123)
         n = 200
@@ -397,6 +399,8 @@ class TestWeightedDecileLiftAggregates:
             abs(a.exposure - b.exposure) > 1e-6
             for a, b in zip(lift.deciles, unw.compute_lift_chart().deciles)
         )
+        expected_gini = _manual_exposure_weighted_gini(comp.y, comp.exposure, idx, weights=w)
+        assert lift.gini == pytest.approx(round(expected_gini, 3))
 
     def test_fitted_weights_auto_propagate_through_diagnostics(self):
         rng = np.random.default_rng(2)
@@ -429,4 +433,75 @@ class TestWeightedDecileLiftAggregates:
         assert any(
             abs(a.exposure - b.exposure) > 1e-6
             for a, b in zip(auto.lift_chart.deciles, forced_unit.lift_chart.deciles)
+        )
+
+    def test_dataset_gini_matches_weighted_lift_gini(self):
+        """Weighted train DatasetDiagnostics.gini and lift_chart.gini share the
+        same prior-weighted Lorenz calculation."""
+        rng = np.random.default_rng(3)
+        df = make_freq_frame(n=2000, seed=8)
+        df = df.with_columns(pl.Series("w", rng.uniform(0.1, 5.0, df.height)))
+        result = rs.glm_dict(
+            response="ClaimCount",
+            terms={"DrivAge": {"type": "linear"}, "Region": {"type": "categorical"}},
+            data=df,
+            family="poisson",
+            exposure="Exposure",
+            weights="w",
+        ).fit()
+        diag = result.diagnostics(
+            df,
+            continuous_factors=["DrivAge"],
+            compute_vif=False,
+            compute_deviance_by_level=False,
+            compute_partial_dep=False,
+            compute_robust_se=False,
+            compute_score_tests=False,
+            compute_coefficients=False,
+        )
+
+        assert diag.lift_chart is not None
+        assert diag.train_test is not None
+        assert diag.train_test.train.gini == pytest.approx(diag.lift_chart.gini, abs=5e-4)
+
+    def test_test_data_uses_test_weights_column(self):
+        """Held-out diagnostics use the held-out weights column, not train weights."""
+        train = make_freq_frame(n=200, seed=1).with_columns(
+            pl.Series("w", np.linspace(1.0, 2.0, 200))
+        )
+        test = make_freq_frame(n=250, seed=2).with_columns(
+            pl.Series("w", np.linspace(3.0, 4.0, 250))
+        )
+        result = rs.glm_dict(
+            response="ClaimCount",
+            terms={"DrivAge": {"type": "linear"}, "Region": {"type": "categorical"}},
+            data=train,
+            family="poisson",
+            exposure="Exposure",
+            weights="w",
+        ).fit()
+        diag = result.diagnostics(
+            train,
+            test_data=test,
+            continuous_factors=["DrivAge"],
+            compute_vif=False,
+            compute_deviance_by_level=False,
+            compute_lift=False,
+            compute_partial_dep=False,
+            compute_robust_se=False,
+            compute_score_tests=False,
+            compute_coefficients=False,
+        )
+
+        assert diag.train_test is not None
+        assert diag.train_test.test is not None
+        mu_test = np.asarray(result.predict(test), dtype=np.float64)
+        exposure_test = test["Exposure"].to_numpy().astype(np.float64)
+        weights_test = test["w"].to_numpy().astype(np.float64)
+        idx = rank_sort_idx(mu_test, exposure_test, has_exposure=True, ranking="auto")
+        first = idx[: test.height // 10]
+        expected_exposure = float(np.sum(weights_test[first] * exposure_test[first]))
+
+        assert diag.train_test.test.ae_by_decile[0].exposure == pytest.approx(
+            round(expected_exposure, 2)
         )

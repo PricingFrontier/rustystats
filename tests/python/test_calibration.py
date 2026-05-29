@@ -331,10 +331,14 @@ class TestReleveLogLink:
         se_old0 = ct_old["Std.Error"][0]
         np.testing.assert_allclose(ct["Std.Error"][0], np.sqrt(se_old0**2 + var), rtol=1e-9)
         assert ct["Std.Error"][0] > se_old0
+        np.testing.assert_allclose(releveled.bse()[0], ct["Std.Error"][0], rtol=1e-12)
+        np.testing.assert_allclose(releveled.tvalues()[0], ct["z"][0], rtol=1e-12)
+        np.testing.assert_allclose(releveled.pvalues()[0], ct["Pr(>|z|)"][0], rtol=1e-12)
         # non-intercept SE untouched; z recentred on the shifted estimate.
         np.testing.assert_allclose(
             ct["Std.Error"].to_numpy()[1:], ct_old["Std.Error"].to_numpy()[1:], rtol=1e-12
         )
+        np.testing.assert_allclose(releveled.bse()[1:], result.bse()[1:], rtol=1e-12)
         np.testing.assert_allclose(ct["z"][0], releveled.params[0] / ct["Std.Error"][0], rtol=1e-9)
         np.testing.assert_allclose(ct["z"].to_numpy()[1:], ct_old["z"].to_numpy()[1:], rtol=1e-12)
 
@@ -342,6 +346,18 @@ class TestReleveLogLink:
         # than the original (inflation); non-intercept CIs unchanged.
         rel_old = result.relativities()
         rel = releveled.relativities()
+        raw_ci_old = result.conf_int()
+        ci_new = releveled.conf_int()
+        zcrit = 0.5 * (raw_ci_old[0, 1] - raw_ci_old[0, 0]) / se_old0
+        np.testing.assert_allclose(
+            ci_new[0],
+            [
+                releveled.params[0] - zcrit * releveled.bse()[0],
+                releveled.params[0] + zcrit * releveled.bse()[0],
+            ],
+            rtol=1e-12,
+        )
+        np.testing.assert_allclose(ci_new[1:], raw_ci_old[1:], rtol=1e-12)
         assert rel["CI_Lower"][0] <= rel["Relativity"][0] <= rel["CI_Upper"][0]
         old_logwidth = np.log(rel_old["CI_Upper"][0]) - np.log(rel_old["CI_Lower"][0])
         new_logwidth = np.log(rel["CI_Upper"][0]) - np.log(rel["CI_Lower"][0])
@@ -378,6 +394,45 @@ class TestReleveLogLink:
             np.testing.assert_allclose(
                 ic.robust_z_value, releveled.params[i0] / ic.robust_std_error, rtol=2e-2
             )
+
+    def test_relevel_public_robust_accessors_use_shifted_intercept(self):
+        """Backlog #3: direct robust accessors reflect the releveled intercept."""
+        df = make_freq_frame(n=1200, seed=7)
+        result = rs.glm_dict(
+            response="ClaimCount",
+            terms={
+                "DrivAge": {"type": "linear"},
+                "VehAge": {"type": "linear"},
+                "Region": {"type": "categorical"},
+            },
+            data=df,
+            family="poisson",
+            exposure="Exposure",
+        ).fit(store_design_matrix=True)
+        df_hold = make_freq_frame(n=1200, seed=707)
+        releveled = result.relevel(data=df_hold)
+
+        raw_robust_se0 = result.bse_robust("HC1")[0]
+        expected_se0 = np.sqrt(raw_robust_se0**2 + releveled.intercept_delta_var)
+        np.testing.assert_allclose(releveled.bse_robust("HC1")[0], expected_se0, rtol=1e-12)
+        np.testing.assert_allclose(
+            releveled.tvalues_robust("HC1")[0],
+            releveled.params[0] / expected_se0,
+            rtol=1e-12,
+        )
+
+        raw_ci = result.conf_int_robust(alpha=0.05, cov_type="HC1")
+        ci = releveled.conf_int_robust(alpha=0.05, cov_type="HC1")
+        zcrit = 0.5 * (raw_ci[0, 1] - raw_ci[0, 0]) / raw_robust_se0
+        np.testing.assert_allclose(
+            ci[0],
+            [
+                releveled.params[0] - zcrit * expected_se0,
+                releveled.params[0] + zcrit * expected_se0,
+            ],
+            rtol=1e-12,
+        )
+        np.testing.assert_allclose(ci[1:], raw_ci[1:], rtol=1e-12)
 
     def test_intercept_shifted_by_log_factor(self):
         """Intercept moves by exactly log(c) where c = Σy/Σμ on the calibration data.
