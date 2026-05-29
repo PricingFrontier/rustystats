@@ -1348,7 +1348,7 @@ def _resolve_test_weights(
     result: Any,
     test_data: pl.DataFrame | None,
     weights_override: str | np.ndarray | None,
-    warnings: list,
+    warnings: list[dict[str, str]],
 ) -> np.ndarray | None:
     """Resolve held-out prior weights without reusing training arrays.
 
