@@ -302,12 +302,12 @@ result = rs.glm_dict(
     terms={"DrivAge": {"type": "linear"}, "VehAge": {"type": "linear"}, "Region": {"type": "categorical"}},
     data=data,
     family="poisson",
-    offset="Exposure"
+    exposure="Exposure"
 ).fit()
 
 # Check for missing interactions
 diagnostics = result.diagnostics(
-    data=data,
+    train_data=data,
     categorical_factors=["Region", "VehBrand"],
     continuous_factors=["DrivAge", "VehAge"],
 )
@@ -328,7 +328,7 @@ result_with_interaction = rs.glm_dict(
     interactions=[{"DrivAge": {"type": "linear"}, "VehAge": {"type": "linear"}}],
     data=data,
     family="poisson",
-    offset="Exposure",
+    exposure="Exposure",
 ).fit()
 
 # Compare AIC

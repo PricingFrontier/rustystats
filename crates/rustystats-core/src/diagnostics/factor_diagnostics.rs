@@ -1518,7 +1518,8 @@ pub(crate) fn unit_deviance_for_family(
         TweedieFamily,
     };
     let lower = family.to_lowercase();
-    match lower.as_str() {
+    let base = lower.split('(').next().unwrap_or("").trim();
+    match base {
         "gaussian" | "normal" => GaussianFamily.unit_deviance_at(y, mu),
         "poisson" | "quasipoisson" => PoissonFamily.unit_deviance_at(y, mu),
         "binomial" | "quasibinomial" => BinomialFamily.unit_deviance_at(y, mu),

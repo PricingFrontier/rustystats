@@ -10,7 +10,7 @@ import rustystats as rs
 # Just specify regularization type - cv=5 is automatic
 result = rs.glm_dict(response="ClaimCount",
     terms={"VehAge": {"type": "linear"}, "BonusMalus": {"type": "linear"}, "Region": {"type": "target_encoding"}},
-    data=data, family="poisson", offset="Exposure").fit(
+    data=data, family="poisson", exposure="Exposure").fit(
     regularization="ridge"  # "ridge", "lasso", or "elastic_net"
 )
 

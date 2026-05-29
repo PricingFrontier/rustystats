@@ -442,7 +442,7 @@ result = rs.glm_dict(
     response="ClaimNb",
     terms={"Age": {"type": "bs", "monotonicity": "increasing"}, "Region": {"type": "categorical"}},
     data=data, family="poisson",
-    offset="Exposure"
+    exposure="Exposure"
 ).fit()
 
 # Combine with other spline types

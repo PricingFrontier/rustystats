@@ -592,14 +592,16 @@ class DatasetDiagnostics:
     loss: float
     deviance: float
     log_likelihood: float
-    aic: float
-    bic: float
+    aic: float | None
+    bic: float | None
     gini: float
     auc: float
     ae_ratio: float
     ae_by_decile: list[DecileMetrics]
     factor_diagnostics: dict[str, list[FactorLevelMetrics]]
     continuous_diagnostics: dict[str, list[ContinuousBandMetrics]]
+    log_likelihood_label: str = "log_likelihood"
+    is_quasi_likelihood: bool = False
 
 
 @dataclass

@@ -348,12 +348,12 @@ class TestPythonRustLinkParityExtremeEta:
         py_mu = apply_inverse_link(eta, "logit")
 
         # Both must be finite (Rust always is; Python must be after hardening).
-        assert np.all(
-            np.isfinite(py_mu)
-        ), f"Python logit inverse produced non-finite values: {py_mu}"
-        assert np.all(
-            np.isfinite(rust_mu)
-        ), f"Rust logit inverse produced non-finite values: {rust_mu}"
+        assert np.all(np.isfinite(py_mu)), (
+            f"Python logit inverse produced non-finite values: {py_mu}"
+        )
+        assert np.all(np.isfinite(rust_mu)), (
+            f"Rust logit inverse produced non-finite values: {rust_mu}"
+        )
 
         # Element-wise equal to atol=1e-12.
         np.testing.assert_allclose(
@@ -376,9 +376,9 @@ class TestPythonRustLinkParityExtremeEta:
         py_mu = apply_inverse_link(eta, "log")
 
         assert np.all(np.isfinite(py_mu)), f"Python log inverse produced non-finite values: {py_mu}"
-        assert np.all(
-            np.isfinite(rust_mu)
-        ), f"Rust log inverse produced non-finite values: {rust_mu}"
+        assert np.all(np.isfinite(rust_mu)), (
+            f"Rust log inverse produced non-finite values: {rust_mu}"
+        )
 
         np.testing.assert_allclose(
             py_mu,

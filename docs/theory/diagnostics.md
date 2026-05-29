@@ -199,7 +199,7 @@ Calibration measures how well predicted probabilities/means match observed value
 \]
 
 ```python
-diagnostics = result.diagnostics(data=data, categorical_factors=["Region"])
+diagnostics = result.diagnostics(train_data=data, categorical_factors=["Region"])
 print(f"Overall A/E: {diagnostics.calibration['actual_expected_ratio']:.3f}")
 ```
 
@@ -301,7 +301,7 @@ RustyStats can automatically detect potential interactions:
 
 ```python
 diagnostics = result.diagnostics(
-    data=data,
+    train_data=data,
     categorical_factors=["Region", "VehBrand"],
     continuous_factors=["Age"],
 )
@@ -337,7 +337,7 @@ Export diagnostics in compact JSON format:
 
 ```python
 json_str = result.diagnostics_json(
-    data=data,
+    train_data=data,
     categorical_factors=["Region"],
     continuous_factors=["Age"],
 )

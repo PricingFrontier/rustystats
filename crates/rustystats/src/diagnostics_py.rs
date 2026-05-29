@@ -22,7 +22,7 @@ use rustystats_core::diagnostics::{
     FactorDevianceResult, InteractionConfig, ResidualPattern,
 };
 
-use crate::families_py::family_from_name;
+use crate::families_py::{family_from_name_with_tweedie_support, validate_tweedie_fit_response};
 
 // =============================================================================
 // Dict construction helpers
@@ -1095,7 +1095,8 @@ pub fn compute_fit_statistics_py<'py>(
 
     let y_arr = y.as_array().to_owned();
     let mu_arr = mu.as_array().to_owned();
-    let fam = family_from_name(family, 1.5, 1.0)?;
+    validate_tweedie_fit_response(family, &y_arr, 1.5, true)?;
+    let fam = family_from_name_with_tweedie_support(family, 1.5, 1.0, true)?;
 
     let stats = py.detach(|| {
         compute_fit_statistics(&y_arr, &mu_arr, fam.as_ref(), deviance, null_dev, n_params)
@@ -1202,7 +1203,8 @@ pub fn compute_dataset_metrics_py<'py>(
     let estimated_scale = deviance / df_resid as f64;
 
     // Use trait dispatch for scale and log-likelihood
-    let fam = family_from_name(family, 1.5, 1.0)?;
+    validate_tweedie_fit_response(family, &y_arr, parsed_var_power, true)?;
+    let fam = family_from_name_with_tweedie_support(family, parsed_var_power, parsed_theta, true)?;
     let effective_scale = if fam.fixed_dispersion() {
         1.0
     } else {
@@ -1396,7 +1398,8 @@ pub fn compute_pearson_residuals_py<'py>(
 ) -> PyResult<Py<PyArray1<f64>>> {
     let y_arr = y.as_array().to_owned();
     let mu_arr = mu.as_array().to_owned();
-    let fam = family_from_name(family, 1.5, 1.0)?;
+    validate_tweedie_fit_response(family, &y_arr, 1.5, true)?;
+    let fam = family_from_name_with_tweedie_support(family, 1.5, 1.0, true)?;
     let resid = resid_pearson(&y_arr, &mu_arr, fam.as_ref());
     Ok(resid.into_pyarray(py).unbind())
 }
@@ -1411,7 +1414,8 @@ pub fn compute_deviance_residuals_py<'py>(
 ) -> PyResult<Py<PyArray1<f64>>> {
     let y_arr = y.as_array().to_owned();
     let mu_arr = mu.as_array().to_owned();
-    let fam = family_from_name(family, 1.5, 1.0)?;
+    validate_tweedie_fit_response(family, &y_arr, 1.5, true)?;
+    let fam = family_from_name_with_tweedie_support(family, 1.5, 1.0, true)?;
     let resid = resid_deviance(&y_arr, &mu_arr, fam.as_ref());
     Ok(resid.into_pyarray(py).unbind())
 }
@@ -1440,7 +1444,8 @@ pub fn compute_unit_deviance_py<'py>(
 ) -> PyResult<Py<PyArray1<f64>>> {
     let y_arr = y.as_array().to_owned();
     let mu_arr = mu.as_array().to_owned();
-    let fam = family_from_name(family, 1.5, 1.0)?;
+    validate_tweedie_fit_response(family, &y_arr, 1.5, true)?;
+    let fam = family_from_name_with_tweedie_support(family, 1.5, 1.0, true)?;
     let unit_dev = fam.unit_deviance(&y_arr, &mu_arr);
     Ok(unit_dev.into_pyarray(py).unbind())
 }

@@ -12,9 +12,6 @@ from typing import Any
 import numpy as np
 
 from rustystats._rustystats import (
-    compute_calibration_curve_py as _rust_calibration_curve,
-)
-from rustystats._rustystats import (
     compute_deviance_residuals_py as _rust_deviance_residuals,
 )
 from rustystats._rustystats import (
@@ -34,6 +31,7 @@ from rustystats._rustystats import (
 )
 from rustystats.constants import DEFAULT_N_CALIBRATION_BINS
 from rustystats.diagnostics.types import CalibrationBin
+from rustystats.exceptions import ValidationError
 
 
 class _ResidualComputer:
@@ -78,13 +76,19 @@ class _CalibrationComputer:
         self.mu = mu
         self.exposure = exposure
 
-    def compute(self, n_bins: int = DEFAULT_N_CALIBRATION_BINS) -> dict[str, Any]:
-        actual_total = float(np.sum(self.y))
-        predicted_total = float(np.sum(self.mu))
-        float(np.sum(self.exposure))
-        ae_ratio = actual_total / predicted_total if predicted_total > 0 else float("nan")
+    def compute(
+        self, n_bins: int = DEFAULT_N_CALIBRATION_BINS, ranking: str = "auto"
+    ) -> dict[str, Any]:
+        # Route through the single weighted A/E primitive (RS-ACT-009): even
+        # the legacy no-weight call path now resolves the overall ratio through
+        # the same `_overall_ae` helper that `rs.calibration_summary` uses,
+        # so the two stay numerically identical.
+        from rustystats.calibration import _overall_ae
 
-        bins = self._compute_bins(n_bins)
+        overall = _overall_ae(self.y, self.mu, weights=None)
+        ae_ratio = overall["ae_ratio"]
+
+        bins = self._compute_bins(n_bins, ranking=ranking)
         _hl_stat, hl_pvalue = self._hosmer_lemeshow(n_bins)
 
         # Compressed format: only include problem deciles (A/E outside [0.9, 1.1])
@@ -108,8 +112,67 @@ class _CalibrationComputer:
             "problem_deciles": problem_deciles,
         }
 
-    def _compute_bins(self, n_bins: int) -> list[CalibrationBin]:
-        rust_bins = _rust_calibration_curve(self.y, self.mu, self.exposure, n_bins)
+    def _compute_bins(self, n_bins: int, ranking: str = "auto") -> list[CalibrationBin]:
+        has_exposure = self.exposure is not None and not np.allclose(self.exposure, 1.0)
+        safe_exposure = np.where(self.exposure > 0.0, self.exposure, 1.0)
+        if ranking == "auto":
+            score = (
+                np.where(self.exposure > 0.0, self.mu / safe_exposure, self.mu)
+                if has_exposure
+                else self.mu
+            )
+        elif ranking == "mean":
+            score = self.mu
+        elif ranking == "rate":
+            if not has_exposure:
+                raise ValidationError("ranking='rate' requires exposure to be supplied.")
+            score = np.where(self.exposure > 0.0, self.mu / safe_exposure, self.mu)
+        else:
+            raise ValidationError(f"ranking must be 'auto', 'mean', or 'rate', got {ranking!r}.")
+
+        order = np.argsort(score, kind="stable")
+        y_sorted = self.y[order]
+        mu_sorted = self.mu[order]
+        exposure_sorted = self.exposure[order]
+        score_sorted = score[order]
+        n = len(y_sorted)
+        bins: list[CalibrationBin] = []
+        for b in range(n_bins):
+            start = b * n // n_bins
+            end = (b + 1) * n // n_bins
+            if start >= end:
+                continue
+            y_b = y_sorted[start:end]
+            mu_b = mu_sorted[start:end]
+            exp_b = exposure_sorted[start:end]
+            score_b = score_sorted[start:end]
+            actual_sum = float(np.sum(y_b))
+            predicted_sum = float(np.sum(mu_b))
+            exposure_sum = float(np.sum(exp_b))
+            ae = actual_sum / predicted_sum if predicted_sum > 0 else np.nan
+            if predicted_sum > 0.0 and np.isfinite(ae):
+                ae_se = np.sqrt(max(actual_sum, 0.0)) / predicted_sum
+                ae_ci_lower = max(0.0, ae - 1.96 * ae_se)
+                ae_ci_upper = ae + 1.96 * ae_se
+            else:
+                ae_ci_lower = float("nan")
+                ae_ci_upper = float("nan")
+            rust_bin = {
+                "bin_index": b + 1,
+                "predicted_lower": float(score_b[0]),
+                "predicted_upper": float(score_b[-1]),
+                "predicted_mean": float(np.mean(score_b)),
+                "actual_mean": float(actual_sum / exposure_sum if exposure_sum > 0 else np.nan),
+                "actual_expected_ratio": float(ae),
+                "count": int(end - start),
+                "exposure": exposure_sum,
+                "actual_sum": actual_sum,
+                "predicted_sum": predicted_sum,
+                "ae_ci_lower": float(ae_ci_lower),
+                "ae_ci_upper": float(ae_ci_upper),
+            }
+            bins.append(rust_bin)
+        rust_bins = bins
         return [
             CalibrationBin(
                 bin_index=b["bin_index"],

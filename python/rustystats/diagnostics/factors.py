@@ -418,6 +418,8 @@ class _FactorDiagnosticsComputer:
                                 p=round(pvalue, 4),
                                 dev_contrib=round(chi2, 2),
                             )
+                except AttributeError:
+                    significance_lookup = {fname: None for fname in all_factor_names}
                 except (ValueError, RuntimeError, np.linalg.LinAlgError) as e:
                     # Optional optimization: the batched Rust call is a perf
                     # path that is mathematically identical to invoking the
@@ -801,9 +803,12 @@ class _FactorDiagnosticsComputer:
 
             bse = None
             if hasattr(result, "bse"):
-                bse = result.bse
-                if callable(bse):
-                    bse = bse()
+                try:
+                    bse = result.bse
+                    if callable(bse):
+                        bse = bse()
+                except AttributeError:
+                    bse = None
             elif hasattr(result, "std_errors"):
                 bse = result.std_errors
                 if callable(bse):
@@ -811,9 +816,12 @@ class _FactorDiagnosticsComputer:
 
             pvalues = None
             if hasattr(result, "pvalues"):
-                pvalues = result.pvalues
-                if callable(pvalues):
-                    pvalues = pvalues()
+                try:
+                    pvalues = result.pvalues
+                    if callable(pvalues):
+                        pvalues = pvalues()
+                except AttributeError:
+                    pvalues = None
 
             link = result.link if hasattr(result, "link") else None
             is_log_link = link in ("log", "Log")
@@ -893,6 +901,10 @@ class _FactorDiagnosticsComputer:
         try:
             params = np.asarray(result.params)
             bse = np.asarray(result.bse())
+        except AttributeError:
+            return None
+
+        try:
             idx = np.array(param_indices)
             beta_s = params[idx]
 

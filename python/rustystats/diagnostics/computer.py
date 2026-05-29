@@ -97,6 +97,95 @@ if TYPE_CHECKING:
     import polars as pl
 
 
+def rank_sort_idx(
+    mu: np.ndarray,
+    exposure: np.ndarray | None = None,
+    *,
+    has_exposure: bool | None = None,
+    ranking: str = "auto",
+) -> np.ndarray:
+    """Ascending argsort for actuarial diagnostics ranking.
+
+    ``ranking``:
+    - ``"auto"`` — rank by ``mu/exposure`` when exposure was supplied, else ``mu``;
+    - ``"rate"`` — rank by ``mu/exposure`` (requires exposure);
+    - ``"mean"`` — rank by raw ``mu``.
+
+    Stable sorting preserves original row order for equal risk scores, matching
+    Rust's `(score, index)` tie-breaker in the default diagnostics sort.
+
+    Zero-exposure rows (``e[i] <= 0``) fall back to ``mu[i]`` as the rank key
+    so the sort never produces ``inf`` / ``nan`` and lines up with the Rust
+    ``predicted_rate`` helper (RS-ACT-004 review).
+    """
+    mu_arr = np.asarray(mu, dtype=np.float64)
+    exposure_arr = None if exposure is None else np.asarray(exposure, dtype=np.float64)
+    exposure_supplied = exposure_arr is not None if has_exposure is None else has_exposure
+
+    if ranking == "mean":
+        key = mu_arr
+    elif ranking == "rate":
+        if not exposure_supplied or exposure_arr is None:
+            raise ValidationError("ranking='rate' requires exposure to be supplied.")
+        # Mirror Rust's predicted_rate fallback: for e[i] <= 0, use mu[i]
+        # directly to avoid inf/nan rank keys.
+        safe_exp = np.where(exposure_arr > 0.0, exposure_arr, 1.0)
+        key = np.where(exposure_arr > 0.0, mu_arr / safe_exp, mu_arr)
+    elif ranking == "auto":
+        if exposure_supplied and exposure_arr is not None:
+            safe_exp = np.where(exposure_arr > 0.0, exposure_arr, 1.0)
+            key = np.where(exposure_arr > 0.0, mu_arr / safe_exp, mu_arr)
+        else:
+            key = mu_arr
+    else:
+        raise ValidationError(f"ranking must be 'auto', 'mean', or 'rate', got {ranking!r}.")
+    return np.argsort(key, kind="stable")
+
+
+def _gini_for_arrays(
+    y: np.ndarray,
+    exposure: np.ndarray,
+    sort_idx: np.ndarray,
+    weights: np.ndarray | None = None,
+) -> float:
+    """Exposure/prior-weighted Gini using a caller-supplied rank order."""
+    if weights is None:
+        w_exposure = exposure
+        w_actual = y
+    else:
+        weights_arr = np.asarray(weights, dtype=np.float64)
+        if weights_arr.ndim != 1 or weights_arr.shape[0] != len(y):
+            raise ValidationError(
+                f"weights length {weights_arr.shape} does not match dataset length {len(y)}."
+            )
+        w_exposure = weights_arr * exposure
+        w_actual = weights_arr * y
+
+    total_exposure = float(np.sum(w_exposure))
+    total_actual = float(np.sum(w_actual))
+    if total_actual == 0.0 or total_exposure == 0.0:
+        return 0.0
+
+    cum_exposure = 0.0
+    cum_actual = 0.0
+    gini_area = 0.0
+    prev_cum_exposure_pct = 0.0
+    prev_cum_actual_pct = 0.0
+    for idx in sort_idx[::-1]:
+        cum_exposure += float(w_exposure[idx])
+        cum_actual += float(w_actual[idx])
+        cum_exposure_pct = cum_exposure / total_exposure
+        cum_actual_pct = cum_actual / total_actual
+        gini_area += (
+            (cum_exposure_pct - prev_cum_exposure_pct)
+            * (cum_actual_pct + prev_cum_actual_pct)
+            / 2.0
+        )
+        prev_cum_exposure_pct = cum_exposure_pct
+        prev_cum_actual_pct = cum_actual_pct
+    return 2.0 * gini_area - 1.0
+
+
 class DiagnosticsComputer:
     """
     Computes comprehensive model diagnostics.
@@ -118,6 +207,7 @@ class DiagnosticsComputer:
         var_power: float = 1.5,
         theta: float = 1.0,
         null_deviance: float | None = None,
+        weights: np.ndarray | None = None,
     ):
         self.y = np.asarray(y, dtype=np.float64)
         self.mu = np.asarray(mu, dtype=np.float64)
@@ -126,12 +216,32 @@ class DiagnosticsComputer:
         self.n_params = n_params
         self.deviance = deviance
         self._null_deviance_override = null_deviance  # From model result
+        self._has_exposure = exposure is not None
         self.exposure = (
             np.asarray(exposure, dtype=np.float64) if exposure is not None else np.ones_like(y)
+        )
+        # RS-ACT-004: optional prior weights for decile/lift aggregates. When
+        # absent (the default) every aggregate is a plain Σ, so behaviour is
+        # byte-identical to the unweighted path.
+        self._has_weights = weights is not None
+        self.weights = (
+            np.asarray(weights, dtype=np.float64) if weights is not None else np.ones_like(self.y)
         )
         self.feature_names = feature_names or []
         self.var_power = var_power
         self.theta = theta
+        # Quasi families lack ordinary full likelihoods; suppress AIC/BIC in
+        # downstream dataset diagnostics (matches GLMModel.is_quasi_likelihood
+        # surfaced in formula.py — see RS-ACT-008).
+        _base = self.family.lower().split("(", 1)[0].strip()
+        self.is_quasi_likelihood = _base in {
+            "quasipoisson",
+            "quasi_poisson",
+            "quasi-poisson",
+            "quasibinomial",
+            "quasi_binomial",
+            "quasi-binomial",
+        }
 
         self.n_obs = len(y)
         self.df_resid = self.n_obs - n_params
@@ -203,9 +313,11 @@ class DiagnosticsComputer:
             "rmse": rust_loss["rmse"],
         }
 
-    def compute_calibration(self, n_bins: int = DEFAULT_N_CALIBRATION_BINS) -> dict[str, Any]:
+    def compute_calibration(
+        self, n_bins: int = DEFAULT_N_CALIBRATION_BINS, ranking: str = "auto"
+    ) -> dict[str, Any]:
         """Compute calibration metrics using focused component."""
-        return self._calibration.compute(n_bins)
+        return self._calibration.compute(n_bins, ranking=ranking)
 
     def compute_discrimination(self) -> dict[str, Any | None]:
         """Compute discrimination metrics using focused component."""
@@ -322,30 +434,43 @@ class DiagnosticsComputer:
             cont_column_cache=cont_column_cache,
         )
 
-    def compute_model_comparison(self) -> dict[str, float]:
+    def compute_model_comparison(self) -> dict[str, float | str | None]:
         """Compute model comparison statistics vs null model."""
         null_dev = self.null_deviance
 
-        # Likelihood ratio test
-        lr_chi2 = null_dev - self.deviance
-        lr_df = self.n_params - 1
+        if self.is_quasi_likelihood:
+            lr_chi2: float | None = None
+            lr_df: int | None = None
+            lr_pvalue: float | None = None
+            likelihood_ratio_label = "not_available_for_quasi_likelihood"
+        else:
+            # Likelihood ratio test
+            lr_chi2 = null_dev - self.deviance
+            lr_df = self.n_params - 1
 
-        # P-value from chi-square distribution (using Rust CDF)
-        lr_pvalue = 1 - _chi2_cdf(lr_chi2, float(lr_df)) if lr_df > 0 else float("nan")
+            # P-value from chi-square distribution (using Rust CDF)
+            lr_pvalue = 1 - _chi2_cdf(lr_chi2, float(lr_df)) if lr_df > 0 else float("nan")
+            likelihood_ratio_label = "likelihood_ratio"
 
         deviance_reduction_pct = 100 * (1 - self.deviance / null_dev) if null_dev > 0 else 0
 
-        # AIC improvement
-        null_aic = null_dev + 2  # Null model has 1 parameter
-        model_aic = self.deviance + 2 * self.n_params
-        aic_improvement = null_aic - model_aic
+        # AIC improvement — not meaningful under quasi-likelihood, so suppress
+        # rather than emit a number indistinguishable from a proper-likelihood
+        # improvement (RS-ACT-008).
+        if self.is_quasi_likelihood:
+            aic_improvement: float | None = None
+        else:
+            null_aic = null_dev + 2  # Null model has 1 parameter
+            model_aic = self.deviance + 2 * self.n_params
+            aic_improvement = float(null_aic - model_aic)
 
         return {
-            "likelihood_ratio_chi2": float(lr_chi2),
+            "likelihood_ratio_label": likelihood_ratio_label,
+            "likelihood_ratio_chi2": float(lr_chi2) if lr_chi2 is not None else None,
             "likelihood_ratio_df": lr_df,
-            "likelihood_ratio_pvalue": float(lr_pvalue),
+            "likelihood_ratio_pvalue": float(lr_pvalue) if lr_pvalue is not None else None,
             "deviance_reduction_pct": float(deviance_reduction_pct),
-            "aic_improvement": float(aic_improvement),
+            "aic_improvement": aic_improvement,
         }
 
     def generate_warnings(
@@ -702,11 +827,15 @@ class DiagnosticsComputer:
 
         for s in summaries:
             idx = feature_to_idx.get(s.feature)
-            if idx is not None and idx < len(robust_bse):
-                s.robust_std_error = round(float(robust_bse[idx]), 6)
-                s.robust_z_value = round(float(robust_tvalues[idx]), 3)
-                s.robust_p_value = round(float(robust_pvalues[idx]), 4)
-                s.robust_significant = float(robust_pvalues[idx]) < 0.05
+            if idx is None or idx >= len(robust_bse):
+                continue
+            r_se = float(robust_bse[idx])
+            r_z = float(robust_tvalues[idx])
+            r_p = float(robust_pvalues[idx])
+            s.robust_std_error = round(r_se, 6)
+            s.robust_z_value = round(r_z, 3)
+            s.robust_p_value = round(r_p, 4)
+            s.robust_significant = r_p < 0.05
 
         return True, None
 
@@ -849,8 +978,29 @@ class DiagnosticsComputer:
 
         return results
 
+    def _rank_sort_idx(self, ranking: str = "auto") -> np.ndarray:
+        return rank_sort_idx(
+            self.mu,
+            self.exposure,
+            has_exposure=self._has_exposure,
+            ranking=ranking,
+        )
+
+    def _gini_for_sort_idx(self, sort_idx: np.ndarray) -> float:
+        """Exposure-weighted Gini using the same rank order as deciles.
+
+        Prior weights (when supplied) scale both the actual and the exposure,
+        so w ≡ 1 reproduces the unweighted curve exactly.
+        """
+        return _gini_for_arrays(
+            self.y,
+            self.exposure,
+            sort_idx,
+            weights=(self.weights if self._has_weights else None),
+        )
+
     def compute_lift_chart(
-        self, n_deciles: int = 10, sort_idx: np.ndarray | None = None
+        self, n_deciles: int = 10, sort_idx: np.ndarray | None = None, ranking: str = "auto"
     ) -> LiftChart:
         """
         Compute full lift chart with all deciles.
@@ -863,23 +1013,40 @@ class DiagnosticsComputer:
         n_deciles : int, default=10
             Number of deciles for binning.
         sort_idx : np.ndarray, optional
-            Pre-computed argsort of self.mu. Pass this when multiple downstream
-            consumers need the same sort to avoid redundant O(n log n) work.
+            Pre-computed rate-rank index (see :func:`rank_sort_idx`): ascending
+            on ``mu/exposure`` when exposure is present (RS-ACT-004), else on
+            ``mu``. Pass this when multiple downstream consumers need the same
+            sort to avoid redundant O(n log n) work.
 
         Returns
         -------
         LiftChart
             Complete lift chart with discrimination metrics
+
+        Notes
+        -----
+        Per-decile aggregates (actual / expected / exposure) use prior weights
+        when supplied, reporting Σw·y / Σw·μ / Σw·exposure. Exposure still
+        remains distinct from prior weights: it is the rate denominator and
+        rank-scale normalizer, not the ``weights=`` multiplier.
         """
-        # Sort by predicted values (reuse pre-computed argsort when provided)
+        # Rank by predicted rate (mu/exposure) when exposure is present, matching
+        # the decile/calibration/discrimination diagnostics (RS-ACT-004). Reuse a
+        # pre-computed sort when provided.
+        if ranking not in {"auto", "mean", "rate"}:
+            raise ValidationError(f"ranking must be 'auto', 'mean', or 'rate', got {ranking!r}.")
+        if ranking == "rate" and not self._has_exposure:
+            raise ValidationError("ranking='rate' requires exposure to be supplied.")
         if sort_idx is None:
-            sort_idx = np.argsort(self.mu)
+            sort_idx = self._rank_sort_idx(ranking)
         y_sorted = self.y[sort_idx]
         mu_sorted = self.mu[sort_idx]
         exp_sorted = self.exposure[sort_idx]
+        w_sorted = self.weights[sort_idx]
+        wexp_sorted = w_sorted * exp_sorted  # weighted exposure (w ≡ 1 ⇒ exp)
 
-        # Overall rate
-        overall_rate = np.sum(self.y) / np.sum(self.exposure)
+        # Overall rate (weighted; reduces to Σy/Σexposure when w ≡ 1)
+        overall_rate = np.sum(self.weights * self.y) / np.sum(self.weights * self.exposure)
 
         # Compute deciles
         n = len(self.y)
@@ -888,8 +1055,8 @@ class DiagnosticsComputer:
         deciles = []
         cumulative_actual = 0
         cumulative_predicted = 0
-        total_actual = np.sum(self.y)
-        total_predicted = np.sum(self.mu)
+        total_actual = np.sum(self.weights * self.y)
+        total_predicted = np.sum(self.weights * self.mu)
 
         max_ks = 0
         ks_decile = 1
@@ -899,13 +1066,14 @@ class DiagnosticsComputer:
             start = d * decile_size
             end = (d + 1) * decile_size if d < n_deciles - 1 else n
 
+            w_d = w_sorted[start:end]
             y_d = y_sorted[start:end]
             mu_d = mu_sorted[start:end]
             exp_d = exp_sorted[start:end]
 
-            actual = float(np.sum(y_d))
-            predicted = float(np.sum(mu_d))
-            exposure = float(np.sum(exp_d))
+            actual = float(np.sum(w_d * y_d))
+            predicted = float(np.sum(w_d * mu_d))
+            exposure = float(np.sum(w_d * exp_d))
             n_d = len(y_d)
 
             ae_ratio = actual / predicted if predicted > 0 else float("nan")
@@ -923,9 +1091,8 @@ class DiagnosticsComputer:
             lift = decile_rate / overall_rate if overall_rate > 0 else 1.0
 
             # Cumulative lift
-            cum_rate = (
-                cumulative_actual / np.sum(exp_sorted[:end]) if np.sum(exp_sorted[:end]) > 0 else 0
-            )
+            cum_wexp = np.sum(wexp_sorted[:end])
+            cum_rate = cumulative_actual / cum_wexp if cum_wexp > 0 else 0
             cum_lift = cum_rate / overall_rate if overall_rate > 0 else 1.0
 
             # KS statistic
@@ -954,10 +1121,7 @@ class DiagnosticsComputer:
                 )
             )
 
-        # Compute Gini
-        gini = 2 * max_ks / 100  # Approximate from KS
-        stats = _rust_discrimination_stats(self.y, self.mu, self.exposure)
-        gini = float(stats["gini"])
+        gini = self._gini_for_sort_idx(sort_idx)
 
         return LiftChart(
             deciles=deciles,
@@ -1401,26 +1565,76 @@ class DiagnosticsComputer:
         cont_column_cache: dict[str, np.ndarray | None] | None = None,
         cat_unique_cache: dict[str, tuple | None] | None = None,
         sort_idx: np.ndarray | None = None,
+        weights: np.ndarray | None = None,
     ) -> DatasetDiagnostics:
         """Compute comprehensive diagnostics for a single dataset."""
         n_obs = len(y)
+        weights_arr = None
+        if weights is not None:
+            weights_arr = np.asarray(weights, dtype=np.float64)
+            if weights_arr.ndim != 1 or weights_arr.shape[0] != n_obs:
+                raise ValidationError(
+                    f"weights length {weights_arr.shape} does not match {dataset_name} "
+                    f"dataset length {n_obs}."
+                )
         total_exposure = float(np.sum(exposure))
         total_actual = float(np.sum(y))
         total_predicted = float(np.sum(mu))
 
+        result_scale = None
+        if result is not None and hasattr(result, "scale") and callable(result.scale):
+            result_scale = result.scale()
+
         # Family deviance metrics (same as GBM loss) using Rust backend
-        dataset_metrics = _rust_dataset_metrics(y, mu, self.family, self.n_params)
+        dataset_metrics = _rust_dataset_metrics(
+            y,
+            mu,
+            self.family,
+            self.n_params,
+            self.var_power,
+            self.theta,
+            result_scale,
+        )
         deviance = float(dataset_metrics["deviance"])
         mean_deviance = float(dataset_metrics["mean_deviance"])
         log_likelihood = float(dataset_metrics["log_likelihood"])
-        aic_val = float(dataset_metrics["aic"])
-        bic_val = (
-            -2.0 * log_likelihood + self.n_params * math.log(n_obs) if n_obs > 0 else float("nan")
-        )
+        # Quasi families: the family loglik stays available for convergence
+        # but AIC/BIC are not ordinary-likelihood values (RS-ACT-008). Surface
+        # them as None in the dataset diagnostics rather than printing a
+        # number indistinguishable from a proper-likelihood AIC.
+        result_aic = result.aic() if result is not None and hasattr(result, "aic") else None
+        result_bic = result.bic() if result is not None and hasattr(result, "bic") else None
+        if self.is_quasi_likelihood or (
+            result is not None and hasattr(result, "aic") and result_aic is None
+        ):
+            aic_val: float | None = None
+            bic_val: float | None = None
+        elif result_aic is not None and dataset_name == "train":
+            aic_val = float(result_aic)
+            bic_val = float(result_bic) if result_bic is not None else None
+        else:
+            aic_val = float(dataset_metrics["aic"])
+            bic_val = (
+                -2.0 * log_likelihood + self.n_params * math.log(n_obs)
+                if n_obs > 0
+                else float("nan")
+            )
 
         # Discrimination metrics
         stats = _rust_discrimination_stats(y, mu, exposure)
-        gini = float(stats["gini"])
+        if weights_arr is not None:
+            if sort_idx is None:
+                sort_idx = rank_sort_idx(
+                    mu,
+                    exposure,
+                    has_exposure=self._has_exposure,
+                    ranking="auto",
+                )
+            gini = _gini_for_arrays(y, exposure, sort_idx, weights_arr)
+        elif sort_idx is not None:
+            gini = _gini_for_arrays(y, exposure, sort_idx)
+        else:
+            gini = float(stats["gini"])
         auc = float(stats["auc"])
 
         # Overall A/E
@@ -1428,7 +1642,14 @@ class DiagnosticsComputer:
 
         # A/E by decile (sorted by predicted value). Forward `sort_idx` so we
         # don't re-sort the same `mu` array the orchestrator already sorted.
-        ae_by_decile = self._compute_ae_by_decile(y, mu, exposure, n_deciles=10, sort_idx=sort_idx)
+        ae_by_decile = self._compute_ae_by_decile(
+            y,
+            mu,
+            exposure,
+            n_deciles=10,
+            sort_idx=sort_idx,
+            weights=weights_arr,
+        )
 
         # Compute deviance residuals once for all factor/continuous diagnostics
         dev_resids = (
@@ -1473,14 +1694,18 @@ class DiagnosticsComputer:
             loss=round(mean_deviance, 6),
             deviance=round(deviance, 2),
             log_likelihood=round(log_likelihood, 2),
-            aic=round(aic_val, 2),
-            bic=round(bic_val, 2),
+            aic=round(aic_val, 2) if aic_val is not None else None,
+            bic=round(bic_val, 2) if bic_val is not None else None,
             gini=round(gini, 4),
             auc=round(auc, 4),
             ae_ratio=round(ae_ratio, 4),
             ae_by_decile=ae_by_decile,
             factor_diagnostics=factor_diag,
             continuous_diagnostics=continuous_diag,
+            log_likelihood_label="quasi_log_likelihood"
+            if self.is_quasi_likelihood
+            else "log_likelihood",
+            is_quasi_likelihood=self.is_quasi_likelihood,
         )
 
     def _compute_ae_by_decile(
@@ -1490,16 +1715,25 @@ class DiagnosticsComputer:
         exposure: np.ndarray,
         n_deciles: int = 10,
         sort_idx: np.ndarray | None = None,
+        weights: np.ndarray | None = None,
     ) -> list[DecileMetrics]:
-        """Compute A/E by decile sorted by predicted value.
+        """Compute A/E by decile sorted by predicted rate (or predicted mean).
 
-        Pass `sort_idx` (a pre-computed `np.argsort(mu)`) when the caller already
-        has it, to skip a redundant O(n log n) sort on the prediction array.
+        Pass `sort_idx` (a pre-computed rate-rank index from :func:`rank_sort_idx`
+        — ascending on ``mu/exposure`` when exposure is present per RS-ACT-004,
+        else on ``mu``) when the caller already has it, to skip a redundant
+        O(n log n) sort on the prediction array.
 
         Per-decile sums (`actual_sum`, `predicted_sum`, `exposure_sum`) are
         computed in Rust via `compute_ae_by_decile_py`; the trivial divisions
-        that produce frequencies and the A/E ratio stay Python-side.
+        that produce frequencies and the A/E ratio stay Python-side. When prior
+        ``weights`` are supplied (RS-ACT-004) the sums become Σw·y / Σw·μ /
+        Σw·exposure and are computed in Python on the same equal-count bins;
+        the unweighted call keeps the fast Rust path unchanged.
         """
+        if weights is not None:
+            return self._weighted_ae_by_decile(y, mu, exposure, weights, n_deciles, sort_idx)
+
         # Hand the pre-computed sort index to Rust as native uintp so the FFI
         # layer can reuse it directly. `np.argsort` returns intp, so this is a
         # no-op on 64-bit platforms but normalises the dtype on 32-bit.
@@ -1528,6 +1762,54 @@ class DiagnosticsComputer:
                 )
             )
 
+        return deciles
+
+    def _weighted_ae_by_decile(
+        self,
+        y: np.ndarray,
+        mu: np.ndarray,
+        exposure: np.ndarray,
+        weights: np.ndarray,
+        n_deciles: int,
+        sort_idx: np.ndarray | None,
+    ) -> list[DecileMetrics]:
+        """Prior-weighted A/E by decile (Σw·y / Σw·μ / Σw·exposure) on the same
+        equal-count, rate-ranked bins the Rust path uses. With uniform weights
+        this reproduces the unweighted decile rates exactly."""
+        if sort_idx is None:
+            sort_idx = rank_sort_idx(
+                mu,
+                exposure,
+                has_exposure=self._has_exposure,
+                ranking="auto",
+            )
+        ys = y[sort_idx]
+        mus = mu[sort_idx]
+        es = exposure[sort_idx]
+        ws = np.asarray(weights, dtype=np.float64)[sort_idx]
+        n = len(ys)
+        decile_size = n // n_deciles
+        deciles: list[DecileMetrics] = []
+        for d in range(n_deciles):
+            start = d * decile_size
+            end = (d + 1) * decile_size if d < n_deciles - 1 else n
+            w_d = ws[start:end]
+            actual = float(np.sum(w_d * ys[start:end]))
+            predicted = float(np.sum(w_d * mus[start:end]))
+            exp_sum = float(np.sum(w_d * es[start:end]))
+            ae = actual / predicted if predicted > 0 else float("nan")
+            actual_freq = actual / exp_sum if exp_sum > 0 else 0.0
+            predicted_freq = predicted / exp_sum if exp_sum > 0 else 0.0
+            deciles.append(
+                DecileMetrics(
+                    decile=d + 1,
+                    n=end - start,
+                    exposure=round(exp_sum, 2),
+                    actual=round(actual_freq, 6),
+                    predicted=round(predicted_freq, 6),
+                    ae_ratio=round(ae, 4) if not np.isnan(ae) else None,
+                )
+            )
         return deciles
 
     def _compute_factor_level_metrics(
@@ -1971,6 +2253,9 @@ class DiagnosticsComputer:
             Complete comparison with per-set diagnostics and flags
         """
         # Compute diagnostics for each dataset
+        train_weights = (
+            self.weights if self._has_weights and self.weights.shape[0] == len(y_train) else None
+        )
         train_diag = self.compute_dataset_diagnostics(
             y_train,
             mu_train,
@@ -1980,6 +2265,7 @@ class DiagnosticsComputer:
             continuous_factors,
             "train",
             result,
+            weights=train_weights,
         )
         test_diag = self.compute_dataset_diagnostics(
             y_test,

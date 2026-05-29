@@ -32,7 +32,7 @@ from rustystats.constants import (
     OVERFITTING_GINI_GAP_THRESHOLD,
     SIGNIFICANCE_THRESHOLD,
 )
-from rustystats.diagnostics.computer import DiagnosticsComputer
+from rustystats.diagnostics.computer import DiagnosticsComputer, rank_sort_idx
 from rustystats.diagnostics.pair_diagnostics import (
     _build_design_correlation_matrix,
     _compute_block_gvif,
@@ -202,6 +202,7 @@ def _normalize_factor_lists(
 def _extract_response_and_predictions(
     result: Any,
     train_data: pl.DataFrame,
+    exposure: str | np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return (y, mu, lp) for the training data.
 
@@ -210,14 +211,21 @@ def _extract_response_and_predictions(
     would be LOO-handicapped). For non-TE models, fittedvalues equals
     predict(train_data) and is reused for free.
     """
+    if exposure is None and getattr(result, "_array_exposure_requires_prediction_override", False):
+        raise ValidationError(
+            "This model was fit with an array exposure that is not reusable diagnostics "
+            "metadata. Pass exposure= explicitly to diagnostics()."
+        )
     formula_parts = result.formula.split("~") if hasattr(result, "formula") else []
     response_col_temp = formula_parts[0].strip() if formula_parts else None
 
     if response_col_temp and response_col_temp in train_data.columns:
         y = train_data[response_col_temp].to_numpy().astype(np.float64)
         has_te = any(fn.startswith("TE(") for fn in getattr(result, "feature_names", []))
-        if has_te and hasattr(result, "predict"):
-            mu = np.asarray(result.predict(train_data), dtype=np.float64)
+        if (
+            has_te or getattr(result, "_is_deserialized", False) or exposure is not None
+        ) and hasattr(result, "predict"):
+            mu = np.asarray(result.predict(train_data, exposure=exposure), dtype=np.float64)
         else:
             mu = np.asarray(result.fittedvalues, dtype=np.float64)
         lp = np.log(mu) if np.all(mu > 0) else mu
@@ -261,6 +269,7 @@ def _extract_model_metadata(result: Any) -> tuple[str, str, int, float, list[str
 def _resolve_offset_and_response(
     result: Any,
     train_data: pl.DataFrame,
+    exposure_override: str | np.ndarray | None = None,
 ) -> tuple[str | None, str | None, np.ndarray | None]:
     """Auto-infer response and exposure column names from the model formula."""
     response_col = None
@@ -269,12 +278,36 @@ def _resolve_offset_and_response(
         formula_parts = result.formula.split("~")
         if len(formula_parts) >= 1:
             response_col = formula_parts[0].strip()
-    if hasattr(result, "_offset_spec") and isinstance(result._offset_spec, str):
-        exposure_col = result._offset_spec
 
     exposure = None
-    if exposure_col and exposure_col in train_data.columns:
+    exposure_spec = exposure_override
+    if exposure_spec is None:
+        exposure_spec = getattr(result, "_exposure_spec", None)
+    if exposure_spec is None and getattr(
+        result, "_array_exposure_requires_prediction_override", False
+    ):
+        raise ValidationError(
+            "This model was fit with an array exposure that is not reusable diagnostics "
+            "metadata. Pass exposure= explicitly to diagnostics()."
+        )
+    if isinstance(exposure_spec, str):
+        exposure_col = exposure_spec
+        if exposure_col not in train_data.columns:
+            raise ValidationError(
+                f"Model requires exposure column '{exposure_col}', but it is not "
+                "present in train_data. Pass exposure= explicitly to diagnostics()."
+            )
         exposure = train_data[exposure_col].to_numpy().astype(np.float64)
+    elif exposure_spec is not None:
+        exposure = np.asarray(exposure_spec, dtype=np.float64)
+        if exposure.ndim != 1:
+            raise ValidationError(f"exposure must be one-dimensional; got shape {exposure.shape}.")
+        if exposure.shape[0] != train_data.height:
+            raise ValidationError(
+                f"Stored exposure length {exposure.shape[0]} does not match "
+                f"train_data length {train_data.height}."
+            )
+
     return response_col, exposure_col, exposure
 
 
@@ -488,6 +521,8 @@ def _extract_test_arrays(
     result: Any,
     response_col: str | None,
     exposure_col: str | None,
+    ranking: str = "auto",
+    exposure_override: str | np.ndarray | None = None,
 ) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None, np.ndarray | None]:
     """Extract test response, prediction, exposure, and prediction order once."""
     if test_data is None or response_col is None:
@@ -498,11 +533,47 @@ def _extract_test_arrays(
         raise ValidationError("Model does not support prediction on new data")
 
     y_test = test_data[response_col].to_numpy().astype(np.float64)
-    mu_test = np.asarray(result.predict(test_data), dtype=np.float64)
+    override_arr = None
+    if exposure_override is not None and not isinstance(exposure_override, str):
+        override_arr = np.asarray(exposure_override, dtype=np.float64)
+        if override_arr.ndim != 1:
+            raise ValidationError(
+                f"exposure must be one-dimensional; got shape {override_arr.shape}."
+            )
+
+    predict_exposure: str | np.ndarray | None
+    if isinstance(exposure_override, str):
+        predict_exposure = exposure_override
+    elif override_arr is not None and override_arr.shape[0] == len(test_data):
+        predict_exposure = override_arr
+    elif override_arr is not None:
+        predict_exposure = None
+    elif getattr(result, "_exposure_spec", None) is not None and not isinstance(
+        getattr(result, "_exposure_spec", None), str
+    ):
+        raise ValidationError(
+            "test_data diagnostics for a model fit with array exposure require "
+            "an explicit exposure= array for the test data."
+        )
+    else:
+        predict_exposure = None
+    mu_test = np.asarray(result.predict(test_data, exposure=predict_exposure), dtype=np.float64)
     exposure_test = np.ones(len(y_test), dtype=np.float64)
+    has_exposure = False
+    if isinstance(exposure_override, str):
+        exposure_col = exposure_override
     if exposure_col and exposure_col in test_data.columns:
         exposure_test = test_data[exposure_col].to_numpy().astype(np.float64)
-    return y_test, mu_test, exposure_test, np.argsort(mu_test)
+        has_exposure = True
+    elif override_arr is not None and override_arr.shape[0] == len(y_test):
+        exposure_test = override_arr.astype(np.float64)
+        has_exposure = True
+    return (
+        y_test,
+        mu_test,
+        exposure_test,
+        rank_sort_idx(mu_test, exposure_test, has_exposure=has_exposure, ranking=ranking),
+    )
 
 
 def _maybe_compute_vif(
@@ -533,6 +604,19 @@ def _maybe_compute_coefficients(
     rather than silently leaving them ``None``.
     """
     if not compute_coefficients:
+        return None, False
+    inference_status = getattr(result, "inference_status", None)
+    if inference_status is not None and inference_status not in {"valid_standard", "valid_robust"}:
+        if warnings is not None:
+            warnings.append(
+                {
+                    "type": "coefficient_inference_unavailable",
+                    "message": (
+                        "Coefficient p-values and standard errors are suppressed because "
+                        f"inference_status={inference_status}."
+                    ),
+                }
+            )
         return None, False
     coef_summary = computer.compute_coefficient_summary(result, link=link)
     robust_se_enriched = False
@@ -580,11 +664,12 @@ def _maybe_compute_lift(
     computer: DiagnosticsComputer,
     mu_sort_idx: np.ndarray,
     warnings: list,
+    ranking: str,
 ) -> Any:
     """Compute the full lift chart and warn on weak deciles."""
     if not compute_lift:
         return None
-    lift_chart = computer.compute_lift_chart(n_deciles=10, sort_idx=mu_sort_idx)
+    lift_chart = computer.compute_lift_chart(n_deciles=10, sort_idx=mu_sort_idx, ranking=ranking)
     if lift_chart.weak_deciles:
         warnings.append(
             {
@@ -650,6 +735,8 @@ def _build_train_test_comparison(
     test_mu: np.ndarray | None = None,
     test_exposure: np.ndarray | None = None,
     test_mu_sort_idx: np.ndarray | None = None,
+    test_weights: np.ndarray | None = None,
+    ranking: str = "auto",
 ) -> TrainTestComparison:
     """Assemble the train/test comparison; populate test_diag and overfitting flags when test_data is supplied."""
     train_test = TrainTestComparison(train=train_diag)
@@ -662,6 +749,7 @@ def _build_train_test_comparison(
             result,
             response_col,
             exposure_col,
+            ranking,
         )
     if test_y is None or test_mu is None or test_exposure is None:
         return train_test
@@ -669,10 +757,17 @@ def _build_train_test_comparison(
     y_test = test_y
     mu_test = test_mu
     exposure_test = test_exposure
-    # Pre-compute argsort of mu_test once so compute_dataset_diagnostics
-    # can skip the redundant sort inside _compute_ae_by_decile.
+    # Pre-compute the rank index of the test predictions once. RS-ACT-004: rank
+    # by predicted rate (mu/exposure); exposure_test is ones when absent, so this
+    # reduces to argsort(mu) for non-exposure models.
     if test_mu_sort_idx is None:
-        test_mu_sort_idx = np.argsort(mu_test)
+        has_exposure = exposure_col is not None and exposure_col in test_data.columns
+        test_mu_sort_idx = rank_sort_idx(
+            mu_test,
+            exposure_test,
+            has_exposure=has_exposure,
+            ranking=ranking,
+        )
 
     # Pre-cache test data columns (same pattern as the train-data cache loop).
     cat_cache_test, cat_unique_cache_test, cont_cache_test = _precompute_data_caches(
@@ -693,6 +788,7 @@ def _build_train_test_comparison(
         cont_column_cache=cont_cache_test,
         cat_unique_cache=cat_unique_cache_test,
         sort_idx=test_mu_sort_idx,
+        weights=test_weights,
     )
 
     # Compute comparison metrics
@@ -1207,8 +1303,93 @@ def _build_model_summary(
 
     if robust_se_enriched:
         model_summary["robust_se_type"] = "HC1"
+    boundary_active = getattr(result, "boundary_active_coefficients", None)
+    if boundary_active is not None:
+        active = boundary_active() if callable(boundary_active) else boundary_active
+        if active:
+            model_summary["boundary_active_coefficients"] = active
 
     return model_summary
+
+
+def _resolve_weights(
+    result: Any,
+    train_data: pl.DataFrame,
+    weights_override: str | np.ndarray | None,
+) -> np.ndarray | None:
+    """Resolve prior weights for decile/lift aggregates (RS-ACT-004).
+
+    An explicit ``weights_override`` wins and is validated strictly; otherwise
+    the model's fitted ``_weights_spec`` is auto-propagated, but leniently — if
+    that column/array can't be matched to ``train_data`` we fall back to
+    unweighted rather than raising, since diagnostics data need not carry it.
+    """
+    explicit = weights_override is not None
+    spec = weights_override if explicit else getattr(result, "_weights_spec", None)
+    if spec is None:
+        return None
+    if isinstance(spec, str):
+        if spec not in train_data.columns:
+            if explicit:
+                raise ValidationError(f"weights column '{spec}' is not present in train_data.")
+            return None
+        return train_data[spec].to_numpy().astype(np.float64)
+    arr = np.asarray(spec, dtype=np.float64)
+    if arr.ndim != 1 or arr.shape[0] != train_data.height:
+        if explicit:
+            raise ValidationError(
+                f"weights length {arr.shape} does not match train_data length {train_data.height}."
+            )
+        return None
+    return arr
+
+
+def _resolve_test_weights(
+    result: Any,
+    test_data: pl.DataFrame | None,
+    weights_override: str | np.ndarray | None,
+    warnings: list[dict[str, str]],
+) -> np.ndarray | None:
+    """Resolve held-out prior weights without reusing training arrays.
+
+    A named weights column can be propagated to ``test_data``. Array weights are
+    train-row aligned, so they cannot safely describe held-out rows through the
+    existing public API; use a column name present in both datasets for weighted
+    train/test diagnostics.
+    """
+    if test_data is None:
+        return None
+    explicit = weights_override is not None
+    spec = weights_override if explicit else getattr(result, "_weights_spec", None)
+    if spec is None:
+        return None
+    if isinstance(spec, str):
+        if spec not in test_data.columns:
+            if explicit:
+                raise ValidationError(f"weights column '{spec}' is not present in test_data.")
+            warnings.append(
+                {
+                    "type": "test_weights_unavailable",
+                    "message": (
+                        f"Fitted weights column '{spec}' is not present in test_data; "
+                        "held-out decile and Gini diagnostics are unweighted."
+                    ),
+                }
+            )
+            return None
+        return test_data[spec].to_numpy().astype(np.float64)
+
+    warnings.append(
+        {
+            "type": "test_weights_unavailable",
+            "message": (
+                "Array weights are aligned to train_data and are not reused for "
+                "test_data diagnostics; pass weights as a column name present in "
+                "both datasets to weight held-out diagnostics."
+            ),
+        }
+    )
+    return None
 
 
 def compute_diagnostics(
@@ -1241,6 +1422,9 @@ def compute_diagnostics(
     compute_score_tests: bool = True,
     # Base predictions comparison (column name in train_data with predictions from another model)
     base_predictions: str | None = None,
+    ranking: str = "auto",
+    exposure: str | np.ndarray | None = None,
+    weights: str | np.ndarray | None = None,
 ) -> ModelDiagnostics:
     """
     Compute comprehensive model diagnostics.
@@ -1302,6 +1486,9 @@ def compute_diagnostics(
         - A/E ratio, loss, Gini for base predictions
         - Model vs base decile analysis sorted by model/base ratio
         - Summary of which model performs better in each decile
+    ranking : {"auto", "mean", "rate"}, default="auto"
+        Decile/lift ranking mode. ``"auto"`` ranks by predicted rate when
+        exposure is present and by raw predicted mean otherwise.
 
     Returns
     -------
@@ -1339,12 +1526,15 @@ def compute_diagnostics(
     categorical_factors, continuous_factors = _normalize_factor_lists(
         categorical_factors, continuous_factors
     )
-    y, mu, lp = _extract_response_and_predictions(result, train_data)
+    y, mu, lp = _extract_response_and_predictions(result, train_data, exposure=exposure)
     _validate_data_length(train_data, mu)
     family, link, n_params, deviance, feature_names = _extract_model_metadata(result)
-    response_col, exposure_col, exposure = _resolve_offset_and_response(result, train_data)
+    response_col, exposure_col, exposure_arr = _resolve_offset_and_response(
+        result, train_data, exposure_override=exposure
+    )
     var_power, theta = _parse_family_params(family)
     null_deviance = _resolve_null_deviance(result)
+    weights_arr = _resolve_weights(result, train_data, weights)
 
     # 2. Build computer
     computer = DiagnosticsComputer(
@@ -1354,19 +1544,21 @@ def compute_diagnostics(
         family=family,
         n_params=n_params,
         deviance=deviance,
-        exposure=exposure,
+        exposure=exposure_arr,
         feature_names=feature_names,
         var_power=var_power,
         theta=theta,
         null_deviance=null_deviance,
+        weights=weights_arr,
     )
 
-    # Pre-compute sort index of mu once. compute_lift_chart and
-    # _compute_ae_by_decile (called from compute_dataset_diagnostics) both need
-    # an argsort of `mu` to bin predictions by decile; sharing the index here
-    # saves ~200ms of redundant O(n log n) work at 1M rows. (Rust's calibration
-    # sort is internal to FFI and not addressed here.)
-    mu_sort_idx = np.argsort(mu)
+    # Pre-compute the rank index once. compute_lift_chart and
+    # _compute_ae_by_decile (called from compute_dataset_diagnostics) both bin
+    # predictions by decile; sharing the index saves ~200ms of redundant
+    # O(n log n) work at 1M rows. RS-ACT-004: rank by predicted rate
+    # (mu/exposure) when exposure is present, else by mu, so the decile table and
+    # lift chart agree with the rate-ranked calibration/discrimination stats.
+    mu_sort_idx = computer._rank_sort_idx(ranking)
 
     # 3. Pre-cache columns + extract score-test matrices
     cat_cache_train, cat_unique_cache_train, cont_cache_train = _precompute_data_caches(
@@ -1377,7 +1569,7 @@ def compute_diagnostics(
     )
 
     # 4. Compute core diagnostics
-    calibration = computer.compute_calibration(n_calibration_bins)
+    calibration = computer.compute_calibration(n_calibration_bins, ranking=ranking)
     residual_summary = computer.compute_residual_summary()
 
     factors = computer.compute_factor_diagnostics(
@@ -1424,6 +1616,7 @@ def compute_diagnostics(
         cont_column_cache=cont_cache_train,
         cat_unique_cache=cat_unique_cache_train,
         sort_idx=mu_sort_idx,
+        weights=weights_arr,
     )
 
     # Generate warnings (use train_diag for fit stats)
@@ -1452,7 +1645,7 @@ def compute_diagnostics(
         cat_unique_cache_train,
         warnings,
     )
-    lift_chart = _maybe_compute_lift(compute_lift, computer, mu_sort_idx, warnings)
+    lift_chart = _maybe_compute_lift(compute_lift, computer, mu_sort_idx, warnings, ranking)
     partial_dep = _maybe_compute_partial_dependence(
         compute_partial_dep,
         computer,
@@ -1472,7 +1665,10 @@ def compute_diagnostics(
         result,
         response_col,
         exposure_col,
+        ranking,
+        exposure,
     )
+    test_weights_arr = _resolve_test_weights(result, test_data, weights, warnings)
 
     # 6. Train/test comparison (test_diag built only if test_data provided)
     train_test = _build_train_test_comparison(
@@ -1489,6 +1685,8 @@ def compute_diagnostics(
         test_mu=test_mu_arr,
         test_exposure=test_exposure_arr,
         test_mu_sort_idx=test_mu_sort_idx,
+        test_weights=test_weights_arr,
+        ranking=ranking,
     )
 
     # 6b. Pre-build the regularized design correlation matrix ONCE per

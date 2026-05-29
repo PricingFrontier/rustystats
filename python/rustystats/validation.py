@@ -99,6 +99,9 @@ def validate_response(
     family: str,
     name: str = "response (y)",
     require_variation: bool = True,
+    *,
+    var_power: float | None = None,
+    allow_extended_tweedie: bool = False,
 ) -> np.ndarray:
     """
     Validate response variable for the specified GLM family.
@@ -115,6 +118,17 @@ def validate_response(
         If True, reject a constant response. Fitting a GLM needs variation in
         ``y``; helper routines that only evaluate per-row formulas can disable
         this while keeping family-domain validation.
+    var_power : float, optional
+        Tweedie variance power ``p``. When ``None`` the Tweedie response check
+        intentionally degrades to the weakest universally-safe form (``y >= 0``)
+        because the per-regime support rules (``y > 0`` for ``p >= 2``, the
+        ``0 < p < 1`` rejection, etc.) cannot be applied without knowing ``p``.
+        Callers that *do* know ``p`` (i.e. anyone in the GLM fit pipeline)
+        **must** pass it so the full regime table is enforced; this weak form
+        is for parameter-agnostic helpers only.
+    allow_extended_tweedie : bool
+        Whether the extended Tweedie regimes (``p <= 0``, ``p == 1``, ``p == 2``,
+        ``p > 2``) are unlocked. Ignored unless ``var_power`` is supplied.
 
     Returns
     -------
@@ -128,7 +142,12 @@ def validate_response(
     """
     y = coerce_to_float64(y, name)
     n = len(y)
-    family_lower = family.lower()
+    # Canonicalise the family name by stripping any embedded parameter suffix
+    # (e.g. ``"tweedie(p=2.0)"`` -> ``"tweedie"``). Without this the dispatch
+    # below silently skips the family-specific check for embedded forms and
+    # the Rust layer is the only thing catching them. Mirrors
+    # ``is_tweedie_family`` / ``is_negbinomial_family`` in ``formula.py``.
+    family_lower = family.lower().split("(", 1)[0].strip()
 
     # Check for empty response
     if n == 0:
@@ -155,7 +174,7 @@ def validate_response(
         _validate_negbinomial_response(y, name)
 
     elif family_lower == "tweedie":
-        _validate_tweedie_response(y, name)
+        _validate_tweedie_response(y, name, var_power, allow_extended_tweedie)
 
     elif family_lower == "inverse_gaussian":
         _validate_inverse_gaussian_response(y, name)
@@ -226,13 +245,103 @@ def _validate_negbinomial_response(y: np.ndarray, name: str) -> None:
         )
 
 
-def _validate_tweedie_response(y: np.ndarray, name: str) -> None:
-    """Validate response for Tweedie: must be non-negative."""
-    if np.any(y < 0):
-        n_neg = np.sum(y < 0)
+def _validate_tweedie_response(
+    y: np.ndarray,
+    name: str,
+    var_power: float | None,
+    allow_extended_tweedie: bool,
+) -> None:
+    """Validate response for Tweedie under the RS-ACT-006 support contract.
+
+    Regime table:
+
+    * ``0 < p < 1``  — no Tweedie distribution exists. Rejected *always*,
+      even under ``allow_extended_tweedie=True``.
+    * ``1 < p < 2``  — compound Poisson-Gamma (the actuarial pure-premium
+      regime, the library default). Requires ``y >= 0``.
+    * ``p <= 0``, ``p == 1``, ``p == 2``, ``p > 2`` — valid Tweedie
+      distributions but outside the default interior. Requires
+      ``allow_extended_tweedie=True`` to opt in. Under that flag:
+
+      - ``p >= 2`` requires ``y > 0`` (no exact zeros — the unit deviance
+        diverges there);
+      - ``p <= 0`` or ``p == 1`` requires ``y >= 0``.
+
+    ``var_power=None`` skips the regime check; callers that don't yet know
+    ``p`` (e.g. ``validate_response`` invoked without parameters) just get
+    the basic ``y >= 0`` check.
+
+    .. note::
+       The regime table here mirrors ``validate_tweedie_power`` /
+       ``validate_tweedie_response`` in
+       ``crates/rustystats/src/families_py.rs`` (Rust binding layer). These
+       two implementations enforce the same contract in two languages and
+       **must stay in sync**: a change in one almost always needs the same
+       change in the other.
+    """
+    if var_power is None:
+        if np.any(y < 0):
+            n_neg = np.sum(y < 0)
+            raise ValidationError(
+                f"Tweedie family requires non-negative {name}. Found {n_neg} negative values."
+            )
+        return
+
+    if not np.isfinite(var_power):
+        raise ValidationError(f"Tweedie var_power must be finite, got {var_power}.")
+
+    # Regime 1: 0 < p < 1 is the genuinely invalid band — no Tweedie
+    # distribution exists; reject *always* (extended mode does not unlock it).
+    if 0.0 < var_power < 1.0:
         raise ValidationError(
-            f"Tweedie family requires non-negative {name}. Found {n_neg} negative values."
+            f"Tweedie var_power={var_power} is in the open interval (0, 1) — "
+            "no Tweedie distribution exists for these powers. Allowed regions: "
+            "p <= 0, p == 1 (Poisson), 1 < p < 2 (compound Poisson-Gamma), "
+            "p == 2 (Gamma), p > 2 (e.g. p=3 Inverse Gaussian)."
         )
+
+    # Regime 2: 1 < p < 2 is the default interior; only y >= 0 required.
+    if 1.0 < var_power < 2.0:
+        if np.any(y < 0):
+            n_neg = np.sum(y < 0)
+            raise ValidationError(
+                f"Tweedie family requires non-negative {name}. Found {n_neg} negative values."
+            )
+        return
+
+    # Regime 3: outside the interior — require explicit opt-in.
+    if not allow_extended_tweedie:
+        # Point users at the matching native family where one exists.
+        suggestion = {
+            0.0: "family='gaussian'",
+            1.0: "family='poisson'",
+            2.0: "family='gamma'",
+        }.get(var_power)
+        hint = f" Use {suggestion} directly." if suggestion is not None else ""
+        raise ValidationError(
+            f"Tweedie var_power={var_power} is outside the default compound "
+            "Poisson-Gamma interior (1 < p < 2). Pass "
+            "allow_extended_tweedie=True to opt in to the extended regime "
+            f"(and its per-regime support rules).{hint}"
+        )
+
+    # Extended regime support: p >= 2 requires y > 0; p <= 0 or p == 1 require y >= 0.
+    if var_power >= 2.0:
+        if np.any(y <= 0):
+            n_invalid = np.sum(y <= 0)
+            raise ValidationError(
+                f"Extended Tweedie with p={var_power} requires strictly positive "
+                f"{name} (y > 0). Found {n_invalid} values <= 0. "
+                "The Tweedie unit deviance at y == 0 diverges for p >= 2; "
+                "filter or cap your zeros before fitting."
+            )
+    else:
+        if np.any(y < 0):
+            n_neg = np.sum(y < 0)
+            raise ValidationError(
+                f"Extended Tweedie with p={var_power} requires non-negative "
+                f"{name} (y >= 0). Found {n_neg} negative values."
+            )
 
 
 def _validate_inverse_gaussian_response(y: np.ndarray, name: str) -> None:
@@ -458,6 +567,9 @@ def validate_glm_inputs(
     offset: np.ndarray | None = None,
     feature_names: list[str] | None = None,
     is_exposure_offset: bool = False,
+    *,
+    var_power: float | None = None,
+    allow_extended_tweedie: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
     """
     Validate all GLM inputs before fitting.
@@ -492,8 +604,15 @@ def validate_glm_inputs(
     ValidationError
         If any validation check fails.
     """
-    # Validate response
-    y = validate_response(y, family)
+    # Validate response (RS-ACT-006 threads var_power + allow_extended_tweedie
+    # through so the Tweedie regime table is enforced before the deviance is
+    # ever evaluated).
+    y = validate_response(
+        y,
+        family,
+        var_power=var_power,
+        allow_extended_tweedie=allow_extended_tweedie,
+    )
     n_obs = len(y)
 
     # Validate design matrix
@@ -527,6 +646,8 @@ def validate_residual_inputs(
     family: str,
     weights: np.ndarray | None = None,
     offset: np.ndarray | None = None,
+    var_power: float | None = None,
+    allow_extended_tweedie: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
     """
     Validate inputs to :func:`rustystats.working_response_weights`.
@@ -564,7 +685,13 @@ def validate_residual_inputs(
     # only care about the base family name.
     family_base = family.split("(", 1)[0].strip()
 
-    y = validate_response(y, family_base, require_variation=False)
+    y = validate_response(
+        y,
+        family_base,
+        require_variation=False,
+        var_power=var_power,
+        allow_extended_tweedie=allow_extended_tweedie,
+    )
     n_obs = len(y)
 
     eta = coerce_to_float64(eta, "eta")

@@ -3337,8 +3337,8 @@ class TestFactorExtensions:
     def test_robust_se_unavailable_emits_warning_on_regularized_fit(self):
         """A regularized fit cannot produce HC1 sandwich SEs. Instead of
         silently leaving every ``coefficient_summary[*].robust_*`` null with
-        no signal to the caller, ``diagnostics(...)`` must emit a
-        ``robust_se_unavailable`` warning that names the reason.
+        no signal to the caller, ``diagnostics(...)`` must suppress the
+        coefficient summary and emit an explicit inference warning.
         """
         import polars as pl
         import rustystats as rs
@@ -3362,7 +3362,7 @@ class TestFactorExtensions:
             },
             data=data,
             family="poisson",
-            offset="exposure",
+            exposure="exposure",
         ).fit(alpha=0.5, l1_ratio=0.5)
 
         diag = result.diagnostics(
@@ -3370,13 +3370,12 @@ class TestFactorExtensions:
             categorical_factors=["region"],
             continuous_factors=["x1", "x2"],
         )
-        # All robust SEs null on every coefficient.
-        assert diag.coefficient_summary is not None
-        assert all(c.robust_std_error is None for c in diag.coefficient_summary)
-        # And the warning is present, with a non-empty message naming the reason.
-        robust_warnings = [w for w in diag.warnings if w.get("type") == "robust_se_unavailable"]
-        assert len(robust_warnings) == 1
-        assert "robust SE unavailable" in robust_warnings[0]["message"]
+        assert diag.coefficient_summary is None
+        inference_warnings = [
+            w for w in diag.warnings if w.get("type") == "coefficient_inference_unavailable"
+        ]
+        assert len(inference_warnings) == 1
+        assert "inference_status=naive_after_selection" in inference_warnings[0]["message"]
 
     def test_factor_extensions_in_json(self):
         """New fields serialize through ``to_json``."""
@@ -3844,7 +3843,7 @@ class TestPairDiagnosticsNumerics:
             terms={"age": {"type": "linear"}, "region": {"type": "categorical"}},
             data=data,
             family="poisson",
-            offset="exposure",
+            exposure="exposure",
         ).fit()
 
     def test_cell_actual_matches_manual_aggregation(self):
@@ -4785,9 +4784,9 @@ class TestPairDiagnosticsDeterminism:
             def __getattr__(self, name):
                 return getattr(self.inner, name)
 
-            def predict(self, data_arg):
+            def predict(self, data_arg, **kwargs):
                 self.predict_calls += 1
-                return self.inner.predict(data_arg)
+                return self.inner.predict(data_arg, **kwargs)
 
         wrapped = CountingResult(result)
         diag = compute_diagnostics(

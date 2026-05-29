@@ -24,7 +24,10 @@ use rustystats_core::solvers::{
     SmoothGLMConfig, SmoothTermSpec,
 };
 
-use crate::families_py::{default_link_name, family_from_name, link_from_name};
+use crate::families_py::{
+    default_link_name, family_from_name_with_tweedie_support, link_from_name,
+    resolve_negbinomial_theta, resolve_tweedie_var_power, validate_tweedie_fit_response,
+};
 use crate::results_py::PyGLMResults;
 
 // =============================================================================
@@ -34,12 +37,14 @@ use crate::results_py::PyGLMResults;
 /// Convert SmoothGLMResult → (PyGLMResults, smooth_metadata_dict) Python tuple.
 fn smooth_result_to_py<'py>(
     py: Python<'py>,
-    result: rustystats_core::solvers::SmoothGLMResult,
+    mut result: rustystats_core::solvers::SmoothGLMResult,
     store_design_matrix: bool,
+    family_name: String,
 ) -> PyResult<Py<PyAny>> {
     let n_obs = result.y.len();
     let n_params = result.coefficients.len();
 
+    result.family_name = family_name;
     let glm_result = PyGLMResults {
         coefficients: result.coefficients,
         fitted_values: result.fitted_values,
@@ -61,6 +66,9 @@ fn smooth_result_to_py<'py>(
         },
         irls_weights: result.irls_weights,
         offset: result.offset,
+        step_halving_used: result.step_halving_used,
+        solver_status: result.solver_status,
+        warnings: result.warnings,
     };
 
     let smooth_dict = pyo3::types::PyDict::new(py);
@@ -109,7 +117,7 @@ fn build_smooth_config(
 // =============================================================================
 
 #[pyfunction]
-#[pyo3(signature = (y, x, family, link=None, var_power=1.5, theta=1.0, offset=None, weights=None, alpha=0.0, l1_ratio=0.0, max_iter=25, tol=1e-8, nonneg_indices=None, nonpos_indices=None, store_design_matrix=false))]
+#[pyo3(signature = (y, x, family, link=None, var_power=1.5, theta=1.0, offset=None, weights=None, alpha=0.0, l1_ratio=0.0, max_iter=25, tol=1e-8, nonneg_indices=None, nonpos_indices=None, store_design_matrix=false, allow_extended_tweedie=false, fit_intercept=true))]
 pub fn fit_glm_py(
     y: PyReadonlyArray1<f64>,
     x: PyReadonlyArray2<f64>,
@@ -126,9 +134,132 @@ pub fn fit_glm_py(
     nonneg_indices: Option<Vec<usize>>,
     nonpos_indices: Option<Vec<usize>>,
     store_design_matrix: bool,
+    allow_extended_tweedie: bool,
+    fit_intercept: bool,
 ) -> PyResult<PyGLMResults> {
     let y_array: Array1<f64> = y.as_array().to_owned();
     let x_view = x.as_array(); // Zero-copy view of numpy array
+    let n_obs = y_array.len();
+    let n_params = x_view.ncols();
+    let offset_array: Option<Array1<f64>> = offset.map(|o| o.as_array().to_owned());
+    let weights_array: Option<Array1<f64>> = weights.map(|w| w.as_array().to_owned());
+
+    let reg_config = if alpha > 0.0 {
+        if l1_ratio >= 1.0 {
+            RegularizationConfig::lasso(alpha)
+        } else if l1_ratio <= 0.0 {
+            RegularizationConfig::ridge(alpha)
+        } else {
+            RegularizationConfig::elastic_net(alpha, l1_ratio)
+        }
+    } else {
+        RegularizationConfig::none()
+    }
+    .with_intercept(fit_intercept);
+
+    let config = FitConfig {
+        max_iterations: max_iter,
+        tolerance: tol,
+        min_weight: 1e-10,
+        verbose: false,
+        nonneg_indices: nonneg_indices.unwrap_or_default(),
+        nonpos_indices: nonpos_indices.unwrap_or_default(),
+        regularization: reg_config,
+        skip_covariance: false,
+    };
+
+    // Gamma validation
+    if family.to_lowercase() == "gamma" {
+        let n_invalid = y_array.iter().filter(|&&v| v <= 0.0).count();
+        if n_invalid > 0 {
+            return Err(PyValueError::new_err(format!(
+                "Gamma family requires strictly positive response values (y > 0). \
+                 Found {} values <= 0 out of {} observations.",
+                n_invalid,
+                y_array.len()
+            )));
+        }
+    }
+
+    validate_tweedie_fit_response(family, &y_array, var_power, allow_extended_tweedie)?;
+
+    let fam =
+        family_from_name_with_tweedie_support(family, var_power, theta, allow_extended_tweedie)?;
+    let lnk = link_from_name(link.unwrap_or(default_link_name(family)))?;
+
+    let result: IRLSResult = fit_glm_unified(
+        &y_array,
+        x_view,
+        fam.as_ref(),
+        lnk.as_ref(),
+        &config,
+        offset_array.as_ref(),
+        weights_array.as_ref(),
+        None,
+    )
+    .map_err(|e| PyValueError::new_err(format!("GLM fitting failed: {}", e)))?;
+
+    let family_name = if let Some(resolved_theta) = resolve_negbinomial_theta(family, theta)? {
+        format!("NegativeBinomial(theta={:.4})", resolved_theta)
+    } else if let Some(resolved_var_power) = resolve_tweedie_var_power(family, var_power)? {
+        format!("Tweedie(p={:.4})", resolved_var_power)
+    } else {
+        result.family_name
+    };
+
+    Ok(PyGLMResults {
+        coefficients: result.coefficients,
+        fitted_values: result.fitted_values,
+        linear_predictor: result.linear_predictor,
+        deviance: result.deviance,
+        iterations: result.iterations,
+        converged: result.converged,
+        covariance_unscaled: result.covariance_unscaled,
+        n_obs,
+        n_params,
+        y: result.y,
+        family_name,
+        prior_weights: result.prior_weights,
+        penalty: result.penalty,
+        design_matrix: if store_design_matrix {
+            Some(x_view.to_owned())
+        } else {
+            None
+        },
+        irls_weights: result.irls_weights,
+        offset: offset_array,
+        step_halving_used: result.step_halving_used,
+        solver_status: result.solver_status,
+        warnings: result.warnings,
+    })
+}
+
+// =============================================================================
+// fit_negbinomial_py — NegBin with automatic theta
+// =============================================================================
+
+#[pyfunction]
+#[pyo3(signature = (y, x, link=None, init_theta=None, theta_tol=1e-5, max_theta_iter=10, offset=None, weights=None, max_iter=25, tol=1e-8, alpha=0.0, l1_ratio=0.0, nonneg_indices=None, nonpos_indices=None, store_design_matrix=false))]
+pub fn fit_negbinomial_py<'py>(
+    py: Python<'py>,
+    y: PyReadonlyArray1<f64>,
+    x: PyReadonlyArray2<f64>,
+    link: Option<&str>,
+    init_theta: Option<f64>,
+    theta_tol: f64,
+    max_theta_iter: usize,
+    offset: Option<PyReadonlyArray1<f64>>,
+    weights: Option<PyReadonlyArray1<f64>>,
+    max_iter: usize,
+    tol: f64,
+    alpha: f64,
+    l1_ratio: f64,
+    nonneg_indices: Option<Vec<usize>>,
+    nonpos_indices: Option<Vec<usize>>,
+    store_design_matrix: bool,
+) -> PyResult<Py<PyAny>> {
+    let y_array: Array1<f64> = y.as_array().to_owned();
+    let x_view = x.as_array(); // Zero-copy view
     let n_obs = y_array.len();
     let n_params = x_view.ncols();
     let offset_array: Option<Array1<f64>> = offset.map(|o| o.as_array().to_owned());
@@ -157,126 +288,6 @@ pub fn fit_glm_py(
         skip_covariance: false,
     };
 
-    // Gamma validation
-    if family.to_lowercase() == "gamma" {
-        let n_invalid = y_array.iter().filter(|&&v| v <= 0.0).count();
-        if n_invalid > 0 {
-            return Err(PyValueError::new_err(format!(
-                "Gamma family requires strictly positive response values (y > 0). \
-                 Found {} values <= 0 out of {} observations.",
-                n_invalid,
-                y_array.len()
-            )));
-        }
-    }
-
-    let fam = family_from_name(family, var_power, theta)?;
-    let lnk = link_from_name(link.unwrap_or(default_link_name(family)))?;
-
-    let result: IRLSResult = fit_glm_unified(
-        &y_array,
-        x_view,
-        fam.as_ref(),
-        lnk.as_ref(),
-        &config,
-        offset_array.as_ref(),
-        weights_array.as_ref(),
-        None,
-    )
-    .map_err(|e| PyValueError::new_err(format!("GLM fitting failed: {}", e)))?;
-
-    let family_name = if result
-        .family_name
-        .to_lowercase()
-        .contains("negativebinomial")
-        || result.family_name.to_lowercase().contains("negbinomial")
-    {
-        format!("NegativeBinomial(theta={:.4})", theta)
-    } else {
-        result.family_name
-    };
-
-    Ok(PyGLMResults {
-        coefficients: result.coefficients,
-        fitted_values: result.fitted_values,
-        linear_predictor: result.linear_predictor,
-        deviance: result.deviance,
-        iterations: result.iterations,
-        converged: result.converged,
-        covariance_unscaled: result.covariance_unscaled,
-        n_obs,
-        n_params,
-        y: result.y,
-        family_name,
-        prior_weights: result.prior_weights,
-        penalty: result.penalty,
-        design_matrix: if store_design_matrix {
-            Some(x_view.to_owned())
-        } else {
-            None
-        },
-        irls_weights: result.irls_weights,
-        offset: offset_array,
-    })
-}
-
-// =============================================================================
-// fit_negbinomial_py — NegBin with automatic theta
-// =============================================================================
-
-#[pyfunction]
-#[pyo3(signature = (y, x, link=None, init_theta=None, theta_tol=1e-5, max_theta_iter=10, offset=None, weights=None, max_iter=25, tol=1e-8, alpha=0.0, l1_ratio=0.0, nonneg_indices=None, nonpos_indices=None, store_design_matrix=false))]
-pub fn fit_negbinomial_py(
-    y: PyReadonlyArray1<f64>,
-    x: PyReadonlyArray2<f64>,
-    link: Option<&str>,
-    init_theta: Option<f64>,
-    theta_tol: f64,
-    max_theta_iter: usize,
-    offset: Option<PyReadonlyArray1<f64>>,
-    weights: Option<PyReadonlyArray1<f64>>,
-    max_iter: usize,
-    tol: f64,
-    alpha: f64,
-    l1_ratio: f64,
-    nonneg_indices: Option<Vec<usize>>,
-    nonpos_indices: Option<Vec<usize>>,
-    store_design_matrix: bool,
-) -> PyResult<PyGLMResults> {
-    let y_array: Array1<f64> = y.as_array().to_owned();
-    let x_view = x.as_array(); // Zero-copy view
-    let n_obs = y_array.len();
-    let n_params = x_view.ncols();
-    let offset_array: Option<Array1<f64>> = offset.map(|o| o.as_array().to_owned());
-    let weights_array: Option<Array1<f64>> = weights.map(|w| w.as_array().to_owned());
-
-    let reg_config = if alpha > 0.0 {
-        if l1_ratio >= 1.0 {
-            RegularizationConfig::lasso(alpha)
-        } else if l1_ratio <= 0.0 {
-            RegularizationConfig::ridge(alpha)
-        } else {
-            RegularizationConfig::elastic_net(alpha, l1_ratio)
-        }
-    } else {
-        RegularizationConfig::none()
-    };
-
-    let config_loose = FitConfig {
-        max_iterations: max_iter,
-        tolerance: 1e-4,
-        min_weight: 1e-10,
-        verbose: false,
-        nonneg_indices: nonneg_indices.unwrap_or_default(),
-        nonpos_indices: nonpos_indices.unwrap_or_default(),
-        regularization: reg_config.clone(),
-        skip_covariance: false,
-    };
-    let config_final = FitConfig {
-        tolerance: tol.max(1e-6),
-        ..config_loose.clone()
-    };
-
     let link_name = link.unwrap_or("log");
     let link_fn = link_from_name(link_name)?;
     if link_name != "log" && link_name != "identity" {
@@ -298,7 +309,7 @@ pub fn fit_negbinomial_py(
             let poisson = PoissonFamily;
             let init_config = FitConfig {
                 regularization: RegularizationConfig::none(),
-                ..config_loose.clone()
+                ..config.clone()
             };
             let init_result = fit_glm_unified(
                 &y_array,
@@ -314,11 +325,15 @@ pub fn fit_negbinomial_py(
             estimate_theta_moments(&y_array, &init_result.fitted_values)
         }
     };
+    let init_theta_used = theta;
 
     let mut result: IRLSResult;
     let mut coefficients: Option<Array1<f64>> = None;
+    let mut theta_iterations: usize = 0;
+    let mut theta_converged = false;
 
     for _iter in 0..max_theta_iter {
+        theta_iterations += 1;
         let family = NegativeBinomialFamily::new(theta)
             .map_err(|e| PyValueError::new_err(format!("Invalid NB theta: {}", e)))?;
         result = fit_glm_unified(
@@ -326,7 +341,7 @@ pub fn fit_negbinomial_py(
             x_view,
             &family,
             link_fn.as_ref(),
-            &config_loose,
+            &config,
             offset_array.as_ref(),
             weights_array.as_ref(),
             coefficients.as_ref(),
@@ -344,6 +359,7 @@ pub fn fit_negbinomial_py(
         );
         if (new_theta - theta).abs() < theta_tol {
             theta = new_theta;
+            theta_converged = true;
             break;
         }
         theta = new_theta;
@@ -356,14 +372,14 @@ pub fn fit_negbinomial_py(
         x_view,
         &final_family,
         link_fn.as_ref(),
-        &config_final,
+        &config,
         offset_array.as_ref(),
         weights_array.as_ref(),
         coefficients.as_ref(),
     )
     .map_err(|e| PyValueError::new_err(format!("Final GLM fit failed: {}", e)))?;
 
-    Ok(PyGLMResults {
+    let glm_result = PyGLMResults {
         coefficients: result.coefficients,
         fitted_values: result.fitted_values,
         linear_predictor: result.linear_predictor,
@@ -384,7 +400,31 @@ pub fn fit_negbinomial_py(
         },
         irls_weights: result.irls_weights,
         offset: offset_array,
-    })
+        step_halving_used: result.step_halving_used,
+        solver_status: result.solver_status,
+        warnings: result.warnings,
+    };
+
+    // Honest theta-estimation metadata (RS-ACT-010): the profile loop's init,
+    // iteration count, convergence flag, tolerance, and final theta.
+    let meta = pyo3::types::PyDict::new(py);
+    meta.set_item("estimated", true)?;
+    meta.set_item("theta", theta)?;
+    meta.set_item("init_theta", init_theta_used)?;
+    meta.set_item("theta_iterations", theta_iterations)?;
+    meta.set_item("theta_converged", theta_converged)?;
+    meta.set_item("theta_tol", theta_tol)?;
+    meta.set_item("max_theta_iter", max_theta_iter)?;
+    meta.set_item("glm_tol", tol)?;
+    // Schema parity with the fixed-theta path (RS-ACT-010): estimation never
+    // falls back, but the key is always present so consumers can rely on it.
+    meta.set_item("fallback_reason", py.None())?;
+
+    let tuple = pyo3::types::PyTuple::new(
+        py,
+        &[Bound::new(py, glm_result)?.into_any(), meta.into_any()],
+    )?;
+    Ok(tuple.unbind().into())
 }
 
 // =============================================================================
@@ -398,8 +438,25 @@ struct CVPathPoint {
     cv_deviance_se: f64,
 }
 
+fn validation_deviance_score(unit_deviance: &Array1<f64>, weights: Option<&Array1<f64>>) -> f64 {
+    if let Some(w) = weights {
+        let denom = w.sum();
+        if denom <= 0.0 || !denom.is_finite() {
+            return f64::INFINITY;
+        }
+        unit_deviance
+            .iter()
+            .zip(w.iter())
+            .map(|(dev, weight)| dev * weight)
+            .sum::<f64>()
+            / denom
+    } else {
+        unit_deviance.mean().unwrap_or(f64::INFINITY)
+    }
+}
+
 #[pyfunction]
-#[pyo3(signature = (y, x, family, link=None, var_power=1.5, theta=1.0, offset=None, weights=None, alphas=None, l1_ratio=0.0, n_folds=5, max_iter=25, tol=1e-8, seed=None, nonneg_indices=None, nonpos_indices=None))]
+#[pyo3(signature = (y, x, family, link=None, var_power=1.5, theta=1.0, offset=None, weights=None, alphas=None, l1_ratio=0.0, n_folds=5, max_iter=25, tol=1e-8, seed=None, nonneg_indices=None, nonpos_indices=None, allow_extended_tweedie=false, fit_intercept=true))]
 pub fn fit_cv_path_py<'py>(
     py: Python<'py>,
     y: PyReadonlyArray1<f64>,
@@ -418,6 +475,8 @@ pub fn fit_cv_path_py<'py>(
     seed: Option<u64>,
     nonneg_indices: Option<Vec<usize>>,
     nonpos_indices: Option<Vec<usize>>,
+    allow_extended_tweedie: bool,
+    fit_intercept: bool,
 ) -> PyResult<Py<PyAny>> {
     let y_array: Array1<f64> = y.as_array().to_owned();
     let x_view = x.as_array(); // Zero-copy view
@@ -426,14 +485,23 @@ pub fn fit_cv_path_py<'py>(
     let offset_array: Option<Array1<f64>> = offset.map(|o| o.as_array().to_owned());
     let weights_array: Option<Array1<f64>> = weights.map(|w| w.as_array().to_owned());
 
-    let alpha_vec = alphas.unwrap_or_else(|| {
-        (0..20)
-            .map(|i| {
-                let t = i as f64 / 19.0;
-                10.0 * (0.0001f64 / 10.0).powf(t)
-            })
-            .collect()
-    });
+    // RS-ACT-005: the previous fallback here was a hard-coded geometric grid
+    // (10 -> 1e-4, 20 points) that was completely blind to family, link,
+    // offset, weights and n. It under-shot ``alpha_max`` by roughly a factor of
+    // ``n`` (e.g. 0.799 vs the correct 479.6 on 600 rows), which left penalised
+    // coefficients non-zero at the grid endpoint and biased CV alpha selection
+    // toward over-shrinkage. The Python helper
+    // ``rustystats.regularization_path.compute_alpha_max`` now derives the
+    // grid from the GLM score at the offset/weight-aware null; route through
+    // it instead of silently shipping a bad grid here.
+    let alpha_vec = alphas.ok_or_else(|| {
+        PyValueError::new_err(
+            "fit_cv_path_py requires an explicit `alphas=` grid. Build one with \
+             rustystats.regularization_path.compute_alpha_max + generate_alpha_path \
+             (RS-ACT-005); the previous silent geometric fallback was score-blind and \
+             under-sized the grid by roughly a factor of n.",
+        )
+    })?;
 
     let fold_assignments: Vec<usize> = {
         use std::collections::hash_map::DefaultHasher;
@@ -447,7 +515,9 @@ pub fn fit_cv_path_py<'py>(
             .collect()
     };
 
-    let _fam = family_from_name(family, var_power, theta)?;
+    validate_tweedie_fit_response(family, &y_array, var_power, allow_extended_tweedie)?;
+    let _fam =
+        family_from_name_with_tweedie_support(family, var_power, theta, allow_extended_tweedie)?;
     let default_link = default_link_name(family);
     let _link_fn = link_from_name(link.unwrap_or(default_link))?;
 
@@ -471,6 +541,8 @@ pub fn fit_cv_path_py<'py>(
             let mut x_val = Array2::zeros((n_val, p));
             let mut offset_val: Option<Array1<f64>> =
                 offset_array.as_ref().map(|_| Array1::zeros(n_val));
+            let mut weights_val: Option<Array1<f64>> =
+                weights_array.as_ref().map(|_| Array1::zeros(n_val));
 
             let (mut ti, mut vi) = (0, 0);
             for i in 0..n {
@@ -490,13 +562,21 @@ pub fn fit_cv_path_py<'py>(
                     if let (Some(ref o), Some(ref mut ov)) = (&offset_array, &mut offset_val) {
                         ov[vi] = o[i];
                     }
+                    if let (Some(ref w), Some(ref mut wv)) = (&weights_array, &mut weights_val) {
+                        wv[vi] = w[i];
+                    }
                     vi += 1;
                 }
             }
 
             // Safe: family/link were validated before entering the parallel loop
-            let thread_fam = family_from_name(family, var_power, theta)
-                .expect("family pre-validated before parallel loop");
+            let thread_fam = family_from_name_with_tweedie_support(
+                family,
+                var_power,
+                theta,
+                allow_extended_tweedie,
+            )
+            .expect("family pre-validated before parallel loop");
             let link_name = link.unwrap_or(default_link);
             let thread_link =
                 link_from_name(link_name).expect("link pre-validated before parallel loop");
@@ -515,7 +595,8 @@ pub fn fit_cv_path_py<'py>(
                     }
                 } else {
                     RegularizationConfig::none()
-                };
+                }
+                .with_intercept(fit_intercept);
 
                 let cv_config = FitConfig {
                     max_iterations: max_iter,
@@ -554,7 +635,7 @@ pub fn fit_cv_path_py<'py>(
                 };
                 let mu_val = thread_link.inverse(&lp_off);
                 let unit_dev = thread_fam.unit_deviance(&y_val, &mu_val);
-                fold_deviances.push(unit_dev.mean().unwrap_or(f64::INFINITY));
+                fold_deviances.push(validation_deviance_score(&unit_dev, weights_val.as_ref()));
             }
             fold_deviances
         })
@@ -604,6 +685,19 @@ pub fn fit_cv_path_py<'py>(
             .map(|r| r.cv_deviance_se)
             .collect::<Vec<_>>(),
     )?;
+    let cv_fold_scores: Vec<Vec<f64>> = (0..alpha_vec.len())
+        .map(|ai| {
+            fold_all_results
+                .iter()
+                .map(|fr| fr.get(ai).copied().unwrap_or(f64::INFINITY))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    dict.set_item("cv_fold_scores", cv_fold_scores)?;
+    // Surface the per-row fold assignment so callers can reproduce the split
+    // (the seeded DefaultHasher partition is not reproducible outside Rust) and
+    // hand-verify the per-fold weighted deviance (RS-ACT-001 backlog #5).
+    dict.set_item("fold_assignments", fold_assignments)?;
 
     let best_idx = path_results
         .iter()
@@ -614,6 +708,31 @@ pub fn fit_cv_path_py<'py>(
     dict.set_item("best_alpha", path_results[best_idx].alpha)?;
     dict.set_item("best_cv_deviance", path_results[best_idx].cv_deviance_mean)?;
     Ok(dict.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validation_deviance_score;
+    use ndarray::array;
+
+    #[test]
+    fn validation_deviance_score_uses_validation_weights() {
+        let unit_deviance = array![1.0, 9.0, 25.0];
+        let weights = array![1.0, 3.0, 6.0];
+
+        let score = validation_deviance_score(&unit_deviance, Some(&weights));
+
+        assert!((score - 17.8).abs() < 1e-12);
+    }
+
+    #[test]
+    fn validation_deviance_score_defaults_to_unweighted_mean() {
+        let unit_deviance = array![1.0, 9.0, 26.0];
+
+        let score = validation_deviance_score(&unit_deviance, None);
+
+        assert!((score - 12.0).abs() < 1e-12);
+    }
 }
 
 /// Unified smooth GLM fitting: takes full design matrix + smooth specs.
@@ -627,7 +746,7 @@ pub fn fit_cv_path_py<'py>(
 /// * `smooth_penalties` - List of penalty matrices (one per smooth term)
 /// * `smooth_monotonicity` - List of monotonicity constraints: None, "increasing", "decreasing"
 #[pyfunction]
-#[pyo3(signature = (y, x_full, smooth_col_ranges, smooth_penalties, family, link=None, offset=None, weights=None, max_iter=25, tol=1e-8, lambda_min=0.001, lambda_max=1000.0, smooth_monotonicity=None, store_design_matrix=false, nonneg_indices=None, nonpos_indices=None))]
+#[pyo3(signature = (y, x_full, smooth_col_ranges, smooth_penalties, family, link=None, offset=None, weights=None, max_iter=25, tol=1e-8, lambda_min=0.001, lambda_max=1000.0, smooth_monotonicity=None, store_design_matrix=false, nonneg_indices=None, nonpos_indices=None, var_power=1.5, theta=1.0, allow_extended_tweedie=false))]
 pub fn fit_smooth_glm_unified_py<'py>(
     py: Python<'py>,
     y: PyReadonlyArray1<f64>,
@@ -646,13 +765,18 @@ pub fn fit_smooth_glm_unified_py<'py>(
     store_design_matrix: bool,
     nonneg_indices: Option<Vec<usize>>,
     nonpos_indices: Option<Vec<usize>>,
+    var_power: f64,
+    theta: f64,
+    allow_extended_tweedie: bool,
 ) -> PyResult<Py<PyAny>> {
     let y_arr = y.as_array().to_owned();
     let x_view = x_full.as_array(); // Zero-copy view
     let offset_arr = offset.map(|o| o.as_array().to_owned());
     let weights_arr = weights.map(|w| w.as_array().to_owned());
 
-    let fam = family_from_name(family, 1.5, 1.0)?;
+    validate_tweedie_fit_response(family, &y_arr, var_power, allow_extended_tweedie)?;
+    let fam =
+        family_from_name_with_tweedie_support(family, var_power, theta, allow_extended_tweedie)?;
     let lnk = match link {
         Some(l) => link_from_name(l)?,
         None => link_from_name(default_link_name(family))?,
@@ -715,5 +839,13 @@ pub fn fit_smooth_glm_unified_py<'py>(
     )
     .map_err(|e| PyValueError::new_err(format!("Smooth GLM fitting failed: {}", e)))?;
 
-    smooth_result_to_py(py, result, store_design_matrix)
+    let family_name = if let Some(resolved_theta) = resolve_negbinomial_theta(family, theta)? {
+        format!("NegativeBinomial(theta={:.4})", resolved_theta)
+    } else if let Some(resolved_var_power) = resolve_tweedie_var_power(family, var_power)? {
+        format!("Tweedie(p={:.4})", resolved_var_power)
+    } else {
+        fam.name().to_string()
+    };
+
+    smooth_result_to_py(py, result, store_design_matrix, family_name)
 }

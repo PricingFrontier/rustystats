@@ -105,6 +105,15 @@ pub struct SmoothGLMResult {
 
     /// Offset values (if any)
     pub offset: Option<Array1<f64>>,
+
+    /// Warnings collected during fitting.
+    pub warnings: Vec<String>,
+
+    /// Whether step-halving produced an accepted step at any iteration.
+    pub step_halving_used: bool,
+
+    /// Terminal solver status.
+    pub solver_status: String,
 }
 
 /// Configuration for smooth GLM fitting.
@@ -441,6 +450,9 @@ fn assemble_smooth_result_from_specs(
     y: &Array1<f64>,
     offset: Option<&Array1<f64>>,
     cov_unscaled: Option<Array2<f64>>,
+    warnings: Vec<String>,
+    step_halving_used: bool,
+    solver_status: String,
 ) -> SmoothGLMResult {
     let n = y.len();
 
@@ -497,6 +509,9 @@ fn assemble_smooth_result_from_specs(
         design_matrix: x_combined.to_owned(),
         y: y.clone(),
         offset: offset.cloned(),
+        warnings,
+        step_halving_used,
+        solver_status,
     }
 }
 
@@ -609,6 +624,9 @@ pub fn fit_smooth_glm_full_matrix(
             } else {
                 Some(irls.offset)
             },
+            warnings: irls.warnings,
+            step_halving_used: irls.step_halving_used,
+            solver_status: irls.solver_status,
         });
     }
 
@@ -662,15 +680,60 @@ pub fn fit_smooth_glm_full_matrix(
     let x_combined = x_full;
     let total_cols = p;
 
+    let mut warnings: Vec<String> = Vec::new();
+    let mut coefficients = Array1::zeros(total_cols);
+
     // Initialize mu
     let mut mu = family.initialize_mu(y);
     let mut eta = link.link(&mu);
     let mut deviance = family.deviance(y, &mu, Some(&prior_weights));
 
+    // Family initializers can be near-saturated and not representable by the
+    // smooth design matrix (Gaussian identity starts at mu=y). Project that
+    // initializer into coefficient space so the step-halving baseline is a real
+    // fitted iterate instead of the saturated response.
+    {
+        let eta_no_offset = &eta - &offset_vec;
+        let zero_penalty = Array2::zeros((total_cols, total_cols));
+        match solve_weighted_least_squares_with_penalty_matrix(
+            x_combined,
+            &eta_no_offset,
+            &prior_weights,
+            &zero_penalty,
+            true,
+        ) {
+            Ok((mut projected, _)) if projected.iter().all(|v| v.is_finite()) => {
+                if let Some(nn) = nonneg_indices {
+                    for &idx in nn {
+                        if idx < projected.len() && projected[idx] < 0.0 {
+                            projected[idx] = 0.0;
+                        }
+                    }
+                }
+                if let Some(np) = nonpos_indices {
+                    for &idx in np {
+                        if idx < projected.len() && projected[idx] > 0.0 {
+                            projected[idx] = 0.0;
+                        }
+                    }
+                }
+                coefficients = projected;
+                eta = &x_combined.dot(&coefficients) + &offset_vec;
+                mu = family.clamp_mu(&link.inverse(&eta));
+                deviance = family.deviance(y, &mu, Some(&prior_weights));
+            }
+            _ => warnings.push(
+                "Initial smooth coefficient projection failed. Starting from zero coefficients."
+                    .to_string(),
+            ),
+        }
+    }
+
     let mut converged = false;
     let mut iteration = 0;
-    let mut coefficients = Array1::zeros(total_cols);
     let mut final_weights = Array1::ones(n);
+    let mut step_halving_used = false;
+    let mut step_halving_failed = false;
 
     let log_lambda_min = config.lambda_min.ln();
     let log_lambda_max = config.lambda_max.ln();
@@ -1007,10 +1070,13 @@ pub fn fit_smooth_glm_full_matrix(
                 };
 
                 // Step halving on penalized deviance with unified blending
-                // of all coefficients. Always accept best step (scam approach).
+                // of all coefficients. Accept only finite non-worsening steps
+                // so a failed PIRLS proposal cannot silently replace the last
+                // valid iterate.
                 let mut best_pen_dev = f64::INFINITY;
                 let mut best_coef = new_coef.clone();
                 let mut best_alphas = wls_alphas.clone();
+                let mut best_trial: Option<i32> = None;
 
                 for trial in 0..20 {
                     let step = 0.5_f64.powi(trial);
@@ -1067,6 +1133,12 @@ pub fn fit_smooth_glm_full_matrix(
                     let trial_eta = &x_combined.dot(&trial_coef) + &offset_vec;
                     let trial_mu = family.clamp_mu(&link.inverse(&trial_eta));
                     let trial_dev = family.deviance(y, &trial_mu, Some(&prior_weights));
+                    if !trial_eta.iter().all(|v| v.is_finite())
+                        || !trial_mu.iter().all(|v| v.is_finite())
+                        || !trial_dev.is_finite()
+                    {
+                        continue;
+                    }
 
                     // Penalized deviance for step acceptance
                     let trial_pen_dev = {
@@ -1079,11 +1151,15 @@ pub fn fit_smooth_glm_full_matrix(
                         }
                         pd
                     };
+                    if !trial_pen_dev.is_finite() {
+                        continue;
+                    }
 
-                    if trial == 0 || trial_pen_dev < best_pen_dev {
+                    if best_trial.is_none() || trial_pen_dev < best_pen_dev {
                         best_pen_dev = trial_pen_dev;
                         best_coef = trial_coef;
                         best_alphas = trial_alphas;
+                        best_trial = Some(trial);
                         if trial == 0 && trial_pen_dev <= pen_dev_old {
                             break;
                         }
@@ -1093,8 +1169,20 @@ pub fn fit_smooth_glm_full_matrix(
                     }
                 }
 
-                // Always accept best step (scam approach). With REML lambdas
-                // and nested iteration, the outer loop compensates.
+                let accept_threshold = pen_dev_old + smooth_tolerance * (1.0 + pen_dev_old.abs());
+                if best_trial.is_none() || best_pen_dev > accept_threshold {
+                    step_halving_failed = true;
+                    warnings.push(
+                        "Smooth PIRLS step halving found no finite non-worsening step; \
+                         retained the previous iterate."
+                            .to_string(),
+                    );
+                    break;
+                }
+                if best_trial.unwrap_or(0) > 0 {
+                    step_halving_used = true;
+                }
+
                 for (i, _spec) in smooth_specs.iter().enumerate() {
                     if let Some(ref best_a) = best_alphas[i] {
                         if let Some(ref mut alpha) = alpha_params[i] {
@@ -1116,6 +1204,9 @@ pub fn fit_smooth_glm_full_matrix(
                     converged = true;
                     break;
                 }
+            }
+            if step_halving_failed {
+                break;
             }
 
             // Outer loop: update lambdas via GCV on the converged X_tilde
@@ -1359,17 +1450,41 @@ pub fn fit_smooth_glm_full_matrix(
             }
         }
 
-        // Step halving if deviance increased
+        let penalized_deviance = |coef: &Array1<f64>, raw_dev: f64| -> f64 {
+            let mut pd = raw_dev;
+            let cs = coef.as_slice().expect("contiguous");
+            for (j, spec) in smooth_specs.iter().enumerate() {
+                let b = &cs[spec.col_start..spec.col_end];
+                let bv = ndarray::ArrayView1::from(b);
+                pd += lambdas[j] * bv.dot(&spec.penalty.dot(&bv));
+            }
+            pd
+        };
+
+        // Step halving if the full step is non-finite or worsens the fitted
+        // smooth objective. Raw deviance can rise slightly as smoothing
+        // increases; the penalized deviance is the objective this solver
+        // actually optimizes.
+        let pen_dev_old = penalized_deviance(&coefficients, deviance_old);
+        let accept_threshold = pen_dev_old + smooth_tolerance * (1.0 + pen_dev_old.abs());
         let eta_new = &x_combined.dot(&new_coef) + &offset_vec;
         let mu_new = family.clamp_mu(&link.inverse(&eta_new));
         let deviance_new = family.deviance(y, &mu_new, Some(&prior_weights));
+        let pen_dev_new = penalized_deviance(&new_coef, deviance_new);
+        let mut step_accepted = eta_new.iter().all(|v| v.is_finite())
+            && mu_new.iter().all(|v| v.is_finite())
+            && deviance_new.is_finite()
+            && pen_dev_new.is_finite()
+            && pen_dev_new <= accept_threshold;
+        let mut accepted_coef = if step_accepted {
+            new_coef.clone()
+        } else {
+            coefficients.clone()
+        };
 
-        if deviance_new > deviance_old * 1.0001 && iteration > 1 {
+        if !step_accepted {
             let mut step = 0.5;
-            let mut best_coef = new_coef.clone();
-            let mut best_dev = deviance_new;
-
-            for _ in 0..5 {
+            for _ in 0..10 {
                 let mut blended = &coefficients * (1.0 - step) + &new_coef * step;
 
                 if let Some(nn) = nonneg_indices {
@@ -1390,28 +1505,45 @@ pub fn fit_smooth_glm_full_matrix(
                 let eta_full = &x_combined.dot(&blended) + &offset_vec;
                 let mu_blend = family.clamp_mu(&link.inverse(&eta_full));
                 let dev_blend = family.deviance(y, &mu_blend, Some(&prior_weights));
+                let pen_dev_blend = penalized_deviance(&blended, dev_blend);
 
-                if dev_blend < best_dev {
-                    best_dev = dev_blend;
-                    best_coef = blended;
+                if eta_full.iter().all(|v| v.is_finite())
+                    && mu_blend.iter().all(|v| v.is_finite())
+                    && dev_blend.is_finite()
+                    && pen_dev_blend.is_finite()
+                    && pen_dev_blend <= accept_threshold
+                {
+                    accepted_coef = blended;
+                    step_accepted = true;
+                    step_halving_used = true;
+                    break;
                 }
                 step *= 0.5;
             }
-            coefficients = best_coef;
-        } else {
-            coefficients = new_coef;
         }
+
+        if !step_accepted {
+            step_halving_failed = true;
+            warnings.push(
+                "Smooth IRLS step halving found no finite non-worsening step; \
+                 retained the previous iterate."
+                    .to_string(),
+            );
+            break;
+        }
+        coefficients = accepted_coef;
 
         // Update state
         eta = &x_combined.dot(&coefficients) + &offset_vec;
         mu = family.clamp_mu(&link.inverse(&eta));
         deviance = family.deviance(y, &mu, Some(&prior_weights));
         final_weights = combined_weights.clone();
+        let pen_dev = penalized_deviance(&coefficients, deviance);
 
-        let rel_change = if deviance_old.abs() > ZERO_TOL {
-            (deviance_old - deviance).abs() / deviance_old.abs()
+        let rel_change = if pen_dev_old.abs() > ZERO_TOL {
+            (pen_dev_old - pen_dev).abs() / pen_dev_old.abs()
         } else {
-            (deviance_old - deviance).abs()
+            (pen_dev_old - pen_dev).abs()
         };
 
         if rel_change < smooth_tolerance {
@@ -1425,6 +1557,18 @@ pub fn fit_smooth_glm_full_matrix(
         .iter()
         .map(|s| (&s.penalty, s.col_start, s.col_end))
         .collect();
+    let solver_status = if step_halving_failed {
+        "step_halving_no_improvement"
+    } else if converged {
+        "converged"
+    } else {
+        "max_iterations"
+    };
+    if !converged {
+        warnings.push(format!(
+            "Smooth GLM did not converge (status: {solver_status}). Results may be approximate."
+        ));
+    }
 
     Ok(assemble_smooth_result_from_specs(
         coefficients,
@@ -1445,6 +1589,9 @@ pub fn fit_smooth_glm_full_matrix(
         // Covariance is computed once here by assemble_smooth_result_from_specs,
         // rather than redundantly on every intermediate IRLS iteration.
         None,
+        warnings,
+        step_halving_used,
+        solver_status.to_string(),
     ))
 }
 

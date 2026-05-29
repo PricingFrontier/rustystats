@@ -729,9 +729,9 @@ class TestMultiplePredictors:
         ).fit()
 
         # Number of parameters should match
-        assert len(rs_res.params) == len(
-            sm_res.params
-        ), f"Param count mismatch: rs={len(rs_res.params)} vs sm={len(sm_res.params)}"
+        assert len(rs_res.params) == len(sm_res.params), (
+            f"Param count mismatch: rs={len(rs_res.params)} vs sm={len(sm_res.params)}"
+        )
 
         # Predictions should match (even if coefficient order differs due to encoding)
         np.testing.assert_allclose(
@@ -1377,9 +1377,9 @@ class TestMonotonicSplines:
         # Check monotonicity with a small tolerance for numerical noise
         diffs = np.diff(preds)
         n_violations = np.sum(diffs < -0.01)
-        assert (
-            n_violations == 0
-        ), f"Monotone increasing spline: {n_violations} violations out of {len(diffs)} steps"
+        assert n_violations == 0, (
+            f"Monotone increasing spline: {n_violations} violations out of {len(diffs)} steps"
+        )
 
     def test_monotone_decreasing(self, data):
         df, x1, *_ = data
@@ -1401,9 +1401,9 @@ class TestMonotonicSplines:
 
         diffs = np.diff(preds)
         n_violations = np.sum(diffs > 0.01)
-        assert (
-            n_violations == 0
-        ), f"Monotone decreasing spline: {n_violations} violations out of {len(diffs)} steps"
+        assert n_violations == 0, (
+            f"Monotone decreasing spline: {n_violations} violations out of {len(diffs)} steps"
+        )
 
 
 # ===========================================================================
@@ -1481,9 +1481,9 @@ class TestTargetEncoding:
         new_encoded = rs.apply_target_encoding(new_cats, stats, prior)
 
         # Unseen level C should get the prior (global mean)
-        assert _close(
-            new_encoded[2], prior, atol=0.01
-        ), f"Unseen level should get prior {prior}, got {new_encoded[2]}"
+        assert _close(new_encoded[2], prior, atol=0.01), (
+            f"Unseen level should get prior {prior}, got {new_encoded[2]}"
+        )
 
     def test_prior_weight_regularization(self):
         """Higher prior_weight should shrink rare categories more toward global mean."""
@@ -2071,12 +2071,12 @@ class TestEdgeCases:
                 family="poisson",
             ).fit()
             # If it converges, predictions should be near zero
-            assert np.all(
-                rs_res.fittedvalues < 0.1
-            ), f"All-zero Poisson predictions should be near zero, max={rs_res.fittedvalues.max()}"
-            assert (
-                rs_res.params[0] < -5
-            ), f"Intercept should be very negative for all-zero data, got {rs_res.params[0]}"
+            assert np.all(rs_res.fittedvalues < 0.1), (
+                f"All-zero Poisson predictions should be near zero, max={rs_res.fittedvalues.max()}"
+            )
+            assert rs_res.params[0] < -5, (
+                f"Intercept should be very negative for all-zero data, got {rs_res.params[0]}"
+            )
         except (rs.ConvergenceError, rs.FittingError, rs.ValidationError):
             # Acceptable to raise for degenerate data (constant response, convergence failure)
             pass
@@ -2184,14 +2184,14 @@ class TestNumericalStability:
         assert rs_res.converged, "Model should converge even with collinear data"
         # Standard errors should be inflated for collinear terms
         se = rs_res.bse()
-        assert (
-            np.max(se[1:]) > 1.0
-        ), f"Collinear terms should have inflated SEs, got max={np.max(se[1:]):.4f}"
+        assert np.max(se[1:]) > 1.0, (
+            f"Collinear terms should have inflated SEs, got max={np.max(se[1:]):.4f}"
+        )
         # Sum of collinear coefficients should approximate the true effect (~0.3)
         coef_sum = rs_res.params[1] + rs_res.params[2]
-        assert (
-            abs(coef_sum - 0.3) < 0.1
-        ), f"Sum of collinear coefficients should approximate 0.3, got {coef_sum:.4f}"
+        assert abs(coef_sum - 0.3) < 0.1, (
+            f"Sum of collinear coefficients should approximate 0.3, got {coef_sum:.4f}"
+        )
 
 
 # ===========================================================================
@@ -2215,9 +2215,9 @@ class TestCategoricalEncoding:
 
         # Should have intercept + x1 + (n_levels - 1) dummies
         expected_params = 1 + 1 + (len(unique_cats) - 1)
-        assert (
-            len(rs_res.params) == expected_params
-        ), f"Expected {expected_params} params, got {len(rs_res.params)}"
+        assert len(rs_res.params) == expected_params, (
+            f"Expected {expected_params} params, got {len(rs_res.params)}"
+        )
 
     def test_predict_on_subset(self, data):
         """Predict works when new data has fewer categorical levels."""

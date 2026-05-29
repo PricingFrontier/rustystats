@@ -1971,6 +1971,78 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#calibration-primitives-rs-act-009" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Calibration Primitives (RS-ACT-009)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Calibration Primitives (RS-ACT-009)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#rscalibration_summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rs.calibration_summary
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#result-bound-wrappers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Result-bound wrappers
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#rsglobalcalibration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rs.GlobalCalibration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#rsisotoniccalibration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rs.IsotonicCalibration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#resultrelevel-log-link-intercept-shift" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        result.relevel — log-link intercept shift
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -2908,6 +2980,78 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#calibration-primitives-rs-act-009" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Calibration Primitives (RS-ACT-009)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Calibration Primitives (RS-ACT-009)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#rscalibration_summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rs.calibration_summary
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#result-bound-wrappers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Result-bound wrappers
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#rsglobalcalibration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rs.GlobalCalibration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#rsisotoniccalibration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rs.IsotonicCalibration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#resultrelevel-log-link-intercept-shift" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        result.relevel — log-link intercept shift
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -3799,6 +3943,88 @@ a current production model) by passing the column name via <code>base_prediction
 </span><span id="__span-20-43"><a id="__codelineno-20-43" name="__codelineno-20-43" href="#__codelineno-20-43"></a>        <span class="sa">f</span><span class="s2">&quot;model_ae=</span><span class="si">{</span><span class="n">d</span><span class="o">.</span><span class="n">model_ae_ratio</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2">  base_ae=</span><span class="si">{</span><span class="n">d</span><span class="o">.</span><span class="n">base_ae_ratio</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2">&quot;</span>
 </span><span id="__span-20-44"><a id="__codelineno-20-44" name="__codelineno-20-44" href="#__codelineno-20-44"></a>    <span class="p">)</span>
 </span></code></pre></div>
+<hr />
+<h2 id="calibration-primitives-rs-act-009">Calibration Primitives (RS-ACT-009)<a class="headerlink" href="#calibration-primitives-rs-act-009" title="Permanent link">&para;</a></h2>
+<p>Stand-alone calibration primitives sit alongside the model — they never silently
+fold into the GLM coefficients. Use them to <em>measure</em> calibration (<code>A/E</code> overall,
+by bin, by factor) and to <em>fit</em> an explicit calibration object (global or
+isotonic) that callers apply on top of <code>result.predict()</code>.</p>
+<div class="admonition warning">
+<p class="admonition-title">In-sample optimism</p>
+<p>Fitting calibration on the same rows used to fit the model overstates
+calibration quality. Prefer a held-out calibration fold, out-of-fold
+predictions, or untouched holdout data.</p>
+</div>
+<h3 id="rscalibration_summary">rs.calibration_summary<a class="headerlink" href="#rscalibration_summary" title="Permanent link">&para;</a></h3>
+<p>Standalone array-level summary. Returns overall, per-bin and (optional)
+per-factor aggregates.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-21-1"><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a><span class="n">summary</span> <span class="o">=</span> <span class="n">rs</span><span class="o">.</span><span class="n">calibration_summary</span><span class="p">(</span>
+</span><span id="__span-21-2"><a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a>    <span class="n">y</span><span class="p">,</span>
+</span><span id="__span-21-3"><a id="__codelineno-21-3" name="__codelineno-21-3" href="#__codelineno-21-3"></a>    <span class="n">pred</span><span class="p">,</span>
+</span><span id="__span-21-4"><a id="__codelineno-21-4" name="__codelineno-21-4" href="#__codelineno-21-4"></a>    <span class="n">exposure</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>     <span class="c1"># bins are rate-ranked when exposure is present</span>
+</span><span id="__span-21-5"><a id="__codelineno-21-5" name="__codelineno-21-5" href="#__codelineno-21-5"></a>    <span class="n">weights</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>      <span class="c1"># Σ(w·y) / Σ(w·μ) when supplied</span>
+</span><span id="__span-21-6"><a id="__codelineno-21-6" name="__codelineno-21-6" href="#__codelineno-21-6"></a>    <span class="n">by</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>           <span class="c1"># mapping {factor_name: array} or None</span>
+</span><span id="__span-21-7"><a id="__codelineno-21-7" name="__codelineno-21-7" href="#__codelineno-21-7"></a>    <span class="n">n_bins</span><span class="o">=</span><span class="mi">10</span><span class="p">,</span>
+</span><span id="__span-21-8"><a id="__codelineno-21-8" name="__codelineno-21-8" href="#__codelineno-21-8"></a>    <span class="n">ranking</span><span class="o">=</span><span class="s2">&quot;auto&quot;</span><span class="p">,</span>    <span class="c1"># &quot;auto&quot; | &quot;mean&quot; | &quot;rate&quot;</span>
+</span><span id="__span-21-9"><a id="__codelineno-21-9" name="__codelineno-21-9" href="#__codelineno-21-9"></a>    <span class="n">min_exposure</span><span class="o">=</span><span class="mf">0.0</span><span class="p">,</span>  <span class="c1"># per-factor cells below this are flagged suppressed</span>
+</span><span id="__span-21-10"><a id="__codelineno-21-10" name="__codelineno-21-10" href="#__codelineno-21-10"></a><span class="p">)</span>
+</span></code></pre></div>
+<p><code>summary["overall"]</code> carries <code>actual</code>, <code>expected</code>, <code>ae_ratio</code>, <code>n_obs</code>,
+<code>total_weight</code>. <code>summary["bins"]</code> is a list of per-bin dicts with
+<code>bin_index</code>, <code>count</code>, <code>actual</code>, <code>expected</code>, <code>ae_ratio</code>, <code>exposure</code>,
+<code>predicted_rate_min/max/mean</code>, <code>actual_rate</code>, <code>expected_rate</code>.
+<code>summary["by_factor"]</code> (when <code>by=</code> is given) groups the same per-bin shape by
+factor level with a boolean <code>suppressed</code> flag.</p>
+<h3 id="result-bound-wrappers">Result-bound wrappers<a class="headerlink" href="#result-bound-wrappers" title="Permanent link">&para;</a></h3>
+<p><code>GLMModel.calibration_summary(data, ...)</code> resolves response / exposure / weights
+through the fitted model and delegates to <code>rs.calibration_summary</code>.
+<code>GLMModel.fit_calibration(data, method=...)</code> returns a <code>GlobalCalibration</code> (for
+<code>method="global"</code>) or an <code>IsotonicCalibration</code> (for <code>method="isotonic"</code>):</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-22-1"><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a><span class="n">result</span><span class="o">.</span><span class="n">calibration_summary</span><span class="p">(</span><span class="n">holdout</span><span class="p">,</span> <span class="n">by</span><span class="o">=</span><span class="s2">&quot;Region&quot;</span><span class="p">,</span> <span class="n">min_exposure</span><span class="o">=</span><span class="mf">10.0</span><span class="p">)</span>
+</span><span id="__span-22-2"><a id="__codelineno-22-2" name="__codelineno-22-2" href="#__codelineno-22-2"></a>
+</span><span id="__span-22-3"><a id="__codelineno-22-3" name="__codelineno-22-3" href="#__codelineno-22-3"></a><span class="n">global_cal</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">fit_calibration</span><span class="p">(</span><span class="n">holdout</span><span class="p">,</span> <span class="n">method</span><span class="o">=</span><span class="s2">&quot;global&quot;</span><span class="p">)</span>
+</span><span id="__span-22-4"><a id="__codelineno-22-4" name="__codelineno-22-4" href="#__codelineno-22-4"></a><span class="n">iso_cal</span>    <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">fit_calibration</span><span class="p">(</span><span class="n">holdout</span><span class="p">,</span> <span class="n">method</span><span class="o">=</span><span class="s2">&quot;isotonic&quot;</span><span class="p">)</span>
+</span><span id="__span-22-5"><a id="__codelineno-22-5" name="__codelineno-22-5" href="#__codelineno-22-5"></a>
+</span><span id="__span-22-6"><a id="__codelineno-22-6" name="__codelineno-22-6" href="#__codelineno-22-6"></a><span class="n">calibrated</span> <span class="o">=</span> <span class="n">global_cal</span><span class="o">.</span><span class="n">predict</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">predict</span><span class="p">(</span><span class="n">new_data</span><span class="p">))</span>
+</span></code></pre></div>
+<h3 id="rsglobalcalibration">rs.GlobalCalibration<a class="headerlink" href="#rsglobalcalibration" title="Permanent link">&para;</a></h3>
+<p>Scalar multiplicative map <code>y_hat = factor * pred</code>, with
+<code>factor = Σ(w·y) / Σ(w·μ)</code>.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-23-1"><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a><span class="n">cal</span> <span class="o">=</span> <span class="n">rs</span><span class="o">.</span><span class="n">fit_global_calibration</span><span class="p">(</span><span class="n">y</span><span class="p">,</span> <span class="n">pred</span><span class="p">,</span> <span class="n">weights</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+</span><span id="__span-23-2"><a id="__codelineno-23-2" name="__codelineno-23-2" href="#__codelineno-23-2"></a><span class="n">cal</span><span class="o">.</span><span class="n">factor</span>                       <span class="c1"># the multiplicative factor</span>
+</span><span id="__span-23-3"><a id="__codelineno-23-3" name="__codelineno-23-3" href="#__codelineno-23-3"></a><span class="n">cal</span><span class="o">.</span><span class="n">predict</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="o">...</span><span class="p">]))</span>     <span class="c1"># = factor * pred</span>
+</span><span id="__span-23-4"><a id="__codelineno-23-4" name="__codelineno-23-4" href="#__codelineno-23-4"></a><span class="n">state</span> <span class="o">=</span> <span class="n">cal</span><span class="o">.</span><span class="n">to_dict</span><span class="p">()</span>
+</span><span id="__span-23-5"><a id="__codelineno-23-5" name="__codelineno-23-5" href="#__codelineno-23-5"></a><span class="n">cal2</span>  <span class="o">=</span> <span class="n">rs</span><span class="o">.</span><span class="n">GlobalCalibration</span><span class="o">.</span><span class="n">from_dict</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+</span></code></pre></div>
+<h3 id="rsisotoniccalibration">rs.IsotonicCalibration<a class="headerlink" href="#rsisotoniccalibration" title="Permanent link">&para;</a></h3>
+<p>Monotone Pool-Adjacent-Violators (PAV) map with optional per-observation
+weights. Predictions outside the fitted threshold range are clamped to the
+nearest knot (<code>numpy.interp</code> semantics).</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-24-1"><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a><span class="n">iso</span> <span class="o">=</span> <span class="n">rs</span><span class="o">.</span><span class="n">fit_isotonic_calibration</span><span class="p">(</span><span class="n">y</span><span class="p">,</span> <span class="n">pred</span><span class="p">,</span> <span class="n">weights</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">increasing</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+</span><span id="__span-24-2"><a id="__codelineno-24-2" name="__codelineno-24-2" href="#__codelineno-24-2"></a><span class="n">iso</span><span class="o">.</span><span class="n">thresholds_</span>   <span class="c1"># ascending pred-space knot positions</span>
+</span><span id="__span-24-3"><a id="__codelineno-24-3" name="__codelineno-24-3" href="#__codelineno-24-3"></a><span class="n">iso</span><span class="o">.</span><span class="n">values_</span>       <span class="c1"># monotone calibrated values at those knots</span>
+</span><span id="__span-24-4"><a id="__codelineno-24-4" name="__codelineno-24-4" href="#__codelineno-24-4"></a><span class="n">iso</span><span class="o">.</span><span class="n">predict</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">linspace</span><span class="p">(</span><span class="o">...</span><span class="p">))</span>
+</span><span id="__span-24-5"><a id="__codelineno-24-5" name="__codelineno-24-5" href="#__codelineno-24-5"></a><span class="n">iso</span><span class="o">.</span><span class="n">to_dict</span><span class="p">()</span>
+</span></code></pre></div>
+<p>Isotonic calibration is <strong>opt-in only</strong> and <strong>serialised separately</strong> from the
+GLM. Use it explicitly on top of <code>result.predict()</code>; it is never applied
+implicitly inside <code>predict()</code>.</p>
+<h3 id="resultrelevel-log-link-intercept-shift">result.relevel — log-link intercept shift<a class="headerlink" href="#resultrelevel-log-link-intercept-shift" title="Permanent link">&para;</a></h3>
+<p>For log-link GLMs, a global calibration can be applied as an intercept shift —
+preserving every relativity exactly:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-25-1"><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a><span class="n">releveled</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">relevel</span><span class="p">(</span><span class="n">holdout</span><span class="p">,</span> <span class="n">weights</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">inplace</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+</span></code></pre></div>
+<p>Computes <code>c = Σ(w·y) / Σ(w·μ)</code> on the calibration data and updates the
+intercept by <code>+log(c)</code>. The non-intercept coefficients <code>β[1:]</code> are
+<strong>bit-identical</strong>, so every <code>exp(β_j)</code> relativity is unchanged — only the
+model's overall level shifts. Returns a new <code>GLMModel</code> by default; pass
+<code>inplace=True</code> to mutate the current object.</p>
+<p><code>releveled.intercept_delta</code> and <code>releveled.relevel_history</code> expose the
+accumulated shift and per-call provenance (original/new intercept, factor,
+log shift, n_obs, total_weight). Relevel state round-trips through
+<code>to_bytes</code>/<code>from_bytes</code>.</p>
+<p>For non-log links <code>relevel()</code> raises <code>ValidationError</code>; attach a
+<code>GlobalCalibration</code> via <code>fit_calibration(method="global")</code> instead.</p>
 
 
 

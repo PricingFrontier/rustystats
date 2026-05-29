@@ -30,7 +30,7 @@ result = rs.glm_dict(
     },
     data=data,
     family="poisson",
-    offset="Exposure",
+    exposure="Exposure",
 ).fit()
 
 print(result.summary())
@@ -72,7 +72,7 @@ This documentation is organized for maintainers who may be new to Rust and/or GL
 - **Gamma** - Positive continuous (claim severity)
 - **Tweedie** - Mixed zeros and positives (pure premium)
 - **QuasiPoisson/QuasiBinomial** - Overdispersed data
-- **Negative Binomial** - Alternative for overdispersed counts
+- **Negative Binomial** - Alternative for overdispersed counts (explicit `theta=`)
 
 ### Advanced Features
 - **[Regularization](components/regularization.md)** - Ridge, Lasso, Elastic Net with automatic CV-based alpha selection

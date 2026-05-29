@@ -20,6 +20,8 @@ from xml.dom import minidom
 
 import numpy as np
 
+from rustystats.exceptions import ValidationError
+
 if TYPE_CHECKING:
     from rustystats.formula import GLMModel
 
@@ -148,6 +150,13 @@ class PMMLExporter:
         self.model = model
         self.n_grid = n_grid_points
         self._pcnt = 0  # parameter name counter
+        exposure_spec = getattr(self.model, "_exposure_spec", None)
+        if exposure_spec is not None and not isinstance(exposure_spec, str):
+            raise ValidationError(
+                "PMML export requires exposure to be a column name. Models fit with an "
+                "exposure array cannot be exported because PMML scoring data has no "
+                "field to supply that exposure."
+            )
 
         # Accumulated PMML structures
         self._raw_inputs: OrderedDict[str, dict] = OrderedDict()
@@ -191,11 +200,20 @@ class PMMLExporter:
     # ── analysis pass ────────────────────────────────────────────────────
 
     def _analyze(self):
-        # Register offset-derived field early so it appears in TransformationDictionary
+        # Register offset-derived fields early so they appear in
+        # TransformationDictionary before the GeneralRegressionModel references them.
         offset_spec = getattr(self.model, "_offset_spec", None)
+        exposure_spec = getattr(self.model, "_exposure_spec", None)
         offset_is_exposure = getattr(self.model, "_offset_is_exposure", False)
-        if isinstance(offset_spec, str) and offset_is_exposure:
-            self._add_ln_derived(f"ln_{offset_spec}", offset_spec)
+        if isinstance(offset_spec, str) and offset_is_exposure and exposure_spec is None:
+            exposure_spec = offset_spec
+        if isinstance(exposure_spec, str):
+            self._add_ln_derived(f"ln_{exposure_spec}", exposure_spec)
+            if isinstance(offset_spec, str) and not offset_is_exposure:
+                self._add_sum_derived(
+                    f"{offset_spec}_plus_ln_{exposure_spec}",
+                    [offset_spec, f"ln_{exposure_spec}"],
+                )
 
         names = self.model.feature_names
         params = self.model.params
@@ -611,6 +629,17 @@ class PMMLExporter:
         ET.SubElement(ap, "FieldRef", {"field": source})
         self._derived_fields[name] = df
 
+    def _add_sum_derived(self, name: str, sources: list[str]):
+        """Add a DerivedField that computes the sum of source fields."""
+        df = ET.Element(
+            "DerivedField",
+            {"name": name, "optype": "continuous", "dataType": "double"},
+        )
+        ap = ET.SubElement(df, "Apply", {"function": "+"})
+        for source in sources:
+            ET.SubElement(ap, "FieldRef", {"field": source})
+        self._derived_fields[name] = df
+
     def _add_extension_derived(self, name: str, expr: str):
         df = ET.Element(
             "DerivedField",
@@ -670,15 +699,38 @@ class PMMLExporter:
         ts = ET.SubElement(hdr, "Timestamp")
         ts.text = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    def _offset_variable(self) -> str | None:
+    def _offset_source_variables(self) -> list[str]:
+        """Raw data fields needed to compute the PMML offset."""
         spec = getattr(self.model, "_offset_spec", None)
-        return spec if isinstance(spec, str) else None
+        exposure_spec = getattr(self.model, "_exposure_spec", None)
+        offset_is_exposure = getattr(self.model, "_offset_is_exposure", False)
+        fields: list[str] = []
+        if isinstance(exposure_spec, str):
+            fields.append(exposure_spec)
+        elif isinstance(spec, str) and offset_is_exposure:
+            fields.append(spec)
+        if isinstance(spec, str) and not offset_is_exposure:
+            fields.append(spec)
+        return list(dict.fromkeys(fields))
+
+    def _pmml_offset_variable(self) -> str | None:
+        """Field or derived field used as PMML's link-scale offsetVariable."""
+        offset_spec = getattr(self.model, "_offset_spec", None)
+        exposure_spec = getattr(self.model, "_exposure_spec", None)
+        offset_is_exposure = getattr(self.model, "_offset_is_exposure", False)
+        if isinstance(offset_spec, str) and offset_is_exposure and exposure_spec is None:
+            exposure_spec = offset_spec
+        if isinstance(exposure_spec, str):
+            if isinstance(offset_spec, str) and not offset_is_exposure:
+                return f"{offset_spec}_plus_ln_{exposure_spec}"
+            return f"ln_{exposure_spec}"
+        return offset_spec if isinstance(offset_spec, str) else None
 
     def _xml_data_dictionary(self, root: ET.Element):
         resp = self._response_name()
-        offset_var = self._offset_variable()
+        offset_vars = self._offset_source_variables()
         # Count: response + predictors + offset (if any and not already a predictor)
-        extra = 1 if offset_var and offset_var not in self._raw_inputs else 0
+        extra = sum(1 for var in offset_vars if var not in self._raw_inputs)
         n_fields = len(self._raw_inputs) + 1 + extra
         dd = ET.SubElement(root, "DataDictionary", {"numberOfFields": str(n_fields)})
         ET.SubElement(
@@ -695,12 +747,13 @@ class PMMLExporter:
             elem = ET.SubElement(dd, "DataField", attrs)
             for lv in info.get("levels", []):
                 ET.SubElement(elem, "Value", {"value": str(lv)})
-        if offset_var and offset_var not in self._raw_inputs:
-            ET.SubElement(
-                dd,
-                "DataField",
-                {"name": offset_var, "optype": "continuous", "dataType": "double"},
-            )
+        for offset_var in offset_vars:
+            if offset_var not in self._raw_inputs:
+                ET.SubElement(
+                    dd,
+                    "DataField",
+                    {"name": offset_var, "optype": "continuous", "dataType": "double"},
+                )
 
     def _xml_transformation_dictionary(self, root: ET.Element):
         td = ET.SubElement(root, "TransformationDictionary")
@@ -727,27 +780,22 @@ class PMMLExporter:
             elif self.model.link == "sqrt":
                 attrs["linkParameter"] = "0.5"
 
-        offset_spec = getattr(self.model, "_offset_spec", None)
-        offset_is_exposure = getattr(self.model, "_offset_is_exposure", False)
-        if isinstance(offset_spec, str):
-            if offset_is_exposure:
-                # RustyStats applies log() to exposure before adding to eta.
-                # PMML adds offsetVariable raw, so use the ln() derived field.
-                attrs["offsetVariable"] = f"ln_{offset_spec}"
-            else:
-                attrs["offsetVariable"] = offset_spec
+        pmml_offset_var = self._pmml_offset_variable()
+        if pmml_offset_var is not None:
+            attrs["offsetVariable"] = pmml_offset_var
 
         grm = ET.SubElement(root, "GeneralRegressionModel", attrs)
 
         # MiningSchema
         resp = self._response_name()
-        offset_var = self._offset_variable()
+        offset_vars = self._offset_source_variables()
         ms = ET.SubElement(grm, "MiningSchema")
         ET.SubElement(ms, "MiningField", {"name": resp, "usageType": "target"})
         for var in self._raw_inputs:
             ET.SubElement(ms, "MiningField", {"name": var, "usageType": "active"})
-        if offset_var and offset_var not in self._raw_inputs:
-            ET.SubElement(ms, "MiningField", {"name": offset_var, "usageType": "active"})
+        for offset_var in offset_vars:
+            if offset_var not in self._raw_inputs:
+                ET.SubElement(ms, "MiningField", {"name": offset_var, "usageType": "active"})
 
         # ParameterList
         pl = ET.SubElement(grm, "ParameterList")

@@ -258,7 +258,8 @@ impl Family for GammaFamily {
 | Property | Value |
 |----------|-------|
 | Variance | \(V(\mu) = \mu^p\) where \(p\) is variance power |
-| Valid \(p\) | \(p \leq 0\) or \(p \geq 1\) |
+| Default \(p\) contract | \(1 < p < 2\) |
+| Extended \(p\) contract | \(p \leq 0\) or \(p \geq 1\) with `allow_extended_tweedie=True`; \(0 < p < 1\) is always rejected |
 | Valid μ range | \((0, +\infty)\) for \(p > 0\) |
 
 ### Implementation
@@ -422,9 +423,15 @@ impl Family for NegativeBinomialFamily {
 }
 ```
 
-### Theta Estimation
+### Theta Contract
 
-RustyStats can automatically estimate θ:
+Negative Binomial fits never silently fall back to `theta=1.0`. The dict API
+requires a positive numeric `theta=` for a fixed-theta fit, an embedded family
+parameter such as `family="negbinomial(theta=2.0)"`, or the explicit
+`theta="estimate"` opt-in on the plain unpenalized path. Regularized,
+constrained, and smooth Negative Binomial fits require a fixed numeric theta.
+
+The profile estimator uses a moment seed:
 
 ```rust
 // In diagnostics module

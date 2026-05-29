@@ -93,7 +93,7 @@ class QuasiBinomialFamily:
     def default_link(self) -> LogitLink: ...
 
 class TweedieFamily:
-    def __init__(self, var_power: float = 1.5) -> None: ...
+    def __init__(self, var_power: float = 1.5, allow_extended_tweedie: bool = False) -> None: ...
     def name(self) -> str: ...
     @property
     def var_power(self) -> float: ...
@@ -138,6 +138,12 @@ class GLMResults:
     @property
     def converged(self) -> bool: ...
     @property
+    def solver_status(self) -> str: ...
+    @property
+    def step_halving_used(self) -> bool: ...
+    @property
+    def warnings(self) -> list[str]: ...
+    @property
     def nobs(self) -> int: ...
     @property
     def df_resid(self) -> int: ...
@@ -179,8 +185,8 @@ class GLMResults:
     def pearson_chi2(self) -> float: ...
     def scale_pearson(self) -> float: ...
     def llf(self) -> float: ...
-    def aic(self) -> float: ...
-    def bic(self) -> float: ...
+    def aic(self) -> float | None: ...
+    def bic(self) -> float | None: ...
     def null_deviance(self) -> float: ...
     def n_nonzero(self) -> int: ...
     def selected_features(self) -> list[int]: ...
@@ -193,68 +199,78 @@ def fit_glm_py(
     y: npt.NDArray[np.float64],
     x: npt.NDArray[np.float64],
     family: str,
-    link: str,
+    link: str | None = None,
+    var_power: float = 1.5,
+    theta: float = 1.0,
     offset: npt.NDArray[np.float64] | None = None,
     weights: npt.NDArray[np.float64] | None = None,
     alpha: float = 0.0,
     l1_ratio: float = 0.0,
     max_iter: int = 25,
     tol: float = 1e-8,
-    var_power: float = 1.5,
-    theta: float = 1.0,
-    verbose: bool = False,
-    init_coefficients: npt.NDArray[np.float64] | None = None,
-    design_matrix: npt.NDArray[np.float64] | None = None,
-    y_raw: npt.NDArray[np.float64] | None = None,
-    irls_weights_out: bool = False,
+    nonneg_indices: list[int] | None = None,
+    nonpos_indices: list[int] | None = None,
+    store_design_matrix: bool = False,
+    allow_extended_tweedie: bool = False,
+    fit_intercept: bool = True,
 ) -> GLMResults: ...
 def fit_negbinomial_py(
     y: npt.NDArray[np.float64],
     x: npt.NDArray[np.float64],
-    link: str,
+    link: str | None = None,
+    init_theta: float | None = None,
+    theta_tol: float = 1e-5,
+    max_theta_iter: int = 10,
     offset: npt.NDArray[np.float64] | None = None,
     weights: npt.NDArray[np.float64] | None = None,
-    alpha: float = 0.0,
-    l1_ratio: float = 0.0,
     max_iter: int = 25,
     tol: float = 1e-8,
-    theta: float = 1.0,
-    verbose: bool = False,
-    init_coefficients: npt.NDArray[np.float64] | None = None,
-    design_matrix: npt.NDArray[np.float64] | None = None,
-    y_raw: npt.NDArray[np.float64] | None = None,
-    irls_weights_out: bool = False,
-) -> GLMResults: ...
+    alpha: float = 0.0,
+    l1_ratio: float = 0.0,
+    nonneg_indices: list[int] | None = None,
+    nonpos_indices: list[int] | None = None,
+    store_design_matrix: bool = False,
+) -> tuple[GLMResults, dict]: ...
 def fit_smooth_glm_unified_py(
     y: npt.NDArray[np.float64],
     x_full: npt.NDArray[np.float64],
+    smooth_col_ranges: list[tuple[int, int]],
+    smooth_penalties: list[npt.NDArray[np.float64]],
     family: str,
-    link: str,
-    smooth_specs: list[dict],
+    link: str | None = None,
     offset: npt.NDArray[np.float64] | None = None,
     weights: npt.NDArray[np.float64] | None = None,
     max_iter: int = 25,
     tol: float = 1e-8,
+    lambda_min: float = 0.001,
+    lambda_max: float = 1000.0,
+    smooth_monotonicity: list[str | None] | None = None,
+    store_design_matrix: bool = False,
+    nonneg_indices: list[int] | None = None,
+    nonpos_indices: list[int] | None = None,
     var_power: float = 1.5,
     theta: float = 1.0,
-    verbose: bool = False,
-    y_raw: npt.NDArray[np.float64] | None = None,
-) -> dict: ...
+    allow_extended_tweedie: bool = False,
+) -> tuple[GLMResults, dict]: ...
 def fit_cv_path_py(
     y: npt.NDArray[np.float64],
     x: npt.NDArray[np.float64],
     family: str,
-    link: str,
-    fold_ids: npt.NDArray[np.int64],
-    alphas: npt.NDArray[np.float64],
-    l1_ratio: float = 0.0,
-    offset: npt.NDArray[np.float64] | None = None,
-    weights: npt.NDArray[np.float64] | None = None,
-    max_iter: int = 25,
-    tol: float = 1e-8,
+    link: str | None = None,
     var_power: float = 1.5,
     theta: float = 1.0,
-    verbose: bool = False,
+    offset: npt.NDArray[np.float64] | None = None,
+    weights: npt.NDArray[np.float64] | None = None,
+    alphas: list[float] = ...,
+    l1_ratio: float = 0.0,
+    n_folds: int = 5,
+    max_iter: int = 25,
+    tol: float = 1e-8,
+    seed: int | None = None,
+    nonneg_indices: list[int] | None = None,
+    nonpos_indices: list[int] | None = None,
+    allow_extended_tweedie: bool = False,
+    fit_intercept: bool = True,
 ) -> dict: ...
 
 # =============================================================================
@@ -270,6 +286,7 @@ def working_response_weights_py(
     theta: float = 1.0,
     offset: npt.NDArray[np.float64] | None = None,
     weights: npt.NDArray[np.float64] | None = None,
+    allow_extended_tweedie: bool = False,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]: ...
 
 # =============================================================================
@@ -476,11 +493,13 @@ def target_encode_interaction_with_exposure_py(
 def compute_calibration_curve_py(
     y: npt.NDArray[np.float64],
     mu: npt.NDArray[np.float64],
+    exposure: npt.NDArray[np.float64] | None = None,
     n_bins: int = 10,
-) -> dict: ...
+) -> list[dict]: ...
 def compute_discrimination_stats_py(
     y: npt.NDArray[np.float64],
     mu: npt.NDArray[np.float64],
+    exposure: npt.NDArray[np.float64] | None = None,
 ) -> dict: ...
 def compute_ae_continuous_py(
     values: npt.NDArray[np.float64],
@@ -655,7 +674,9 @@ def detect_interactions_py(
 def compute_lorenz_curve_py(
     y: npt.NDArray[np.float64],
     mu: npt.NDArray[np.float64],
-) -> dict: ...
+    exposure: npt.NDArray[np.float64] | None = None,
+    n_points: int = 20,
+) -> list[dict]: ...
 def hosmer_lemeshow_test_py(
     y: npt.NDArray[np.float64],
     mu: npt.NDArray[np.float64],
@@ -671,23 +692,16 @@ def compute_fit_statistics_py(
     theta: float | None = None,
 ) -> dict: ...
 def compute_dataset_metrics_py(
-    y_train: npt.NDArray[np.float64],
-    mu_train: npt.NDArray[np.float64],
-    y_test: npt.NDArray[np.float64],
-    mu_test: npt.NDArray[np.float64],
-    family: str,
-    weights_train: npt.NDArray[np.float64] | None = None,
-    weights_test: npt.NDArray[np.float64] | None = None,
-    var_power: float | None = None,
-    theta: float | None = None,
-) -> dict: ...
-def compute_residual_summary_py(
     y: npt.NDArray[np.float64],
     mu: npt.NDArray[np.float64],
     family: str,
-    link: str,
-    var_power: float | None = None,
-    theta: float | None = None,
+    n_params: int,
+    var_power: float = 1.5,
+    theta: float = 1.0,
+    scale: float | None = None,
+) -> dict: ...
+def compute_residual_summary_py(
+    residuals: npt.NDArray[np.float64],
 ) -> dict: ...
 def compute_residual_pattern_py(
     y: npt.NDArray[np.float64],

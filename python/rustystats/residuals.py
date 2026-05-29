@@ -52,6 +52,7 @@ def working_response_weights(
     weights: npt.ArrayLike | None = None,
     var_power: float = 1.5,
     theta: float = 1.0,
+    allow_extended_tweedie: bool = False,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Compute IRLS working response z and combined working weight w.
 
@@ -79,6 +80,10 @@ def working_response_weights(
         Tweedie variance power. Ignored for non-Tweedie families.
     theta : float, default 1.0
         Negative Binomial dispersion. Ignored for non-NB families.
+    allow_extended_tweedie : bool, default False
+        Permit Tweedie powers outside the default ``1 < p < 2`` interior
+        (i.e. ``p <= 0``, ``p == 1``, ``p == 2`` (Gamma), ``p > 2``). The
+        per-regime response support rules are enforced regardless.
 
     Returns
     -------
@@ -119,6 +124,8 @@ def working_response_weights(
         family,
         weights=weights,
         offset=offset,
+        var_power=var_power,
+        allow_extended_tweedie=allow_extended_tweedie,
     )
 
     return _wrw_rust(
@@ -130,4 +137,5 @@ def working_response_weights(
         theta,
         offset_arr,
         weights_arr,
+        allow_extended_tweedie,
     )

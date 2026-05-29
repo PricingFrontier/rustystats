@@ -77,7 +77,18 @@ impl TweedieFamily {
     ///   - p = 1.6-1.9: More Gamma-like, fewer zeros
     ///
     /// # Errors
-    /// Returns an error if var_power is in (0, 1) as this range is not supported.
+    /// Returns an error if `var_power` is in the open interval `(0, 1)` — no
+    /// Tweedie distribution exists there. **All other extended powers
+    /// (`p <= 0`, `p == 1`, `p == 2`, `p > 2`) are accepted by this core
+    /// constructor**; the default-vs-extended gate (the requirement that
+    /// callers explicitly opt in to anything outside the compound
+    /// Poisson-Gamma interior `1 < p < 2`) lives at the **binding layer** —
+    /// see `validate_tweedie_power` in `crates/rustystats/src/families_py.rs`
+    /// and the matching Python-side `_validate_tweedie_response` in
+    /// `python/rustystats/validation.py`. Direct Rust callers therefore opt
+    /// themselves in by construction and must enforce per-regime support
+    /// (e.g. `y > 0` for `p >= 2`) before calling `unit_deviance` /
+    /// `unit_deviance_at` themselves.
     pub fn new(var_power: f64) -> Result<Self, String> {
         // Tweedie is not defined for 0 < p < 1
         if var_power > 0.0 && var_power < 1.0 {
@@ -134,8 +145,14 @@ impl Family for TweedieFamily {
                 2.0 * (yi_safe * (yi_safe / mui_safe).ln() - (yi_safe - mui_safe))
             }
         } else if (p - 2.0).abs() < ZERO_TOL {
+            if yi <= 0.0 {
+                return f64::INFINITY;
+            }
             2.0 * ((yi_safe - mui_safe) / mui_safe - (yi_safe / mui_safe).ln())
         } else {
+            if p > 2.0 && yi <= 0.0 {
+                return f64::INFINITY;
+            }
             let term1 = if yi_safe > 0.0 {
                 yi_safe.powf(2.0 - p) / ((1.0 - p) * (2.0 - p))
             } else {
@@ -319,6 +336,18 @@ mod tests {
     fn test_tweedie_invalid_power() {
         // p in (0, 1) is not valid for Tweedie
         assert!(TweedieFamily::new(0.5).is_err());
+    }
+
+    #[test]
+    fn test_high_power_zero_deviance_is_not_negative() {
+        let family = TweedieFamily::new(2.5).expect("test setup should be valid");
+        let y = array![0.0];
+        let mu = array![1.0];
+
+        let deviance = family.unit_deviance(&y, &mu);
+
+        assert!(deviance[0].is_infinite());
+        assert!(deviance[0].is_sign_positive());
     }
 
     #[test]

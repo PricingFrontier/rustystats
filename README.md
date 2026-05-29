@@ -9,6 +9,8 @@
 
 **Codebase Documentation**: [pricingfrontier.github.io/rustystats/](https://pricingfrontier.github.io/rustystats/)
 
+See [CHANGELOG.md](CHANGELOG.md) for release notes.
+
 ## Features
 
 - **Dict-First API** - Programmatic model building ideal for automated workflows and agents
@@ -49,7 +51,7 @@ result = rs.glm_dict(
     },
     data=data,
     family="poisson",
-    offset="Exposure",
+    exposure="Exposure",
 ).fit()
 
 # View results
@@ -69,7 +71,7 @@ print(result.summary())
 | `tweedie` | log | Pure premium (var_power=1.5) |
 | `quasipoisson` | log | Overdispersed counts |
 | `quasibinomial` | logit | Overdispersed binary |
-| `negbinomial` | log | Overdispersed counts (proper distribution) |
+| `negbinomial` | log | Overdispersed counts (requires `theta=` or `theta="estimate"`) |
 
 ---
 
@@ -98,7 +100,7 @@ result = rs.glm_dict(
     ],
     data=data,
     family="poisson",
-    offset="Exposure",
+    exposure="Exposure",
     seed=42,
 ).fit(regularization="elastic_net")
 ```
@@ -167,7 +169,7 @@ result = rs.glm_dict(
         "VehPower": {"type": "ns"},      # Natural spline (auto-tuned)
         "Region": {"type": "categorical"},
     },
-    data=data, family="poisson", offset="Exposure",
+    data=data, family="poisson", exposure="Exposure",
 ).fit()
 
 # Fixed degrees of freedom (no penalty)
@@ -178,7 +180,7 @@ result = rs.glm_dict(
         "VehPower": {"type": "ns", "df": 4},  # Fixed 4 df
         "Region": {"type": "categorical"},
     },
-    data=data, family="poisson", offset="Exposure",
+    data=data, family="poisson", exposure="Exposure",
 ).fit()
 ```
 
@@ -206,7 +208,7 @@ result = rs.glm_dict(
         "Age": {"type": "bs", "monotonicity": "increasing"},
         "Region": {"type": "categorical"},
     },
-    data=data, family="poisson", offset="Exposure",
+    data=data, family="poisson", exposure="Exposure",
 ).fit()
 
 # Monotonically decreasing effect (e.g., vehicle value with age)
@@ -256,7 +258,7 @@ result = rs.glm_dict(
         "Age": {"type": "linear"},
         "Region": {"type": "categorical"},
     },
-    data=data, family="poisson", offset="Exposure",
+    data=data, family="poisson", exposure="Exposure",
 ).fit()
 
 # Sklearn-style API
@@ -269,7 +271,7 @@ test_encoded = encoder.transform(test_categories)
 - **No target leakage**: Ordered target statistics
 - **Regularization**: Prior weight controls shrinkage toward global mean
 - **High-cardinality**: Single column instead of thousands of dummies
-- **Exposure-aware**: For frequency models with `offset="Exposure"`, automatically uses claim rate (ClaimCount/Exposure) instead of raw counts
+- **Exposure-aware**: For frequency models with `exposure="Exposure"`, automatically uses claim rate (ClaimCount/Exposure) instead of raw counts. Pre-RS-ACT-002 users with `offset="Exposure"` get the same behaviour via the legacy alias, but array `offset=` no longer feeds the encoder — pass `exposure=` explicitly for exposure-weighted target encoding.
 - **Interactions**: Use `target_encoding: True` in interactions to encode variable combinations
 
 ---
@@ -338,7 +340,7 @@ cw_result = rs.glm_dict(
     terms={"VehAge": {"type": "bs"}, "DrivAge": {"type": "bs"}},
     data=countrywide_data,
     family="poisson",
-    offset="Exposure",
+    exposure="Exposure",
 ).fit()
 
 # 2. Fit a state model with lasso, shrinking toward countrywide rates
@@ -351,7 +353,7 @@ state_result = rs.glm_dict(
     },
     data=state_data,
     family="poisson",
-    offset="Exposure",
+    exposure="Exposure",
     complement="countrywide_rate",  # Column with prior rates (response scale)
 ).fit(regularization="lasso")
 
@@ -400,7 +402,7 @@ if not results['valid']:
 ```python
 # Compute all diagnostics at once
 diagnostics = result.diagnostics(
-    data=data,
+    train_data=data,
     categorical_factors=["Region", "VehBrand", "Area"],  # Including non-fitted
     continuous_factors=["Age", "Income", "VehPower"],    # Including non-fitted
 )
@@ -517,6 +519,44 @@ The comparison includes:
 - **Improvement metrics**: `loss_improvement_pct`, `gini_improvement`, `auc_improvement`
 - **Decile analysis**: Data sorted by model/base ratio, showing where the new model diverges
 - **Calibration comparison**: Count of deciles where each model has better A/E
+
+---
+
+## Calibration Primitives
+
+Explicit calibration tools for assessing and adjusting model balance, kept
+separate from the GLM coefficients so the underlying fit stays untouched.
+
+```python
+# Standalone summary on arrays (overall A/E, per-bin, optional per-factor)
+summary = rs.calibration_summary(
+    y, mu,
+    exposure=exposure,
+    weights=weights,         # optional; weighted Σwy/Σwμ
+    by={"Region": region},   # optional per-factor breakdown
+    n_bins=10,
+    ranking="auto",          # rate-rank when exposure is present
+    min_exposure=10.0,       # flag low-exposure cells as suppressed
+)
+
+# From a fitted GLM (response/exposure resolved automatically)
+result.calibration_summary(data, by="Region")
+
+# Multiplicative or monotone calibration objects (opt-in, serialized separately)
+cal = result.fit_calibration(holdout, method="global")     # GlobalCalibration
+iso = result.fit_calibration(holdout, method="isotonic")   # IsotonicCalibration
+calibrated_pred = cal.predict(result.predict(new_data))
+
+# Log-link intercept relevel — same factor c = Σ(w·y)/Σ(w·μ), updates only the
+# intercept. Every other coefficient is bit-identical, relativities preserved.
+releveled = result.relevel(holdout)
+assert all(releveled.params[1:] == result.params[1:])
+```
+
+Calibration is **never applied silently** to `result.predict()`. Calibration
+objects are separate, serializable (`to_dict`/`from_dict`), and not folded into
+GLM coefficients. Fitting calibration on the same rows used to fit the model
+overstates calibration quality — prefer a held-out fold.
 
 ---
 

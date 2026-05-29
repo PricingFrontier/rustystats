@@ -87,6 +87,15 @@ from rustystats._rustystats import (
     ns_py as _ns_rust,  # noqa: F401
 )
 
+# Calibration primitives (RS-ACT-009 / PR11)
+from rustystats.calibration import (
+    GlobalCalibration,
+    IsotonicCalibration,
+    calibration_summary,
+    fit_global_calibration,
+    fit_isotonic_calibration,
+)
+
 # Model diagnostics
 from rustystats.diagnostics import (
     DataExploration,
@@ -184,6 +193,12 @@ __all__ = [
     "explore_data",
     "DataExploration",
     "DataExplorer",
+    # Calibration primitives (RS-ACT-009)
+    "calibration_summary",
+    "fit_global_calibration",
+    "fit_isotonic_calibration",
+    "GlobalCalibration",
+    "IsotonicCalibration",
     # Direct access to classes (for convenience)
     "IdentityLink",
     "LogLink",

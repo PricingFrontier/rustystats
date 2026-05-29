@@ -790,7 +790,16 @@ def check_singular_vs_batch(
                 )
 
     # ===== ae_by_decile: with vs without sort_idx =====
-    sort_idx = np.argsort(mu).astype(np.uintp)
+    # RS-ACT-004: the internal default ranks by predicted rate (mu/exposure) with
+    # index tie-breaking, so the externally supplied sort_idx must match that to
+    # reproduce the no-sort result. A stable argsort on the rate key replicates
+    # the Rust comparator (rate, then original index).
+    if exposure is not None:
+        safe_exp = np.where(exposure > 0.0, exposure, 1.0)
+        rank_key = mu / safe_exp
+    else:
+        rank_key = mu
+    sort_idx = np.argsort(rank_key, kind="stable").astype(np.uintp)
     rust_no_sort = _rust_ae_by_decile(y, mu, exposure, 10, None)
     rust_with_sort = _rust_ae_by_decile(y, mu, exposure, 10, sort_idx)
     c.check(

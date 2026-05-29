@@ -323,6 +323,9 @@ class TestInteractions:
 
 class TestOffset:
     def test_log_link_exposure_offset_row(self, sample_data):
+        # RS-ACT-002: ``offset="exposure"`` under a log link is the legacy
+        # alias for ``exposure="exposure"``; the ladder row therefore carries
+        # ``term_type="exposure"`` rather than ``"offset"``.
         result = rs.glm_dict(
             response="y",
             terms={"x1": {"type": "linear"}},
@@ -332,11 +335,11 @@ class TestOffset:
         ).fit()
         rows = result.predict_contributions(sample_data.head(3))
         for i, row in enumerate(rows):
-            offset_row = next(c for c in row["contributions"] if c["term_type"] == "offset")
+            exposure_row = next(c for c in row["contributions"] if c["term_type"] == "exposure")
             raw = sample_data["exposure"].to_numpy()[i]
             # contribution is log(exposure) for log-link models
-            assert abs(offset_row["contribution"] - np.log(raw)) < 1e-12
-            assert abs(offset_row["feature_value"] - raw) < 1e-12
+            assert abs(exposure_row["contribution"] - np.log(raw)) < 1e-12
+            assert abs(exposure_row["feature_value"] - raw) < 1e-12
 
     def test_identity_link_array_offset(self, sample_data):
         result = rs.glm_dict(
@@ -354,6 +357,39 @@ class TestOffset:
             offset_row = next(c for c in row["contributions"] if c["term_type"] == "offset")
             # identity link: offset contribution equals raw offset
             assert abs(offset_row["contribution"] - offset_arr[i]) < 1e-12
+
+    def test_explicit_exposure_plus_link_offset_rows(self, sample_data):
+        adjustment = np.linspace(-0.2, 0.2, len(sample_data))
+        data = sample_data.with_columns(pl.Series("adj", adjustment))
+        result = rs.glm_dict(
+            response="y",
+            terms={"x1": {"type": "linear"}},
+            data=data,
+            family="poisson",
+            exposure="exposure",
+            offset="adj",
+        ).fit()
+
+        new_d = data.head(3)
+        rows = result.predict_contributions(new_d)
+        preds = result.predict(new_d)
+        assert_additivity(rows, preds)
+        for i, row in enumerate(rows):
+            # RS-ACT-002b: exposure and link-scale offset are now distinct
+            # ladder rows — exposure carries term_type="exposure" and link
+            # offset keeps term_type="offset" — so consumers identify them by
+            # the visible column rather than by position.
+            exposure_rows = [c for c in row["contributions"] if c["term_type"] == "exposure"]
+            offset_rows = [c for c in row["contributions"] if c["term_type"] == "offset"]
+            raw = sample_data["exposure"].to_numpy()[i]
+            assert len(exposure_rows) == 1
+            assert len(offset_rows) == 1
+            assert exposure_rows[0]["term"] == "exposure"
+            assert offset_rows[0]["term"] == "offset"
+            assert abs(exposure_rows[0]["contribution"] - np.log(raw)) < 1e-12
+            assert abs(exposure_rows[0]["feature_value"] - raw) < 1e-12
+            assert abs(offset_rows[0]["contribution"] - adjustment[i]) < 1e-12
+            assert abs(offset_rows[0]["feature_value"] - adjustment[i]) < 1e-12
 
 
 # ---------------------------------------------------------------------------

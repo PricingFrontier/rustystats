@@ -21,7 +21,7 @@ use rustystats_core::inference::{
 };
 use rustystats_core::regularization::Penalty;
 
-use crate::families_py::family_from_name;
+use crate::families_py::family_from_name_with_tweedie_support;
 
 /// Results from fitting a GLM.
 ///
@@ -63,6 +63,16 @@ pub struct PyGLMResults {
     pub(crate) irls_weights: Array1<f64>,
     /// Offset values (e.g., log(exposure) for count models)
     pub(crate) offset: Option<Array1<f64>>,
+    /// Whether step-halving was triggered during fitting (RS-ACT-007).
+    pub(crate) step_halving_used: bool,
+    /// Terminal solver status: "converged", "max_iterations", or
+    /// "step_halving_no_improvement" (RS-ACT-007).
+    pub(crate) solver_status: String,
+    /// User-facing warnings collected during fitting (e.g. non-convergence,
+    /// fallback initialisation, final-extraction instability). Surfaced so the
+    /// solver can communicate diagnostic context beyond the terminal status
+    /// string (RS-ACT-007).
+    pub(crate) warnings: Vec<String>,
 }
 
 // =============================================================================
@@ -74,8 +84,28 @@ impl PyGLMResults {
     /// Used internally by diagnostics and robust SE methods.
     /// Note: family_name is validated at model creation, so this should never fail.
     fn get_family(&self) -> Box<dyn Family> {
-        family_from_name(&self.family_name, 1.5, 1.0)
+        family_from_name_with_tweedie_support(&self.family_name, 1.5, 1.0, true)
             .expect("Invalid family name stored in results - this is a bug")
+    }
+
+    fn is_quasi_likelihood(&self) -> bool {
+        let base = self
+            .family_name
+            .to_lowercase()
+            .split('(')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        matches!(
+            base.as_str(),
+            "quasipoisson"
+                | "quasi_poisson"
+                | "quasi-poisson"
+                | "quasibinomial"
+                | "quasi_binomial"
+                | "quasi-binomial"
+        )
     }
 
     /// Get prior weights as Option, returning None if all weights are 1.0.
@@ -168,6 +198,31 @@ impl PyGLMResults {
     #[getter]
     fn converged(&self) -> bool {
         self.converged
+    }
+
+    /// Terminal solver status: "converged", "max_iterations", or
+    /// "step_halving_no_improvement" (RS-ACT-007).
+    #[getter]
+    fn solver_status(&self) -> String {
+        self.solver_status.clone()
+    }
+
+    /// Whether step-halving was triggered during fitting (RS-ACT-007).
+    #[getter]
+    fn step_halving_used(&self) -> bool {
+        self.step_halving_used
+    }
+
+    /// Warnings collected during fitting (RS-ACT-007).
+    ///
+    /// Empty when the fit completed without diagnostic concerns. Common
+    /// messages include "IRLS did not converge ...", "Family ... initial μ
+    /// values were invalid ...", and final-coefficient extraction fallbacks.
+    /// The terminal `solver_status` is the primary signal — `warnings`
+    /// carries the additional human-readable context.
+    #[getter]
+    fn warnings(&self) -> Vec<String> {
+        self.warnings.clone()
     }
 
     /// Number of observations.
@@ -682,8 +737,12 @@ impl PyGLMResults {
     /// AIC = -2ℓ + 2p
     ///
     /// Lower is better. Use for model comparison.
-    fn aic(&self) -> f64 {
-        aic(self.llf(), self.n_params)
+    fn aic(&self) -> Option<f64> {
+        if self.is_quasi_likelihood() {
+            None
+        } else {
+            Some(aic(self.llf(), self.n_params))
+        }
     }
 
     /// Get the Bayesian Information Criterion.
@@ -691,8 +750,12 @@ impl PyGLMResults {
     /// BIC = -2ℓ + p×log(n)
     ///
     /// Lower is better. Penalizes complexity more than AIC for large n.
-    fn bic(&self) -> f64 {
-        bic(self.llf(), self.n_params, self.n_obs)
+    fn bic(&self) -> Option<f64> {
+        if self.is_quasi_likelihood() {
+            None
+        } else {
+            Some(bic(self.llf(), self.n_params, self.n_obs))
+        }
     }
 
     /// Get the null deviance (deviance of intercept-only model).

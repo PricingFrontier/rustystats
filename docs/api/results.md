@@ -294,20 +294,37 @@ ll = result.llf()
 Akaike Information Criterion.
 
 ```python
-aic = result.aic()
+aic = result.aic()  # float, or None when no ordinary likelihood AIC is available
 ```
 
-**Formula**: AIC = -2 × loglik + 2p
+**Formula**: AIC = −2 × loglik + 2p (or `2 × total_edf` for penalised smooth
+fits, RS-ACT-011).
+
+**Returns `None`** when `result.is_quasi_likelihood` is `True` —
+quasi-Poisson / quasi-Binomial have no proper full likelihood; surfacing an
+ordinary-likelihood AIC for them would be misleading. Lean/deserialized models
+may also return `None` when the persisted state does not include enough raw fit
+statistics to recompute the criterion honestly.
 
 ### bic()
 
 Bayesian Information Criterion.
 
 ```python
-bic = result.bic()
+bic = result.bic()  # float, or None when no ordinary likelihood BIC is available
 ```
 
-**Formula**: BIC = -2 × loglik + p × log(n)
+**Formula**: BIC = −2 × loglik + p × log(n) (or `total_edf × log(n)` for
+penalised smooth fits). Same `None` rules as `aic()`.
+
+### is_quasi_likelihood
+
+```python
+result.is_quasi_likelihood  # True for family in {quasipoisson, quasibinomial}
+```
+
+Drives the `aic()`/`bic()` suppression above. Derived from `self.family`, so it
+survives `to_bytes` / `from_bytes` without extra state.
 
 ### null_deviance()
 
@@ -382,7 +399,7 @@ Compute comprehensive diagnostics.
 
 ```python
 diag = result.diagnostics(
-    data=data,
+    train_data=data,
     categorical_factors=["region"],
     continuous_factors=["age"],
 )
@@ -394,7 +411,7 @@ Get diagnostics as JSON string.
 
 ```python
 json_str = result.diagnostics_json(
-    data=data,
+    train_data=data,
     categorical_factors=["region"],
 )
 ```
@@ -448,9 +465,87 @@ df = result.relativities_table()
 
 ### predict()
 
-Predict on new data.
+Predict on new data (response scale, ``μ = E[Y]``).
 
 ```python
 predictions = result.predict(new_data)
-predictions_link = result.predict(new_data, type="link")
 ```
+
+`result.predict` accepts `offset=`, `exposure=` and `complement=` overrides
+to swap in alternative values without refitting. The linear predictor on
+new data is exposed via `predict_contributions` — its
+`prediction_from_contributions` field is the per-row linear predictor on the
+link scale. For training-data fitted values use `result.linear_predictor`.
+
+---
+
+## Inference & Solver Status (RS-ACT-007 / RS-ACT-011)
+
+Beyond the numeric estimates, the result object carries two metadata fields
+that explain *whether the inference is trustworthy* and *what the solver
+actually did*.
+
+### inference_status
+
+```python
+result.inference_status
+```
+
+One of:
+
+| Value | Meaning |
+|---|---|
+| `valid_standard` | Unpenalised, unselected, unconstrained fit. Standard SEs, p-values, AIC/BIC are valid. |
+| `valid_robust` | As above, with HC1 robust SEs available. |
+| `naive_after_regularization` | Ridge fit. Standard SEs ignore the penalty. |
+| `naive_after_selection` | Lasso / elastic-net. Variable selection invalidates ordinary inference. |
+| `naive_after_cv_selection` | Any CV-selected fit (incl. pure ridge — CV is itself a selection layer). |
+| `constrained_boundary` | One or more sign / monotonicity constraints are active. |
+| `unavailable` | Penalised smooth terms — use `effective_df` instead. |
+
+`summary()` hides the significance stars and the AIC/BIC values when the
+status is not `valid_standard` / `valid_robust`; the inference field appears
+near the bottom of the summary table so the caller knows why.
+
+### solver_status
+
+```python
+result.solver_status        # "converged" | "max_iterations" | "step_halving_no_improvement"
+result.step_halving_used    # bool
+result.optimizer_route      # "irls" | "coordinate_descent" | "gcv_penalized"
+result.iterations           # final IRLS iteration count
+result.converged            # bool
+```
+
+The status reports the *terminal* state of the solver — a
+`step_halving_no_improvement` fit retained the previous accepted coefficients
+and `converged == False`. Step-halving accepts only non-worsening steps, and
+the final $\mu$ is clamped through each family's `clamp_mu`, so
+`fittedvalues` never sits outside the family's support.
+
+---
+
+## Post-Fit Calibration (RS-ACT-009)
+
+The calibration primitives — `result.calibration_summary`,
+`result.fit_calibration`, and `result.relevel` — are documented in
+[Diagnostics API → Calibration Primitives](diagnostics.md#calibration-primitives-rs-act-009).
+
+Two pieces of metadata live on the result itself:
+
+### intercept_delta
+
+```python
+result.intercept_delta   # accumulated log(c) shift, 0.0 if never releveled
+```
+
+### relevel_history
+
+```python
+result.relevel_history   # list of {factor, log_shift, original_intercept,
+                          #          new_intercept, n_obs, total_weight}
+```
+
+Both round-trip through `to_bytes` / `from_bytes`, so a releveled model
+re-loads with its shift intact (and `result.params[0]` reflects the
+accumulated `+log(c)` automatically).

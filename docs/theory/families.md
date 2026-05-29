@@ -806,7 +806,40 @@ $$
 
 **Estimating $p$**: Profile the likelihood over a grid of $p$ values.
 
-### 6.6 Implementation
+### 6.6 Support contract (RS-ACT-006)
+
+RustyStats defaults to the actuarial pure-premium interior `1 < p < 2`.
+Other powers are valid Tweedie distributions but live outside that interior,
+so they require an explicit opt-in plus per-regime support rules on the
+response:
+
+| `var_power` | Default behaviour | With `allow_extended_tweedie=True` |
+|---|---|---|
+| `0 < p < 1` | ❌ rejected — no Tweedie distribution exists here | ❌ still rejected |
+| `1 < p < 2` | ✅ compound Poisson-Gamma; requires `y ≥ 0` | (no-op) |
+| `p ≤ 0` | ❌ rejected (use `family="gaussian"` if `p == 0`) | ✅ requires `y ≥ 0` |
+| `p == 1` | ❌ rejected (use `family="poisson"`) | ✅ requires `y ≥ 0` |
+| `p == 2` | ❌ rejected (use `family="gamma"`) | ✅ requires `y > 0` |
+| `p > 2` | ❌ rejected | ✅ requires `y > 0` |
+
+```python
+# Default — actuarial pure premium.
+rs.glm_dict(..., family="tweedie", var_power=1.5)
+
+# Opt in to extended Tweedie; per-regime y rules still apply.
+rs.glm_dict(
+    ..., family="tweedie", var_power=2.5,
+    allow_extended_tweedie=True,
+)
+```
+
+Per-regime support is enforced **before** any deviance is evaluated. The
+legacy behaviour silently produced `deviance = inf` for `p == 2` with `y == 0`
+and *negative* deviances for `p > 2` with `y == 0`; both now raise
+`ValidationError` upfront with a clear message naming the canonical alternative
+where one exists.
+
+### 6.7 Implementation
 
 ```rust
 pub struct TweedieFamily {
@@ -887,6 +920,21 @@ This is the Pearson chi-square divided by residual degrees of freedom.
 
 **Caution**: Quasi-likelihood inference is valid for large samples. AIC/BIC interpretation is murky.
 
+### 7.6 Honest AIC/BIC labelling (RS-ACT-008)
+
+Quasi families do not have a proper full likelihood — only a quasi-likelihood
+with an estimated dispersion $\phi$. To stop these values being compared as if
+they were ordinary likelihood AICs, RustyStats:
+
+* Flags the fit with `result.is_quasi_likelihood == True`.
+* Returns `None` from `result.aic()` and `result.bic()` (no documented QIC
+  ships yet; we don't surface a fake value).
+* Relabels `summary()`'s log-likelihood-like line as
+  `Quasi-Log-Likelihood:` and prints `AIC` / `BIC` as `NA`.
+
+`result.deviance`, `result.scale()` (estimated $\phi$), and the Pearson chi²
+remain available unchanged.
+
 ---
 
 ## Part 8: The Negative Binomial Family
@@ -928,14 +976,37 @@ This is **quadratic** in $\mu$, unlike QuasiPoisson's linear variance.
 
 **Rule of thumb**: Use NegBin when overdispersion increases with the mean.
 
-### 8.5 Estimating $\theta$
+### 8.5 The $\theta$ Contract (RS-ACT-010)
 
-RustyStats estimates $\theta$ using an iterative moment-based approach:
+`theta` is an **explicit opt-in**. Three call shapes:
 
-1. **Initial fit**: Fit a Poisson GLM to get starting $\hat{\mu}$
-2. **Moment estimation**: Estimate $\theta$ from residuals:
+```python
+# 1. Fixed numeric theta — recorded as fixed in result metadata.
+rs.glm_dict(..., family="negbinomial", theta=2.0)
+
+# 2. Profile-likelihood estimation — fit alongside β via Rust's
+#    fit_negbinomial_py. Records initial theta, iterations, convergence,
+#    and tolerance on the result.
+rs.glm_dict(..., family="negbinomial", theta="estimate")
+
+# 3. No theta passed → rejected. There is no silent theta=1.0 fallback
+#    and no implicit profile estimation.
+```
+
+Regularised, constrained, or smooth NB combinations require a fixed numeric
+theta — the profile estimator only ships for the plain path. The result's
+`theta_metadata` records whether theta was estimated or fixed, plus the
+estimator's provenance when applicable.
+
+#### Estimation algorithm
+
+When `theta="estimate"`, RustyStats uses the profile estimator:
+
+1. **Initial fit**: Fit a Poisson GLM to get starting $\hat{\mu}$.
+2. **Moment seed**: Initialise $\theta$ from residuals:
    $$\hat{\theta} = \frac{\bar{\mu}^2}{\text{Var}(Y - \mu) - \bar{\mu}}$$
-3. **Iterate**: Fit NegBin GLM with current $\theta$, re-estimate $\theta$, repeat until convergence
+3. **Iterate**: Fit NegBin GLM with current $\theta$, re-estimate $\theta$,
+   repeat until convergence.
 
 **Bounds**: $\theta$ is constrained to $[0.01, 1000]$ to prevent numerical issues.
 
@@ -952,9 +1023,17 @@ Negative Binomial fitting is numerically challenging due to:
 RustyStats applies **minimum ridge regularization** (α ≥ 1e-6) automatically for NegBin models:
 
 ```python
-# The formula API automatically applies minimum regularization
-result = rs.glm_dict("claims ~ ns(age, df=5) + TE(region)", 
-                data, family="negbinomial").fit()
+# The dict API automatically applies minimum regularization for NegBin fits
+result = rs.glm_dict(
+    response="claims",
+    terms={
+        "age": {"type": "ns", "df": 5},
+        "region": {"type": "target_encoding"},
+    },
+    data=data,
+    family="negbinomial",
+    theta=1.0,
+).fit()
 
 # You'll see "Method: IRLS + Ridge" in the summary
 ```

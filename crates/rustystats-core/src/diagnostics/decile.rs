@@ -32,10 +32,25 @@ pub struct DecileMetricsRaw {
     pub mu_max: f64,
 }
 
-/// Compute A/E and exposure metrics per decile, sorted by `mu`.
+/// Predicted-rate ranking score (RS-ACT-004): `mu/exposure` when a positive
+/// exposure is present, else `mu`. Matches the discrimination stats so deciles,
+/// calibration, and Gini all rank observations the same way.
+#[inline]
+fn rate_score(mu: &Array1<f64>, exposure: Option<&Array1<f64>>, i: usize) -> f64 {
+    match exposure {
+        Some(e) if e[i] > 0.0 => mu[i] / e[i],
+        _ => mu[i],
+    }
+}
+
+/// Compute A/E and exposure metrics per decile, ranked by predicted rate.
+///
+/// Observations are ordered by `mu/exposure` (or `mu` when no exposure), so the
+/// table reflects per-unit-exposure risk rather than raw expected count
+/// (RS-ACT-004). Aggregates stay on the count scale (`Σy`, `Σmu`, `Σexposure`).
 ///
 /// Accepts an optional pre-sorted index to avoid redundant sorts when the
-/// caller already holds `argsort(mu)`.
+/// caller already holds the rank order.
 ///
 /// The decile loop is sequential: each decile aggregates a different range of
 /// `n / n_deciles` rows so the per-decile work is fast (and rayon overhead at
@@ -59,11 +74,14 @@ pub fn compute_ae_by_decile(
     let owned_sort: Option<Array1<usize>> = match sort_idx {
         Some(_) => None,
         None => {
+            // Rank by predicted rate (mu/exposure) when exposure is present;
+            // ties break by index for determinism (RS-ACT-004).
             let mut idx: Vec<usize> = (0..n).collect();
             idx.sort_unstable_by(|&a, &b| {
-                mu[a]
-                    .partial_cmp(&mu[b])
+                rate_score(mu, exposure, a)
+                    .partial_cmp(&rate_score(mu, exposure, b))
                     .unwrap_or(std::cmp::Ordering::Equal)
+                    .then(a.cmp(&b))
             });
             Some(Array1::from_vec(idx))
         }
@@ -117,9 +135,9 @@ pub fn compute_ae_by_decile(
             }
             None => (end - start) as f64,
         };
-        // mu is sorted ascending across the full sort_idx, so the first
-        // and last elements of `bucket` map to the decile's min/max mu.
-        // Guard against empty deciles (n < n_deciles).
+        // The bucket is ordered by rank score (rate), so its first/last entries
+        // are the lowest/highest-rate observations in the decile; we report their
+        // mu as the decile's mu bounds. Guard against empty deciles (n < n_deciles).
         let (mu_min, mu_max) = if let (Some(&first), Some(&last)) = (bucket.first(), bucket.last())
         {
             (mu_slice[first], mu_slice[last])
@@ -260,9 +278,10 @@ mod tests {
         let n = y.len();
         let mut idx: Vec<usize> = (0..n).collect();
         idx.sort_unstable_by(|&a, &b| {
-            mu[a]
-                .partial_cmp(&mu[b])
+            rate_score(mu, exposure, a)
+                .partial_cmp(&rate_score(mu, exposure, b))
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.cmp(&b))
         });
         let y_sorted: Vec<f64> = idx.iter().map(|&r| y[r]).collect();
         let mu_sorted: Vec<f64> = idx.iter().map(|&r| mu[r]).collect();

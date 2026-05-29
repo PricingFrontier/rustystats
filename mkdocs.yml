@@ -93,6 +93,7 @@ nav:
     - Diagnostics: api/diagnostics.md
     - Working Response & Weights: api/working-response-weights.md
     - Model Serialization: api/serialization.md
+  - Release Notes: changelog.md
   - Rust Guide:
     - Rust Fundamentals: rust-guide/fundamentals.md
     - Code Walkthrough: rust-guide/code-walkthrough.md

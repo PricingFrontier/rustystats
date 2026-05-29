@@ -214,6 +214,40 @@ for alpha in [0.001, 0.01, 0.1, 1.0]:
     print(f"α={alpha}: {result.n_nonzero()} features, deviance={result.deviance:.2f}")
 ```
 
+### Choosing `alpha_max`: the GLM-score endpoint (RS-ACT-005)
+
+For elastic-net with `l1_ratio > 0`, the largest meaningful penalty is the
+smallest `α` that *zeroes* every penalised coefficient. RustyStats derives this
+from the KKT condition at the **offset / weight-aware intercept-only null
+model** `μ_0`:
+
+\[
+\alpha_{\max} = \frac{\max_j \,\bigl|\sum_i x_{ij}\, w_i\,(y_i - \mu_{0,i})\,(\partial\mu/\partial\eta)_i \big/ V(\mu_{0,i})\bigr|}{l_1}
+\]
+
+For canonical-link families (Gaussian/identity, Poisson/log, Binomial/logit)
+this collapses to `X' diag(w) (y - μ_0)` because the chain factor
+`(∂μ/∂η)/V(μ)` is identically 1. For non-canonical links (e.g. Gamma/log) the
+chain factor is included explicitly.
+
+**Scaling matches the solver.** RustyStats' coordinate descent works with raw
+weighted sums (no `1/n`), so the alpha-max formula does too. The intercept
+column and any other unpenalised columns are excluded from the maximum.
+
+**Ridge fallback.** With `l1_ratio == 0` the all-zero KKT does not define a
+finite `alpha_max`. We fall back to a documented heuristic anchored on the
+median weighted Gram diagonal `Σ_i w_i x_{ij}^2`, scaled by 10. Tune with
+`alpha_min_ratio` and `n_alphas` if you want a finer grid.
+
+!!! warning "Behaviour change vs pre-RS-ACT-005 versions"
+    The legacy formula divided the score by `n` and used a centred-`y` proxy
+    with no family/link/offset awareness, which under-sized `alpha_max` by
+    roughly a factor of `n`. On a 600-row Poisson fit it returned ~0.799
+    versus the correct ~479.6, leaving penalised coefficients non-zero at
+    the grid endpoint and biasing CV selection toward over-shrinkage. If you
+    were tuning `alpha_min_ratio` to compensate, you can now drop that
+    workaround.
+
 ### The 1-SE Rule
 
 Choose the largest λ within one standard error of the minimum CV error:

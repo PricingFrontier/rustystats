@@ -163,6 +163,34 @@ pub fn null_deviance(
 }
 ```
 
+## Ranking Policy (RS-ACT-004)
+
+Decile / calibration / lift / Lorenz / Gini all need a single risk score to
+sort by. For rate models with positive exposure, the right score is
+$\mu / \text{exposure}$, not raw $\mu$: ranking by $\mu$ alone confuses
+high-exposure cells with high-risk cells.
+
+```python
+result.diagnostics(
+    train_data=data,
+    categorical_factors=["Region"],
+    continuous_factors=["Age"],
+    ranking="auto",   # default; rate when exposure present, mean otherwise
+    # ranking="rate"  # explicit rate ranking — errors if no exposure
+    # ranking="mean"  # legacy mean ranking
+)
+```
+
+| `ranking` | Sort key | Notes |
+|---|---|---|
+| `"auto"` (default) | $\mu / \text{exposure}$ when exposure was supplied, else $\mu$ | Recommended for actuarial diagnostics. |
+| `"rate"` | $\mu / \text{exposure}$ | Requires exposure; raises otherwise. |
+| `"mean"` | $\mu$ | Pre-RS-ACT-004 behaviour. Useful for severity / non-exposure models. |
+
+**Aggregates stay on the count scale.** Bin totals report
+`Σ y`, `Σ μ`, `Σ exposure`, and `actual / expected`, regardless of the
+ranking choice — only the bin *assignment* changes.
+
 ## Calibration Metrics
 
 ### Actual vs Expected
@@ -177,6 +205,7 @@ pub struct CalibrationResult {
 pub fn compute_calibration_curve(
     y: &Array1<f64>,
     mu: &Array1<f64>,
+    exposure: Option<&Array1<f64>>,
     weights: Option<&Array1<f64>>,
     n_bins: usize,
 ) -> CalibrationResult {
@@ -193,9 +222,14 @@ pub fn compute_calibration_curve(
     };
     let overall_ae = total_actual / total_expected;
     
-    // Sort by predicted risk
+    // Sort by predicted risk. With exposure in scope and ranking="auto",
+    // this score is μ / exposure; otherwise it is μ.
+    let rank_score = match exposure {
+        Some(e) => mu / e,
+        None => mu.clone(),
+    };
     let mut indices: Vec<usize> = (0..n).collect();
-    indices.sort_by(|&a, &b| mu[a].partial_cmp(&mu[b]).unwrap());
+    indices.sort_by(|&a, &b| rank_score[a].partial_cmp(&rank_score[b]).unwrap());
     
     // Compute A/E by decile
     let bin_size = n / n_bins;
@@ -420,7 +454,7 @@ class ModelDiagnostics:
 result = rs.glm_dict(response="y", terms={"x1": {"type": "linear"}, "region": {"type": "categorical"}}, data=data, family="poisson").fit()
 
 diagnostics = result.diagnostics(
-    data=data,
+    train_data=data,
     categorical_factors=["region", "brand"],
     continuous_factors=["age", "income"],
 )

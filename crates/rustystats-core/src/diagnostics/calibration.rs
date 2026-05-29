@@ -77,6 +77,17 @@ pub struct CalibrationBin {
     pub ae_ci_upper: f64,
 }
 
+/// Predicted-rate ranking score (RS-ACT-004): `mu/exposure` when a positive
+/// exposure is present, else `mu`. Shared so the calibration curve and the
+/// discrimination stats rank observations identically.
+#[inline]
+fn predicted_rate(mu: &Array1<f64>, exposure: Option<&Array1<f64>>, i: usize) -> f64 {
+    match exposure {
+        Some(e) if e[i] > 0.0 => mu[i] / e[i],
+        _ => mu[i],
+    }
+}
+
 /// Compute calibration curve by prediction deciles (or other quantiles)
 pub fn compute_calibration_curve(
     y: &Array1<f64>,
@@ -89,11 +100,16 @@ pub fn compute_calibration_curve(
         return Vec::new();
     }
 
-    // Sort indices by predicted values. `sort_unstable_by` is in-place
-    // (vs. Timsort's O(n) scratch buffer); ties on `mu` end up in the same
-    // bin and are summed, so stability is irrelevant here.
+    // Sort indices by predicted RATE (mu/exposure), matching the discrimination
+    // stats and the decile table (RS-ACT-004). `sort_unstable_by` is in-place;
+    // ties break by index for determinism, and same-rate rows land in the same
+    // bin and are summed regardless.
     let mut indices: Vec<usize> = (0..n).collect();
-    indices.sort_unstable_by(|&a, &b| mu[a].total_cmp(&mu[b]));
+    indices.sort_unstable_by(|&a, &b| {
+        predicted_rate(mu, exposure, a)
+            .total_cmp(&predicted_rate(mu, exposure, b))
+            .then(a.cmp(&b))
+    });
 
     // Compute quantile boundaries based on exposure (if provided) or count
     let total_exposure: f64 = exposure.map_or(n as f64, |e| e.sum());
@@ -289,25 +305,8 @@ pub fn compute_discrimination_stats(
     // and lift accumulators regardless of their internal order.
     let mut indices: Vec<usize> = (0..n).collect();
     indices.sort_unstable_by(|&a, &b| {
-        let rate_a = if let Some(exp) = exposure {
-            if exp[a] > 0.0 {
-                mu[a] / exp[a]
-            } else {
-                mu[a]
-            }
-        } else {
-            mu[a]
-        };
-        let rate_b = if let Some(exp) = exposure {
-            if exp[b] > 0.0 {
-                mu[b] / exp[b]
-            } else {
-                mu[b]
-            }
-        } else {
-            mu[b]
-        };
-        rate_b.total_cmp(&rate_a)
+        // Descending: highest predicted rate first (RS-ACT-004 shared helper).
+        predicted_rate(mu, exposure, b).total_cmp(&predicted_rate(mu, exposure, a))
     });
 
     let total_exposure: f64 = exposure.map_or(n as f64, |e| e.sum());
@@ -416,6 +415,11 @@ pub struct LorenzPoint {
 }
 
 /// Compute Lorenz curve data points
+///
+/// Sorts by predicted RATE (`mu/exposure`) when a positive exposure is
+/// supplied, else by raw `mu` (RS-ACT-004). Matches the ranking used by
+/// `compute_calibration_curve` and `compute_discrimination_stats`, so the
+/// curve, deciles, and Gini all agree on what counts as a "low risk" row.
 pub fn compute_lorenz_curve(
     y: &Array1<f64>,
     mu: &Array1<f64>,
@@ -427,10 +431,16 @@ pub fn compute_lorenz_curve(
         return Vec::new();
     }
 
-    // Sort by predictions (ascending - low risk first). `sort_unstable_by`
-    // is in-place (vs. Timsort's O(n) scratch buffer).
+    // Sort by predicted RATE (ascending - low risk first; RS-ACT-004 shared
+    // helper). `sort_unstable_by` is in-place (vs. Timsort's O(n) scratch
+    // buffer). Ties break by index for determinism, mirroring the calibration
+    // curve comparator.
     let mut indices: Vec<usize> = (0..n).collect();
-    indices.sort_unstable_by(|&a, &b| mu[a].total_cmp(&mu[b]));
+    indices.sort_unstable_by(|&a, &b| {
+        predicted_rate(mu, exposure, a)
+            .total_cmp(&predicted_rate(mu, exposure, b))
+            .then(a.cmp(&b))
+    });
 
     let total_exposure: f64 = exposure.map_or(n as f64, |e| e.sum());
     let total_actual: f64 = y.sum();
@@ -610,5 +620,40 @@ mod tests {
         // Last point should be (1, 1, 1)
         let last = points.last().expect("test setup should be valid");
         assert_abs_diff_eq!(last.cumulative_exposure_pct, 1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_lorenz_curve_uses_rate_ranking_with_exposure() {
+        // High-exposure rows have large raw mu but a low predicted rate; low-
+        // exposure rows have small raw mu but a high predicted rate. RS-ACT-004
+        // requires sorting by rate (mu/exposure), so the high-exposure rows
+        // (rate ≈ 0.13) come first and the low-exposure rows (rate ≈ 2.0) come
+        // last. Under mean ranking the order is exactly inverted.
+        let y = array![1.0, 1.0, 1.0, 1.0, 1.0, 5.0, 5.0, 5.0, 5.0, 5.0];
+        let mu = array![100.0, 110.0, 120.0, 130.0, 140.0, 1.0, 2.0, 3.0, 4.0, 5.0];
+        let exposure = array![1000.0, 1000.0, 1000.0, 1000.0, 1000.0, 1.0, 1.0, 1.0, 1.0, 1.0];
+
+        let points_rate = compute_lorenz_curve(&y, &mu, Some(&exposure), 10);
+        let points_no_exp = compute_lorenz_curve(&y, &mu, None, 10);
+        assert!(!points_rate.is_empty());
+        assert!(!points_no_exp.is_empty());
+
+        // Both curves terminate at (1, 1, 1), but the path differs because the
+        // ordering of rows along the exposure axis is opposite. Inspect the
+        // first interior point: rate ranking puts the largest-mu rows at the
+        // FRONT, so cumulative_predicted_pct grows quickly. No-exposure
+        // ranking puts the smallest-mu rows at the front, so cumulative
+        // predicted grows slowly.
+        let rate_p1 = &points_rate[1];
+        let mean_p1 = &points_no_exp[1];
+        // Different orderings ⇒ the early cumulative predicted percentages
+        // must materially diverge.
+        assert!(
+            (rate_p1.cumulative_predicted_pct - mean_p1.cumulative_predicted_pct).abs() > 0.01,
+            "expected rate vs mean ranking to produce different Lorenz curves; \
+             rate_p1.cum_pred={}, mean_p1.cum_pred={}",
+            rate_p1.cumulative_predicted_pct,
+            mean_p1.cumulative_predicted_pct,
+        );
     }
 }
