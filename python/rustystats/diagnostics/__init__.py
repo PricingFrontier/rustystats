@@ -44,6 +44,7 @@ from rustystats.diagnostics.computer import DiagnosticsComputer
 from rustystats.diagnostics.explorer import DataExplorer, explore_data
 from rustystats.diagnostics.types import (
     ActualExpectedBin,
+    BasePredictionsByRole,
     BasePredictionsComparison,
     BasePredictionsMetrics,
     CalibrationBin,
@@ -61,12 +62,14 @@ from rustystats.diagnostics.types import (
     DatasetDiagnostics,
     DecileMetrics,
     DevianceByLevel,
+    EncodingDiagnostics,
     FactorBinPair,
     FactorCoefficient,
     FactorDeviance,
     FactorDiagnostics,
     FactorLevelMetrics,
     FactorSignificance,
+    InteractionBlockDiagnostics,
     # Interaction and VIF
     InteractionCandidate,
     InteractionDiagnostics,
@@ -115,6 +118,7 @@ __all__ = [
     "FactorDiagnostics",
     "FactorBinPair",
     "InteractionCandidate",
+    "InteractionBlockDiagnostics",
     "InteractionDiagnostics",
     "InteractionExploration",
     "SurfaceCell",
@@ -136,6 +140,8 @@ __all__ = [
     "ModelVsBaseDecile",
     "BasePredictionsMetrics",
     "BasePredictionsComparison",
+    "BasePredictionsByRole",
+    "EncodingDiagnostics",
     "DataExploration",
     "ModelDiagnostics",
     # Computer classes and functions

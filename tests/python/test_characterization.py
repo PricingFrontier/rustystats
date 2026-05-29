@@ -67,10 +67,10 @@ class TestDeterminism:
         df = make_freq_frame()
         terms = {"DrivAge": {"type": "linear"}, "VehAge": {"type": "linear"}}
         r1 = rs.glm_dict(
-            response="ClaimCount", terms=terms, data=df, family="poisson", offset="Exposure"
+            response="ClaimCount", terms=terms, data=df, family="poisson", exposure="Exposure"
         ).fit()
         r2 = rs.glm_dict(
-            response="ClaimCount", terms=terms, data=df, family="poisson", offset="Exposure"
+            response="ClaimCount", terms=terms, data=df, family="poisson", exposure="Exposure"
         ).fit()
         np.testing.assert_array_equal(r1.params, r2.params)
 
@@ -82,7 +82,7 @@ class TestDeterminism:
             terms=terms,
             data=df,
             family="poisson",
-            offset="Exposure",
+            exposure="Exposure",
             seed=42,
         ).fit()
         r2 = rs.glm_dict(
@@ -90,7 +90,7 @@ class TestDeterminism:
             terms=terms,
             data=df,
             family="poisson",
-            offset="Exposure",
+            exposure="Exposure",
             seed=42,
         ).fit()
         np.testing.assert_array_equal(r1.params, r2.params)
@@ -104,9 +104,8 @@ class TestDeterminism:
 class TestPoissonOffsetAnchor:
     """Poisson + log-link offset must match statsmodels.
 
-    This is the regression guard for RS-ACT-002: after `exposure=` is added and
-    legacy `offset="Exposure"` is normalized, BOTH spellings must still match
-    this anchor (and each other).
+    This is the regression guard for RS-ACT-002: `exposure="Exposure"` must match
+    a statsmodels fit with a ``log(Exposure)`` offset.
     """
 
     @staticmethod
@@ -116,7 +115,7 @@ class TestPoissonOffsetAnchor:
     def _fit_rustystats(self, df):
         terms = {"DrivAge": {"type": "linear"}, "VehAge": {"type": "linear"}}
         return rs.glm_dict(
-            response="ClaimCount", terms=terms, data=df, family="poisson", offset="Exposure"
+            response="ClaimCount", terms=terms, data=df, family="poisson", exposure="Exposure"
         ).fit()
 
     def _fit_statsmodels(self, df):

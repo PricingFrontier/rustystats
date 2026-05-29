@@ -853,37 +853,18 @@ class _GLMBase:
     def _process_offset(
         self,
         offset: str | np.ndarray | None,
-        *,
-        string_is_exposure: bool | None = None,
     ) -> np.ndarray | None:
-        """Process offset specification, applying log for log-link families.
+        """Resolve a link-scale offset (column name or array), used verbatim.
 
-        For log-link families (Poisson, Gamma, etc.), exposure must be strictly
-        positive before log-transform. Validation is done here on raw values.
+        An ``offset`` is added to the linear predictor as-is. The rate
+        denominator that gets log-transformed is passed via ``exposure=``
+        instead (RS-ACT-002).
         """
-        from rustystats.exceptions import ValidationError
-
         if offset is None:
             return None
-
-        if string_is_exposure is None:
-            string_is_exposure = isinstance(offset, str) and self._uses_log_link()
-
         if isinstance(offset, str):
-            offset_values = _get_column(self.data, offset)
-            if string_is_exposure:
-                # Validate raw exposure before log-transform
-                n_invalid = np.sum(offset_values <= 0)
-                if n_invalid > 0:
-                    raise ValidationError(
-                        f"Exposure '{offset}' must be strictly positive for {self.family} family with log link. "
-                        f"Found {n_invalid} values <= 0. "
-                        "Exposure represents the denominator (e.g., time, population) and cannot be zero or negative."
-                    )
-                offset_values = np.log(offset_values)
-            return offset_values.astype(np.float64)
-        else:
-            return np.asarray(offset, dtype=np.float64)
+            return _get_column(self.data, offset).astype(np.float64)
+        return np.asarray(offset, dtype=np.float64)
 
     def _process_weights(
         self,
@@ -1022,17 +1003,14 @@ class _GLMBase:
     def _get_raw_exposure(
         self,
         exposure: str | np.ndarray | None,
-        offset: str | np.ndarray | None,
     ) -> np.ndarray | None:
-        """Raw positive exposure for target encoding.
+        """Raw positive exposure for target encoding / rate diagnostics.
 
-        Comes only from an explicit ``exposure`` or a legacy string offset under a
-        log link -- never from a link-scale array offset (RS-ACT-002).
+        Sourced only from an explicit ``exposure=`` -- never from a link-scale
+        ``offset`` (RS-ACT-002).
         """
         if exposure is not None:
             return self._resolve_exposure_values(exposure)
-        if isinstance(offset, str) and self._uses_log_link():
-            return self._resolve_exposure_values(offset)
         return None
 
     def _resolve_cv_path(
@@ -1329,11 +1307,6 @@ class GLMModel:
         self.link = link or get_default_link(family)
         self._builder = builder
         self._offset_spec = offset_spec
-        # RS-ACT-002b retired the runtime semantics of ``_offset_is_exposure``;
-        # the attribute is kept as an always-False legacy field so external
-        # consumers (PMML export, pickled-state introspection in tests) don't
-        # blow up. Nothing reads it for branching anymore.
-        self._offset_is_exposure = False
         self._exposure_spec = exposure_spec
         self._array_exposure_requires_prediction_override = bool(
             array_exposure_requires_prediction_override
@@ -2301,7 +2274,7 @@ class GLMModel:
 
         Examples
         --------
-        >>> result = rs.glm_dict(response="ClaimNb", terms={"Age": {"type": "linear"}, "Region": {"type": "categorical"}}, data=data, family="poisson", offset="Exposure").fit()
+        >>> result = rs.glm_dict(response="ClaimNb", terms={"Age": {"type": "linear"}, "Region": {"type": "categorical"}}, data=data, family="poisson", exposure="Exposure").fit()
         >>>
         >>> # Basic diagnostics
         >>> diagnostics = result.diagnostics(
@@ -3067,13 +3040,6 @@ class GLMModel:
             "link": self.link,
             "builder_state": builder_state,
             "offset_spec": self._offset_spec,
-            # Always False post-RS-ACT-002b: the attribute was retired from the
-            # model, but the key stays in the schema so legacy readers don't
-            # explode looking for it. ``from_bytes`` no longer uses it for
-            # fresh-fit pickles; it only matters when loading legacy v0/v1/v2
-            # payloads where ``offset_is_exposure=True`` flagged the legacy
-            # ``offset="Exposure"`` alias.
-            "offset_is_exposure": False,
             # Raw array exposure is fit-time data, not reusable prediction
             # metadata. Persist only column specs; array-exposure models require
             # callers to supply prediction-time exposure explicitly after load.
@@ -3143,28 +3109,11 @@ class GLMModel:
         if state["builder_state"] is not None:
             builder = _DeserializedBuilder(state["builder_state"])
 
-        # Back-compat: exposure/offset schema has evolved across PRs. Whenever
-        # `offset_is_exposure=True` is on the pickle, the offset column was
-        # the raw exposure denominator. Three legacy shapes need to load
-        # cleanly:
-        #   v0/v1 — only `offset_spec` set; `exposure_spec` absent.
-        #   v2    — both `exposure_spec` and `offset_spec` set to the same
-        #           column; predict would have double-counted log(exposure).
-        #   later — `offset_is_exposure` should always be cleared so the
-        #           rest of the codebase sees a uniform shape.
-        # Collapsing whenever the flag is True handles all three uniformly.
-        # The migrated model carries the exposure on ``_exposure_spec`` only;
-        # the runtime attribute ``_offset_is_exposure`` survives as an
-        # always-False legacy field (see ``GLMModel.__init__``).
         offset_spec = state.get("offset_spec")
-        offset_is_exposure = state.get("offset_is_exposure", False)
         exposure_spec = state.get("exposure_spec")
         array_exposure_requires_prediction_override = bool(
             state.get("array_exposure_requires_prediction_override", False)
         )
-        if offset_is_exposure:
-            exposure_spec = exposure_spec if exposure_spec is not None else offset_spec
-            offset_spec = None
 
         model = cls(
             result=result,
@@ -3873,16 +3822,6 @@ class FormulaGLMDict(_GLMBase):
         self._offset_spec = offset
         self._weights_spec = weights
         self._seed = seed
-        # RS-ACT-002: a string offset under a log link has historically meant
-        # raw exposure; preserve that meaning only when no explicit exposure= is
-        # supplied.
-        self._offset_is_legacy_exposure_alias = (
-            exposure is None and isinstance(offset, str) and self._uses_log_link()
-        )
-        if self._offset_is_legacy_exposure_alias:
-            # The legacy string offset *is* raw exposure; record it as such so
-            # prediction, diagnostics, and serialization treat it uniformly.
-            self._exposure_spec = offset
         self._complement_spec = complement if isinstance(complement, str | GLMModel) else None
         self._complement_values = None  # Set by _process_complement
 
@@ -3897,47 +3836,28 @@ class FormulaGLMDict(_GLMBase):
             intercept=intercept,
         )
 
-        # RS-ACT-002: keep model metadata split into raw exposure and link-scale
-        # offset specs, while constructing a fit-only combined link-scale offset
-        # for the Rust solver.
-        raw_exposure = self._get_raw_exposure(exposure, offset)
-        fit_offset = offset
-        fit_offset_string_is_exposure: bool | None = None
-        if exposure is not None:
-            if not self._uses_log_link():
-                raise ValidationError(
-                    "`exposure=` is only supported for log-link rate models "
-                    f"(got family={self.family!r}, link={self.link!r}). Use "
-                    "`offset=` for a link-scale adjustment on other links."
-                )
-            if isinstance(exposure, str) and offset is None:
-                fit_offset = exposure
-                fit_offset_string_is_exposure = True
-            else:
-                user_offset = self._process_offset(offset, string_is_exposure=False)
-                log_exposure = np.log(raw_exposure)
-                fit_offset = log_exposure if user_offset is None else log_exposure + user_offset
-            self._offset_spec = offset
-        elif self._offset_is_legacy_exposure_alias:
-            # Legacy offset="Exposure" is normalized to explicit exposure
-            # metadata; the string is used only to produce the fit-time log
-            # offset so fitted values remain identical to historical behavior.
-            fit_offset = offset
-            fit_offset_string_is_exposure = True
-            self._offset_spec = None
-        elif (
-            offset is not None
-            and not isinstance(offset, str)
+        # RS-ACT-002: raw exposure (the logged rate denominator) and the
+        # link-scale offset are independent — `exposure=` is logged into the fit
+        # offset, `offset=` is added verbatim.
+        raw_exposure = self._get_raw_exposure(exposure)
+        if exposure is not None and not self._uses_log_link():
+            raise ValidationError(
+                "`exposure=` is only supported for log-link rate models "
+                f"(got family={self.family!r}, link={self.link!r}). Use "
+                "`offset=` for a link-scale adjustment on other links."
+            )
+        if (
+            exposure is None
+            and offset is not None
             and self._uses_log_link()
             and self._has_target_encoding()
         ):
-            # A link-scale array offset is not raw exposure (RS-ACT-002), so target
-            # encoding falls back to unweighted statistics. Warn and point to
-            # exposure= for exposure-weighted encoding.
+            # A link-scale `offset` is not raw exposure, so target encoding falls
+            # back to unweighted statistics. Point to `exposure=` for weighting.
             warnings.warn(
-                "A link-scale array `offset` is not raw exposure, so target "
-                "encoding will use observation-weighted (unweighted) statistics. "
-                "Pass `exposure=` for exposure-weighted target encoding.",
+                "A link-scale `offset` is not raw exposure, so target encoding "
+                "will use observation-weighted (unweighted) statistics. Pass "
+                "`exposure=` for exposure-weighted target encoding.",
                 UserWarning,
                 stacklevel=3,
             )
@@ -3955,10 +3875,13 @@ class FormulaGLMDict(_GLMBase):
         self.n_obs = len(self.y)
         self.n_params = self.X.shape[1]
 
-        # Process offset, weights, and complement
-        self.offset = self._process_offset(
-            fit_offset, string_is_exposure=fit_offset_string_is_exposure
-        )
+        # Fit-time link-scale offset = log(exposure) [if any] + offset [if any].
+        user_offset = self._process_offset(offset)
+        if raw_exposure is not None:
+            log_exposure = np.log(raw_exposure)
+            self.offset = log_exposure if user_offset is None else log_exposure + user_offset
+        else:
+            self.offset = user_offset
         self.weights = self._process_weights(weights)
         complement_link = self._process_complement(complement, raw_exposure)
         if complement_link is not None:
@@ -4451,12 +4374,11 @@ def glm_dict(
     exposure : str or array-like, optional
         Raw positive exposure (the rate denominator) for log-link rate models.
         Added to the linear predictor as ``log(exposure)`` and used as the
-        denominator for exposure-weighted target encoding. Prefer this over
-        ``offset="Exposure"`` (which remains accepted as a legacy alias).
+        denominator for exposure-weighted target encoding.
     offset : str or array-like, optional
-        Link-scale additive offset. A string offset for a log-link family is
-        treated as raw exposure (a legacy alias for ``exposure=``); an array
-        offset is used on the link scale as-is.
+        Link-scale additive offset, used as-is (a string names a column added
+        verbatim on the link scale). Use ``exposure=`` for the rate denominator;
+        an ``offset`` is never treated as raw exposure.
     weights : str or array-like, optional
         Prior weights.
     seed : int, optional
@@ -4487,7 +4409,7 @@ def glm_dict(
     ...     },
     ...     data=data,
     ...     family="poisson",
-    ...     offset="Exposure",
+    ...     exposure="Exposure",
     ... ).fit()
 
     >>> # LazyFrame: only needed columns are collected
@@ -4497,7 +4419,7 @@ def glm_dict(
     ...     terms={"VehAge": {"type": "linear"}, "Region": {"type": "categorical"}},
     ...     data=lf,
     ...     family="poisson",
-    ...     offset="Exposure",
+    ...     exposure="Exposure",
     ... ).fit()
 
     >>> # Lasso credibility: shrink state model toward countrywide rates
@@ -4509,7 +4431,7 @@ def glm_dict(
     ...     },
     ...     data=state_data,
     ...     family="poisson",
-    ...     offset="Exposure",
+    ...     exposure="Exposure",
     ...     complement="countrywide_rate",
     ... ).fit(regularization="lasso")
     """

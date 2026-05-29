@@ -291,6 +291,14 @@ Serialized models must include:
 Existing serialized models with only `offset_spec` and
 `offset_is_exposure=True` should load as legacy exposure models.
 
+> **Superseded.** The `offset_is_exposure` flag, the `_offset_is_legacy_exposure_alias`
+> field, and the `offset="Exposure"` → exposure normalization described in this
+> section were later removed. A string `offset` is now always a verbatim
+> link-scale column; raw exposure comes only from `exposure=`. Serialized
+> payloads no longer carry `offset_is_exposure`, and legacy payloads are no
+> longer migrated. This section is retained as a historical record of the
+> RS-ACT-002 design.
+
 ### Tests
 
 Add tests covering:

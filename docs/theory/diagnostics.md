@@ -198,6 +198,33 @@ Calibration measures how well predicted probabilities/means match observed value
 \text{A/E} = \frac{\sum y_i}{\sum \hat{\mu}_i}
 \]
 
+When prior weights are supplied, RustyStats uses the weighted form:
+
+\[
+\text{A/E}_w = \frac{\sum_i w_i y_i}{\sum_i w_i \hat{\mu}_i}
+\]
+
+Exposure remains a separate rate denominator. For factor, decile, and
+benchmark-comparison aggregates:
+
+\[
+\text{weighted exposure} = \sum_i w_i e_i,\quad
+\text{actual rate} = \frac{\sum_i w_i y_i}{\sum_i w_i e_i},\quad
+\text{expected rate} = \frac{\sum_i w_i \hat{\mu}_i}{\sum_i w_i e_i}
+\]
+
+Benchmark predictions supplied through `base_predictions` follow the same
+contract:
+
+\[
+\text{base rate} = \frac{\sum_i w_i \mu^{base}_i}{\sum_i w_i e_i},\quad
+\text{base A/E} = \frac{\sum_i w_i y_i}{\sum_i w_i \mu^{base}_i}
+\]
+
+`base_predictions` must be response-scale row predictions. For a frequency
+model with exposure, pass expected claim counts per row, not claim rates and
+not link-scale predictions.
+
 ```python
 diagnostics = result.diagnostics(train_data=data, categorical_factors=["Region"])
 print(f"Overall A/E: {diagnostics.calibration['actual_expected_ratio']:.3f}")

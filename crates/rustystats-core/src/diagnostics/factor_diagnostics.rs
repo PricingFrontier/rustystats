@@ -227,6 +227,13 @@ pub struct ActualExpectedBin {
     pub loss: f64,
     pub ae_ci_lower: f64,
     pub ae_ci_upper: f64,
+    /// Σ prior_weights over the bin (== `count` when no prior weights are
+    /// supplied). Lets callers form a weighted mean prediction `predicted_sum /
+    /// weight_sum` without re-deriving the bin membership.
+    pub weight_sum: f64,
+    /// Σ prior_weights · base_prediction over the bin, or `None` when no
+    /// benchmark/base prediction array was supplied.
+    pub base_sum: Option<f64>,
 }
 
 /// Compute A/E analysis for a continuous factor using quantile bins
@@ -239,6 +246,8 @@ pub fn compute_ae_continuous(
     n_bins: usize,
     var_power: Option<f64>,
     theta: Option<f64>,
+    prior_weights: Option<&Array1<f64>>,
+    base: Option<&Array1<f64>>,
 ) -> Vec<ActualExpectedBin> {
     let n = factor_values.len();
     if n == 0 || n != y.len() {
@@ -300,6 +309,8 @@ pub fn compute_ae_continuous(
                 family,
                 var_power,
                 theta,
+                prior_weights,
+                base,
             )
         })
         .collect()
@@ -321,11 +332,24 @@ pub fn compute_ae_continuous_batch(
     n_bins: usize,
     var_power: Option<f64>,
     theta: Option<f64>,
+    prior_weights: Option<&Array1<f64>>,
+    base: Option<&Array1<f64>>,
 ) -> Vec<Vec<ActualExpectedBin>> {
     factor_values_list
         .par_iter()
         .map(|values| {
-            compute_ae_continuous(values, y, mu, exposure, family, n_bins, var_power, theta)
+            compute_ae_continuous(
+                values,
+                y,
+                mu,
+                exposure,
+                family,
+                n_bins,
+                var_power,
+                theta,
+                prior_weights,
+                base,
+            )
         })
         .collect()
 }
@@ -341,6 +365,8 @@ pub fn compute_ae_categorical(
     theta: Option<f64>,
     rare_threshold_pct: f64,
     max_levels: usize,
+    prior_weights: Option<&Array1<f64>>,
+    base: Option<&Array1<f64>>,
 ) -> Vec<ActualExpectedBin> {
     let n = factor_values.len();
     if n == 0 || n != y.len() {
@@ -391,6 +417,8 @@ pub fn compute_ae_categorical(
                 family,
                 var_power,
                 theta,
+                prior_weights,
+                base,
             ));
         }
     }
@@ -409,6 +437,8 @@ pub fn compute_ae_categorical(
             family,
             var_power,
             theta,
+            prior_weights,
+            base,
         ));
     }
 
@@ -433,6 +463,8 @@ pub fn compute_ae_categorical_from_codes(
     theta: Option<f64>,
     rare_threshold_pct: f64,
     max_levels: usize,
+    prior_weights: Option<&Array1<f64>>,
+    base: Option<&Array1<f64>>,
 ) -> Vec<ActualExpectedBin> {
     let n = codes.len();
     if n == 0 || n != y.len() {
@@ -494,6 +526,8 @@ pub fn compute_ae_categorical_from_codes(
                 family,
                 var_power,
                 theta,
+                prior_weights,
+                base,
             ));
         }
     }
@@ -511,6 +545,8 @@ pub fn compute_ae_categorical_from_codes(
             family,
             var_power,
             theta,
+            prior_weights,
+            base,
         ));
     }
 
@@ -535,6 +571,8 @@ pub fn compute_ae_categorical_batch(
     theta: Option<f64>,
     rare_threshold_pct: f64,
     max_levels: usize,
+    prior_weights: Option<&Array1<f64>>,
+    base: Option<&Array1<f64>>,
 ) -> Vec<Vec<ActualExpectedBin>> {
     codes_list
         .par_iter()
@@ -551,6 +589,8 @@ pub fn compute_ae_categorical_batch(
                 theta,
                 rare_threshold_pct,
                 max_levels,
+                prior_weights,
+                base,
             )
         })
         .collect()
@@ -568,6 +608,8 @@ fn compute_ae_bin(
     family: &str,
     var_power: Option<f64>,
     theta: Option<f64>,
+    prior_weights: Option<&Array1<f64>>,
+    base: Option<&Array1<f64>>,
 ) -> ActualExpectedBin {
     let count = indices.len();
     if count == 0 {
@@ -586,12 +628,20 @@ fn compute_ae_bin(
             loss: f64::NAN,
             ae_ci_lower: f64::NAN,
             ae_ci_upper: f64::NAN,
+            weight_sum: 0.0,
+            base_sum: base.map(|_| 0.0),
         };
     }
 
+    // All reported sums are prior-weighted (`wi`); `exposure` and `base` are
+    // the per-row rate denominator and benchmark prediction. With no prior
+    // weights `wi == 1`, so this reduces to the plain sums. The per-row vectors
+    // feed the (exposure-weighted) family loss, whose weighting is unchanged.
     let mut actual_sum = 0.0;
     let mut predicted_sum = 0.0;
     let mut exposure_sum = 0.0;
+    let mut weight_sum = 0.0;
+    let mut base_acc = 0.0;
     let mut y_bin = Vec::with_capacity(count);
     let mut mu_bin = Vec::with_capacity(count);
     let mut w_bin = Vec::with_capacity(count);
@@ -599,14 +649,19 @@ fn compute_ae_bin(
     for &i in indices {
         let yi = y[i];
         let mui = mu[i];
-        let wi = exposure.map_or(1.0, |e| e[i]);
+        let ei = exposure.map_or(1.0, |e| e[i]);
+        let wi = prior_weights.map_or(1.0, |w| w[i]);
 
-        actual_sum += yi;
-        predicted_sum += mui;
-        exposure_sum += wi;
+        actual_sum += wi * yi;
+        predicted_sum += wi * mui;
+        exposure_sum += wi * ei;
+        weight_sum += wi;
+        if let Some(b) = base {
+            base_acc += wi * b[i];
+        }
         y_bin.push(yi);
         mu_bin.push(mui);
-        w_bin.push(wi);
+        w_bin.push(ei);
     }
 
     let actual_mean = actual_sum / exposure_sum;
@@ -650,6 +705,8 @@ fn compute_ae_bin(
         loss,
         ae_ci_lower,
         ae_ci_upper,
+        weight_sum,
+        base_sum: base.map(|_| base_acc),
     }
 }
 
@@ -1775,7 +1832,9 @@ mod tests {
         let y = array![0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0];
         let mu = array![0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0];
 
-        let bins = compute_ae_continuous(&factor, &y, &mu, None, "gaussian", 5, None, None);
+        let bins = compute_ae_continuous(
+            &factor, &y, &mu, None, "gaussian", 5, None, None, None, None,
+        );
 
         assert_eq!(bins.len(), 5);
         // Perfect predictions should have A/E ≈ 1
@@ -1790,7 +1849,9 @@ mod tests {
         let y = array![];
         let mu = array![];
 
-        let bins = compute_ae_continuous(&factor, &y, &mu, None, "gaussian", 5, None, None);
+        let bins = compute_ae_continuous(
+            &factor, &y, &mu, None, "gaussian", 5, None, None, None, None,
+        );
 
         assert_eq!(bins.len(), 0);
     }
@@ -1802,8 +1863,18 @@ mod tests {
         let mu = array![1.0, 2.0, 3.0, 4.0];
         let exposure = array![1.0, 2.0, 1.0, 2.0];
 
-        let bins =
-            compute_ae_continuous(&factor, &y, &mu, Some(&exposure), "poisson", 2, None, None);
+        let bins = compute_ae_continuous(
+            &factor,
+            &y,
+            &mu,
+            Some(&exposure),
+            "poisson",
+            2,
+            None,
+            None,
+            None,
+            None,
+        );
 
         assert_eq!(bins.len(), 2);
         for bin in &bins {
@@ -1817,7 +1888,9 @@ mod tests {
         let y = array![1.0, 2.0, 3.0, 4.0];
         let mu = array![1.0, 2.0, 3.0, 4.0];
 
-        let bins = compute_ae_continuous(&factor, &y, &mu, None, "gaussian", 2, None, None);
+        let bins = compute_ae_continuous(
+            &factor, &y, &mu, None, "gaussian", 2, None, None, None, None,
+        );
 
         // Should handle NaN gracefully
         assert!(bins.len() <= 2);
@@ -1834,7 +1907,9 @@ mod tests {
         let y = array![1.0, 2.0, 3.0, 4.0];
         let mu = array![1.0, 2.0, 3.0, 4.0];
 
-        let bins = compute_ae_categorical(&factor, &y, &mu, None, "gaussian", None, None, 5.0, 10);
+        let bins = compute_ae_categorical(
+            &factor, &y, &mu, None, "gaussian", None, None, 5.0, 10, None, None,
+        );
 
         assert_eq!(bins.len(), 2); // A and B
         for bin in &bins {
@@ -1848,7 +1923,9 @@ mod tests {
         let y = array![];
         let mu = array![];
 
-        let bins = compute_ae_categorical(&factor, &y, &mu, None, "gaussian", None, None, 5.0, 10);
+        let bins = compute_ae_categorical(
+            &factor, &y, &mu, None, "gaussian", None, None, 5.0, 10, None, None,
+        );
 
         assert_eq!(bins.len(), 0);
     }
@@ -1875,7 +1952,9 @@ mod tests {
         let mu = Array1::from_vec(vec![1.0; n]);
 
         // Rare threshold 5%, max 3 levels
-        let bins = compute_ae_categorical(&factor, &y, &mu, None, "gaussian", None, None, 5.0, 3);
+        let bins = compute_ae_categorical(
+            &factor, &y, &mu, None, "gaussian", None, None, 5.0, 3, None, None,
+        );
 
         // Should have A, B, and "_Other" (C+D grouped)
         assert!(bins.len() <= 3);
@@ -2463,7 +2542,8 @@ mod tests {
         let y = Array1::from_vec(vec![1.0; 20]);
         let mu = Array1::from_vec(vec![1.0; 20]);
 
-        let bins = compute_ae_continuous(&factor, &y, &mu, None, "poisson", 4, None, None);
+        let bins =
+            compute_ae_continuous(&factor, &y, &mu, None, "poisson", 4, None, None, None, None);
 
         for bin in &bins {
             // 5 obs each => actual_sum=5, predicted_sum=5, A/E=1.0.

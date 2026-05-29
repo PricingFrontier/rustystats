@@ -38,8 +38,13 @@ from rustystats.diagnostics.pair_diagnostics import (
     _compute_block_gvif,
 )
 from rustystats.diagnostics.types import (
+    BasePredictionsByRole,
+    EncodingDiagnostics,
     FactorBinPair,
+    FactorCoefficient,
     FactorLevelMetrics,
+    FactorSignificance,
+    InteractionBlockDiagnostics,
     InteractionDiagnostics,
     ModelDiagnostics,
     SmoothTermDiagnostics,
@@ -736,6 +741,7 @@ def _build_train_test_comparison(
     test_exposure: np.ndarray | None = None,
     test_mu_sort_idx: np.ndarray | None = None,
     test_weights: np.ndarray | None = None,
+    test_base_mu: np.ndarray | None = None,
     ranking: str = "auto",
 ) -> TrainTestComparison:
     """Assemble the train/test comparison; populate test_diag and overfitting flags when test_data is supplied."""
@@ -789,6 +795,7 @@ def _build_train_test_comparison(
         cat_unique_cache=cat_unique_cache_test,
         sort_idx=test_mu_sort_idx,
         weights=test_weights,
+        base_mu=test_base_mu,
     )
 
     # Compute comparison metrics
@@ -954,28 +961,192 @@ def _compute_smooth_diagnostics(result: Any, warnings: list) -> Any:
     return None
 
 
-def _compute_base_comparison(
-    base_predictions: str | None,
+def _level_set(data: pl.DataFrame | None, factors: list[str]) -> set[str]:
+    """Return observed level keys for one categorical factor or encoded interaction."""
+    if data is None or not factors or any(f not in data.columns for f in factors):
+        return set()
+    if len(factors) == 1:
+        return set(str(v) for v in data[factors[0]].cast(pl.Utf8).unique().to_list())
+    return set(
+        data.select(
+            pl.concat_str([pl.col(f).cast(pl.Utf8) for f in factors], separator=":").alias("_level")
+        )
+        .get_column("_level")
+        .unique()
+        .to_list()
+    )
+
+
+def _encoding_kind_from_slot(slot: Any) -> str:
+    if slot.term_type in {"categorical", "categorical_indicator"}:
+        return "categorical"
+    if slot.term_type == "target_encoding":
+        return "target_encoding"
+    if slot.term_type == "frequency_encoding":
+        return "frequency_encoding"
+    return "unknown"
+
+
+def _maybe_grouped_kind(name: str, kind: str, notes: list[str]) -> str:
+    grouped_suffixes = ("_grp", "_group", "_grouped", "_band", "_bucket")
+    if kind in {"categorical", "unknown"} and name.endswith(grouped_suffixes):
+        notes.append("kind='grouped_categorical' is inferred from the column name suffix only.")
+        return "grouped_categorical"
+    return kind
+
+
+def _compute_encoding_diagnostics(
+    result: Any,
     train_data: pl.DataFrame,
+    test_data: pl.DataFrame | None,
+    categorical_factors: list[str],
+) -> list[EncodingDiagnostics] | None:
+    """Expose fitted categorical/encoding representation without report opinions."""
+    builder = getattr(result, "_builder", None)
+    slots = getattr(builder, "_term_slots", None) if builder is not None else None
+    entries: list[EncodingDiagnostics] = []
+    seen: set[str] = set()
+
+    if slots is not None:
+        for slot in slots:
+            if slot.term_type not in {
+                "categorical",
+                "categorical_indicator",
+                "target_encoding",
+                "frequency_encoding",
+            }:
+                continue
+            source_factors = list(getattr(slot, "factors", []) or [])
+            name = str(getattr(slot, "term_name", "") or ":".join(source_factors))
+            notes: list[str] = []
+            kind = _maybe_grouped_kind(name, _encoding_kind_from_slot(slot), notes)
+            train_levels = _level_set(train_data, source_factors)
+            test_levels = _level_set(test_data, source_factors)
+            entries.append(
+                EncodingDiagnostics(
+                    name=name,
+                    kind=kind,
+                    in_model=True,
+                    n_levels_train=len(train_levels) if train_levels else None,
+                    n_levels_test=len(test_levels) if test_levels else None,
+                    unseen_levels_test=len(test_levels - train_levels)
+                    if test_levels and train_levels
+                    else None,
+                    interaction_order=max(1, len(source_factors)),
+                    source_factors=source_factors,
+                    feature_names=list(getattr(slot, "design_column_names", []) or []),
+                    notes=notes,
+                )
+            )
+            seen.add(name)
+            seen.update(source_factors)
+
+    for factor in categorical_factors:
+        if factor in seen:
+            continue
+        notes = []
+        kind = _maybe_grouped_kind(factor, "unknown", notes)
+        train_levels = _level_set(train_data, [factor])
+        test_levels = _level_set(test_data, [factor])
+        entries.append(
+            EncodingDiagnostics(
+                name=factor,
+                kind=kind,
+                in_model=False,
+                n_levels_train=len(train_levels) if train_levels else None,
+                n_levels_test=len(test_levels) if test_levels else None,
+                unseen_levels_test=len(test_levels - train_levels)
+                if test_levels and train_levels
+                else None,
+                source_factors=[factor],
+                notes=notes,
+            )
+        )
+
+    return entries or None
+
+
+def _resolve_base_predictions_column(
+    base_predictions: str | dict[str, str] | None,
+    role: str,
+) -> str | None:
+    """Resolve a base/benchmark prediction column for a dataset role."""
+    if base_predictions is None:
+        return None
+    if isinstance(base_predictions, str):
+        return base_predictions
+    if isinstance(base_predictions, dict):
+        value = base_predictions.get(role)
+        return str(value) if value is not None else None
+    raise ValidationError(
+        "base_predictions must be a column name or a {'train': ..., 'test': ...} mapping."
+    )
+
+
+def _extract_base_predictions_array(
+    base_predictions: str | dict[str, str] | None,
+    role: str,
+    data: pl.DataFrame | None,
+    expected_len: int | None,
+    warnings: list[dict[str, str]],
+    required: bool,
+) -> np.ndarray | None:
+    """Extract response-scale benchmark predictions for one dataset role."""
+    if base_predictions is None or data is None:
+        return None
+    column = _resolve_base_predictions_column(base_predictions, role)
+    if column is None:
+        return None
+    if column not in data.columns:
+        message = f"base_predictions column '{column}' not found in {role}_data"
+        if required:
+            raise ValidationError(message)
+        warnings.append(
+            {
+                "type": "base_predictions_unavailable",
+                "message": f"{message}; leaving {role}-side base comparison empty.",
+            }
+        )
+        return None
+    values = data[column].to_numpy().astype(np.float64)
+    if expected_len is not None and values.shape[0] != expected_len:
+        raise ValidationError(
+            f"base_predictions column '{column}' in {role}_data has {values.shape[0]} "
+            f"rows but expected {expected_len}."
+        )
+    return values
+
+
+def _compute_base_comparison_for_role(
+    mu_base: np.ndarray | None,
+    role: str,
     computer: DiagnosticsComputer,
     y: np.ndarray,
     mu: np.ndarray,
+    exposure: np.ndarray,
+    weights: np.ndarray | None,
     warnings: list,
+    ranking: str,
+    required: bool,
+    emit_performance_warning: bool = False,
 ) -> Any:
     """Compute base predictions comparison (model vs. another set of predictions)."""
-    if base_predictions is None:
+    if mu_base is None:
         return None
-    if base_predictions not in train_data.columns:
+    if mu_base.shape[0] != y.shape[0]:
         raise ValidationError(
-            f"base_predictions column '{base_predictions}' not found in train_data"
+            f"{role}-side base_predictions has {mu_base.shape[0]} rows but expected {y.shape[0]}."
         )
-    mu_base = train_data[base_predictions].to_numpy().astype(np.float64)
     base_predictions_comparison = computer.compute_base_predictions_comparison(
         y=y,
         mu_model=mu,
         mu_base=mu_base,
-        exposure=computer.exposure,
+        exposure=exposure,
+        weights=weights,
+        ranking=ranking,
     )
+    if not emit_performance_warning:
+        return base_predictions_comparison
     if base_predictions_comparison.loss_improvement_pct > 0:
         warnings.append(
             {
@@ -995,6 +1166,81 @@ def _compute_base_comparison(
     return base_predictions_comparison
 
 
+def _compute_base_predictions_by_role(
+    base_predictions: str | dict[str, str] | None,
+    train_data: pl.DataFrame,
+    test_data: pl.DataFrame | None,
+    computer: DiagnosticsComputer,
+    train_base_mu: np.ndarray | None,
+    test_base_mu: np.ndarray | None,
+    train_y: np.ndarray,
+    train_mu: np.ndarray,
+    train_exposure: np.ndarray,
+    train_weights: np.ndarray | None,
+    test_y: np.ndarray | None,
+    test_mu: np.ndarray | None,
+    test_exposure: np.ndarray | None,
+    test_weights: np.ndarray | None,
+    warnings: list,
+    ranking: str,
+) -> BasePredictionsByRole | None:
+    """Compute base/benchmark prediction comparisons for train and optional test roles."""
+    if base_predictions is None:
+        return None
+
+    train_col = _resolve_base_predictions_column(base_predictions, "train")
+    if train_col is None:
+        raise ValidationError("base_predictions mapping must include a 'train' column.")
+
+    train_comparison = _compute_base_comparison_for_role(
+        mu_base=train_base_mu,
+        role="train",
+        computer=computer,
+        y=train_y,
+        mu=train_mu,
+        exposure=train_exposure,
+        weights=train_weights,
+        warnings=warnings,
+        ranking=ranking,
+        required=True,
+        emit_performance_warning=True,
+    )
+
+    test_comparison = None
+    if (
+        test_data is not None
+        and test_y is not None
+        and test_mu is not None
+        and test_exposure is not None
+    ):
+        # String input means "same column on both roles"; a dict without a
+        # "test" key means the caller intentionally provided train-only base
+        # data. Either way a named-but-missing test column has already produced
+        # a "base_predictions_unavailable" warning (and a None ``test_base_mu``)
+        # in ``_extract_base_predictions_array``, so this is best-effort.
+        test_col = _resolve_base_predictions_column(base_predictions, "test")
+        if test_col is not None:
+            test_comparison = _compute_base_comparison_for_role(
+                mu_base=test_base_mu,
+                role="test",
+                computer=computer,
+                y=test_y,
+                mu=test_mu,
+                exposure=test_exposure,
+                weights=test_weights,
+                warnings=warnings,
+                ranking=ranking,
+                required=False,
+            )
+
+    return BasePredictionsByRole(
+        train=train_comparison,
+        test=test_comparison,
+        ranking=ranking,
+        prediction_basis="response",
+    )
+
+
 # TermSlot term_type values that represent a *main effect* on a single
 # variable (not an interaction). A factor's design-column range comes from
 # the slot matching ``len(slot.factors) == 1``.
@@ -1008,6 +1254,18 @@ _MAIN_EFFECT_TERM_TYPES: frozenset[str] = frozenset(
         "expression",
         "target_encoding",
         "frequency_encoding",
+    }
+)
+
+_INTERACTION_SPEC_RESERVED_KEYS: frozenset[str] = frozenset(
+    {
+        "factor1",
+        "factor2",
+        "factor3",
+        "include_main",
+        "target_encoding",
+        "frequency_encoding",
+        "prior_weight",
     }
 )
 
@@ -1030,6 +1288,185 @@ def _find_main_effect_slot(model: Any, factor_name: str) -> Any | None:
     return None
 
 
+def _extract_interaction_spec_factors(spec: Any) -> list[str]:
+    """Extract raw factor names from pair or higher-order interaction specs."""
+    if isinstance(spec, dict):
+        ordered = [
+            str(spec[k])
+            for k in ("factor1", "factor2", "factor3")
+            if k in spec and spec[k] is not None
+        ]
+        if ordered:
+            return ordered
+        return [str(k) for k in spec if k not in _INTERACTION_SPEC_RESERVED_KEYS]
+    if isinstance(spec, (tuple, list)):
+        return [str(v) for v in spec]
+    return []
+
+
+def _split_interaction_specs(interactions: list[Any] | None) -> tuple[list[Any], list[list[str]]]:
+    """Split user-specified interactions into legacy pairs and block requests."""
+    pairs: list[Any] = []
+    blocks: list[list[str]] = []
+    for spec in interactions or []:
+        factors = _extract_interaction_spec_factors(spec)
+        if len(factors) == 2:
+            pairs.append(spec)
+        elif len(factors) > 2:
+            blocks.append(factors)
+        else:
+            pairs.append(spec)
+    return pairs, blocks
+
+
+def _find_interaction_slot(model: Any, factors: list[str]) -> Any | None:
+    builder = getattr(model, "_builder", None)
+    slots = getattr(builder, "_term_slots", None) if builder is not None else None
+    if slots is None:
+        return None
+    target = frozenset(factors)
+    for slot in slots:
+        if slot.term_type not in {"interaction", "target_encoding", "frequency_encoding"}:
+            continue
+        if len(slot.factors) == len(factors) and frozenset(slot.factors) == target:
+            return slot
+    return None
+
+
+def _interaction_representation(slot: Any | None) -> str | None:
+    if slot is None:
+        return None
+    if slot.term_type == "interaction":
+        return "tensor_product"
+    if slot.term_type == "target_encoding":
+        return "target_encoding"
+    if slot.term_type == "frequency_encoding":
+        return "frequency_encoding"
+    return "unknown"
+
+
+def _coefficients_for_slot(model: Any, slot: Any) -> list[FactorCoefficient] | None:
+    try:
+        params = np.asarray(model.params, dtype=np.float64)
+        bse_attr = model.bse
+        bse = np.asarray(bse_attr() if callable(bse_attr) else bse_attr, dtype=np.float64)
+        pvalues = None
+        if hasattr(model, "pvalues"):
+            pv_attr = model.pvalues
+            pvalues = np.asarray(pv_attr() if callable(pv_attr) else pv_attr, dtype=np.float64)
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+    coefficients: list[FactorCoefficient] = []
+    for idx in range(slot.col_start, slot.col_end):
+        coef = float(params[idx])
+        se = float(bse[idx]) if idx < len(bse) else 0.0
+        z_val = coef / se if se > 0 else 0.0
+        p_val = float(pvalues[idx]) if pvalues is not None and idx < len(pvalues) else 0.0
+        term = (
+            slot.design_column_names[idx - slot.col_start]
+            if idx - slot.col_start < len(slot.design_column_names)
+            else f"{slot.term_name}[{idx - slot.col_start}]"
+        )
+        coefficients.append(
+            FactorCoefficient(
+                term=term,
+                estimate=round(coef, 6),
+                std_error=round(se, 6),
+                z_value=round(z_val, 3),
+                p_value=round(p_val, 4),
+                relativity=None,
+            )
+        )
+    return coefficients or None
+
+
+def _significance_for_slot(
+    model: Any, slot: Any, bread_matrix: np.ndarray | None
+) -> FactorSignificance | None:
+    try:
+        params = np.asarray(model.params, dtype=np.float64)
+        bse_attr = model.bse
+        bse = np.asarray(bse_attr() if callable(bse_attr) else bse_attr, dtype=np.float64)
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+    idx = np.arange(slot.col_start, slot.col_end)
+    if idx.size == 0:
+        return None
+    beta = params[idx]
+    try:
+        if bread_matrix is not None and idx.size > 1:
+            bread_sub = bread_matrix[np.ix_(idx, idx)]
+            scale = 1.0
+            for i in idx:
+                if bread_matrix[i, i] > 0 and bse[i] > 0:
+                    scale = (bse[i] ** 2) / bread_matrix[i, i]
+                    break
+            cov_inv = np.linalg.pinv(scale * bread_sub)
+            chi2 = float(beta @ cov_inv @ beta)
+        else:
+            chi2 = float(
+                np.sum(np.divide(beta, bse[idx], out=np.zeros_like(beta), where=bse[idx] > 0) ** 2)
+            )
+    except (ValueError, RuntimeError, np.linalg.LinAlgError):
+        return None
+    pvalue = 1.0 - _chi2_cdf(chi2, float(idx.size))
+    return FactorSignificance(chi2=round(chi2, 2), p=round(pvalue, 4), dev_contrib=round(chi2, 2))
+
+
+def _compute_interaction_block_diagnostics(
+    block_specs: list[list[str]],
+    model: Any,
+    bread_matrix: np.ndarray | None,
+    correlation_matrix: np.ndarray | None,
+    warnings: list[dict[str, str]],
+) -> list[InteractionBlockDiagnostics]:
+    blocks: list[InteractionBlockDiagnostics] = []
+    for factors in block_specs:
+        name = ":".join(factors)
+        slot = _find_interaction_slot(model, factors)
+        if slot is None:
+            warnings.append(
+                {
+                    "type": "interaction_score_test_unavailable",
+                    "message": (
+                        f"Score test for higher-order interaction '{name}' is not available "
+                        "without safely materializing the expanded design block."
+                    ),
+                }
+            )
+            blocks.append(
+                InteractionBlockDiagnostics(
+                    name=name,
+                    factors=factors,
+                    order=len(factors),
+                    in_model=False,
+                    representation=None,
+                )
+            )
+            continue
+
+        gvif = (
+            _compute_block_gvif(correlation_matrix, slot.col_start, slot.col_end)
+            if correlation_matrix is not None and slot.col_end > slot.col_start
+            else None
+        )
+        blocks.append(
+            InteractionBlockDiagnostics(
+                name=name,
+                factors=list(slot.factors),
+                order=len(slot.factors),
+                in_model=True,
+                representation=_interaction_representation(slot),
+                coefficients=_coefficients_for_slot(model, slot),
+                significance=_significance_for_slot(model, slot, bread_matrix),
+                gvif=gvif,
+            )
+        )
+    return blocks
+
+
 def _build_factor_bin_pairs(
     factor_name: str,
     factor_type: str,
@@ -1039,6 +1476,8 @@ def _build_factor_bin_pairs(
     test_y: np.ndarray | None = None,
     test_mu: np.ndarray | None = None,
     test_exposure: np.ndarray | None = None,
+    test_weights: np.ndarray | None = None,
+    test_base_mu: np.ndarray | None = None,
 ) -> list[FactorBinPair] | None:
     """Construct ``train_test_bins`` for a factor by joining the per-bin
     metrics that already exist on the train and test ``DatasetDiagnostics``.
@@ -1071,6 +1510,24 @@ def _build_factor_bin_pairs(
                     test_ae_ratio=(
                         float(te.ae_ratio) if te is not None and te.ae_ratio is not None else None
                     ),
+                    train_actual_total=getattr(tb, "actual_total", None),
+                    train_predicted_total=getattr(tb, "predicted_total", None),
+                    train_base_predicted=getattr(tb, "base_predicted", None),
+                    train_base_predicted_total=getattr(tb, "base_predicted_total", None),
+                    train_base_ae_ratio=getattr(tb, "base_ae_ratio", None),
+                    test_actual_total=getattr(te, "actual_total", None) if te is not None else None,
+                    test_predicted_total=(
+                        getattr(te, "predicted_total", None) if te is not None else None
+                    ),
+                    test_base_predicted=(
+                        getattr(te, "base_predicted", None) if te is not None else None
+                    ),
+                    test_base_predicted_total=(
+                        getattr(te, "base_predicted_total", None) if te is not None else None
+                    ),
+                    test_base_ae_ratio=(
+                        getattr(te, "base_ae_ratio", None) if te is not None else None
+                    ),
                 )
             )
         return pairs or None
@@ -1094,6 +1551,8 @@ def _build_factor_bin_pairs(
             test_y,
             test_mu,
             test_exposure,
+            test_weights=test_weights,
+            test_base_mu=test_base_mu,
         )
     test_by_band: dict[int, Any] = {b.band: b for b in test_bands}
     pairs2: list[FactorBinPair] = []
@@ -1115,6 +1574,22 @@ def _build_factor_bin_pairs(
                 test_ae_ratio=(
                     float(te.ae_ratio) if te is not None and te.ae_ratio is not None else None
                 ),
+                train_actual_total=getattr(tb, "actual_total", None),
+                train_predicted_total=getattr(tb, "predicted_total", None),
+                train_base_predicted=getattr(tb, "base_predicted", None),
+                train_base_predicted_total=getattr(tb, "base_predicted_total", None),
+                train_base_ae_ratio=getattr(tb, "base_ae_ratio", None),
+                test_actual_total=getattr(te, "actual_total", None) if te is not None else None,
+                test_predicted_total=(
+                    getattr(te, "predicted_total", None) if te is not None else None
+                ),
+                test_base_predicted=(
+                    getattr(te, "base_predicted", None) if te is not None else None
+                ),
+                test_base_predicted_total=(
+                    getattr(te, "base_predicted_total", None) if te is not None else None
+                ),
+                test_base_ae_ratio=(getattr(te, "base_ae_ratio", None) if te is not None else None),
             )
         )
     return pairs2 or None
@@ -1127,6 +1602,8 @@ def _build_continuous_train_test_bin_pairs(
     test_y: np.ndarray,
     test_mu: np.ndarray,
     test_exposure: np.ndarray,
+    test_weights: np.ndarray | None = None,
+    test_base_mu: np.ndarray | None = None,
 ) -> list[FactorBinPair] | None:
     """Join continuous train bands to test aggregates using train band edges."""
     if not train_bands:
@@ -1148,9 +1625,21 @@ def _build_continuous_train_test_bin_pairs(
     safe_idx = np.where(valid, bin_idx, n_bins)
 
     counts = np.bincount(safe_idx, minlength=n_bins + 1)[:n_bins]
-    exp_sums = np.bincount(safe_idx, weights=test_exposure, minlength=n_bins + 1)[:n_bins]
-    y_sums = np.bincount(safe_idx, weights=test_y, minlength=n_bins + 1)[:n_bins]
-    mu_sums = np.bincount(safe_idx, weights=test_mu, minlength=n_bins + 1)[:n_bins]
+    weights_arr = (
+        np.ones_like(test_y, dtype=np.float64)
+        if test_weights is None
+        else np.asarray(test_weights, dtype=np.float64)
+    )
+    exp_sums = np.bincount(safe_idx, weights=weights_arr * test_exposure, minlength=n_bins + 1)[
+        :n_bins
+    ]
+    y_sums = np.bincount(safe_idx, weights=weights_arr * test_y, minlength=n_bins + 1)[:n_bins]
+    mu_sums = np.bincount(safe_idx, weights=weights_arr * test_mu, minlength=n_bins + 1)[:n_bins]
+    base_sums = (
+        np.bincount(safe_idx, weights=weights_arr * test_base_mu, minlength=n_bins + 1)[:n_bins]
+        if test_base_mu is not None
+        else None
+    )
 
     pairs: list[FactorBinPair] = []
     for i, tb in enumerate(ordered_bands):
@@ -1160,10 +1649,22 @@ def _build_continuous_train_test_bin_pairs(
             test_actual = float(y_sums[i] / test_exp)
             test_predicted = float(mu_sums[i] / test_exp)
             test_ae_ratio = float(y_sums[i] / mu_sums[i]) if mu_sums[i] > 0.0 else None
+            test_base_total = float(base_sums[i]) if base_sums is not None else None
+            test_base_predicted = (
+                test_base_total / test_exp if test_base_total is not None else None
+            )
+            test_base_ae_ratio = (
+                float(y_sums[i] / test_base_total)
+                if test_base_total is not None and test_base_total > 0.0
+                else None
+            )
         else:
             test_actual = None
             test_predicted = None
             test_ae_ratio = None
+            test_base_total = None
+            test_base_predicted = None
+            test_base_ae_ratio = None
 
         pairs.append(
             FactorBinPair(
@@ -1178,6 +1679,16 @@ def _build_continuous_train_test_bin_pairs(
                 test_actual=test_actual,
                 test_predicted=test_predicted,
                 test_ae_ratio=test_ae_ratio,
+                train_actual_total=getattr(tb, "actual_total", None),
+                train_predicted_total=getattr(tb, "predicted_total", None),
+                train_base_predicted=getattr(tb, "base_predicted", None),
+                train_base_predicted_total=getattr(tb, "base_predicted_total", None),
+                train_base_ae_ratio=getattr(tb, "base_ae_ratio", None),
+                test_actual_total=float(y_sums[i]) if test_n > 0 else None,
+                test_predicted_total=float(mu_sums[i]) if test_n > 0 else None,
+                test_base_predicted=test_base_predicted,
+                test_base_predicted_total=test_base_total,
+                test_base_ae_ratio=test_base_ae_ratio,
             )
         )
     return pairs or None
@@ -1193,6 +1704,8 @@ def _annotate_factor_extensions(
     test_y: np.ndarray | None = None,
     test_mu: np.ndarray | None = None,
     test_exposure: np.ndarray | None = None,
+    test_weights: np.ndarray | None = None,
+    test_base_mu: np.ndarray | None = None,
 ) -> None:
     """Populate ``gvif`` and ``train_test_bins`` on each ``FactorDiagnostics``
     in place. Both are no-refit and reuse data that's already in flight.
@@ -1223,6 +1736,8 @@ def _annotate_factor_extensions(
                 test_y=test_y,
                 test_mu=test_mu,
                 test_exposure=test_exposure,
+                test_weights=test_weights,
+                test_base_mu=test_base_mu,
             )
 
 
@@ -1420,8 +1935,9 @@ def compute_diagnostics(
     compute_robust_se: bool = True,
     # Score tests on unfitted factors
     compute_score_tests: bool = True,
-    # Base predictions comparison (column name in train_data with predictions from another model)
-    base_predictions: str | None = None,
+    # Base/benchmark predictions comparison. String = same column name on
+    # train/test; mapping = role-specific columns.
+    base_predictions: str | dict[str, str] | None = None,
     ranking: str = "auto",
     exposure: str | np.ndarray | None = None,
     weights: str | np.ndarray | None = None,
@@ -1480,9 +1996,11 @@ def compute_diagnostics(
         Whether to compute partial dependence plots.
     compute_score_tests : bool, default=True
         Whether to compute Rao score tests for unfitted factors. Default True.
-    base_predictions : str, optional
-        Column name in train_data containing predictions from another model
-        (e.g., a base/benchmark model). When provided, computes:
+    base_predictions : str or dict, optional
+        Column name containing response-scale predictions from another model
+        (for example a GBM teacher or incumbent production model), or a mapping
+        like ``{"train": "gbm_oof_mu", "test": "gbm_test_mu"}``. When provided,
+        computes:
         - A/E ratio, loss, Gini for base predictions
         - Model vs base decile analysis sorted by model/base ratio
         - Summary of which model performs better in each decile
@@ -1505,11 +2023,12 @@ def compute_diagnostics(
             - overfitting_risk: True if gini_gap > 0.03
             - calibration_drift: True if test A/E outside [0.95, 1.05]
             - unstable_factors: Factors where train/test A/E differ by > 0.1
-        - base_predictions_comparison: Comparison against base predictions (if provided)
+        - base_predictions_by_role: Train/test base comparisons when available
+          (the train-side comparison is ``base_predictions_by_role.train``)
 
     Examples
     --------
-    >>> result = rs.glm_dict(response="ClaimNb", terms={"Age": {"type": "linear"}, "Region": {"type": "categorical"}}, data=data, family="poisson", offset="Exposure").fit()
+    >>> result = rs.glm_dict(response="ClaimNb", terms={"Age": {"type": "linear"}, "Region": {"type": "categorical"}}, data=data, family="poisson", exposure="Exposure").fit()
     >>> diagnostics = result.diagnostics(
     ...     train_data=train_data,
     ...     test_data=test_data,
@@ -1535,6 +2054,23 @@ def compute_diagnostics(
     var_power, theta = _parse_family_params(family)
     null_deviance = _resolve_null_deviance(result)
     weights_arr = _resolve_weights(result, train_data, weights)
+    warnings: list[dict[str, str]] = []
+    base_train_mu = _extract_base_predictions_array(
+        base_predictions,
+        role="train",
+        data=train_data,
+        expected_len=train_data.height,
+        warnings=warnings,
+        required=base_predictions is not None,
+    )
+    base_test_mu = _extract_base_predictions_array(
+        base_predictions,
+        role="test",
+        data=test_data,
+        expected_len=test_data.height if test_data is not None else None,
+        warnings=warnings,
+        required=False,
+    )
 
     # 2. Build computer
     computer = DiagnosticsComputer(
@@ -1550,6 +2086,7 @@ def compute_diagnostics(
         theta=theta,
         null_deviance=null_deviance,
         weights=weights_arr,
+        base_mu=base_train_mu,
     )
 
     # Pre-compute the rank index once. compute_lift_chart and
@@ -1617,18 +2154,21 @@ def compute_diagnostics(
         cat_unique_cache=cat_unique_cache_train,
         sort_idx=mu_sort_idx,
         weights=weights_arr,
+        base_mu=base_train_mu,
     )
 
     # Generate warnings (use train_diag for fit stats)
-    warnings = computer.generate_warnings(
-        {
-            "deviance": train_diag.deviance,
-            "aic": train_diag.aic,
-            "log_likelihood": train_diag.log_likelihood,
-        },
-        calibration,
-        factors,
-        family=family,
+    warnings.extend(
+        computer.generate_warnings(
+            {
+                "deviance": train_diag.deviance,
+                "aic": train_diag.aic,
+                "log_likelihood": train_diag.log_likelihood,
+            },
+            calibration,
+            factors,
+            family=family,
+        )
     )
 
     # 5. Optional enhanced diagnostics for agentic workflows
@@ -1686,8 +2226,11 @@ def compute_diagnostics(
         test_exposure=test_exposure_arr,
         test_mu_sort_idx=test_mu_sort_idx,
         test_weights=test_weights_arr,
+        test_base_mu=base_test_mu,
         ranking=ranking,
     )
+
+    pair_interactions, block_interactions = _split_interaction_specs(interactions)
 
     # 6b. Pre-build the regularized design correlation matrix ONCE per
     # diagnostics call. Both the per-factor GVIF (step 6d) and the
@@ -1696,17 +2239,19 @@ def compute_diagnostics(
     # it per factor and per interaction. Uses the same Rust path as the
     # existing per-column VIF computation (compute_correlation_and_vif).
     block_gvif_correlation: np.ndarray | None = None
-    if score_test_design_matrix is not None and (interactions or any(f.in_model for f in factors)):
+    if score_test_design_matrix is not None and (
+        pair_interactions or block_interactions or any(f.in_model for f in factors)
+    ):
         block_gvif_correlation = _build_design_correlation_matrix(score_test_design_matrix)
 
     # 6c. User-specified pair (interaction) diagnostics. Only fires when the
     # caller passed ``interactions=[...]``. Independent of the auto-detector
     # at step 5 (interaction_candidates), which keeps populating itself.
     interaction_diagnostics: list[InteractionDiagnostics] = []
-    if interactions:
+    if pair_interactions:
         interaction_diagnostics = _compute_pair_diagnostics(
             computer=computer,
-            interactions=interactions,
+            interactions=pair_interactions,
             train_data=train_data,
             result=result,
             response_col=response_col,
@@ -1720,6 +2265,13 @@ def compute_diagnostics(
             test_mu=test_mu_arr,
             test_exposure=test_exposure_arr,
         )
+    interaction_blocks = _compute_interaction_block_diagnostics(
+        block_specs=block_interactions,
+        model=result,
+        bread_matrix=score_test_bread_matrix,
+        correlation_matrix=block_gvif_correlation,
+        warnings=warnings,
+    )
 
     # 6d. Factor extensions: block GVIF (when fitted) and train/test bin
     # pairs (when test_data is supplied). Both are post-processing — no
@@ -1734,14 +2286,37 @@ def compute_diagnostics(
         test_y=test_y_arr,
         test_mu=test_mu_arr,
         test_exposure=test_exposure_arr,
+        test_weights=test_weights_arr,
+        test_base_mu=base_test_mu,
     )
 
     # 7. Auxiliary diagnostics
     overdispersion_result = _compute_overdispersion(family, result, computer, y, warnings)
     spline_info = _extract_spline_info(result)
     smooth_term_diagnostics = _compute_smooth_diagnostics(result, warnings)
-    base_predictions_comparison = _compute_base_comparison(
-        base_predictions, train_data, computer, y, mu, warnings
+    encoding_diagnostics = _compute_encoding_diagnostics(
+        result,
+        train_data,
+        test_data,
+        categorical_factors,
+    )
+    base_predictions_by_role = _compute_base_predictions_by_role(
+        base_predictions=base_predictions,
+        train_data=train_data,
+        test_data=test_data,
+        computer=computer,
+        train_base_mu=base_train_mu,
+        test_base_mu=base_test_mu,
+        train_y=y,
+        train_mu=mu,
+        train_exposure=computer.exposure,
+        train_weights=weights_arr,
+        test_y=test_y_arr,
+        test_mu=test_mu_arr,
+        test_exposure=test_exposure_arr,
+        test_weights=test_weights_arr,
+        warnings=warnings,
+        ranking=ranking,
     )
 
     # 8. Final assembly: relative importance + model summary, build diagnostics, save
@@ -1767,7 +2342,9 @@ def compute_diagnostics(
         overdispersion=overdispersion_result,
         spline_info=spline_info,
         smooth_terms=smooth_term_diagnostics,
-        base_predictions_comparison=base_predictions_comparison,
+        base_predictions_by_role=base_predictions_by_role,
+        encoding_diagnostics=encoding_diagnostics,
+        interaction_blocks=interaction_blocks,
         interactions=interaction_diagnostics,
     )
 

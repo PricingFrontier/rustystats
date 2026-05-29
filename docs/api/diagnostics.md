@@ -29,6 +29,7 @@ diagnostics = result.diagnostics(
     base_predictions=None,
     ranking="auto",
     exposure=None,
+    weights=None,
 )
 ```
 
@@ -51,7 +52,7 @@ call.
 | `max_categorical_levels` | int | `20` | Maximum categorical levels to show |
 | `detect_interactions` | bool | `False` | Run residual-based interaction detection |
 | `max_interaction_factors` | int | `10` | Max factors for interaction search |
-| `interactions` | list | `None` | Explicit factor pairs for per-pair surface diagnostics |
+| `interactions` | list | `None` | Explicit factor pairs for per-pair surface diagnostics. Length-3+ entries return block diagnostics rather than surfaces. |
 | `test_data` | `pl.DataFrame` | `None` | Holdout data for overfitting checks |
 | `compute_vif` | bool | `True` | Compute VIF / multicollinearity scores |
 | `compute_coefficients` | bool | `True` | Compute coefficient summary |
@@ -60,9 +61,16 @@ call.
 | `compute_partial_dep` | bool | `True` | Partial dependence per variable |
 | `compute_robust_se` | bool | `True` | Enrich coefficient summary with HC1 robust SEs |
 | `compute_score_tests` | bool | `True` | Rao score tests for unfitted factors |
-| `base_predictions` | str | `None` | Column in `train_data` with predictions from another model |
+| `base_predictions` | str or dict | `None` | Column with response-scale benchmark predictions, or `{"train": "...", "test": "..."}` for role-specific columns |
 | `ranking` | str | `"auto"` | Decile/lift ranking mode. `"auto"` ranks by predicted rate when an exposure is in scope, otherwise by the raw mean prediction. `"mean"` and `"rate"` force the corresponding mode. |
 | `exposure` | str or array | `None` | Override exposure for diagnostics. Required for models fit with array exposure after serialization, because the array is not embedded in the model state. |
+| `weights` | str or array | `None` | Prior weights for diagnostics aggregates. Exposure remains the rate denominator; weights multiply actual, expected, benchmark predictions, and exposure totals. |
+
+`base_predictions` are generic base/benchmark/reference predictions. They may
+come from a GBM teacher, an incumbent production model, a manual tariff, or any
+other external model. They must be on the response scale: for frequency models
+with exposure, pass expected claim counts per row, not claim frequencies and not
+link-scale values.
 
 ### Returns
 
@@ -101,7 +109,9 @@ fitted model and `train_data`; optional fields are populated according to the
 | `partial_dependence` | `list[PartialDependence]` \| `None` | `compute_partial_dep=True` and factors provided |
 | `overdispersion` | `dict` \| `None` | Family is Poisson / Binomial / NegativeBinomial |
 | `spline_info` | `dict` \| `None` | Model has spline terms with knot info |
-| `base_predictions_comparison` | `BasePredictionsComparison` \| `None` | `base_predictions` column provided |
+| `base_predictions_by_role` | `BasePredictionsByRole` \| `None` | `base_predictions` provided; `.train` (and optional `.test`) hold the per-role comparison |
+| `encoding_diagnostics` | `list[EncodingDiagnostics]` \| `None` | Categorical, target-encoding, frequency-encoding, and grouped-column representation metadata |
+| `interaction_blocks` | `list[InteractionBlockDiagnostics]` | Higher-order `interactions=[...]` block diagnostics |
 
 ### model_summary
 
@@ -193,6 +203,13 @@ for f in diagnostics.factors:
         print(f.relative_importance, "% of fitted dev contribution")
     for bin_ in f.actual_vs_expected:            # ActualExpectedBin
         print(bin_.bin, bin_.actual, bin_.expected, bin_.ae_ratio, bin_.ae_ci)
+        # Totals and base overlay are populated when available:
+        # bin_.actual_total, bin_.expected_total
+        # bin_.base_expected, bin_.base_expected_total, bin_.base_ae_ratio
+
+    if f.train_test_bins:
+        first = f.train_test_bins[0]
+        print(first.train_base_predicted, first.test_base_predicted)
 ```
 
 ### lift_chart
@@ -215,11 +232,42 @@ for pd in diagnostics.partial_dependence:    # PartialDependence
     print(pd.variable, pd.variable_type, pd.shape)
     print(pd.recommendation)
     # pd.grid_values, pd.predictions, pd.relativities
+    # pd.term_type, pd.knots, pd.boundary_knots, pd.monotonicity
 ```
 
 `shape` is one of `"flat"`, `"monotonic"`, `"u_shaped"`, `"inverted_u"`,
 `"complex"`. Recommendations such as "consider a spline" trigger a warning
 in `diagnostics.warnings`.
+
+### base_predictions_by_role
+
+```python
+diagnostics = result.diagnostics(
+    train_data=train.with_columns(pl.Series("gbm_mu", gbm_train_mu)),
+    test_data=test.with_columns(pl.Series("gbm_mu", gbm_test_mu)),
+    categorical_factors=["Region"],
+    continuous_factors=["DrivAge"],
+    base_predictions="gbm_mu",
+    exposure="Exposure",
+    weights="policy_weight",
+)
+
+diagnostics.base_predictions_by_role.train    # train-side comparison
+diagnostics.base_predictions_by_role.test     # test-side comparison (if available)
+```
+
+When `base_predictions` is a string, RustyStats looks for the same column on
+train and test. If the column is missing on test, diagnostics emit a warning and
+leave `base_predictions_by_role.test` as `None`. Use a dict when train/test
+benchmark columns differ, for example OOF teacher predictions on train and
+ordinary teacher predictions on test:
+
+```python
+base_predictions={"train": "gbm_oof_mu", "test": "gbm_test_mu"}
+```
+
+With prior weights, benchmark totals use `Σ(w * base_mu)`, actual totals use
+`Σ(w * y)`, and exposure uses `Σ(w * exposure)`.
 
 ### vif
 
@@ -467,13 +515,14 @@ json_str = diagnostics.to_json(indent=2)
 
 ---
 
-## Comparing Against a Base Model
+## Comparing Against A Benchmark Model
 
-Compare your new model against predictions from another model (for example,
-a current production model) by passing the column name via `base_predictions`.
+Compare your new model against predictions from another model (for example, a
+GBM teacher or a current production model) by passing the column name via
+`base_predictions`.
 
 ```python
-# Add base model predictions to your data
+# Add benchmark model predictions to your data
 data = data.with_columns(pl.lit(old_model_predictions).alias("base_pred"))
 
 diagnostics = result.diagnostics(
@@ -486,7 +535,9 @@ diagnostics = result.diagnostics(
 
 ### BasePredictionsComparison
 
-Access via `diagnostics.base_predictions_comparison`.
+Access the train-side comparison via `diagnostics.base_predictions_by_role.train`.
+When `test_data` also has the benchmark prediction column,
+`diagnostics.base_predictions_by_role.test` is populated too.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -508,6 +559,8 @@ Access via `diagnostics.base_predictions_comparison`.
 | `loss` | float | Mean deviance loss |
 | `gini` | float | Gini coefficient |
 | `auc` | float | Area under ROC curve |
+| `total_actual` | float \| `None` | Weighted actual total when available |
+| `total_exposure` | float \| `None` | Weighted exposure total when available |
 
 ### ModelVsBaseDecile
 
@@ -551,7 +604,7 @@ diagnostics = result.diagnostics(
     base_predictions="base_pred",
 )
 
-bc = diagnostics.base_predictions_comparison
+bc = diagnostics.base_predictions_by_role.train
 
 print("=== Side-by-side ===")
 print(f"Loss:  new={bc.model_metrics.loss:.4f}  base={bc.base_metrics.loss:.4f}")

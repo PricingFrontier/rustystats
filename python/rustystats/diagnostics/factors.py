@@ -270,10 +270,17 @@ class _FactorDiagnosticsComputer:
         pearson_residuals: np.ndarray,
         feature_names: list[str],
         family: str,
+        weights: np.ndarray | None = None,
+        base_mu: np.ndarray | None = None,
     ):
         self.y = y
         self.mu = mu
         self.exposure = exposure
+        self._has_weights = weights is not None
+        self.weights = (
+            np.asarray(weights, dtype=np.float64) if weights is not None else np.ones_like(y)
+        )
+        self.base_mu = None if base_mu is None else np.asarray(base_mu, dtype=np.float64)
         self.pearson_residuals = pearson_residuals
         self.feature_names = feature_names
         self.family = family
@@ -293,6 +300,12 @@ class _FactorDiagnosticsComputer:
         # cache key mismatched, the entire index was rebuilt for one
         # variable, and the cache was overwritten — repeating 30+ times.
         self._var_feature_cache: dict[str, _FactorFeature] = {}
+
+    @property
+    def _prior_weights(self) -> np.ndarray | None:
+        """Prior-weight array to forward to the Rust A/E kernels, or ``None``
+        when the fit was unweighted (so the kernel uses unit weights)."""
+        return self.weights if self._has_weights else None
 
     def _get_feature_for(self, var: str) -> _FactorFeature:
         """Return the ``_FactorFeature`` for ``var``, building on first request.
@@ -518,6 +531,8 @@ class _FactorDiagnosticsComputer:
                 rare_threshold_pct,
                 max_categorical_levels,
                 self.family,
+                prior_weights=self._prior_weights,
+                base=self.base_mu,
             )
             for out_col, src_idx in enumerate(batchable_indices):
                 ae_bins_per_factor[src_idx] = self._format_ae_bins(batch_result[out_col])
@@ -694,7 +709,14 @@ class _FactorDiagnosticsComputer:
             ]
 
             ae_batch = _rust_ae_continuous_batch(
-                values_list, self.y, self.mu, self.exposure, n_bins, self.family
+                values_list,
+                self.y,
+                self.mu,
+                self.exposure,
+                n_bins,
+                self.family,
+                prior_weights=self._prior_weights,
+                base=self.base_mu,
             )
             for i, rust_bins in enumerate(ae_batch):
                 ae_bins_per_factor[i] = self._format_ae_bins(rust_bins)
@@ -941,26 +963,54 @@ class _FactorDiagnosticsComputer:
             raise FittingError(f"Failed to compute factor significance for '{name}': {e}") from e
 
     def _compute_ae_continuous(self, values: np.ndarray, n_bins: int) -> list[ActualExpectedBin]:
-        """Compute A/E for continuous factor using Rust backend (compact format)."""
-        rust_bins = _rust_ae_continuous(values, self.y, self.mu, self.exposure, n_bins, self.family)
+        """Compute A/E for a continuous factor via the Rust backend."""
+        rust_bins = _rust_ae_continuous(
+            values,
+            self.y,
+            self.mu,
+            self.exposure,
+            n_bins,
+            self.family,
+            prior_weights=self._prior_weights,
+            base=self.base_mu,
+        )
         return self._format_ae_bins(rust_bins)
 
     @staticmethod
     def _format_ae_bins(rust_bins) -> list[ActualExpectedBin]:
-        """Convert raw Rust A/E bins into the compact ActualExpectedBin form."""
-        non_empty_bins = [b for b in rust_bins if b["count"] > 0]
-        return [
-            ActualExpectedBin(
-                bin=b["bin_label"],
-                n=b["count"],
-                exposure=round(b["exposure"], 2),
-                actual=round(b["actual_sum"] / b["exposure"], 6) if b["exposure"] > 0 else 0.0,
-                expected=round(b["predicted_sum"] / b["exposure"], 6) if b["exposure"] > 0 else 0.0,
-                ae_ratio=round(b["actual_expected_ratio"], 2),
-                ae_ci=[round(b["ae_ci_lower"], 2), round(b["ae_ci_upper"], 2)],
+        """Convert raw Rust A/E bins into the compact ``ActualExpectedBin`` form.
+
+        The Rust kernel returns prior-weighted sums and, when a benchmark/base
+        array was supplied, ``base_sum`` (Σ prior_weights · base prediction);
+        the base-overlay rate, total, and A/E are derived from it here.
+        """
+        bins: list[ActualExpectedBin] = []
+        for b in rust_bins:
+            if b["count"] <= 0:
+                continue
+            exposure = b["exposure"]
+            actual_sum = b["actual_sum"]
+            predicted_sum = b["predicted_sum"]
+            base_sum = b["base_sum"]  # None unless a base array was supplied
+            base_rate = base_sum / exposure if base_sum is not None and exposure > 0 else None
+            base_ae = actual_sum / base_sum if base_sum is not None and base_sum > 0.0 else None
+            bins.append(
+                ActualExpectedBin(
+                    bin=b["bin_label"],
+                    n=b["count"],
+                    exposure=round(exposure, 2),
+                    actual=round(actual_sum / exposure, 6) if exposure > 0 else 0.0,
+                    expected=round(predicted_sum / exposure, 6) if exposure > 0 else 0.0,
+                    ae_ratio=round(b["actual_expected_ratio"], 2),
+                    ae_ci=[round(b["ae_ci_lower"], 2), round(b["ae_ci_upper"], 2)],
+                    actual_total=float(actual_sum),
+                    expected_total=float(predicted_sum),
+                    base_expected=round(base_rate, 6) if base_rate is not None else None,
+                    base_expected_total=float(base_sum) if base_sum is not None else None,
+                    base_ae_ratio=round(base_ae, 2) if base_ae is not None else None,
+                )
             )
-            for b in non_empty_bins
-        ]
+        return bins
 
     def _compute_ae_categorical(
         self,
@@ -968,23 +1018,20 @@ class _FactorDiagnosticsComputer:
         rare_threshold_pct: float,
         max_levels: int,
     ) -> list[ActualExpectedBin]:
-        """Compute A/E for categorical factor using Rust backend (compact format)."""
+        """Compute A/E for a categorical factor via the Rust backend."""
         levels = values.tolist()
         rust_bins = _rust_ae_categorical(
-            levels, self.y, self.mu, self.exposure, rare_threshold_pct, max_levels, self.family
+            levels,
+            self.y,
+            self.mu,
+            self.exposure,
+            rare_threshold_pct,
+            max_levels,
+            self.family,
+            prior_weights=self._prior_weights,
+            base=self.base_mu,
         )
-        return [
-            ActualExpectedBin(
-                bin=b["bin_label"],
-                n=b["count"],
-                exposure=round(b["exposure"], 2),
-                actual=round(b["actual_sum"] / b["exposure"], 6) if b["exposure"] > 0 else 0.0,
-                expected=round(b["predicted_sum"] / b["exposure"], 6) if b["exposure"] > 0 else 0.0,
-                ae_ratio=round(b["actual_expected_ratio"], 2),
-                ae_ci=[round(b["ae_ci_lower"], 2), round(b["ae_ci_upper"], 2)],
-            )
-            for b in rust_bins
-        ]
+        return self._format_ae_bins(rust_bins)
 
     def _compute_residual_pattern_continuous(
         self,

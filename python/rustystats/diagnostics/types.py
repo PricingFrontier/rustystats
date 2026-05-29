@@ -66,6 +66,9 @@ __all__ = [
     "ModelVsBaseDecile",
     "BasePredictionsMetrics",
     "BasePredictionsComparison",
+    "BasePredictionsByRole",
+    "EncodingDiagnostics",
+    "InteractionBlockDiagnostics",
     # Data exploration
     "DataExploration",
     # Main output
@@ -232,8 +235,13 @@ class ActualExpectedBin:
     exposure: float
     actual: float
     expected: float
-    ae_ratio: float
+    ae_ratio: float | None
     ae_ci: list[float]  # [lower, upper]
+    actual_total: float | None = None
+    expected_total: float | None = None
+    base_expected: float | None = None
+    base_expected_total: float | None = None
+    base_ae_ratio: float | None = None
 
 
 @dataclass
@@ -413,6 +421,21 @@ class InteractionDiagnostics:
 
 
 @dataclass
+class InteractionBlockDiagnostics:
+    """Block diagnostics for fitted or requested higher-order interactions."""
+
+    name: str
+    factors: list[str]
+    order: int
+    in_model: bool
+    representation: str | None
+    coefficients: list[FactorCoefficient] | None = None
+    significance: FactorSignificance | None = None
+    score_test: ScoreTestResult | None = None
+    gvif: float | None = None
+
+
+@dataclass
 class InteractionExploration:
     """Pre-fit data summary for a single user-specified interaction pair."""
 
@@ -439,6 +462,16 @@ class FactorBinPair:
     test_actual: float | None = None
     test_predicted: float | None = None
     test_ae_ratio: float | None = None
+    train_actual_total: float | None = None
+    train_predicted_total: float | None = None
+    train_base_predicted: float | None = None
+    train_base_predicted_total: float | None = None
+    train_base_ae_ratio: float | None = None
+    test_actual_total: float | None = None
+    test_predicted_total: float | None = None
+    test_base_predicted: float | None = None
+    test_base_predicted_total: float | None = None
+    test_base_ae_ratio: float | None = None
 
 
 # =============================================================================
@@ -531,6 +564,12 @@ class PartialDependence:
     relativities: list[float] | None
     shape: str
     recommendation: str
+    term_type: str | None = None
+    prediction_scale: str = "response"
+    relativity_base: Any | None = None
+    knots: list[float] | None = None
+    boundary_knots: list[float] | None = None
+    monotonicity: str | None = None
 
 
 @dataclass
@@ -556,6 +595,11 @@ class FactorLevelMetrics:
     predicted: float
     ae_ratio: float
     residual_mean: float
+    actual_total: float | None = None
+    predicted_total: float | None = None
+    base_predicted: float | None = None
+    base_predicted_total: float | None = None
+    base_ae_ratio: float | None = None
 
 
 @dataclass
@@ -573,6 +617,11 @@ class ContinuousBandMetrics:
     ae_ratio: float
     partial_dep: float
     residual_mean: float
+    actual_total: float | None = None
+    predicted_total: float | None = None
+    base_predicted: float | None = None
+    base_predicted_total: float | None = None
+    base_ae_ratio: float | None = None
 
 
 # =============================================================================
@@ -689,6 +738,8 @@ class BasePredictionsMetrics:
     loss: float
     gini: float
     auc: float
+    total_actual: float | None = None
+    total_exposure: float | None = None
 
 
 @dataclass
@@ -703,6 +754,33 @@ class BasePredictionsComparison:
     loss_improvement_pct: float
     gini_improvement: float
     auc_improvement: float
+
+
+@dataclass
+class BasePredictionsByRole:
+    """Base/benchmark prediction comparison split by dataset role."""
+
+    train: BasePredictionsComparison | None
+    test: BasePredictionsComparison | None = None
+    ranking: str = "auto"
+    prediction_basis: str = "response"
+
+
+@dataclass
+class EncodingDiagnostics:
+    """Representation diagnostics for categorical and encoded terms."""
+
+    name: str
+    kind: str
+    in_model: bool
+    n_levels_train: int | None = None
+    n_levels_test: int | None = None
+    unseen_levels_test: int | None = None
+    rare_levels_grouped: int | None = None
+    interaction_order: int = 1
+    source_factors: list[str] = field(default_factory=list)
+    feature_names: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
 
 
 # =============================================================================
@@ -759,7 +837,9 @@ class ModelDiagnostics:
     partial_dependence: list[PartialDependence] | None = None
     overdispersion: dict[str, Any] | None = None
     spline_info: dict[str, dict[str, Any]] | None = None
-    base_predictions_comparison: BasePredictionsComparison | None = None
+    base_predictions_by_role: BasePredictionsByRole | None = None
+    encoding_diagnostics: list[EncodingDiagnostics] | None = None
+    interaction_blocks: list[InteractionBlockDiagnostics] = field(default_factory=list)
     interactions: list[InteractionDiagnostics] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:

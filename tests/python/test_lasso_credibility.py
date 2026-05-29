@@ -537,7 +537,7 @@ class TestLassoShrinkage:
             terms={"x1": {"type": "linear"}, "x2": {"type": "linear"}},
             data=poisson_data,
             family="poisson",
-            offset="exposure",
+            exposure="exposure",
             complement="cw_rate",
         ).fit(alpha=1000.0, l1_ratio=1.0)
 

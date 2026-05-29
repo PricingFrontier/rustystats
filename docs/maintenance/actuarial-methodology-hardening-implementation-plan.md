@@ -185,6 +185,12 @@ chains. The only hard ordering is **002b before 001b/004/009** and **007 before
 
 ### PR2 — RS-ACT-002a: `exposure=` kwarg + fail-closed exposure-as-offset (P0)
 
+> **Partially superseded.** The legacy `offset="Exposure"` → `exposure="Exposure"`
+> normalization and the `_offset_is_legacy_exposure_alias` flag introduced here
+> were later removed: a string `offset` is now always a verbatim link-scale
+> column, and raw exposure comes only from `exposure=`. The `exposure=` kwarg,
+> validation, and fail-closed TE behaviour below still hold.
+
 **Goal.** Introduce the explicit `exposure` concept and stop the silent
 array-offset-as-TE-denominator bug, without yet doing the full prediction/
 serialization rework.
@@ -263,6 +269,12 @@ injected silently (`regularization_path.py:422-425`:
 ---
 
 ### PR4 — RS-ACT-002b: full exposure threading (predict, diagnostics, serialization) (P0)
+
+> **Partially superseded.** The `offset_is_exposure` serialization field and the
+> legacy-payload migration described here were later removed. Serialized models
+> no longer store or read `offset_is_exposure`, and old `offset_is_exposure=True`
+> payloads are no longer remapped to exposure models. The exposure threading
+> through predict/diagnostics/serialization below still holds.
 
 **Goal.** Make `exposure` first-class end-to-end.
 
