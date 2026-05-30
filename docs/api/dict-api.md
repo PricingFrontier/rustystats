@@ -311,6 +311,7 @@ result = model.fit(alpha=0.1, l1_ratio=1.0)  # Lasso
 | `cv` | int | 5 | Number of CV folds |
 | `alpha` | float | 0.0 | Explicit regularization strength |
 | `l1_ratio` | float | 1.0 | Elastic Net mixing (0=Ridge, 1=Lasso) |
+| `standardize` | bool | True | Standardize penalized columns internally, then report original-scale coefficients |
 | `cv_seed` | int | None | Seed for reproducible CV folds |
 
 ---

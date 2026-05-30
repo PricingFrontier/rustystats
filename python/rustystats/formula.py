@@ -634,6 +634,7 @@ def _fit_glm_core(
     fit_intercept: bool = True,
     store_design_matrix: bool = False,
     allow_extended_tweedie: bool = False,
+    standardize: bool = True,
 ) -> tuple:
     """
     Core GLM fitting logic for FormulaGLMDict.
@@ -700,6 +701,14 @@ def _fit_glm_core(
         )
         return result, smooth_results, total_edf, gcv
 
+    center = scale = None
+    if standardize and alpha > 0.0:
+        from rustystats.regularization_path import compute_standardization
+
+        # pen_mask defaults to "all columns except the intercept"; this path
+        # does not build an alpha grid, so it need not share an explicit mask.
+        center, scale = compute_standardization(X, weights, fit_intercept=fit_intercept)
+
     result = _fit_glm_rust(
         y,
         X,
@@ -718,6 +727,8 @@ def _fit_glm_core(
         store_design_matrix,
         allow_extended_tweedie,
         fit_intercept,
+        center,
+        scale,
     )
     return result, None, None, None
 
@@ -786,6 +797,7 @@ def _build_results(
     complement_spec: str | GLMModel | None = None,
     complement_values: np.ndarray | None = None,
     array_exposure_requires_prediction_override: bool = False,
+    regularization_standardized: bool = False,
 ) -> GLMModel:
     """Build GLMModel with all metadata."""
     # Clear builder caches to free memory (keep TE stats for prediction)
@@ -810,6 +822,7 @@ def _build_results(
         complement_spec=complement_spec,
         complement_values=complement_values,
         array_exposure_requires_prediction_override=array_exposure_requires_prediction_override,
+        regularization_standardized=regularization_standardized,
     )
 
 
@@ -1027,6 +1040,7 @@ class _GLMBase:
         cv_seed: int | None,
         include_unregularized: bool,
         verbose: bool,
+        standardize: bool,
     ) -> tuple:
         """
         Handle CV-based regularization path if requested.
@@ -1082,6 +1096,7 @@ class _GLMBase:
             seed=cv_seed if cv_seed is not None else self._seed,
             include_unregularized=include_unregularized,
             verbose=verbose,
+            standardize=standardize,
         )
 
         if verbose:
@@ -1294,6 +1309,7 @@ class GLMModel:
         complement_spec: str | GLMModel | None = None,
         complement_values: np.ndarray | None = None,
         array_exposure_requires_prediction_override: bool = False,
+        regularization_standardized: bool = False,
     ):
         self._result = result
         self._is_deserialized = isinstance(result, _DeserializedResult)
@@ -1315,6 +1331,7 @@ class GLMModel:
         self._interactions_spec = interactions_spec
         self._complement_spec = complement_spec
         self._complement_values = complement_values
+        self._regularization_standardized = bool(regularization_standardized)
         # Post-fit intercept shift applied by ``relevel()``; zero for ordinary
         # fits. Stored Python-side rather than mutating the Rust result so the
         # underlying ``self._result`` stays the original immutable fit.
@@ -2164,6 +2181,12 @@ class GLMModel:
                 "      Var(log c). Other coefficients and relativities are unchanged.\n"
             )
 
+        if self._regularization_standardized:
+            result += (
+                "\nNote: regularized coefficients were fit with internal column standardization\n"
+                "      and reported on the original design scale.\n"
+            )
+
         return result
 
     def diagnostics(
@@ -2994,6 +3017,7 @@ class GLMModel:
             "optimizer_route": self.__dict__.get("optimizer_route"),
             "solver_status": self.__dict__.get("solver_status"),
             "step_halving_used": self.__dict__.get("step_halving_used"),
+            "regularization_standardized": self.__dict__.get("_regularization_standardized", False),
         }
 
         # Extract builder state for prediction
@@ -3132,6 +3156,9 @@ class GLMModel:
             interactions_spec=state.get("interactions_spec"),
             complement_spec=state.get("complement_spec"),
             array_exposure_requires_prediction_override=array_exposure_requires_prediction_override,
+            regularization_standardized=bool(
+                result_state.get("regularization_standardized", False)
+            ),
         )
         model.theta = result_state.get("theta")
         model.theta_metadata = result_state.get("theta_metadata")
@@ -4109,6 +4136,7 @@ class FormulaGLMDict(_GLMBase):
         alpha_min_ratio: float = DEFAULT_ALPHA_MIN_RATIO,
         cv_seed: int | None = None,
         include_unregularized: bool = True,
+        standardize: bool = True,
         verbose: bool = False,
         # Memory optimization
         store_design_matrix: bool = False,
@@ -4151,6 +4179,11 @@ class FormulaGLMDict(_GLMBase):
 
         include_unregularized : bool, default=True
             Include alpha=0 in CV comparison.
+
+        standardize : bool, default=True
+            For regularized fits, internally center/scale penalized design
+            columns before applying the penalty, then report coefficients on
+            the original scale. Set False for legacy raw-scale penalization.
 
         verbose : bool, default=False
             Print progress.
@@ -4208,6 +4241,7 @@ class FormulaGLMDict(_GLMBase):
             cv_seed,
             include_unregularized,
             verbose,
+            standardize,
         )
 
         if nb_estimate:
@@ -4245,6 +4279,7 @@ class FormulaGLMDict(_GLMBase):
                 fit_intercept=self.intercept,
                 store_design_matrix=store_design_matrix,
                 allow_extended_tweedie=self.allow_extended_tweedie,
+                standardize=standardize,
             )
             if is_negbinomial:
                 theta_metadata = {
@@ -4285,6 +4320,7 @@ class FormulaGLMDict(_GLMBase):
             array_exposure_requires_prediction_override=(
                 self._exposure_spec is not None and not isinstance(self._exposure_spec, str)
             ),
+            regularization_standardized=bool(standardize and alpha > 0.0),
         )
         # RS-ACT-010: surface the theta actually used and its estimation provenance.
         results.theta = theta if is_negbinomial else None

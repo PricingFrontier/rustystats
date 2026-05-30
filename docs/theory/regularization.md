@@ -266,13 +266,18 @@ The penalty is applied uniformly to all coefficients. Without standardization, v
 
 ### Internal Standardization
 
-RustyStats internally standardizes features before fitting:
+RustyStats internally standardizes penalized features before fitting and
+back-transforms coefficients to the original data scale:
 
 ```python
 # Features are standardized internally
 # Coefficients are returned on original scale
 result = rs.glm_dict(response="y", terms={"x1": {"type": "linear"}, "x2": {"type": "linear"}}, data=data, family="gaussian").fit(alpha=0.1, l1_ratio=1.0)
 ```
+
+Set `standardize=False` only when you need the legacy raw-scale penalty. Fits
+without an intercept use scale-only standardization, avoiding a hidden
+intercept shift.
 
 ### Intercept
 

@@ -213,6 +213,8 @@ def fit_glm_py(
     store_design_matrix: bool = False,
     allow_extended_tweedie: bool = False,
     fit_intercept: bool = True,
+    center: npt.NDArray[np.float64] | None = None,
+    scale: npt.NDArray[np.float64] | None = None,
 ) -> GLMResults: ...
 def fit_negbinomial_py(
     y: npt.NDArray[np.float64],
@@ -230,6 +232,8 @@ def fit_negbinomial_py(
     nonneg_indices: list[int] | None = None,
     nonpos_indices: list[int] | None = None,
     store_design_matrix: bool = False,
+    center: npt.NDArray[np.float64] | None = None,
+    scale: npt.NDArray[np.float64] | None = None,
 ) -> tuple[GLMResults, dict]: ...
 def fit_smooth_glm_unified_py(
     y: npt.NDArray[np.float64],
@@ -271,6 +275,8 @@ def fit_cv_path_py(
     nonpos_indices: list[int] | None = None,
     allow_extended_tweedie: bool = False,
     fit_intercept: bool = True,
+    center: npt.NDArray[np.float64] | None = None,
+    scale: npt.NDArray[np.float64] | None = None,
 ) -> dict: ...
 
 # =============================================================================

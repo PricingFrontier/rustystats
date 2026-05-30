@@ -7,9 +7,9 @@ project tracks the
 [Actuarial Methodology Hardening Spec](https://github.com/PricingFrontier/rustystats/blob/main/docs/maintenance/actuarial-methodology-hardening.md)
 via `RS-ACT-NNN` IDs.
 
-## [Unreleased] — Actuarial Methodology Hardening (RS-ACT-001 to 011)
+## [Unreleased] — Actuarial Methodology Hardening (RS-ACT-001 to 012)
 
-This release closes the eleven actuarial-correctness items from the hardening
+This release closes the actuarial-correctness items from the hardening
 spec and is intended to be the first version safe to use as the statistical
 engine inside production insurance pricing workflows. The headline behaviour
 changes are listed under *Behaviour changes* below; the new APIs are listed
@@ -35,6 +35,14 @@ even with the same call shape.
   `alpha_min_ratio` to compensate, you can drop that workaround. `alpha_max`
   is now offset, weight, family, and link aware, and matches the solver's raw
   weighted-sum loss scaling (no implicit `1/n`).
+
+* **RS-ACT-012 — regularized fits now standardize penalized columns by
+  default.** Ridge, lasso, and elastic-net fits use weighted internal
+  standardization before the penalty acts, then return coefficients and
+  covariance on the original data scale. This fixes raw-scale penalty
+  collapse when design columns have very different magnitudes. Regularized
+  coefficients and selected `alpha` values can change; set
+  `standardize=False` to recover the legacy raw-scale penalty.
 
 ### Added
 
@@ -113,6 +121,12 @@ even with the same call shape.
   `summary()` hides stars / p-values / AIC / BIC when the status is not
   valid, and reports the status verbatim near the bottom of the table.
 
+* **RS-ACT-012 — `standardize=` for regularization.** `fit(...,
+  standardize=True)` is the default for regularized fits. With an intercept,
+  penalized columns are centered and scaled; without an intercept, columns are
+  scale-only standardized to preserve the model class. The option is a no-op
+  when `alpha=0` / no regularization is used.
+
 ### Fixed
 
 * **RS-ACT-001 — fold-safe target-encoding CV** + weighted CV scoring +
@@ -145,9 +159,16 @@ even with the same call shape.
   `rs.calibration_summary`, so the unweighted diagnostics path and the
   weighted primitive cannot drift.
 
+* **RS-ACT-012 — scale-fair regularization.** `alpha_max`, CV paths, target-
+  encoding fold rebuilds, solver warm starts, and covariance back-transforms
+  now share the same standardization contract. Target-encoding CV computes
+  scales from fold-training designs only.
+
 ### Migration
 
 * No public APIs were removed.
+* Regularized fits now default to `standardize=True`; pass
+  `standardize=False` to reproduce pre-RS-ACT-012 raw-scale penalties.
 * `compute_alpha_max` (internal helper) gained kwargs-only `family=`, `link=`,
   `offset=`, `weights=`, `var_power=`, `theta=`, `intercept_col=` and the
   positional `weights=` argument moved into keyword-only. The two internal

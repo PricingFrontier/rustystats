@@ -317,6 +317,7 @@ print(f"CV deviance: {result.cv_deviance}")
 - `regularization`: `"ridge"` (L2), `"lasso"` (L1), or `"elastic_net"` (mix)
 - `selection`: `"min"` (best fit) or `"1se"` (more conservative, default: `"min"`)
 - `cv`: Number of folds (default: 5)
+- `standardize`: Internally standardize penalized columns before the penalty acts, reporting original-scale coefficients (default: `True`; set `False` for the legacy raw-scale penalty)
 
 ### Explicit Alpha
 
