@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 import numpy as np
 
@@ -56,9 +56,6 @@ from rustystats.constants import (
     DEFAULT_TOLERANCE,
 )
 from rustystats.exceptions import FittingError, ValidationError
-
-if TYPE_CHECKING:
-    pass
 
 
 @dataclass
@@ -286,6 +283,101 @@ def _fit_null_intercept(
     return float(np.asarray(null_res.params)[0])
 
 
+# Columns whose weighted standard deviation falls below this are treated as
+# constant: left unstandardized (center=0, scale=1) so the penalty path never
+# divides by ~0. Sits well above f64 round-off yet below any real predictor sd.
+MIN_WEIGHTED_STD = 1e-12
+
+
+def penalized_column_mask(n_cols: int, fit_intercept: bool) -> np.ndarray:
+    """Boolean mask of the columns a global penalty applies to.
+
+    Every column is penalized except the intercept (assumed at index 0 when
+    ``fit_intercept``). Shared by the standardization and alpha-grid paths so
+    they cannot disagree about which columns the penalty — and therefore the
+    standardization — acts on.
+    """
+    mask = np.ones(n_cols, dtype=bool)
+    if fit_intercept and n_cols > 0:
+        mask[0] = False
+    return mask
+
+
+def compute_standardization(
+    X: np.ndarray,
+    weights: np.ndarray | None = None,
+    pen_mask: np.ndarray | None = None,
+    *,
+    fit_intercept: bool = True,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Weighted center/scale vectors for internally standardized penalties.
+
+    The returned vectors are length ``p`` and safe to pass straight to the Rust
+    fit boundary: unpenalized columns, intercept columns, constant columns and
+    no-intercept fits receive ``center=0``; non-constant penalized columns get a
+    weighted mean and population standard deviation.
+    """
+    x = np.asarray(X, dtype=np.float64)
+    if x.ndim != 2:
+        raise ValidationError(f"X must be a 2D design matrix, got shape {x.shape}.")
+    n, p = x.shape
+    if p == 0:
+        return np.zeros(0, dtype=np.float64), np.ones(0, dtype=np.float64)
+
+    if weights is None:
+        w = np.ones(n, dtype=np.float64)
+    else:
+        w = np.asarray(weights, dtype=np.float64)
+        if w.ndim != 1 or w.shape[0] != n:
+            raise ValidationError(
+                f"weights must be length {n} for standardization, got shape {w.shape}."
+            )
+    weight_sum = float(np.sum(w))
+    if not np.isfinite(weight_sum) or weight_sum <= 0.0:
+        raise ValidationError(
+            f"standardization requires positive finite sum(weights), got {weight_sum}."
+        )
+
+    if pen_mask is None:
+        mask = penalized_column_mask(p, fit_intercept)
+    else:
+        mask = np.asarray(pen_mask, dtype=bool)
+        if mask.ndim != 1 or mask.shape[0] != p:
+            raise ValidationError(
+                f"pen_mask must be length {p} for standardization, got shape {mask.shape}."
+            )
+        mask = mask.copy()
+    if fit_intercept and p > 0:
+        mask[0] = False
+
+    center = np.zeros(p, dtype=np.float64)
+    scale = np.ones(p, dtype=np.float64)
+    active = np.flatnonzero(mask)
+    if active.size == 0:
+        return center, scale
+
+    cols = x[:, active]
+    mean = (w @ cols) / weight_sum
+    # Two-pass weighted variance: centre before squaring. The one-pass
+    # ``E[x²] - E[x]²`` loses precision to catastrophic cancellation on the
+    # very high-magnitude columns this standardization exists to tame — a
+    # mean ~1e10 column can lose its variance entirely, which would clamp a
+    # genuinely varying column to "constant" below and let it escape the
+    # penalty (reintroducing the RS-ACT-012 defect for that column).
+    centered = cols - mean
+    var = np.maximum((w @ (centered * centered)) / weight_sum, 0.0)
+    sd = np.sqrt(var)
+    valid = np.isfinite(mean) & np.isfinite(sd) & (sd > MIN_WEIGHTED_STD)
+    valid_cols = active[valid]
+    if valid_cols.size == 0:
+        return center, scale
+
+    if fit_intercept:
+        center[valid_cols] = mean[valid]
+    scale[valid_cols] = sd[valid]
+    return center, scale
+
+
 def compute_alpha_max(
     X: np.ndarray,
     y: np.ndarray,
@@ -298,6 +390,9 @@ def compute_alpha_max(
     var_power: float = 1.5,
     theta: float = 1.0,
     intercept_col: int | None = 0,
+    center: np.ndarray | None = None,
+    scale: np.ndarray | None = None,
+    pen_mask: np.ndarray | None = None,
     allow_extended_tweedie: bool = False,
 ) -> float:
     """Maximum alpha that zeroes every penalised coefficient (RS-ACT-005).
@@ -366,9 +461,36 @@ def compute_alpha_max(
         w = np.asarray(weights, dtype=np.float64)
     off = np.zeros(n) if offset is None else np.asarray(offset, dtype=np.float64)
 
-    pen_mask = np.ones(p, dtype=bool)
-    if intercept_col is not None and 0 <= intercept_col < p:
-        pen_mask[intercept_col] = False
+    if pen_mask is None:
+        penalty_mask = np.ones(p, dtype=bool)
+        if intercept_col is not None and 0 <= intercept_col < p:
+            penalty_mask[intercept_col] = False
+    else:
+        penalty_mask = np.asarray(pen_mask, dtype=bool)
+        if penalty_mask.ndim != 1 or penalty_mask.shape[0] != p:
+            raise ValidationError(
+                f"pen_mask must be length {p} for alpha_max, got shape {penalty_mask.shape}."
+            )
+        penalty_mask = penalty_mask.copy()
+        if intercept_col is not None and 0 <= intercept_col < p:
+            penalty_mask[intercept_col] = False
+
+    use_standardization = center is not None or scale is not None
+    if use_standardization:
+        if center is None or scale is None:
+            raise ValidationError("center and scale must be provided together for alpha_max.")
+        c = np.asarray(center, dtype=np.float64)
+        s = np.asarray(scale, dtype=np.float64)
+        if c.shape != (p,) or s.shape != (p,):
+            raise ValidationError(
+                f"center/scale must be length {p} for alpha_max, "
+                f"got center={c.shape}, scale={s.shape}."
+            )
+        if np.any(~np.isfinite(c)) or np.any(~np.isfinite(s)) or np.any(s <= 0.0):
+            raise ValidationError("center/scale for alpha_max must be finite with scale > 0.")
+    else:
+        c = None
+        s = None
 
     if l1_ratio > 0:
         beta_0 = _fit_null_intercept(
@@ -386,18 +508,27 @@ def compute_alpha_max(
         score_factor = _glm_score_gradient_factor(y, mu_0, family, link, var_power, theta, w)
         # Per-feature unpenalised gradient magnitudes.
         scores = X.T @ score_factor
-        if not np.any(pen_mask):
+        if use_standardization:
+            # Centering term is included explicitly instead of assuming the
+            # intercept score is exactly zero; this keeps the endpoint stable
+            # across non-canonical links and fallback null fits.
+            scores = (scores - c * float(np.sum(score_factor))) / s
+        if not np.any(penalty_mask):
             return ALPHA_MAX_FLOOR
-        max_score = float(np.max(np.abs(scores[pen_mask])))
+        max_score = float(np.max(np.abs(scores[penalty_mask])))
         alpha_max = max_score / l1_ratio
     else:
         # Ridge has no all-zero KKT; use the median weighted column norm as a
         # documented heuristic. Same shape as the pre-RS-ACT-005 fallback but
         # weight-aware and intercept-excluding, with no division by ``n`` so
         # the magnitude matches the solver's loss scale.
-        if not np.any(pen_mask):
+        if not np.any(penalty_mask):
             return ALPHA_MAX_FLOOR
-        XtX_diag = np.sum((X[:, pen_mask] ** 2) * w[:, None], axis=0)
+        if use_standardization:
+            x_pen = (X[:, penalty_mask] - c[penalty_mask][None, :]) / s[penalty_mask][None, :]
+            XtX_diag = np.sum((x_pen**2) * w[:, None], axis=0)
+        else:
+            XtX_diag = np.sum((X[:, penalty_mask] ** 2) * w[:, None], axis=0)
         alpha_max = float(np.median(XtX_diag)) * 10.0 if XtX_diag.size > 0 else ALPHA_MAX_FLOOR
 
     return max(alpha_max, ALPHA_MAX_FLOOR)
@@ -604,6 +735,7 @@ def fit_cv_regularization_path(
     seed: int | None = None,
     include_unregularized: bool = True,
     verbose: bool = False,
+    standardize: bool = True,
 ) -> RegularizationPathInfo:
     """
     Fit regularization path with CV and return best model.
@@ -661,6 +793,17 @@ def fit_cv_regularization_path(
     offset = glm_instance.offset
     weights = glm_instance.weights
     allow_extended_tweedie = bool(getattr(glm_instance, "allow_extended_tweedie", False))
+    fit_intercept = bool(getattr(glm_instance, "intercept", True))
+
+    pen_mask = penalized_column_mask(X.shape[1], fit_intercept)
+    center = scale = None
+    if standardize:
+        center, scale = compute_standardization(
+            X,
+            weights,
+            pen_mask,
+            fit_intercept=fit_intercept,
+        )
 
     # Compute alpha path: GLM-score-aware, offset+weight+family+link aware.
     alpha_max = compute_alpha_max(
@@ -673,7 +816,10 @@ def fit_cv_regularization_path(
         weights=weights,
         var_power=var_power,
         theta=theta,
-        intercept_col=0 if getattr(glm_instance, "intercept", True) else None,
+        intercept_col=0 if fit_intercept else None,
+        center=center,
+        scale=scale,
+        pen_mask=pen_mask,
         allow_extended_tweedie=allow_extended_tweedie,
     )
     alphas = generate_alpha_path(alpha_max, n_alphas, alpha_min_ratio)
@@ -722,7 +868,9 @@ def fit_cv_regularization_path(
         nonneg_indices=nonneg_indices if nonneg_indices else None,
         nonpos_indices=nonpos_indices if nonpos_indices else None,
         allow_extended_tweedie=allow_extended_tweedie,
-        fit_intercept=bool(getattr(glm_instance, "intercept", True)),
+        fit_intercept=fit_intercept,
+        center=center,
+        scale=scale,
     )
 
     # Convert Rust result to path_results format
@@ -841,6 +989,7 @@ def fit_cv_te_regularization_path(
     seed: int | None = None,
     include_unregularized: bool = True,
     verbose: bool = False,
+    standardize: bool = True,
 ) -> RegularizationPathInfo:
     """Fold-safe CV regularization path for models with target-encoded terms.
 
@@ -872,6 +1021,7 @@ def fit_cv_te_regularization_path(
     offset = glm_instance.offset
     weights = glm_instance.weights
     allow_extended_tweedie = bool(getattr(glm_instance, "allow_extended_tweedie", False))
+    fit_intercept = bool(getattr(glm_instance, "intercept", True))
 
     parsed = glm_instance._builder._parsed_formula
     data = glm_instance.data
@@ -899,16 +1049,27 @@ def fit_cv_te_regularization_path(
     # builder workload on TE CV fits. ``build_fold_design_matrices`` is
     # deterministic in ``(data, parsed, train_idx, val_idx, raw_exposure, seed)``,
     # so caching is behaviour-preserving.
-    fold_designs: list[tuple[np.ndarray, np.ndarray, list[str]]] = []
+    fold_designs: list[
+        tuple[np.ndarray, np.ndarray, list[str], np.ndarray | None, np.ndarray | None]
+    ] = []
     fold_alpha_maxes = []
     for train_idx, val_idx in folds:
         x_train, x_val, names = build_fold_design_matrices(
             data, parsed, train_idx, val_idx, raw_exposure=raw_exposure, seed=cv_seed
         )
-        fold_designs.append((x_train, x_val, names))
         y_train = y[train_idx]
         weights_train = weights[train_idx] if weights is not None else None
         offset_train = offset[train_idx] if offset is not None else None
+        fold_center = fold_scale = None
+        fold_pen_mask = penalized_column_mask(x_train.shape[1], fit_intercept)
+        if standardize:
+            fold_center, fold_scale = compute_standardization(
+                x_train,
+                weights_train,
+                fold_pen_mask,
+                fit_intercept=fit_intercept,
+            )
+        fold_designs.append((x_train, x_val, names, fold_center, fold_scale))
         fold_alpha_maxes.append(
             compute_alpha_max(
                 x_train,
@@ -920,7 +1081,10 @@ def fit_cv_te_regularization_path(
                 weights=weights_train,
                 var_power=var_power,
                 theta=theta,
-                intercept_col=0 if getattr(glm_instance, "intercept", True) else None,
+                intercept_col=0 if fit_intercept else None,
+                center=fold_center,
+                scale=fold_scale,
+                pen_mask=fold_pen_mask,
                 allow_extended_tweedie=allow_extended_tweedie,
             )
         )
@@ -938,7 +1102,9 @@ def fit_cv_te_regularization_path(
     deviances: dict[float, list[float]] = {a: [] for a in candidate_alphas}
     failed_alphas: set[float] = set()
 
-    for (train_idx, val_idx), (x_train, x_val, names) in zip(folds, fold_designs, strict=True):
+    for (train_idx, val_idx), (x_train, x_val, names, fold_center, fold_scale) in zip(
+        folds, fold_designs, strict=True
+    ):
         y_train = y[train_idx]
         y_val = y[val_idx]
         offset_train = offset[train_idx] if offset is not None else None
@@ -968,7 +1134,9 @@ def fit_cv_te_regularization_path(
                     nonpos_indices if nonpos_indices else None,
                     False,
                     allow_extended_tweedie,
-                    bool(getattr(glm_instance, "intercept", True)),
+                    fit_intercept,
+                    fold_center,
+                    fold_scale,
                 )
             except ValueError:
                 failed_alphas.add(alpha)

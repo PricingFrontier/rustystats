@@ -492,6 +492,7 @@ class TestCVWeightedScoring:
         from rustystats.regularization_path import (
             build_fold_design_matrices,
             compute_deviance,
+            compute_standardization,
             create_cv_folds,
         )
 
@@ -532,6 +533,7 @@ class TestCVWeightedScoring:
             x_train, x_val, _names = build_fold_design_matrices(
                 df, parsed, train_idx, val_idx, raw_exposure=None, seed=cv_seed
             )
+            center, scale = compute_standardization(x_train)
             fit_res = fit_glm_py(
                 y[train_idx],
                 x_train,
@@ -548,6 +550,10 @@ class TestCVWeightedScoring:
                 None,
                 None,
                 False,
+                False,
+                True,
+                center,
+                scale,
             )
             beta = np.asarray(fit_res.params)
             mu_val = np.exp(x_val @ beta)
@@ -555,7 +561,9 @@ class TestCVWeightedScoring:
             # The penalty contribution (alpha * ||beta_penalised||^2) that
             # would leak into the score if the validation deviance accidentally
             # included it. Intercept (index 0) is unpenalised.
-            fold_penalty_contributions.append(selected_alpha * float(np.sum(beta[1:] ** 2)))
+            beta_tilde = beta.copy()
+            beta_tilde[1:] *= scale[1:]
+            fold_penalty_contributions.append(selected_alpha * float(np.sum(beta_tilde[1:] ** 2)))
 
         manual_mean_dev = float(np.mean(fold_devs))
         mean_penalty = float(np.mean(fold_penalty_contributions))
@@ -593,6 +601,7 @@ class TestManualFoldCV:
         from rustystats.regularization_path import (
             build_fold_design_matrices,
             compute_deviance,
+            compute_standardization,
             create_cv_folds,
         )
 
@@ -643,6 +652,7 @@ class TestManualFoldCV:
             x_train, x_val, _names = build_fold_design_matrices(
                 df, parsed, train_idx, val_idx, raw_exposure=None, seed=cv_seed
             )
+            center, scale = compute_standardization(x_train)
             fit_res = fit_glm_py(
                 y[train_idx],
                 x_train,
@@ -659,6 +669,10 @@ class TestManualFoldCV:
                 None,
                 None,
                 False,
+                False,
+                True,
+                center,
+                scale,
             )
             beta = np.asarray(fit_res.params)
             mu_val = np.exp(x_val @ beta)

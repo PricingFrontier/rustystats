@@ -18,7 +18,7 @@ use rayon::prelude::*;
 
 use rustystats_core::diagnostics::{estimate_theta_moments, estimate_theta_profile};
 use rustystats_core::families::{NegativeBinomialFamily, PoissonFamily};
-use rustystats_core::regularization::RegularizationConfig;
+use rustystats_core::regularization::{RegularizationConfig, Standardization};
 use rustystats_core::solvers::{
     fit_glm_unified, fit_smooth_glm_full_matrix, FitConfig, IRLSConfig, IRLSResult, Monotonicity,
     SmoothGLMConfig, SmoothTermSpec,
@@ -112,12 +112,46 @@ fn build_smooth_config(
     }
 }
 
+fn build_standardization(
+    center: Option<PyReadonlyArray1<f64>>,
+    scale: Option<PyReadonlyArray1<f64>>,
+    n_params: usize,
+) -> PyResult<Option<Standardization>> {
+    match (center, scale) {
+        (None, None) => Ok(None),
+        (Some(c), Some(s)) => {
+            let center_vec = c.as_array().to_vec();
+            let scale_vec = s.as_array().to_vec();
+            if center_vec.len() != n_params {
+                return Err(PyValueError::new_err(format!(
+                    "center length {} does not match X columns {}",
+                    center_vec.len(),
+                    n_params
+                )));
+            }
+            if scale_vec.len() != n_params {
+                return Err(PyValueError::new_err(format!(
+                    "scale length {} does not match X columns {}",
+                    scale_vec.len(),
+                    n_params
+                )));
+            }
+            Standardization::new(center_vec, scale_vec)
+                .map(Some)
+                .map_err(|e| PyValueError::new_err(format!("Invalid standardization: {}", e)))
+        }
+        _ => Err(PyValueError::new_err(
+            "center and scale must be provided together for standardization",
+        )),
+    }
+}
+
 // =============================================================================
 // fit_glm_py — Standard GLM
 // =============================================================================
 
 #[pyfunction]
-#[pyo3(signature = (y, x, family, link=None, var_power=1.5, theta=1.0, offset=None, weights=None, alpha=0.0, l1_ratio=0.0, max_iter=25, tol=1e-8, nonneg_indices=None, nonpos_indices=None, store_design_matrix=false, allow_extended_tweedie=false, fit_intercept=true))]
+#[pyo3(signature = (y, x, family, link=None, var_power=1.5, theta=1.0, offset=None, weights=None, alpha=0.0, l1_ratio=0.0, max_iter=25, tol=1e-8, nonneg_indices=None, nonpos_indices=None, store_design_matrix=false, allow_extended_tweedie=false, fit_intercept=true, center=None, scale=None))]
 pub fn fit_glm_py(
     y: PyReadonlyArray1<f64>,
     x: PyReadonlyArray2<f64>,
@@ -136,6 +170,8 @@ pub fn fit_glm_py(
     store_design_matrix: bool,
     allow_extended_tweedie: bool,
     fit_intercept: bool,
+    center: Option<PyReadonlyArray1<f64>>,
+    scale: Option<PyReadonlyArray1<f64>>,
 ) -> PyResult<PyGLMResults> {
     let y_array: Array1<f64> = y.as_array().to_owned();
     let x_view = x.as_array(); // Zero-copy view of numpy array
@@ -143,6 +179,7 @@ pub fn fit_glm_py(
     let n_params = x_view.ncols();
     let offset_array: Option<Array1<f64>> = offset.map(|o| o.as_array().to_owned());
     let weights_array: Option<Array1<f64>> = weights.map(|w| w.as_array().to_owned());
+    let standardization = build_standardization(center, scale, n_params)?;
 
     let reg_config = if alpha > 0.0 {
         if l1_ratio >= 1.0 {
@@ -166,6 +203,7 @@ pub fn fit_glm_py(
         nonpos_indices: nonpos_indices.unwrap_or_default(),
         regularization: reg_config,
         skip_covariance: false,
+        standardization,
     };
 
     // Gamma validation
@@ -239,7 +277,7 @@ pub fn fit_glm_py(
 // =============================================================================
 
 #[pyfunction]
-#[pyo3(signature = (y, x, link=None, init_theta=None, theta_tol=1e-5, max_theta_iter=10, offset=None, weights=None, max_iter=25, tol=1e-8, alpha=0.0, l1_ratio=0.0, nonneg_indices=None, nonpos_indices=None, store_design_matrix=false))]
+#[pyo3(signature = (y, x, link=None, init_theta=None, theta_tol=1e-5, max_theta_iter=10, offset=None, weights=None, max_iter=25, tol=1e-8, alpha=0.0, l1_ratio=0.0, nonneg_indices=None, nonpos_indices=None, store_design_matrix=false, center=None, scale=None))]
 pub fn fit_negbinomial_py<'py>(
     py: Python<'py>,
     y: PyReadonlyArray1<f64>,
@@ -257,6 +295,8 @@ pub fn fit_negbinomial_py<'py>(
     nonneg_indices: Option<Vec<usize>>,
     nonpos_indices: Option<Vec<usize>>,
     store_design_matrix: bool,
+    center: Option<PyReadonlyArray1<f64>>,
+    scale: Option<PyReadonlyArray1<f64>>,
 ) -> PyResult<Py<PyAny>> {
     let y_array: Array1<f64> = y.as_array().to_owned();
     let x_view = x.as_array(); // Zero-copy view
@@ -264,6 +304,11 @@ pub fn fit_negbinomial_py<'py>(
     let n_params = x_view.ncols();
     let offset_array: Option<Array1<f64>> = offset.map(|o| o.as_array().to_owned());
     let weights_array: Option<Array1<f64>> = weights.map(|w| w.as_array().to_owned());
+    // Standardization for penalized fits, mirroring `fit_glm_py`. Like this
+    // binding's existing `alpha`/`l1_ratio`, it serves direct callers running a
+    // penalized fit; the Python theta-estimation path always fits unpenalized
+    // (`alpha=0`, where standardization is a no-op), so it passes `None`.
+    let standardization = build_standardization(center, scale, n_params)?;
 
     let reg_config = if alpha > 0.0 {
         if l1_ratio >= 1.0 {
@@ -286,6 +331,7 @@ pub fn fit_negbinomial_py<'py>(
         nonpos_indices: nonpos_indices.unwrap_or_default(),
         regularization: reg_config,
         skip_covariance: false,
+        standardization,
     };
 
     let link_name = link.unwrap_or("log");
@@ -456,7 +502,7 @@ fn validation_deviance_score(unit_deviance: &Array1<f64>, weights: Option<&Array
 }
 
 #[pyfunction]
-#[pyo3(signature = (y, x, family, link=None, var_power=1.5, theta=1.0, offset=None, weights=None, alphas=None, l1_ratio=0.0, n_folds=5, max_iter=25, tol=1e-8, seed=None, nonneg_indices=None, nonpos_indices=None, allow_extended_tweedie=false, fit_intercept=true))]
+#[pyo3(signature = (y, x, family, link=None, var_power=1.5, theta=1.0, offset=None, weights=None, alphas=None, l1_ratio=0.0, n_folds=5, max_iter=25, tol=1e-8, seed=None, nonneg_indices=None, nonpos_indices=None, allow_extended_tweedie=false, fit_intercept=true, center=None, scale=None))]
 pub fn fit_cv_path_py<'py>(
     py: Python<'py>,
     y: PyReadonlyArray1<f64>,
@@ -477,6 +523,8 @@ pub fn fit_cv_path_py<'py>(
     nonpos_indices: Option<Vec<usize>>,
     allow_extended_tweedie: bool,
     fit_intercept: bool,
+    center: Option<PyReadonlyArray1<f64>>,
+    scale: Option<PyReadonlyArray1<f64>>,
 ) -> PyResult<Py<PyAny>> {
     let y_array: Array1<f64> = y.as_array().to_owned();
     let x_view = x.as_array(); // Zero-copy view
@@ -484,6 +532,7 @@ pub fn fit_cv_path_py<'py>(
     let p = x_view.ncols();
     let offset_array: Option<Array1<f64>> = offset.map(|o| o.as_array().to_owned());
     let weights_array: Option<Array1<f64>> = weights.map(|w| w.as_array().to_owned());
+    let standardization = build_standardization(center, scale, p)?;
 
     // RS-ACT-005: the previous fallback here was a hard-coded geometric grid
     // (10 -> 1e-4, 20 points) that was completely blind to family, link,
@@ -569,6 +618,17 @@ pub fn fit_cv_path_py<'py>(
                 }
             }
 
+            if let Some(std) = &standardization {
+                x_train = match std.standardize_matrix(x_train.view()) {
+                    Ok(x) => x,
+                    Err(_) => return vec![f64::INFINITY; alpha_vec.len()],
+                };
+                x_val = match std.standardize_matrix(x_val.view()) {
+                    Ok(x) => x,
+                    Err(_) => return vec![f64::INFINITY; alpha_vec.len()],
+                };
+            }
+
             // Safe: family/link were validated before entering the parallel loop
             let thread_fam = family_from_name_with_tweedie_support(
                 family,
@@ -607,6 +667,7 @@ pub fn fit_cv_path_py<'py>(
                     nonpos_indices: nonpos.clone(),
                     regularization: reg_config,
                     skip_covariance: true,
+                    standardization: None,
                 };
 
                 let result = match fit_glm_unified(

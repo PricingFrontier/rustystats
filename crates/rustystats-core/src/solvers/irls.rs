@@ -60,7 +60,7 @@ use crate::constants::{
 use crate::error::{Result, RustyStatsError};
 use crate::families::Family;
 use crate::links::Link;
-use crate::regularization::{Penalty, RegularizationConfig};
+use crate::regularization::{Penalty, RegularizationConfig, Standardization};
 
 // =============================================================================
 // Configuration
@@ -175,6 +175,11 @@ pub struct FitConfig {
     /// coefficients are needed). Saves O(n×p²) computation.
     /// Default: false
     pub skip_covariance: bool,
+
+    /// Optional internal standardization for regularized parametric fits.
+    /// Coefficients are accepted and returned on the caller's original scale.
+    /// Default: None
+    pub standardization: Option<Standardization>,
 }
 
 impl Default for FitConfig {
@@ -188,6 +193,7 @@ impl Default for FitConfig {
             nonpos_indices: Vec::new(),
             regularization: RegularizationConfig::default(),
             skip_covariance: false,
+            standardization: None,
         }
     }
 }
@@ -266,6 +272,7 @@ impl From<&IRLSConfig> for FitConfig {
             nonpos_indices: irls.nonpos_indices.clone(),
             regularization: RegularizationConfig::default(),
             skip_covariance: false,
+            standardization: None,
         }
     }
 }
@@ -380,6 +387,44 @@ pub fn fit_glm_unified(
     weights: Option<&Array1<f64>>,
     init_coefficients: Option<&Array1<f64>>,
 ) -> Result<IRLSResult> {
+    if let Some(standardization) = &config.standardization {
+        if !config.regularization.penalty.is_none() && !config.regularization.penalty.is_smooth() {
+            standardization.validate(x.ncols())?;
+            let x_work = standardization.standardize_matrix(x)?;
+            let init_work = match init_coefficients {
+                Some(init) => Some(
+                    standardization
+                        .to_standardized_coefficients(init, config.regularization.fit_intercept)?,
+                ),
+                None => None,
+            };
+            let mut work_config = config.clone();
+            work_config.standardization = None;
+
+            let mut result = fit_glm_unified(
+                y,
+                x_work.view(),
+                family,
+                link,
+                &work_config,
+                offset,
+                weights,
+                init_work.as_ref(),
+            )?;
+            result.coefficients = standardization.to_original_coefficients(
+                &result.coefficients,
+                config.regularization.fit_intercept,
+            )?;
+            if !config.skip_covariance {
+                result.covariance_unscaled = standardization.to_original_covariance(
+                    &result.covariance_unscaled,
+                    config.regularization.fit_intercept,
+                )?;
+            }
+            return Ok(result);
+        }
+    }
+
     if config.regularization.penalty.requires_coordinate_descent() {
         // L1 or Elastic Net → coordinate descent solver
         use super::coordinate_descent::fit_glm_coordinate_descent;

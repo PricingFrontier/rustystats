@@ -38,8 +38,10 @@
 //
 // =============================================================================
 
-use ndarray::Array2;
+use ndarray::{Array1, Array2, ArrayView2};
 use std::ops::Range;
+
+use crate::error::{Result, RustyStatsError};
 
 /// Penalty type for regularized GLMs.
 ///
@@ -355,6 +357,181 @@ pub struct RegularizationConfig {
     pub cd_tolerance: f64,
 }
 
+/// Column standardization metadata for regularized fits.
+///
+/// The solver fits on ``(X - center) / scale`` so that a single penalty
+/// strength acts fairly across predictors, then maps coefficients and
+/// covariance back to the caller's original design scale.
+#[derive(Debug, Clone)]
+pub struct Standardization {
+    pub center: Vec<f64>,
+    pub scale: Vec<f64>,
+}
+
+impl Standardization {
+    /// Create a validated standardization descriptor.
+    pub fn new(center: Vec<f64>, scale: Vec<f64>) -> Result<Self> {
+        let std = Self { center, scale };
+        std.validate(std.center.len())?;
+        Ok(std)
+    }
+
+    /// Validate shape and numerical sanity against a design with ``n_cols`` columns.
+    pub fn validate(&self, n_cols: usize) -> Result<()> {
+        if self.center.len() != n_cols {
+            return Err(RustyStatsError::dim_mismatch(
+                n_cols,
+                self.center.len(),
+                "standardization center length vs X columns",
+            ));
+        }
+        if self.scale.len() != n_cols {
+            return Err(RustyStatsError::dim_mismatch(
+                n_cols,
+                self.scale.len(),
+                "standardization scale length vs X columns",
+            ));
+        }
+        if self.center.iter().any(|v| !v.is_finite()) {
+            return Err(RustyStatsError::InvalidValue(
+                "standardization center values must be finite".to_string(),
+            ));
+        }
+        if self.scale.iter().any(|v| !v.is_finite() || *v <= 0.0) {
+            return Err(RustyStatsError::InvalidValue(
+                "standardization scale values must be finite and > 0".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Return a standardized working copy of the design matrix.
+    pub fn standardize_matrix(&self, x: ArrayView2<'_, f64>) -> Result<Array2<f64>> {
+        self.validate(x.ncols())?;
+        let mut out = x.to_owned();
+        for j in 0..x.ncols() {
+            let center = self.center[j];
+            let scale = self.scale[j];
+            if center == 0.0 && scale == 1.0 {
+                continue;
+            }
+            for i in 0..x.nrows() {
+                out[[i, j]] = (out[[i, j]] - center) / scale;
+            }
+        }
+        Ok(out)
+    }
+
+    /// Map public/original-scale coefficients into standardized coordinates.
+    pub fn to_standardized_coefficients(
+        &self,
+        beta: &Array1<f64>,
+        fit_intercept: bool,
+    ) -> Result<Array1<f64>> {
+        self.validate(beta.len())?;
+        let mut out = beta.clone();
+        for j in 0..beta.len() {
+            if fit_intercept && j == 0 {
+                continue;
+            }
+            out[j] = beta[j] * self.scale[j];
+        }
+        if fit_intercept && !beta.is_empty() {
+            let mut intercept = beta[0];
+            for j in 1..beta.len() {
+                intercept += self.center[j] * beta[j];
+            }
+            out[0] = intercept;
+        }
+        Ok(out)
+    }
+
+    /// Map standardized coefficients back to the caller's original design scale.
+    pub fn to_original_coefficients(
+        &self,
+        beta_tilde: &Array1<f64>,
+        fit_intercept: bool,
+    ) -> Result<Array1<f64>> {
+        self.validate(beta_tilde.len())?;
+        let mut out = beta_tilde.clone();
+        for j in 0..beta_tilde.len() {
+            if fit_intercept && j == 0 {
+                continue;
+            }
+            out[j] = beta_tilde[j] / self.scale[j];
+        }
+        if fit_intercept && !beta_tilde.is_empty() {
+            let mut intercept = beta_tilde[0];
+            for j in 1..beta_tilde.len() {
+                intercept -= (self.center[j] / self.scale[j]) * beta_tilde[j];
+            }
+            out[0] = intercept;
+        }
+        Ok(out)
+    }
+
+    /// Map covariance from standardized coordinates back to original coordinates.
+    pub fn to_original_covariance(
+        &self,
+        cov_tilde: &Array2<f64>,
+        fit_intercept: bool,
+    ) -> Result<Array2<f64>> {
+        let p = cov_tilde.nrows();
+        if cov_tilde.ncols() != p {
+            return Err(RustyStatsError::InvalidValue(
+                "standardization covariance transform requires a square matrix".to_string(),
+            ));
+        }
+        self.validate(p)?;
+
+        let mut cov = cov_tilde.clone();
+        for i in 0..p {
+            let si = if fit_intercept && i == 0 {
+                1.0
+            } else {
+                self.scale[i]
+            };
+            for j in 0..p {
+                let sj = if fit_intercept && j == 0 {
+                    1.0
+                } else {
+                    self.scale[j]
+                };
+                cov[[i, j]] = cov_tilde[[i, j]] / (si * sj);
+            }
+        }
+
+        if fit_intercept && p > 0 {
+            let mut intercept_row = vec![0.0; p];
+            for j in 1..p {
+                let mut val = cov[[0, j]];
+                for k in 1..p {
+                    val -= self.center[k] * cov[[k, j]];
+                }
+                intercept_row[j] = val;
+            }
+
+            let mut intercept_var = cov[[0, 0]];
+            for k in 1..p {
+                intercept_var -= 2.0 * self.center[k] * cov[[0, k]];
+            }
+            for k in 1..p {
+                for l in 1..p {
+                    intercept_var += self.center[k] * self.center[l] * cov[[k, l]];
+                }
+            }
+
+            cov[[0, 0]] = intercept_var;
+            for j in 1..p {
+                cov[[0, j]] = intercept_row[j];
+                cov[[j, 0]] = intercept_row[j];
+            }
+        }
+
+        Ok(cov)
+    }
+}
+
 impl Default for RegularizationConfig {
     fn default() -> Self {
         Self {
@@ -496,6 +673,75 @@ mod tests {
 
         assert_eq!(config.penalty.l2_penalty(), 0.1);
         assert!(config.fit_intercept);
+    }
+
+    #[test]
+    fn test_standardization_coefficient_round_trip() {
+        let std = Standardization::new(vec![0.0, 10.0, -2.0], vec![1.0, 5.0, 0.5])
+            .expect("standardization should validate");
+        let beta = Array1::from_vec(vec![1.2, 0.3, -0.4]);
+        let beta_tilde = std
+            .to_standardized_coefficients(&beta, true)
+            .expect("to standardized");
+        let beta_back = std
+            .to_original_coefficients(&beta_tilde, true)
+            .expect("to original");
+        for i in 0..beta.len() {
+            assert!((beta[i] - beta_back[i]).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn test_standardization_covariance_scale_only() {
+        let std = Standardization::new(vec![0.0, 0.0], vec![2.0, 4.0])
+            .expect("standardization should validate");
+        let cov_tilde = Array2::from_shape_vec((2, 2), vec![4.0, 8.0, 8.0, 16.0])
+            .expect("test covariance shape");
+        let cov = std
+            .to_original_covariance(&cov_tilde, false)
+            .expect("covariance transform");
+        assert!((cov[[0, 0]] - 1.0).abs() < 1e-12);
+        assert!((cov[[0, 1]] - 1.0).abs() < 1e-12);
+        assert!((cov[[1, 1]] - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_standardization_covariance_center_scale_matches_reference() {
+        // The intercept cross-term back-transform must equal the explicit
+        // A·C̃·Aᵀ map (β = A·β̃), independently of the closed form in
+        // `to_original_covariance`. This locks in the full center+scale path —
+        // the scale-only test above never exercises the intercept row/col.
+        let center = vec![0.0, 10.0, -2.0];
+        let scale = vec![1.0, 5.0, 0.5];
+        let std = Standardization::new(center.clone(), scale.clone())
+            .expect("standardization should validate");
+
+        let cov_tilde =
+            Array2::from_shape_vec((3, 3), vec![2.0, 0.3, -0.1, 0.3, 1.5, 0.2, -0.1, 0.2, 0.8])
+                .expect("test covariance shape");
+
+        // A: β = A·β̃ with the intercept at index 0 (A[0,j] = −center[j]/scale[j]).
+        let mut a = Array2::<f64>::zeros((3, 3));
+        a[[0, 0]] = 1.0;
+        for j in 1..3 {
+            a[[0, j]] = -center[j] / scale[j];
+            a[[j, j]] = 1.0 / scale[j];
+        }
+        let reference = a.dot(&cov_tilde).dot(&a.t());
+
+        let cov = std
+            .to_original_covariance(&cov_tilde, true)
+            .expect("covariance transform");
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!(
+                    (cov[[i, j]] - reference[[i, j]]).abs() < 1e-12,
+                    "mismatch at ({i},{j}): {} vs {}",
+                    cov[[i, j]],
+                    reference[[i, j]]
+                );
+            }
+        }
     }
 
     #[test]

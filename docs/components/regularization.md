@@ -32,7 +32,12 @@ print(f"CV deviance: {result.cv_deviance}")
 | `selection` | `"min"` | `"min"` (best fit) or `"1se"` (more conservative) |
 | `cv` | `5` | Number of CV folds |
 | `n_alphas` | `20` | Alpha grid size |
+| `standardize` | `True` | Standardize penalized columns internally before applying the penalty |
 | `cv_seed` | `None` | Seed for reproducible folds |
+
+With `standardize=True`, coefficients, standard errors, predictions, and
+exports are still reported on the original data scale. Set
+`standardize=False` only to reproduce the legacy raw-scale penalty.
 
 ## Selection Methods
 
