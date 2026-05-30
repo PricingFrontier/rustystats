@@ -3411,6 +3411,107 @@ class TestFactorExtensions:
                     assert key in pair
 
 
+class TestDestylerMethodologyExtensions:
+    def test_partial_dependence_and_encoding_metadata(self):
+        import rustystats as rs
+
+        rng = np.random.default_rng(21)
+        n = 500
+        age = rng.uniform(18, 75, n)
+        brand = rng.choice(["A", "B", "C", "D"], n)
+        exposure = rng.uniform(0.5, 1.5, n)
+        mu = np.exp(-2.5 + 0.015 * age + 0.2 * (brand == "A"))
+        y = rng.poisson(mu * exposure)
+        data = pl.DataFrame({"y": y, "age": age, "brand": brand, "exposure": exposure})
+        result = rs.glm_dict(
+            response="y",
+            terms={
+                "age": {"type": "bs", "df": 5},
+                "brand": {"type": "target_encoding"},
+            },
+            data=data,
+            family="poisson",
+            exposure="exposure",
+        ).fit()
+
+        diag = result.diagnostics(
+            train_data=data,
+            categorical_factors=["brand"],
+            continuous_factors=["age"],
+            compute_vif=False,
+            compute_deviance_by_level=False,
+            compute_lift=False,
+            compute_robust_se=False,
+            compute_score_tests=False,
+            compute_coefficients=False,
+        )
+
+        age_pd = next(pd for pd in diag.partial_dependence if pd.variable == "age")
+        assert age_pd.term_type == "bs"
+        assert age_pd.prediction_scale == "response"
+        assert age_pd.knots is not None
+        assert age_pd.boundary_knots is not None
+
+        assert diag.encoding_diagnostics is not None
+        brand_encoding = next(e for e in diag.encoding_diagnostics if e.name == "TE(brand)")
+        assert brand_encoding.kind == "target_encoding"
+        assert brand_encoding.source_factors == ["brand"]
+        assert brand_encoding.n_levels_train == 4
+
+    def test_higher_order_interaction_block_diagnostics(self):
+        import rustystats as rs
+
+        rng = np.random.default_rng(22)
+        n = 700
+        x1 = rng.normal(size=n)
+        x2 = rng.normal(size=n)
+        region = rng.choice(["N", "S", "E"], n)
+        exposure = rng.uniform(0.5, 1.2, n)
+        mu = np.exp(-2.2 + 0.2 * x1 - 0.1 * x2 + 0.15 * (region == "N"))
+        y = rng.poisson(mu * exposure)
+        data = pl.DataFrame({"y": y, "x1": x1, "x2": x2, "region": region, "exposure": exposure})
+        result = rs.glm_dict(
+            response="y",
+            terms={
+                "x1": {"type": "linear"},
+                "x2": {"type": "linear"},
+                "region": {"type": "categorical"},
+            },
+            interactions=[
+                {
+                    "x1": {"type": "linear"},
+                    "x2": {"type": "linear"},
+                    "region": {"type": "categorical"},
+                    "include_main": False,
+                }
+            ],
+            data=data,
+            family="poisson",
+            exposure="exposure",
+        ).fit()
+
+        diag = result.diagnostics(
+            train_data=data,
+            categorical_factors=["region"],
+            continuous_factors=["x1", "x2"],
+            interactions=[("x1", "x2", "region")],
+            compute_deviance_by_level=False,
+            compute_lift=False,
+            compute_partial_dep=False,
+            compute_robust_se=False,
+            compute_score_tests=False,
+        )
+
+        assert len(diag.interactions) == 0
+        assert len(diag.interaction_blocks) == 1
+        block = diag.interaction_blocks[0]
+        assert block.order == 3
+        assert block.in_model is True
+        assert block.representation == "tensor_product"
+        assert block.coefficients
+        assert block.significance is not None
+
+
 # =============================================================================
 # Helper unit tests — exercise the pair_diagnostics building blocks in
 # isolation so a future refactor that breaks one helper fails loudly here.

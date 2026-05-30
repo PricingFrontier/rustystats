@@ -508,6 +508,8 @@ def compute_ae_continuous_py(
     exposure: npt.NDArray[np.float64] | None = None,
     n_bins: int = 10,
     family: str = "poisson",
+    prior_weights: npt.NDArray[np.float64] | None = None,
+    base: npt.NDArray[np.float64] | None = None,
 ) -> list[dict]: ...
 def compute_ae_continuous_batch_py(
     values_list: list[npt.NDArray[np.float64]],
@@ -516,6 +518,8 @@ def compute_ae_continuous_batch_py(
     exposure: npt.NDArray[np.float64] | None = None,
     n_bins: int = 10,
     family: str = "poisson",
+    prior_weights: npt.NDArray[np.float64] | None = None,
+    base: npt.NDArray[np.float64] | None = None,
 ) -> list[list[dict]]:
     """Compute A/E bins for many continuous factors at once, parallelized over factors.
 
@@ -533,6 +537,8 @@ def compute_ae_categorical_py(
     rare_threshold_pct: float = 1.0,
     max_levels: int = 20,
     family: str = "poisson",
+    prior_weights: npt.NDArray[np.float64] | None = None,
+    base: npt.NDArray[np.float64] | None = None,
 ) -> list[dict]: ...
 def compute_ae_categorical_batch_py(
     codes_list: list[npt.NDArray[np.uint32]],
@@ -543,6 +549,8 @@ def compute_ae_categorical_batch_py(
     rare_threshold_pct: float = 1.0,
     max_levels: int = 20,
     family: str = "poisson",
+    prior_weights: npt.NDArray[np.float64] | None = None,
+    base: npt.NDArray[np.float64] | None = None,
 ) -> list[list[dict]]:
     """Compute A/E bins for many categorical factors at once, parallelized over factors.
 

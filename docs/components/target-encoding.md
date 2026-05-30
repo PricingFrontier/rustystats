@@ -220,7 +220,7 @@ result = rs.glm_dict(
     },
     data=data,
     family="poisson",
-    exposure="Exposure",  # preferred; `offset="Exposure"` is a legacy alias
+    exposure="Exposure",  # raw exposure (the rate denominator)
 ).fit()
 ```
 

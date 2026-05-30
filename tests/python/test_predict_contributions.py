@@ -323,15 +323,14 @@ class TestInteractions:
 
 class TestOffset:
     def test_log_link_exposure_offset_row(self, sample_data):
-        # RS-ACT-002: ``offset="exposure"`` under a log link is the legacy
-        # alias for ``exposure="exposure"``; the ladder row therefore carries
-        # ``term_type="exposure"`` rather than ``"offset"``.
+        # RS-ACT-002: raw rate denominators use ``exposure=`` and appear as an
+        # exposure row in the contribution ladder.
         result = rs.glm_dict(
             response="y",
             terms={"x1": {"type": "linear"}},
             data=sample_data,
             family="poisson",
-            offset="exposure",
+            exposure="exposure",
         ).fit()
         rows = result.predict_contributions(sample_data.head(3))
         for i, row in enumerate(rows):

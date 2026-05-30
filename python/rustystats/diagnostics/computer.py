@@ -208,6 +208,7 @@ class DiagnosticsComputer:
         theta: float = 1.0,
         null_deviance: float | None = None,
         weights: np.ndarray | None = None,
+        base_mu: np.ndarray | None = None,
     ):
         self.y = np.asarray(y, dtype=np.float64)
         self.mu = np.asarray(mu, dtype=np.float64)
@@ -227,6 +228,7 @@ class DiagnosticsComputer:
         self.weights = (
             np.asarray(weights, dtype=np.float64) if weights is not None else np.ones_like(self.y)
         )
+        self.base_mu = None if base_mu is None else np.asarray(base_mu, dtype=np.float64)
         self.feature_names = feature_names or []
         self.var_power = var_power
         self.theta = theta
@@ -257,6 +259,8 @@ class DiagnosticsComputer:
             self.pearson_residuals,
             self.feature_names,
             self.family,
+            weights=(self.weights if self._has_weights else None),
+            base_mu=self.base_mu,
         )
         self._interactions = _InteractionDetector(
             self.pearson_residuals,
@@ -1305,6 +1309,27 @@ class DiagnosticsComputer:
         eta_baseline_response = float(link_forward(link, base_pred))
 
         results = []
+        spline_info = None
+        builder = getattr(result, "_builder", None)
+        if builder is not None and hasattr(builder, "get_spline_info"):
+            spline_info = builder.get_spline_info()
+
+        def _term_metadata(var: str) -> dict[str, Any]:
+            slot = None
+            slots = getattr(builder, "_term_slots", None) if builder is not None else None
+            if slots is not None:
+                for candidate in slots:
+                    if len(getattr(candidate, "factors", [])) == 1 and candidate.factors[0] == var:
+                        slot = candidate
+                        break
+            term_type = getattr(slot, "term_type", None)
+            info = spline_info.get(var, {}) if isinstance(spline_info, dict) else {}
+            return {
+                "term_type": term_type,
+                "knots": info.get("knots"),
+                "boundary_knots": info.get("boundary_knots"),
+                "monotonicity": info.get("monotonicity"),
+            }
 
         # Continuous variables
         for var in continuous_factors:
@@ -1362,6 +1387,7 @@ class DiagnosticsComputer:
                 base = predictions[len(predictions) // 2]
                 relativities = [p / base if base > 0 else 1.0 for p in predictions]
 
+            metadata = _term_metadata(var)
             results.append(
                 PartialDependence(
                     variable=var,
@@ -1371,6 +1397,12 @@ class DiagnosticsComputer:
                     relativities=[round(r, 4) for r in relativities] if relativities else None,
                     shape=shape,
                     recommendation=recommendation,
+                    term_type=metadata["term_type"],
+                    prediction_scale="response",
+                    relativity_base=round(float(grid[len(grid) // 2]), 4),
+                    knots=metadata["knots"],
+                    boundary_knots=metadata["boundary_knots"],
+                    monotonicity=metadata["monotonicity"],
                 )
             )
 
@@ -1475,6 +1507,7 @@ class DiagnosticsComputer:
                 base = predictions[0]  # First level as base
                 relativities = [p / base if base > 0 else 1.0 for p in predictions]
 
+            metadata = _term_metadata(var)
             results.append(
                 PartialDependence(
                     variable=var,
@@ -1484,6 +1517,12 @@ class DiagnosticsComputer:
                     relativities=[round(r, 4) for r in relativities] if relativities else None,
                     shape=shape,
                     recommendation=recommendation,
+                    term_type=metadata["term_type"],
+                    prediction_scale="response",
+                    relativity_base=grid_values[0] if grid_values else None,
+                    knots=metadata["knots"],
+                    boundary_knots=metadata["boundary_knots"],
+                    monotonicity=metadata["monotonicity"],
                 )
             )
 
@@ -1566,6 +1605,7 @@ class DiagnosticsComputer:
         cat_unique_cache: dict[str, tuple | None] | None = None,
         sort_idx: np.ndarray | None = None,
         weights: np.ndarray | None = None,
+        base_mu: np.ndarray | None = None,
     ) -> DatasetDiagnostics:
         """Compute comprehensive diagnostics for a single dataset."""
         n_obs = len(y)
@@ -1577,9 +1617,22 @@ class DiagnosticsComputer:
                     f"weights length {weights_arr.shape} does not match {dataset_name} "
                     f"dataset length {n_obs}."
                 )
-        total_exposure = float(np.sum(exposure))
-        total_actual = float(np.sum(y))
-        total_predicted = float(np.sum(mu))
+        base_arr = None
+        if base_mu is not None:
+            base_arr = np.asarray(base_mu, dtype=np.float64)
+            if base_arr.ndim != 1 or base_arr.shape[0] != n_obs:
+                raise ValidationError(
+                    f"base_mu length {base_arr.shape} does not match {dataset_name} "
+                    f"dataset length {n_obs}."
+                )
+        if weights_arr is None:
+            total_exposure = float(np.sum(exposure))
+            total_actual = float(np.sum(y))
+            total_predicted = float(np.sum(mu))
+        else:
+            total_exposure = float(np.sum(weights_arr * exposure))
+            total_actual = float(np.sum(weights_arr * y))
+            total_predicted = float(np.sum(weights_arr * mu))
 
         result_scale = None
         if result is not None and hasattr(result, "scale") and callable(result.scale):
@@ -1669,6 +1722,8 @@ class DiagnosticsComputer:
             categorical_factors,
             dev_resids,
             cat_unique_cache=cat_unique_cache,
+            weights=weights_arr,
+            base_mu=base_arr,
         )
 
         # Continuous variable diagnostics. Same batched-Rust strategy as above:
@@ -1683,6 +1738,8 @@ class DiagnosticsComputer:
             dev_resids,
             n_bands,
             cont_column_cache=cont_column_cache,
+            weights=weights_arr,
+            base_mu=base_arr,
         )
 
         return DatasetDiagnostics(
@@ -1821,6 +1878,8 @@ class DiagnosticsComputer:
         categorical_factors: list[str],
         deviance_residuals: np.ndarray | None,
         cat_unique_cache: dict[str, tuple],
+        weights: np.ndarray | None = None,
+        base_mu: np.ndarray | None = None,
     ) -> dict[str, list[FactorLevelMetrics]]:
         """Compute factor-level metrics for all categorical factors in one shot.
 
@@ -1843,7 +1902,11 @@ class DiagnosticsComputer:
             if factor not in data.columns:
                 continue
 
-            unique_levels, inverse = cat_unique_cache[factor]
+            if cat_unique_cache is not None and factor in cat_unique_cache:
+                unique_levels, inverse = cat_unique_cache[factor]
+            else:
+                values = data[factor].cast(pl.Utf8).to_numpy()
+                unique_levels, inverse = np.unique(values, return_inverse=True)
             cat_entries.append(
                 {
                     "name": factor,
@@ -1851,6 +1914,9 @@ class DiagnosticsComputer:
                     "inverse": np.ascontiguousarray(inverse, dtype=np.uint32),
                 }
             )
+
+        weights_arr = None if weights is None else np.asarray(weights, dtype=np.float64)
+        base_arr = None if base_mu is None else np.asarray(base_mu, dtype=np.float64)
 
         # Dispatch the batched Rust call with a list of per-factor code arrays.
         # Passing contiguous 1D arrays (instead of an (n, k) matrix) lets the
@@ -1878,6 +1944,8 @@ class DiagnosticsComputer:
                 -1.0,  # rare_threshold_pct: never rare
                 max_k_plus_2,  # max_levels: never overflow into "_Other"
                 self.family,
+                prior_weights=weights_arr,
+                base=base_arr,
             )
 
             # Compute residual_means per factor with one bincount each, then
@@ -1918,6 +1986,13 @@ class DiagnosticsComputer:
 
                     actual_freq = actual_sum / exp_sum if exp_sum > 0 else 0.0
                     predicted_freq = predicted_sum / exp_sum if exp_sum > 0 else 0.0
+                    base_sum = b["base_sum"]  # None unless a base array was supplied
+                    base_freq = (
+                        base_sum / exp_sum if base_sum is not None and exp_sum > 0.0 else None
+                    )
+                    base_ae = (
+                        actual_sum / base_sum if base_sum is not None and base_sum > 0.0 else None
+                    )
                     metrics.append(
                         FactorLevelMetrics(
                             level=b["bin_label"],
@@ -1927,6 +2002,11 @@ class DiagnosticsComputer:
                             predicted=round(predicted_freq, 6),
                             ae_ratio=round(ae, 4) if not np.isnan(ae) else None,
                             residual_mean=round(resid_mean, 6),
+                            actual_total=actual_sum,
+                            predicted_total=predicted_sum,
+                            base_predicted=round(base_freq, 6) if base_freq is not None else None,
+                            base_predicted_total=base_sum,
+                            base_ae_ratio=round(base_ae, 4) if base_ae is not None else None,
                         )
                     )
 
@@ -1948,6 +2028,8 @@ class DiagnosticsComputer:
         deviance_residuals: np.ndarray | None,
         n_bands: int,
         cont_column_cache: dict[str, np.ndarray],
+        weights: np.ndarray | None = None,
+        base_mu: np.ndarray | None = None,
     ) -> dict[str, list[ContinuousBandMetrics]]:
         """Compute continuous band metrics for all factors in one batched call.
 
@@ -1968,7 +2050,12 @@ class DiagnosticsComputer:
         for var in continuous_factors:
             if var not in data.columns:
                 continue
-            cont_entries.append({"name": var, "values": cont_column_cache[var]})
+            values = (
+                cont_column_cache[var]
+                if cont_column_cache is not None and var in cont_column_cache
+                else data[var].to_numpy().astype(np.float64)
+            )
+            cont_entries.append({"name": var, "values": values})
 
         if not cont_entries:
             return continuous_diag
@@ -1980,6 +2067,8 @@ class DiagnosticsComputer:
         values_list = [
             np.ascontiguousarray(entry["values"], dtype=np.float64) for entry in cont_entries
         ]
+        weights_arr = None if weights is None else np.asarray(weights, dtype=np.float64)
+        base_arr = None if base_mu is None else np.asarray(base_mu, dtype=np.float64)
 
         ae_batch = _rust_ae_continuous_batch(
             values_list,
@@ -1988,6 +2077,8 @@ class DiagnosticsComputer:
             exposure,
             n_bands,
             self.family,
+            prior_weights=weights_arr,
+            base=base_arr,
         )
 
         for entry, rust_bins in zip(cont_entries, ae_batch):
@@ -2046,11 +2137,17 @@ class DiagnosticsComputer:
                 # picks up Rust-side division-rounding drift (~5e-3 worst case).
                 ae = actual_sum / predicted_sum if predicted_sum > 0 else float("nan")
                 midpoint = (lower + upper) / 2
-                partial_dep = predicted_sum / n
+                # Weighted mean prediction Σwμ/Σw (weight_sum == count when the
+                # fit is unweighted, so this stays the plain mean prediction).
+                weight_sum = float(b["weight_sum"])
+                partial_dep = predicted_sum / weight_sum if weight_sum > 0 else 0.0
                 resid_mean = float(resid_sums[i] / n)
 
                 actual_freq = actual_sum / exp_sum if exp_sum > 0 else 0.0
                 predicted_freq = predicted_sum / exp_sum if exp_sum > 0 else 0.0
+                base_sum = b["base_sum"]  # None unless a base array was supplied
+                base_freq = base_sum / exp_sum if base_sum is not None and exp_sum > 0.0 else None
+                base_ae = actual_sum / base_sum if base_sum is not None and base_sum > 0.0 else None
                 metrics.append(
                     ContinuousBandMetrics(
                         band=i + 1,
@@ -2064,6 +2161,11 @@ class DiagnosticsComputer:
                         ae_ratio=round(ae, 4) if not np.isnan(ae) else None,
                         partial_dep=round(partial_dep, 6),
                         residual_mean=round(resid_mean, 6),
+                        actual_total=actual_sum,
+                        predicted_total=predicted_sum,
+                        base_predicted=round(base_freq, 6) if base_freq is not None else None,
+                        base_predicted_total=base_sum,
+                        base_ae_ratio=round(base_ae, 4) if base_ae is not None else None,
                     )
                 )
 
@@ -2078,6 +2180,8 @@ class DiagnosticsComputer:
         mu_base: np.ndarray,
         exposure: np.ndarray,
         n_deciles: int = 10,
+        weights: np.ndarray | None = None,
+        ranking: str = "auto",
     ) -> BasePredictionsComparison:
         """
         Compute comparison between model predictions and base predictions.
@@ -2094,26 +2198,75 @@ class DiagnosticsComputer:
             Exposure weights
         n_deciles : int
             Number of deciles for ratio analysis
+        weights : np.ndarray, optional
+            Prior weights. When supplied, totals, loss, Gini, and decile
+            aggregates use the same Σw·value convention as lift/decile
+            diagnostics.
+        ranking : {"auto", "mean", "rate"}
+            Ranking mode for weighted Gini. Model-vs-base deciles retain their
+            historical sort by model/base prediction ratio.
 
         Returns
         -------
         BasePredictionsComparison
             Complete comparison with metrics and decile analysis
         """
+        y_arr = np.asarray(y, dtype=np.float64)
+        mu_model_arr = np.asarray(mu_model, dtype=np.float64)
+        mu_base_arr = np.asarray(mu_base, dtype=np.float64)
+        exposure_arr = np.asarray(exposure, dtype=np.float64)
+        if not (
+            y_arr.shape[0] == mu_model_arr.shape[0] == mu_base_arr.shape[0] == exposure_arr.shape[0]
+        ):
+            raise ValidationError("y, mu_model, mu_base, and exposure must have matching lengths.")
+
+        weights_arr = None
+        if weights is not None:
+            weights_arr = np.asarray(weights, dtype=np.float64)
+            if weights_arr.ndim != 1 or weights_arr.shape[0] != y_arr.shape[0]:
+                raise ValidationError(
+                    f"weights length {weights_arr.shape} does not match base comparison "
+                    f"length {y_arr.shape[0]}."
+                )
+
+        if weights_arr is None:
+            w = None
+            total_actual = float(np.sum(y_arr))
+            total_exposure = float(np.sum(exposure_arr))
+            total_predicted_base = float(np.sum(mu_base_arr))
+            total_predicted_model = float(np.sum(mu_model_arr))
+        else:
+            w = weights_arr
+            total_actual = float(np.sum(w * y_arr))
+            total_exposure = float(np.sum(w * exposure_arr))
+            total_predicted_base = float(np.sum(w * mu_base_arr))
+            total_predicted_model = float(np.sum(w * mu_model_arr))
+
         # Compute base metrics
-        total_predicted_base = float(np.sum(mu_base))
-        total_actual = float(np.sum(y))
         ae_ratio_base = (
             total_actual / total_predicted_base if total_predicted_base > 0 else float("nan")
         )
 
-        # Base loss using Rust backend
-        base_dataset_metrics = _rust_dataset_metrics(y, mu_base, self.family, self.n_params)
-        base_loss = float(base_dataset_metrics["mean_deviance"])
-
-        # Base discrimination
-        base_stats = _rust_discrimination_stats(y, mu_base, exposure)
-        base_gini = float(base_stats["gini"])
+        # Base loss / discrimination. Keep the unweighted path on the existing
+        # Rust kernels; use the shared weighted Python helpers only when prior
+        # weights are actually supplied. ``_rust_dataset_metrics`` is computed
+        # only on the unweighted path, where its mean_deviance is the loss.
+        base_stats = _rust_discrimination_stats(y_arr, mu_base_arr, exposure_arr)
+        if weights_arr is None:
+            base_dataset_metrics = _rust_dataset_metrics(
+                y_arr, mu_base_arr, self.family, self.n_params
+            )
+            base_loss = float(base_dataset_metrics["mean_deviance"])
+            base_gini = float(base_stats["gini"])
+        else:
+            base_loss = self._compute_loss(y_arr, mu_base_arr, weights_arr)
+            base_sort_idx = rank_sort_idx(
+                mu_base_arr,
+                exposure_arr,
+                has_exposure=self._has_exposure,
+                ranking=ranking,
+            )
+            base_gini = _gini_for_arrays(y_arr, exposure_arr, base_sort_idx, weights_arr)
         base_auc = float(base_stats["auc"])
 
         base_metrics = BasePredictionsMetrics(
@@ -2122,17 +2275,30 @@ class DiagnosticsComputer:
             loss=round(base_loss, 6),
             gini=round(base_gini, 4),
             auc=round(base_auc, 4),
+            total_actual=round(total_actual, 2),
+            total_exposure=round(total_exposure, 2),
         )
 
         # Model metrics for side-by-side comparison
-        total_predicted_model = float(np.sum(mu_model))
         ae_ratio_model = (
             total_actual / total_predicted_model if total_predicted_model > 0 else float("nan")
         )
-        model_dataset_metrics = _rust_dataset_metrics(y, mu_model, self.family, self.n_params)
-        model_loss = float(model_dataset_metrics["mean_deviance"])
-        model_stats = _rust_discrimination_stats(y, mu_model, exposure)
-        model_gini = float(model_stats["gini"])
+        model_stats = _rust_discrimination_stats(y_arr, mu_model_arr, exposure_arr)
+        if weights_arr is None:
+            model_dataset_metrics = _rust_dataset_metrics(
+                y_arr, mu_model_arr, self.family, self.n_params
+            )
+            model_loss = float(model_dataset_metrics["mean_deviance"])
+            model_gini = float(model_stats["gini"])
+        else:
+            model_loss = self._compute_loss(y_arr, mu_model_arr, weights_arr)
+            model_sort_idx = rank_sort_idx(
+                mu_model_arr,
+                exposure_arr,
+                has_exposure=self._has_exposure,
+                ranking=ranking,
+            )
+            model_gini = _gini_for_arrays(y_arr, exposure_arr, model_sort_idx, weights_arr)
         model_auc = float(model_stats["auc"])
 
         model_metrics = BasePredictionsMetrics(
@@ -2141,22 +2307,25 @@ class DiagnosticsComputer:
             loss=round(model_loss, 6),
             gini=round(model_gini, 4),
             auc=round(model_auc, 4),
+            total_actual=round(total_actual, 2),
+            total_exposure=round(total_exposure, 2),
         )
 
         # Compute model/base ratio and sort into deciles
         # Handle divide by zero - use small epsilon where base is 0
-        mu_base_safe = np.where(mu_base > EPSILON, mu_base, EPSILON)
-        model_base_ratio = mu_model / mu_base_safe
+        mu_base_safe = np.where(mu_base_arr > EPSILON, mu_base_arr, EPSILON)
+        model_base_ratio = mu_model_arr / mu_base_safe
 
         # Sort by model/base ratio
         sort_idx = np.argsort(model_base_ratio)
-        y_sorted = y[sort_idx]
-        mu_model_sorted = mu_model[sort_idx]
-        mu_base_sorted = mu_base[sort_idx]
-        exp_sorted = exposure[sort_idx]
+        y_sorted = y_arr[sort_idx]
+        mu_model_sorted = mu_model_arr[sort_idx]
+        mu_base_sorted = mu_base_arr[sort_idx]
+        exp_sorted = exposure_arr[sort_idx]
         ratio_sorted = model_base_ratio[sort_idx]
+        w_sorted = np.ones_like(y_sorted) if weights_arr is None else weights_arr[sort_idx]
 
-        n = len(y)
+        n = len(y_arr)
         decile_size = n // n_deciles
 
         deciles = []
@@ -2172,11 +2341,12 @@ class DiagnosticsComputer:
             mu_base_d = mu_base_sorted[start:end]
             exp_d = exp_sorted[start:end]
             ratio_d = ratio_sorted[start:end]
+            w_d = w_sorted[start:end]
 
-            actual_sum = float(np.sum(y_d))
-            model_sum = float(np.sum(mu_model_d))
-            base_sum = float(np.sum(mu_base_d))
-            exp_sum = float(np.sum(exp_d))
+            actual_sum = float(np.sum(w_d * y_d))
+            model_sum = float(np.sum(w_d * mu_model_d))
+            base_sum = float(np.sum(w_d * mu_base_d))
+            exp_sum = float(np.sum(w_d * exp_d))
 
             model_ae = actual_sum / model_sum if model_sum > 0 else float("nan")
             base_ae = actual_sum / base_sum if base_sum > 0 else float("nan")
@@ -2187,7 +2357,12 @@ class DiagnosticsComputer:
             base_freq = base_sum / exp_sum if exp_sum > 0 else 0.0
 
             # Mean ratio in this decile
-            ratio_mean = float(np.mean(ratio_d))
+            ratio_weight = float(np.sum(w_d))
+            ratio_mean = (
+                float(np.average(ratio_d, weights=w_d))
+                if ratio_weight > 0.0 and ratio_d.size > 0
+                else float(np.mean(ratio_d))
+            )
 
             deciles.append(
                 ModelVsBaseDecile(

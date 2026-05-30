@@ -51,6 +51,8 @@ fn ae_continuous_bin_to_dict<'py>(py: Python<'py>, bin: &ActualExpectedBin) -> P
     dict.set_item("loss", bin.loss)?;
     dict.set_item("ae_ci_lower", bin.ae_ci_lower)?;
     dict.set_item("ae_ci_upper", bin.ae_ci_upper)?;
+    dict.set_item("weight_sum", bin.weight_sum)?;
+    dict.set_item("base_sum", bin.base_sum)?;
     Ok(dict.unbind().into())
 }
 
@@ -73,6 +75,8 @@ fn ae_categorical_bin_to_dict<'py>(
     dict.set_item("loss", bin.loss)?;
     dict.set_item("ae_ci_lower", bin.ae_ci_lower)?;
     dict.set_item("ae_ci_upper", bin.ae_ci_upper)?;
+    dict.set_item("weight_sum", bin.weight_sum)?;
+    dict.set_item("base_sum", bin.base_sum)?;
     Ok(dict.unbind().into())
 }
 
@@ -199,7 +203,7 @@ pub fn compute_discrimination_stats_py<'py>(
 
 /// Compute A/E bins for continuous factor from Rust
 #[pyfunction]
-#[pyo3(signature = (values, y, mu, exposure=None, n_bins=10, family="poisson"))]
+#[pyo3(signature = (values, y, mu, exposure=None, n_bins=10, family="poisson", prior_weights=None, base=None))]
 pub fn compute_ae_continuous_py<'py>(
     py: Python<'py>,
     values: PyReadonlyArray1<f64>,
@@ -208,11 +212,15 @@ pub fn compute_ae_continuous_py<'py>(
     exposure: Option<PyReadonlyArray1<f64>>,
     n_bins: usize,
     family: &str,
+    prior_weights: Option<PyReadonlyArray1<f64>>,
+    base: Option<PyReadonlyArray1<f64>>,
 ) -> PyResult<Vec<Py<PyAny>>> {
     let values_arr = values.as_array().to_owned();
     let y_arr = y.as_array().to_owned();
     let mu_arr = mu.as_array().to_owned();
     let exp_arr = exposure.map(|e| e.as_array().to_owned());
+    let pw_arr = prior_weights.map(|w| w.as_array().to_owned());
+    let base_arr = base.map(|b| b.as_array().to_owned());
 
     let values_slice = values_arr
         .as_slice()
@@ -227,6 +235,8 @@ pub fn compute_ae_continuous_py<'py>(
         n_bins,
         None, // var_power
         None, // theta
+        pw_arr.as_ref(),
+        base_arr.as_ref(),
     );
 
     bins.iter()
@@ -249,7 +259,7 @@ pub fn compute_ae_continuous_py<'py>(
 /// transient peak (per copy, so 384 MB combined) on every factor diagnostics
 /// call.
 #[pyfunction]
-#[pyo3(signature = (values_list, y, mu, exposure=None, n_bins=10, family="poisson"))]
+#[pyo3(signature = (values_list, y, mu, exposure=None, n_bins=10, family="poisson", prior_weights=None, base=None))]
 pub fn compute_ae_continuous_batch_py<'py>(
     py: Python<'py>,
     values_list: Vec<PyReadonlyArray1<'py, f64>>,
@@ -258,10 +268,14 @@ pub fn compute_ae_continuous_batch_py<'py>(
     exposure: Option<PyReadonlyArray1<f64>>,
     n_bins: usize,
     family: &str,
+    prior_weights: Option<PyReadonlyArray1<f64>>,
+    base: Option<PyReadonlyArray1<f64>>,
 ) -> PyResult<Vec<Vec<Py<PyAny>>>> {
     let y_arr = y.as_array().to_owned();
     let mu_arr = mu.as_array().to_owned();
     let exp_arr = exposure.map(|e| e.as_array().to_owned());
+    let pw_arr = prior_weights.map(|w| w.as_array().to_owned());
+    let base_arr = base.map(|b| b.as_array().to_owned());
 
     let n = y_arr.len();
 
@@ -306,6 +320,8 @@ pub fn compute_ae_continuous_batch_py<'py>(
             n_bins,
             None,
             None,
+            pw_arr.as_ref(),
+            base_arr.as_ref(),
         )
     });
 
@@ -322,7 +338,7 @@ pub fn compute_ae_continuous_batch_py<'py>(
 
 /// Compute A/E bins for categorical factor from Rust
 #[pyfunction]
-#[pyo3(signature = (levels, y, mu, exposure=None, rare_threshold_pct=1.0, max_levels=20, family="poisson"))]
+#[pyo3(signature = (levels, y, mu, exposure=None, rare_threshold_pct=1.0, max_levels=20, family="poisson", prior_weights=None, base=None))]
 pub fn compute_ae_categorical_py<'py>(
     py: Python<'py>,
     levels: Vec<String>,
@@ -332,10 +348,14 @@ pub fn compute_ae_categorical_py<'py>(
     rare_threshold_pct: f64,
     max_levels: usize,
     family: &str,
+    prior_weights: Option<PyReadonlyArray1<f64>>,
+    base: Option<PyReadonlyArray1<f64>>,
 ) -> PyResult<Vec<Py<PyAny>>> {
     let y_arr = y.as_array().to_owned();
     let mu_arr = mu.as_array().to_owned();
     let exp_arr = exposure.map(|e| e.as_array().to_owned());
+    let pw_arr = prior_weights.map(|w| w.as_array().to_owned());
+    let base_arr = base.map(|b| b.as_array().to_owned());
 
     let bins = compute_ae_categorical(
         &levels,
@@ -347,6 +367,8 @@ pub fn compute_ae_categorical_py<'py>(
         None, // theta
         rare_threshold_pct,
         max_levels,
+        pw_arr.as_ref(),
+        base_arr.as_ref(),
     );
 
     bins.iter()
@@ -370,7 +392,7 @@ pub fn compute_ae_categorical_py<'py>(
 /// eliminates both, saving ~24 MB transient peak (per copy, 48 MB combined)
 /// at 1M rows × 6 categorical factors.
 #[pyfunction]
-#[pyo3(signature = (codes_list, levels_list, y, mu, exposure=None, rare_threshold_pct=1.0, max_levels=20, family="poisson"))]
+#[pyo3(signature = (codes_list, levels_list, y, mu, exposure=None, rare_threshold_pct=1.0, max_levels=20, family="poisson", prior_weights=None, base=None))]
 pub fn compute_ae_categorical_batch_py<'py>(
     py: Python<'py>,
     codes_list: Vec<PyReadonlyArray1<'py, u32>>,
@@ -381,10 +403,14 @@ pub fn compute_ae_categorical_batch_py<'py>(
     rare_threshold_pct: f64,
     max_levels: usize,
     family: &str,
+    prior_weights: Option<PyReadonlyArray1<f64>>,
+    base: Option<PyReadonlyArray1<f64>>,
 ) -> PyResult<Vec<Vec<Py<PyAny>>>> {
     let y_arr = y.as_array().to_owned();
     let mu_arr = mu.as_array().to_owned();
     let exp_arr = exposure.map(|e| e.as_array().to_owned());
+    let pw_arr = prior_weights.map(|w| w.as_array().to_owned());
+    let base_arr = base.map(|b| b.as_array().to_owned());
 
     let n = y_arr.len();
     let k = codes_list.len();
@@ -435,6 +461,8 @@ pub fn compute_ae_categorical_batch_py<'py>(
             None, // theta
             rare_threshold_pct,
             max_levels,
+            pw_arr.as_ref(),
+            base_arr.as_ref(),
         )
     });
 

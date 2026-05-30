@@ -22,18 +22,24 @@ def _te_column(model, needle: str = "Brand") -> np.ndarray:
 
 
 class TestExposureKwarg:
-    def test_string_exposure_matches_legacy_offset(self):
-        """002.1: exposure="Exposure" is identical to legacy offset="Exposure"."""
+    def test_string_offset_is_link_scale_not_exposure(self):
+        """RS-ACT-002 (alias removed): a standalone string offset on a log link is
+        a link-scale column used verbatim — NOT raw exposure. It matches an array
+        offset of the same column and is recorded as an offset, not exposure.
+        """
         df = make_freq_frame()
-        terms = {"DrivAge": {"type": "linear"}, "Region": {"type": "categorical"}}
-        legacy = rs.glm_dict(
-            response="ClaimCount", terms=terms, data=df, family="poisson", offset="Exposure"
+        adj = np.linspace(-0.2, 0.2, df.height)
+        df = df.with_columns(pl.Series("Adj", adj))
+        terms = {"DrivAge": {"type": "linear"}, "VehAge": {"type": "linear"}}
+        string_offset = rs.glm_dict(
+            response="ClaimCount", terms=terms, data=df, family="poisson", offset="Adj"
         ).fit()
-        explicit = rs.glm_dict(
-            response="ClaimCount", terms=terms, data=df, family="poisson", exposure="Exposure"
+        array_offset = rs.glm_dict(
+            response="ClaimCount", terms=terms, data=df, family="poisson", offset=adj
         ).fit()
-        np.testing.assert_array_equal(explicit.params, legacy.params)
-        np.testing.assert_array_equal(explicit.fittedvalues, legacy.fittedvalues)
+        np.testing.assert_allclose(string_offset.params, array_offset.params, rtol=0, atol=0)
+        assert string_offset._exposure_spec is None
+        assert string_offset._offset_spec == "Adj"
 
     def test_explicit_exposure_plus_string_offset_treats_offset_as_link_scale(self):
         """002.2: when exposure= is explicit, offset= remains link-scale."""
@@ -346,30 +352,6 @@ class TestExposureSerialization:
             result.predict_contributions(df)
         rows = result.predict_contributions(df, exposure=exposure)
         assert len(rows) == len(df)
-
-    def test_deserializes_legacy_offset_exposure_payload_as_exposure_model(self):
-        import pickle
-
-        df = make_freq_frame()
-        terms = {"DrivAge": {"type": "linear"}, "Region": {"type": "categorical"}}
-        result = rs.glm_dict(
-            response="ClaimCount", terms=terms, data=df, family="poisson", exposure="Exposure"
-        ).fit()
-        state = pickle.loads(result.to_bytes())
-        state.pop("exposure_spec", None)
-        state["offset_spec"] = "Exposure"
-        state["offset_is_exposure"] = True
-
-        loaded = rs.GLMModel.from_bytes(pickle.dumps(state))
-        assert loaded._exposure_spec == "Exposure"
-        assert loaded._offset_spec is None
-        assert not loaded._offset_is_exposure
-        np.testing.assert_allclose(
-            loaded.predict(df.head(20)),
-            result.predict(df.head(20)),
-            rtol=1e-9,
-            atol=1e-9,
-        )
 
 
 class TestExposureDiagnostics:

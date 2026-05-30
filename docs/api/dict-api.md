@@ -40,7 +40,7 @@ rustystats.glm_dict(
 | `var_power` | float | Tweedie variance power, default 1.5 (compound Poisson-Gamma interior) |
 | `theta` | float or `"estimate"` | Negative Binomial dispersion. Pass a positive number for a fixed-theta fit, or `"estimate"` for profile estimation on the plain unpenalized path. For Negative Binomial, leaving `theta` unspecified raises. Embedded forms such as `family="negbinomial(theta=2.0)"` are also accepted. |
 | `exposure` | str or array | **Preferred** raw positive denominator for rate models. Added as `log(exposure)` to the linear predictor under log link, and used as the rate denominator for exposure-weighted target encoding. |
-| `offset` | str or array | Link-scale additive offset. A string offset under a log-link family is treated as a legacy alias for `exposure=` when `exposure` is not set. |
+| `offset` | str or array | Link-scale additive offset, used as-is. A string names a column added verbatim on the link scale; it is **never** treated as raw exposure. Use `exposure=` for the rate denominator. |
 | `weights` | str or array | Prior weights |
 | `seed` | int | Random seed for reproducibility |
 | `complement` | str, array, or `GLMModel` | Complement-of-credibility prior (response scale). Used by lasso shrinkage. |
@@ -71,9 +71,9 @@ rs.glm_dict(..., family="poisson", exposure="Exposure")
 # diagnostics / target encoding.
 rs.glm_dict(..., family="poisson", offset=np.log(exposure), exposure=exposure)
 
-# Legacy alias — `offset="Exposure"` under a log-link family is still accepted
-# and treated as `exposure="Exposure"` when no explicit `exposure=` is given.
-rs.glm_dict(..., family="poisson", offset="Exposure")
+# A string `offset=` is a link-scale column added verbatim (NOT raw exposure).
+# Use `exposure=` for the rate denominator.
+rs.glm_dict(..., family="poisson", offset="link_scale_adjustment_column")
 ```
 
 A subtle but **deliberate behaviour change**: an array `offset=np.log(...)`

@@ -505,3 +505,255 @@ class TestWeightedDecileLiftAggregates:
         assert diag.train_test.test.ae_by_decile[0].exposure == pytest.approx(
             round(expected_exposure, 2)
         )
+
+
+class TestBasePredictionDiagnostics:
+    def test_base_predictions_by_role_use_prior_weighted_totals(self):
+        train = make_freq_frame(n=300, seed=11).with_columns(
+            pl.Series("w", np.linspace(0.5, 2.0, 300))
+        )
+        test = make_freq_frame(n=240, seed=12).with_columns(
+            pl.Series("w", np.linspace(1.0, 3.0, 240))
+        )
+        result = rs.glm_dict(
+            response="ClaimCount",
+            terms={"DrivAge": {"type": "linear"}, "Region": {"type": "categorical"}},
+            data=train,
+            family="poisson",
+            exposure="Exposure",
+            weights="w",
+        ).fit()
+        train_base = np.asarray(result.predict(train), dtype=np.float64) * 1.1
+        test_base = np.asarray(result.predict(test), dtype=np.float64) * 0.9
+        train = train.with_columns(pl.Series("base_mu", train_base))
+        test = test.with_columns(pl.Series("base_mu", test_base))
+
+        diag = result.diagnostics(
+            train,
+            test_data=test,
+            categorical_factors=["Region"],
+            continuous_factors=["DrivAge"],
+            base_predictions="base_mu",
+            weights="w",
+            compute_vif=False,
+            compute_deviance_by_level=False,
+            compute_lift=False,
+            compute_partial_dep=False,
+            compute_robust_se=False,
+            compute_score_tests=False,
+            compute_coefficients=False,
+        )
+
+        assert diag.base_predictions_by_role is not None
+        assert diag.base_predictions_by_role.train is not None
+        assert diag.base_predictions_by_role.test is not None
+        expected_train_base = float(np.sum(train["w"].to_numpy() * train_base))
+        expected_test_base = float(np.sum(test["w"].to_numpy() * test_base))
+        assert diag.base_predictions_by_role.train.base_metrics.total_predicted == pytest.approx(
+            round(expected_train_base, 2)
+        )
+        assert diag.base_predictions_by_role.test.base_metrics.total_predicted == pytest.approx(
+            round(expected_test_base, 2)
+        )
+
+    def test_factor_bins_include_weighted_totals_and_base_overlay(self):
+        df = make_freq_frame(n=320, seed=13).with_columns(
+            pl.Series("w", np.linspace(0.25, 2.5, 320))
+        )
+        result = rs.glm_dict(
+            response="ClaimCount",
+            terms={"DrivAge": {"type": "linear"}, "Region": {"type": "categorical"}},
+            data=df,
+            family="poisson",
+            exposure="Exposure",
+            weights="w",
+        ).fit()
+        mu = np.asarray(result.predict(df), dtype=np.float64)
+        base = mu * 1.2
+        df = df.with_columns(pl.Series("base_mu", base))
+
+        diag = result.diagnostics(
+            df,
+            categorical_factors=["Region"],
+            base_predictions="base_mu",
+            weights="w",
+            compute_vif=False,
+            compute_deviance_by_level=False,
+            compute_lift=False,
+            compute_partial_dep=False,
+            compute_robust_se=False,
+            compute_score_tests=False,
+            compute_coefficients=False,
+        )
+
+        region = next(f for f in diag.factors if f.name == "Region")
+        # The rare bucket is labeled "_Other" (matching the Rust kernel); skip it
+        # so ``first`` is a real Region level we can mask the source rows by.
+        first = next(b for b in region.actual_vs_expected if b.bin != "_Other")
+        mask = df["Region"].to_numpy() == first.bin
+        w = df["w"].to_numpy().astype(np.float64)
+        y = df["ClaimCount"].to_numpy().astype(np.float64)
+        exposure = df["Exposure"].to_numpy().astype(np.float64)
+        assert first.actual_total == pytest.approx(float(np.sum(w[mask] * y[mask])))
+        assert first.expected_total == pytest.approx(float(np.sum(w[mask] * mu[mask])))
+        assert first.base_expected_total == pytest.approx(float(np.sum(w[mask] * base[mask])))
+        assert first.exposure == pytest.approx(round(float(np.sum(w[mask] * exposure[mask])), 2))
+
+    def test_role_specific_base_prediction_columns_and_missing_test_warning(self):
+        train = make_freq_frame(n=180, seed=14)
+        test = make_freq_frame(n=160, seed=15)
+        result = rs.glm_dict(
+            response="ClaimCount",
+            terms={"DrivAge": {"type": "linear"}, "Region": {"type": "categorical"}},
+            data=train,
+            family="poisson",
+            exposure="Exposure",
+        ).fit()
+        train = train.with_columns(
+            pl.Series("base_train", np.asarray(result.predict(train)) * 1.05)
+        )
+        test = test.with_columns(pl.Series("base_test", np.asarray(result.predict(test)) * 0.95))
+
+        diag = result.diagnostics(
+            train,
+            test_data=test,
+            base_predictions={"train": "base_train", "test": "base_test"},
+            compute_vif=False,
+            compute_deviance_by_level=False,
+            compute_lift=False,
+            compute_partial_dep=False,
+            compute_robust_se=False,
+            compute_score_tests=False,
+            compute_coefficients=False,
+        )
+        assert diag.base_predictions_by_role is not None
+        assert diag.base_predictions_by_role.test is not None
+
+        missing = result.diagnostics(
+            train,
+            test_data=test.drop("base_test"),
+            base_predictions="base_train",
+            compute_vif=False,
+            compute_deviance_by_level=False,
+            compute_lift=False,
+            compute_partial_dep=False,
+            compute_robust_se=False,
+            compute_score_tests=False,
+            compute_coefficients=False,
+        )
+        assert missing.base_predictions_by_role is not None
+        assert missing.base_predictions_by_role.test is None
+        assert any(w["type"] == "base_predictions_unavailable" for w in missing.warnings)
+
+
+# Common compute_* flags that strip diagnostics down to the factor A/E tables,
+# keeping the parity tests below fast and focused.
+_AE_ONLY = dict(
+    compute_vif=False,
+    compute_deviance_by_level=False,
+    compute_lift=False,
+    compute_partial_dep=False,
+    compute_robust_se=False,
+    compute_score_tests=False,
+    compute_coefficients=False,
+)
+
+
+class TestBasePredictionBinningParity:
+    """Regression guards for the weighted/base A/E path. Both the unweighted and
+    the weighted/base cases now flow through the same Rust kernel, so supplying
+    ``base_predictions=`` or ``weights=`` must not change the model's own A/E
+    binning, labels, or confidence intervals.
+    """
+
+    def test_zero_claim_bin_gets_proper_one_sided_ci(self):
+        """A populated zero-claim bin must surface a Wilson-Poisson interval with
+        a positive upper bound, not a degenerate ``[0, 0]``."""
+        from rustystats._rustystats import compute_ae_continuous_py
+
+        # The lowest-x bin has all-zero claims against a positive expectation.
+        x = np.arange(20.0)
+        y = np.where(x < 4, 0.0, 1.0)
+        mu = np.full(20, 0.5)
+        exposure = np.ones(20)
+        first = compute_ae_continuous_py(x, y, mu, exposure, 5, "poisson")[0]
+        assert first["actual_sum"] == 0.0 and first["predicted_sum"] > 0.0
+        assert first["ae_ci_lower"] == 0.0
+        assert first["ae_ci_upper"] > 0.0
+
+    def test_base_predictions_does_not_change_factor_binning(self):
+        """The Rust path (no base) and Python fallback (with base) must produce
+        the same bin labels, counts, and A/E ratios for every factor."""
+        df = make_freq_frame(n=400, seed=7)
+        result = rs.glm_dict(
+            response="ClaimCount",
+            terms={"DrivAge": {"type": "linear"}, "Region": {"type": "categorical"}},
+            data=df,
+            family="poisson",
+            exposure="Exposure",
+        ).fit()
+        df = df.with_columns(pl.Series("base_mu", np.asarray(result.predict(df)) * 1.1))
+
+        shared = dict(categorical_factors=["Region"], continuous_factors=["DrivAge"], **_AE_ONLY)
+        rust_path = result.diagnostics(df, **shared)  # no base -> Rust kernel
+        py_path = result.diagnostics(df, base_predictions="base_mu", **shared)  # base -> Python
+
+        def bins(diag, name):
+            f = next(f for f in diag.factors if f.name == name)
+            return f.actual_vs_expected
+
+        for name in ("DrivAge", "Region"):
+            rust_bins, py_bins = bins(rust_path, name), bins(py_path, name)
+            assert [(b.bin, b.n) for b in rust_bins] == [(b.bin, b.n) for b in py_bins]
+            for rb, pb in zip(rust_bins, py_bins):
+                assert pb.ae_ratio == pytest.approx(rb.ae_ratio, abs=0.01)
+                assert pb.ae_ci == pytest.approx(rb.ae_ci, abs=0.01)
+
+    def test_weighted_categorical_rare_bucket_uses_underscore_other(self):
+        """The folded rare bucket is labeled ``_Other`` (Rust convention), not
+        ``Other``, on the weighted/base Python path."""
+        rng = np.random.default_rng(99)
+        n = 1500
+        cat = rng.integers(0, 30, n).astype(str)  # 30 levels > max_levels=20 -> rare bucket
+        exposure = rng.uniform(0.5, 1.5, n)
+        y = rng.poisson(np.exp(-2.0) * exposure)
+        df = pl.DataFrame({"y": y, "cat": cat, "exposure": exposure})
+        result = rs.glm_dict(
+            response="y",
+            terms={"cat": {"type": "categorical"}},
+            data=df,
+            family="poisson",
+            exposure="exposure",
+        ).fit()
+        df = df.with_columns(pl.Series("base_mu", np.asarray(result.predict(df))))
+
+        diag = result.diagnostics(
+            df, categorical_factors=["cat"], base_predictions="base_mu", **_AE_ONLY
+        )
+        labels = [
+            b.bin for b in next(f for f in diag.factors if f.name == "cat").actual_vs_expected
+        ]
+        assert "_Other" in labels
+        assert "Other" not in labels
+
+    def test_constant_weights_preserve_continuous_partial_dep(self):
+        """``partial_dep`` is a weighted mean (Σwμ/Σw); a constant weight must
+        leave it (and the band ranges) equal to the unweighted Rust path."""
+        df = make_freq_frame(n=400, seed=8)
+        result = rs.glm_dict(
+            response="ClaimCount",
+            terms={"DrivAge": {"type": "linear"}},
+            data=df,
+            family="poisson",
+            exposure="Exposure",
+        ).fit()
+        unweighted = result.diagnostics(df, continuous_factors=["DrivAge"], **_AE_ONLY)
+        df_w = df.with_columns(pl.Series("w", np.full(df.height, 3.0)))
+        weighted = result.diagnostics(df_w, continuous_factors=["DrivAge"], weights="w", **_AE_ONLY)
+
+        rb = unweighted.train_test.train.continuous_diagnostics["DrivAge"]
+        wb = weighted.train_test.train.continuous_diagnostics["DrivAge"]
+        assert [b.band for b in rb] == [b.band for b in wb]
+        for r, w in zip(rb, wb):
+            assert (w.range_min, w.range_max) == (r.range_min, r.range_max)
+            assert w.partial_dep == pytest.approx(r.partial_dep, rel=1e-9)

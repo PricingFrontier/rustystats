@@ -26,7 +26,7 @@ Example
 ...     terms={"VehAge": {"type": "linear"}, "BonusMalus": {"type": "linear"}, "Region": {"type": "target_encoding"}},
 ...     data=train_df,
 ...     family="negbinomial",
-...     offset="Exposure",
+...     exposure="Exposure",
 ... )
 >>>
 >>> # Fit with CV-based regularization selection

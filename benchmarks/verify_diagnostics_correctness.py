@@ -1015,7 +1015,7 @@ def make_poisson_small(seed: int = 11) -> tuple[pl.DataFrame, dict]:
     )
     return df, {
         "response": "y",
-        "offset": "exposure",
+        "exposure": "exposure",
         "family": "poisson",
         "terms": {
             "age": {"type": "linear"},
@@ -1051,7 +1051,7 @@ def make_poisson_with_te(seed: int = 13) -> tuple[pl.DataFrame, dict]:
     )
     return df, {
         "response": "y",
-        "offset": "exposure",
+        "exposure": "exposure",
         "family": "poisson",
         "terms": {
             "age": {"type": "linear"},
@@ -1289,8 +1289,8 @@ def run_scenario(
             y = df[spec["response"]].to_numpy().astype(np.float64)
             mu = np.asarray(result.fittedvalues, dtype=np.float64)
             exposure = None
-            if spec.get("offset") and spec["offset"] in df.columns:
-                exposure = df[spec["offset"]].to_numpy().astype(np.float64)
+            if spec.get("exposure") and spec["exposure"] in df.columns:
+                exposure = df[spec["exposure"]].to_numpy().astype(np.float64)
             cat_vals = df[cat_in_data[0]].cast(pl.Utf8).to_numpy()
             cont_vals = df[cont_in_data[0]].to_numpy().astype(np.float64)
             check_singular_vs_batch(c, label, y, mu, exposure, cat_vals, cont_vals, fam_simple)
@@ -1361,7 +1361,7 @@ def run_scenario_lean_mode() -> CheckCollector:
     df = pl.DataFrame({"y": y, "exposure": exposure, "age": age, "region": region})
     spec = {
         "response": "y",
-        "offset": "exposure",
+        "exposure": "exposure",
         "family": "poisson",
         "terms": {
             "age": {"type": "linear"},
@@ -1465,7 +1465,7 @@ def run_scenario_offset_exposure() -> CheckCollector:
     df = pl.DataFrame({"y": y, "exposure": exposure, "age": age, "region": region})
     spec = {
         "response": "y",
-        "offset": "exposure",
+        "exposure": "exposure",
         "family": "poisson",
         "terms": {
             "age": {"type": "linear"},
@@ -1633,7 +1633,7 @@ def run_scenario_unseen_levels() -> CheckCollector:
     )
     spec = {
         "response": "y",
-        "offset": "exposure",
+        "exposure": "exposure",
         "family": "poisson",
         "terms": {
             "age": {"type": "linear"},

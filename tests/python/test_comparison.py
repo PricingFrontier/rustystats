@@ -605,7 +605,7 @@ class TestPoissonOffset:
             terms={"x1": {"type": "linear"}},
             data=df_off,
             family="poisson",
-            offset="exposure",
+            exposure="exposure",
         ).fit()
 
         np.testing.assert_allclose(rs_res.params, sm_res.params, atol=COEF_ATOL, rtol=COEF_RTOL)
@@ -633,7 +633,7 @@ class TestPoissonOffset:
             terms={"x1": {"type": "linear"}},
             data=df_off,
             family="poisson",
-            offset="exposure",
+            exposure="exposure",
         ).fit()
 
         glum_coefs = np.concatenate([[glum_model.intercept_], glum_model.coef_])
@@ -1765,7 +1765,7 @@ class TestPrediction:
             terms={"x1": {"type": "linear"}},
             data=df2,
             family="poisson",
-            offset="exposure",
+            exposure="exposure",
         ).fit()
 
         # Predict on new data with offset
@@ -2401,5 +2401,5 @@ class TestInputValidation:
                 terms={"x1": {"type": "linear"}},
                 data=df,
                 family="poisson",
-                offset="exposure",
+                exposure="exposure",
             ).fit()

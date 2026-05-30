@@ -204,12 +204,9 @@ class PMMLExporter:
         # TransformationDictionary before the GeneralRegressionModel references them.
         offset_spec = getattr(self.model, "_offset_spec", None)
         exposure_spec = getattr(self.model, "_exposure_spec", None)
-        offset_is_exposure = getattr(self.model, "_offset_is_exposure", False)
-        if isinstance(offset_spec, str) and offset_is_exposure and exposure_spec is None:
-            exposure_spec = offset_spec
         if isinstance(exposure_spec, str):
             self._add_ln_derived(f"ln_{exposure_spec}", exposure_spec)
-            if isinstance(offset_spec, str) and not offset_is_exposure:
+            if isinstance(offset_spec, str):
                 self._add_sum_derived(
                     f"{offset_spec}_plus_ln_{exposure_spec}",
                     [offset_spec, f"ln_{exposure_spec}"],
@@ -703,13 +700,10 @@ class PMMLExporter:
         """Raw data fields needed to compute the PMML offset."""
         spec = getattr(self.model, "_offset_spec", None)
         exposure_spec = getattr(self.model, "_exposure_spec", None)
-        offset_is_exposure = getattr(self.model, "_offset_is_exposure", False)
         fields: list[str] = []
         if isinstance(exposure_spec, str):
             fields.append(exposure_spec)
-        elif isinstance(spec, str) and offset_is_exposure:
-            fields.append(spec)
-        if isinstance(spec, str) and not offset_is_exposure:
+        if isinstance(spec, str):
             fields.append(spec)
         return list(dict.fromkeys(fields))
 
@@ -717,11 +711,8 @@ class PMMLExporter:
         """Field or derived field used as PMML's link-scale offsetVariable."""
         offset_spec = getattr(self.model, "_offset_spec", None)
         exposure_spec = getattr(self.model, "_exposure_spec", None)
-        offset_is_exposure = getattr(self.model, "_offset_is_exposure", False)
-        if isinstance(offset_spec, str) and offset_is_exposure and exposure_spec is None:
-            exposure_spec = offset_spec
         if isinstance(exposure_spec, str):
-            if isinstance(offset_spec, str) and not offset_is_exposure:
+            if isinstance(offset_spec, str):
                 return f"{offset_spec}_plus_ln_{exposure_spec}"
             return f"ln_{exposure_spec}"
         return offset_spec if isinstance(offset_spec, str) else None

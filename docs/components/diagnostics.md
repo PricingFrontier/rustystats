@@ -191,6 +191,36 @@ result.diagnostics(
 `Σ y`, `Σ μ`, `Σ exposure`, and `actual / expected`, regardless of the
 ranking choice — only the bin *assignment* changes.
 
+## Exposure, Prior Weights, And Benchmark Predictions
+
+Exposure and prior weights have different meanings in diagnostics:
+
+- exposure is the rate denominator and, for log-link frequency models, the
+  exposure offset concept;
+- prior weights multiply each row's contribution to totals;
+- weighted exposure is `Σ(w * exposure)`;
+- weighted actual is `Σ(w * y)`;
+- weighted expected is `Σ(w * μ)`;
+- A/E is `Σ(w * y) / Σ(w * μ)`.
+
+`base_predictions` are response-scale benchmark predictions. They can represent
+a GBM teacher in a teacher-guided GLM workflow or an incumbent production model
+in a challenger validation. RustyStats does not infer how they were produced.
+For exposure models, benchmark predictions should be expected response totals
+per row, such as expected claim counts, not rates and not link-scale values.
+
+When benchmark predictions are supplied, factor A/E bins and train/test factor
+stability bins include benchmark totals and rates alongside the GLM totals.
+This lets downstream reports compare actual, GLM, and benchmark curves without
+re-binning factors outside RustyStats.
+
+Higher-order interaction requests in `diagnostics(interactions=[...])` are
+reported as block diagnostics. Pair requests still produce 2D surface grids;
+3-way and higher requests report fitted block representation, coefficients,
+Wald significance, and GVIF when available. RustyStats does not emit mandatory
+3D cubes in this phase because sparse categorical cubes can be too large for a
+default diagnostic payload.
+
 ## Calibration Metrics
 
 ### Actual vs Expected

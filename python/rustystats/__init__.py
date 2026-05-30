@@ -23,7 +23,7 @@ Quick Start
 ...     },
 ...     data=data,
 ...     family="poisson",
-...     offset="Exposure",
+...     exposure="Exposure",
 ... ).fit()
 >>>
 >>> print(result.summary())
