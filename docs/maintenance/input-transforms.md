@@ -319,11 +319,14 @@ The serialized state should bump schema version and include:
 }
 ```
 
-Compatibility rule:
+Compatibility rule (as implemented):
 
-- Older models without `input_transforms` load with an empty transform list.
-- New models with transforms must fail clearly if loaded by an older version
-  that cannot understand schema version 4.
+- `from_bytes` requires an **exact** `schema_version` match and raises a clear
+  `ValidationError` on any other version — it does not migrate or best-effort
+  load older payloads. RustyStats is pre-1.0, so persisted models are not
+  guaranteed to load across versions (re-fit and re-serialize after upgrading).
+- Transform-bearing models serialize `input_transforms` in the schema-version-4
+  state and restore them exactly when loaded by the same build.
 
 The docs currently claim serialized models include everything needed for
 prediction. After this feature, that claim must explicitly include deterministic

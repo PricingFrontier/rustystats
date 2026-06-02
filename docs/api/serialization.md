@@ -162,15 +162,19 @@ def handler(event, context):
 
 ## Version Compatibility
 
-Models are forward-compatible within the same major version:
+The serialized state carries a `schema_version`. `GLMModel.from_bytes` requires
+it to match the schema version of the running RustyStats build **exactly** and
+raises a clear `ValidationError` otherwise — it does not migrate or best-effort
+load older or newer payloads. (A silently mis-loaded model can mispredict, for
+example when the exposure layout changed between versions, so loading fails loud
+instead.)
 
-| Saved With | Loadable By |
-|------------|-------------|
-| v1.0.x | v1.0.x, v1.1.x, v1.2.x |
-| v1.1.x | v1.1.x, v1.2.x |
-| v2.x.x | v2.x.x only |
+RustyStats is pre-1.0: the serialization format may change between releases, so
+**persisted models are not guaranteed to load across versions**. Re-fit and
+re-serialize models after upgrading RustyStats.
 
-**Best practice:** Include the RustyStats version in your model metadata or filename.
+**Best practice:** store each model alongside the exact RustyStats version that
+wrote it (in metadata or the filename), and regenerate models when you upgrade.
 
 ---
 
