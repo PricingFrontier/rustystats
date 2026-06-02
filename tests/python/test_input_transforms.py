@@ -649,6 +649,46 @@ def test_predict_transform_produced_exposure_chunked_matches_unchunked(monkeypat
     np.testing.assert_allclose(unchunked, chunked, rtol=1e-12, atol=1e-12)
 
 
+def test_predict_chunked_aux_mixes_transform_produced_and_raw_columns(monkeypatch):
+    # A transform-produced exposure alongside a RAW offset column: the projected
+    # aux frame must keep the raw offset column too, not just transform sources.
+    import rustystats.formula as F
+
+    df = _training_data().with_columns(
+        pl.when(pl.col("exposure") >= 1.0)
+        .then(pl.lit("high"))
+        .otherwise(pl.lit("low"))
+        .alias("expo_band"),
+        pl.Series("off", [0.1, 0.2, 0.0, 0.3, 0.1, 0.2, 0.0, 0.3]),
+    )
+    specs = [
+        {
+            "type": "lookup",
+            "name": "exposure_lookup",
+            "sources": ["expo_band"],
+            "output": "expo",
+            "output_dtype": "float64",
+            "keys": [["high"], ["low"]],
+            "values": [1.25, 0.75],
+            "on_unseen": "raise",
+            "on_null": "raise",
+        }
+    ]
+    result = rs.glm_dict(
+        response="y",
+        terms={"brand": {"type": "categorical"}},
+        data=df,
+        family="poisson",
+        exposure="expo",  # transform-produced
+        offset="off",  # raw column
+        input_transforms=specs,
+    ).fit()
+    unchunked = result.predict(df)
+    monkeypatch.setattr(F, "_compute_predict_chunk_size", lambda n_features: 2)
+    chunked = result.predict(df)
+    np.testing.assert_allclose(unchunked, chunked, rtol=1e-12, atol=1e-12)
+
+
 def test_predict_contributions_with_input_transforms_adds_up():
     df = _training_data()
     result = rs.glm_dict(

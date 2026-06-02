@@ -2651,11 +2651,23 @@ class GLMModel:
                 # Chunked path: a transform-produced offset/exposure/complement
                 # column still needs the prepared frame, but materializing the
                 # full transformed frame here would defeat the chunked memory
-                # bound. Project to just the transform source columns first so
-                # only the (small) transform inputs/outputs are held; the bulk
-                # non-transform design columns stay out of memory.
-                src_cols = input_transform_source_columns(self._input_transforms)
-                present = [c for c in new_data.columns if c in src_cols]
+                # bound. Project to only what the auxiliary resolvers actually
+                # read — the transform source columns (to recompute
+                # transform-produced auxiliaries), any RAW auxiliary columns, and
+                # a complement model's own needed columns — so the bulk design
+                # columns stay out of memory while every auxiliary stays
+                # resolvable (a transform-produced auxiliary alongside a raw one
+                # must not drop the raw column).
+                aux_cols = set(input_transform_source_columns(self._input_transforms))
+                exposure_spec = exposure if exposure is not None else self._exposure_spec
+                offset_spec = offset if offset is not None else self._offset_spec
+                complement_spec = complement if complement is not None else self._complement_spec
+                for spec in (exposure_spec, offset_spec, complement_spec):
+                    if isinstance(spec, str):
+                        aux_cols.add(spec)
+                if isinstance(complement_spec, GLMModel):
+                    aux_cols |= _extract_model_needed_columns(complement_spec)
+                present = [c for c in new_data.columns if c in aux_cols]
                 aux_data = self._apply_model_input_transforms(new_data.select(present))
 
         exposure_to_use = exposure if exposure is not None else self._exposure_spec
