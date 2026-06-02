@@ -54,6 +54,7 @@ from rustystats.input_transforms import (
     CompiledInputTransform,
     apply_input_transforms,
     compile_input_transforms,
+    input_transform_source_columns,
     validate_input_transforms,
 )
 
@@ -2644,9 +2645,18 @@ class GLMModel:
             exposure=exposure,
             complement=complement,
         ):
-            if prepared_all is None:
-                prepared_all = self._apply_model_input_transforms(new_data)
-            aux_data = prepared_all
+            if prepared_all is not None:
+                aux_data = prepared_all
+            else:
+                # Chunked path: a transform-produced offset/exposure/complement
+                # column still needs the prepared frame, but materializing the
+                # full transformed frame here would defeat the chunked memory
+                # bound. Project to just the transform source columns first so
+                # only the (small) transform inputs/outputs are held; the bulk
+                # non-transform design columns stay out of memory.
+                src_cols = input_transform_source_columns(self._input_transforms)
+                present = [c for c in new_data.columns if c in src_cols]
+                aux_data = self._apply_model_input_transforms(new_data.select(present))
 
         exposure_to_use = exposure if exposure is not None else self._exposure_spec
         if exposure is None and getattr(

@@ -1,4 +1,5 @@
 import csv
+import decimal
 
 import numpy as np
 import polars as pl
@@ -175,6 +176,196 @@ def test_lookup_duplicate_numeric_keys_collide_across_int_float():
                 }
             ]
         )
+
+
+def test_lookup_keys_colliding_after_dtype_cast_fail_loud():
+    # Regression: distinct float keys that truncate/collapse to the same value
+    # against an integer source must fail loudly, not duplicate join rows (which
+    # previously desynced the null mask and panicked).
+    spec = [
+        {
+            "type": "lookup",
+            "name": "t",
+            "sources": ["x"],
+            "output": "y",
+            "output_dtype": "float64",
+            "keys": [[10.1], [10.2]],
+            "values": [1.0, 2.0],
+            "default": -1.0,
+            "on_unseen": "default",
+            "on_null": "default",
+        }
+    ]
+    df = pl.DataFrame({"x": pl.Series([10, 11], dtype=pl.Int64)})
+    with pytest.raises(ValidationError):
+        apply_input_transforms(df, spec)
+
+
+def test_lookup_mixed_type_keys_for_one_source_fail_loud():
+    # Regression: ["10"] (str) and [10] (int) for the same source must raise a
+    # clear ValidationError, not a raw Polars TypeError on Series construction.
+    spec = [
+        {
+            "type": "lookup",
+            "name": "t",
+            "sources": ["x"],
+            "output": "y",
+            "output_dtype": "float64",
+            "keys": [["10"], [10]],
+            "values": [1.0, 2.0],
+            "default": -1.0,
+            "on_unseen": "default",
+            "on_null": "default",
+        }
+    ]
+    df = pl.DataFrame({"x": pl.Series([10], dtype=pl.Int64)})
+    with pytest.raises(ValidationError, match="cannot be normalized"):
+        apply_input_transforms(df, spec)
+
+
+def test_lookup_all_null_source_column_uses_null_policy():
+    # An all-null source column has the Null dtype; keys can't cast to it, but
+    # the lookup must still apply the on_null policy rather than crashing.
+    base = {
+        "type": "lookup",
+        "name": "t",
+        "sources": ["x"],
+        "output": "y",
+        "output_dtype": "float64",
+        "keys": [["A"], ["B"]],
+        "values": [1.0, 2.0],
+        "default": -1.0,
+    }
+    df = pl.DataFrame({"x": [None, None]})  # inferred Null dtype
+    # on_null="default" -> all rows take the default.
+    out = apply_input_transforms(df, [{**base, "on_null": "default", "on_unseen": "default"}])
+    assert out["y"].to_list() == [-1.0, -1.0]
+    # on_null="raise" -> the null-source guard fires.
+    with pytest.raises(PredictionError, match="null source"):
+        apply_input_transforms(df, [{**base, "on_null": "raise", "on_unseen": "raise"}])
+
+
+def _one_key_lookup(keys, values, default=-1.0, on_unseen="default"):
+    return [
+        {
+            "type": "lookup",
+            "name": "t",
+            "sources": ["x"],
+            "output": "y",
+            "output_dtype": "float64",
+            "keys": keys,
+            "values": values,
+            "default": default,
+            "on_unseen": on_unseen,
+            "on_null": "default",
+        }
+    ]
+
+
+class TestNonStringSourceNormalization:
+    """Audit regressions: keys against non-string source columns must either match
+    correctly on the native dtype or fail loud — never silently mismatch, change
+    row cardinality, leak a raw Polars error, or crash the process."""
+
+    def test_enum_out_of_range_numeric_key_does_not_segfault(self):
+        # Previously a numeric key cast to an out-of-range Enum physical code
+        # crashed Polars below the FFI boundary (exit 139). It must now be a
+        # clean no-match (keys never cast to the categorical dtype).
+        df = pl.DataFrame({"x": pl.Series(["A", "B", "C"], dtype=pl.Enum(["A", "B", "C"]))})
+        out = apply_input_transforms(df, _one_key_lookup([[99]], [5.0]))
+        assert out["y"].to_list() == [-1.0, -1.0, -1.0]
+        # A valid string key matches the category text.
+        out2 = apply_input_transforms(df, _one_key_lookup([["B"]], [5.0]))
+        assert out2["y"].to_list() == [-1.0, 5.0, -1.0]
+
+    def test_categorical_numeric_key_is_not_a_physical_code_match(self):
+        df = pl.DataFrame({"x": pl.Series(["A", "B"], dtype=pl.Categorical)})
+        # key 1 must NOT match the category at physical code 1 ("B").
+        out = apply_input_transforms(df, _one_key_lookup([[1]], [5.0]))
+        assert out["y"].to_list() == [-1.0, -1.0]
+
+    def test_signed_zero_matches_via_native_equality(self):
+        df = pl.DataFrame({"x": pl.Series([-0.0, 1.0], dtype=pl.Float64)})
+        out = apply_input_transforms(df, _one_key_lookup([[0.0]], [5.0]))
+        assert out["y"].to_list() == [5.0, -1.0]
+
+    def test_int_key_truncation_against_int_source_fails_loud(self):
+        df = pl.DataFrame({"x": pl.Series([10, 11], dtype=pl.Int64)})
+        with pytest.raises(ValidationError, match="cannot be normalized"):
+            apply_input_transforms(df, _one_key_lookup([[10.1]], [5.0], on_unseen="raise"))
+
+    def test_int_key_precision_loss_against_float32_fails_loud(self):
+        df = pl.DataFrame({"x": pl.Series([16777216.0, 1.0], dtype=pl.Float32)})
+        with pytest.raises(ValidationError, match="cannot be normalized"):
+            apply_input_transforms(df, _one_key_lookup([[16777217]], [5.0]))
+
+    def test_boolean_source_numeric_keys(self):
+        df = pl.DataFrame({"x": pl.Series([True, False], dtype=pl.Boolean)})
+        # non-0/1 numeric key is not representable as a bool -> fail loud
+        with pytest.raises(ValidationError, match="cannot be normalized"):
+            apply_input_transforms(df, _one_key_lookup([[2]], [5.0]))
+        # 1 round-trips to True and matches
+        out = apply_input_transforms(df, _one_key_lookup([[1]], [5.0]))
+        assert out["y"].to_list() == [5.0, -1.0]
+
+    def test_decimal_rounding_key_fails_loud(self):
+        df = pl.DataFrame({"x": pl.Series([decimal.Decimal("1.51")], dtype=pl.Decimal(scale=2))})
+        with pytest.raises(ValidationError, match="cannot be normalized"):
+            apply_input_transforms(df, _one_key_lookup([[1.514]], [5.0]))
+
+    def test_duration_source_does_not_leak_raw_error(self):
+        df = pl.DataFrame({"x": pl.Series([1000, 2000], dtype=pl.Duration)})
+        # native-dtype matching avoids the unsupported Duration->Utf8 cast.
+        out = apply_input_transforms(df, _one_key_lookup([[1000]], [5.0]))
+        assert out["y"].to_list() == [5.0, -1.0]
+
+    def test_duration_source_degenerate_keys_do_not_leak_raw_error(self):
+        # Empty key list and an all-null key + on_null=match previously leaked a
+        # raw Duration->Utf8 InvalidOperationError; native matching avoids it.
+        df = pl.DataFrame({"x": pl.Series([1000, None], dtype=pl.Duration)})
+        out_empty = apply_input_transforms(
+            df,
+            _one_key_lookup([], []),  # everything -> default
+        )
+        assert out_empty["y"].to_list() == [-1.0, -1.0]
+        spec = {
+            "type": "lookup",
+            "name": "t",
+            "sources": ["x"],
+            "output": "y",
+            "output_dtype": "float64",
+            "keys": [[None]],
+            "values": [7.0],
+            "default": -1.0,
+            "on_null": "match",
+        }
+        out_match = apply_input_transforms(df, [spec])
+        assert out_match["y"].to_list() == [-1.0, 7.0]
+
+
+def test_lookup_replace_existing_output_equals_source_column():
+    # validate_input_transforms permits output==source when replace_existing=True;
+    # _apply_lookup must not drop the source column before normalizing it (which
+    # previously leaked a raw ColumnNotFoundError).
+    spec = [
+        {
+            "type": "lookup",
+            "name": "t",
+            "sources": ["x"],
+            "output": "x",
+            "output_dtype": "float64",
+            "keys": [["A"], ["B"]],
+            "values": [1.0, 2.0],
+            "default": -1.0,
+            "on_unseen": "default",
+            "on_null": "default",
+            "replace_existing": True,
+        }
+    ]
+    df = pl.DataFrame({"x": ["A", "B", "C"]})
+    out = apply_input_transforms(df, spec)
+    assert out["x"].to_list() == [1.0, 2.0, -1.0]
+    assert out.height == df.height
 
 
 def test_lookup_transform_unseen_and_null_raise():
@@ -417,6 +608,45 @@ def test_predict_resolves_transform_produced_exposure_from_prepared_data():
 
     np.testing.assert_allclose(result.predict(df), result.predict(result.prepare_input(df)))
     assert result.diagnostics(train_data=df) is not None
+
+
+def test_predict_transform_produced_exposure_chunked_matches_unchunked(monkeypatch):
+    # When the exposure column is itself produced by a transform, the chunked
+    # prediction path resolves it through a projected (memory-bounded) prepared
+    # frame; it must match the single-shot path exactly.
+    import rustystats.formula as F
+
+    df = _training_data().with_columns(
+        pl.when(pl.col("exposure") >= 1.0)
+        .then(pl.lit("high"))
+        .otherwise(pl.lit("low"))
+        .alias("expo_band")
+    )
+    specs = [
+        {
+            "type": "lookup",
+            "name": "exposure_lookup",
+            "sources": ["expo_band"],
+            "output": "expo",
+            "output_dtype": "float64",
+            "keys": [["high"], ["low"]],
+            "values": [1.25, 0.75],
+            "on_unseen": "raise",
+            "on_null": "raise",
+        }
+    ]
+    result = rs.glm_dict(
+        response="y",
+        terms={"brand": {"type": "categorical"}},
+        data=df,
+        family="poisson",
+        exposure="expo",
+        input_transforms=specs,
+    ).fit()
+    unchunked = result.predict(df)  # small data -> single-shot path
+    monkeypatch.setattr(F, "_compute_predict_chunk_size", lambda n_features: 2)
+    chunked = result.predict(df)  # forced chunked path -> projected aux frame
+    np.testing.assert_allclose(unchunked, chunked, rtol=1e-12, atol=1e-12)
 
 
 def test_predict_contributions_with_input_transforms_adds_up():

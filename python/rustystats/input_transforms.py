@@ -290,33 +290,137 @@ def _compile_lookup(spec: dict[str, Any]) -> CompiledLookupTransform:
     return CompiledLookupTransform(spec=dict(spec), normalized_sources=normalized_sources)
 
 
-def _build_lookup_frame(
+def _is_string_like(dtype: Any) -> bool:
+    """Whether a source column is matched on its Utf8 (string) form.
+
+    Categorical/Enum match via their string *values* (``cast(Utf8)``), never by
+    casting keys *to* the categorical dtype — that interprets a numeric key as a
+    physical category code (a silent mismatch), and an out-of-range code can
+    crash Polars below the FFI boundary (an uncatchable segfault).
+    """
+    return isinstance(dtype, (pl.String, pl.Categorical, pl.Enum))
+
+
+def _key_norm_error(
+    transform: CompiledLookupTransform, source: str, dtype: Any, raw_vals: list[Any]
+) -> ValidationError:
+    return ValidationError(
+        f"input transform {transform.name!r}: keys for source {source!r} cannot be normalized "
+        f"against its column dtype {dtype}. Provide keys that are distinct and exactly "
+        f"representable in that dtype (got {raw_vals!r})."
+    )
+
+
+def _utf8_key_series(
+    transform: CompiledLookupTransform, source: str, raw_vals: list[Any], norm: str
+) -> pl.Series:
+    try:
+        return pl.Series(norm, raw_vals).cast(pl.Utf8)
+    except (TypeError, ValueError, pl.exceptions.PolarsError) as exc:
+        raise _key_norm_error(transform, source, pl.Utf8, raw_vals) from exc
+
+
+def _normalize_key_and_source(
+    transform: CompiledLookupTransform,
+    source: str,
+    dtype: Any,
+    raw_vals: list[Any],
+    norm: str,
+) -> tuple[pl.Series, pl.Expr]:
+    """Normalize one source's keys and its data column to a common joinable form.
+
+    Returns ``(lookup_key_series, data_side_expr)`` aligned to the same dtype.
+
+    - All-null (``Null``) and string-like (Utf8/Categorical/Enum) sources join on
+      Utf8: the source casts to its string values and keys cast to Utf8. Keys are
+      never cast *to* a categorical dtype, so a numeric key can never be read as
+      a physical code or crash Polars.
+    - Every other dtype joins on its *native* dtype, with a round-trip
+      representability check so a key not exactly representable there (10.1
+      against Int64, an int that loses precision against Float32, a float rounded
+      by a Decimal scale, a non-0/1 int against Boolean, ...) fails loud instead
+      of silently matching the wrong value. Native matching also avoids casting
+      the source to Utf8 (unsupported for e.g. Duration) and honors numeric
+      equality such as ``-0.0 == 0.0``.
+    """
+    if dtype == pl.Null or _is_string_like(dtype):
+        return (
+            _utf8_key_series(transform, source, raw_vals, norm),
+            pl.col(source).cast(pl.Utf8).alias(norm),
+        )
+
+    try:
+        key_series = pl.Series(norm, raw_vals)
+        cast_keys = key_series.cast(dtype, strict=True)
+    except (TypeError, ValueError, pl.exceptions.PolarsError) as exc:
+        raise _key_norm_error(transform, source, dtype, raw_vals) from exc
+    # Polars' strict cast still silently truncates/rounds some numeric casts, so
+    # verify each non-null key round-trips back to its original value unchanged.
+    roundtrip = cast_keys.cast(key_series.dtype, strict=False)
+    lossy = key_series.is_not_null() & (roundtrip.is_null() | (roundtrip != key_series))
+    if bool(lossy.any()):
+        raise _key_norm_error(transform, source, dtype, raw_vals)
+    return cast_keys.rename(norm), pl.col(source).alias(norm)
+
+
+def _build_lookup_and_source_exprs(
     data: pl.DataFrame,
     transform: CompiledLookupTransform,
     normalized_sources: list[str],
     match_id: str,
-) -> pl.DataFrame:
-    """Build the join frame, normalizing spec keys against each source's dtype.
+) -> tuple[pl.DataFrame, list[pl.Expr]]:
+    """Build the join frame and the matching data-side normalization expressions.
 
-    Each source-key column is cast to the *actual* dtype of its source column
-    and then to ``Utf8``, identical to the ``pl.col(source).cast(Utf8)``
-    normalization applied to the data side. This guarantees a numeric spec key
-    (e.g. ``10``) matches a numeric source value (e.g. ``Float64`` ``10.0``)
-    instead of silently falling through to the default.
+    Both sides are normalized to the same per-source representation (see
+    :func:`_normalize_key_and_source`) so the left-join keys line up exactly.
     """
     spec = transform.spec
     keys = spec["keys"]
     n = len(keys)
     cols: dict[str, pl.Series] = {}
+    source_exprs: list[pl.Expr] = []
     for col_idx, (source, norm) in enumerate(
         zip(transform.sources, normalized_sources, strict=True)
     ):
         dtype = data.schema[source]
         raw_vals = [keys[row][col_idx] for row in range(n)]
-        cols[norm] = pl.Series(norm, raw_vals).cast(dtype, strict=False).cast(pl.Utf8)
+        key_series, source_expr = _normalize_key_and_source(
+            transform, source, dtype, raw_vals, norm
+        )
+        cols[norm] = key_series
+        source_exprs.append(source_expr)
     cols[transform.output] = pl.Series(transform.output, list(spec["values"]))
     cols[match_id] = pl.Series(match_id, list(range(n)), dtype=pl.Int64)
-    return pl.DataFrame(cols)
+    frame = pl.DataFrame(cols)
+    _check_unique_normalized_keys(frame, transform, normalized_sources, match_id)
+    return frame, source_exprs
+
+
+def _check_unique_normalized_keys(
+    frame: pl.DataFrame,
+    transform: CompiledLookupTransform,
+    normalized_sources: list[str],
+    match_id: str,
+) -> None:
+    """Reject distinct spec keys that collapse to the same normalized key.
+
+    Validation dedups keys numerically/textually, but the per-application cast to
+    the actual source dtype can still collapse distinct keys to one normalized
+    Utf8 string for some dtypes. Duplicate keys on the right side of the left
+    join would duplicate rows and desync the row-aligned null/unseen masks (a
+    hard panic), so fail loud here with the colliding original keys instead.
+    """
+    duplicated = frame.select(normalized_sources).is_duplicated()
+    if not bool(duplicated.any()):
+        return
+    dup_match_ids = frame.filter(duplicated)[match_id].to_list()
+    spec_keys = transform.spec["keys"]
+    colliding = [spec_keys[i] for i in sorted(dup_match_ids)[:6]]
+    raise ValidationError(
+        f"input transform {transform.name!r} has distinct keys that collide after "
+        f"normalization against the source column dtype(s); colliding keys: {colliding!r}. "
+        "Provide keys that are distinct and representable in the source dtype."
+    )
 
 
 def _apply_lookup(data: pl.DataFrame, transform: CompiledLookupTransform) -> pl.DataFrame:
@@ -334,11 +438,17 @@ def _apply_lookup(data: pl.DataFrame, transform: CompiledLookupTransform) -> pl.
     for base in transform.normalized_sources:
         normalized_sources.append(_unique_temp_name([*reserved, *normalized_sources], base))
     match_id = _unique_temp_name([*reserved, *normalized_sources], _MATCH_ID)
-    lookup_frame = _build_lookup_frame(data, transform, normalized_sources, match_id)
-    left = data
+    lookup_frame, source_exprs = _build_lookup_and_source_exprs(
+        data, transform, normalized_sources, match_id
+    )
+    # Materialize the normalized join columns BEFORE dropping a pre-existing
+    # output column: with replace_existing=True the output name may equal a
+    # source column, and the source-normalization expressions still need to read
+    # it (dropping first leaked a raw ColumnNotFoundError). The normalized
+    # columns are independent temp columns, so the later drop cannot affect them.
+    left = data.with_columns(source_exprs)
     if output in left.columns:
         left = left.drop(output)
-    left = left.with_columns(_source_normalization_exprs(transform, normalized_sources))
     null_mask = _any_null_mask(left, normalized_sources)
 
     if spec["on_null"] == "raise" and bool(null_mask.any()):
@@ -382,16 +492,6 @@ def _apply_lookup(data: pl.DataFrame, transform: CompiledLookupTransform) -> pl.
 
     drop_cols = [match_id, *normalized_sources]
     return joined.drop([c for c in drop_cols if c in joined.columns])
-
-
-def _source_normalization_exprs(
-    transform: CompiledLookupTransform,
-    normalized_sources: list[str],
-) -> list[pl.Expr]:
-    return [
-        pl.col(source).cast(pl.Utf8).alias(normalized)
-        for source, normalized in zip(transform.sources, normalized_sources, strict=True)
-    ]
 
 
 def _any_null_mask(data: pl.DataFrame, columns: list[str]) -> pl.Series:
