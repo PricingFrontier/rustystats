@@ -345,6 +345,25 @@
   
   
   
+    <li class="md-tabs__item">
+      <a href="../../changelog/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Release Notes
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
     
     
       <li class="md-tabs__item">
@@ -1489,10 +1508,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#theta-estimation" class="md-nav__link">
+  <a href="#theta-contract" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Theta Estimation
+        Theta Contract
       
     </span>
   </a>
@@ -1962,6 +1981,33 @@
   
   
   
+    <li class="md-nav__item">
+      <a href="../../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Release Notes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
     
     
     
@@ -1978,10 +2024,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_7" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
         
           
-          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
             
   
   
@@ -1999,8 +2045,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_7">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2095,10 +2141,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
         
           
-          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
             
   
   
@@ -2116,8 +2162,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_8">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2218,6 +2264,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../../maintenance/input-transforms/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Input Transforms
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../maintenance/testing/" class="md-nav__link">
         
   
@@ -2296,10 +2370,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_10" >
         
           
-          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="0">
             
   
   
@@ -2317,8 +2391,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_9">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2708,10 +2782,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#theta-estimation" class="md-nav__link">
+  <a href="#theta-contract" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Theta Estimation
+        Theta Contract
       
     </span>
   </a>
@@ -3063,8 +3137,12 @@
 <td><span class="arithmatex">\(V(\mu) = \mu^p\)</span> where <span class="arithmatex">\(p\)</span> is variance power</td>
 </tr>
 <tr>
-<td>Valid <span class="arithmatex">\(p\)</span></td>
-<td><span class="arithmatex">\(p \leq 0\)</span> or <span class="arithmatex">\(p \geq 1\)</span></td>
+<td>Default <span class="arithmatex">\(p\)</span> contract</td>
+<td><span class="arithmatex">\(1 &lt; p &lt; 2\)</span></td>
+</tr>
+<tr>
+<td>Extended <span class="arithmatex">\(p\)</span> contract</td>
+<td><span class="arithmatex">\(p \leq 0\)</span> or <span class="arithmatex">\(p \geq 1\)</span> with <code>allow_extended_tweedie=True</code>; <span class="arithmatex">\(0 &lt; p &lt; 1\)</span> is always rejected</td>
 </tr>
 <tr>
 <td>Valid μ range</td>
@@ -3231,8 +3309,13 @@
 </span><span id="__span-9-47"><a id="__codelineno-9-47" name="__codelineno-9-47" href="#__codelineno-9-47"></a><span class="w">    </span><span class="c1">// ...</span>
 </span><span id="__span-9-48"><a id="__codelineno-9-48" name="__codelineno-9-48" href="#__codelineno-9-48"></a><span class="p">}</span>
 </span></code></pre></div>
-<h3 id="theta-estimation">Theta Estimation<a class="headerlink" href="#theta-estimation" title="Permanent link">&para;</a></h3>
-<p>RustyStats can automatically estimate θ:</p>
+<h3 id="theta-contract">Theta Contract<a class="headerlink" href="#theta-contract" title="Permanent link">&para;</a></h3>
+<p>Negative Binomial fits never silently fall back to <code>theta=1.0</code>. The dict API
+requires a positive numeric <code>theta=</code> for a fixed-theta fit, an embedded family
+parameter such as <code>family="negbinomial(theta=2.0)"</code>, or the explicit
+<code>theta="estimate"</code> opt-in on the plain unpenalized path. Regularized,
+constrained, and smooth Negative Binomial fits require a fixed numeric theta.</p>
+<p>The profile estimator uses a moment seed:</p>
 <div class="language-rust highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1">// In diagnostics module</span>
 </span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="k">pub</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">estimate_theta_moments</span><span class="p">(</span>
 </span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">    </span><span class="n">y</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">,</span>

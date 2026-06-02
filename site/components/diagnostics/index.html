@@ -345,6 +345,25 @@
   
   
   
+    <li class="md-tabs__item">
+      <a href="../../changelog/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Release Notes
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
     
     
       <li class="md-tabs__item">
@@ -1478,6 +1497,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#exposure-prior-weights-and-benchmark-predictions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exposure, Prior Weights, And Benchmark Predictions
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#calibration-metrics" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1856,6 +1886,33 @@
   
   
   
+    <li class="md-nav__item">
+      <a href="../../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Release Notes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
     
     
     
@@ -1872,10 +1929,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_7" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
         
           
-          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
             
   
   
@@ -1893,8 +1950,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_7">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1989,10 +2046,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
         
           
-          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
             
   
   
@@ -2010,8 +2067,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_8">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2112,6 +2169,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../../maintenance/input-transforms/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Input Transforms
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../maintenance/testing/" class="md-nav__link">
         
   
@@ -2190,10 +2275,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_10" >
         
           
-          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="0">
             
   
   
@@ -2211,8 +2296,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_9">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2388,6 +2473,17 @@
     <span class="md-ellipsis">
       
         Ranking Policy (RS-ACT-004)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#exposure-prior-weights-and-benchmark-predictions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exposure, Prior Weights, And Benchmark Predictions
       
     </span>
   </a>
@@ -2753,6 +2849,32 @@ high-exposure cells with high-risk cells.</p>
 <p><strong>Aggregates stay on the count scale.</strong> Bin totals report
 <code>Σ y</code>, <code>Σ μ</code>, <code>Σ exposure</code>, and <code>actual / expected</code>, regardless of the
 ranking choice — only the bin <em>assignment</em> changes.</p>
+<h2 id="exposure-prior-weights-and-benchmark-predictions">Exposure, Prior Weights, And Benchmark Predictions<a class="headerlink" href="#exposure-prior-weights-and-benchmark-predictions" title="Permanent link">&para;</a></h2>
+<p>Exposure and prior weights have different meanings in diagnostics:</p>
+<ul>
+<li>exposure is the rate denominator and, for log-link frequency models, the
+  exposure offset concept;</li>
+<li>prior weights multiply each row's contribution to totals;</li>
+<li>weighted exposure is <code>Σ(w * exposure)</code>;</li>
+<li>weighted actual is <code>Σ(w * y)</code>;</li>
+<li>weighted expected is <code>Σ(w * μ)</code>;</li>
+<li>A/E is <code>Σ(w * y) / Σ(w * μ)</code>.</li>
+</ul>
+<p><code>base_predictions</code> are response-scale benchmark predictions. They can represent
+a GBM teacher in a teacher-guided GLM workflow or an incumbent production model
+in a challenger validation. RustyStats does not infer how they were produced.
+For exposure models, benchmark predictions should be expected response totals
+per row, such as expected claim counts, not rates and not link-scale values.</p>
+<p>When benchmark predictions are supplied, factor A/E bins and train/test factor
+stability bins include benchmark totals and rates alongside the GLM totals.
+This lets downstream reports compare actual, GLM, and benchmark curves without
+re-binning factors outside RustyStats.</p>
+<p>Higher-order interaction requests in <code>diagnostics(interactions=[...])</code> are
+reported as block diagnostics. Pair requests still produce 2D surface grids;
+3-way and higher requests report fitted block representation, coefficients,
+Wald significance, and GVIF when available. RustyStats does not emit mandatory
+3D cubes in this phase because sparse categorical cubes can be too large for a
+default diagnostic payload.</p>
 <h2 id="calibration-metrics">Calibration Metrics<a class="headerlink" href="#calibration-metrics" title="Permanent link">&para;</a></h2>
 <h3 id="actual-vs-expected">Actual vs Expected<a class="headerlink" href="#actual-vs-expected" title="Permanent link">&para;</a></h3>
 <div class="language-rust highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">CalibrationResult</span><span class="w"> </span><span class="p">{</span>
@@ -2764,56 +2886,62 @@ ranking choice — only the bin <em>assignment</em> changes.</p>
 </span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="k">pub</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">compute_calibration_curve</span><span class="p">(</span>
 </span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="w">    </span><span class="n">y</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">,</span>
 </span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="w">    </span><span class="n">mu</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;</span><span class="p">,</span>
-</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="w">    </span><span class="n">weights</span><span class="p">:</span><span class="w"> </span><span class="nb">Option</span><span class="o">&lt;&amp;</span><span class="n">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;&gt;</span><span class="p">,</span>
-</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a><span class="w">    </span><span class="n">n_bins</span><span class="p">:</span><span class="w"> </span><span class="kt">usize</span><span class="p">,</span>
-</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">CalibrationResult</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-5-13"><a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">n</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">y</span><span class="p">.</span><span class="n">len</span><span class="p">();</span>
-</span><span id="__span-5-14"><a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a>
-</span><span id="__span-5-15"><a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a><span class="w">    </span><span class="c1">// Overall A/E</span>
-</span><span id="__span-5-16"><a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">total_actual</span><span class="p">:</span><span class="w"> </span><span class="kt">f64</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">match</span><span class="w"> </span><span class="n">weights</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-5-17"><a id="__codelineno-5-17" name="__codelineno-5-17" href="#__codelineno-5-17"></a><span class="w">        </span><span class="nb">Some</span><span class="p">(</span><span class="n">w</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="n">y</span><span class="p">.</span><span class="n">iter</span><span class="p">().</span><span class="n">zip</span><span class="p">(</span><span class="n">w</span><span class="p">.</span><span class="n">iter</span><span class="p">()).</span><span class="n">map</span><span class="p">(</span><span class="o">|</span><span class="p">(</span><span class="n">y</span><span class="p">,</span><span class="w"> </span><span class="n">w</span><span class="p">)</span><span class="o">|</span><span class="w"> </span><span class="n">y</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">w</span><span class="p">).</span><span class="n">sum</span><span class="p">(),</span>
-</span><span id="__span-5-18"><a id="__codelineno-5-18" name="__codelineno-5-18" href="#__codelineno-5-18"></a><span class="w">        </span><span class="nb">None</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="n">y</span><span class="p">.</span><span class="n">sum</span><span class="p">(),</span>
-</span><span id="__span-5-19"><a id="__codelineno-5-19" name="__codelineno-5-19" href="#__codelineno-5-19"></a><span class="w">    </span><span class="p">};</span>
-</span><span id="__span-5-20"><a id="__codelineno-5-20" name="__codelineno-5-20" href="#__codelineno-5-20"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">total_expected</span><span class="p">:</span><span class="w"> </span><span class="kt">f64</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">match</span><span class="w"> </span><span class="n">weights</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-5-21"><a id="__codelineno-5-21" name="__codelineno-5-21" href="#__codelineno-5-21"></a><span class="w">        </span><span class="nb">Some</span><span class="p">(</span><span class="n">w</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="n">mu</span><span class="p">.</span><span class="n">iter</span><span class="p">().</span><span class="n">zip</span><span class="p">(</span><span class="n">w</span><span class="p">.</span><span class="n">iter</span><span class="p">()).</span><span class="n">map</span><span class="p">(</span><span class="o">|</span><span class="p">(</span><span class="n">m</span><span class="p">,</span><span class="w"> </span><span class="n">w</span><span class="p">)</span><span class="o">|</span><span class="w"> </span><span class="n">m</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">w</span><span class="p">).</span><span class="n">sum</span><span class="p">(),</span>
-</span><span id="__span-5-22"><a id="__codelineno-5-22" name="__codelineno-5-22" href="#__codelineno-5-22"></a><span class="w">        </span><span class="nb">None</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="n">mu</span><span class="p">.</span><span class="n">sum</span><span class="p">(),</span>
-</span><span id="__span-5-23"><a id="__codelineno-5-23" name="__codelineno-5-23" href="#__codelineno-5-23"></a><span class="w">    </span><span class="p">};</span>
-</span><span id="__span-5-24"><a id="__codelineno-5-24" name="__codelineno-5-24" href="#__codelineno-5-24"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">overall_ae</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">total_actual</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">total_expected</span><span class="p">;</span>
-</span><span id="__span-5-25"><a id="__codelineno-5-25" name="__codelineno-5-25" href="#__codelineno-5-25"></a>
-</span><span id="__span-5-26"><a id="__codelineno-5-26" name="__codelineno-5-26" href="#__codelineno-5-26"></a><span class="w">    </span><span class="c1">// Sort by predicted risk</span>
-</span><span id="__span-5-27"><a id="__codelineno-5-27" name="__codelineno-5-27" href="#__codelineno-5-27"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">indices</span><span class="p">:</span><span class="w"> </span><span class="nb">Vec</span><span class="o">&lt;</span><span class="kt">usize</span><span class="o">&gt;</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">(</span><span class="mi">0</span><span class="o">..</span><span class="n">n</span><span class="p">).</span><span class="n">collect</span><span class="p">();</span>
-</span><span id="__span-5-28"><a id="__codelineno-5-28" name="__codelineno-5-28" href="#__codelineno-5-28"></a><span class="w">    </span><span class="n">indices</span><span class="p">.</span><span class="n">sort_by</span><span class="p">(</span><span class="o">|&amp;</span><span class="n">a</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">b</span><span class="o">|</span><span class="w"> </span><span class="n">mu</span><span class="p">[</span><span class="n">a</span><span class="p">].</span><span class="n">partial_cmp</span><span class="p">(</span><span class="o">&amp;</span><span class="n">mu</span><span class="p">[</span><span class="n">b</span><span class="p">]).</span><span class="n">unwrap</span><span class="p">());</span>
-</span><span id="__span-5-29"><a id="__codelineno-5-29" name="__codelineno-5-29" href="#__codelineno-5-29"></a>
-</span><span id="__span-5-30"><a id="__codelineno-5-30" name="__codelineno-5-30" href="#__codelineno-5-30"></a><span class="w">    </span><span class="c1">// Compute A/E by decile</span>
-</span><span id="__span-5-31"><a id="__codelineno-5-31" name="__codelineno-5-31" href="#__codelineno-5-31"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">bin_size</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">n</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">n_bins</span><span class="p">;</span>
-</span><span id="__span-5-32"><a id="__codelineno-5-32" name="__codelineno-5-32" href="#__codelineno-5-32"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">by_decile</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">Vec</span><span class="p">::</span><span class="n">with_capacity</span><span class="p">(</span><span class="n">n_bins</span><span class="p">);</span>
-</span><span id="__span-5-33"><a id="__codelineno-5-33" name="__codelineno-5-33" href="#__codelineno-5-33"></a>
-</span><span id="__span-5-34"><a id="__codelineno-5-34" name="__codelineno-5-34" href="#__codelineno-5-34"></a><span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="n">bin</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="mi">0</span><span class="o">..</span><span class="n">n_bins</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-5-35"><a id="__codelineno-5-35" name="__codelineno-5-35" href="#__codelineno-5-35"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">start</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">bin</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">bin_size</span><span class="p">;</span>
-</span><span id="__span-5-36"><a id="__codelineno-5-36" name="__codelineno-5-36" href="#__codelineno-5-36"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">end</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="n">bin</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="n">n_bins</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="mi">1</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">n</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="p">(</span><span class="n">bin</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="mi">1</span><span class="p">)</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">bin_size</span><span class="w"> </span><span class="p">};</span>
-</span><span id="__span-5-37"><a id="__codelineno-5-37" name="__codelineno-5-37" href="#__codelineno-5-37"></a>
-</span><span id="__span-5-38"><a id="__codelineno-5-38" name="__codelineno-5-38" href="#__codelineno-5-38"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">actual</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.0</span><span class="p">;</span>
-</span><span id="__span-5-39"><a id="__codelineno-5-39" name="__codelineno-5-39" href="#__codelineno-5-39"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">expected</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.0</span><span class="p">;</span>
-</span><span id="__span-5-40"><a id="__codelineno-5-40" name="__codelineno-5-40" href="#__codelineno-5-40"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">exposure</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.0</span><span class="p">;</span>
-</span><span id="__span-5-41"><a id="__codelineno-5-41" name="__codelineno-5-41" href="#__codelineno-5-41"></a>
-</span><span id="__span-5-42"><a id="__codelineno-5-42" name="__codelineno-5-42" href="#__codelineno-5-42"></a><span class="w">        </span><span class="k">for</span><span class="w"> </span><span class="o">&amp;</span><span class="n">i</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="o">&amp;</span><span class="n">indices</span><span class="p">[</span><span class="n">start</span><span class="o">..</span><span class="n">end</span><span class="p">]</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-5-43"><a id="__codelineno-5-43" name="__codelineno-5-43" href="#__codelineno-5-43"></a><span class="w">            </span><span class="kd">let</span><span class="w"> </span><span class="n">w</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">weights</span><span class="p">.</span><span class="n">map_or</span><span class="p">(</span><span class="mf">1.0</span><span class="p">,</span><span class="w"> </span><span class="o">|</span><span class="n">w</span><span class="o">|</span><span class="w"> </span><span class="n">w</span><span class="p">[</span><span class="n">i</span><span class="p">]);</span>
-</span><span id="__span-5-44"><a id="__codelineno-5-44" name="__codelineno-5-44" href="#__codelineno-5-44"></a><span class="w">            </span><span class="n">actual</span><span class="w"> </span><span class="o">+=</span><span class="w"> </span><span class="n">y</span><span class="p">[</span><span class="n">i</span><span class="p">]</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">w</span><span class="p">;</span>
-</span><span id="__span-5-45"><a id="__codelineno-5-45" name="__codelineno-5-45" href="#__codelineno-5-45"></a><span class="w">            </span><span class="n">expected</span><span class="w"> </span><span class="o">+=</span><span class="w"> </span><span class="n">mu</span><span class="p">[</span><span class="n">i</span><span class="p">]</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">w</span><span class="p">;</span>
-</span><span id="__span-5-46"><a id="__codelineno-5-46" name="__codelineno-5-46" href="#__codelineno-5-46"></a><span class="w">            </span><span class="n">exposure</span><span class="w"> </span><span class="o">+=</span><span class="w"> </span><span class="n">w</span><span class="p">;</span>
-</span><span id="__span-5-47"><a id="__codelineno-5-47" name="__codelineno-5-47" href="#__codelineno-5-47"></a><span class="w">        </span><span class="p">}</span>
-</span><span id="__span-5-48"><a id="__codelineno-5-48" name="__codelineno-5-48" href="#__codelineno-5-48"></a>
-</span><span id="__span-5-49"><a id="__codelineno-5-49" name="__codelineno-5-49" href="#__codelineno-5-49"></a><span class="w">        </span><span class="n">by_decile</span><span class="p">.</span><span class="n">push</span><span class="p">(</span><span class="n">DecileStats</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-5-50"><a id="__codelineno-5-50" name="__codelineno-5-50" href="#__codelineno-5-50"></a><span class="w">            </span><span class="n">decile</span><span class="p">:</span><span class="w"> </span><span class="nc">bin</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
-</span><span id="__span-5-51"><a id="__codelineno-5-51" name="__codelineno-5-51" href="#__codelineno-5-51"></a><span class="w">            </span><span class="n">actual</span><span class="p">,</span>
-</span><span id="__span-5-52"><a id="__codelineno-5-52" name="__codelineno-5-52" href="#__codelineno-5-52"></a><span class="w">            </span><span class="n">expected</span><span class="p">,</span>
-</span><span id="__span-5-53"><a id="__codelineno-5-53" name="__codelineno-5-53" href="#__codelineno-5-53"></a><span class="w">            </span><span class="n">ae_ratio</span><span class="p">:</span><span class="w"> </span><span class="nc">actual</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">expected</span><span class="p">,</span>
-</span><span id="__span-5-54"><a id="__codelineno-5-54" name="__codelineno-5-54" href="#__codelineno-5-54"></a><span class="w">            </span><span class="n">exposure</span><span class="p">,</span>
-</span><span id="__span-5-55"><a id="__codelineno-5-55" name="__codelineno-5-55" href="#__codelineno-5-55"></a><span class="w">        </span><span class="p">});</span>
-</span><span id="__span-5-56"><a id="__codelineno-5-56" name="__codelineno-5-56" href="#__codelineno-5-56"></a><span class="w">    </span><span class="p">}</span>
-</span><span id="__span-5-57"><a id="__codelineno-5-57" name="__codelineno-5-57" href="#__codelineno-5-57"></a>
-</span><span id="__span-5-58"><a id="__codelineno-5-58" name="__codelineno-5-58" href="#__codelineno-5-58"></a><span class="w">    </span><span class="n">CalibrationResult</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">overall_ae</span><span class="p">,</span><span class="w"> </span><span class="n">by_decile</span><span class="p">,</span><span class="w"> </span><span class="n">hosmer_lemeshow</span><span class="p">:</span><span class="w"> </span><span class="nb">None</span><span class="w"> </span><span class="p">}</span>
-</span><span id="__span-5-59"><a id="__codelineno-5-59" name="__codelineno-5-59" href="#__codelineno-5-59"></a><span class="p">}</span>
+</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="w">    </span><span class="n">exposure</span><span class="p">:</span><span class="w"> </span><span class="nb">Option</span><span class="o">&lt;&amp;</span><span class="n">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;&gt;</span><span class="p">,</span>
+</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a><span class="w">    </span><span class="n">weights</span><span class="p">:</span><span class="w"> </span><span class="nb">Option</span><span class="o">&lt;&amp;</span><span class="n">Array1</span><span class="o">&lt;</span><span class="kt">f64</span><span class="o">&gt;&gt;</span><span class="p">,</span>
+</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a><span class="w">    </span><span class="n">n_bins</span><span class="p">:</span><span class="w"> </span><span class="kt">usize</span><span class="p">,</span>
+</span><span id="__span-5-13"><a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">CalibrationResult</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-5-14"><a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">n</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">y</span><span class="p">.</span><span class="n">len</span><span class="p">();</span>
+</span><span id="__span-5-15"><a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a>
+</span><span id="__span-5-16"><a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a><span class="w">    </span><span class="c1">// Overall A/E</span>
+</span><span id="__span-5-17"><a id="__codelineno-5-17" name="__codelineno-5-17" href="#__codelineno-5-17"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">total_actual</span><span class="p">:</span><span class="w"> </span><span class="kt">f64</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">match</span><span class="w"> </span><span class="n">weights</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-5-18"><a id="__codelineno-5-18" name="__codelineno-5-18" href="#__codelineno-5-18"></a><span class="w">        </span><span class="nb">Some</span><span class="p">(</span><span class="n">w</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="n">y</span><span class="p">.</span><span class="n">iter</span><span class="p">().</span><span class="n">zip</span><span class="p">(</span><span class="n">w</span><span class="p">.</span><span class="n">iter</span><span class="p">()).</span><span class="n">map</span><span class="p">(</span><span class="o">|</span><span class="p">(</span><span class="n">y</span><span class="p">,</span><span class="w"> </span><span class="n">w</span><span class="p">)</span><span class="o">|</span><span class="w"> </span><span class="n">y</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">w</span><span class="p">).</span><span class="n">sum</span><span class="p">(),</span>
+</span><span id="__span-5-19"><a id="__codelineno-5-19" name="__codelineno-5-19" href="#__codelineno-5-19"></a><span class="w">        </span><span class="nb">None</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="n">y</span><span class="p">.</span><span class="n">sum</span><span class="p">(),</span>
+</span><span id="__span-5-20"><a id="__codelineno-5-20" name="__codelineno-5-20" href="#__codelineno-5-20"></a><span class="w">    </span><span class="p">};</span>
+</span><span id="__span-5-21"><a id="__codelineno-5-21" name="__codelineno-5-21" href="#__codelineno-5-21"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">total_expected</span><span class="p">:</span><span class="w"> </span><span class="kt">f64</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">match</span><span class="w"> </span><span class="n">weights</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-5-22"><a id="__codelineno-5-22" name="__codelineno-5-22" href="#__codelineno-5-22"></a><span class="w">        </span><span class="nb">Some</span><span class="p">(</span><span class="n">w</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="n">mu</span><span class="p">.</span><span class="n">iter</span><span class="p">().</span><span class="n">zip</span><span class="p">(</span><span class="n">w</span><span class="p">.</span><span class="n">iter</span><span class="p">()).</span><span class="n">map</span><span class="p">(</span><span class="o">|</span><span class="p">(</span><span class="n">m</span><span class="p">,</span><span class="w"> </span><span class="n">w</span><span class="p">)</span><span class="o">|</span><span class="w"> </span><span class="n">m</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">w</span><span class="p">).</span><span class="n">sum</span><span class="p">(),</span>
+</span><span id="__span-5-23"><a id="__codelineno-5-23" name="__codelineno-5-23" href="#__codelineno-5-23"></a><span class="w">        </span><span class="nb">None</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="n">mu</span><span class="p">.</span><span class="n">sum</span><span class="p">(),</span>
+</span><span id="__span-5-24"><a id="__codelineno-5-24" name="__codelineno-5-24" href="#__codelineno-5-24"></a><span class="w">    </span><span class="p">};</span>
+</span><span id="__span-5-25"><a id="__codelineno-5-25" name="__codelineno-5-25" href="#__codelineno-5-25"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">overall_ae</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">total_actual</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">total_expected</span><span class="p">;</span>
+</span><span id="__span-5-26"><a id="__codelineno-5-26" name="__codelineno-5-26" href="#__codelineno-5-26"></a>
+</span><span id="__span-5-27"><a id="__codelineno-5-27" name="__codelineno-5-27" href="#__codelineno-5-27"></a><span class="w">    </span><span class="c1">// Sort by predicted risk. With exposure in scope and ranking=&quot;auto&quot;,</span>
+</span><span id="__span-5-28"><a id="__codelineno-5-28" name="__codelineno-5-28" href="#__codelineno-5-28"></a><span class="w">    </span><span class="c1">// this score is μ / exposure; otherwise it is μ.</span>
+</span><span id="__span-5-29"><a id="__codelineno-5-29" name="__codelineno-5-29" href="#__codelineno-5-29"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">rank_score</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">match</span><span class="w"> </span><span class="n">exposure</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-5-30"><a id="__codelineno-5-30" name="__codelineno-5-30" href="#__codelineno-5-30"></a><span class="w">        </span><span class="nb">Some</span><span class="p">(</span><span class="n">e</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="n">mu</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">e</span><span class="p">,</span>
+</span><span id="__span-5-31"><a id="__codelineno-5-31" name="__codelineno-5-31" href="#__codelineno-5-31"></a><span class="w">        </span><span class="nb">None</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="n">mu</span><span class="p">.</span><span class="n">clone</span><span class="p">(),</span>
+</span><span id="__span-5-32"><a id="__codelineno-5-32" name="__codelineno-5-32" href="#__codelineno-5-32"></a><span class="w">    </span><span class="p">};</span>
+</span><span id="__span-5-33"><a id="__codelineno-5-33" name="__codelineno-5-33" href="#__codelineno-5-33"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">indices</span><span class="p">:</span><span class="w"> </span><span class="nb">Vec</span><span class="o">&lt;</span><span class="kt">usize</span><span class="o">&gt;</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">(</span><span class="mi">0</span><span class="o">..</span><span class="n">n</span><span class="p">).</span><span class="n">collect</span><span class="p">();</span>
+</span><span id="__span-5-34"><a id="__codelineno-5-34" name="__codelineno-5-34" href="#__codelineno-5-34"></a><span class="w">    </span><span class="n">indices</span><span class="p">.</span><span class="n">sort_by</span><span class="p">(</span><span class="o">|&amp;</span><span class="n">a</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">b</span><span class="o">|</span><span class="w"> </span><span class="n">rank_score</span><span class="p">[</span><span class="n">a</span><span class="p">].</span><span class="n">partial_cmp</span><span class="p">(</span><span class="o">&amp;</span><span class="n">rank_score</span><span class="p">[</span><span class="n">b</span><span class="p">]).</span><span class="n">unwrap</span><span class="p">());</span>
+</span><span id="__span-5-35"><a id="__codelineno-5-35" name="__codelineno-5-35" href="#__codelineno-5-35"></a>
+</span><span id="__span-5-36"><a id="__codelineno-5-36" name="__codelineno-5-36" href="#__codelineno-5-36"></a><span class="w">    </span><span class="c1">// Compute A/E by decile</span>
+</span><span id="__span-5-37"><a id="__codelineno-5-37" name="__codelineno-5-37" href="#__codelineno-5-37"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">bin_size</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">n</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">n_bins</span><span class="p">;</span>
+</span><span id="__span-5-38"><a id="__codelineno-5-38" name="__codelineno-5-38" href="#__codelineno-5-38"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">by_decile</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">Vec</span><span class="p">::</span><span class="n">with_capacity</span><span class="p">(</span><span class="n">n_bins</span><span class="p">);</span>
+</span><span id="__span-5-39"><a id="__codelineno-5-39" name="__codelineno-5-39" href="#__codelineno-5-39"></a>
+</span><span id="__span-5-40"><a id="__codelineno-5-40" name="__codelineno-5-40" href="#__codelineno-5-40"></a><span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="n">bin</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="mi">0</span><span class="o">..</span><span class="n">n_bins</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-5-41"><a id="__codelineno-5-41" name="__codelineno-5-41" href="#__codelineno-5-41"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">start</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">bin</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">bin_size</span><span class="p">;</span>
+</span><span id="__span-5-42"><a id="__codelineno-5-42" name="__codelineno-5-42" href="#__codelineno-5-42"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">end</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="n">bin</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="n">n_bins</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="mi">1</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">n</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="p">(</span><span class="n">bin</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="mi">1</span><span class="p">)</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">bin_size</span><span class="w"> </span><span class="p">};</span>
+</span><span id="__span-5-43"><a id="__codelineno-5-43" name="__codelineno-5-43" href="#__codelineno-5-43"></a>
+</span><span id="__span-5-44"><a id="__codelineno-5-44" name="__codelineno-5-44" href="#__codelineno-5-44"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">actual</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.0</span><span class="p">;</span>
+</span><span id="__span-5-45"><a id="__codelineno-5-45" name="__codelineno-5-45" href="#__codelineno-5-45"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">expected</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.0</span><span class="p">;</span>
+</span><span id="__span-5-46"><a id="__codelineno-5-46" name="__codelineno-5-46" href="#__codelineno-5-46"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">exposure</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.0</span><span class="p">;</span>
+</span><span id="__span-5-47"><a id="__codelineno-5-47" name="__codelineno-5-47" href="#__codelineno-5-47"></a>
+</span><span id="__span-5-48"><a id="__codelineno-5-48" name="__codelineno-5-48" href="#__codelineno-5-48"></a><span class="w">        </span><span class="k">for</span><span class="w"> </span><span class="o">&amp;</span><span class="n">i</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="o">&amp;</span><span class="n">indices</span><span class="p">[</span><span class="n">start</span><span class="o">..</span><span class="n">end</span><span class="p">]</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-5-49"><a id="__codelineno-5-49" name="__codelineno-5-49" href="#__codelineno-5-49"></a><span class="w">            </span><span class="kd">let</span><span class="w"> </span><span class="n">w</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">weights</span><span class="p">.</span><span class="n">map_or</span><span class="p">(</span><span class="mf">1.0</span><span class="p">,</span><span class="w"> </span><span class="o">|</span><span class="n">w</span><span class="o">|</span><span class="w"> </span><span class="n">w</span><span class="p">[</span><span class="n">i</span><span class="p">]);</span>
+</span><span id="__span-5-50"><a id="__codelineno-5-50" name="__codelineno-5-50" href="#__codelineno-5-50"></a><span class="w">            </span><span class="n">actual</span><span class="w"> </span><span class="o">+=</span><span class="w"> </span><span class="n">y</span><span class="p">[</span><span class="n">i</span><span class="p">]</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">w</span><span class="p">;</span>
+</span><span id="__span-5-51"><a id="__codelineno-5-51" name="__codelineno-5-51" href="#__codelineno-5-51"></a><span class="w">            </span><span class="n">expected</span><span class="w"> </span><span class="o">+=</span><span class="w"> </span><span class="n">mu</span><span class="p">[</span><span class="n">i</span><span class="p">]</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">w</span><span class="p">;</span>
+</span><span id="__span-5-52"><a id="__codelineno-5-52" name="__codelineno-5-52" href="#__codelineno-5-52"></a><span class="w">            </span><span class="n">exposure</span><span class="w"> </span><span class="o">+=</span><span class="w"> </span><span class="n">w</span><span class="p">;</span>
+</span><span id="__span-5-53"><a id="__codelineno-5-53" name="__codelineno-5-53" href="#__codelineno-5-53"></a><span class="w">        </span><span class="p">}</span>
+</span><span id="__span-5-54"><a id="__codelineno-5-54" name="__codelineno-5-54" href="#__codelineno-5-54"></a>
+</span><span id="__span-5-55"><a id="__codelineno-5-55" name="__codelineno-5-55" href="#__codelineno-5-55"></a><span class="w">        </span><span class="n">by_decile</span><span class="p">.</span><span class="n">push</span><span class="p">(</span><span class="n">DecileStats</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-5-56"><a id="__codelineno-5-56" name="__codelineno-5-56" href="#__codelineno-5-56"></a><span class="w">            </span><span class="n">decile</span><span class="p">:</span><span class="w"> </span><span class="nc">bin</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+</span><span id="__span-5-57"><a id="__codelineno-5-57" name="__codelineno-5-57" href="#__codelineno-5-57"></a><span class="w">            </span><span class="n">actual</span><span class="p">,</span>
+</span><span id="__span-5-58"><a id="__codelineno-5-58" name="__codelineno-5-58" href="#__codelineno-5-58"></a><span class="w">            </span><span class="n">expected</span><span class="p">,</span>
+</span><span id="__span-5-59"><a id="__codelineno-5-59" name="__codelineno-5-59" href="#__codelineno-5-59"></a><span class="w">            </span><span class="n">ae_ratio</span><span class="p">:</span><span class="w"> </span><span class="nc">actual</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">expected</span><span class="p">,</span>
+</span><span id="__span-5-60"><a id="__codelineno-5-60" name="__codelineno-5-60" href="#__codelineno-5-60"></a><span class="w">            </span><span class="n">exposure</span><span class="p">,</span>
+</span><span id="__span-5-61"><a id="__codelineno-5-61" name="__codelineno-5-61" href="#__codelineno-5-61"></a><span class="w">        </span><span class="p">});</span>
+</span><span id="__span-5-62"><a id="__codelineno-5-62" name="__codelineno-5-62" href="#__codelineno-5-62"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-5-63"><a id="__codelineno-5-63" name="__codelineno-5-63" href="#__codelineno-5-63"></a>
+</span><span id="__span-5-64"><a id="__codelineno-5-64" name="__codelineno-5-64" href="#__codelineno-5-64"></a><span class="w">    </span><span class="n">CalibrationResult</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">overall_ae</span><span class="p">,</span><span class="w"> </span><span class="n">by_decile</span><span class="p">,</span><span class="w"> </span><span class="n">hosmer_lemeshow</span><span class="p">:</span><span class="w"> </span><span class="nb">None</span><span class="w"> </span><span class="p">}</span>
+</span><span id="__span-5-65"><a id="__codelineno-5-65" name="__codelineno-5-65" href="#__codelineno-5-65"></a><span class="p">}</span>
 </span></code></pre></div>
 <h2 id="discrimination-metrics">Discrimination Metrics<a class="headerlink" href="#discrimination-metrics" title="Permanent link">&para;</a></h2>
 <h3 id="gini-coefficient">Gini Coefficient<a class="headerlink" href="#gini-coefficient" title="Permanent link">&para;</a></h3>
@@ -2990,7 +3118,7 @@ ranking choice — only the bin <em>assignment</em> changes.</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="n">result</span> <span class="o">=</span> <span class="n">rs</span><span class="o">.</span><span class="n">glm_dict</span><span class="p">(</span><span class="n">response</span><span class="o">=</span><span class="s2">&quot;y&quot;</span><span class="p">,</span> <span class="n">terms</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;x1&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;linear&quot;</span><span class="p">},</span> <span class="s2">&quot;region&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;categorical&quot;</span><span class="p">}},</span> <span class="n">data</span><span class="o">=</span><span class="n">data</span><span class="p">,</span> <span class="n">family</span><span class="o">=</span><span class="s2">&quot;poisson&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">fit</span><span class="p">()</span>
 </span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>
 </span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="n">diagnostics</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">diagnostics</span><span class="p">(</span>
-</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>    <span class="n">data</span><span class="o">=</span><span class="n">data</span><span class="p">,</span>
+</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>    <span class="n">train_data</span><span class="o">=</span><span class="n">data</span><span class="p">,</span>
 </span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>    <span class="n">categorical_factors</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;region&quot;</span><span class="p">,</span> <span class="s2">&quot;brand&quot;</span><span class="p">],</span>
 </span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a>    <span class="n">continuous_factors</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;age&quot;</span><span class="p">,</span> <span class="s2">&quot;income&quot;</span><span class="p">],</span>
 </span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="p">)</span>

@@ -345,6 +345,25 @@
   
   
   
+    <li class="md-tabs__item">
+      <a href="../../changelog/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Release Notes
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
     
     
       <li class="md-tabs__item">
@@ -2033,6 +2052,33 @@
   
   
   
+    <li class="md-nav__item">
+      <a href="../../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Release Notes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
     
     
     
@@ -2049,10 +2095,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_7" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
         
           
-          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
             
   
   
@@ -2070,8 +2116,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_7">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2166,10 +2212,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
         
           
-          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
             
   
   
@@ -2187,8 +2233,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_8">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2289,6 +2335,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../../maintenance/input-transforms/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Input Transforms
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../maintenance/testing/" class="md-nav__link">
         
   
@@ -2367,10 +2441,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_10" >
         
           
-          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="0">
             
   
   
@@ -2388,8 +2462,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_9">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -3036,7 +3110,27 @@ R^2_{\text{pseudo}} = 1 - \frac{D}{D_{\text{null}}}
 <div class="arithmatex">\[
 \text{A/E} = \frac{\sum y_i}{\sum \hat{\mu}_i}
 \]</div>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="n">diagnostics</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">diagnostics</span><span class="p">(</span><span class="n">data</span><span class="o">=</span><span class="n">data</span><span class="p">,</span> <span class="n">categorical_factors</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;Region&quot;</span><span class="p">])</span>
+<p>When prior weights are supplied, RustyStats uses the weighted form:</p>
+<div class="arithmatex">\[
+\text{A/E}_w = \frac{\sum_i w_i y_i}{\sum_i w_i \hat{\mu}_i}
+\]</div>
+<p>Exposure remains a separate rate denominator. For factor, decile, and
+benchmark-comparison aggregates:</p>
+<div class="arithmatex">\[
+\text{weighted exposure} = \sum_i w_i e_i,\quad
+\text{actual rate} = \frac{\sum_i w_i y_i}{\sum_i w_i e_i},\quad
+\text{expected rate} = \frac{\sum_i w_i \hat{\mu}_i}{\sum_i w_i e_i}
+\]</div>
+<p>Benchmark predictions supplied through <code>base_predictions</code> follow the same
+contract:</p>
+<div class="arithmatex">\[
+\text{base rate} = \frac{\sum_i w_i \mu^{base}_i}{\sum_i w_i e_i},\quad
+\text{base A/E} = \frac{\sum_i w_i y_i}{\sum_i w_i \mu^{base}_i}
+\]</div>
+<p><code>base_predictions</code> must be response-scale row predictions. For a frequency
+model with exposure, pass expected claim counts per row, not claim rates and
+not link-scale predictions.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="n">diagnostics</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">diagnostics</span><span class="p">(</span><span class="n">train_data</span><span class="o">=</span><span class="n">data</span><span class="p">,</span> <span class="n">categorical_factors</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;Region&quot;</span><span class="p">])</span>
 </span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Overall A/E: </span><span class="si">{</span><span class="n">diagnostics</span><span class="o">.</span><span class="n">calibration</span><span class="p">[</span><span class="s1">&#39;actual_expected_ratio&#39;</span><span class="p">]</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
 </span></code></pre></div>
 <p><strong>Interpretation:</strong>
@@ -3098,7 +3192,7 @@ H = \sum_{g=1}^{G} \frac{(O_g - E_g)^2}{E_g(1 - E_g/n_g)}
 <h2 id="interaction-detection">Interaction Detection<a class="headerlink" href="#interaction-detection" title="Permanent link">&para;</a></h2>
 <p>RustyStats can automatically detect potential interactions:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-18-1"><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="n">diagnostics</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">diagnostics</span><span class="p">(</span>
-</span><span id="__span-18-2"><a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a>    <span class="n">data</span><span class="o">=</span><span class="n">data</span><span class="p">,</span>
+</span><span id="__span-18-2"><a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a>    <span class="n">train_data</span><span class="o">=</span><span class="n">data</span><span class="p">,</span>
 </span><span id="__span-18-3"><a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a>    <span class="n">categorical_factors</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;Region&quot;</span><span class="p">,</span> <span class="s2">&quot;VehBrand&quot;</span><span class="p">],</span>
 </span><span id="__span-18-4"><a id="__codelineno-18-4" name="__codelineno-18-4" href="#__codelineno-18-4"></a>    <span class="n">continuous_factors</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;Age&quot;</span><span class="p">],</span>
 </span><span id="__span-18-5"><a id="__codelineno-18-5" name="__codelineno-18-5" href="#__codelineno-18-5"></a><span class="p">)</span>
@@ -3125,7 +3219,7 @@ H = \sum_{g=1}^{G} \frac{(O_g - E_g)^2}{E_g(1 - E_g/n_g)}
 <h2 id="json-export-for-llm-integration">JSON Export for LLM Integration<a class="headerlink" href="#json-export-for-llm-integration" title="Permanent link">&para;</a></h2>
 <p>Export diagnostics in compact JSON format:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-20-1"><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="n">json_str</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">diagnostics_json</span><span class="p">(</span>
-</span><span id="__span-20-2"><a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a>    <span class="n">data</span><span class="o">=</span><span class="n">data</span><span class="p">,</span>
+</span><span id="__span-20-2"><a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a>    <span class="n">train_data</span><span class="o">=</span><span class="n">data</span><span class="p">,</span>
 </span><span id="__span-20-3"><a id="__codelineno-20-3" name="__codelineno-20-3" href="#__codelineno-20-3"></a>    <span class="n">categorical_factors</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;Region&quot;</span><span class="p">],</span>
 </span><span id="__span-20-4"><a id="__codelineno-20-4" name="__codelineno-20-4" href="#__codelineno-20-4"></a>    <span class="n">continuous_factors</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;Age&quot;</span><span class="p">],</span>
 </span><span id="__span-20-5"><a id="__codelineno-20-5" name="__codelineno-20-5" href="#__codelineno-20-5"></a><span class="p">)</span>
