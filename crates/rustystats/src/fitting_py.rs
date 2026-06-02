@@ -530,6 +530,48 @@ pub fn fit_cv_path_py<'py>(
     let x_view = x.as_array(); // Zero-copy view
     let n = y_array.len();
     let p = x_view.ncols();
+
+    // Dimension validation BEFORE any slicing / modular arithmetic. A direct
+    // caller passing mismatched arrays (or n_folds == 0) would otherwise hit an
+    // out-of-bounds index or divide-by-zero panic inside the rayon closure,
+    // crossing FFI as an opaque PanicException. Mirror the dimension contract
+    // the core solver enforces for the other fit entry points.
+    if x_view.nrows() != n {
+        return Err(PyValueError::new_err(format!(
+            "x has {} rows but y has length {}; they must match",
+            x_view.nrows(),
+            n
+        )));
+    }
+    if let Some(ref o) = offset {
+        if o.as_array().len() != n {
+            return Err(PyValueError::new_err(format!(
+                "offset has length {} but y has length {}; they must match",
+                o.as_array().len(),
+                n
+            )));
+        }
+    }
+    if let Some(ref w) = weights {
+        if w.as_array().len() != n {
+            return Err(PyValueError::new_err(format!(
+                "weights has length {} but y has length {}; they must match",
+                w.as_array().len(),
+                n
+            )));
+        }
+    }
+    if n_folds < 1 {
+        return Err(PyValueError::new_err(
+            "n_folds must be at least 1".to_string(),
+        ));
+    }
+    if n_folds > n {
+        return Err(PyValueError::new_err(format!(
+            "n_folds ({n_folds}) cannot exceed the number of observations ({n})"
+        )));
+    }
+
     let offset_array: Option<Array1<f64>> = offset.map(|o| o.as_array().to_owned());
     let weights_array: Option<Array1<f64>> = weights.map(|w| w.as_array().to_owned());
     let standardization = build_standardization(center, scale, p)?;
@@ -866,20 +908,30 @@ pub fn fit_smooth_glm_unified_py<'py>(
         .zip(smooth_penalties.iter())
         .zip(mono_vec.iter())
         .map(|((&(start, end), pen), mono)| {
+            // Unrecognized monotonicity strings must error loudly rather than
+            // silently disabling the constraint. `None` (Python) leaves the term
+            // unconstrained by design.
             let monotonicity = match mono.as_deref() {
+                None => Monotonicity::None,
                 Some("increasing") | Some("inc") => Monotonicity::Increasing,
                 Some("decreasing") | Some("dec") => Monotonicity::Decreasing,
-                _ => Monotonicity::None,
+                Some(other) => {
+                    return Err(PyValueError::new_err(format!(
+                        "Unrecognized smooth_monotonicity value {other:?}; \
+                         accepted values are None, \"increasing\" (\"inc\"), or \
+                         \"decreasing\" (\"dec\")."
+                    )));
+                }
             };
-            SmoothTermSpec {
+            Ok(SmoothTermSpec {
                 col_start: start,
                 col_end: end,
                 penalty: pen.as_array().to_owned(),
                 monotonicity,
                 initial_lambda: 1.0,
-            }
+            })
         })
-        .collect();
+        .collect::<PyResult<Vec<_>>>()?;
 
     let config = build_smooth_config(max_iter, tol, lambda_min, lambda_max);
 

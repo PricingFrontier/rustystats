@@ -39,6 +39,11 @@ with open("model.bin", "rb") as f:
 predictions = loaded.predict(new_data)
 ```
 
+Models fitted with deterministic `input_transforms` are also self-contained.
+The serialized payload stores the canonical transform specs and recompiles
+lookup tables when loaded, so production callers can pass the same raw columns
+to `loaded.predict(...)` that they passed to the original model.
+
 ---
 
 ## API Reference
@@ -83,6 +88,7 @@ The serialized model includes everything needed for prediction:
 | Spline knots | ✓ | For basis function evaluation |
 | Target encoding stats | ✓ | Prior, level means, counts |
 | Frequency encoding stats | ✓ | Level frequencies |
+| Input transforms | ✓ | Deterministic lookup specs for raw-data scoring |
 | Formula/term specs | ✓ | For design matrix construction |
 
 ## What's NOT Preserved
@@ -184,11 +190,14 @@ except ValueError as e:
 
 ```python
 # Check that new data has required columns
-required = model.feature_names
+required = model.required_columns
 missing = set(required) - set(new_data.columns)
 if missing:
     print(f"Missing columns: {missing}")
 ```
+
+`required_columns` returns raw input columns. For transformed models it includes
+the transform source columns, not the derived transform output columns.
 
 ### Unseen categorical levels
 

@@ -229,6 +229,22 @@ class DiagnosticsComputer:
             np.asarray(weights, dtype=np.float64) if weights is not None else np.ones_like(self.y)
         )
         self.base_mu = None if base_mu is None else np.asarray(base_mu, dtype=np.float64)
+        # Validate aligned lengths up front: mismatched mu/exposure/weights/base
+        # arrays otherwise reach the Rust A/E kernels and panic with an index
+        # out-of-bounds (PanicException) instead of a clean error.
+        _n = self.y.shape[0]
+        for _name, _arr in (
+            ("mu", self.mu),
+            ("linear_predictor", self.linear_predictor),
+            ("exposure", self.exposure),
+            ("weights", self.weights),
+            ("base_mu", self.base_mu),
+        ):
+            if _arr is not None and _arr.shape[0] != _n:
+                raise ValidationError(
+                    f"DiagnosticsComputer received {_name} of length {_arr.shape[0]}, "
+                    f"expected {_n} to match y."
+                )
         self.feature_names = feature_names or []
         self.var_power = var_power
         self.theta = theta
@@ -2251,6 +2267,13 @@ class DiagnosticsComputer:
         # Rust kernels; use the shared weighted Python helpers only when prior
         # weights are actually supplied. ``_rust_dataset_metrics`` is computed
         # only on the unweighted path, where its mean_deviance is the loss.
+        #
+        # WEIGHTING CONTRACT: when prior weights are supplied, ``loss``, ``gini``,
+        # and ``ae_ratio`` are weighted, but ``auc`` (and therefore
+        # ``auc_improvement``) stays UNWEIGHTED — the discrimination kernel does
+        # not accept weights, and a weighted ROC is intentionally out of scope.
+        # Treat ``auc`` as the rank-only diagnostic; use ``gini`` for the
+        # exposure/prior-weighted ranking comparison.
         base_stats = _rust_discrimination_stats(y_arr, mu_base_arr, exposure_arr)
         if weights_arr is None:
             base_dataset_metrics = _rust_dataset_metrics(

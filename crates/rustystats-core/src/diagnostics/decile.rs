@@ -121,9 +121,18 @@ pub fn compute_ae_by_decile(
         // sorted by `mu`, but we never materialise the gathered values.
         let mut actual = 0.0f64;
         let mut predicted = 0.0f64;
+        let mut mu_min = f64::INFINITY;
+        let mut mu_max = f64::NEG_INFINITY;
         for &row in bucket {
             actual += y_slice[row];
-            predicted += mu_slice[row];
+            let m = mu_slice[row];
+            predicted += m;
+            if m < mu_min {
+                mu_min = m;
+            }
+            if m > mu_max {
+                mu_max = m;
+            }
         }
         let expo: f64 = match exp_slice {
             Some(e) => {
@@ -135,14 +144,15 @@ pub fn compute_ae_by_decile(
             }
             None => (end - start) as f64,
         };
-        // The bucket is ordered by rank score (rate), so its first/last entries
-        // are the lowest/highest-rate observations in the decile; we report their
-        // mu as the decile's mu bounds. Guard against empty deciles (n < n_deciles).
-        let (mu_min, mu_max) = if let (Some(&first), Some(&last)) = (bucket.first(), bucket.last())
-        {
-            (mu_slice[first], mu_slice[last])
-        } else {
+        // Report the actual min/max of mu over the decile's members. The bucket
+        // is ranked by RATE (mu/exposure), so when exposure varies the first/last
+        // entries by rate are not necessarily the min/max by mu — taking the true
+        // extrema avoids an inverted (mu_min > mu_max) report. Guard against empty
+        // deciles (n < n_deciles).
+        let (mu_min, mu_max) = if bucket.is_empty() {
             (f64::NAN, f64::NAN)
+        } else {
+            (mu_min, mu_max)
         };
 
         out.push(DecileMetricsRaw {
@@ -265,6 +275,39 @@ mod tests {
         assert_eq!(result[1].n, 6);
     }
 
+    #[test]
+    fn mu_bounds_are_true_extrema_under_varying_exposure() {
+        // E1: when ranking is by RATE (mu/exposure) and exposure varies, the
+        // first/last entries by rate are NOT the min/max by mu. mu_min/mu_max
+        // must be the actual extrema of mu within the decile, never inverted.
+        //
+        // Row 0: mu=1.0, exp=10 → rate 0.10 (low rate, but HIGH mu)
+        // Row 1: mu=0.2, exp=1  → rate 0.20 (high rate, but LOW mu)
+        // With one decile, the rate-sorted bucket is [row0, row1]; reporting
+        // first/last-by-rate mu would give (mu_min=1.0, mu_max=0.2) — inverted.
+        let y = arr(&[1.0, 1.0]);
+        let mu = arr(&[1.0, 0.2]);
+        let exp = arr(&[10.0, 1.0]);
+        let result = compute_ae_by_decile(&y, &mu, Some(&exp), 1, None);
+        assert_eq!(result.len(), 1);
+        assert!(
+            (result[0].mu_min - 0.2).abs() < 1e-12,
+            "mu_min should be the true minimum 0.2, got {}",
+            result[0].mu_min
+        );
+        assert!(
+            (result[0].mu_max - 1.0).abs() < 1e-12,
+            "mu_max should be the true maximum 1.0, got {}",
+            result[0].mu_max
+        );
+        assert!(
+            result[0].mu_min <= result[0].mu_max,
+            "mu_min ({}) must not exceed mu_max ({})",
+            result[0].mu_min,
+            result[0].mu_max
+        );
+    }
+
     /// Naive reference implementation that materialises the gathered slices
     /// and sums them sequentially. Kept inside the test module so the
     /// production code can drop the gather-Vec strategy. Uses the same
@@ -301,8 +344,13 @@ mod tests {
                 Some(v) => v[start..end].iter().sum(),
                 None => (end - start) as f64,
             };
+            // True min/max of mu over the decile members (E1): the rate-sorted
+            // endpoints are NOT the mu extrema when exposure varies.
             let (mu_min, mu_max) = if start < end {
-                (mu_sorted[start], mu_sorted[end - 1])
+                let slice = &mu_sorted[start..end];
+                let mn = slice.iter().cloned().fold(f64::INFINITY, f64::min);
+                let mx = slice.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                (mn, mx)
             } else {
                 (f64::NAN, f64::NAN)
             };

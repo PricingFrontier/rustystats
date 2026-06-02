@@ -9,9 +9,10 @@
 use ndarray::{Array1, Array2};
 use proptest::prelude::*;
 
-use rustystats_core::constants::ZERO_TOL;
+use rustystats_core::constants::{IRLS_ACCEPT_REL_SLACK, ZERO_TOL};
 use rustystats_core::families::{
-    BinomialFamily, Family, GammaFamily, GaussianFamily, PoissonFamily, TweedieFamily,
+    BinomialFamily, Family, GammaFamily, GaussianFamily, NegativeBinomialFamily, PoissonFamily,
+    QuasiBinomialFamily, QuasiPoissonFamily, TweedieFamily,
 };
 use rustystats_core::links::{IdentityLink, Link, LogLink, LogitLink};
 use rustystats_core::solvers::{fit_glm_unified, FitConfig};
@@ -142,6 +143,124 @@ proptest! {
             prop_assert!(d >= -1e-10, "Binomial unit deviance negative: {}", d);
         }
     }
+
+    #[test]
+    fn negbinomial_deviance_nonneg(
+        // Counts including exact zeros (exercises the y == 0 branch) plus
+        // positive mu and a representative theta sweep.
+        y_vals in prop::collection::vec(0.0f64..50.0, 10),
+        mu_vals in positive_mu_vec(10),
+        theta in 0.1f64..50.0
+    ) {
+        let family = NegativeBinomialFamily::new(theta).expect("theta > 0 valid");
+        let y = Array1::from_vec(y_vals);
+        let mu = Array1::from_vec(mu_vals);
+        let dev = family.unit_deviance(&y, &mu);
+        for &d in dev.iter() {
+            prop_assert!(d >= -1e-10, "NegativeBinomial unit deviance negative: {}", d);
+        }
+    }
+
+    #[test]
+    fn quasipoisson_deviance_nonneg(
+        y_vals in prop::collection::vec(0.0f64..50.0, 10),
+        mu_vals in positive_mu_vec(10)
+    ) {
+        let family = QuasiPoissonFamily;
+        let y = Array1::from_vec(y_vals);
+        let mu = Array1::from_vec(mu_vals);
+        let dev = family.unit_deviance(&y, &mu);
+        for &d in dev.iter() {
+            prop_assert!(d >= -1e-10, "QuasiPoisson unit deviance negative: {}", d);
+        }
+    }
+
+    #[test]
+    fn quasibinomial_deviance_nonneg(
+        y_vals in probability_vec(10),
+        mu_vals in probability_vec(10)
+    ) {
+        let family = QuasiBinomialFamily;
+        let y = Array1::from_vec(y_vals);
+        let mu = Array1::from_vec(mu_vals);
+        let dev = family.unit_deviance(&y, &mu);
+        for &d in dev.iter() {
+            prop_assert!(d >= -1e-10, "QuasiBinomial unit deviance negative: {}", d);
+        }
+    }
+}
+
+// =============================================================================
+// Tweedie Deviance Across the p Regimes
+// =============================================================================
+//
+// G1: exercise the full Tweedie p-regime structure {p=0} ∪ [1,2] ∪ (2,3] with
+// y/mu vectors INCLUDING exact zeros. The unit deviance must never be a finite
+// NEGATIVE value (it is either >= -1e-10 or exactly +inf, the latter only for
+// y <= 0 with p >= 2). At a perfect fit (y == mu, finite support) the deviance
+// must be ~0. This covers the new `y <= 0 & p >= 2 → +inf` boundary branch.
+
+/// Strategy for a Tweedie power spanning the supported regimes:
+/// exactly 0 (Gaussian), the closed interval [1, 2] (Poisson, compound
+/// Poisson-Gamma, Gamma), and the open-above interval (2, 3] (positive stable).
+fn tweedie_power() -> impl Strategy<Value = f64> {
+    prop_oneof![
+        Just(0.0),
+        1.0f64..=2.0,
+        (2.0f64..=3.0).prop_map(|p| p.max(2.0 + 1e-6)),
+    ]
+}
+
+/// y values that include exact zeros (Just(0.0)) plus a positive range.
+fn nonneg_with_zeros() -> impl Strategy<Value = f64> {
+    prop_oneof![Just(0.0), 0.001f64..100.0]
+}
+
+proptest! {
+    #[test]
+    fn tweedie_deviance_nonneg_or_inf(
+        p in tweedie_power(),
+        y_vals in prop::collection::vec(nonneg_with_zeros(), 10),
+        mu_vals in positive_mu_vec(10),
+    ) {
+        let family = TweedieFamily::new(p).expect("tweedie_power() yields valid p");
+        for (&yi, &mui) in y_vals.iter().zip(mu_vals.iter()) {
+            let d = family.unit_deviance_at(yi, mui);
+            // Either a clearly non-negative finite value, or exactly +inf.
+            let ok = (d.is_finite() && d >= -1e-10) || d == f64::INFINITY;
+            prop_assert!(
+                ok,
+                "Tweedie deviance not (>= -1e-10 or +inf): d={} (p={}, y={}, mu={})",
+                d, p, yi, mui
+            );
+            // The only legitimate +inf is y <= 0 with p >= 2.
+            if d == f64::INFINITY {
+                prop_assert!(
+                    yi <= 0.0 && p >= 2.0,
+                    "Unexpected +inf Tweedie deviance at p={}, y={}, mu={}",
+                    p, yi, mui
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tweedie_deviance_zero_at_perfect_fit(
+        p in tweedie_power(),
+        // Strictly positive so every regime (including p >= 2) has finite
+        // support at this point — perfect fit deviance must vanish.
+        mu_vals in positive_mu_vec(10),
+    ) {
+        let family = TweedieFamily::new(p).expect("tweedie_power() yields valid p");
+        for &mui in mu_vals.iter() {
+            let d = family.unit_deviance_at(mui, mui);
+            prop_assert!(
+                d.abs() < 1e-6 * (1.0 + mui.abs()),
+                "Tweedie deviance not ~0 at perfect fit: d={} (p={}, mu={})",
+                d, p, mui
+            );
+        }
+    }
 }
 
 // =============================================================================
@@ -173,12 +292,40 @@ proptest! {
 
 proptest! {
     #[test]
-    fn gaussian_variance_positive(mu_vals in positive_mu_vec(10)) {
+    fn gaussian_variance_is_exactly_one(
+        // Span extreme magnitudes and signs: the Gaussian variance function is
+        // V(mu) = 1 for ALL mu, so a regression that accidentally made it
+        // mu-dependent (e.g. copied the Poisson V(mu) = mu) would fail here.
+        mu_vals in prop::collection::vec(-1e12f64..1e12, 10)
+    ) {
         let family = GaussianFamily;
         let mu = Array1::from_vec(mu_vals);
         let var = family.variance(&mu);
         for &v in var.iter() {
-            prop_assert!(v > 0.0, "Gaussian variance not positive: {}", v);
+            prop_assert!((v - 1.0).abs() < 1e-12, "Gaussian variance != 1: {}", v);
+        }
+    }
+
+    #[test]
+    fn gaussian_deviance_is_squared_residual(
+        // Deviance must equal (y - mu)^2 exactly for the Gaussian family,
+        // independent of the magnitude/sign of y and mu. This would fail if the
+        // deviance were ever rewritten using a non-identity transform.
+        y_vals in prop::collection::vec(-1e6f64..1e6, 10),
+        mu_vals in prop::collection::vec(-1e6f64..1e6, 10)
+    ) {
+        let family = GaussianFamily;
+        let y = Array1::from_vec(y_vals);
+        let mu = Array1::from_vec(mu_vals);
+        let dev = family.unit_deviance(&y, &mu);
+        for ((&yi, &mui), &d) in y.iter().zip(mu.iter()).zip(dev.iter()) {
+            let expected = (yi - mui) * (yi - mui);
+            let tol = 1e-6 * expected.abs().max(1.0);
+            prop_assert!(
+                (d - expected).abs() <= tol,
+                "Gaussian deviance {} != squared residual {} (y={}, mu={})",
+                d, expected, yi, mui
+            );
         }
     }
 
@@ -221,6 +368,39 @@ proptest! {
             prop_assert!(v > 0.0, "Tweedie variance not positive: {}", v);
         }
     }
+
+    #[test]
+    fn negbinomial_variance_positive(
+        mu_vals in positive_mu_vec(10),
+        theta in 0.1f64..50.0
+    ) {
+        let family = NegativeBinomialFamily::new(theta).expect("theta > 0 valid");
+        let mu = Array1::from_vec(mu_vals);
+        let var = family.variance(&mu);
+        for &v in var.iter() {
+            prop_assert!(v > 0.0, "NegativeBinomial variance not positive: {}", v);
+        }
+    }
+
+    #[test]
+    fn quasipoisson_variance_positive(mu_vals in positive_mu_vec(10)) {
+        let family = QuasiPoissonFamily;
+        let mu = Array1::from_vec(mu_vals);
+        let var = family.variance(&mu);
+        for &v in var.iter() {
+            prop_assert!(v > 0.0, "QuasiPoisson variance not positive: {}", v);
+        }
+    }
+
+    #[test]
+    fn quasibinomial_variance_positive(mu_vals in probability_vec(10)) {
+        let family = QuasiBinomialFamily;
+        let mu = Array1::from_vec(mu_vals);
+        let var = family.variance(&mu);
+        for &v in var.iter() {
+            prop_assert!(v > 0.0, "QuasiBinomial variance not positive: {}", v);
+        }
+    }
 }
 
 // =============================================================================
@@ -256,12 +436,14 @@ proptest! {
 // =============================================================================
 //
 // Across multiple deterministic fixtures and families, the deviance at the
-// accepted terminal iterate must be non-increasing as the iteration budget
-// grows (within ZERO_TOL slack). The orchestrator hardened convergence to
-// require signed non-worsening (irls.rs:715), so the terminal deviance of a
-// fit with budget `k+1` cannot exceed that of a fit with budget `k`. We
-// exercise that contract here by stepping max_iterations up and asserting
-// monotone non-increasing deviance across a small seed × family sweep.
+// accepted terminal iterate may not exceed a smaller-budget fit by more than the
+// per-step acceptance slack as the iteration budget grows. The solver accepts a
+// trial step when `deviance_new <= deviance_old * IRLS_ACCEPT_REL_SLACK`
+// (irls.rs), so a larger-budget fit can take one more accepted step that nudges
+// the deviance up by up to `(IRLS_ACCEPT_REL_SLACK - 1)` relative. The earlier
+// "cannot exceed" claim (with a ~1e-10 relative slack) was therefore too tight:
+// we relax the assertion to the solver's real acceptance contract and exercise
+// it by stepping max_iterations up across a small seed × family sweep.
 
 /// Minimal linear congruential generator for deterministic fixture data.
 /// We avoid pulling in `rand` as a dev-dep; the sequence is reproducible.
@@ -318,11 +500,14 @@ fn assert_monotone_in_budget(
             result.deviance
         );
         if let Some(prev) = prev_deviance {
-            // Absolute + relative slack for float noise.
-            let slack = ZERO_TOL + prev.abs() * 1e-10;
+            // Slack matches the solver's real per-step acceptance contract: a
+            // larger-budget fit may take one more accepted step that worsens the
+            // deviance by up to `(IRLS_ACCEPT_REL_SLACK - 1)` relative, plus a
+            // small absolute floor for float noise near zero deviance.
+            let slack = ZERO_TOL + prev.abs() * (IRLS_ACCEPT_REL_SLACK - 1.0);
             assert!(
                 result.deviance <= prev + slack,
-                "[{label} seed={seed}] deviance increased with budget: \
+                "[{label} seed={seed}] deviance increased beyond acceptance slack: \
                  prev={prev} (smaller budget) vs current={} (budget={budget}, slack={slack})",
                 result.deviance
             );

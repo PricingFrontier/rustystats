@@ -72,6 +72,22 @@ def gaussian_model(gaussian_data):
     ).fit()
 
 
+@pytest.fixture
+def full_export_model(simple_poisson_data):
+    # ONNX full raw-data export does not embed offset/exposure into the graph,
+    # so a model exercised through full mode must not carry either.
+    return rs.glm_dict(
+        response="y",
+        terms={
+            "x1": {"type": "linear"},
+            "x2": {"type": "linear"},
+            "cat": {"type": "categorical"},
+        },
+        data=simple_poisson_data,
+        family="poisson",
+    ).fit()
+
+
 # ── PMML Tests ───────────────────────────────────────────────────────────────
 
 
@@ -191,10 +207,27 @@ class TestONNXExport:
         assert isinstance(result, bytes)
         assert len(result) > 0
 
-    def test_onnx_full_returns_bytes(self, simple_model):
-        result = simple_model.to_onnx(mode="full")
+    def test_onnx_full_returns_bytes(self, full_export_model):
+        result = full_export_model.to_onnx(mode="full")
         assert isinstance(result, bytes)
         assert len(result) > 0
+
+    def test_onnx_full_rejects_offset_exposure(self, simple_model, simple_poisson_data):
+        # simple_model is fit with offset="exposure"; full mode would silently
+        # drop that term, so it must fail closed.
+        with pytest.raises(rs.ValidationError, match="offset/exposure"):
+            simple_model.to_onnx(mode="full")
+        exposure_model = rs.glm_dict(
+            response="y",
+            terms={"x1": {"type": "linear"}},
+            data=simple_poisson_data,
+            family="poisson",
+            exposure="exposure",
+        ).fit()
+        with pytest.raises(rs.ValidationError, match="offset/exposure"):
+            exposure_model.to_onnx(mode="full")
+        # scoring mode (caller supplies the design matrix) is unaffected.
+        assert isinstance(exposure_model.to_onnx(mode="scoring"), bytes)
 
     def test_onnx_scoring_write_to_file(self, simple_model):
         with tempfile.NamedTemporaryFile(suffix=".onnx", delete=False) as f:
@@ -210,11 +243,11 @@ class TestONNXExport:
         finally:
             os.unlink(path)
 
-    def test_onnx_full_write_to_file(self, simple_model):
+    def test_onnx_full_write_to_file(self, full_export_model):
         with tempfile.NamedTemporaryFile(suffix=".onnx", delete=False) as f:
             path = f.name
         try:
-            result = simple_model.to_onnx(path=path, mode="full")
+            result = full_export_model.to_onnx(path=path, mode="full")
             assert os.path.exists(path)
             with open(path, "rb") as f:
                 content = f.read()
@@ -227,9 +260,9 @@ class TestONNXExport:
         result_scoring = simple_model.to_onnx(mode="scoring")
         assert result_default == result_scoring
 
-    def test_onnx_scoring_vs_full_different(self, simple_model):
-        scoring = simple_model.to_onnx(mode="scoring")
-        full = simple_model.to_onnx(mode="full")
+    def test_onnx_scoring_vs_full_different(self, full_export_model):
+        scoring = full_export_model.to_onnx(mode="scoring")
+        full = full_export_model.to_onnx(mode="full")
         assert scoring != full
         # Full model should be larger (has preprocessing nodes)
         assert len(full) > len(scoring)
@@ -259,8 +292,8 @@ class TestONNXExport:
         assert b"inverse_link" in onnx_bytes
         assert b"exp" in onnx_bytes  # log link → exp inverse
 
-    def test_onnx_full_contains_input_metadata(self, simple_model):
-        onnx_bytes = simple_model.to_onnx(mode="full")
+    def test_onnx_full_contains_input_metadata(self, full_export_model):
+        onnx_bytes = full_export_model.to_onnx(mode="full")
         assert b"input_names" in onnx_bytes
         assert b"input_types" in onnx_bytes
 
@@ -381,15 +414,14 @@ class TestSplineExport:
             {
                 "y": np.random.poisson(np.exp(0.5 * x), n).astype(float),
                 "x": x,
-                "exposure": np.ones(n),
             }
         )
+        # No offset/exposure: full-mode ONNX export does not embed those terms.
         return rs.glm_dict(
             response="y",
             terms={"x": {"type": "ns", "df": 4}},
             data=data,
             family="poisson",
-            offset="exposure",
         ).fit()
 
     def test_pmml_spline(self, spline_model):

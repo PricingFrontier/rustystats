@@ -236,6 +236,29 @@ pub struct ActualExpectedBin {
     pub base_sum: Option<f64>,
 }
 
+/// Validate that all per-row A/E inputs share the same length `n`.
+///
+/// `compute_ae_bin` indexes `mu`, `exposure`, `prior_weights`, and `base` by the
+/// same row indices as the factor values, so a shorter array would panic with an
+/// out-of-bounds access. Validating once here protects every `compute_ae_*`
+/// caller uniformly. Returns `false` (caller returns an empty `Vec`, matching the
+/// existing `n == 0 || n != y.len()` guard convention) when any length differs.
+fn ae_inputs_consistent(
+    n: usize,
+    y: &Array1<f64>,
+    mu: &Array1<f64>,
+    exposure: Option<&Array1<f64>>,
+    prior_weights: Option<&Array1<f64>>,
+    base: Option<&Array1<f64>>,
+) -> bool {
+    n != 0
+        && y.len() == n
+        && mu.len() == n
+        && exposure.is_none_or(|e| e.len() == n)
+        && prior_weights.is_none_or(|w| w.len() == n)
+        && base.is_none_or(|b| b.len() == n)
+}
+
 /// Compute A/E analysis for a continuous factor using quantile bins
 pub fn compute_ae_continuous(
     factor_values: &[f64],
@@ -250,7 +273,7 @@ pub fn compute_ae_continuous(
     base: Option<&Array1<f64>>,
 ) -> Vec<ActualExpectedBin> {
     let n = factor_values.len();
-    if n == 0 || n != y.len() {
+    if !ae_inputs_consistent(n, y, mu, exposure, prior_weights, base) {
         return Vec::new();
     }
 
@@ -369,7 +392,7 @@ pub fn compute_ae_categorical(
     base: Option<&Array1<f64>>,
 ) -> Vec<ActualExpectedBin> {
     let n = factor_values.len();
-    if n == 0 || n != y.len() {
+    if !ae_inputs_consistent(n, y, mu, exposure, prior_weights, base) {
         return Vec::new();
     }
 
@@ -467,7 +490,7 @@ pub fn compute_ae_categorical_from_codes(
     base: Option<&Array1<f64>>,
 ) -> Vec<ActualExpectedBin> {
     let n = codes.len();
-    if n == 0 || n != y.len() {
+    if !ae_inputs_consistent(n, y, mu, exposure, prior_weights, base) {
         return Vec::new();
     }
 
@@ -1894,6 +1917,154 @@ mod tests {
 
         // Should handle NaN gracefully
         assert!(bins.len() <= 2);
+    }
+
+    #[test]
+    fn test_ae_continuous_mismatched_aux_arrays_return_empty() {
+        // D1: mu/exposure/prior_weights/base shorter than the factor values must
+        // be rejected by the length guard (returning an empty Vec, matching the
+        // existing `n != y.len()` convention) rather than panicking out-of-bounds
+        // inside compute_ae_bin.
+        let factor = vec![1.0, 2.0, 3.0, 4.0];
+        let y = array![1.0, 2.0, 3.0, 4.0];
+
+        // mu too short
+        let mu_short = array![1.0, 2.0];
+        assert!(
+            compute_ae_continuous(
+                &factor, &y, &mu_short, None, "gaussian", 2, None, None, None, None
+            )
+            .is_empty(),
+            "short mu must yield an empty result, not a panic"
+        );
+
+        // exposure too short
+        let mu = array![1.0, 2.0, 3.0, 4.0];
+        let exp_short = array![1.0, 2.0];
+        assert!(
+            compute_ae_continuous(
+                &factor,
+                &y,
+                &mu,
+                Some(&exp_short),
+                "poisson",
+                2,
+                None,
+                None,
+                None,
+                None
+            )
+            .is_empty(),
+            "short exposure must yield an empty result"
+        );
+
+        // prior_weights too short
+        let pw_short = array![1.0];
+        assert!(
+            compute_ae_continuous(
+                &factor,
+                &y,
+                &mu,
+                None,
+                "gaussian",
+                2,
+                None,
+                None,
+                Some(&pw_short),
+                None
+            )
+            .is_empty(),
+            "short prior_weights must yield an empty result"
+        );
+
+        // base too short
+        let base_short = array![0.5, 0.5, 0.5];
+        assert!(
+            compute_ae_continuous(
+                &factor,
+                &y,
+                &mu,
+                None,
+                "gaussian",
+                2,
+                None,
+                None,
+                None,
+                Some(&base_short)
+            )
+            .is_empty(),
+            "short base must yield an empty result"
+        );
+
+        // All correct lengths still works.
+        assert!(
+            !compute_ae_continuous(&factor, &y, &mu, None, "gaussian", 2, None, None, None, None)
+                .is_empty(),
+            "matching lengths must still produce bins"
+        );
+    }
+
+    #[test]
+    fn test_ae_categorical_mismatched_aux_arrays_return_empty() {
+        // D1: same length contract for the categorical entry points.
+        let factor = vec![
+            "A".to_string(),
+            "A".to_string(),
+            "B".to_string(),
+            "B".to_string(),
+        ];
+        let y = array![1.0, 2.0, 3.0, 4.0];
+        let mu_short = array![1.0, 2.0];
+        assert!(
+            compute_ae_categorical(
+                &factor, &y, &mu_short, None, "gaussian", None, None, 5.0, 10, None, None
+            )
+            .is_empty(),
+            "short mu must yield an empty categorical result"
+        );
+
+        let mu = array![1.0, 2.0, 3.0, 4.0];
+        let base_short = array![0.5];
+        assert!(
+            compute_ae_categorical(
+                &factor,
+                &y,
+                &mu,
+                None,
+                "gaussian",
+                None,
+                None,
+                5.0,
+                10,
+                None,
+                Some(&base_short)
+            )
+            .is_empty(),
+            "short base must yield an empty categorical result"
+        );
+
+        // from_codes path
+        let codes = vec![0u32, 0, 1, 1];
+        let levels = vec!["A".to_string(), "B".to_string()];
+        let pw_short = array![1.0, 1.0];
+        assert!(
+            compute_ae_categorical_from_codes(
+                &codes,
+                &levels,
+                &y,
+                &mu,
+                None,
+                "gaussian",
+                None,
+                None,
+                5.0,
+                10,
+                Some(&pw_short),
+                None
+            )
+            .is_empty(),
+            "short prior_weights must yield an empty from_codes result"
+        );
     }
 
     #[test]

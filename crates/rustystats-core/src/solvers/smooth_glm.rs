@@ -940,6 +940,10 @@ pub fn fit_smooth_glm_full_matrix(
                     combined_weights[i] = prior_weights[i] * irls_weights[i];
                     working_response[i] = (eta[i] - offset_vec[i]) + (y[i] - mu[i]) * link_deriv[i];
                 }
+                // Reflect the current iterate's weights immediately so that a
+                // step-halving failure on the FIRST iteration still yields the
+                // retained-iterate weights for covariance/EDF/GCV — not all-ones.
+                final_weights = combined_weights.clone();
 
                 // Save alpha state before WLS for step halving
                 let pre_wls_alphas: Vec<Option<Array1<f64>>> = alpha_params.clone();
@@ -1078,8 +1082,17 @@ pub fn fit_smooth_glm_full_matrix(
                 let mut best_alphas = wls_alphas.clone();
                 let mut best_trial: Option<i32> = None;
 
-                for trial in 0..20 {
-                    let step = 0.5_f64.powi(trial);
+                // 20 halving trials plus a final fraction = 0 fallback (trial 20),
+                // which exactly retains the previous accepted iterate (alphas =
+                // pre_wls_alphas, coef = coefficients) and is known finite and
+                // non-worsening. This guarantees a finite non-worsening step
+                // always exists when the previous iterate was valid.
+                for trial in 0..=20 {
+                    let step = if trial == 20 {
+                        0.0
+                    } else {
+                        0.5_f64.powi(trial)
+                    };
 
                     // Blend all coefficients: parametric + non-monotonic smooth
                     let mut trial_coef = if step >= 1.0 {
@@ -1179,7 +1192,9 @@ pub fn fit_smooth_glm_full_matrix(
                     );
                     break;
                 }
-                if best_trial.unwrap_or(0) > 0 {
+                // trial 20 is the fraction-0 fallback (retained previous iterate),
+                // not a genuine halved step.
+                if matches!(best_trial, Some(t) if t > 0 && t < 20) {
                     step_halving_used = true;
                 }
 
@@ -1363,6 +1378,10 @@ pub fn fit_smooth_glm_full_matrix(
             combined_weights[i] = prior_weights[i] * irls_weights[i];
             working_response[i] = (eta[i] - offset_vec[i]) + (y[i] - mu[i]) * link_deriv[i];
         }
+        // Reflect the current iterate's weights immediately so that a
+        // step-halving failure on the FIRST iteration still yields the
+        // retained-iterate weights for covariance/EDF/GCV — not all-ones.
+        final_weights = combined_weights.clone();
 
         let mut new_coef;
 
@@ -1484,8 +1503,14 @@ pub fn fit_smooth_glm_full_matrix(
 
         if !step_accepted {
             let mut step = 0.5;
-            for _ in 0..10 {
-                let mut blended = &coefficients * (1.0 - step) + &new_coef * step;
+            // 10 halving steps plus a final fraction = 0 fallback (the previous
+            // accepted coefficients), which is known finite and non-worsening.
+            // This guarantees a finite non-worsening step always exists when the
+            // previous iterate was valid, rather than blending toward but never
+            // reaching it.
+            for half_step in 0..=10 {
+                let fraction = if half_step == 10 { 0.0 } else { step };
+                let mut blended = &coefficients * (1.0 - fraction) + &new_coef * fraction;
 
                 if let Some(nn) = nonneg_indices {
                     for &idx in nn {
@@ -1515,7 +1540,11 @@ pub fn fit_smooth_glm_full_matrix(
                 {
                     accepted_coef = blended;
                     step_accepted = true;
-                    step_halving_used = true;
+                    // A fraction-0 fallback is not a genuine halving "step",
+                    // it simply retains the previous iterate.
+                    if fraction > 0.0 {
+                        step_halving_used = true;
+                    }
                     break;
                 }
                 step *= 0.5;
@@ -2078,5 +2107,112 @@ mod tests {
         assert!(result.lambdas.is_empty());
         assert!(result.smooth_edfs.is_empty());
         assert_eq!(result.coefficients.len(), 1); // intercept only
+    }
+
+    // =========================================================================
+    // B1 / B2: step-halving robustness in the smooth solver
+    // =========================================================================
+
+    /// Build a Poisson/log smooth fixture with a single large y spike that makes
+    /// the full Newton step overshoot, forcing the step-halving loop to engage
+    /// (and exercising the fraction-0 fallback added in B2).
+    fn poisson_overshoot_fixture() -> (Array1<f64>, Array2<f64>, Vec<SmoothTermSpec>) {
+        let n = 30usize;
+        let x_vals: Array1<f64> = (0..n).map(|i| i as f64).collect();
+        let mut yv = vec![1.0; n];
+        yv[n - 1] = 1.0e3; // large spike → first full step overshoots
+        let y = Array1::from_vec(yv);
+        let x_param = Array2::from_shape_fn((n, 1), |(_, _)| 1.0);
+        let basis = bs_basis(&x_vals, 8, 3, None, false);
+        let (x_full, specs) = make_full_matrix(&x_param, &basis);
+        (y, x_full, specs)
+    }
+
+    #[test]
+    fn test_smooth_step_halving_engages_and_weights_are_real() {
+        // B1 + B2: a fit that genuinely exercises the step-halving loop must (a)
+        // succeed with a finite result (the fraction-0 fallback guarantees a
+        // finite non-worsening step always exists) and (b) carry the retained
+        // iterate's real IRLS weights into the result — never the all-ones init
+        // (which would silently corrupt covariance/EDF/GCV).
+        let (y, x_full, specs) = poisson_overshoot_fixture();
+        let config = SmoothGLMConfig::default();
+
+        let result = fit_smooth_glm_full_matrix(
+            &y,
+            x_full.view(),
+            &specs,
+            &PoissonFamily,
+            &LogLink,
+            &config,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("overshoot fixture must still produce a finite fit (B2 fallback)");
+
+        // Step-halving must have engaged for this fixture (regression guard: if
+        // it stops engaging, the fixture no longer tests the halving path).
+        assert!(
+            result.step_halving_used,
+            "fixture should exercise step-halving (status={}, iters={})",
+            result.solver_status, result.iterations
+        );
+        assert!(result.deviance.is_finite(), "deviance must be finite (B2)");
+        assert!(
+            result.coefficients.iter().all(|c| c.is_finite()),
+            "coefficients must be finite (B2)"
+        );
+        // B1: weights reflect the real iterate, not the all-ones init.
+        let all_unit = result.irls_weights.iter().all(|&w| (w - 1.0).abs() < 1e-12);
+        assert!(
+            !all_unit,
+            "irls_weights must reflect the retained iterate, not the all-ones init"
+        );
+        assert!(
+            result
+                .irls_weights
+                .iter()
+                .all(|w| w.is_finite() && *w > 0.0),
+            "retained irls_weights must be finite and positive"
+        );
+    }
+
+    #[test]
+    fn test_smooth_normal_fit_weights_populated() {
+        // B1 (positive path): a normal converging Poisson smooth fit must carry
+        // genuine (non-unit) IRLS weights through to the result.
+        let (y, x_param, x_vals) = poisson_smooth_data(120);
+        let basis = bs_basis(&x_vals, 10, 3, None, false);
+        let (x_full, specs) = make_full_matrix(&x_param, &basis);
+        let config = SmoothGLMConfig::default();
+
+        let result = fit_smooth_glm_full_matrix(
+            &y,
+            x_full.view(),
+            &specs,
+            &PoissonFamily,
+            &LogLink,
+            &config,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("normal Poisson smooth fit should succeed");
+
+        assert!(
+            result
+                .irls_weights
+                .iter()
+                .all(|w| w.is_finite() && *w > 0.0),
+            "weights must be finite and positive"
+        );
+        let all_unit = result.irls_weights.iter().all(|&w| (w - 1.0).abs() < 1e-12);
+        assert!(
+            !all_unit,
+            "Poisson IRLS weights should not be all-ones for a real fit"
+        );
     }
 }

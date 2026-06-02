@@ -265,7 +265,7 @@ def fit_cv_path_py(
     theta: float = 1.0,
     offset: npt.NDArray[np.float64] | None = None,
     weights: npt.NDArray[np.float64] | None = None,
-    alphas: list[float] = ...,
+    alphas: list[float] | None = None,
     l1_ratio: float = 0.0,
     n_folds: int = 5,
     max_iter: int = 25,

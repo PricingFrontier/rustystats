@@ -536,11 +536,17 @@ impl PyTweedieFamily {
     ///
     /// Notes
     /// -----
-    /// Per-regime support rules on the response (``y >= 0`` for the interior
-    /// and the low-p extended regimes; ``y > 0`` for ``p >= 2`` because the
-    /// Tweedie unit deviance at ``y == 0`` diverges) are enforced at fit time
-    /// by ``rustystats.glm_dict``. Constructing a ``TweedieFamily`` here only
-    /// gates the ``var_power`` itself.
+    /// Per-regime support rules on the response are enforced at fit time by
+    /// ``rustystats.glm_dict``:
+    ///
+    /// * Interior ``1 < p < 2`` and the low-p extended regimes (``p <= 0``,
+    ///   ``p == 1``): zeros are allowed but **negative responses are rejected**
+    ///   (``y >= 0``).
+    /// * ``p >= 2``: requires **strictly positive** responses (``y > 0``),
+    ///   because the Tweedie unit deviance at ``y == 0`` diverges.
+    ///
+    /// Constructing a ``TweedieFamily`` here only gates the ``var_power`` itself;
+    /// the response support is not checked until fit time.
     #[new]
     #[pyo3(signature = (var_power=1.5, allow_extended_tweedie=false))]
     fn new(var_power: f64, allow_extended_tweedie: bool) -> PyResult<Self> {
