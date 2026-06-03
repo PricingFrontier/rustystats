@@ -1,0 +1,77 @@
+{
+  "status": "failed",
+  "summary": {
+    "dataset": "freMTPL2 frequency",
+    "training_sample": 150000,
+    "test_role": "Group == 4",
+    "oot_role": "Group == 5",
+    "compute_diagnostics": false,
+    "raw_rows": 678012,
+    "raw_columns": [
+      "VehPower",
+      "VehAge",
+      "DrivAge",
+      "BonusMalus",
+      "VehBrand",
+      "VehGas",
+      "Area",
+      "Density",
+      "Region",
+      "Group",
+      "Exposure",
+      "ClaimCount"
+    ],
+    "role_counts": {
+      "test": 135616,
+      "train": 150000,
+      "oot": 135957
+    },
+    "teacher_depth": 3,
+    "n_main_importance": 10,
+    "n_pair_importance": 41,
+    "n_triple_importance": 55,
+    "n_terms": 12,
+    "n_interactions": 11,
+    "n_frozen_maps": 5,
+    "n_input_transforms": 5,
+    "student_params": 291
+  },
+  "stages": [
+    {
+      "stage": "load_fremtpl2",
+      "seconds": 2.0632259771227837,
+      "status": "ok"
+    },
+    {
+      "stage": "build_preassigned_roles",
+      "seconds": 0.11545061692595482,
+      "status": "ok"
+    },
+    {
+      "stage": "construct_distiller",
+      "seconds": 1.2950282089877874,
+      "status": "ok"
+    },
+    {
+      "stage": "train_teacher_catboost",
+      "seconds": 58.28447128809057,
+      "status": "ok"
+    },
+    {
+      "stage": "functional_anova_decompose",
+      "seconds": 46.19578523305245,
+      "status": "ok"
+    },
+    {
+      "stage": "propose_recipe_and_freeze_categoricals",
+      "seconds": 0.07484578597359359,
+      "status": "ok"
+    },
+    {
+      "stage": "fit_student_rustystats",
+      "seconds": 252.05567844701,
+      "status": "failed",
+      "error": "TypeError(\"'list' object is not callable\")"
+    }
+  ]
+}

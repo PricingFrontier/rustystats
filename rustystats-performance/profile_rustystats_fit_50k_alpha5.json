@@ -1,0 +1,1772 @@
+{
+  "command": [
+    "rustystats-performance/profile_rustystats_fit.py",
+    "--n-alphas",
+    "5",
+    "--no-include-unregularized",
+    "--output",
+    "rustystats-performance/profile_rustystats_fit_50k_alpha5.json"
+  ],
+  "cwd": "/home/ralph/suite/rustystats",
+  "platform": "Linux-6.6.114.1-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "python": "3.13.11 (main, Dec  9 2025, 19:04:10) [Clang 21.1.4 ]",
+  "rustystats_version": "0.8.1",
+  "polars_version": "1.36.1",
+  "bundle_dir": "/home/ralph/suite/rustystats/rustystats-performance",
+  "input_shape": {
+    "rows": 50000,
+    "columns": 13
+  },
+  "fit_kwargs": {
+    "regularization": "ridge",
+    "cv": 2,
+    "selection": "1se",
+    "n_alphas": 5,
+    "cv_seed": 0,
+    "store_design_matrix": false,
+    "include_unregularized": false
+  },
+  "result": {
+    "n_obs": 50000,
+    "n_params": 298,
+    "deviance": 47.087914189153956,
+    "iterations": 6,
+    "converged": true,
+    "selected_alpha": 49.99999999999999,
+    "cv_deviance": 0.0010342833115046524,
+    "solver_status": "converged",
+    "feature_count": 298
+  },
+  "aggregates": [
+    {
+      "name": "model.fit",
+      "label": "",
+      "count": 1,
+      "seconds": 23.031772613991052,
+      "max_seconds": 23.031772613991052,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 23.031772613991052
+    },
+    {
+      "name": "fit.FormulaGLMDict.fit",
+      "label": "",
+      "count": 1,
+      "seconds": 23.03176333499141,
+      "max_seconds": 23.03176333499141,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 23.03176333499141
+    },
+    {
+      "name": "fit.resolve_cv_path",
+      "label": "",
+      "count": 1,
+      "seconds": 20.31135831796564,
+      "max_seconds": 20.31135831796564,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 20.31135831796564
+    },
+    {
+      "name": "cv.fit_cv_regularization_path",
+      "label": "",
+      "count": 1,
+      "seconds": 20.311295945895836,
+      "max_seconds": 20.311295945895836,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 20.311295945895836
+    },
+    {
+      "name": "rust.fit_cv_path_py",
+      "label": "",
+      "count": 1,
+      "seconds": 19.760944066103548,
+      "max_seconds": 19.760944066103548,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 19.760944066103548
+    },
+    {
+      "name": "fit._fit_glm_core",
+      "label": "alpha=50,l1=0",
+      "count": 1,
+      "seconds": 2.6687468430027366,
+      "max_seconds": 2.6687468430027366,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 2.6687468430027366
+    },
+    {
+      "name": "rust.fit_glm_py",
+      "label": "alpha=50",
+      "count": 1,
+      "seconds": 2.1812604339793324,
+      "max_seconds": 2.1812604339793324,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 2.1812604339793324
+    },
+    {
+      "name": "cv.compute_standardization",
+      "label": "",
+      "count": 2,
+      "seconds": 0.7218911729287356,
+      "max_seconds": 0.42033135099336505,
+      "statuses": {
+        "ok": 2
+      },
+      "seconds_per_call": 0.3609455864643678
+    },
+    {
+      "name": "model.construct_glm_dict",
+      "label": "",
+      "count": 1,
+      "seconds": 0.39818203798495233,
+      "max_seconds": 0.39818203798495233,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.39818203798495233
+    },
+    {
+      "name": "glm.FormulaGLMDict.__init__",
+      "label": "",
+      "count": 1,
+      "seconds": 0.398080131970346,
+      "max_seconds": 0.398080131970346,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.398080131970346
+    },
+    {
+      "name": "design.build_matrix",
+      "label": "",
+      "count": 1,
+      "seconds": 0.32220082310959697,
+      "max_seconds": 0.32220082310959697,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.32220082310959697
+    },
+    {
+      "name": "design.build_matrix_core",
+      "label": "",
+      "count": 1,
+      "seconds": 0.322181441122666,
+      "max_seconds": 0.322181441122666,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.322181441122666
+    },
+    {
+      "name": "cv.compute_alpha_max",
+      "label": "",
+      "count": 1,
+      "seconds": 0.24821621109731495,
+      "max_seconds": 0.24821621109731495,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.24821621109731495
+    },
+    {
+      "name": "design.interaction_columns",
+      "label": "Region:VehAge:VehBrand",
+      "count": 1,
+      "seconds": 0.18175443797372282,
+      "max_seconds": 0.18175443797372282,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.18175443797372282
+    },
+    {
+      "name": "design.interaction_mixed",
+      "label": "Region:VehAge:VehBrand",
+      "count": 1,
+      "seconds": 0.18173111299984157,
+      "max_seconds": 0.18173111299984157,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.18173111299984157
+    },
+    {
+      "name": "glm.apply_input_transforms",
+      "label": "",
+      "count": 1,
+      "seconds": 0.07464390294626355,
+      "max_seconds": 0.07464390294626355,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.07464390294626355
+    },
+    {
+      "name": "design.interaction_categorical",
+      "label": "Region:VehBrand",
+      "count": 2,
+      "seconds": 0.0637119070161134,
+      "max_seconds": 0.04065763484686613,
+      "statuses": {
+        "ok": 2
+      },
+      "seconds_per_call": 0.0318559535080567
+    },
+    {
+      "name": "design.stack_columns",
+      "label": "",
+      "count": 1,
+      "seconds": 0.049305041087791324,
+      "max_seconds": 0.049305041087791324,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.049305041087791324
+    },
+    {
+      "name": "load.train_parquet",
+      "label": "",
+      "count": 1,
+      "seconds": 0.027417978970333934,
+      "max_seconds": 0.027417978970333934,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.027417978970333934
+    },
+    {
+      "name": "design.interaction_columns",
+      "label": "VehAge:VehBrand",
+      "count": 1,
+      "seconds": 0.017638352932408452,
+      "max_seconds": 0.017638352932408452,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.017638352932408452
+    },
+    {
+      "name": "design.interaction_mixed",
+      "label": "VehAge:VehBrand",
+      "count": 1,
+      "seconds": 0.017614115960896015,
+      "max_seconds": 0.017614115960896015,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.017614115960896015
+    },
+    {
+      "name": "design.categorical_encoding",
+      "label": "VehGas,drop_first=True",
+      "count": 5,
+      "seconds": 0.01671348186209798,
+      "max_seconds": 0.01670182286761701,
+      "statuses": {
+        "ok": 5
+      },
+      "seconds_per_call": 0.0033426963724195956
+    },
+    {
+      "name": "design.categorical_encoding",
+      "label": "Region,drop_first=True",
+      "count": 4,
+      "seconds": 0.01633773581124842,
+      "max_seconds": 0.016329339938238263,
+      "statuses": {
+        "ok": 4
+      },
+      "seconds_per_call": 0.004084433952812105
+    },
+    {
+      "name": "design.categorical_encoding",
+      "label": "VehBrand,drop_first=True",
+      "count": 8,
+      "seconds": 0.016157464357092977,
+      "max_seconds": 0.016144191147759557,
+      "statuses": {
+        "ok": 8
+      },
+      "seconds_per_call": 0.002019683044636622
+    },
+    {
+      "name": "design.spline_columns",
+      "label": "Group:bs",
+      "count": 1,
+      "seconds": 0.009679253911599517,
+      "max_seconds": 0.009679253911599517,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.009679253911599517
+    },
+    {
+      "name": "design.spline_columns",
+      "label": "VehPower:bs",
+      "count": 1,
+      "seconds": 0.007874327013269067,
+      "max_seconds": 0.007874327013269067,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.007874327013269067
+    },
+    {
+      "name": "design.spline_columns",
+      "label": "Density:ms",
+      "count": 1,
+      "seconds": 0.00681640300899744,
+      "max_seconds": 0.00681640300899744,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.00681640300899744
+    },
+    {
+      "name": "design.spline_columns",
+      "label": "VehAge:bs",
+      "count": 1,
+      "seconds": 0.006278601009398699,
+      "max_seconds": 0.006278601009398699,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.006278601009398699
+    },
+    {
+      "name": "design.spline_columns",
+      "label": "DrivAge:bs",
+      "count": 1,
+      "seconds": 0.005096444161608815,
+      "max_seconds": 0.005096444161608815,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.005096444161608815
+    },
+    {
+      "name": "design.spline_columns",
+      "label": "BonusMalus:ms",
+      "count": 1,
+      "seconds": 0.004328383831307292,
+      "max_seconds": 0.004328383831307292,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.004328383831307292
+    },
+    {
+      "name": "design.interaction_columns",
+      "label": "DrivAge:Group:VehBrand",
+      "count": 1,
+      "seconds": 0.0035723489709198475,
+      "max_seconds": 0.0035723489709198475,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.0035723489709198475
+    },
+    {
+      "name": "design.interaction_mixed",
+      "label": "DrivAge:Group:VehBrand",
+      "count": 1,
+      "seconds": 0.0035494600888341665,
+      "max_seconds": 0.0035494600888341665,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.0035494600888341665
+    },
+    {
+      "name": "design.interaction_columns",
+      "label": "Density:Region:VehPower",
+      "count": 1,
+      "seconds": 0.003443649038672447,
+      "max_seconds": 0.003443649038672447,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.003443649038672447
+    },
+    {
+      "name": "design.interaction_mixed",
+      "label": "Density:Region:VehPower",
+      "count": 1,
+      "seconds": 0.003425345988944173,
+      "max_seconds": 0.003425345988944173,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.003425345988944173
+    },
+    {
+      "name": "design.get_column",
+      "label": "Group",
+      "count": 2,
+      "seconds": 0.0032891298178583384,
+      "max_seconds": 0.001875016838312149,
+      "statuses": {
+        "ok": 2
+      },
+      "seconds_per_call": 0.0016445649089291692
+    },
+    {
+      "name": "load.glm_kwargs_json",
+      "label": "",
+      "count": 1,
+      "seconds": 0.0017858180217444897,
+      "max_seconds": 0.0017858180217444897,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.0017858180217444897
+    },
+    {
+      "name": "design.interaction_columns",
+      "label": "Density:VehAge:VehBrand",
+      "count": 1,
+      "seconds": 0.001699147978797555,
+      "max_seconds": 0.001699147978797555,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.001699147978797555
+    },
+    {
+      "name": "design.interaction_mixed",
+      "label": "Density:VehAge:VehBrand",
+      "count": 1,
+      "seconds": 0.0016877339221537113,
+      "max_seconds": 0.0016877339221537113,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.0016877339221537113
+    },
+    {
+      "name": "fit._build_results",
+      "label": "",
+      "count": 1,
+      "seconds": 0.0015544600319117308,
+      "max_seconds": 0.0015544600319117308,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.0015544600319117308
+    },
+    {
+      "name": "glm.validate_input_transforms",
+      "label": "",
+      "count": 2,
+      "seconds": 0.0015091798268258572,
+      "max_seconds": 0.0010242988355457783,
+      "statuses": {
+        "ok": 2
+      },
+      "seconds_per_call": 0.0007545899134129286
+    },
+    {
+      "name": "design.interaction_columns",
+      "label": "VehAge:VehGas",
+      "count": 1,
+      "seconds": 0.00141807715408504,
+      "max_seconds": 0.00141807715408504,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.00141807715408504
+    },
+    {
+      "name": "design.interaction_mixed",
+      "label": "VehAge:VehGas",
+      "count": 1,
+      "seconds": 0.0013429110404103994,
+      "max_seconds": 0.0013429110404103994,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.0013429110404103994
+    },
+    {
+      "name": "design.interaction_columns",
+      "label": "VehAge:VehGas:VehPower",
+      "count": 1,
+      "seconds": 0.0009034869726747274,
+      "max_seconds": 0.0009034869726747274,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.0009034869726747274
+    },
+    {
+      "name": "design.interaction_mixed",
+      "label": "VehAge:VehGas:VehPower",
+      "count": 1,
+      "seconds": 0.0008900179527699947,
+      "max_seconds": 0.0008900179527699947,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.0008900179527699947
+    },
+    {
+      "name": "design.get_column",
+      "label": "VehAge",
+      "count": 9,
+      "seconds": 0.000529223820194602,
+      "max_seconds": 0.00010679103434085846,
+      "statuses": {
+        "ok": 9
+      },
+      "seconds_per_call": 5.880264668828911e-05
+    },
+    {
+      "name": "design.clear_caches",
+      "label": "",
+      "count": 1,
+      "seconds": 0.0004613432101905346,
+      "max_seconds": 0.0004613432101905346,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.0004613432101905346
+    },
+    {
+      "name": "design.interaction_columns",
+      "label": "BonusMalus:DrivAge",
+      "count": 1,
+      "seconds": 0.0004560560919344425,
+      "max_seconds": 0.0004560560919344425,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.0004560560919344425
+    },
+    {
+      "name": "design.interaction_continuous",
+      "label": "BonusMalus:DrivAge",
+      "count": 1,
+      "seconds": 0.0004370477981865406,
+      "max_seconds": 0.0004370477981865406,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.0004370477981865406
+    },
+    {
+      "name": "design.get_column",
+      "label": "VehPower",
+      "count": 4,
+      "seconds": 0.000341121107339859,
+      "max_seconds": 0.0001550398301333189,
+      "statuses": {
+        "ok": 4
+      },
+      "seconds_per_call": 8.528027683496475e-05
+    },
+    {
+      "name": "design.get_column",
+      "label": "Density",
+      "count": 3,
+      "seconds": 0.00027716299518942833,
+      "max_seconds": 0.0001344380434602499,
+      "statuses": {
+        "ok": 3
+      },
+      "seconds_per_call": 9.238766506314278e-05
+    },
+    {
+      "name": "design.interaction_columns",
+      "label": "BonusMalus:VehAge",
+      "count": 1,
+      "seconds": 0.00024137180298566818,
+      "max_seconds": 0.00024137180298566818,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.00024137180298566818
+    },
+    {
+      "name": "design.get_column",
+      "label": "DrivAge",
+      "count": 4,
+      "seconds": 0.00023864326067268848,
+      "max_seconds": 9.794207289814949e-05,
+      "statuses": {
+        "ok": 4
+      },
+      "seconds_per_call": 5.966081516817212e-05
+    },
+    {
+      "name": "design.interaction_continuous",
+      "label": "BonusMalus:VehAge",
+      "count": 1,
+      "seconds": 0.00023408490233123302,
+      "max_seconds": 0.00023408490233123302,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.00023408490233123302
+    },
+    {
+      "name": "design.interaction_columns",
+      "label": "VehAge:VehPower",
+      "count": 1,
+      "seconds": 0.00021796999499201775,
+      "max_seconds": 0.00021796999499201775,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.00021796999499201775
+    },
+    {
+      "name": "design.interaction_continuous",
+      "label": "VehAge:VehPower",
+      "count": 1,
+      "seconds": 0.0002096700482070446,
+      "max_seconds": 0.0002096700482070446,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.0002096700482070446
+    },
+    {
+      "name": "design.interaction_columns",
+      "label": "DrivAge:VehAge",
+      "count": 1,
+      "seconds": 0.00020324601791799068,
+      "max_seconds": 0.00020324601791799068,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.00020324601791799068
+    },
+    {
+      "name": "design.interaction_continuous",
+      "label": "DrivAge:VehAge",
+      "count": 1,
+      "seconds": 0.0001990990713238716,
+      "max_seconds": 0.0001990990713238716,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.0001990990713238716
+    },
+    {
+      "name": "design.get_column",
+      "label": "BonusMalus",
+      "count": 3,
+      "seconds": 0.00018552294932305813,
+      "max_seconds": 8.000992238521576e-05,
+      "statuses": {
+        "ok": 3
+      },
+      "seconds_per_call": 6.184098310768604e-05
+    },
+    {
+      "name": "glm.dict_to_parsed_formula",
+      "label": "",
+      "count": 1,
+      "seconds": 0.0001710441429167986,
+      "max_seconds": 0.0001710441429167986,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.0001710441429167986
+    },
+    {
+      "name": "design.get_column",
+      "label": "Region_fts",
+      "count": 1,
+      "seconds": 0.00016053905710577965,
+      "max_seconds": 0.00016053905710577965,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.00016053905710577965
+    },
+    {
+      "name": "design.get_column",
+      "label": "ClaimCount",
+      "count": 1,
+      "seconds": 0.00013457401655614376,
+      "max_seconds": 0.00013457401655614376,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.00013457401655614376
+    },
+    {
+      "name": "glm.process_offset",
+      "label": "",
+      "count": 1,
+      "seconds": 0.00012312992475926876,
+      "max_seconds": 0.00012312992475926876,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.00012312992475926876
+    },
+    {
+      "name": "load.fit_config_json",
+      "label": "",
+      "count": 1,
+      "seconds": 0.000106374965980649,
+      "max_seconds": 0.000106374965980649,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 0.000106374965980649
+    },
+    {
+      "name": "cv.generate_alpha_path",
+      "label": "",
+      "count": 1,
+      "seconds": 6.731809116899967e-05,
+      "max_seconds": 6.731809116899967e-05,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 6.731809116899967e-05
+    },
+    {
+      "name": "cv.select_optimal_alpha",
+      "label": "",
+      "count": 1,
+      "seconds": 6.653997115790844e-05,
+      "max_seconds": 6.653997115790844e-05,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 6.653997115790844e-05
+    },
+    {
+      "name": "design.get_column",
+      "label": "VehBrand_fts",
+      "count": 1,
+      "seconds": 5.6213000789284706e-05,
+      "max_seconds": 5.6213000789284706e-05,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 5.6213000789284706e-05
+    },
+    {
+      "name": "fit.has_target_encoding",
+      "label": "",
+      "count": 2,
+      "seconds": 4.623597487807274e-05,
+      "max_seconds": 2.6994850486516953e-05,
+      "statuses": {
+        "ok": 2
+      },
+      "seconds_per_call": 2.311798743903637e-05
+    },
+    {
+      "name": "design.get_column",
+      "label": "Region__VehBrand_fts",
+      "count": 1,
+      "seconds": 4.490697756409645e-05,
+      "max_seconds": 4.490697756409645e-05,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 4.490697756409645e-05
+    },
+    {
+      "name": "design.get_column",
+      "label": "Area_fts",
+      "count": 1,
+      "seconds": 3.74519731849432e-05,
+      "max_seconds": 3.74519731849432e-05,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 3.74519731849432e-05
+    },
+    {
+      "name": "design.get_column",
+      "label": "Area__Region_fts",
+      "count": 1,
+      "seconds": 3.743101842701435e-05,
+      "max_seconds": 3.743101842701435e-05,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 3.743101842701435e-05
+    },
+    {
+      "name": "glm.collect_lazyframe",
+      "label": "",
+      "count": 1,
+      "seconds": 3.544194623827934e-05,
+      "max_seconds": 3.544194623827934e-05,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 3.544194623827934e-05
+    },
+    {
+      "name": "glm.build_formula_string",
+      "label": "",
+      "count": 1,
+      "seconds": 2.6406953111290932e-05,
+      "max_seconds": 2.6406953111290932e-05,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 2.6406953111290932e-05
+    },
+    {
+      "name": "glm.compile_input_transforms",
+      "label": "",
+      "count": 1,
+      "seconds": 1.5113037079572678e-05,
+      "max_seconds": 1.5113037079572678e-05,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 1.5113037079572678e-05
+    },
+    {
+      "name": "design.InteractionBuilder.__init__",
+      "label": "",
+      "count": 1,
+      "seconds": 8.58190469443798e-06,
+      "max_seconds": 8.58190469443798e-06,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 8.58190469443798e-06
+    },
+    {
+      "name": "glm.process_raw_exposure",
+      "label": "",
+      "count": 1,
+      "seconds": 1.6728881746530533e-06,
+      "max_seconds": 1.6728881746530533e-06,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 1.6728881746530533e-06
+    },
+    {
+      "name": "glm.process_complement",
+      "label": "",
+      "count": 1,
+      "seconds": 7.8580342233181e-07,
+      "max_seconds": 7.8580342233181e-07,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 7.8580342233181e-07
+    },
+    {
+      "name": "glm.process_weights",
+      "label": "",
+      "count": 1,
+      "seconds": 5.702022463083267e-07,
+      "max_seconds": 5.702022463083267e-07,
+      "statuses": {
+        "ok": 1
+      },
+      "seconds_per_call": 5.702022463083267e-07
+    }
+  ],
+  "events": [
+    {
+      "name": "load.train_parquet",
+      "seconds": 0.027417978970333934,
+      "status": "ok",
+      "details": {
+        "path": "/home/ralph/suite/rustystats/rustystats-performance/fremtpl2_50k_rustystats_train.parquet"
+      }
+    },
+    {
+      "name": "load.glm_kwargs_json",
+      "seconds": 0.0017858180217444897,
+      "status": "ok",
+      "details": {
+        "path": "/home/ralph/suite/rustystats/rustystats-performance/glm_kwargs.json"
+      }
+    },
+    {
+      "name": "load.fit_config_json",
+      "seconds": 0.000106374965980649,
+      "status": "ok",
+      "details": {
+        "path": "/home/ralph/suite/rustystats/rustystats-performance/fit_config.json"
+      }
+    },
+    {
+      "name": "glm.collect_lazyframe",
+      "seconds": 3.544194623827934e-05,
+      "status": "ok",
+      "details": {}
+    },
+    {
+      "name": "glm.validate_input_transforms",
+      "seconds": 0.0004848809912800789,
+      "status": "ok",
+      "details": {}
+    },
+    {
+      "name": "glm.compile_input_transforms",
+      "seconds": 1.5113037079572678e-05,
+      "status": "ok",
+      "details": {}
+    },
+    {
+      "name": "glm.apply_input_transforms",
+      "seconds": 0.07464390294626355,
+      "status": "ok",
+      "details": {}
+    },
+    {
+      "name": "glm.build_formula_string",
+      "seconds": 2.6406953111290932e-05,
+      "status": "ok",
+      "details": {}
+    },
+    {
+      "name": "glm.dict_to_parsed_formula",
+      "seconds": 0.0001710441429167986,
+      "status": "ok",
+      "details": {}
+    },
+    {
+      "name": "glm.process_raw_exposure",
+      "seconds": 1.6728881746530533e-06,
+      "status": "ok",
+      "details": {}
+    },
+    {
+      "name": "fit.has_target_encoding",
+      "seconds": 1.9241124391555786e-05,
+      "status": "ok",
+      "details": {}
+    },
+    {
+      "name": "design.InteractionBuilder.__init__",
+      "seconds": 8.58190469443798e-06,
+      "status": "ok",
+      "details": {
+        "rows": 50000,
+        "columns": 18
+      }
+    },
+    {
+      "name": "design.categorical_encoding",
+      "seconds": 0.01670182286761701,
+      "status": "ok",
+      "details": {
+        "label": "VehGas,drop_first=True"
+      }
+    },
+    {
+      "name": "design.get_column",
+      "seconds": 0.00016053905710577965,
+      "status": "ok",
+      "details": {
+        "label": "Region_fts"
+      }
+    },
+    {
+      "name": "design.get_column",
+      "seconds": 5.6213000789284706e-05,
+      "status": "ok",
+      "details": {
+        "label": "VehBrand_fts"
+      }
+    },
+    {
+      "name": "design.get_column",
+      "seconds": 3.74519731849432e-05,
+      "status": "ok",
+      "details": {
+        "label": "Area_fts"
+      }
+    },
+    {
+      "name": "design.get_column",
+      "seconds": 3.743101842701435e-05,
+      "status": "ok",
+      "details": {
+        "label": "Area__Region_fts"
+      }
+    },
+    {
+      "name": "design.get_column",
+      "seconds": 4.490697756409645e-05,
+      "status": "ok",
+      "details": {
+        "label": "Region__VehBrand_fts"
+      }
+    },
+    {
+      "name": "design.get_column",
+      "seconds": 4.2387982830405235e-05,
+      "status": "ok",
+      "details": {
+        "label": "BonusMalus"
+      }
+    },
+    {
+      "name": "design.spline_columns",
+      "seconds": 0.004328383831307292,
+      "status": "ok",
+      "details": {
+        "label": "BonusMalus:ms"
+      }
+    },
+    {
+      "name": "design.get_column",
+      "seconds": 6.0137826949357986e-05,
+      "status": "ok",
+      "details": {
+        "label": "VehAge"
+      }
+    },
+    {
+      "name": "design.spline_columns",
+      "seconds": 0.006278601009398699,
+      "status": "ok",
+      "details": {
+        "label": "VehAge:bs"
+      }
+    },
+    {
+      "name": "design.get_column",
+      "seconds": 6.529898382723331e-05,
+      "status": "ok",
+      "details": {
+        "label": "DrivAge"
+      }
+    },
+    {
+      "name": "design.spline_columns",
+      "seconds": 0.005096444161608815,
+      "status": "ok",
+      "details": {
+        "label": "DrivAge:bs"
+      }
+    },
+    {
+      "name": "design.get_column",
+      "seconds": 8.233310654759407e-05,
+      "status": "ok",
+      "details": {
+        "label": "VehPower"
+      }
+    },
+    {
+      "name": "design.spline_columns",
+      "seconds": 0.007874327013269067,
+      "status": "ok",
+      "details": {
+        "label": "VehPower:bs"
+      }
+    },
+    {
+      "name": "design.get_column",
+      "seconds": 0.0001344380434602499,
+      "status": "ok",
+      "details": {
+        "label": "Density"
+      }
+    },
+    {
+      "name": "design.spline_columns",
+      "seconds": 0.00681640300899744,
+      "status": "ok",
+      "details": {
+        "label": "Density:ms"
+      }
+    },
+    {
+      "name": "design.get_column",
+      "seconds": 0.0014141129795461893,
+      "status": "ok",
+      "details": {
+        "label": "Group"
+      }
+    },
+    {
+      "name": "design.spline_columns",
+      "seconds": 0.009679253911599517,
+      "status": "ok",
+      "details": {
+        "label": "Group:bs"
+      }
+    },
+    {
+      "name": "design.get_column",
+      "seconds": 0.00013457401655614376,
+      "status": "ok",
+      "details": {
+        "label": "ClaimCount"
+      }
+    },
+    {
+      "name": "design.categorical_encoding",
+      "seconds": 4.723900929093361e-06,
+      "status": "ok",
+      "details": {
+        "label": "VehGas,drop_first=True"
+      }
+    },
+    {
+      "name": "design.get_column",
+      "seconds": 6.874697282910347e-05,
+      "status": "ok",
+      "details": {
+        "label": "VehAge"
+      }
+    },
+    {
+      "name": "design.categorical_encoding",
+      "seconds": 1.8260907381772995e-06,
+      "status": "ok",
+      "details": {
+        "label": "VehGas,drop_first=True"
+      }
+    },
+    {
+      "name": "design.interaction_mixed",
+      "seconds": 0.0013429110404103994,
+      "status": "ok",
+      "details": {
+        "label": "VehAge:VehGas"
+      }
+    },
+    {
+      "name": "design.interaction_columns",
+      "seconds": 0.00141807715408504,
+      "status": "ok",
+      "details": {
+        "label": "VehAge:VehGas",
+        "kind": "mixed"
+      }
+    },
+    {
+      "name": "design.categorical_encoding",
+      "seconds": 0.016144191147759557,
+      "status": "ok",
+      "details": {
+        "label": "VehBrand,drop_first=True"
+      }
+    },
+    {
+      "name": "design.get_column",
+      "seconds": 8.550286293029785e-05,
+      "status": "ok",
+      "details": {
+        "label": "VehAge"
+      }
+    },
+    {
+      "name": "design.categorical_encoding",
+      "seconds": 1.1548399925231934e-06,
+      "status": "ok",
+      "details": {
+        "label": "VehBrand,drop_first=True"
+      }
+    },
+    {
+      "name": "design.interaction_mixed",
+      "seconds": 0.017614115960896015,
+      "status": "ok",
+      "details": {
+        "label": "VehAge:VehBrand"
+      }
+    },
+    {
+      "name": "design.interaction_columns",
+      "seconds": 0.017638352932408452,
+      "status": "ok",
+      "details": {
+        "label": "VehAge:VehBrand",
+        "kind": "mixed"
+      }
+    },
+    {
+      "name": "design.get_column",
+      "seconds": 8.000992238521576e-05,
+      "status": "ok",
+      "details": {
+        "label": "BonusMalus"
+      }
+    },
+    {
+      "name": "design.get_column",
+      "seconds": 3.813114017248154e-05,
+      "status": "ok",
+      "details": {
+        "label": "DrivAge"
+      }
+    },
+    {
+      "name": "design.interaction_continuous",
+      "seconds": 0.0004370477981865406,
+      "status": "ok",
+      "details": {
+        "label": "BonusMalus:DrivAge"
+      }
+    },
+    {
+      "name": "design.interaction_columns",
+      "seconds": 0.0004560560919344425,
+      "status": "ok",
+      "details": {
+        "label": "BonusMalus:DrivAge",
+        "kind": "continuous"
+      }
+    },
+    {
+      "name": "design.get_column",
+      "seconds": 6.312504410743713e-05,
+      "status": "ok",
+      "details": {
+        "label": "BonusMalus"
+      }
+    },
+    {
+      "name": "design.get_column",
+      "seconds": 3.203796222805977e-05,
+      "status": "ok",
+      "details": {
+        "label": "VehAge"
+      }
+    },
+    {
+      "name": "design.interaction_continuous",
+      "seconds": 0.00023408490233123302,
+      "status": "ok",
+      "details": {
+        "label": "BonusMalus:VehAge"
+      }
+    },
+    {
+      "name": "design.interaction_columns",
+      "seconds": 0.00024137180298566818,
+      "status": "ok",
+      "details": {
+        "label": "BonusMalus:VehAge",
+        "kind": "continuous"
+      }
+    },
+    {
+      "name": "design.get_column",
+      "seconds": 2.889009192585945e-05,
+      "status": "ok",
+      "details": {
+        "label": "VehAge"
+      }
+    },
+    {
+      "name": "design.get_column",
+      "seconds": 3.260909579694271e-05,
+      "status": "ok",
+      "details": {
+        "label": "VehPower"
+      }
+    },
+    {
+      "name": "design.interaction_continuous",
+      "seconds": 0.0002096700482070446,
+      "status": "ok",
+      "details": {
+        "label": "VehAge:VehPower"
+      }
+    },
+    {
+      "name": "design.interaction_columns",
+      "seconds": 0.00021796999499201775,
+      "status": "ok",
+      "details": {
+        "label": "VehAge:VehPower",
+        "kind": "continuous"
+      }
+    },
+    {
+      "name": "design.get_column",
+      "seconds": 3.727106377482414e-05,
+      "status": "ok",
+      "details": {
+        "label": "DrivAge"
+      }
+    },
+    {
+      "name": "design.get_column",
+      "seconds": 2.1011102944612503e-05,
+      "status": "ok",
+      "details": {
+        "label": "VehAge"
+      }
+    },
+    {
+      "name": "design.interaction_continuous",
+      "seconds": 0.0001990990713238716,
+      "status": "ok",
+      "details": {
+        "label": "DrivAge:VehAge"
+      }
+    },
+    {
+      "name": "design.interaction_columns",
+      "seconds": 0.00020324601791799068,
+      "status": "ok",
+      "details": {
+        "label": "DrivAge:VehAge",
+        "kind": "continuous"
+      }
+    },
+    {
+      "name": "design.categorical_encoding",
+      "seconds": 1.998152583837509e-06,
+      "status": "ok",
+      "details": {
+        "label": "VehBrand,drop_first=True"
+      }
+    },
+    {
+      "name": "design.get_column",
+      "seconds": 4.405807703733444e-05,
+      "status": "ok",
+      "details": {
+        "label": "Density"
+      }
+    },
+    {
+      "name": "design.get_column",
+      "seconds": 2.033705823123455e-05,
+      "status": "ok",
+      "details": {
+        "label": "VehAge"
+      }
+    },
+    {
+      "name": "design.categorical_encoding",
+      "seconds": 8.910428732633591e-07,
+      "status": "ok",
+      "details": {
+        "label": "VehBrand,drop_first=True"
+      }
+    },
+    {
+      "name": "design.interaction_mixed",
+      "seconds": 0.0016877339221537113,
+      "status": "ok",
+      "details": {
+        "label": "Density:VehAge:VehBrand"
+      }
+    },
+    {
+      "name": "design.interaction_columns",
+      "seconds": 0.001699147978797555,
+      "status": "ok",
+      "details": {
+        "label": "Density:VehAge:VehBrand",
+        "kind": "mixed"
+      }
+    },
+    {
+      "name": "design.categorical_encoding",
+      "seconds": 0.016329339938238263,
+      "status": "ok",
+      "details": {
+        "label": "Region,drop_first=True"
+      }
+    },
+    {
+      "name": "design.categorical_encoding",
+      "seconds": 3.4689437597990036e-06,
+      "status": "ok",
+      "details": {
+        "label": "VehBrand,drop_first=True"
+      }
+    },
+    {
+      "name": "design.interaction_categorical",
+      "seconds": 0.04065763484686613,
+      "status": "ok",
+      "details": {
+        "label": "Region:VehBrand"
+      }
+    },
+    {
+      "name": "design.get_column",
+      "seconds": 0.00010576890781521797,
+      "status": "ok",
+      "details": {
+        "label": "VehAge"
+      }
+    },
+    {
+      "name": "design.categorical_encoding",
+      "seconds": 3.448920324444771e-06,
+      "status": "ok",
+      "details": {
+        "label": "Region,drop_first=True"
+      }
+    },
+    {
+      "name": "design.categorical_encoding",
+      "seconds": 6.479676812887192e-07,
+      "status": "ok",
+      "details": {
+        "label": "VehBrand,drop_first=True"
+      }
+    },
+    {
+      "name": "design.interaction_categorical",
+      "seconds": 0.02305427216924727,
+      "status": "ok",
+      "details": {
+        "label": "Region:VehBrand"
+      }
+    },
+    {
+      "name": "design.interaction_mixed",
+      "seconds": 0.18173111299984157,
+      "status": "ok",
+      "details": {
+        "label": "Region:VehAge:VehBrand"
+      }
+    },
+    {
+      "name": "design.interaction_columns",
+      "seconds": 0.18175443797372282,
+      "status": "ok",
+      "details": {
+        "label": "Region:VehAge:VehBrand",
+        "kind": "mixed"
+      }
+    },
+    {
+      "name": "design.categorical_encoding",
+      "seconds": 3.4892000257968903e-06,
+      "status": "ok",
+      "details": {
+        "label": "VehBrand,drop_first=True"
+      }
+    },
+    {
+      "name": "design.get_column",
+      "seconds": 9.794207289814949e-05,
+      "status": "ok",
+      "details": {
+        "label": "DrivAge"
+      }
+    },
+    {
+      "name": "design.get_column",
+      "seconds": 0.001875016838312149,
+      "status": "ok",
+      "details": {
+        "label": "Group"
+      }
+    },
+    {
+      "name": "design.categorical_encoding",
+      "seconds": 1.6230624169111252e-06,
+      "status": "ok",
+      "details": {
+        "label": "VehBrand,drop_first=True"
+      }
+    },
+    {
+      "name": "design.interaction_mixed",
+      "seconds": 0.0035494600888341665,
+      "status": "ok",
+      "details": {
+        "label": "DrivAge:Group:VehBrand"
+      }
+    },
+    {
+      "name": "design.interaction_columns",
+      "seconds": 0.0035723489709198475,
+      "status": "ok",
+      "details": {
+        "label": "DrivAge:Group:VehBrand",
+        "kind": "mixed"
+      }
+    },
+    {
+      "name": "design.categorical_encoding",
+      "seconds": 3.017950803041458e-06,
+      "status": "ok",
+      "details": {
+        "label": "VehGas,drop_first=True"
+      }
+    },
+    {
+      "name": "design.get_column",
+      "seconds": 0.00010679103434085846,
+      "status": "ok",
+      "details": {
+        "label": "VehAge"
+      }
+    },
+    {
+      "name": "design.get_column",
+      "seconds": 7.113907486200333e-05,
+      "status": "ok",
+      "details": {
+        "label": "VehPower"
+      }
+    },
+    {
+      "name": "design.categorical_encoding",
+      "seconds": 2.091052010655403e-06,
+      "status": "ok",
+      "details": {
+        "label": "VehGas,drop_first=True"
+      }
+    },
+    {
+      "name": "design.interaction_mixed",
+      "seconds": 0.0008900179527699947,
+      "status": "ok",
+      "details": {
+        "label": "VehAge:VehGas:VehPower"
+      }
+    },
+    {
+      "name": "design.interaction_columns",
+      "seconds": 0.0009034869726747274,
+      "status": "ok",
+      "details": {
+        "label": "VehAge:VehGas:VehPower",
+        "kind": "mixed"
+      }
+    },
+    {
+      "name": "design.categorical_encoding",
+      "seconds": 2.4959444999694824e-06,
+      "status": "ok",
+      "details": {
+        "label": "Region,drop_first=True"
+      }
+    },
+    {
+      "name": "design.get_column",
+      "seconds": 9.866687469184399e-05,
+      "status": "ok",
+      "details": {
+        "label": "Density"
+      }
+    },
+    {
+      "name": "design.get_column",
+      "seconds": 0.0001550398301333189,
+      "status": "ok",
+      "details": {
+        "label": "VehPower"
+      }
+    },
+    {
+      "name": "design.categorical_encoding",
+      "seconds": 2.4510081857442856e-06,
+      "status": "ok",
+      "details": {
+        "label": "Region,drop_first=True"
+      }
+    },
+    {
+      "name": "design.interaction_mixed",
+      "seconds": 0.003425345988944173,
+      "status": "ok",
+      "details": {
+        "label": "Density:Region:VehPower"
+      }
+    },
+    {
+      "name": "design.interaction_columns",
+      "seconds": 0.003443649038672447,
+      "status": "ok",
+      "details": {
+        "label": "Density:Region:VehPower",
+        "kind": "mixed"
+      }
+    },
+    {
+      "name": "design.stack_columns",
+      "seconds": 0.049305041087791324,
+      "status": "ok",
+      "details": {
+        "blocks": 24,
+        "rows": 50000,
+        "dtype": "<class 'numpy.float64'>"
+      }
+    },
+    {
+      "name": "design.build_matrix_core",
+      "seconds": 0.322181441122666,
+      "status": "ok",
+      "details": {}
+    },
+    {
+      "name": "design.build_matrix",
+      "seconds": 0.32220082310959697,
+      "status": "ok",
+      "details": {}
+    },
+    {
+      "name": "glm.process_offset",
+      "seconds": 0.00012312992475926876,
+      "status": "ok",
+      "details": {}
+    },
+    {
+      "name": "glm.process_weights",
+      "seconds": 5.702022463083267e-07,
+      "status": "ok",
+      "details": {}
+    },
+    {
+      "name": "glm.process_complement",
+      "seconds": 7.8580342233181e-07,
+      "status": "ok",
+      "details": {}
+    },
+    {
+      "name": "glm.FormulaGLMDict.__init__",
+      "seconds": 0.398080131970346,
+      "status": "ok",
+      "details": {}
+    },
+    {
+      "name": "model.construct_glm_dict",
+      "seconds": 0.39818203798495233,
+      "status": "ok",
+      "details": {}
+    },
+    {
+      "name": "fit.has_target_encoding",
+      "seconds": 2.6994850486516953e-05,
+      "status": "ok",
+      "details": {}
+    },
+    {
+      "name": "cv.compute_standardization",
+      "seconds": 0.30155982193537056,
+      "status": "ok",
+      "details": {}
+    },
+    {
+      "name": "cv.compute_alpha_max",
+      "seconds": 0.24821621109731495,
+      "status": "ok",
+      "details": {
+        "shape": [
+          50000,
+          298
+        ],
+        "l1_ratio": 0.0
+      }
+    },
+    {
+      "name": "cv.generate_alpha_path",
+      "seconds": 6.731809116899967e-05,
+      "status": "ok",
+      "details": {}
+    },
+    {
+      "name": "rust.fit_cv_path_py",
+      "seconds": 19.760944066103548,
+      "status": "ok",
+      "details": {
+        "detail_error": "TypeError(\"object of type 'float' has no len()\")"
+      }
+    },
+    {
+      "name": "cv.select_optimal_alpha",
+      "seconds": 6.653997115790844e-05,
+      "status": "ok",
+      "details": {}
+    },
+    {
+      "name": "cv.fit_cv_regularization_path",
+      "seconds": 20.311295945895836,
+      "status": "ok",
+      "details": {}
+    },
+    {
+      "name": "fit.resolve_cv_path",
+      "seconds": 20.31135831796564,
+      "status": "ok",
+      "details": {}
+    },
+    {
+      "name": "cv.compute_standardization",
+      "seconds": 0.42033135099336505,
+      "status": "ok",
+      "details": {}
+    },
+    {
+      "name": "rust.fit_glm_py",
+      "seconds": 2.1812604339793324,
+      "status": "ok",
+      "details": {
+        "label": "alpha=50",
+        "n": 50000,
+        "p": 298,
+        "family": "poisson"
+      }
+    },
+    {
+      "name": "fit._fit_glm_core",
+      "seconds": 2.6687468430027366,
+      "status": "ok",
+      "details": {
+        "label": "alpha=50,l1=0",
+        "n": 50000,
+        "p": 298
+      }
+    },
+    {
+      "name": "design.clear_caches",
+      "seconds": 0.0004613432101905346,
+      "status": "ok",
+      "details": {}
+    },
+    {
+      "name": "glm.validate_input_transforms",
+      "seconds": 0.0010242988355457783,
+      "status": "ok",
+      "details": {}
+    },
+    {
+      "name": "fit._build_results",
+      "seconds": 0.0015544600319117308,
+      "status": "ok",
+      "details": {}
+    },
+    {
+      "name": "fit.FormulaGLMDict.fit",
+      "seconds": 23.03176333499141,
+      "status": "ok",
+      "details": {}
+    },
+    {
+      "name": "model.fit",
+      "seconds": 23.031772613991052,
+      "status": "ok",
+      "details": {}
+    }
+  ]
+}

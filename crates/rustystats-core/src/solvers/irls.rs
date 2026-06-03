@@ -101,6 +101,11 @@ pub struct IRLSConfig {
     /// Used for: neg() terms.
     /// Default: empty (no constraints)
     pub nonpos_indices: Vec<usize>,
+
+    /// Skip the O(p³) covariance inverse in WLS solves (coefficients are still
+    /// computed identically). Set by CV fold fits, which read only coefficients.
+    /// Default: false
+    pub skip_covariance: bool,
 }
 
 impl Default for IRLSConfig {
@@ -112,6 +117,7 @@ impl Default for IRLSConfig {
             verbose: false,
             nonneg_indices: Vec::new(),
             nonpos_indices: Vec::new(),
+            skip_covariance: false,
         }
     }
 }
@@ -257,6 +263,7 @@ impl FitConfig {
             verbose: self.verbose,
             nonneg_indices: self.nonneg_indices.clone(),
             nonpos_indices: self.nonpos_indices.clone(),
+            skip_covariance: self.skip_covariance,
         }
     }
 }
@@ -537,6 +544,7 @@ fn fit_glm_core(
             &prior_weights_vec,
             l2_penalty,
             penalize_intercept,
+            true, // init projection covariance is discarded
         ) {
             Ok((mut coef, _)) if !coef.iter().any(|&c| c.is_nan() || c.is_infinite()) => {
                 for &idx in &config.nonneg_indices {
@@ -578,8 +586,8 @@ fn fit_glm_core(
     // is retained rather than accepting a worse step (RS-ACT-007).
     let mut step_halving_failed = false;
 
-    // We'll store the final covariance matrix and coefficients from iteration
-    let mut cov_unscaled = Array2::zeros((p, p));
+    // Store the final accepted IRLS weights. Covariance is computed once after
+    // the final accepted state is known, not on every iteration.
     let mut final_weights = Array1::zeros(n);
 
     // For constrained problems, track best solution seen (deviance can increase due to projection)
@@ -588,7 +596,6 @@ fn fit_glm_core(
     let mut best_coefficients = iter_coefficients.clone();
     let mut best_mu = mu.clone();
     let mut best_eta = eta.clone();
-    let mut best_cov = cov_unscaled.clone();
     let mut best_weights = final_weights.clone();
 
     while iteration < config.max_iterations {
@@ -617,12 +624,13 @@ fn fit_glm_core(
         // This is the core linear algebra step.
         // We're finding β that minimizes: Σ w_i (z_i - x_i'β)²
         // ---------------------------------------------------------------------
-        let (mut new_coefficients, xtwinv) = solve_weighted_least_squares_penalized(
+        let (mut new_coefficients, _) = solve_weighted_least_squares_penalized(
             x,
             &working_response,
             &combined_weights,
             l2_penalty,
             penalize_intercept,
+            true, // per-iteration inverse is unused; compute final covariance once
         )?;
 
         // Check for NaN in coefficients - indicates numerical instability
@@ -738,7 +746,6 @@ fn fit_glm_core(
             // consistent with the converged / max_iterations count.
             step_halving_failed = true;
             iteration = iteration.saturating_sub(1);
-            cov_unscaled = xtwinv.clone();
             final_weights = irls_weights.clone();
             break;
         }
@@ -771,7 +778,6 @@ fn fit_glm_core(
             best_coefficients = iter_coefficients.clone();
             best_mu = mu.clone();
             best_eta = eta.clone();
-            best_cov = xtwinv.clone();
             best_weights = irls_weights.clone();
         }
 
@@ -783,13 +789,11 @@ fn fit_glm_core(
         // matching the acceptance contract rather than an absolute 1e-10 floor.
         if irls_step_converged(deviance_old, deviance, rel_change, config.tolerance) {
             converged = true;
-            cov_unscaled = xtwinv;
             final_weights = irls_weights;
             break;
         }
 
         // Store for final iteration
-        cov_unscaled = xtwinv;
         final_weights = irls_weights;
     }
 
@@ -808,7 +812,6 @@ fn fit_glm_core(
             // not the worse step that triggered the halving break).
             converged = true;
             step_halving_failed = false;
-            cov_unscaled = best_cov;
             final_weights = best_weights;
             (best_mu, best_eta, best_deviance, best_coefficients)
         } else {
@@ -829,76 +832,110 @@ fn fit_glm_core(
         .map(|(&pw, &iw)| pw * iw)
         .collect();
 
-    // Try final coefficient extraction, but fall back to iteration coefficients if it produces NaN
-    let final_coefficients = match solve_weighted_least_squares_penalized(
-        x,
-        &compute_working_response(y, &final_mu, &eta_no_offset, link),
-        &combined_final_weights,
-        l2_penalty,
-        penalize_intercept,
-    ) {
-        Ok((coef, _)) if !coef.iter().any(|&c| c.is_nan() || c.is_infinite()) => {
-            // For constrained problems, apply projection and check if it's better than stored best
-            if has_constraints {
-                let mut proj_coef = coef;
-                for &idx in &config.nonneg_indices {
-                    if idx < proj_coef.len() && proj_coef[idx] < 0.0 {
-                        proj_coef[idx] = 0.0;
-                    }
-                }
-                for &idx in &config.nonpos_indices {
-                    if idx < proj_coef.len() && proj_coef[idx] > 0.0 {
-                        proj_coef[idx] = 0.0;
-                    }
-                }
-                // Check if this extraction is better
-                let eta_check = x.dot(&proj_coef);
-                let eta_full: Array1<f64> = eta_check
-                    .iter()
-                    .zip(offset_vec.iter())
-                    .map(|(&e, &o)| e + o)
-                    .collect();
-                let mu_check = family.clamp_mu(&link.inverse(&eta_full));
-                let dev_check = family.deviance(y, &mu_check, Some(&prior_weights_vec));
-                if dev_check <= final_deviance {
-                    proj_coef
+    let final_working_response = compute_working_response(y, &final_mu, &eta_no_offset, link);
+
+    // Try final coefficient extraction, but fall back to iteration coefficients
+    // if it produces NaN. Non-CV fits compute covariance here once, after the
+    // final accepted weights are known, instead of in every IRLS iteration.
+    let (final_coefficients, cov_unscaled) = if config.skip_covariance {
+        (use_coefficients, Array2::zeros((p, p)))
+    } else {
+        match solve_weighted_least_squares_penalized(
+            x,
+            &final_working_response,
+            &combined_final_weights,
+            l2_penalty,
+            penalize_intercept,
+            false,
+        ) {
+            Ok((coef, cov)) if !coef.iter().any(|&c| c.is_nan() || c.is_infinite()) => {
+                let cov = if cov.iter().all(|v| v.is_finite()) {
+                    cov
                 } else {
-                    use_coefficients
-                }
-            } else {
-                // Unconstrained: guard against a final extraction that is worse
-                // than the loop's retained iterate (RS-ACT-007).
-                let eta_full = &x.dot(&coef) + &offset_vec;
-                let mu_check = family.clamp_mu(&link.inverse(&eta_full));
-                let dev_check = family.deviance(y, &mu_check, Some(&prior_weights_vec));
-                if dev_check.is_finite() && dev_check <= final_deviance {
-                    coef
+                    return Err(RustyStatsError::NumericalError(
+                        "Final covariance extraction produced NaN/Inf. \
+                        This usually indicates numerical instability or a nearly singular design matrix."
+                            .to_string(),
+                    ));
+                };
+                // For constrained problems, apply projection and check if it's better than stored best
+                if has_constraints {
+                    let mut proj_coef = coef;
+                    for &idx in &config.nonneg_indices {
+                        if idx < proj_coef.len() && proj_coef[idx] < 0.0 {
+                            proj_coef[idx] = 0.0;
+                        }
+                    }
+                    for &idx in &config.nonpos_indices {
+                        if idx < proj_coef.len() && proj_coef[idx] > 0.0 {
+                            proj_coef[idx] = 0.0;
+                        }
+                    }
+                    // Check if this extraction is better
+                    let eta_check = x.dot(&proj_coef);
+                    let eta_full: Array1<f64> = eta_check
+                        .iter()
+                        .zip(offset_vec.iter())
+                        .map(|(&e, &o)| e + o)
+                        .collect();
+                    let mu_check = family.clamp_mu(&link.inverse(&eta_full));
+                    let dev_check = family.deviance(y, &mu_check, Some(&prior_weights_vec));
+                    if dev_check <= final_deviance {
+                        (proj_coef, cov)
+                    } else {
+                        (use_coefficients, cov)
+                    }
                 } else {
-                    use_coefficients
+                    // Unconstrained: guard against a final extraction that is worse
+                    // than the loop's retained iterate (RS-ACT-007).
+                    let eta_full = &x.dot(&coef) + &offset_vec;
+                    let mu_check = family.clamp_mu(&link.inverse(&eta_full));
+                    let dev_check = family.deviance(y, &mu_check, Some(&prior_weights_vec));
+                    if dev_check.is_finite() && dev_check <= final_deviance {
+                        (coef, cov)
+                    } else {
+                        (use_coefficients, cov)
+                    }
                 }
             }
-        }
-        _ => {
-            // Final extraction failed or produced NaN - use stored coefficients
-            warnings.push(
-                "Final coefficient extraction produced NaN/Inf. \
-                Using coefficients from best iteration instead. This may indicate numerical instability."
-                    .to_string(),
-            );
-            if use_coefficients
-                .iter()
-                .any(|&c| c.is_nan() || c.is_infinite())
-            {
-                return Err(RustyStatsError::NumericalError(
-                    "IRLS produced NaN or infinite coefficients. This usually indicates: \
-                     (1) severe multicollinearity in predictors, \
-                     (2) extreme scale differences between variables, or \
-                     (3) separation in binary response data. \
-                     Try standardizing continuous predictors or removing correlated terms."
+            Ok((_coef, cov)) => {
+                // Final extraction failed or produced NaN - use stored coefficients
+                warnings.push(
+                    "Final coefficient extraction produced NaN/Inf. \
+                    Using coefficients from best iteration instead. This may indicate numerical instability."
+                        .to_string(),
+                );
+                if use_coefficients
+                    .iter()
+                    .any(|&c| c.is_nan() || c.is_infinite())
+                {
+                    return Err(RustyStatsError::NumericalError(
+                        "IRLS produced NaN or infinite coefficients. This usually indicates: \
+                         (1) severe multicollinearity in predictors, \
+                         (2) extreme scale differences between variables, or \
+                         (3) separation in binary response data. \
+                         Try standardizing continuous predictors or removing correlated terms."
+                            .to_string(),
+                    ));
+                }
+                let cov_unscaled = if cov.iter().all(|v| v.is_finite()) {
+                    cov
+                } else {
+                    return Err(RustyStatsError::NumericalError(
+                        "Final covariance extraction produced NaN/Inf. \
+                        This usually indicates numerical instability or a nearly singular design matrix."
+                            .to_string(),
+                    ));
+                };
+                (use_coefficients, cov_unscaled)
+            }
+            Err(_) => {
+                return Err(RustyStatsError::LinearAlgebraError(
+                    "Final coefficient/covariance extraction failed. \
+                    This often indicates multicollinearity in predictors."
                         .to_string(),
                 ));
             }
-            use_coefficients
         }
     };
 
@@ -1042,20 +1079,28 @@ pub fn compute_xtwx_xtwz(
     assert_eq!(w_slice.len(), n, "w_slice length must be n");
     assert_eq!(z_slice.len(), n, "z_slice length must be n");
 
-    const CHUNK_SIZE: usize = 8192;
-    let num_chunks = n.div_ceil(CHUNK_SIZE);
+    if should_use_sparse_xtwx_kernel(x_slice, n, p) {
+        return compute_xtwx_xtwz_sparse(x_slice, z_slice, w_slice, n, p);
+    }
+
+    // Core-adaptive chunking: split rows across all available threads so this
+    // kernel (the dominant per-iteration cost) saturates the CPU, instead of
+    // the ~4 chunks the old fixed 8192 produced for a 25k-row CV fold.
+    let chunk_size = n.div_ceil(rayon::current_num_threads()).max(1);
+    let num_chunks = n.div_ceil(chunk_size);
 
     let (xtx_data, xtz_data): (Vec<f64>, Vec<f64>) = (0..num_chunks)
         .into_par_iter()
         .map(|chunk_idx| {
-            let chunk_start = chunk_idx * CHUNK_SIZE;
-            let chunk_end = (chunk_start + CHUNK_SIZE).min(n);
+            let chunk_start = chunk_idx * chunk_size;
+            let chunk_end = (chunk_start + chunk_size).min(n);
             let mut xtx_local = vec![0.0; p * p];
             let mut xtz_local = vec![0.0; p];
 
             for k in chunk_start..chunk_end {
                 // SAFETY: k < n, so k < w_slice.len() and k < z_slice.len()
                 let wk = unsafe { *w_slice.get_unchecked(k) };
+                // SAFETY: k < n, so k < z_slice.len().
                 let zk = unsafe { *z_slice.get_unchecked(k) };
                 let wz = wk * zk;
                 let row_start = k * p;
@@ -1092,6 +1137,117 @@ pub fn compute_xtwx_xtwz(
         );
 
     // Convert to nalgebra symmetric DMatrix
+    let mut xtx = DMatrix::zeros(p, p);
+    for i in 0..p {
+        for j in i..p {
+            let val = xtx_data[i * p + j];
+            xtx[(i, j)] = val;
+            xtx[(j, i)] = val;
+        }
+    }
+    let xtz = DVector::from_vec(xtz_data);
+
+    Ok((xtx, xtz))
+}
+
+#[inline]
+fn should_use_sparse_xtwx_kernel(x_slice: &[f64], n: usize, p: usize) -> bool {
+    if n == 0 || p < 16 {
+        return false;
+    }
+
+    let sample_rows = n.min(1024);
+    let mut nonzero = 0usize;
+    for sample_idx in 0..sample_rows {
+        let row = sample_idx * n / sample_rows;
+        let row_start = row * p;
+        for j in 0..p {
+            if x_slice[row_start + j] != 0.0 {
+                nonzero += 1;
+            }
+        }
+    }
+    let density = nonzero as f64 / (sample_rows * p) as f64;
+    density <= 0.35
+}
+
+#[inline]
+fn compute_xtwx_xtwz_sparse(
+    x_slice: &[f64],
+    z_slice: &[f64],
+    w_slice: &[f64],
+    n: usize,
+    p: usize,
+) -> Result<(DMatrix<f64>, DVector<f64>)> {
+    let chunk_size = n.div_ceil(rayon::current_num_threads()).max(1);
+    let num_chunks = n.div_ceil(chunk_size);
+
+    let (xtx_data, xtz_data): (Vec<f64>, Vec<f64>) = (0..num_chunks)
+        .into_par_iter()
+        .map(|chunk_idx| {
+            let chunk_start = chunk_idx * chunk_size;
+            let chunk_end = (chunk_start + chunk_size).min(n);
+            let mut xtx_local = vec![0.0; p * p];
+            let mut xtz_local = vec![0.0; p];
+            let mut nz_idx: Vec<usize> = Vec::with_capacity(p);
+            let mut nz_val: Vec<f64> = Vec::with_capacity(p);
+
+            for k in chunk_start..chunk_end {
+                nz_idx.clear();
+                nz_val.clear();
+                let row_start = k * p;
+                for j in 0..p {
+                    // SAFETY: row_start + j < n*p = x_slice.len().
+                    let xkj = unsafe { *x_slice.get_unchecked(row_start + j) };
+                    if xkj != 0.0 {
+                        nz_idx.push(j);
+                        nz_val.push(xkj);
+                    }
+                }
+
+                if nz_idx.is_empty() {
+                    continue;
+                }
+
+                // SAFETY: k < n, so k is within both weight/response slices.
+                let wk = unsafe { *w_slice.get_unchecked(k) };
+                let zk = unsafe { *z_slice.get_unchecked(k) };
+                let wz = wk * zk;
+
+                for a in 0..nz_idx.len() {
+                    // SAFETY: a is within both nz vectors populated in lockstep above.
+                    let i = unsafe { *nz_idx.get_unchecked(a) };
+                    let xki = unsafe { *nz_val.get_unchecked(a) };
+                    let xki_w = xki * wk;
+                    // SAFETY: i is a column index < p, so i < xtz_local.len().
+                    unsafe { *xtz_local.get_unchecked_mut(i) += xki * wz };
+
+                    for b in a..nz_idx.len() {
+                        // SAFETY: b is within both nz vectors; i and j are
+                        // column indices < p, so i*p + j < xtx_local.len().
+                        let j = unsafe { *nz_idx.get_unchecked(b) };
+                        let xkj = unsafe { *nz_val.get_unchecked(b) };
+                        // SAFETY: i and j are column indices < p, so the
+                        // flattened upper-triangle target is in bounds.
+                        unsafe { *xtx_local.get_unchecked_mut(i * p + j) += xki_w * xkj };
+                    }
+                }
+            }
+            (xtx_local, xtz_local)
+        })
+        .reduce(
+            || (vec![0.0; p * p], vec![0.0; p]),
+            |(mut a_xtx, mut a_xtz), (b_xtx, b_xtz)| {
+                for i in 0..a_xtx.len() {
+                    a_xtx[i] += b_xtx[i];
+                }
+                for i in 0..a_xtz.len() {
+                    a_xtz[i] += b_xtz[i];
+                }
+                (a_xtx, a_xtz)
+            },
+        );
+
     let mut xtx = DMatrix::zeros(p, p);
     for i in 0..p {
         for j in i..p {
@@ -1198,6 +1354,7 @@ fn solve_weighted_least_squares_penalized(
     w: &Array1<f64>,
     l2_penalty: f64,
     penalize_intercept: bool,
+    skip_covariance: bool,
 ) -> Result<(Array1<f64>, Array2<f64>)> {
     let p = x.ncols();
     let (mut xtx, xtz) = compute_xtwx_xtwz(x, z, w)?;
@@ -1211,7 +1368,7 @@ fn solve_weighted_least_squares_penalized(
         }
     }
 
-    cholesky_solve(xtx, &xtz, false)
+    cholesky_solve(xtx, &xtz, skip_covariance)
 }
 
 /// Solve weighted least squares with a full penalty matrix.
@@ -1309,7 +1466,131 @@ pub fn compute_xtwx(x: ArrayView2<'_, f64>, w: &Array1<f64>) -> Array2<f64> {
     let n = x.nrows();
     let p = x.ncols();
 
-    let xtx_data: Vec<f64> = (0..n)
+    let xtx_data = match (x.as_slice(), w.as_slice()) {
+        (Some(x_slice), Some(w_slice)) => {
+            assert_eq!(x_slice.len(), n * p, "x_slice length must be n*p");
+            assert_eq!(w_slice.len(), n, "w_slice length must be n");
+            if should_use_sparse_xtwx_kernel(x_slice, n, p) {
+                compute_xtwx_sparse_data(x_slice, w_slice, n, p)
+            } else {
+                compute_xtwx_dense_data(x_slice, w_slice, n, p)
+            }
+        }
+        _ => compute_xtwx_strided_data(x, w, n, p),
+    };
+
+    xtx_data_to_array2(xtx_data, p)
+}
+
+#[inline]
+fn compute_xtwx_dense_data(x_slice: &[f64], w_slice: &[f64], n: usize, p: usize) -> Vec<f64> {
+    let chunk_size = n.div_ceil(rayon::current_num_threads()).max(1);
+    let num_chunks = n.div_ceil(chunk_size);
+
+    (0..num_chunks)
+        .into_par_iter()
+        .map(|chunk_idx| {
+            let chunk_start = chunk_idx * chunk_size;
+            let chunk_end = (chunk_start + chunk_size).min(n);
+            let mut xtx_local = vec![0.0; p * p];
+
+            for k in chunk_start..chunk_end {
+                // SAFETY: k < n, so k < w_slice.len().
+                let wk = unsafe { *w_slice.get_unchecked(k) };
+                let row_start = k * p;
+                for i in 0..p {
+                    // SAFETY: row_start + i < n*p = x_slice.len().
+                    let xki = unsafe { *x_slice.get_unchecked(row_start + i) };
+                    let xki_w = xki * wk;
+                    for j in i..p {
+                        // SAFETY: row_start + j < n*p = x_slice.len().
+                        let xkj = unsafe { *x_slice.get_unchecked(row_start + j) };
+                        // SAFETY: i, j < p, so i*p + j < xtx_local.len().
+                        unsafe { *xtx_local.get_unchecked_mut(i * p + j) += xki_w * xkj };
+                    }
+                }
+            }
+            xtx_local
+        })
+        .reduce(
+            || vec![0.0; p * p],
+            |mut a, b| {
+                for i in 0..a.len() {
+                    a[i] += b[i];
+                }
+                a
+            },
+        )
+}
+
+#[inline]
+fn compute_xtwx_sparse_data(x_slice: &[f64], w_slice: &[f64], n: usize, p: usize) -> Vec<f64> {
+    let chunk_size = n.div_ceil(rayon::current_num_threads()).max(1);
+    let num_chunks = n.div_ceil(chunk_size);
+
+    (0..num_chunks)
+        .into_par_iter()
+        .map(|chunk_idx| {
+            let chunk_start = chunk_idx * chunk_size;
+            let chunk_end = (chunk_start + chunk_size).min(n);
+            let mut xtx_local = vec![0.0; p * p];
+            let mut nz_idx: Vec<usize> = Vec::with_capacity(p);
+            let mut nz_val: Vec<f64> = Vec::with_capacity(p);
+
+            for k in chunk_start..chunk_end {
+                nz_idx.clear();
+                nz_val.clear();
+                let row_start = k * p;
+                for j in 0..p {
+                    // SAFETY: row_start + j < n*p = x_slice.len().
+                    let xkj = unsafe { *x_slice.get_unchecked(row_start + j) };
+                    if xkj != 0.0 {
+                        nz_idx.push(j);
+                        nz_val.push(xkj);
+                    }
+                }
+
+                if nz_idx.is_empty() {
+                    continue;
+                }
+
+                // SAFETY: k < n, so k < w_slice.len().
+                let wk = unsafe { *w_slice.get_unchecked(k) };
+                for a in 0..nz_idx.len() {
+                    // SAFETY: a is within both nz vectors populated in lockstep above.
+                    let i = unsafe { *nz_idx.get_unchecked(a) };
+                    let xki_w = unsafe { *nz_val.get_unchecked(a) } * wk;
+                    for b in a..nz_idx.len() {
+                        // SAFETY: b is within both nz vectors; i and j are
+                        // column indices < p, so i*p + j < xtx_local.len().
+                        let j = unsafe { *nz_idx.get_unchecked(b) };
+                        let xkj = unsafe { *nz_val.get_unchecked(b) };
+                        // SAFETY: i and j are column indices < p, so the
+                        // flattened upper-triangle target is in bounds.
+                        unsafe { *xtx_local.get_unchecked_mut(i * p + j) += xki_w * xkj };
+                    }
+                }
+            }
+            xtx_local
+        })
+        .reduce(
+            || vec![0.0; p * p],
+            |mut a, b| {
+                for i in 0..a.len() {
+                    a[i] += b[i];
+                }
+                a
+            },
+        )
+}
+
+fn compute_xtwx_strided_data(
+    x: ArrayView2<'_, f64>,
+    w: &Array1<f64>,
+    n: usize,
+    p: usize,
+) -> Vec<f64> {
+    (0..n)
         .into_par_iter()
         .fold(
             || vec![0.0; p * p],
@@ -1332,9 +1613,10 @@ pub fn compute_xtwx(x: ArrayView2<'_, f64>, w: &Array1<f64>) -> Array2<f64> {
                 }
                 a
             },
-        );
+        )
+}
 
-    // Convert to Array2, symmetrizing
+fn xtx_data_to_array2(xtx_data: Vec<f64>, p: usize) -> Array2<f64> {
     let mut xtwx = Array2::zeros((p, p));
     for i in 0..p {
         for j in i..p {
@@ -1373,7 +1655,68 @@ mod tests {
     use super::*;
     use crate::families::{BinomialFamily, GaussianFamily, PoissonFamily};
     use crate::links::{IdentityLink, LogLink, LogitLink};
-    use ndarray::array;
+    use ndarray::{array, Array2};
+
+    #[test]
+    fn test_compute_xtwx_sparse_kernel_matches_dense_formula() {
+        let n = 64;
+        let p = 24;
+        let mut x = Array2::<f64>::zeros((n, p));
+        for row in 0..n {
+            let j1 = row % p;
+            let j2 = (row * 5 + 3) % p;
+            x[[row, j1]] = 1.0 + (row % 4) as f64;
+            x[[row, j2]] += (row as f64 / 4.0).sin();
+        }
+        let w: Array1<f64> = (0..n).map(|i| 0.75 + (i % 7) as f64 * 0.05).collect();
+
+        assert!(should_use_sparse_xtwx_kernel(x.as_slice().unwrap(), n, p));
+
+        let actual = compute_xtwx(x.view(), &w);
+        let mut expected = Array2::<f64>::zeros((p, p));
+        for row in 0..n {
+            for i in 0..p {
+                for j in 0..p {
+                    expected[[i, j]] += w[row] * x[[row, i]] * x[[row, j]];
+                }
+            }
+        }
+
+        for i in 0..p {
+            for j in 0..p {
+                assert!((actual[[i, j]] - expected[[i, j]]).abs() < 1e-12);
+            }
+        }
+    }
+
+    #[test]
+    fn test_final_covariance_matches_gaussian_closed_form() {
+        let x = Array2::from_shape_vec(
+            (5, 2),
+            vec![1.0, -2.0, 1.0, -1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 2.0],
+        )
+        .expect("test setup should be valid");
+        let y = array![-3.0, -1.0, 1.0, 3.0, 5.0];
+
+        let result = fit_glm_unified(
+            &y,
+            x.view(),
+            &GaussianFamily,
+            &IdentityLink,
+            &FitConfig::default(),
+            None,
+            None,
+            None,
+        )
+        .expect("fit should not error");
+
+        // X'X is diagonal here: [[5, 0], [0, 10]], so the unscaled
+        // covariance has a simple closed-form inverse.
+        assert!((result.covariance_unscaled[[0, 0]] - 0.2).abs() < 1e-12);
+        assert!(result.covariance_unscaled[[0, 1]].abs() < 1e-12);
+        assert!(result.covariance_unscaled[[1, 0]].abs() < 1e-12);
+        assert!((result.covariance_unscaled[[1, 1]] - 0.1).abs() < 1e-12);
+    }
 
     #[test]
     fn test_final_mu_clamped_for_separated_binomial() {
@@ -1515,9 +1858,15 @@ mod tests {
         let initial_mu = PoissonFamily.initialize_mu(&y);
         let initial_eta = LogLink.link(&initial_mu);
         let weights = Array1::ones(y.len());
-        let (initial_coef, _) =
-            solve_weighted_least_squares_penalized(x.view(), &initial_eta, &weights, 0.0, true)
-                .expect("initial projection should be valid");
+        let (initial_coef, _) = solve_weighted_least_squares_penalized(
+            x.view(),
+            &initial_eta,
+            &weights,
+            0.0,
+            true,
+            false,
+        )
+        .expect("initial projection should be valid");
         let initial_fit_eta = x.dot(&initial_coef);
         let initial_fit_mu = PoissonFamily.clamp_mu(&LogLink.inverse(&initial_fit_eta));
         let initial_model_deviance = PoissonFamily.deviance(&y, &initial_fit_mu, None);

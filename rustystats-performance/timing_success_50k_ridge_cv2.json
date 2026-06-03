@@ -1,0 +1,103 @@
+{
+  "status": "ok",
+  "summary": {
+    "dataset": "freMTPL2 frequency",
+    "training_sample": 50000,
+    "regularization": "ridge",
+    "cv": 2,
+    "test_role": "Group == 4",
+    "oot_role": "Group == 5",
+    "compute_diagnostics": false,
+    "raw_rows": 678012,
+    "raw_columns": [
+      "VehPower",
+      "VehAge",
+      "DrivAge",
+      "BonusMalus",
+      "VehBrand",
+      "VehGas",
+      "Area",
+      "Density",
+      "Region",
+      "Group",
+      "Exposure",
+      "ClaimCount"
+    ],
+    "role_counts": {
+      "train": 50000,
+      "test": 135616,
+      "oot": 135957
+    },
+    "teacher_depth": 3,
+    "n_main_importance": 10,
+    "n_pair_importance": 42,
+    "n_triple_importance": 52,
+    "n_terms": 12,
+    "n_interactions": 11,
+    "n_frozen_maps": 5,
+    "n_input_transforms": 5,
+    "student_params": 298,
+    "student_input_transforms": 5,
+    "gap_loss_change_pct": 2.191772795364697,
+    "gap_recommendation": "1\u20135% worse \u2014 revisit the recipe (more interactions/knots, or drop heredity).",
+    "production_mode": "raw_glm",
+    "validation_status": "warn",
+    "primary_role": "oot",
+    "html_report": "reports/fremtpl2_50k_frequency_report.html",
+    "json_report": "reports/fremtpl2_50k_frequency_report.json",
+    "dst_bundle": "reports/fremtpl2_50k_frequency.dst",
+    "total_timed_seconds": 110.61414077854715
+  },
+  "stages": [
+    {
+      "stage": "load_fremtpl2",
+      "seconds": 1.825934257823974,
+      "status": "ok"
+    },
+    {
+      "stage": "build_preassigned_roles",
+      "seconds": 0.08177381008863449,
+      "status": "ok"
+    },
+    {
+      "stage": "construct_distiller",
+      "seconds": 1.1482238459866494,
+      "status": "ok"
+    },
+    {
+      "stage": "train_teacher_catboost",
+      "seconds": 10.971739952918142,
+      "status": "ok"
+    },
+    {
+      "stage": "functional_anova_decompose",
+      "seconds": 14.134322516154498,
+      "status": "ok"
+    },
+    {
+      "stage": "propose_recipe_and_freeze_categoricals",
+      "seconds": 0.07151298597455025,
+      "status": "ok"
+    },
+    {
+      "stage": "fit_student_rustystats_ridge_cv2",
+      "seconds": 74.72133385483176,
+      "status": "ok"
+    },
+    {
+      "stage": "diagnose_validation_packet_no_full_diagnostics",
+      "seconds": 5.027955951867625,
+      "status": "ok"
+    },
+    {
+      "stage": "build_result_report",
+      "seconds": 0.01097289309836924,
+      "status": "ok"
+    },
+    {
+      "stage": "write_report_artifacts",
+      "seconds": 2.6203707098029554,
+      "status": "ok"
+    }
+  ]
+}

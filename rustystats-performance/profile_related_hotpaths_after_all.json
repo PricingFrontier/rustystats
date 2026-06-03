@@ -1,0 +1,391 @@
+{
+  "command": [
+    "rustystats-performance/profile_related_hotpaths.py",
+    "--output",
+    "rustystats-performance/profile_related_hotpaths_after_all.json",
+    "--cv",
+    "2",
+    "--n-alphas",
+    "3",
+    "--max-iter",
+    "6",
+    "--tol",
+    "1e-6",
+    "--vif-repeats",
+    "3",
+    "--robust-types",
+    "HC1",
+    "--robust-types",
+    "HC3"
+  ],
+  "cwd": "/home/ralph/suite/rustystats",
+  "platform": "Linux-6.6.114.1-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "python": "3.13.11 (main, Dec  9 2025, 19:04:10) [Clang 21.1.4 ]",
+  "rustystats_version": "0.8.1",
+  "extension_file": "/home/ralph/suite/rustystats/python/rustystats/_rustystats.cpython-313-x86_64-linux-gnu.so",
+  "rayon_num_threads_env": null,
+  "input_shape": {
+    "rows": 50000,
+    "columns": 13
+  },
+  "design_shape": {
+    "rows": 50000,
+    "columns": 298
+  },
+  "design_density": 0.10734255033557047,
+  "design_nonzero": 1599404,
+  "build_seconds": 0.3451695470139384,
+  "coordinate_descent": {
+    "lasso": {
+      "prep_seconds": 0.016138942213729024,
+      "cv_wall_seconds_python": 0.8766217371448874,
+      "args": {
+        "cv": 2,
+        "n_alphas_requested": 3,
+        "n_alphas_actual": 3,
+        "include_unregularized": false,
+        "alpha_min_ratio": 0.0001,
+        "alpha_max": 815.7498360824812,
+        "alphas": [
+          815.7498360824816,
+          8.157498360824816,
+          0.08157498360824812
+        ],
+        "l1_ratio": 1.0,
+        "max_iter": 6,
+        "tol": 1e-06,
+        "cv_seed": 0
+      },
+      "result": {
+        "best_alpha": 8.157498360824816,
+        "best_cv_deviance": 0.0011196613733602447,
+        "profile": {
+          "n": 50000,
+          "p": 298,
+          "n_folds": 2,
+          "n_alphas": 3,
+          "rayon_threads": 22,
+          "input_seconds": 3.9572e-05,
+          "validation_seconds": 6.4e-08,
+          "setup_seconds": 0.0004958,
+          "cv_parallel_wall_seconds": 0.875852532,
+          "aggregate_seconds": 7.54e-07,
+          "total_wall_seconds": 0.876534718,
+          "summed_work_seconds": {
+            "fold_split_copy_seconds": 0.197642066,
+            "fold_standardize_seconds": 0.23136562,
+            "fold_setup_seconds": 1.0741000000000001e-05,
+            "alpha_fit_seconds": 1.222532468,
+            "alpha_validation_dot_seconds": 0.030287775,
+            "alpha_validation_score_seconds": 0.0016066599999999998
+          },
+          "folds": [
+            {
+              "fold": 0,
+              "n_train": 25045,
+              "n_val": 24955,
+              "split_copy_seconds": 0.082628068,
+              "standardize_seconds": 0.116164297,
+              "setup_seconds": 6.627e-06,
+              "fit_seconds": [
+                0.149821933,
+                0.184670162,
+                0.325409127
+              ],
+              "validation_dot_seconds": [
+                0.004819767,
+                0.004337796,
+                0.004139468
+              ],
+              "validation_score_seconds": [
+                0.00021719,
+                0.000295525,
+                0.000292958
+              ],
+              "iterations": [
+                5,
+                6,
+                6
+              ],
+              "statuses": [
+                "converged",
+                "max_iterations",
+                "converged"
+              ]
+            },
+            {
+              "fold": 1,
+              "n_train": 24955,
+              "n_val": 25045,
+              "split_copy_seconds": 0.115013998,
+              "standardize_seconds": 0.115201323,
+              "setup_seconds": 4.114e-06,
+              "fit_seconds": [
+                0.117073227,
+                0.199137388,
+                0.246420631
+              ],
+              "validation_dot_seconds": [
+                0.004676569,
+                0.007699819,
+                0.004614356
+              ],
+              "validation_score_seconds": [
+                0.000205622,
+                0.000291932,
+                0.000303433
+              ],
+              "iterations": [
+                5,
+                6,
+                5
+              ],
+              "statuses": [
+                "converged",
+                "max_iterations",
+                "converged"
+              ]
+            }
+          ]
+        },
+        "status_counts": {
+          "converged": 4,
+          "max_iterations": 2
+        },
+        "iterations": {
+          "count": 6,
+          "min": 5,
+          "max": 6,
+          "mean": 5.5
+        },
+        "fit_seconds": {
+          "count": 6,
+          "min": 0.117073227,
+          "max": 0.325409127,
+          "mean": 0.20375541133333333,
+          "sum": 1.222532468
+        }
+      }
+    },
+    "elastic_net": {
+      "prep_seconds": 0.04168404592201114,
+      "cv_wall_seconds_python": 0.9116478338837624,
+      "args": {
+        "cv": 2,
+        "n_alphas_requested": 3,
+        "n_alphas_actual": 3,
+        "include_unregularized": false,
+        "alpha_min_ratio": 0.0001,
+        "alpha_max": 1631.4996721649625,
+        "alphas": [
+          1631.4996721649618,
+          16.314996721649617,
+          0.16314996721649624
+        ],
+        "l1_ratio": 0.5,
+        "max_iter": 6,
+        "tol": 1e-06,
+        "cv_seed": 0
+      },
+      "result": {
+        "best_alpha": 16.314996721649617,
+        "best_cv_deviance": 0.0011281322868914084,
+        "profile": {
+          "n": 50000,
+          "p": 298,
+          "n_folds": 2,
+          "n_alphas": 3,
+          "rayon_threads": 22,
+          "input_seconds": 3.8966e-05,
+          "validation_seconds": 4.8e-08,
+          "setup_seconds": 0.000493072,
+          "cv_parallel_wall_seconds": 0.910836938,
+          "aggregate_seconds": 7.39e-07,
+          "total_wall_seconds": 0.911520843,
+          "summed_work_seconds": {
+            "fold_split_copy_seconds": 0.155484335,
+            "fold_standardize_seconds": 0.20872997799999998,
+            "fold_setup_seconds": 9.928e-06,
+            "alpha_fit_seconds": 1.382693875,
+            "alpha_validation_dot_seconds": 0.034331334,
+            "alpha_validation_score_seconds": 0.001601512
+          },
+          "folds": [
+            {
+              "fold": 0,
+              "n_train": 25045,
+              "n_val": 24955,
+              "split_copy_seconds": 0.080543846,
+              "standardize_seconds": 0.109865169,
+              "setup_seconds": 4.629e-06,
+              "fit_seconds": [
+                0.113106758,
+                0.20029613,
+                0.379609877
+              ],
+              "validation_dot_seconds": [
+                0.005542527,
+                0.004727274,
+                0.004199606
+              ],
+              "validation_score_seconds": [
+                0.000197297,
+                0.000297121,
+                0.000289087
+              ],
+              "iterations": [
+                5,
+                6,
+                6
+              ],
+              "statuses": [
+                "converged",
+                "max_iterations",
+                "converged"
+              ]
+            },
+            {
+              "fold": 1,
+              "n_train": 24955,
+              "n_val": 25045,
+              "split_copy_seconds": 0.074940489,
+              "standardize_seconds": 0.098864809,
+              "setup_seconds": 5.299e-06,
+              "fit_seconds": [
+                0.111393439,
+                0.205907273,
+                0.372380398
+              ],
+              "validation_dot_seconds": [
+                0.01117287,
+                0.00456668,
+                0.004122377
+              ],
+              "validation_score_seconds": [
+                0.0002258,
+                0.000302687,
+                0.00028952
+              ],
+              "iterations": [
+                5,
+                6,
+                6
+              ],
+              "statuses": [
+                "converged",
+                "max_iterations",
+                "converged"
+              ]
+            }
+          ]
+        },
+        "status_counts": {
+          "converged": 4,
+          "max_iterations": 2
+        },
+        "iterations": {
+          "count": 6,
+          "min": 5,
+          "max": 6,
+          "mean": 5.666666666666667
+        },
+        "fit_seconds": {
+          "count": 6,
+          "min": 0.111393439,
+          "max": 0.379609877,
+          "mean": 0.23044897916666665,
+          "sum": 1.382693875
+        }
+      }
+    }
+  },
+  "vif": {
+    "skip_cols=1": {
+      "seconds": 0.016105341026559472,
+      "repeats": 3,
+      "seconds_all": [
+        0.018152351025491953,
+        0.018176752142608166,
+        0.016105341026559472
+      ],
+      "seconds_min": 0.016105341026559472,
+      "seconds_mean": 0.01747814806488653,
+      "result": {
+        "corr_shape": [
+          297,
+          297
+        ],
+        "vif_len": 297,
+        "max_abs_corr": 1.0,
+        "max_vif": 9999999999.999998
+      }
+    },
+    "skip_cols=0": {
+      "seconds": 0.015803818125277758,
+      "repeats": 3,
+      "seconds_all": [
+        0.014822351979091763,
+        0.015757665038108826,
+        0.015803818125277758
+      ],
+      "seconds_min": 0.014822351979091763,
+      "seconds_mean": 0.015461278380826116,
+      "result": {
+        "corr_shape": [
+          298,
+          298
+        ],
+        "vif_len": 298,
+        "max_abs_corr": 1.0,
+        "max_vif": 9999999999.999998
+      }
+    }
+  },
+  "robust": {
+    "fit_harness": {
+      "seconds": 0.3925880629103631,
+      "alpha": 50.0,
+      "max_iter": 25,
+      "tol": 1e-08,
+      "iterations": 6,
+      "converged": true,
+      "solver_status": "converged",
+      "deviance": 47.08791418915237
+    },
+    "HC1": {
+      "bse_seconds": 0.10651137493550777,
+      "cov_seconds": 0.1196936359629035,
+      "bse_summary": {
+        "len": 298,
+        "min": 0.0,
+        "max": 3.6967171393193508
+      },
+      "cov_summary": {
+        "shape": [
+          298,
+          298
+        ],
+        "diag_min": 0.0,
+        "diag_max": 13.665717608137443
+      }
+    },
+    "HC3": {
+      "bse_seconds": 0.11589822708629072,
+      "cov_seconds": 0.10853160894475877,
+      "bse_summary": {
+        "len": 298,
+        "min": 0.0,
+        "max": 17.036474063416772
+      },
+      "cov_summary": {
+        "shape": [
+          298,
+          298
+        ],
+        "diag_min": 0.0,
+        "diag_max": 290.24144851347245
+      }
+    }
+  },
+  "total_seconds": 3.481212391052395
+}

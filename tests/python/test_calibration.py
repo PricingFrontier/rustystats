@@ -491,8 +491,9 @@ class TestReleveLogLink:
 
     def test_inplace_mutates_self(self):
         df, result = _fit_log_link_poisson(seed=5)
+        calibration_df = df.with_columns((pl.col("ClaimCount") + 1).alias("ClaimCount"))
         intercept_before = result.params[0]
-        returned = result.relevel(data=df, inplace=True)
+        returned = result.relevel(data=calibration_df, inplace=True)
         assert returned is result
         assert result.params[0] != intercept_before
 

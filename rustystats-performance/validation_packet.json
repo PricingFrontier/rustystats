@@ -1,0 +1,111 @@
+{
+  "status": "warn",
+  "primary_role": "oot",
+  "production_ready": true,
+  "family": {
+    "name": "poisson",
+    "link": "log",
+    "var_power": 1.5,
+    "theta": 1.0
+  },
+  "metrics": {
+    "teacher": {
+      "n_rows": 135957,
+      "actual": 7151.0,
+      "expected": 7345.565918822237,
+      "ae_ratio": 0.9735124671165659,
+      "deviance": 40694.0669802616,
+      "mean_prediction": 0.054028596679996155
+    },
+    "student_raw": {
+      "n_rows": 135957,
+      "actual": 7151.0,
+      "expected": 7696.034520959767,
+      "ae_ratio": 0.9291798237812743,
+      "deviance": 41585.988469662465,
+      "mean_prediction": 0.05660638673227393
+    },
+    "student_production": {
+      "n_rows": 135957,
+      "actual": 7151.0,
+      "expected": 7696.034520959767,
+      "ae_ratio": 0.9291798237812743,
+      "deviance": 41585.988469662465,
+      "mean_prediction": 0.05660638673227393
+    }
+  },
+  "fidelity": {
+    "student_raw": {
+      "n_rows": 135957,
+      "link_rmse": 0.12931637977254157,
+      "response_rmse": 0.6394506845188885,
+      "response_mae": 0.007393456605480013,
+      "teacher_target_deviance": 762.165549222904,
+      "pearson_corr": 0.03846114299871975,
+      "spearman_corr": 0.9666516171220222,
+      "mean_teacher": 0.054028596679996155,
+      "mean_student": 0.05660638673227393,
+      "mean_ratio": 1.0477115862835689
+    },
+    "student_production": {
+      "n_rows": 135957,
+      "link_rmse": 0.12931637977254157,
+      "response_rmse": 0.6394506845188885,
+      "response_mae": 0.007393456605480013,
+      "teacher_target_deviance": 762.165549222904,
+      "pearson_corr": 0.03846114299871975,
+      "spearman_corr": 0.9666516171220222,
+      "mean_teacher": 0.054028596679996155,
+      "mean_student": 0.05660638673227393,
+      "mean_ratio": 1.0477115862835689
+    }
+  },
+  "gates": [
+    {
+      "name": "student_production_loss_gap_pct",
+      "status": "pass",
+      "value": 2.191772795364697,
+      "threshold": 5.0,
+      "message": "Production student deviance gap versus teacher on the primary evaluation role."
+    },
+    {
+      "name": "student_production_ae_abs_error",
+      "status": "warn",
+      "value": 0.07082017621872572,
+      "threshold": 0.05,
+      "message": "Absolute actual-over-expected error for production predictions."
+    },
+    {
+      "name": "student_raw_loss_gap_pct",
+      "status": "pass",
+      "value": 2.191772795364697,
+      "threshold": 5.0,
+      "message": "Raw GLM deviance gap versus teacher before optional calibration on the primary evaluation role."
+    },
+    {
+      "name": "golden_row_bundle_parity",
+      "status": "pass",
+      "value": 0.0,
+      "threshold": 1e-09,
+      "message": "Loaded .dst bundle predictions match the stored golden-row raw and production predictions within tolerance."
+    }
+  ],
+  "split_manifest": {
+    "method": "preassigned",
+    "seed": 0,
+    "time_column": null,
+    "role_column": "__destyler_role__",
+    "data_fingerprint": "85c9e79b929888e5ca6fe2053ce17d58ce45a5741e38fea511e6da446cc7d9bd",
+    "roles": {
+      "train": 50000,
+      "calibration": 0,
+      "validation": 0,
+      "test": 135616,
+      "oot": 135957
+    },
+    "primary_evaluation_role": "oot",
+    "production_ready": true
+  },
+  "calibrated": false,
+  "packet_hash": "72ac57acd200cd9b704409b8a4495e2e8178666e7e1e7e8c79b6a0f2ccf4e043"
+}

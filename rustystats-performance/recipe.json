@@ -1,0 +1,1982 @@
+{
+  "response": "ClaimCount",
+  "family": {
+    "name": "poisson",
+    "link": "log",
+    "var_power": 1.5,
+    "theta": 1.0
+  },
+  "terms": {
+    "BonusMalus": {
+      "type": "ms",
+      "knots": [
+        59.5,
+        65.0,
+        89.5,
+        98.0
+      ],
+      "monotonicity": "increasing"
+    },
+    "VehAge": {
+      "type": "bs",
+      "knots": [
+        1.0,
+        5.0,
+        7.0,
+        37.75,
+        48.5
+      ]
+    },
+    "DrivAge": {
+      "type": "bs",
+      "knots": [
+        20.0,
+        22.0,
+        28.5,
+        32.0,
+        50.0,
+        53.0,
+        59.0
+      ]
+    },
+    "VehPower": {
+      "type": "bs",
+      "knots": [
+        5.0
+      ]
+    },
+    "Density": {
+      "type": "ms",
+      "knots": [
+        314.0,
+        4193.75
+      ],
+      "monotonicity": "increasing"
+    },
+    "VehGas": {
+      "type": "categorical"
+    },
+    "Region_fts": {
+      "type": "linear"
+    },
+    "VehBrand_fts": {
+      "type": "linear"
+    },
+    "Group": {
+      "type": "bs",
+      "df": 4
+    },
+    "Area_fts": {
+      "type": "linear"
+    },
+    "Area__Region_fts": {
+      "type": "linear"
+    },
+    "Region__VehBrand_fts": {
+      "type": "linear"
+    }
+  },
+  "interactions": [
+    {
+      "VehAge": {
+        "type": "linear"
+      },
+      "VehGas": {
+        "type": "categorical"
+      },
+      "include_main": false
+    },
+    {
+      "VehAge": {
+        "type": "linear"
+      },
+      "VehBrand": {
+        "type": "categorical"
+      },
+      "include_main": false
+    },
+    {
+      "BonusMalus": {
+        "type": "linear"
+      },
+      "DrivAge": {
+        "type": "linear"
+      },
+      "include_main": false
+    },
+    {
+      "BonusMalus": {
+        "type": "linear"
+      },
+      "VehAge": {
+        "type": "linear"
+      },
+      "include_main": false
+    },
+    {
+      "VehAge": {
+        "type": "linear"
+      },
+      "VehPower": {
+        "type": "linear"
+      },
+      "include_main": false
+    },
+    {
+      "DrivAge": {
+        "type": "linear"
+      },
+      "VehAge": {
+        "type": "linear"
+      },
+      "include_main": false
+    },
+    {
+      "Density": {
+        "type": "linear"
+      },
+      "VehAge": {
+        "type": "linear"
+      },
+      "VehBrand": {
+        "type": "categorical"
+      },
+      "include_main": false
+    },
+    {
+      "Region": {
+        "type": "categorical"
+      },
+      "VehAge": {
+        "type": "linear"
+      },
+      "VehBrand": {
+        "type": "categorical"
+      },
+      "include_main": false
+    },
+    {
+      "DrivAge": {
+        "type": "linear"
+      },
+      "Group": {
+        "type": "linear"
+      },
+      "VehBrand": {
+        "type": "categorical"
+      },
+      "include_main": false
+    },
+    {
+      "VehAge": {
+        "type": "linear"
+      },
+      "VehGas": {
+        "type": "categorical"
+      },
+      "VehPower": {
+        "type": "linear"
+      },
+      "include_main": false
+    },
+    {
+      "Density": {
+        "type": "linear"
+      },
+      "Region": {
+        "type": "categorical"
+      },
+      "VehPower": {
+        "type": "linear"
+      },
+      "include_main": false
+    }
+  ],
+  "exposure": null,
+  "offset": "Exposure",
+  "weights": null,
+  "complement": null,
+  "promoted_main_effects": [],
+  "skipped_interactions": [],
+  "grouping_maps": {},
+  "frozen_maps": {
+    "Region": {
+      "sources": [
+        "Region"
+      ],
+      "map": {
+        "Alsace": 0.014662106683553507,
+        "Aquitaine": -0.019418900178876684,
+        "Auvergne": 0.0056427880783621355,
+        "Basse-Normandie": 0.04274845436053267,
+        "Bourgogne": 0.012080141858697829,
+        "Bretagne": -0.02500105415842031,
+        "Centre": 0.01925905605560305,
+        "Champagne-Ardenne": 0.006617863615262133,
+        "Corse": 0.006612604222253649,
+        "Franche-Comte": 0.006739597661702942,
+        "Haute-Normandie": 0.011540823794607542,
+        "Ile-de-France": -0.01823013953352912,
+        "Languedoc-Roussillon": -0.022648136174904392,
+        "Limousin": 0.007863298318751516,
+        "Midi-Pyrenees": -0.013802609306116426,
+        "Nord-Pas-de-Calais": -0.024638506580545408,
+        "Pays-de-la-Loire": -0.024107957098417204,
+        "Picardie": 0.011635773718401228,
+        "Poitou-Charentes": -0.016485172966586664,
+        "Provence-Alpes-Cotes-D'Azur": 0.012696123385819347,
+        "Rhone-Alpes": 0.012638926773373969
+      },
+      "default": 0.0
+    },
+    "VehBrand": {
+      "sources": [
+        "VehBrand"
+      ],
+      "map": {
+        "B1": -0.011443902472411054,
+        "B10": 0.006708770088595543,
+        "B11": 0.0055895426631008445,
+        "B12": 0.004836874457048784,
+        "B13": 0.006791555080451603,
+        "B14": 0.0028543884981352442,
+        "B2": -0.01121659549611374,
+        "B3": 0.005117715162357189,
+        "B4": 0.011457096274174692,
+        "B5": 0.008840937130575443,
+        "B6": 0.01497039309605586
+      },
+      "default": 0.0
+    },
+    "Area": {
+      "sources": [
+        "Area"
+      ],
+      "map": {
+        "A": -0.00317339819224219,
+        "B": 0.00019870481742244038,
+        "C": 0.0038363942611919187,
+        "D": -0.00032343562891862053,
+        "E": -0.00228627863492051,
+        "F": 0.001119626322126353
+      },
+      "default": 0.0
+    },
+    "Area__Region": {
+      "sources": [
+        "Area",
+        "Region"
+      ],
+      "map": {
+        "E|Haute-Normandie": -0.009763455215302589,
+        "A|Pays-de-la-Loire": 0.0014667290120425798,
+        "D|Auvergne": 0.0045153132461792705,
+        "C|Aquitaine": -0.0015057327982549253,
+        "B|Rhone-Alpes": 0.002719961243902845,
+        "E|Nord-Pas-de-Calais": 0.0012968095838348547,
+        "E|Picardie": -0.007469507979393818,
+        "B|Basse-Normandie": -0.009940223804943318,
+        "C|Midi-Pyrenees": -0.001105022325934345,
+        "C|Nord-Pas-de-Calais": 7.70243114243476e-05,
+        "A|Provence-Alpes-Cotes-D'Azur": 0.0019494009602997054,
+        "E|Basse-Normandie": -0.008537480451932174,
+        "A|Midi-Pyrenees": 0.0011024425764343225,
+        "A|Aquitaine": 0.0016980011879886856,
+        "C|Auvergne": 0.009661009674350355,
+        "C|Franche-Comte": 0.0029677193097544024,
+        "C|Ile-de-France": -0.0023120397124219228,
+        "D|Centre": -0.0018074428187319555,
+        "E|Ile-de-France": 0.00115183808523452,
+        "C|Basse-Normandie": 0.012976656438964503,
+        "C|Rhone-Alpes": -0.002658413730107587,
+        "E|Centre": 0.00106274218387513,
+        "D|Picardie": 0.010198063279284247,
+        "A|Bretagne": 0.0013030735725242664,
+        "A|Corse": -0.008110871356869317,
+        "C|Bourgogne": 0.015676695135539834,
+        "D|Poitou-Charentes": -0.0014984938975539782,
+        "D|Aquitaine": -0.0015629115347147308,
+        "D|Limousin": 0.004406212053176855,
+        "A|Bourgogne": -0.009091351200442984,
+        "C|Picardie": 0.009574142857147491,
+        "A|Franche-Comte": -0.002553758127120794,
+        "E|Bourgogne": -0.006365554785856389,
+        "B|Poitou-Charentes": 0.001381603783456624,
+        "A|Centre": 0.0028504605445708394,
+        "D|Bretagne": -0.0016569948650209368,
+        "E|Franche-Comte": -0.0004599497957721625,
+        "B|Limousin": -0.004018601706327316,
+        "C|Alsace": 0.003918975458329679,
+        "B|Aquitaine": 0.0014228050201494247,
+        "A|Haute-Normandie": -0.0040238881370403025,
+        "B|Corse": -0.004460026755964965,
+        "C|Haute-Normandie": 0.013240434766451722,
+        "C|Limousin": 0.008779834222259836,
+        "E|Bretagne": 0.0008366430129287812,
+        "D|Bourgogne": 0.005550708430167274,
+        "B|Provence-Alpes-Cotes-D'Azur": 0.001840811229620464,
+        "C|Bretagne": -0.0007726561533429137,
+        "B|Centre": 0.002995690167025323,
+        "E|Champagne-Ardenne": -0.002514242438349888,
+        "D|Corse": 0.0067757016770612815,
+        "C|Corse": 0.005030659586759358,
+        "D|Rhone-Alpes": -0.0011975261979089737,
+        "C|Pays-de-la-Loire": -0.0009211584866878487,
+        "E|Alsace": -0.0060071579581395486,
+        "B|Alsace": -0.0014392703032796782,
+        "B|Haute-Normandie": -0.006809106240288282,
+        "D|Pays-de-la-Loire": -0.0018448501609922134,
+        "E|Rhone-Alpes": 0.0019717712507538367,
+        "B|Languedoc-Roussillon": 0.002184916186594568,
+        "B|Bretagne": 0.0021222404190374675,
+        "A|Basse-Normandie": -0.009049017056006118,
+        "E|Auvergne": -0.003986087645627489,
+        "D|Nord-Pas-de-Calais": -0.0012473072177350056,
+        "A|Ile-de-France": 0.0005803142093592214,
+        "B|Nord-Pas-de-Calais": 0.0015010605134001577,
+        "E|Languedoc-Roussillon": 0.0005470660205283306,
+        "E|Aquitaine": 0.0008952485328408958,
+        "E|Poitou-Charentes": 0.0002630230967492466,
+        "D|Ile-de-France": -0.001593398169816659,
+        "A|Auvergne": -0.005864789223618785,
+        "E|Provence-Alpes-Cotes-D'Azur": 0.0020006381121752976,
+        "B|Picardie": -0.008570671240478134,
+        "B|Midi-Pyrenees": 0.0009885007999820314,
+        "E|Midi-Pyrenees": 0.000614696122296614,
+        "A|Limousin": -0.008800587537332365,
+        "B|Bourgogne": -0.0071525375122082225,
+        "D|Basse-Normandie": 0.009644427040528505,
+        "A|Picardie": -0.0041734772463612665,
+        "D|Champagne-Ardenne": 0.004877577746554127,
+        "A|Nord-Pas-de-Calais": 0.0011793460748890415,
+        "B|Champagne-Ardenne": -0.002681282330287659,
+        "F|Ile-de-France": -9.90252620106047e-07,
+        "D|Provence-Alpes-Cotes-D'Azur": -0.00125574439843981,
+        "D|Alsace": 0.003709439829874203,
+        "C|Languedoc-Roussillon": -0.0007382568935334427,
+        "D|Franche-Comte": 0.001677644139778448,
+        "B|Franche-Comte": -0.0016779419064395984,
+        "C|Champagne-Ardenne": 0.004811821327428627,
+        "D|Midi-Pyrenees": -0.0011862763341245316,
+        "B|Ile-de-France": 0.0012334597204766028,
+        "A|Alsace": -0.00020166163752297303,
+        "C|Provence-Alpes-Cotes-D'Azur": -0.0023857353245894134,
+        "E|Pays-de-la-Loire": 0.0007288540899243305,
+        "B|Auvergne": -0.004408839232675665,
+        "D|Languedoc-Roussillon": -0.0011237895588161932,
+        "A|Champagne-Ardenne": -0.00417776714323875,
+        "A|Poitou-Charentes": 0.0015703465520415794,
+        "D|Haute-Normandie": 0.008469633851199159,
+        "C|Centre": -0.004335650519836664,
+        "C|Poitou-Charentes": -0.0010995328667683783,
+        "A|Languedoc-Roussillon": 0.0020524164538768554,
+        "B|Pays-de-la-Loire": 0.0018623872562690156,
+        "A|Rhone-Alpes": 0.002203821424290724
+      },
+      "structured_keys": {
+        "E|Haute-Normandie": [
+          "E",
+          "Haute-Normandie"
+        ],
+        "A|Pays-de-la-Loire": [
+          "A",
+          "Pays-de-la-Loire"
+        ],
+        "D|Auvergne": [
+          "D",
+          "Auvergne"
+        ],
+        "C|Aquitaine": [
+          "C",
+          "Aquitaine"
+        ],
+        "B|Rhone-Alpes": [
+          "B",
+          "Rhone-Alpes"
+        ],
+        "E|Nord-Pas-de-Calais": [
+          "E",
+          "Nord-Pas-de-Calais"
+        ],
+        "E|Picardie": [
+          "E",
+          "Picardie"
+        ],
+        "B|Basse-Normandie": [
+          "B",
+          "Basse-Normandie"
+        ],
+        "C|Midi-Pyrenees": [
+          "C",
+          "Midi-Pyrenees"
+        ],
+        "C|Nord-Pas-de-Calais": [
+          "C",
+          "Nord-Pas-de-Calais"
+        ],
+        "A|Provence-Alpes-Cotes-D'Azur": [
+          "A",
+          "Provence-Alpes-Cotes-D'Azur"
+        ],
+        "E|Basse-Normandie": [
+          "E",
+          "Basse-Normandie"
+        ],
+        "A|Midi-Pyrenees": [
+          "A",
+          "Midi-Pyrenees"
+        ],
+        "A|Aquitaine": [
+          "A",
+          "Aquitaine"
+        ],
+        "C|Auvergne": [
+          "C",
+          "Auvergne"
+        ],
+        "C|Franche-Comte": [
+          "C",
+          "Franche-Comte"
+        ],
+        "C|Ile-de-France": [
+          "C",
+          "Ile-de-France"
+        ],
+        "D|Centre": [
+          "D",
+          "Centre"
+        ],
+        "E|Ile-de-France": [
+          "E",
+          "Ile-de-France"
+        ],
+        "C|Basse-Normandie": [
+          "C",
+          "Basse-Normandie"
+        ],
+        "C|Rhone-Alpes": [
+          "C",
+          "Rhone-Alpes"
+        ],
+        "E|Centre": [
+          "E",
+          "Centre"
+        ],
+        "D|Picardie": [
+          "D",
+          "Picardie"
+        ],
+        "A|Bretagne": [
+          "A",
+          "Bretagne"
+        ],
+        "A|Corse": [
+          "A",
+          "Corse"
+        ],
+        "C|Bourgogne": [
+          "C",
+          "Bourgogne"
+        ],
+        "D|Poitou-Charentes": [
+          "D",
+          "Poitou-Charentes"
+        ],
+        "D|Aquitaine": [
+          "D",
+          "Aquitaine"
+        ],
+        "D|Limousin": [
+          "D",
+          "Limousin"
+        ],
+        "A|Bourgogne": [
+          "A",
+          "Bourgogne"
+        ],
+        "C|Picardie": [
+          "C",
+          "Picardie"
+        ],
+        "A|Franche-Comte": [
+          "A",
+          "Franche-Comte"
+        ],
+        "E|Bourgogne": [
+          "E",
+          "Bourgogne"
+        ],
+        "B|Poitou-Charentes": [
+          "B",
+          "Poitou-Charentes"
+        ],
+        "A|Centre": [
+          "A",
+          "Centre"
+        ],
+        "D|Bretagne": [
+          "D",
+          "Bretagne"
+        ],
+        "E|Franche-Comte": [
+          "E",
+          "Franche-Comte"
+        ],
+        "B|Limousin": [
+          "B",
+          "Limousin"
+        ],
+        "C|Alsace": [
+          "C",
+          "Alsace"
+        ],
+        "B|Aquitaine": [
+          "B",
+          "Aquitaine"
+        ],
+        "A|Haute-Normandie": [
+          "A",
+          "Haute-Normandie"
+        ],
+        "B|Corse": [
+          "B",
+          "Corse"
+        ],
+        "C|Haute-Normandie": [
+          "C",
+          "Haute-Normandie"
+        ],
+        "C|Limousin": [
+          "C",
+          "Limousin"
+        ],
+        "E|Bretagne": [
+          "E",
+          "Bretagne"
+        ],
+        "D|Bourgogne": [
+          "D",
+          "Bourgogne"
+        ],
+        "B|Provence-Alpes-Cotes-D'Azur": [
+          "B",
+          "Provence-Alpes-Cotes-D'Azur"
+        ],
+        "C|Bretagne": [
+          "C",
+          "Bretagne"
+        ],
+        "B|Centre": [
+          "B",
+          "Centre"
+        ],
+        "E|Champagne-Ardenne": [
+          "E",
+          "Champagne-Ardenne"
+        ],
+        "D|Corse": [
+          "D",
+          "Corse"
+        ],
+        "C|Corse": [
+          "C",
+          "Corse"
+        ],
+        "D|Rhone-Alpes": [
+          "D",
+          "Rhone-Alpes"
+        ],
+        "C|Pays-de-la-Loire": [
+          "C",
+          "Pays-de-la-Loire"
+        ],
+        "E|Alsace": [
+          "E",
+          "Alsace"
+        ],
+        "B|Alsace": [
+          "B",
+          "Alsace"
+        ],
+        "B|Haute-Normandie": [
+          "B",
+          "Haute-Normandie"
+        ],
+        "D|Pays-de-la-Loire": [
+          "D",
+          "Pays-de-la-Loire"
+        ],
+        "E|Rhone-Alpes": [
+          "E",
+          "Rhone-Alpes"
+        ],
+        "B|Languedoc-Roussillon": [
+          "B",
+          "Languedoc-Roussillon"
+        ],
+        "B|Bretagne": [
+          "B",
+          "Bretagne"
+        ],
+        "A|Basse-Normandie": [
+          "A",
+          "Basse-Normandie"
+        ],
+        "E|Auvergne": [
+          "E",
+          "Auvergne"
+        ],
+        "D|Nord-Pas-de-Calais": [
+          "D",
+          "Nord-Pas-de-Calais"
+        ],
+        "A|Ile-de-France": [
+          "A",
+          "Ile-de-France"
+        ],
+        "B|Nord-Pas-de-Calais": [
+          "B",
+          "Nord-Pas-de-Calais"
+        ],
+        "E|Languedoc-Roussillon": [
+          "E",
+          "Languedoc-Roussillon"
+        ],
+        "E|Aquitaine": [
+          "E",
+          "Aquitaine"
+        ],
+        "E|Poitou-Charentes": [
+          "E",
+          "Poitou-Charentes"
+        ],
+        "D|Ile-de-France": [
+          "D",
+          "Ile-de-France"
+        ],
+        "A|Auvergne": [
+          "A",
+          "Auvergne"
+        ],
+        "E|Provence-Alpes-Cotes-D'Azur": [
+          "E",
+          "Provence-Alpes-Cotes-D'Azur"
+        ],
+        "B|Picardie": [
+          "B",
+          "Picardie"
+        ],
+        "B|Midi-Pyrenees": [
+          "B",
+          "Midi-Pyrenees"
+        ],
+        "E|Midi-Pyrenees": [
+          "E",
+          "Midi-Pyrenees"
+        ],
+        "A|Limousin": [
+          "A",
+          "Limousin"
+        ],
+        "B|Bourgogne": [
+          "B",
+          "Bourgogne"
+        ],
+        "D|Basse-Normandie": [
+          "D",
+          "Basse-Normandie"
+        ],
+        "A|Picardie": [
+          "A",
+          "Picardie"
+        ],
+        "D|Champagne-Ardenne": [
+          "D",
+          "Champagne-Ardenne"
+        ],
+        "A|Nord-Pas-de-Calais": [
+          "A",
+          "Nord-Pas-de-Calais"
+        ],
+        "B|Champagne-Ardenne": [
+          "B",
+          "Champagne-Ardenne"
+        ],
+        "F|Ile-de-France": [
+          "F",
+          "Ile-de-France"
+        ],
+        "D|Provence-Alpes-Cotes-D'Azur": [
+          "D",
+          "Provence-Alpes-Cotes-D'Azur"
+        ],
+        "D|Alsace": [
+          "D",
+          "Alsace"
+        ],
+        "C|Languedoc-Roussillon": [
+          "C",
+          "Languedoc-Roussillon"
+        ],
+        "D|Franche-Comte": [
+          "D",
+          "Franche-Comte"
+        ],
+        "B|Franche-Comte": [
+          "B",
+          "Franche-Comte"
+        ],
+        "C|Champagne-Ardenne": [
+          "C",
+          "Champagne-Ardenne"
+        ],
+        "D|Midi-Pyrenees": [
+          "D",
+          "Midi-Pyrenees"
+        ],
+        "B|Ile-de-France": [
+          "B",
+          "Ile-de-France"
+        ],
+        "A|Alsace": [
+          "A",
+          "Alsace"
+        ],
+        "C|Provence-Alpes-Cotes-D'Azur": [
+          "C",
+          "Provence-Alpes-Cotes-D'Azur"
+        ],
+        "E|Pays-de-la-Loire": [
+          "E",
+          "Pays-de-la-Loire"
+        ],
+        "B|Auvergne": [
+          "B",
+          "Auvergne"
+        ],
+        "D|Languedoc-Roussillon": [
+          "D",
+          "Languedoc-Roussillon"
+        ],
+        "A|Champagne-Ardenne": [
+          "A",
+          "Champagne-Ardenne"
+        ],
+        "A|Poitou-Charentes": [
+          "A",
+          "Poitou-Charentes"
+        ],
+        "D|Haute-Normandie": [
+          "D",
+          "Haute-Normandie"
+        ],
+        "C|Centre": [
+          "C",
+          "Centre"
+        ],
+        "C|Poitou-Charentes": [
+          "C",
+          "Poitou-Charentes"
+        ],
+        "A|Languedoc-Roussillon": [
+          "A",
+          "Languedoc-Roussillon"
+        ],
+        "B|Pays-de-la-Loire": [
+          "B",
+          "Pays-de-la-Loire"
+        ],
+        "A|Rhone-Alpes": [
+          "A",
+          "Rhone-Alpes"
+        ]
+      },
+      "default": 0.0,
+      "prior_weight": 218.0
+    },
+    "Region__VehBrand": {
+      "sources": [
+        "Region",
+        "VehBrand"
+      ],
+      "map": {
+        "Ile-de-France|B3": 0.005692972267669887,
+        "Alsace|B12": -0.004149008931786308,
+        "Ile-de-France|B4": 0.002329670359317928,
+        "Rhone-Alpes|B5": -0.0049607500561155895,
+        "Alsace|B13": 0.0008789021615310555,
+        "Provence-Alpes-Cotes-D'Azur|B4": -0.005095731628194037,
+        "Poitou-Charentes|B3": 0.003600329119451486,
+        "Alsace|B1": -0.003476592761067571,
+        "Corse|B2": -0.0009198048795636062,
+        "Centre|B10": -0.007443077326450598,
+        "Franche-Comte|B5": 0.0018886175142903746,
+        "Auvergne|B11": 0.000136376106724584,
+        "Aquitaine|B14": 0.0023271174415487677,
+        "Picardie|B2": -0.002002265015125101,
+        "Corse|B11": -0.00040943451722460535,
+        "Picardie|B5": 0.002519007370857457,
+        "Poitou-Charentes|B14": 0.002220272279762208,
+        "Basse-Normandie|B10": 0.007778859602995034,
+        "Midi-Pyrenees|B4": 0.0029326838639273847,
+        "Corse|B12": 7.25013194990313e-05,
+        "Auvergne|B12": 0.00025783384541434916,
+        "Champagne-Ardenne|B13": 0.0009397984247222796,
+        "Languedoc-Roussillon|B1": -0.0032739861517652184,
+        "Nord-Pas-de-Calais|B14": 0.0017396717040425718,
+        "Bretagne|B4": 0.005393841964951507,
+        "Nord-Pas-de-Calais|B6": 0.005421661785193918,
+        "Basse-Normandie|B14": 0.0013391060542317316,
+        "Centre|B13": -0.007313103942316584,
+        "Franche-Comte|B10": 0.0004927548392970576,
+        "Rhone-Alpes|B1": 0.0028782505332768664,
+        "Haute-Normandie|B10": 0.0020788228140507584,
+        "Bourgogne|B2": -0.003196991256553854,
+        "Limousin|B3": 0.0026187570263460553,
+        "Midi-Pyrenees|B2": -0.0018849530408292106,
+        "Ile-de-France|B13": 0.004596917431026898,
+        "Bourgogne|B5": 0.0032818505484728516,
+        "Franche-Comte|B6": 0.0018800956491638742,
+        "Rhone-Alpes|B13": -0.0035163045535701325,
+        "Nord-Pas-de-Calais|B5": 0.00399122280834586,
+        "Haute-Normandie|B13": 0.00041431360486346815,
+        "Languedoc-Roussillon|B2": -0.0030259252061763334,
+        "Haute-Normandie|B12": -0.000623229536134106,
+        "Bretagne|B10": 0.003253388268902396,
+        "Ile-de-France|B12": -0.0005610067645007754,
+        "Midi-Pyrenees|B12": -0.0004049674862508996,
+        "Ile-de-France|B5": 0.005530845585324076,
+        "Bretagne|B13": 0.004285015250431803,
+        "Aquitaine|B3": 0.0034823144593333468,
+        "Languedoc-Roussillon|B6": 0.005052979301095442,
+        "Limousin|B13": 0.0003043221305728531,
+        "Nord-Pas-de-Calais|B13": 0.0021467158706985094,
+        "Bourgogne|B12": 0.0011042187230652,
+        "Aquitaine|B5": 0.0034463313116621977,
+        "Basse-Normandie|B3": 0.0028903201493188945,
+        "Midi-Pyrenees|B13": 0.001994438636758446,
+        "Limousin|B1": -0.002277704810994069,
+        "Picardie|B4": 0.0028311216063203145,
+        "Poitou-Charentes|B13": 0.0033179223885104227,
+        "Nord-Pas-de-Calais|B12": -0.0009450508798615925,
+        "Languedoc-Roussillon|B5": 0.00414858958272755,
+        "Bourgogne|B1": -0.0025564135172585715,
+        "Nord-Pas-de-Calais|B4": 0.004775824505793827,
+        "Nord-Pas-de-Calais|B3": 0.005331814703687791,
+        "Bretagne|B6": 0.005300825146258396,
+        "Poitou-Charentes|B10": 0.002741986504120108,
+        "Picardie|B11": 0.0008907599976805338,
+        "Provence-Alpes-Cotes-D'Azur|B11": -0.004020932448338025,
+        "Corse|B13": 0.0002663465186581929,
+        "Champagne-Ardenne|B11": -0.000556833030535663,
+        "Franche-Comte|B3": 0.0009251195747858583,
+        "Champagne-Ardenne|B4": 0.0003429566909645617,
+        "Ile-de-France|B14": 0.0011786968016881405,
+        "Limousin|B11": 0.0011486434613229585,
+        "Nord-Pas-de-Calais|B10": 0.004651006746164182,
+        "Rhone-Alpes|B2": 0.002882950195415031,
+        "Rhone-Alpes|B4": -0.005245581544169982,
+        "Pays-de-la-Loire|B3": 0.006245510560299311,
+        "Haute-Normandie|B4": 0.001910278889494344,
+        "Ile-de-France|B11": 0.00345499977235863,
+        "Alsace|B2": -0.0038721307518148904,
+        "Bretagne|B2": -0.0034159286718597696,
+        "Auvergne|B5": 0.0013099298349393677,
+        "Champagne-Ardenne|B5": 0.0011842024293056935,
+        "Alsace|B6": 0.005489054744736136,
+        "Rhone-Alpes|B10": -0.0028653534909652474,
+        "Midi-Pyrenees|B6": 0.002101807692660277,
+        "Limousin|B2": -0.002282377659924273,
+        "Haute-Normandie|B6": 0.002290792814647072,
+        "Provence-Alpes-Cotes-D'Azur|B5": -0.005502904676259734,
+        "Corse|B3": 0.0010962604365618491,
+        "Pays-de-la-Loire|B11": 0.0031075377493124464,
+        "Pays-de-la-Loire|B10": 0.004600610237971533,
+        "Pays-de-la-Loire|B5": 0.00553289562898213,
+        "Haute-Normandie|B2": -0.0023228891460672267,
+        "Corse|B1": -0.0014114608892495382,
+        "Poitou-Charentes|B11": 0.0032280475330317827,
+        "Auvergne|B1": -0.0016590403665948784,
+        "Franche-Comte|B1": -0.001582749636139555,
+        "Poitou-Charentes|B5": 0.004120917619463705,
+        "Haute-Normandie|B1": -0.0023222167449089373,
+        "Midi-Pyrenees|B11": 0.00168635723438363,
+        "Rhone-Alpes|B12": 0.0017356661521974832,
+        "Corse|B6": -6.265143504611383e-05,
+        "Pays-de-la-Loire|B4": 0.003922730269285586,
+        "Languedoc-Roussillon|B3": 0.005624456116357847,
+        "Poitou-Charentes|B6": 0.0033238318898156523,
+        "Pays-de-la-Loire|B6": 0.005904989063856228,
+        "Haute-Normandie|B14": 0.00038272328679884727,
+        "Bretagne|B14": 0.0018574562683382626,
+        "Picardie|B10": 0.00034012210812714455,
+        "Provence-Alpes-Cotes-D'Azur|B14": -0.002093450794936003,
+        "Centre|B1": 0.0035985896748853483,
+        "Aquitaine|B12": 0.00022241653509471948,
+        "Centre|B12": -0.001736633132589929,
+        "Corse|B10": 0.0003109981294289357,
+        "Provence-Alpes-Cotes-D'Azur|B10": -0.003166802746081321,
+        "Midi-Pyrenees|B5": 0.0035523933277959103,
+        "Picardie|B1": -0.002574143464624261,
+        "Champagne-Ardenne|B1": -0.000809932900745324,
+        "Ile-de-France|B2": -0.0030310778991095673,
+        "Auvergne|B6": 0.0017143001230774208,
+        "Limousin|B12": -0.0005641585640350709,
+        "Picardie|B6": 0.002159261740293407,
+        "Pays-de-la-Loire|B1": -0.0037822569303372464,
+        "Languedoc-Roussillon|B10": 0.00388699726696015,
+        "Midi-Pyrenees|B3": 0.001594532706577499,
+        "Alsace|B4": 0.0035901682231621653,
+        "Alsace|B5": 0.0038490179262975393,
+        "Centre|B14": -0.005371384123935288,
+        "Bourgogne|B3": 0.0014234262488831862,
+        "Champagne-Ardenne|B2": -0.001083013952872235,
+        "Poitou-Charentes|B4": 0.003607769413400735,
+        "Basse-Normandie|B4": 0.009988645902916874,
+        "Rhone-Alpes|B6": -0.005252543602265616,
+        "Bourgogne|B6": 0.0011421185268657705,
+        "Ile-de-France|B6": 0.005345142101657514,
+        "Basse-Normandie|B12": -0.003974508487605169,
+        "Bourgogne|B13": 0.0011672386117928613,
+        "Basse-Normandie|B13": 0.004989084682868627,
+        "Champagne-Ardenne|B12": -0.0007537869554238159,
+        "Picardie|B12": -0.0009296402001808175,
+        "Midi-Pyrenees|B14": 5.374016187826849e-05,
+        "Centre|B11": -0.005392984852741809,
+        "Corse|B4": 0.0009939217628768388,
+        "Auvergne|B13": 0.0009872084629526537,
+        "Poitou-Charentes|B12": -0.0004147612347443695,
+        "Bourgogne|B11": 0.0006181526376840678,
+        "Picardie|B14": 0.0006068414373088446,
+        "Limousin|B10": -0.00028480172746959465,
+        "Bretagne|B3": 0.0038422275299120944,
+        "Languedoc-Roussillon|B14": 0.0008511898761519326,
+        "Provence-Alpes-Cotes-D'Azur|B3": -0.004788869176503804,
+        "Limousin|B5": 0.0023625900210604294,
+        "Bretagne|B5": 0.005835784979826035,
+        "Auvergne|B10": -0.0007602984974340411,
+        "Franche-Comte|B14": -0.00029908764777946247,
+        "Provence-Alpes-Cotes-D'Azur|B1": 0.0023328551609711617,
+        "Basse-Normandie|B5": 0.009666281364360478,
+        "Pays-de-la-Loire|B13": 0.002874881705546158,
+        "Limousin|B14": 0.00047178590321460436,
+        "Aquitaine|B1": -0.003498936676655913,
+        "Picardie|B3": 0.0017765296107091065,
+        "Ile-de-France|B1": -0.00312051347488501,
+        "Centre|B3": -0.005676170275078624,
+        "Midi-Pyrenees|B10": 0.0011429192923911747,
+        "Haute-Normandie|B11": 0.0021693526824304167,
+        "Centre|B4": -0.00614480312716527,
+        "Provence-Alpes-Cotes-D'Azur|B2": 0.0025143011408425503,
+        "Provence-Alpes-Cotes-D'Azur|B12": 0.00189208533433308,
+        "Nord-Pas-de-Calais|B1": -0.0036900156120209075,
+        "Languedoc-Roussillon|B12": -0.0005156216121447258,
+        "Bourgogne|B14": 0.0009580770767021896,
+        "Aquitaine|B11": 0.0013764786649478574,
+        "Pays-de-la-Loire|B12": -0.0007669887797066992,
+        "Franche-Comte|B4": 0.0013573960150113631,
+        "Limousin|B4": 0.0010623231249542097,
+        "Champagne-Ardenne|B10": 0.0015435083083323545,
+        "Basse-Normandie|B2": -0.006454194409851929,
+        "Rhone-Alpes|B14": -0.0021347305038539187,
+        "Basse-Normandie|B6": 0.008262541764796162,
+        "Alsace|B10": 0.0021321968728665514,
+        "Franche-Comte|B2": -0.0019230814107445869,
+        "Basse-Normandie|B1": -0.00722258347060281,
+        "Auvergne|B3": 0.0015420900793953302,
+        "Aquitaine|B6": 0.003799689502135418,
+        "Nord-Pas-de-Calais|B11": 0.0017813238135286397,
+        "Aquitaine|B10": 0.0028725343399593436,
+        "Bourgogne|B10": 0.0006237302014693957,
+        "Centre|B6": -0.00805230161722804,
+        "Picardie|B13": 0.0007518669309073512,
+        "Franche-Comte|B12": -0.0021536050344576974,
+        "Champagne-Ardenne|B6": 0.00012175166303302259,
+        "Bourgogne|B4": 0.0006737611816236593,
+        "Alsace|B11": 0.0004488806621953366,
+        "Rhone-Alpes|B3": -0.004913015062621779,
+        "Rhone-Alpes|B11": -0.003203090930682528,
+        "Ile-de-France|B10": 0.002366994870489357,
+        "Poitou-Charentes|B1": -0.0037554332221729813,
+        "Franche-Comte|B13": 0.0012609345769775614,
+        "Auvergne|B4": -0.0012873647046508512,
+        "Languedoc-Roussillon|B13": 0.002246737287260512,
+        "Provence-Alpes-Cotes-D'Azur|B6": -0.005020210121041988,
+        "Bretagne|B1": -0.0035431616954954143,
+        "Languedoc-Roussillon|B4": 0.0008759891030408935,
+        "Auvergne|B2": -0.0014547083152958843,
+        "Bretagne|B11": 0.0034053960252417555,
+        "Midi-Pyrenees|B1": -0.00219904975058728,
+        "Corse|B14": 0.0003439779982659714,
+        "Pays-de-la-Loire|B2": -0.0036507873029467913,
+        "Bretagne|B12": -1.0478533637427277e-05,
+        "Haute-Normandie|B3": 0.0028453599808997325,
+        "Haute-Normandie|B5": 0.0009004934838998612,
+        "Champagne-Ardenne|B3": 0.0014208939863505094,
+        "Centre|B5": -0.00876235147293452,
+        "Aquitaine|B13": 0.0015585435543800789,
+        "Aquitaine|B2": -0.003465464920495296,
+        "Aquitaine|B4": 0.0036567466970257013,
+        "Limousin|B6": 0.0014083617893773605,
+        "Pays-de-la-Loire|B14": 0.0015024145972260176,
+        "Basse-Normandie|B11": 0.005154581123296355,
+        "Corse|B5": 0.00016002558950496492,
+        "Languedoc-Roussillon|B11": 0.0022369235581306936,
+        "Poitou-Charentes|B2": -0.003146272893539055,
+        "Alsace|B3": 0.0009951247487211977,
+        "Centre|B2": 0.003316688593422815,
+        "Provence-Alpes-Cotes-D'Azur|B13": -0.004214979158729409,
+        "Auvergne|B14": 0.00034032200547467377,
+        "Nord-Pas-de-Calais|B2": -0.0036347151725718303
+      },
+      "structured_keys": {
+        "Ile-de-France|B3": [
+          "Ile-de-France",
+          "B3"
+        ],
+        "Alsace|B12": [
+          "Alsace",
+          "B12"
+        ],
+        "Ile-de-France|B4": [
+          "Ile-de-France",
+          "B4"
+        ],
+        "Rhone-Alpes|B5": [
+          "Rhone-Alpes",
+          "B5"
+        ],
+        "Alsace|B13": [
+          "Alsace",
+          "B13"
+        ],
+        "Provence-Alpes-Cotes-D'Azur|B4": [
+          "Provence-Alpes-Cotes-D'Azur",
+          "B4"
+        ],
+        "Poitou-Charentes|B3": [
+          "Poitou-Charentes",
+          "B3"
+        ],
+        "Alsace|B1": [
+          "Alsace",
+          "B1"
+        ],
+        "Corse|B2": [
+          "Corse",
+          "B2"
+        ],
+        "Centre|B10": [
+          "Centre",
+          "B10"
+        ],
+        "Franche-Comte|B5": [
+          "Franche-Comte",
+          "B5"
+        ],
+        "Auvergne|B11": [
+          "Auvergne",
+          "B11"
+        ],
+        "Aquitaine|B14": [
+          "Aquitaine",
+          "B14"
+        ],
+        "Picardie|B2": [
+          "Picardie",
+          "B2"
+        ],
+        "Corse|B11": [
+          "Corse",
+          "B11"
+        ],
+        "Picardie|B5": [
+          "Picardie",
+          "B5"
+        ],
+        "Poitou-Charentes|B14": [
+          "Poitou-Charentes",
+          "B14"
+        ],
+        "Basse-Normandie|B10": [
+          "Basse-Normandie",
+          "B10"
+        ],
+        "Midi-Pyrenees|B4": [
+          "Midi-Pyrenees",
+          "B4"
+        ],
+        "Corse|B12": [
+          "Corse",
+          "B12"
+        ],
+        "Auvergne|B12": [
+          "Auvergne",
+          "B12"
+        ],
+        "Champagne-Ardenne|B13": [
+          "Champagne-Ardenne",
+          "B13"
+        ],
+        "Languedoc-Roussillon|B1": [
+          "Languedoc-Roussillon",
+          "B1"
+        ],
+        "Nord-Pas-de-Calais|B14": [
+          "Nord-Pas-de-Calais",
+          "B14"
+        ],
+        "Bretagne|B4": [
+          "Bretagne",
+          "B4"
+        ],
+        "Nord-Pas-de-Calais|B6": [
+          "Nord-Pas-de-Calais",
+          "B6"
+        ],
+        "Basse-Normandie|B14": [
+          "Basse-Normandie",
+          "B14"
+        ],
+        "Centre|B13": [
+          "Centre",
+          "B13"
+        ],
+        "Franche-Comte|B10": [
+          "Franche-Comte",
+          "B10"
+        ],
+        "Rhone-Alpes|B1": [
+          "Rhone-Alpes",
+          "B1"
+        ],
+        "Haute-Normandie|B10": [
+          "Haute-Normandie",
+          "B10"
+        ],
+        "Bourgogne|B2": [
+          "Bourgogne",
+          "B2"
+        ],
+        "Limousin|B3": [
+          "Limousin",
+          "B3"
+        ],
+        "Midi-Pyrenees|B2": [
+          "Midi-Pyrenees",
+          "B2"
+        ],
+        "Ile-de-France|B13": [
+          "Ile-de-France",
+          "B13"
+        ],
+        "Bourgogne|B5": [
+          "Bourgogne",
+          "B5"
+        ],
+        "Franche-Comte|B6": [
+          "Franche-Comte",
+          "B6"
+        ],
+        "Rhone-Alpes|B13": [
+          "Rhone-Alpes",
+          "B13"
+        ],
+        "Nord-Pas-de-Calais|B5": [
+          "Nord-Pas-de-Calais",
+          "B5"
+        ],
+        "Haute-Normandie|B13": [
+          "Haute-Normandie",
+          "B13"
+        ],
+        "Languedoc-Roussillon|B2": [
+          "Languedoc-Roussillon",
+          "B2"
+        ],
+        "Haute-Normandie|B12": [
+          "Haute-Normandie",
+          "B12"
+        ],
+        "Bretagne|B10": [
+          "Bretagne",
+          "B10"
+        ],
+        "Ile-de-France|B12": [
+          "Ile-de-France",
+          "B12"
+        ],
+        "Midi-Pyrenees|B12": [
+          "Midi-Pyrenees",
+          "B12"
+        ],
+        "Ile-de-France|B5": [
+          "Ile-de-France",
+          "B5"
+        ],
+        "Bretagne|B13": [
+          "Bretagne",
+          "B13"
+        ],
+        "Aquitaine|B3": [
+          "Aquitaine",
+          "B3"
+        ],
+        "Languedoc-Roussillon|B6": [
+          "Languedoc-Roussillon",
+          "B6"
+        ],
+        "Limousin|B13": [
+          "Limousin",
+          "B13"
+        ],
+        "Nord-Pas-de-Calais|B13": [
+          "Nord-Pas-de-Calais",
+          "B13"
+        ],
+        "Bourgogne|B12": [
+          "Bourgogne",
+          "B12"
+        ],
+        "Aquitaine|B5": [
+          "Aquitaine",
+          "B5"
+        ],
+        "Basse-Normandie|B3": [
+          "Basse-Normandie",
+          "B3"
+        ],
+        "Midi-Pyrenees|B13": [
+          "Midi-Pyrenees",
+          "B13"
+        ],
+        "Limousin|B1": [
+          "Limousin",
+          "B1"
+        ],
+        "Picardie|B4": [
+          "Picardie",
+          "B4"
+        ],
+        "Poitou-Charentes|B13": [
+          "Poitou-Charentes",
+          "B13"
+        ],
+        "Nord-Pas-de-Calais|B12": [
+          "Nord-Pas-de-Calais",
+          "B12"
+        ],
+        "Languedoc-Roussillon|B5": [
+          "Languedoc-Roussillon",
+          "B5"
+        ],
+        "Bourgogne|B1": [
+          "Bourgogne",
+          "B1"
+        ],
+        "Nord-Pas-de-Calais|B4": [
+          "Nord-Pas-de-Calais",
+          "B4"
+        ],
+        "Nord-Pas-de-Calais|B3": [
+          "Nord-Pas-de-Calais",
+          "B3"
+        ],
+        "Bretagne|B6": [
+          "Bretagne",
+          "B6"
+        ],
+        "Poitou-Charentes|B10": [
+          "Poitou-Charentes",
+          "B10"
+        ],
+        "Picardie|B11": [
+          "Picardie",
+          "B11"
+        ],
+        "Provence-Alpes-Cotes-D'Azur|B11": [
+          "Provence-Alpes-Cotes-D'Azur",
+          "B11"
+        ],
+        "Corse|B13": [
+          "Corse",
+          "B13"
+        ],
+        "Champagne-Ardenne|B11": [
+          "Champagne-Ardenne",
+          "B11"
+        ],
+        "Franche-Comte|B3": [
+          "Franche-Comte",
+          "B3"
+        ],
+        "Champagne-Ardenne|B4": [
+          "Champagne-Ardenne",
+          "B4"
+        ],
+        "Ile-de-France|B14": [
+          "Ile-de-France",
+          "B14"
+        ],
+        "Limousin|B11": [
+          "Limousin",
+          "B11"
+        ],
+        "Nord-Pas-de-Calais|B10": [
+          "Nord-Pas-de-Calais",
+          "B10"
+        ],
+        "Rhone-Alpes|B2": [
+          "Rhone-Alpes",
+          "B2"
+        ],
+        "Rhone-Alpes|B4": [
+          "Rhone-Alpes",
+          "B4"
+        ],
+        "Pays-de-la-Loire|B3": [
+          "Pays-de-la-Loire",
+          "B3"
+        ],
+        "Haute-Normandie|B4": [
+          "Haute-Normandie",
+          "B4"
+        ],
+        "Ile-de-France|B11": [
+          "Ile-de-France",
+          "B11"
+        ],
+        "Alsace|B2": [
+          "Alsace",
+          "B2"
+        ],
+        "Bretagne|B2": [
+          "Bretagne",
+          "B2"
+        ],
+        "Auvergne|B5": [
+          "Auvergne",
+          "B5"
+        ],
+        "Champagne-Ardenne|B5": [
+          "Champagne-Ardenne",
+          "B5"
+        ],
+        "Alsace|B6": [
+          "Alsace",
+          "B6"
+        ],
+        "Rhone-Alpes|B10": [
+          "Rhone-Alpes",
+          "B10"
+        ],
+        "Midi-Pyrenees|B6": [
+          "Midi-Pyrenees",
+          "B6"
+        ],
+        "Limousin|B2": [
+          "Limousin",
+          "B2"
+        ],
+        "Haute-Normandie|B6": [
+          "Haute-Normandie",
+          "B6"
+        ],
+        "Provence-Alpes-Cotes-D'Azur|B5": [
+          "Provence-Alpes-Cotes-D'Azur",
+          "B5"
+        ],
+        "Corse|B3": [
+          "Corse",
+          "B3"
+        ],
+        "Pays-de-la-Loire|B11": [
+          "Pays-de-la-Loire",
+          "B11"
+        ],
+        "Pays-de-la-Loire|B10": [
+          "Pays-de-la-Loire",
+          "B10"
+        ],
+        "Pays-de-la-Loire|B5": [
+          "Pays-de-la-Loire",
+          "B5"
+        ],
+        "Haute-Normandie|B2": [
+          "Haute-Normandie",
+          "B2"
+        ],
+        "Corse|B1": [
+          "Corse",
+          "B1"
+        ],
+        "Poitou-Charentes|B11": [
+          "Poitou-Charentes",
+          "B11"
+        ],
+        "Auvergne|B1": [
+          "Auvergne",
+          "B1"
+        ],
+        "Franche-Comte|B1": [
+          "Franche-Comte",
+          "B1"
+        ],
+        "Poitou-Charentes|B5": [
+          "Poitou-Charentes",
+          "B5"
+        ],
+        "Haute-Normandie|B1": [
+          "Haute-Normandie",
+          "B1"
+        ],
+        "Midi-Pyrenees|B11": [
+          "Midi-Pyrenees",
+          "B11"
+        ],
+        "Rhone-Alpes|B12": [
+          "Rhone-Alpes",
+          "B12"
+        ],
+        "Corse|B6": [
+          "Corse",
+          "B6"
+        ],
+        "Pays-de-la-Loire|B4": [
+          "Pays-de-la-Loire",
+          "B4"
+        ],
+        "Languedoc-Roussillon|B3": [
+          "Languedoc-Roussillon",
+          "B3"
+        ],
+        "Poitou-Charentes|B6": [
+          "Poitou-Charentes",
+          "B6"
+        ],
+        "Pays-de-la-Loire|B6": [
+          "Pays-de-la-Loire",
+          "B6"
+        ],
+        "Haute-Normandie|B14": [
+          "Haute-Normandie",
+          "B14"
+        ],
+        "Bretagne|B14": [
+          "Bretagne",
+          "B14"
+        ],
+        "Picardie|B10": [
+          "Picardie",
+          "B10"
+        ],
+        "Provence-Alpes-Cotes-D'Azur|B14": [
+          "Provence-Alpes-Cotes-D'Azur",
+          "B14"
+        ],
+        "Centre|B1": [
+          "Centre",
+          "B1"
+        ],
+        "Aquitaine|B12": [
+          "Aquitaine",
+          "B12"
+        ],
+        "Centre|B12": [
+          "Centre",
+          "B12"
+        ],
+        "Corse|B10": [
+          "Corse",
+          "B10"
+        ],
+        "Provence-Alpes-Cotes-D'Azur|B10": [
+          "Provence-Alpes-Cotes-D'Azur",
+          "B10"
+        ],
+        "Midi-Pyrenees|B5": [
+          "Midi-Pyrenees",
+          "B5"
+        ],
+        "Picardie|B1": [
+          "Picardie",
+          "B1"
+        ],
+        "Champagne-Ardenne|B1": [
+          "Champagne-Ardenne",
+          "B1"
+        ],
+        "Ile-de-France|B2": [
+          "Ile-de-France",
+          "B2"
+        ],
+        "Auvergne|B6": [
+          "Auvergne",
+          "B6"
+        ],
+        "Limousin|B12": [
+          "Limousin",
+          "B12"
+        ],
+        "Picardie|B6": [
+          "Picardie",
+          "B6"
+        ],
+        "Pays-de-la-Loire|B1": [
+          "Pays-de-la-Loire",
+          "B1"
+        ],
+        "Languedoc-Roussillon|B10": [
+          "Languedoc-Roussillon",
+          "B10"
+        ],
+        "Midi-Pyrenees|B3": [
+          "Midi-Pyrenees",
+          "B3"
+        ],
+        "Alsace|B4": [
+          "Alsace",
+          "B4"
+        ],
+        "Alsace|B5": [
+          "Alsace",
+          "B5"
+        ],
+        "Centre|B14": [
+          "Centre",
+          "B14"
+        ],
+        "Bourgogne|B3": [
+          "Bourgogne",
+          "B3"
+        ],
+        "Champagne-Ardenne|B2": [
+          "Champagne-Ardenne",
+          "B2"
+        ],
+        "Poitou-Charentes|B4": [
+          "Poitou-Charentes",
+          "B4"
+        ],
+        "Basse-Normandie|B4": [
+          "Basse-Normandie",
+          "B4"
+        ],
+        "Rhone-Alpes|B6": [
+          "Rhone-Alpes",
+          "B6"
+        ],
+        "Bourgogne|B6": [
+          "Bourgogne",
+          "B6"
+        ],
+        "Ile-de-France|B6": [
+          "Ile-de-France",
+          "B6"
+        ],
+        "Basse-Normandie|B12": [
+          "Basse-Normandie",
+          "B12"
+        ],
+        "Bourgogne|B13": [
+          "Bourgogne",
+          "B13"
+        ],
+        "Basse-Normandie|B13": [
+          "Basse-Normandie",
+          "B13"
+        ],
+        "Champagne-Ardenne|B12": [
+          "Champagne-Ardenne",
+          "B12"
+        ],
+        "Picardie|B12": [
+          "Picardie",
+          "B12"
+        ],
+        "Midi-Pyrenees|B14": [
+          "Midi-Pyrenees",
+          "B14"
+        ],
+        "Centre|B11": [
+          "Centre",
+          "B11"
+        ],
+        "Corse|B4": [
+          "Corse",
+          "B4"
+        ],
+        "Auvergne|B13": [
+          "Auvergne",
+          "B13"
+        ],
+        "Poitou-Charentes|B12": [
+          "Poitou-Charentes",
+          "B12"
+        ],
+        "Bourgogne|B11": [
+          "Bourgogne",
+          "B11"
+        ],
+        "Picardie|B14": [
+          "Picardie",
+          "B14"
+        ],
+        "Limousin|B10": [
+          "Limousin",
+          "B10"
+        ],
+        "Bretagne|B3": [
+          "Bretagne",
+          "B3"
+        ],
+        "Languedoc-Roussillon|B14": [
+          "Languedoc-Roussillon",
+          "B14"
+        ],
+        "Provence-Alpes-Cotes-D'Azur|B3": [
+          "Provence-Alpes-Cotes-D'Azur",
+          "B3"
+        ],
+        "Limousin|B5": [
+          "Limousin",
+          "B5"
+        ],
+        "Bretagne|B5": [
+          "Bretagne",
+          "B5"
+        ],
+        "Auvergne|B10": [
+          "Auvergne",
+          "B10"
+        ],
+        "Franche-Comte|B14": [
+          "Franche-Comte",
+          "B14"
+        ],
+        "Provence-Alpes-Cotes-D'Azur|B1": [
+          "Provence-Alpes-Cotes-D'Azur",
+          "B1"
+        ],
+        "Basse-Normandie|B5": [
+          "Basse-Normandie",
+          "B5"
+        ],
+        "Pays-de-la-Loire|B13": [
+          "Pays-de-la-Loire",
+          "B13"
+        ],
+        "Limousin|B14": [
+          "Limousin",
+          "B14"
+        ],
+        "Aquitaine|B1": [
+          "Aquitaine",
+          "B1"
+        ],
+        "Picardie|B3": [
+          "Picardie",
+          "B3"
+        ],
+        "Ile-de-France|B1": [
+          "Ile-de-France",
+          "B1"
+        ],
+        "Centre|B3": [
+          "Centre",
+          "B3"
+        ],
+        "Midi-Pyrenees|B10": [
+          "Midi-Pyrenees",
+          "B10"
+        ],
+        "Haute-Normandie|B11": [
+          "Haute-Normandie",
+          "B11"
+        ],
+        "Centre|B4": [
+          "Centre",
+          "B4"
+        ],
+        "Provence-Alpes-Cotes-D'Azur|B2": [
+          "Provence-Alpes-Cotes-D'Azur",
+          "B2"
+        ],
+        "Provence-Alpes-Cotes-D'Azur|B12": [
+          "Provence-Alpes-Cotes-D'Azur",
+          "B12"
+        ],
+        "Nord-Pas-de-Calais|B1": [
+          "Nord-Pas-de-Calais",
+          "B1"
+        ],
+        "Languedoc-Roussillon|B12": [
+          "Languedoc-Roussillon",
+          "B12"
+        ],
+        "Bourgogne|B14": [
+          "Bourgogne",
+          "B14"
+        ],
+        "Aquitaine|B11": [
+          "Aquitaine",
+          "B11"
+        ],
+        "Pays-de-la-Loire|B12": [
+          "Pays-de-la-Loire",
+          "B12"
+        ],
+        "Franche-Comte|B4": [
+          "Franche-Comte",
+          "B4"
+        ],
+        "Limousin|B4": [
+          "Limousin",
+          "B4"
+        ],
+        "Champagne-Ardenne|B10": [
+          "Champagne-Ardenne",
+          "B10"
+        ],
+        "Basse-Normandie|B2": [
+          "Basse-Normandie",
+          "B2"
+        ],
+        "Rhone-Alpes|B14": [
+          "Rhone-Alpes",
+          "B14"
+        ],
+        "Basse-Normandie|B6": [
+          "Basse-Normandie",
+          "B6"
+        ],
+        "Alsace|B10": [
+          "Alsace",
+          "B10"
+        ],
+        "Franche-Comte|B2": [
+          "Franche-Comte",
+          "B2"
+        ],
+        "Basse-Normandie|B1": [
+          "Basse-Normandie",
+          "B1"
+        ],
+        "Auvergne|B3": [
+          "Auvergne",
+          "B3"
+        ],
+        "Aquitaine|B6": [
+          "Aquitaine",
+          "B6"
+        ],
+        "Nord-Pas-de-Calais|B11": [
+          "Nord-Pas-de-Calais",
+          "B11"
+        ],
+        "Aquitaine|B10": [
+          "Aquitaine",
+          "B10"
+        ],
+        "Bourgogne|B10": [
+          "Bourgogne",
+          "B10"
+        ],
+        "Centre|B6": [
+          "Centre",
+          "B6"
+        ],
+        "Picardie|B13": [
+          "Picardie",
+          "B13"
+        ],
+        "Franche-Comte|B12": [
+          "Franche-Comte",
+          "B12"
+        ],
+        "Champagne-Ardenne|B6": [
+          "Champagne-Ardenne",
+          "B6"
+        ],
+        "Bourgogne|B4": [
+          "Bourgogne",
+          "B4"
+        ],
+        "Alsace|B11": [
+          "Alsace",
+          "B11"
+        ],
+        "Rhone-Alpes|B3": [
+          "Rhone-Alpes",
+          "B3"
+        ],
+        "Rhone-Alpes|B11": [
+          "Rhone-Alpes",
+          "B11"
+        ],
+        "Ile-de-France|B10": [
+          "Ile-de-France",
+          "B10"
+        ],
+        "Poitou-Charentes|B1": [
+          "Poitou-Charentes",
+          "B1"
+        ],
+        "Franche-Comte|B13": [
+          "Franche-Comte",
+          "B13"
+        ],
+        "Auvergne|B4": [
+          "Auvergne",
+          "B4"
+        ],
+        "Languedoc-Roussillon|B13": [
+          "Languedoc-Roussillon",
+          "B13"
+        ],
+        "Provence-Alpes-Cotes-D'Azur|B6": [
+          "Provence-Alpes-Cotes-D'Azur",
+          "B6"
+        ],
+        "Bretagne|B1": [
+          "Bretagne",
+          "B1"
+        ],
+        "Languedoc-Roussillon|B4": [
+          "Languedoc-Roussillon",
+          "B4"
+        ],
+        "Auvergne|B2": [
+          "Auvergne",
+          "B2"
+        ],
+        "Bretagne|B11": [
+          "Bretagne",
+          "B11"
+        ],
+        "Midi-Pyrenees|B1": [
+          "Midi-Pyrenees",
+          "B1"
+        ],
+        "Corse|B14": [
+          "Corse",
+          "B14"
+        ],
+        "Pays-de-la-Loire|B2": [
+          "Pays-de-la-Loire",
+          "B2"
+        ],
+        "Bretagne|B12": [
+          "Bretagne",
+          "B12"
+        ],
+        "Haute-Normandie|B3": [
+          "Haute-Normandie",
+          "B3"
+        ],
+        "Haute-Normandie|B5": [
+          "Haute-Normandie",
+          "B5"
+        ],
+        "Champagne-Ardenne|B3": [
+          "Champagne-Ardenne",
+          "B3"
+        ],
+        "Centre|B5": [
+          "Centre",
+          "B5"
+        ],
+        "Aquitaine|B13": [
+          "Aquitaine",
+          "B13"
+        ],
+        "Aquitaine|B2": [
+          "Aquitaine",
+          "B2"
+        ],
+        "Aquitaine|B4": [
+          "Aquitaine",
+          "B4"
+        ],
+        "Limousin|B6": [
+          "Limousin",
+          "B6"
+        ],
+        "Pays-de-la-Loire|B14": [
+          "Pays-de-la-Loire",
+          "B14"
+        ],
+        "Basse-Normandie|B11": [
+          "Basse-Normandie",
+          "B11"
+        ],
+        "Corse|B5": [
+          "Corse",
+          "B5"
+        ],
+        "Languedoc-Roussillon|B11": [
+          "Languedoc-Roussillon",
+          "B11"
+        ],
+        "Poitou-Charentes|B2": [
+          "Poitou-Charentes",
+          "B2"
+        ],
+        "Alsace|B3": [
+          "Alsace",
+          "B3"
+        ],
+        "Centre|B2": [
+          "Centre",
+          "B2"
+        ],
+        "Provence-Alpes-Cotes-D'Azur|B13": [
+          "Provence-Alpes-Cotes-D'Azur",
+          "B13"
+        ],
+        "Auvergne|B14": [
+          "Auvergne",
+          "B14"
+        ],
+        "Nord-Pas-de-Calais|B2": [
+          "Nord-Pas-de-Calais",
+          "B2"
+        ]
+      },
+      "default": 0.0,
+      "prior_weight": 57.0
+    }
+  },
+  "origin_map": {
+    "BonusMalus": "main_effect",
+    "VehAge": "main_effect",
+    "DrivAge": "main_effect",
+    "VehPower": "main_effect",
+    "Density": "main_effect",
+    "VehGas": "main_effect",
+    "Region_fts": "main_effect",
+    "VehBrand_fts": "main_effect",
+    "Group": "main_effect",
+    "Area_fts": "main_effect",
+    "VehAge:VehGas": "two_way",
+    "VehAge:VehBrand": "two_way",
+    "BonusMalus:DrivAge": "two_way",
+    "BonusMalus:VehAge": "two_way",
+    "VehAge:VehPower": "two_way",
+    "DrivAge:VehAge": "two_way",
+    "Density:VehAge:VehBrand": "three_way",
+    "Region:VehAge:VehBrand": "three_way",
+    "DrivAge:Group:VehBrand": "three_way",
+    "VehAge:VehGas:VehPower": "three_way",
+    "Density:Region:VehPower": "three_way",
+    "Area__Region_fts": "two_way_combination",
+    "Region__VehBrand_fts": "two_way_combination"
+  },
+  "notes": [
+    "Frozen target statistic for 'Region' (21 levels).",
+    "Frozen target statistic for 'VehBrand' (11 levels).",
+    "Frozen target statistic for 'Area' (6 levels).",
+    "Frozen combination Area\u00d7Region: 104 observed cells, prior weight 218 (importance share 0.017).",
+    "Frozen combination Region\u00d7VehBrand: 228 observed cells, prior weight 57 (importance share 0.011)."
+  ]
+}

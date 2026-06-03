@@ -731,11 +731,12 @@ def _fit_glm_core(
 
     center = scale = None
     if standardize and alpha > 0.0:
-        from rustystats.regularization_path import compute_standardization
+        from rustystats.regularization_path import compute_standardization, solver_standardization
 
         # pen_mask defaults to "all columns except the intercept"; this path
         # does not build an alpha grid, so it need not share an explicit mask.
         center, scale = compute_standardization(X, weights, fit_intercept=fit_intercept)
+        center, scale = solver_standardization(center, scale, fit_intercept=fit_intercept)
 
     result = _fit_glm_rust(
         y,
@@ -1070,6 +1071,8 @@ class _GLMBase:
         n_alphas: int,
         alpha_min_ratio: float,
         cv_seed: int | None,
+        cv_max_iter: int | None,
+        cv_tol: float | None,
         include_unregularized: bool,
         verbose: bool,
         standardize: bool,
@@ -1123,8 +1126,8 @@ class _GLMBase:
             n_alphas=n_alphas,
             alpha_min_ratio=alpha_min_ratio,
             l1_ratio=cv_l1_ratio,
-            max_iter=max_iter,
-            tol=tol,
+            max_iter=cv_max_iter if cv_max_iter is not None else max_iter,
+            tol=cv_tol if cv_tol is not None else tol,
             seed=cv_seed if cv_seed is not None else self._seed,
             include_unregularized=include_unregularized,
             verbose=verbose,
@@ -4357,6 +4360,8 @@ class FormulaGLMDict(_GLMBase):
         n_alphas: int = DEFAULT_N_ALPHAS,
         alpha_min_ratio: float = DEFAULT_ALPHA_MIN_RATIO,
         cv_seed: int | None = None,
+        cv_max_iter: int | None = None,
+        cv_tol: float | None = None,
         include_unregularized: bool = True,
         standardize: bool = True,
         verbose: bool = False,
@@ -4398,6 +4403,14 @@ class FormulaGLMDict(_GLMBase):
 
         cv_seed : int, optional
             Random seed for CV folds.
+
+        cv_max_iter : int, optional
+            Maximum IRLS iterations for CV fold fits only. Defaults to
+            ``max_iter``. The final full-data refit still uses ``max_iter``.
+
+        cv_tol : float, optional
+            Convergence tolerance for CV fold fits only. Defaults to ``tol``.
+            The final full-data refit still uses ``tol``.
 
         include_unregularized : bool, default=True
             Include alpha=0 in CV comparison.
@@ -4461,6 +4474,8 @@ class FormulaGLMDict(_GLMBase):
             n_alphas,
             alpha_min_ratio,
             cv_seed,
+            cv_max_iter,
+            cv_tol,
             include_unregularized,
             verbose,
             standardize,

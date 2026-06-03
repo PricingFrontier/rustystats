@@ -1,0 +1,77 @@
+{
+  "status": "failed",
+  "summary": {
+    "dataset": "freMTPL2 frequency",
+    "training_sample": 150000,
+    "regularization": null,
+    "test_role": "Group == 4",
+    "oot_role": "Group == 5",
+    "compute_diagnostics": false,
+    "raw_rows": 678012,
+    "raw_columns": [
+      "VehPower",
+      "VehAge",
+      "DrivAge",
+      "BonusMalus",
+      "VehBrand",
+      "VehGas",
+      "Area",
+      "Density",
+      "Region",
+      "Group",
+      "Exposure",
+      "ClaimCount"
+    ],
+    "role_counts": {
+      "train": 150000,
+      "oot": 135957,
+      "test": 135616
+    },
+    "teacher_depth": 3,
+    "n_main_importance": 10,
+    "n_pair_importance": 41,
+    "n_triple_importance": 55,
+    "n_terms": 12,
+    "n_interactions": 11,
+    "n_frozen_maps": 5,
+    "n_input_transforms": 5
+  },
+  "stages": [
+    {
+      "stage": "load_fremtpl2",
+      "seconds": 41.77095154905692,
+      "status": "ok"
+    },
+    {
+      "stage": "build_preassigned_roles",
+      "seconds": 0.08292636810801923,
+      "status": "ok"
+    },
+    {
+      "stage": "construct_distiller",
+      "seconds": 1.278809533920139,
+      "status": "ok"
+    },
+    {
+      "stage": "train_teacher_catboost",
+      "seconds": 57.99965471797623,
+      "status": "ok"
+    },
+    {
+      "stage": "functional_anova_decompose",
+      "seconds": 45.46912930998951,
+      "status": "ok"
+    },
+    {
+      "stage": "propose_recipe_and_freeze_categoricals",
+      "seconds": 0.06510581891052425,
+      "status": "ok"
+    },
+    {
+      "stage": "fit_student_rustystats_unregularized",
+      "seconds": 3.7923961740452796,
+      "status": "failed",
+      "error": "ValueError('GLM fitting failed: Linear algebra error: Failed to solve linear system - matrix may be singular. This often indicates multicollinearity in predictors.')"
+    }
+  ]
+}

@@ -19,6 +19,17 @@ members = [
 resolver = "2"
 
 # =============================================================================
+# Release profile
+# =============================================================================
+# thin LTO + a single codegen unit let the optimizer inline/vectorize across
+# units (notably the hot X'WX kernel). Portable and numerically safe: this only
+# changes optimization/LTO — no -ffast-math, no target-cpu pinning — so f64
+# results are bit-identical to the default release build.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+# =============================================================================
 # Shared Dependencies
 # =============================================================================
 # Dependencies listed here can be inherited by workspace members using:
