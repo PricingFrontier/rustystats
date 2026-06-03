@@ -22,6 +22,7 @@ rustystats.glm_dict(
     weights=None,
     seed=None,
     complement=None,
+    input_transforms=None,
     allow_extended_tweedie=False,
 )
 ```
@@ -44,6 +45,7 @@ rustystats.glm_dict(
 | `weights` | str or array | Prior weights |
 | `seed` | int | Random seed for reproducibility |
 | `complement` | str, array, or `GLMModel` | Complement-of-credibility prior (response scale). Used by lasso shrinkage. |
+| `input_transforms` | list[dict] | Deterministic raw-input transforms applied before design-matrix construction. See [Input Transforms](#input-transforms). |
 | `allow_extended_tweedie` | bool | Opt-in for Tweedie powers outside the default `1 < p < 2` interior. Default `False`. See [Distribution Families: Tweedie support contract](../theory/families.md#66-support-contract-rs-act-006). |
 
 ### exposure= vs offset= (RS-ACT-002)
@@ -213,6 +215,68 @@ terms = {
 | `monotonicity` | str | `"increasing"` or `"decreasing"` (optional) |
 
 **Supported operations:** `+`, `-`, `*`, `/`, `**`, `log`, `exp`, `sqrt`
+
+---
+
+## Input Transforms
+
+`input_transforms` let a fitted `GLMModel` score raw production data directly
+when some model terms are deterministic derived columns. The first supported
+transform type is `lookup`, which maps one or more raw source columns to a
+numeric or string output column before the design matrix is built.
+
+```python
+input_transforms = [
+    {
+        "type": "lookup",
+        "name": "brand_region_effect",
+        "sources": ["Brand", "Region"],
+        "output": "brand_region_fts",
+        "output_dtype": "float64",
+        "keys": [["Ford", "North"], ["BMW", "South"]],
+        "values": [0.07, -0.03],
+        "default": 0.0,
+        "on_unseen": "default",
+        "on_null": "default",
+    }
+]
+
+result = rs.glm_dict(
+    response="ClaimNb",
+    terms={"brand_region_fts": {"type": "linear"}},
+    input_transforms=input_transforms,
+    data=train_raw,
+    family="poisson",
+    exposure="Exposure",
+).fit()
+
+# score_raw only needs Brand, Region, and Exposure.
+pred = result.predict(score_raw)
+```
+
+Lookup keys are structured rows, not delimiter-joined strings, so multi-column
+keys are safe when raw levels contain characters such as `"|"`. Transforms are
+stored with the fitted model and are applied consistently by `predict`,
+`predict_contributions`, diagnostics, calibration helpers, and serialization.
+
+`result.prepare_input(raw_df)` is available for debugging and parity tests. It
+returns a new Polars DataFrame with derived columns added and does not mutate
+the caller's input.
+
+### Lookup Transform Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | `"lookup"` | Transform type |
+| `name` | str | Stable transform identifier |
+| `sources` | list[str] | Raw source columns, in key order |
+| `output` | str | Derived column created before modelling |
+| `output_dtype` | `"float64"` or `"string"` | Output dtype |
+| `keys` | list[list[str \| null]] | Structured lookup keys |
+| `values` | list[float \| str] | Values aligned to `keys` |
+| `default` | float or str | Fallback when default policy is used |
+| `on_unseen` | `"default"` or `"raise"` | Unseen-key policy |
+| `on_null` | `"default"`, `"raise"`, or `"match"` | Null-key policy |
 
 ---
 

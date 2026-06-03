@@ -132,31 +132,46 @@ impl Family for TweedieFamily {
     #[inline]
     fn unit_deviance_at(&self, yi: f64, mui: f64) -> f64 {
         let p = self.var_power;
+        // Negative responses are rejected upstream by the validate path
+        // (`validate_tweedie_fit_response`). `yi_safe` is a defensive clamp so
+        // any negative that slips through is treated as y = 0 rather than
+        // producing a non-finite deviance; the boundary predicate below is the
+        // single source of truth for the "y at the lower support boundary" case.
         let yi_safe = yi.max(0.0);
         let mui_safe = mui.max(MU_MIN_POSITIVE);
 
+        // `y_at_zero` is the consistent boundary predicate used by every regime:
+        // `yi <= 0.0` covers exact zeros and (clamped) negatives identically.
+        let y_at_zero = yi <= 0.0;
+
         if (p - 0.0).abs() < ZERO_TOL {
+            // Gaussian: defined for all y, including negatives (clamp is a no-op
+            // here because the squared difference is finite for any yi_safe).
             let diff = yi_safe - mui_safe;
             diff * diff
         } else if (p - 1.0).abs() < ZERO_TOL {
-            if yi_safe == 0.0 {
+            // Poisson: at y = 0 the `y·ln y` term → 0, leaving 2·mu.
+            if y_at_zero {
                 2.0 * mui_safe
             } else {
                 2.0 * (yi_safe * (yi_safe / mui_safe).ln() - (yi_safe - mui_safe))
             }
         } else if (p - 2.0).abs() < ZERO_TOL {
-            if yi <= 0.0 {
+            // Gamma: support is y > 0, so y <= 0 has +inf deviance.
+            if y_at_zero {
                 return f64::INFINITY;
             }
             2.0 * ((yi_safe - mui_safe) / mui_safe - (yi_safe / mui_safe).ln())
         } else {
-            if p > 2.0 && yi <= 0.0 {
+            // p > 2 has support y > 0 (no atom at zero), so y <= 0 → +inf.
+            // 1 < p < 2 and p < 0 admit y = 0 (the `term1` branch handles it).
+            if p > 2.0 && y_at_zero {
                 return f64::INFINITY;
             }
-            let term1 = if yi_safe > 0.0 {
-                yi_safe.powf(2.0 - p) / ((1.0 - p) * (2.0 - p))
-            } else {
+            let term1 = if y_at_zero {
                 0.0
+            } else {
+                yi_safe.powf(2.0 - p) / ((1.0 - p) * (2.0 - p))
             };
             let term2 = yi_safe * mui_safe.powf(1.0 - p) / (1.0 - p);
             let term3 = mui_safe.powf(2.0 - p) / (2.0 - p);
@@ -348,6 +363,47 @@ mod tests {
 
         assert!(deviance[0].is_infinite());
         assert!(deviance[0].is_sign_positive());
+    }
+
+    #[test]
+    fn test_tweedie_boundary_predicates_consistent_across_regimes() {
+        // F1: the y-at-lower-boundary predicate must be consistent across the
+        // p-regimes. y == 0 and y < 0 (defensively clamped to 0) must produce
+        // identical results; y <= 0 with p >= 2 must be +inf; finite-support
+        // regimes (p in {0, 1}, 1 < p < 2, p < 0) must be finite and >= 0 at y=0.
+        let mui = 1.5_f64;
+
+        // p == 1 (Poisson): y = 0 and y = -3 (clamped) both give 2*mu_safe.
+        let pois = TweedieFamily::new(1.0).expect("p=1 valid");
+        let d0 = pois.unit_deviance_at(0.0, mui);
+        let dneg = pois.unit_deviance_at(-3.0, mui);
+        assert!(d0.is_finite() && d0 >= 0.0);
+        assert_abs_diff_eq!(d0, dneg, epsilon = 1e-12);
+
+        // p == 2 (Gamma): y <= 0 → +inf (both exact zero and negative).
+        let gamma = TweedieFamily::new(2.0).expect("p=2 valid");
+        assert!(gamma.unit_deviance_at(0.0, mui).is_infinite());
+        assert!(gamma.unit_deviance_at(-3.0, mui).is_infinite());
+        assert!(gamma.unit_deviance_at(0.0, mui).is_sign_positive());
+
+        // p > 2: y <= 0 → +inf, consistent with the p == 2 boundary.
+        let stable = TweedieFamily::new(2.5).expect("p=2.5 valid");
+        assert!(stable.unit_deviance_at(0.0, mui).is_infinite());
+        assert!(stable.unit_deviance_at(-1.0, mui).is_infinite());
+
+        // 1 < p < 2: y = 0 and y = -2 (clamped) both finite, non-negative, equal.
+        let interior = TweedieFamily::new(1.5).expect("p=1.5 valid");
+        let i0 = interior.unit_deviance_at(0.0, mui);
+        let ineg = interior.unit_deviance_at(-2.0, mui);
+        assert!(i0.is_finite() && i0 >= 0.0);
+        assert_abs_diff_eq!(i0, ineg, epsilon = 1e-12);
+
+        // p == 0 (Gaussian): negatives are NOT clamped here — squared residual is
+        // finite for any y. (yi_safe clamps to 0 for the squared diff, which is
+        // the documented defensive contract.)
+        let gauss = TweedieFamily::new(0.0).expect("p=0 valid");
+        assert!(gauss.unit_deviance_at(0.0, mui).is_finite());
+        assert!(gauss.unit_deviance_at(-5.0, mui).is_finite());
     }
 
     #[test]

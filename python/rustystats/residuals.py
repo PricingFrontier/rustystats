@@ -33,13 +33,24 @@ Family / link strings follow the rest of rustystats:
 
 from __future__ import annotations
 
+import re
+
 import numpy as np
 import numpy.typing as npt
 
 from rustystats._rustystats import working_response_weights_py as _wrw_rust
+from rustystats.exceptions import ValidationError
 from rustystats.validation import validate_residual_inputs
 
 __all__ = ["working_response_weights"]
+
+
+def _embedded_tweedie_p(family: str) -> float | None:
+    """Extract a Tweedie power embedded in a family string, e.g. ``tweedie(p=2.5)``."""
+    if "tweedie" not in family.lower():
+        return None
+    match = re.search(r"p\s*=\s*(-?\d+\.?\d*)", family)
+    return float(match.group(1)) if match else None
 
 
 def working_response_weights(
@@ -117,6 +128,17 @@ def working_response_weights(
     """
     # Resolve "default" / None to None so the Rust binding picks the canonical link.
     link_resolved = None if link in (None, "default") else link
+
+    # Honour a Tweedie power embedded in the family string (e.g. "tweedie(p=2.5)")
+    # so it is not silently overridden by the default var_power=1.5.
+    embedded_p = _embedded_tweedie_p(family)
+    if embedded_p is not None:
+        if var_power != 1.5 and not np.isclose(var_power, embedded_p):
+            raise ValidationError(
+                f"family={family!r} embeds Tweedie p={embedded_p}, but var_power={var_power} "
+                "was also passed. Provide the power in one place."
+            )
+        var_power = embedded_p
 
     y_arr, eta_arr, weights_arr, offset_arr = validate_residual_inputs(
         y,

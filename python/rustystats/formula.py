@@ -50,6 +50,13 @@ from rustystats.exceptions import (
     PredictionError,
     ValidationError,
 )
+from rustystats.input_transforms import (
+    CompiledInputTransform,
+    apply_input_transforms,
+    compile_input_transforms,
+    input_transform_source_columns,
+    validate_input_transforms,
+)
 
 
 def is_negbinomial_family(family: str) -> bool:
@@ -270,6 +277,7 @@ def _extract_needed_columns(
     terms: dict[str, dict[str, Any]],
     response: str | None = None,
     interactions: list[dict[str, Any]] | None = None,
+    input_transforms: list[dict[str, Any]] | None = None,
     offset: str | np.ndarray | None = None,
     weights: str | np.ndarray | None = None,
     exposure: str | np.ndarray | None = None,
@@ -290,6 +298,22 @@ def _extract_needed_columns(
     import re
 
     cols: set[str] = set()
+    transform_specs = input_transforms if input_transforms is not None else []
+    transform_outputs = {
+        spec.get("output")
+        for spec in transform_specs
+        if isinstance(spec, dict) and isinstance(spec.get("output"), str)
+    }
+    produced: set[str] = set()
+    for spec in transform_specs:
+        if not isinstance(spec, dict):
+            continue
+        for source in spec.get("sources", []):
+            if isinstance(source, str) and source not in produced:
+                cols.add(source)
+        output = spec.get("output")
+        if isinstance(output, str):
+            produced.add(output)
     if response is not None:
         cols.add(response)
 
@@ -298,9 +322,11 @@ def _extract_needed_columns(
         if term_type == "expression":
             expr = spec["expr"]
             for token in re.findall(r"\b([A-Za-z_]\w*)\b", expr):
-                cols.add(token)
+                if token not in transform_outputs:
+                    cols.add(token)
         else:
-            cols.add(var_name)
+            if var_name not in transform_outputs:
+                cols.add(var_name)
 
     if interactions:
         for ix in interactions:
@@ -313,15 +339,16 @@ def _extract_needed_columns(
                     "n_permutations",
                 ):
                     continue
-                cols.add(key)
+                if key not in transform_outputs:
+                    cols.add(key)
 
-    if isinstance(offset, str):
+    if isinstance(offset, str) and offset not in transform_outputs:
         cols.add(offset)
-    if isinstance(exposure, str):
+    if isinstance(exposure, str) and exposure not in transform_outputs:
         cols.add(exposure)
-    if isinstance(weights, str):
+    if isinstance(weights, str) and weights not in transform_outputs:
         cols.add(weights)
-    if isinstance(complement, str):
+    if isinstance(complement, str) and complement not in transform_outputs:
         cols.add(complement)
     else:
         cols.update(_extract_model_needed_columns(complement, _seen_models))
@@ -347,6 +374,7 @@ def _extract_model_needed_columns(model: Any, seen_models: set[int] | None = Non
     return _extract_needed_columns(
         terms=terms,
         interactions=getattr(model, "_interactions_spec", None),
+        input_transforms=getattr(model, "_input_transforms", None),
         offset=getattr(model, "_offset_spec", None),
         exposure=getattr(model, "_exposure_spec", None),
         complement=getattr(model, "_complement_spec", None),
@@ -794,6 +822,8 @@ def _build_results(
     gcv: float | None,
     terms_dict: dict[str, dict[str, Any]] | None = None,
     interactions_spec: list[dict[str, Any]] | None = None,
+    input_transforms: list[dict[str, Any]] | None = None,
+    compiled_input_transforms: list[CompiledInputTransform] | None = None,
     complement_spec: str | GLMModel | None = None,
     complement_values: np.ndarray | None = None,
     array_exposure_requires_prediction_override: bool = False,
@@ -819,6 +849,8 @@ def _build_results(
         gcv=gcv,
         terms_dict=terms_dict,
         interactions_spec=interactions_spec,
+        input_transforms=input_transforms,
+        compiled_input_transforms=compiled_input_transforms,
         complement_spec=complement_spec,
         complement_values=complement_values,
         array_exposure_requires_prediction_override=array_exposure_requires_prediction_override,
@@ -1290,6 +1322,10 @@ class GLMModel:
         The formula used to fit the model
     """
 
+    # Serialized-state schema version written by ``to_bytes`` and required by
+    # ``from_bytes``. Bumped whenever the persisted state shape changes.
+    _SCHEMA_VERSION = 4
+
     def __init__(
         self,
         result,
@@ -1306,6 +1342,8 @@ class GLMModel:
         gcv: float | None = None,
         terms_dict: dict[str, dict[str, Any]] | None = None,
         interactions_spec: list[dict[str, Any]] | None = None,
+        input_transforms: list[dict[str, Any]] | None = None,
+        compiled_input_transforms: list[CompiledInputTransform] | None = None,
         complement_spec: str | GLMModel | None = None,
         complement_values: np.ndarray | None = None,
         array_exposure_requires_prediction_override: bool = False,
@@ -1319,6 +1357,14 @@ class GLMModel:
         self.feature_names = feature_names
         self.formula = formula
         self.family = family
+        # Tweedie var_power is encoded in the (serialized, round-tripped) family
+        # string, e.g. "Tweedie(p=2.5000)". Derive it so releveled deviance/llf
+        # use the fitted power instead of the 1.5 default — this fixes both
+        # in-memory and deserialized models (RS-ACT-006).
+        from rustystats.diagnostics.api import _parse_family_params
+
+        self.var_power, _ = _parse_family_params(family)
+        self.allow_extended_tweedie = True
         self._regularization_path_info = regularization_path_info
         self.link = link or get_default_link(family)
         self._builder = builder
@@ -1329,6 +1375,12 @@ class GLMModel:
         )
         self._terms_dict = terms_dict
         self._interactions_spec = interactions_spec
+        self._input_transforms = validate_input_transforms(input_transforms)
+        self._compiled_input_transforms = (
+            list(compiled_input_transforms)
+            if compiled_input_transforms is not None
+            else compile_input_transforms(self._input_transforms, assume_validated=True)
+        )
         self._complement_spec = complement_spec
         self._complement_values = complement_values
         self._regularization_standardized = bool(regularization_standardized)
@@ -1338,6 +1390,67 @@ class GLMModel:
         self._intercept_delta: float = 0.0
         self._intercept_delta_var: float = 0.0
         self._relevel_history: list[dict[str, Any]] = []
+
+    @property
+    def input_transforms(self) -> list[dict[str, Any]]:
+        """Canonical deterministic input transforms stored on this model."""
+        return copy.deepcopy(self._input_transforms)
+
+    @property
+    def warnings(self) -> list[str]:
+        """Fit-time warnings collected by the solver (non-convergence, clamps, etc.).
+
+        Empty for deserialized models, which do not carry the solver's warning
+        buffer; ``solver_status`` remains the durable signal there.
+        """
+        warns = getattr(self._result, "warnings", None)
+        if warns is None:
+            return []
+        resolved = warns() if callable(warns) else warns
+        return list(resolved)
+
+    def prepare_input(self, raw_df: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame:
+        """Return a DataFrame with deterministic input transforms applied.
+
+        This is primarily useful for debugging and parity tests. Prediction
+        methods call the same transform layer internally.
+        """
+        data = _collect_lazyframe(raw_df, set())
+        return self._apply_model_input_transforms(data)
+
+    def _apply_model_input_transforms(self, data: pl.DataFrame) -> pl.DataFrame:
+        """Apply this model's transforms, recomputing any existing outputs."""
+        if not self._compiled_input_transforms:
+            return data
+        drop_outputs = [
+            spec["output"] for spec in self._input_transforms if spec["output"] in data.columns
+        ]
+        if drop_outputs:
+            data = data.drop(drop_outputs)
+        return apply_input_transforms(data, self._compiled_input_transforms)
+
+    def _uses_transform_output(self, spec: Any) -> bool:
+        """Return True when a string prediction spec is produced by a transform."""
+        if not isinstance(spec, str):
+            return False
+        return any(transform["output"] == spec for transform in self._input_transforms)
+
+    def _prediction_aux_needs_prepared_data(
+        self,
+        *,
+        offset: str | np.ndarray | None,
+        exposure: str | np.ndarray | None,
+        complement: str | np.ndarray | GLMModel | None,
+    ) -> bool:
+        """Whether prediction auxiliaries must be read after transforms."""
+        exposure_to_use = exposure if exposure is not None else self._exposure_spec
+        offset_to_use = offset if offset is not None else self._offset_spec
+        complement_to_use = complement if complement is not None else self._complement_spec
+        return (
+            self._uses_transform_output(exposure_to_use)
+            or self._uses_transform_output(offset_to_use)
+            or self._uses_transform_output(complement_to_use)
+        )
 
     @property
     def params(self) -> np.ndarray:
@@ -1709,6 +1822,7 @@ class GLMModel:
             _extract_needed_columns(
                 terms=self._terms_dict,
                 interactions=self._interactions_spec,
+                input_transforms=self._input_transforms,
                 offset=self._offset_spec,
                 exposure=self._exposure_spec,
                 complement=self._complement_spec,
@@ -2479,6 +2593,7 @@ class GLMModel:
             needed = _extract_needed_columns(
                 terms=self._terms_dict,
                 interactions=self._interactions_spec,
+                input_transforms=self._input_transforms,
                 offset=offset if offset is not None else self._offset_spec,
                 exposure=exposure_needed,
                 complement=complement if complement is not None else self._complement_spec,
@@ -2504,23 +2619,56 @@ class GLMModel:
         n_features = len(self.params)
         chunk_size = _compute_predict_chunk_size(n_features)
         params = np.asarray(self.params, dtype=np.float64)
+        prepared_all: pl.DataFrame | None = None
         if n_rows <= chunk_size:
             # Small input: skip slicing overhead, keep behavior identical to
             # the pre-chunking implementation.
-            X_new = self._builder.transform_new_data(new_data)
+            prepared_all = self._apply_model_input_transforms(new_data)
+            X_new = self._builder.transform_new_data(prepared_all)
             linear_pred = X_new @ params
             del X_new
         else:
             linear_pred = np.empty(n_rows, dtype=np.float64)
             for start in range(0, n_rows, chunk_size):
                 stop = min(start + chunk_size, n_rows)
-                chunk = new_data.slice(start, stop - start)
+                chunk = self._apply_model_input_transforms(new_data.slice(start, stop - start))
                 X_chunk = self._builder.transform_new_data(chunk)
                 # Write directly into the pre-allocated output slice; the
                 # X_chunk reference is rebound on the next iteration so the
                 # ~chunk_size × p matrix is freed before the next one is built.
                 linear_pred[start:stop] = X_chunk @ params
                 del X_chunk, chunk
+
+        aux_data = new_data
+        if self._prediction_aux_needs_prepared_data(
+            offset=offset,
+            exposure=exposure,
+            complement=complement,
+        ):
+            if prepared_all is not None:
+                aux_data = prepared_all
+            else:
+                # Chunked path: a transform-produced offset/exposure/complement
+                # column still needs the prepared frame, but materializing the
+                # full transformed frame here would defeat the chunked memory
+                # bound. Project to only what the auxiliary resolvers actually
+                # read — the transform source columns (to recompute
+                # transform-produced auxiliaries), any RAW auxiliary columns, and
+                # a complement model's own needed columns — so the bulk design
+                # columns stay out of memory while every auxiliary stays
+                # resolvable (a transform-produced auxiliary alongside a raw one
+                # must not drop the raw column).
+                aux_cols = set(input_transform_source_columns(self._input_transforms))
+                exposure_spec = exposure if exposure is not None else self._exposure_spec
+                offset_spec = offset if offset is not None else self._offset_spec
+                complement_spec = complement if complement is not None else self._complement_spec
+                for spec in (exposure_spec, offset_spec, complement_spec):
+                    if isinstance(spec, str):
+                        aux_cols.add(spec)
+                if isinstance(complement_spec, GLMModel):
+                    aux_cols |= _extract_model_needed_columns(complement_spec)
+                present = [c for c in new_data.columns if c in aux_cols]
+                aux_data = self._apply_model_input_transforms(new_data.select(present))
 
         exposure_to_use = exposure if exposure is not None else self._exposure_spec
         if exposure is None and getattr(
@@ -2536,15 +2684,15 @@ class GLMModel:
         if exposure_to_use is not None:
             if self.link != "log":
                 raise ValidationError("exposure= is only meaningful for log-link rate models.")
-            exposure_link = _resolve_predict_exposure_link(new_data, exposure_to_use)
+            exposure_link = _resolve_predict_exposure_link(aux_data, exposure_to_use)
             linear_pred = linear_pred + exposure_link
 
-        _, offset_link, _ = _resolve_predict_offset(new_data, offset, self._offset_spec)
+        _, offset_link, _ = _resolve_predict_offset(aux_data, offset, self._offset_spec)
         if offset_link is not None:
             linear_pred = linear_pred + offset_link
 
         _, complement_link = _resolve_predict_complement(
-            new_data,
+            aux_data,
             complement,
             self._complement_spec,
             exposure_to_use,
@@ -2922,6 +3070,12 @@ class GLMModel:
         str
             The PMML XML document as a string.
         """
+        if self._input_transforms:
+            names = [spec["name"] for spec in self._input_transforms]
+            raise ValidationError(
+                "PMML raw-data export does not yet support input_transforms; "
+                f"unsupported transform(s): {names}."
+            )
         from rustystats.export_pmml import to_pmml
 
         return to_pmml(self, path=path, n_grid_points=n_grid_points)
@@ -2958,9 +3112,44 @@ class GLMModel:
             Raw ONNX protobuf bytes.  Load with
             ``onnxruntime.InferenceSession(onnx_bytes)`` or write to disk.
         """
+        if mode == "full" and self._input_transforms:
+            names = [spec["name"] for spec in self._input_transforms]
+            raise ValidationError(
+                "ONNX full raw-data export does not yet support input_transforms; "
+                f"unsupported transform(s): {names}."
+            )
         from rustystats.export_onnx import to_onnx
 
         return to_onnx(self, path=path, n_grid_points=n_grid_points, mode=mode)
+
+    def to_rate_tables(
+        self,
+        path: str | None = None,
+        *,
+        format: str = "dict",
+        style: str = "resolved",
+        deployment: bool = True,
+        spline_strategy: str = "unsupported",
+        spline_grids: dict[str, list[float]] | None = None,
+        spline_interpolation: str = "linear",
+        spline_extrapolation: str = "clip",
+        include_components: bool = False,
+    ) -> dict[str, Any]:
+        """Export the fitted model as concise resolved rate tables."""
+        from rustystats.rate_tables import to_rate_tables
+
+        return to_rate_tables(
+            self,
+            path=path,
+            format=format,
+            style=style,
+            deployment=deployment,
+            spline_strategy=spline_strategy,
+            spline_grids=spline_grids,
+            spline_interpolation=spline_interpolation,
+            spline_extrapolation=spline_extrapolation,
+            include_components=include_components,
+        )
 
     def to_bytes(self) -> bytes:
         """
@@ -2972,6 +3161,7 @@ class GLMModel:
         - Categorical encoding levels
         - Spline knot positions
         - Target encoding statistics
+        - Deterministic input transforms
         - Family parameter metadata such as Negative Binomial theta
         - Relevel intercept shifts and metadata
 
@@ -3055,8 +3245,14 @@ class GLMModel:
             None if array_exposure_requires_override else self._exposure_spec
         )
 
+        # Persist a prior-weights column spec so deserialized models keep
+        # weighted diagnostics. Array weights, like array exposure, are fit-time
+        # data the caller must re-supply, so only column-name specs are stored.
+        weights_spec = getattr(self, "_weights_spec", None)
+        serializable_weights_spec = weights_spec if isinstance(weights_spec, str) else None
+
         state = {
-            "schema_version": 3,
+            "schema_version": self._SCHEMA_VERSION,
             "result_state": result_state,
             "feature_names": self.feature_names,
             "formula": self.formula,
@@ -3064,6 +3260,7 @@ class GLMModel:
             "link": self.link,
             "builder_state": builder_state,
             "offset_spec": self._offset_spec,
+            "weights_spec": serializable_weights_spec,
             # Raw array exposure is fit-time data, not reusable prediction
             # metadata. Persist only column specs; array-exposure models require
             # callers to supply prediction-time exposure explicitly after load.
@@ -3074,6 +3271,7 @@ class GLMModel:
             "gcv": self._gcv,
             "terms_dict": self._terms_dict,
             "interactions_spec": self._interactions_spec,
+            "input_transforms": self._input_transforms,
             "complement_spec": self._complement_spec,
             "intercept_delta": float(self._intercept_delta),
             "intercept_delta_var": float(self._intercept_delta_var),
@@ -3110,6 +3308,16 @@ class GLMModel:
         import pickle
 
         state = pickle.loads(data)
+
+        # Fail loud on a schema this build cannot read, rather than silently
+        # loading it and mis-handling fields (e.g. the pre-v4 exposure layout).
+        sv = state.get("schema_version")
+        if sv != cls._SCHEMA_VERSION:
+            raise ValidationError(
+                f"Cannot load model: serialized schema_version {sv!r} is not supported by "
+                f"this RustyStats build (schema_version {cls._SCHEMA_VERSION}). Re-serialize "
+                "the model with the current version."
+            )
 
         result_state = state["result_state"]
 
@@ -3154,6 +3362,7 @@ class GLMModel:
             gcv=state["gcv"],
             terms_dict=state.get("terms_dict"),
             interactions_spec=state.get("interactions_spec"),
+            input_transforms=state.get("input_transforms", []),
             complement_spec=state.get("complement_spec"),
             array_exposure_requires_prediction_override=array_exposure_requires_prediction_override,
             regularization_standardized=bool(
@@ -3169,6 +3378,7 @@ class GLMModel:
         model._intercept_delta = float(state.get("intercept_delta", 0.0))
         model._intercept_delta_var = float(state.get("intercept_delta_var", 0.0))
         model._relevel_history = [dict(entry) for entry in state.get("relevel_history", [])]
+        model._weights_spec = state.get("weights_spec")
         return model
 
     def __repr__(self) -> str:
@@ -3800,13 +4010,25 @@ class FormulaGLMDict(_GLMBase):
         weights: str | np.ndarray | None = None,
         seed: int | None = None,
         complement: str | np.ndarray | GLMModel | None = None,
+        input_transforms: list[dict[str, Any]] | None = None,
         allow_extended_tweedie: bool = False,
     ):
         self.response = response
         self.terms = terms
         self.interactions_spec = interactions
         self.intercept = intercept
-        # Store weak reference to data to allow garbage collection
+        self._input_transforms = validate_input_transforms(
+            input_transforms, data_schema=dict(data.schema)
+        )
+        self._compiled_input_transforms = compile_input_transforms(
+            self._input_transforms,
+            assume_validated=True,
+        )
+        if self._compiled_input_transforms:
+            data = apply_input_transforms(data, self._compiled_input_transforms)
+        self._owned_transformed_data = data if self._compiled_input_transforms else None
+        # Store weak reference to data to allow garbage collection. When input
+        # transforms are present, this is the transformed frame used for fitting.
         self._data_ref = weakref.ref(data)
         raw_family_base, _embedded_params = _split_embedded_family_param(family)
         if raw_family_base.lower() == "tweedie":
@@ -4315,6 +4537,8 @@ class FormulaGLMDict(_GLMBase):
             self._gcv,
             terms_dict=self.terms,
             interactions_spec=self.interactions_spec,
+            input_transforms=self._input_transforms,
+            compiled_input_transforms=self._compiled_input_transforms,
             complement_spec=self._complement_spec,
             complement_values=self._complement_values,
             array_exposure_requires_prediction_override=(
@@ -4353,6 +4577,7 @@ def glm_dict(
     weights: str | np.ndarray | None = None,
     seed: int | None = None,
     complement: str | np.ndarray | GLMModel | None = None,
+    input_transforms: list[dict[str, Any]] | None = None,
     allow_extended_tweedie: bool = False,
 ) -> FormulaGLMDict:
     """
@@ -4426,6 +4651,16 @@ def glm_dict(
         shrunk toward the complement rather than toward zero. If str,
         column name in data. If GLMModel, predictions are computed and
         divided by exposure if applicable.
+    input_transforms : list of dict, optional
+        Deterministic input transforms (currently ``{"type": "lookup", ...}``)
+        applied to the raw data before the design matrix is built, during fit,
+        prediction, contributions, diagnostics, and serialization. Terms may
+        reference a transform ``output`` column that is absent from the raw
+        frame. See :func:`rustystats.validate_input_transforms` for the schema.
+    allow_extended_tweedie : bool, default False
+        Allow Tweedie power parameters outside the default ``1 < p < 2``
+        compound-Poisson-Gamma range. By default such powers are rejected
+        (RS-ACT-006); set this only when you intend an extended-support model.
 
     Returns
     -------
@@ -4476,6 +4711,7 @@ def glm_dict(
         terms,
         response=response,
         interactions=interactions,
+        input_transforms=input_transforms,
         offset=offset,
         weights=weights,
         exposure=exposure,
@@ -4498,5 +4734,6 @@ def glm_dict(
         weights=weights,
         seed=seed,
         complement=complement,
+        input_transforms=input_transforms,
         allow_extended_tweedie=allow_extended_tweedie,
     )

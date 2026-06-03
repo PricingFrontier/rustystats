@@ -74,9 +74,14 @@ class RegularizationPathResult:
     cv_deviance_se : float
         Standard error of CV deviance
     n_nonzero : int
-        Number of non-zero coefficients
+        Number of non-zero coefficients at this alpha. NOTE: the fold-safe
+        target-encoding CV path selects alpha by validation deviance without
+        refitting coefficients per alpha, so on that route this reports the
+        full-data design column count (the design width), not a post-fit count.
     max_coef : float
-        Maximum absolute coefficient value
+        Maximum absolute coefficient value at this alpha, or ``0.0`` on the
+        fold-safe target-encoding CV path, which does not refit coefficients
+        during alpha selection.
     """
 
     alpha: float
@@ -1035,10 +1040,14 @@ def fit_cv_te_regularization_path(
     if verbose:
         print(f"Fold-safe target-encoding CV: {regularization}, {cv} folds, {n_alphas} alphas")
 
-    # Default the CV seed to DEFAULT_CV_SEED so the fold-safe path has the same
-    # deterministic fold assignment as the fast Rust array path (see the
-    # ``seed if seed is not None else DEFAULT_CV_SEED`` map at the
-    # ``_fit_cv_path_rust`` call site).
+    # Default the CV seed to DEFAULT_CV_SEED for determinism. NOTE: only the seed
+    # value is shared with the fast Rust array path — NOT the resulting fold
+    # partition. This path splits a seeded ``permutation(n)`` into contiguous
+    # blocks (``create_cv_folds``); the Rust path assigns each row to a fold via
+    # ``(row, seed)`` hashing. For the same seed the two produce different
+    # partitions, so CV deviances and the selected alpha are not comparable
+    # across the two routes (each is internally deterministic). A model silently
+    # switches routes based on whether it has a target-encoded/spline term.
     cv_seed = seed if seed is not None else DEFAULT_CV_SEED
     folds = create_cv_folds(len(y), cv, cv_seed)
     from rustystats.formula import _get_constraint_indices
@@ -1070,8 +1079,8 @@ def fit_cv_te_regularization_path(
                 fit_intercept=fit_intercept,
             )
         fold_designs.append((x_train, x_val, names, fold_center, fold_scale))
-        fold_alpha_maxes.append(
-            compute_alpha_max(
+        try:
+            fold_alpha_max = compute_alpha_max(
                 x_train,
                 y_train,
                 effective_l1_ratio,
@@ -1087,7 +1096,16 @@ def fit_cv_te_regularization_path(
                 pen_mask=fold_pen_mask,
                 allow_extended_tweedie=allow_extended_tweedie,
             )
-        )
+        except (ValidationError, FittingError, ValueError, RuntimeError) as exc:
+            # A degenerate fold (all-zero counts, perfect separation, a singular
+            # null-intercept solve) must not abort the entire CV: the per-alpha
+            # fits below already fail closed, so the alpha_max that *gates* the
+            # grid must too. Floor this fold's contribution instead of letting a
+            # solver error escape.
+            if verbose:
+                print(f"  fold alpha_max computation failed ({exc!r}); flooring this fold.")
+            fold_alpha_max = ALPHA_MAX_FLOOR
+        fold_alpha_maxes.append(fold_alpha_max)
 
     # Build the alpha search range only from fold-training designs. Taking the
     # maximum keeps the grid regularized enough for every fold without letting

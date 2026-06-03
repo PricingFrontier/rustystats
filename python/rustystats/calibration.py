@@ -180,21 +180,38 @@ def _compute_bins(
     total = float(np.sum(size_arr))
     if total <= 0.0:
         return []
-    target = total / n_bins
 
     bins: list[dict[str, Any]] = []
     start = 0
     cum = 0.0
     bin_idx = 0
     n = y.shape[0]
+    # Mass still unassigned to a *closed* bin (the current open bin's mass lives
+    # in ``cum``). Re-derive the per-bin target from the remaining mass and the
+    # remaining bin budget on every step so the partition stays balanced even
+    # when n is close to n_bins or exposure is skewed. A fixed target with a
+    # "don't close yet" guard (the previous implementation) skipped the close
+    # but never reset ``cum``, dumping all the deferred mass into one tail bin
+    # (e.g. n=11/n_bins=10 collapsed to 2 bins of [2, 9]).
+    mass_remaining = total
     for pos, idx in enumerate(sort_idx):
-        cum += float(size_arr[idx])
+        size = float(size_arr[idx])
+        cum += size
+        mass_remaining -= size
         is_last = pos == n - 1
-        remaining_bins = n_bins - bin_idx - 1
-        remaining_obs = n - pos - 1
-        if is_last or (
-            cum >= target * 0.99 and remaining_bins > 0 and remaining_obs >= remaining_bins
-        ):
+        bins_remaining = n_bins - bin_idx  # includes the bin currently open
+        obs_remaining = n - pos - 1
+        close = is_last
+        if not close and bins_remaining > 1:
+            # Force one observation per remaining bin once we would otherwise
+            # run out of observations to fill them.
+            if obs_remaining <= bins_remaining - 1:
+                close = True
+            else:
+                target = (cum + mass_remaining) / bins_remaining
+                if cum >= target:
+                    close = True
+        if close:
             members = sort_idx[start : pos + 1]
             bins.append(_aggregate_bin(y, mu, exposure, weights, members, bin_idx))
             bin_idx += 1
@@ -274,10 +291,14 @@ def _by_factor(
         if arr.shape[0] != n:
             raise ValidationError(f"by[{factor_name!r}] length {arr.shape[0]} != y length {n}")
         rows: list[dict[str, Any]] = []
+        # Null/NaN-keyed rows must not silently vanish (they would break
+        # Σ(by_factor) == overall reconciliation). Separate them out first: this
+        # also avoids ``np.unique`` raising on an object array that mixes None
+        # with comparable values.
+        missing = _missing_mask(arr)
+        present = arr[~missing] if missing.any() else arr
         # Preserve sorted level order for determinism; np.unique sorts already.
-        # Use object-safe unique via pandas-free path: numpy works on strings/ints.
-        unique = np.unique(arr)
-        for level in unique:
+        for level in np.unique(present):
             mask = arr == level
             members = np.flatnonzero(mask)
             if members.size == 0:
@@ -288,8 +309,25 @@ def _by_factor(
             row["level"] = level.item() if isinstance(level, np.generic) else level
             row["suppressed"] = bool(row["exposure"] < min_exposure)
             rows.append(row)
+        if missing.any():
+            members = np.flatnonzero(missing)
+            row = _aggregate_bin(y, mu, exposure, weights, members, bin_index=0)
+            row.pop("bin_index", None)
+            row["level"] = None
+            row["suppressed"] = bool(row["exposure"] < min_exposure)
+            rows.append(row)
         out[factor_name] = rows
     return out
+
+
+def _missing_mask(arr: np.ndarray) -> np.ndarray:
+    """Boolean mask of null/NaN factor keys (None for object arrays, NaN for float)."""
+    if arr.dtype.kind in ("f", "c"):
+        return np.isnan(arr)
+    if arr.dtype.kind == "O":
+        # ``v != v`` is True only for NaN; also catch explicit None.
+        return np.array([(v is None) or (v != v) for v in arr.tolist()], dtype=bool)
+    return np.zeros(arr.shape[0], dtype=bool)
 
 
 # ---------------------------------------------------------------------------
@@ -568,9 +606,15 @@ def fit_isotonic_calibration(
     fitted values; the returned object always exposes ``thresholds_`` ascending.
     """
     y_arr, mu_arr = _validate_response_pred(y, pred)
+    if y_arr.shape[0] == 0:
+        raise ValidationError("cannot fit isotonic calibration on empty data.")
     weights_arr = _resolve_weights(weights, y_arr.shape[0])
     if weights_arr is None:
         weights_arr = np.ones_like(y_arr)
+    elif float(np.sum(weights_arr)) <= 0.0:
+        raise ValidationError(
+            "isotonic calibration requires a positive total weight; all weights are zero."
+        )
 
     # For decreasing, flip the sign of pred so the increasing PAV builds the
     # right shape, then flip back. Equivalently we could sort descending and

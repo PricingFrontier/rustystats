@@ -13,6 +13,7 @@ import pickle
 
 import numpy as np
 import polars as pl
+import pytest
 import rustystats as rs
 
 
@@ -178,23 +179,22 @@ class TestInferenceSerialization:
         """011.7: serialization preserves inference + solver-status metadata."""
         result = _fit(_frame(), cv=3, regularization="ridge", n_alphas=3)
         state = pickle.loads(result.to_bytes())
-        assert state["schema_version"] == 3
+        assert state["schema_version"] == 4
         loaded = rs.GLMModel.from_bytes(result.to_bytes())
         assert loaded.inference_status == result.inference_status
         assert loaded.solver_status == result.solver_status
         assert loaded.optimizer_route == result.optimizer_route
         assert loaded.step_halving_used == result.step_halving_used
 
-    def test_legacy_pickle_without_inference_fields_loads(self):
-        """011.7 back-compat: a pre-RS-ACT-011 payload (no inference/solver keys)
-        deserializes cleanly with None defaults and still predicts."""
+    def test_missing_inference_fields_load_with_none_defaults(self):
+        """A current-version payload missing the optional inference/solver keys
+        (e.g. a model never probed for inference) deserializes cleanly with None
+        defaults and still predicts."""
         df = _frame()
         result = _fit(df)
         state = pickle.loads(result.to_bytes())
-        # Simulate an old schema: drop the four fields and the version bump.
         for key in ("inference_status", "optimizer_route", "solver_status", "step_halving_used"):
             state["result_state"].pop(key, None)
-        state["schema_version"] = 2
         loaded = rs.GLMModel.from_bytes(pickle.dumps(state))
         assert loaded.inference_status is None
         assert loaded.solver_status is None
@@ -202,3 +202,86 @@ class TestInferenceSerialization:
         assert loaded.step_halving_used is None
         preds = loaded.predict(df)
         assert len(preds) == len(df)
+
+    def test_mismatched_schema_version_fails_loud(self):
+        """No backwards compatibility: a payload whose schema_version differs from
+        the current writer must be rejected with a clear error rather than loaded
+        and silently mis-handled (e.g. the pre-v4 exposure layout)."""
+        result = _fit(_frame())
+        state = pickle.loads(result.to_bytes())
+        state["schema_version"] = 2
+        with pytest.raises(rs.ValidationError, match="schema_version"):
+            rs.GLMModel.from_bytes(pickle.dumps(state))
+        state.pop("schema_version", None)
+        with pytest.raises(rs.ValidationError, match="schema_version"):
+            rs.GLMModel.from_bytes(pickle.dumps(state))
+
+    def test_weights_spec_round_trips(self):
+        """A column-name weights spec must survive serialization so a reloaded
+        model still produces weighted (not silently unweighted) diagnostics."""
+        df = _frame().with_columns(pl.Series("w", np.linspace(0.5, 2.0, 600)))
+        result = rs.glm_dict(
+            response="y",
+            terms={"x": {"type": "linear"}, "x2": {"type": "linear"}},
+            data=df,
+            family="poisson",
+            weights="w",
+        ).fit()
+        assert result._weights_spec == "w"
+        loaded = rs.GLMModel.from_bytes(result.to_bytes())
+        assert loaded._weights_spec == "w"
+
+    def test_tweedie_var_power_is_derived_and_round_trips(self):
+        """var_power must be recovered from the family string (not defaulted to
+        1.5) for both the in-memory and the deserialized model."""
+        rng = np.random.default_rng(3)
+        n = 400
+        x = rng.normal(size=n)
+        mu = np.exp(0.2 + 0.3 * x)
+        y = rng.gamma(shape=2.0, scale=mu / 2.0)
+        df = pl.DataFrame({"y": y, "x": x})
+        result = rs.glm_dict(
+            response="y",
+            terms={"x": {"type": "linear"}},
+            data=df,
+            family="tweedie(p=1.7)",
+        ).fit()
+        assert result.var_power == pytest.approx(1.7, abs=1e-9)
+        loaded = rs.GLMModel.from_bytes(result.to_bytes())
+        assert loaded.var_power == pytest.approx(1.7, abs=1e-9)
+
+
+class TestFactorInferenceSuppression:
+    """Factor diagnostics must mirror the main coefficient table: Wald factor
+    significance and per-coefficient SE/p are only shown for valid inference."""
+
+    def test_factor_significance_and_se_suppressed_under_selection(self):
+        df = _frame()
+        terms = {"x": {"type": "linear"}, "x2": {"type": "linear"}}
+        plain = rs.glm_dict(response="y", terms=terms, data=df, family="poisson").fit()
+        lasso = rs.glm_dict(response="y", terms=terms, data=df, family="poisson").fit(
+            alpha=0.1, l1_ratio=1.0
+        )
+        assert plain.inference_status == "valid_standard"
+        assert lasso.inference_status == "naive_after_selection"
+
+        d_plain = plain.diagnostics(df, continuous_factors=["x", "x2"])
+        d_lasso = lasso.diagnostics(df, continuous_factors=["x", "x2"])
+
+        # Plain GLM: factor significance present.
+        assert all(f.significance is not None for f in d_plain.factors)
+        # Selected (lasso) GLM: factor significance suppressed, matching the
+        # main coefficient table which hides Std.Err / P>|z|.
+        assert all(f.significance is None for f in d_lasso.factors)
+
+        # Per-coefficient SE is real for the plain fit and NaN (suppressed) for
+        # the selected fit.
+        def first_se(diag):
+            for f in diag.factors:
+                coefs = getattr(f, "coefficients", None)
+                if coefs:
+                    return coefs[0].std_error
+            return None
+
+        assert np.isfinite(first_se(d_plain))
+        assert np.isnan(first_se(d_lasso))

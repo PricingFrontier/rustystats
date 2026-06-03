@@ -33,6 +33,26 @@ from rustystats.constants import DEFAULT_N_CALIBRATION_BINS
 from rustystats.diagnostics.types import CalibrationBin
 from rustystats.exceptions import ValidationError
 
+# z-score for the 0.975 quantile; matches rustystats-core DEFAULT_CI_Z.
+_DEFAULT_CI_Z = 1.959964
+
+
+def _wilson_poisson_rate_ci(actual_sum: float, predicted_sum: float) -> tuple[float, float]:
+    """Wilson-score Poisson rate interval for an A/E ratio (matches the Rust core).
+
+    Preferred over a Wald approximation in actuarial settings: it stays inside
+    ``[0, inf)``, behaves well for small/zero claim counts, and needs no
+    ``max(actual, 1)`` fudge.
+    """
+    if predicted_sum <= 0.0:
+        return (0.0, float("nan"))
+    z = _DEFAULT_CI_Z
+    k = max(actual_sum, 0.0)
+    z2 = z * z
+    center = (k + z2 / 2.0) / predicted_sum
+    half_width = z * np.sqrt(k + z2 / 4.0) / predicted_sum
+    return (max(0.0, center - half_width), center + half_width)
+
 
 class _ResidualComputer:
     """Computes and caches residuals."""
@@ -83,6 +103,12 @@ class _CalibrationComputer:
         # the legacy no-weight call path now resolves the overall ratio through
         # the same `_overall_ae` helper that `rs.calibration_summary` uses,
         # so the two stay numerically identical.
+        #
+        # WEIGHTING CONTRACT: this calibration summary's overall ``ae_ratio`` is
+        # exposure-based but PRIOR-WEIGHT-UNWEIGHTED (the _CalibrationComputer is
+        # constructed without prior weights), whereas the model's weighted decile
+        # A/E does honour prior weights. For a prior-weighted overall A/E, call
+        # ``rs.calibration_summary(y, mu, weights=...)`` directly.
         from rustystats.calibration import _overall_ae
 
         overall = _overall_ae(self.y, self.mu, weights=None)
@@ -136,60 +162,67 @@ class _CalibrationComputer:
         exposure_sorted = self.exposure[order]
         score_sorted = score[order]
         n = len(y_sorted)
+        if n == 0 or n_bins <= 0:
+            return []
+
+        # Bin by equal exposure mass (equal count when exposure is uniform),
+        # matching the deliberate actuarial behavior: each decile holds an equal
+        # slice of portfolio exposure rather than an equal row count. The target
+        # is re-derived from the remaining mass each step so a skewed tail can
+        # neither collapse the partition nor overflow the bin budget.
+        size_sorted = exposure_sorted if has_exposure else np.ones_like(y_sorted)
+        total_mass = float(np.sum(size_sorted))
+        if total_mass <= 0.0:
+            return []
+
         bins: list[CalibrationBin] = []
-        for b in range(n_bins):
-            start = b * n // n_bins
-            end = (b + 1) * n // n_bins
-            if start >= end:
+        start = 0
+        cum = 0.0
+        bin_idx = 0
+        mass_remaining = total_mass
+        for pos in range(n):
+            size = float(size_sorted[pos])
+            cum += size
+            mass_remaining -= size
+            is_last = pos == n - 1
+            bins_remaining = n_bins - bin_idx
+            obs_remaining = n - pos - 1
+            close = is_last
+            if not close and bins_remaining > 1:
+                target = (cum + mass_remaining) / bins_remaining
+                close = obs_remaining <= bins_remaining - 1 or cum >= target
+            if not close:
                 continue
-            y_b = y_sorted[start:end]
-            mu_b = mu_sorted[start:end]
-            exp_b = exposure_sorted[start:end]
-            score_b = score_sorted[start:end]
-            actual_sum = float(np.sum(y_b))
+            mu_b = mu_sorted[start : pos + 1]
+            exp_b = exposure_sorted[start : pos + 1]
+            score_b = score_sorted[start : pos + 1]
+            actual_sum = float(np.sum(y_sorted[start : pos + 1]))
             predicted_sum = float(np.sum(mu_b))
             exposure_sum = float(np.sum(exp_b))
-            ae = actual_sum / predicted_sum if predicted_sum > 0 else np.nan
-            if predicted_sum > 0.0 and np.isfinite(ae):
-                ae_se = np.sqrt(max(actual_sum, 0.0)) / predicted_sum
-                ae_ci_lower = max(0.0, ae - 1.96 * ae_se)
-                ae_ci_upper = ae + 1.96 * ae_se
-            else:
-                ae_ci_lower = float("nan")
-                ae_ci_upper = float("nan")
-            rust_bin = {
-                "bin_index": b + 1,
-                "predicted_lower": float(score_b[0]),
-                "predicted_upper": float(score_b[-1]),
-                "predicted_mean": float(np.mean(score_b)),
-                "actual_mean": float(actual_sum / exposure_sum if exposure_sum > 0 else np.nan),
-                "actual_expected_ratio": float(ae),
-                "count": int(end - start),
-                "exposure": exposure_sum,
-                "actual_sum": actual_sum,
-                "predicted_sum": predicted_sum,
-                "ae_ci_lower": float(ae_ci_lower),
-                "ae_ci_upper": float(ae_ci_upper),
-            }
-            bins.append(rust_bin)
-        rust_bins = bins
-        return [
-            CalibrationBin(
-                bin_index=b["bin_index"],
-                predicted_lower=b["predicted_lower"],
-                predicted_upper=b["predicted_upper"],
-                predicted_mean=b["predicted_mean"],
-                actual_mean=b["actual_mean"],
-                actual_expected_ratio=b["actual_expected_ratio"],
-                count=b["count"],
-                exposure=b["exposure"],
-                actual_sum=b["actual_sum"],
-                predicted_sum=b["predicted_sum"],
-                ae_confidence_interval_lower=b["ae_ci_lower"],
-                ae_confidence_interval_upper=b["ae_ci_upper"],
+            ae = actual_sum / predicted_sum if predicted_sum > 0 else float("nan")
+            ae_ci_lower, ae_ci_upper = _wilson_poisson_rate_ci(actual_sum, predicted_sum)
+            bins.append(
+                CalibrationBin(
+                    bin_index=bin_idx + 1,
+                    predicted_lower=float(score_b[0]),
+                    predicted_upper=float(score_b[-1]),
+                    predicted_mean=float(np.mean(score_b)),
+                    actual_mean=float(
+                        actual_sum / exposure_sum if exposure_sum > 0 else float("nan")
+                    ),
+                    actual_expected_ratio=float(ae),
+                    count=int(pos + 1 - start),
+                    exposure=exposure_sum,
+                    actual_sum=actual_sum,
+                    predicted_sum=predicted_sum,
+                    ae_confidence_interval_lower=float(ae_ci_lower),
+                    ae_confidence_interval_upper=float(ae_ci_upper),
+                )
             )
-            for b in rust_bins
-        ]
+            bin_idx += 1
+            start = pos + 1
+            cum = 0.0
+        return bins
 
     def _hosmer_lemeshow(self, n_bins: int) -> tuple:
         result = _rust_hosmer_lemeshow(self.y, self.mu, n_bins)

@@ -126,6 +126,16 @@ from rustystats.export_pmml import to_pmml
 from rustystats.formula import FormulaGLMDict, GLMModel, glm_dict
 from rustystats.glm import summary, summary_relativities
 
+# Deterministic input transforms (frozen lookups applied before the design matrix)
+from rustystats.input_transforms import (
+    apply_input_transforms,
+    compile_input_transforms,
+    validate_input_transforms,
+)
+
+# Rate-table export (resolved deployment tables), sibling to to_pmml / to_onnx
+from rustystats.rate_tables import to_rate_tables
+
 # IRLS residual / working-response helper (e.g. for link-scale boosting loops)
 from rustystats.residuals import working_response_weights
 
@@ -211,6 +221,11 @@ __all__ = [
     # Model export
     "to_pmml",
     "to_onnx",
+    "to_rate_tables",
+    # Deterministic input transforms
+    "validate_input_transforms",
+    "compile_input_transforms",
+    "apply_input_transforms",
     # Exceptions
     "RustyStatsError",
     "DesignMatrixError",

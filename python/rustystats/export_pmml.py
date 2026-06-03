@@ -157,6 +157,13 @@ class PMMLExporter:
                 "exposure array cannot be exported because PMML scoring data has no "
                 "field to supply that exposure."
             )
+        offset_spec = getattr(self.model, "_offset_spec", None)
+        if offset_spec is not None and not isinstance(offset_spec, str):
+            raise ValidationError(
+                "PMML export requires offset to be a column name. Models fit with an "
+                "offset array cannot be exported because PMML scoring data has no "
+                "field to supply that offset."
+            )
 
         # Accumulated PMML structures
         self._raw_inputs: OrderedDict[str, dict] = OrderedDict()
@@ -856,6 +863,13 @@ def to_pmml(
     str
         The PMML XML document as a string.
     """
+    input_transforms = getattr(model, "_input_transforms", [])
+    if input_transforms:
+        names = [spec["name"] for spec in input_transforms]
+        raise ValidationError(
+            "PMML raw-data export does not yet support input_transforms; "
+            f"unsupported transform(s): {names}."
+        )
     exporter = PMMLExporter(model, n_grid_points=n_grid_points)
     xml = exporter.export()
 

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -199,6 +199,26 @@ def _match_factor(feature_name: str, var: str) -> tuple[bool, str]:
             return True, "other"
 
     return False, "unknown"
+
+
+def _inference_is_valid(result: Any) -> bool:
+    """Whether per-factor Wald significance / SE should be shown for this fit.
+
+    The genuinely-misleading case is *post-selection / post-regularization*
+    inference (``naive_after_selection`` / ``naive_after_regularization`` /
+    ``naive_after_cv_selection``): the Wald covariance ignores the selection or
+    shrinkage event, so factor χ²/SE are suppressed there, matching how the main
+    coefficient table hides Std.Err / P>|z|.
+
+    A penalized *smooth* fit (``unavailable``) or a ``constrained_boundary`` fit
+    still surfaces a descriptive joint factor χ² — that is standard GAM practice
+    and the existing diagnostics contract (e.g. comparing whether two smooth
+    terms contribute), distinct from the per-coefficient Wald p-values the
+    summary suppresses. So only the ``naive_*`` (selection/regularization)
+    statuses are treated as untrustworthy here.
+    """
+    status = getattr(result, "inference_status", None)
+    return not (isinstance(status, str) and status.startswith("naive_"))
 
 
 class _FactorFeatureIndex:
@@ -389,6 +409,10 @@ class _FactorDiagnosticsComputer:
             and result is not None
             and hasattr(result, "params")
             and hasattr(result, "bse")
+            # Wald factor significance is only trustworthy for valid inference;
+            # suppress it (leave None) for penalized/selected/constrained fits,
+            # matching the main coefficient table's suppression.
+            and _inference_is_valid(result)
         ):
             # Gather one entry per factor (categorical first, continuous second)
             # in a stable order matching the per-factor loops below. Only
@@ -810,6 +834,11 @@ class _FactorDiagnosticsComputer:
         if result is None or not hasattr(result, "params"):
             return None
 
+        # SE / z / p are only trustworthy for valid inference; for penalized,
+        # selected, or constrained fits they are suppressed (NaN), matching the
+        # main coefficient table rather than presenting hidden Wald numbers.
+        inference_valid = _inference_is_valid(result)
+
         feat = self._get_feature_for(name)
 
         try:
@@ -823,6 +852,16 @@ class _FactorDiagnosticsComputer:
                 result.feature_names if hasattr(result, "feature_names") else self.feature_names
             )
 
+            # SE / p-value fetch. The ``except AttributeError`` arms are
+            # intentional and narrow: ``hasattr`` already screens out results
+            # that do not expose the method at all (e.g. deserialized models),
+            # so the only thing caught here is a result that *advertises* ``bse``
+            # / ``pvalues`` but cannot materialize a covariance for them. That is
+            # a "covariance unavailable" condition, not a programming error, so a
+            # conservative None (later rendered as a blank SE) is the right
+            # outcome rather than crashing the whole diagnostics run. Inference
+            # that is merely untrustworthy (penalized/selected/constrained) is
+            # already suppressed above via ``inference_valid``.
             bse = None
             if hasattr(result, "bse"):
                 try:
@@ -866,13 +905,18 @@ class _FactorDiagnosticsComputer:
                 if ":" in fn:
                     continue
                 coef = float(params[i])
-                se = float(bse[i]) if bse is not None else 0.0
-                z_val = coef / se if se > 0 else 0.0
-                p_val = (
-                    float(pvalues[i])
-                    if pvalues is not None
-                    else (2 * (1 - min(0.9999, abs(z_val) / 4)))
-                )
+                if not inference_valid:
+                    se = float("nan")
+                    z_val = float("nan")
+                    p_val = float("nan")
+                else:
+                    se = float(bse[i]) if bse is not None else 0.0
+                    z_val = coef / se if se > 0 else 0.0
+                    p_val = (
+                        float(pvalues[i])
+                        if pvalues is not None
+                        else (2 * (1 - min(0.9999, abs(z_val) / 4)))
+                    )
 
                 rel: float | None
                 if is_log_link and relativity_meaningful:
@@ -913,6 +957,13 @@ class _FactorDiagnosticsComputer:
         ``bs(VehAge, 1/4)``.
         """
         if not hasattr(result, "params") or not hasattr(result, "bse"):
+            return None
+
+        # Wald factor significance is only trustworthy for valid inference;
+        # suppress it (like the main coefficient table) for penalized, selected,
+        # or constrained fits. This also covers the per-factor fallback that the
+        # batched path dispatches to when the lookup is intentionally empty.
+        if not _inference_is_valid(result):
             return None
 
         param_indices = list(self._get_feature_for(name).indices)

@@ -733,7 +733,11 @@ fn fit_glm_core(
             // No full or halved step reduced the deviance: retain the previous
             // iterate (already held in iter_coefficients / eta / mu / deviance)
             // instead of accepting a worse one, and stop (RS-ACT-007).
+            // `iteration` was incremented at the top before this (rejected) step
+            // was attempted; report the index of the RETAINED iterate instead,
+            // consistent with the converged / max_iterations count.
             step_halving_failed = true;
+            iteration = iteration.saturating_sub(1);
             cov_unscaled = xtwinv.clone();
             final_weights = irls_weights.clone();
             break;
@@ -771,12 +775,13 @@ fn fit_glm_core(
             best_weights = irls_weights.clone();
         }
 
-        // Convergence requires the accepted step to be non-worsening (signed
-        // change ≤ 0) AND small. A worse-but-close step is not converged.
-        // The accept loop above already enforces the slack on the signed
-        // change; the final convergence flag must also.
-        let signed_change = deviance_old - deviance;
-        if signed_change >= -ZERO_TOL && rel_change < config.tolerance {
+        // Convergence requires the accepted step to be non-worsening AND small.
+        // A clearly-worse step is not converged, but the non-worsening guard is
+        // RELATIVE — mirroring the accept loop's `IRLS_ACCEPT_REL_SLACK`. A
+        // terminal step that nudges the deviance up by a tiny relative amount
+        // (still below `config.tolerance` relative) is treated as converged,
+        // matching the acceptance contract rather than an absolute 1e-10 floor.
+        if irls_step_converged(deviance_old, deviance, rel_change, config.tolerance) {
             converged = true;
             cov_unscaled = xtwinv;
             final_weights = irls_weights;
@@ -797,8 +802,12 @@ fn fit_glm_core(
         if has_constraints && best_deviance < deviance {
             // Best solution was found earlier — use it and treat as converged
             // (sign clamping can cause coefficient oscillation even when deviance
-            // has stabilized, so the best-tracked solution is the correct answer)
+            // has stabilized, so the best-tracked solution is the correct answer).
+            // Clear the step-halving-failure flag so the reported solver_status
+            // is consistent with converged = true (the best iterate is adopted,
+            // not the worse step that triggered the halving break).
             converged = true;
+            step_halving_failed = false;
             cov_unscaled = best_cov;
             final_weights = best_weights;
             (best_mu, best_eta, best_deviance, best_coefficients)
@@ -957,6 +966,26 @@ fn fit_glm_core(
 // =============================================================================
 // Helper Functions
 // =============================================================================
+
+/// Decide whether an accepted IRLS step satisfies the convergence criterion.
+///
+/// Two conditions must both hold (RS-ACT-007, A2):
+/// * the relative deviance change is small: `rel_change < tolerance`;
+/// * the step is non-worsening up to a RELATIVE slack mirroring the accept loop:
+///   `deviance <= deviance_old * (1 + tolerance)`, i.e.
+///   `signed_change >= -(tolerance * |deviance_old|)`, floored at `ZERO_TOL` so a
+///   near-zero deviance still has a tiny absolute allowance.
+///
+/// Using a relative (not absolute 1e-10) non-worsening guard means a genuinely
+/// converged large-deviance fit whose terminal step nudges deviance up by a tiny
+/// relative amount is correctly flagged converged instead of running to
+/// `max_iterations` with a spurious warning.
+#[inline]
+fn irls_step_converged(deviance_old: f64, deviance: f64, rel_change: f64, tolerance: f64) -> bool {
+    let signed_change = deviance_old - deviance;
+    let non_worsening_threshold = -(tolerance * deviance_old.abs()).max(ZERO_TOL);
+    signed_change >= non_worsening_threshold && rel_change < tolerance
+}
 
 /// Compute X'WX and X'Wz using parallel chunked computation with raw slice access.
 ///
@@ -1566,6 +1595,20 @@ mod tests {
             result.solver_status, result.deviance, result.iterations
         );
         assert!(!result.converged, "exhausted halving must not be converged");
+        // A1: status and converged must never contradict.
+        assert!(
+            !(result.converged && result.solver_status == "step_halving_no_improvement"),
+            "converged must not coexist with step_halving_no_improvement"
+        );
+        // A3: the halving-exhaustion break reports the RETAINED iterate index,
+        // not the rejected iteration. With this fixture the first step is
+        // accepted and the SECOND step is rejected, so the loop counter reaches 2
+        // at the break but the retained iterate is index 1. Before the fix the
+        // reported count was the rejected iteration (2); it must now be 1.
+        assert_eq!(
+            result.iterations, 1,
+            "halving-exhaustion break must report the retained iterate index, not the rejected one"
+        );
         // Retained coefficients are the previous iterate's, not the last failed
         // trial. The previous iterate corresponds to the projected initial fit
         // (iteration 1's "previous" state), so the returned coefficients must
@@ -1578,6 +1621,144 @@ mod tests {
         assert!(
             result.deviance.is_finite(),
             "retained deviance must be finite (previous iterate's deviance)"
+        );
+    }
+
+    #[test]
+    fn test_solver_status_consistent_with_converged_invariant() {
+        // A1: the reported `solver_status` must never contradict `converged`.
+        // In particular the constrained best-iterate recovery block sets
+        // converged = true; the previously-sticky `step_halving_failed` flag
+        // must not then make the status read "step_halving_no_improvement".
+        // We assert the invariant across a representative sweep that includes
+        // sign-constrained fits (which exercise the best-iterate recovery path).
+        let check = |result: &IRLSResult| {
+            if result.converged {
+                assert_ne!(
+                    result.solver_status, "step_halving_no_improvement",
+                    "converged result must not report step_halving_no_improvement"
+                );
+                assert_eq!(
+                    result.solver_status, "converged",
+                    "converged result must report status 'converged'"
+                );
+            }
+            if result.solver_status == "step_halving_no_improvement" {
+                assert!(
+                    !result.converged,
+                    "step_halving_no_improvement must not be marked converged"
+                );
+            }
+        };
+
+        // Unconstrained Poisson/log.
+        let x = Array2::from_shape_vec(
+            (6, 2),
+            vec![1.0, 0.0, 1.0, 1.0, 1.0, 2.0, 1.0, 3.0, 1.0, 4.0, 1.0, 5.0],
+        )
+        .expect("test setup should be valid");
+        let y = array![2.0, 2.0, 3.0, 4.0, 5.0, 7.0];
+        let config = FitConfig::default().with_max_iterations(100);
+        let r = fit_glm_unified(
+            &y,
+            x.view(),
+            &PoissonFamily,
+            &LogLink,
+            &config,
+            None,
+            None,
+            None,
+        )
+        .expect("fit should not error");
+        check(&r);
+
+        // Sign-constrained Poisson/log (slope forced non-negative) — exercises
+        // the best-iterate recovery branch where converged is set late.
+        let config_nn = FitConfig::default()
+            .with_max_iterations(100)
+            .with_nonneg_indices(vec![1]);
+        let r_nn = fit_glm_unified(
+            &y,
+            x.view(),
+            &PoissonFamily,
+            &LogLink,
+            &config_nn,
+            None,
+            None,
+            None,
+        )
+        .expect("constrained fit should not error");
+        check(&r_nn);
+
+        // Sign-constrained where the constraint fights the data (slope forced
+        // non-positive on increasing data) — the projection oscillation path.
+        let config_np = FitConfig::default()
+            .with_max_iterations(100)
+            .with_nonpos_indices(vec![1]);
+        let r_np = fit_glm_unified(
+            &y,
+            x.view(),
+            &PoissonFamily,
+            &LogLink,
+            &config_np,
+            None,
+            None,
+            None,
+        )
+        .expect("constrained fit should not error");
+        check(&r_np);
+    }
+
+    #[test]
+    fn test_convergence_guard_is_relative_not_absolute() {
+        // A2: the non-worsening convergence guard must be RELATIVE (mirroring the
+        // accept loop's slack), not an absolute 1e-10 floor. We exercise the
+        // extracted `irls_step_converged` decision directly at the regression
+        // boundary.
+        let tol = 1e-8;
+
+        // Large-deviance fit: terminal step worsens deviance by a tiny RELATIVE
+        // amount that is well above 1e-10 absolute (5e-6) but below tol*deviance
+        // (1e-5), and rel_change (5e-9) is below tol. The OLD absolute guard
+        // (signed_change >= -1e-10) would WRONGLY reject this; the relative guard
+        // accepts it.
+        let deviance_old = 1000.0_f64;
+        let deviance = 1000.0_f64 + 5e-6; // worsened slightly
+        let rel_change = (deviance_old - deviance).abs() / deviance_old.abs(); // 5e-9 < tol
+        assert!(rel_change < tol, "fixture rel_change must be below tol");
+        // Sanity: this is the case the old absolute guard rejected.
+        assert!(
+            deviance_old - deviance < -ZERO_TOL,
+            "absolute worsening must exceed the old 1e-10 floor"
+        );
+        assert!(
+            irls_step_converged(deviance_old, deviance, rel_change, tol),
+            "relative guard must treat a tiny-relative-worsening large-deviance step as converged"
+        );
+
+        // A clearly-worse step (worsened by 10% relative) is NOT converged, even
+        // though its rel_change could be small for a different reason — here we
+        // make rel_change small artificially to confirm the non-worsening guard
+        // is what rejects it.
+        let deviance_bad = 1100.0_f64; // +10%
+        assert!(
+            !irls_step_converged(deviance_old, deviance_bad, 1e-12, tol),
+            "a clearly-worse step must not be reported converged"
+        );
+
+        // A genuine improvement within tolerance is converged.
+        let deviance_better = 1000.0_f64 - 1e-6;
+        let rel_better = (deviance_old - deviance_better).abs() / deviance_old.abs();
+        assert!(
+            irls_step_converged(deviance_old, deviance_better, rel_better, tol),
+            "a small improving step must be converged"
+        );
+
+        // Near-zero deviance retains an absolute floor (ZERO_TOL) so float noise
+        // does not deny convergence there either.
+        assert!(
+            irls_step_converged(1e-12, 1e-12 + 1e-11, 1e-30, tol),
+            "near-zero deviance must keep the ZERO_TOL absolute allowance"
         );
     }
 

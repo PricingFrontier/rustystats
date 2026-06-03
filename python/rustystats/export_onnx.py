@@ -29,6 +29,7 @@ import numpy as np
 if TYPE_CHECKING:
     from rustystats.formula import GLMModel
 
+from rustystats.exceptions import ValidationError
 from rustystats.export_pmml import _classify_feature
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -654,6 +655,28 @@ def to_onnx(
         ``onnxruntime.InferenceSession(onnx_bytes)`` or written to disk.
     """
     if mode == "full":
+        input_transforms = getattr(model, "_input_transforms", [])
+        if input_transforms:
+            names = [spec["name"] for spec in input_transforms]
+            raise ValidationError(
+                "ONNX full raw-data export does not yet support input_transforms; "
+                f"unsupported transform(s): {names}."
+            )
+        # The full graph reconstructs eta = X @ beta + intercept only. It does not
+        # add the offset / log(exposure) term the model applies at predict time, so
+        # exporting an offset/exposure model would silently omit it and yield wrong
+        # predictions. Fail closed (PMML embeds these; scoring mode takes a design
+        # matrix from the caller).
+        if getattr(model, "_offset_spec", None) is not None or (
+            getattr(model, "_exposure_spec", None) is not None
+        ):
+            raise ValidationError(
+                "ONNX full raw-data export does not yet incorporate offset/exposure into "
+                "the scoring graph, which would silently omit the offset / log(exposure) "
+                "term and produce wrong predictions. Use mode='scoring' (you supply the "
+                "design matrix), export via to_pmml() (which embeds offset/exposure), or "
+                "fit without offset=/exposure=."
+            )
         onnx_bytes = _build_full_model(model, n_grid_points=n_grid_points)
     else:
         onnx_bytes = _build_scoring_model(model)

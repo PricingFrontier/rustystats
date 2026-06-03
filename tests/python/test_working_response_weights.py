@@ -603,3 +603,25 @@ class TestWorkingResponseWeightsAgreesWithSolver:
         # IRLS convergence band (~1e-12) by the condition number of XᵀWX.
         # The point is consistency with the solver, not bit-exactness.
         np.testing.assert_allclose(beta_new, beta_fit, atol=1e-6, rtol=1e-6)
+
+
+class TestEmbeddedTweediePower:
+    """Regression: a Tweedie power embedded in the family string (e.g.
+    ``tweedie(p=1.8)``) must be honoured, not silently overridden by the default
+    ``var_power=1.5``."""
+
+    def test_embedded_power_changes_weights(self):
+        eta = np.log(np.array([2.0, 3.0, 4.0]))  # mu != 1 so mu**p depends on p
+        y = np.array([1.0, 2.0, 3.0])
+        _, w_low = rs.working_response_weights(y, eta, family="tweedie(p=1.2)")
+        _, w_high = rs.working_response_weights(y, eta, family="tweedie(p=1.8)")
+        assert not np.allclose(w_low, w_high)
+        # Embedded p matches the explicit var_power form.
+        _, w_explicit = rs.working_response_weights(y, eta, family="tweedie", var_power=1.8)
+        np.testing.assert_allclose(w_high, w_explicit, rtol=1e-12, atol=1e-12)
+
+    def test_embedded_power_conflicting_var_power_raises(self):
+        with pytest.raises(ValidationError, match="embeds"):
+            rs.working_response_weights(
+                np.array([1.0]), np.zeros(1), family="tweedie(p=1.2)", var_power=1.8
+            )

@@ -80,6 +80,7 @@ def compute_contributions(
         needed = _extract_needed_columns(
             terms=model._terms_dict,
             interactions=model._interactions_spec,
+            input_transforms=model._input_transforms,
             offset=offset_to_use,
             exposure=exposure_to_use,
             complement=complement_to_use,
@@ -88,6 +89,7 @@ def compute_contributions(
     else:
         new_data = _collect_lazyframe(new_data, set())
 
+    new_data = model.prepare_input(new_data)
     n_rows = len(new_data)
     params = np.asarray(model.params, dtype=np.float64)
     _validate_term_slots(slots, params.size)

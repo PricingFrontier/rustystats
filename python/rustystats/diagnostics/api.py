@@ -243,6 +243,18 @@ def _extract_response_and_predictions(
     return y, mu, lp
 
 
+def _spec_is_transform_output(result: Any, spec: Any) -> bool:
+    return isinstance(spec, str) and any(
+        transform.get("output") == spec for transform in getattr(result, "_input_transforms", [])
+    )
+
+
+def _data_for_model_spec(result: Any, data: pl.DataFrame, spec: Any) -> pl.DataFrame:
+    if _spec_is_transform_output(result, spec) and hasattr(result, "prepare_input"):
+        return result.prepare_input(data)
+    return data
+
+
 def _validate_data_length(train_data: pl.DataFrame, mu: np.ndarray) -> None:
     """Raise ValidationError when train_data length disagrees with model fit length."""
     if len(train_data) != len(mu):
@@ -297,12 +309,13 @@ def _resolve_offset_and_response(
         )
     if isinstance(exposure_spec, str):
         exposure_col = exposure_spec
-        if exposure_col not in train_data.columns:
+        data_for_exposure = _data_for_model_spec(result, train_data, exposure_col)
+        if exposure_col not in data_for_exposure.columns:
             raise ValidationError(
                 f"Model requires exposure column '{exposure_col}', but it is not "
                 "present in train_data. Pass exposure= explicitly to diagnostics()."
             )
-        exposure = train_data[exposure_col].to_numpy().astype(np.float64)
+        exposure = data_for_exposure[exposure_col].to_numpy().astype(np.float64)
     elif exposure_spec is not None:
         exposure = np.asarray(exposure_spec, dtype=np.float64)
         if exposure.ndim != 1:
@@ -405,16 +418,18 @@ def _extract_score_test_matrices(
         if n_rows <= chunk_size:
             # Small input: keep the single-shot fast path (bit-exact to
             # pre-refactor behavior).
-            design_matrix = result._builder.transform_new_data(train_data)
+            prepared = result.prepare_input(train_data)
+            design_matrix = result._builder.transform_new_data(prepared)
         else:
             design_matrix = np.empty((n_rows, n_features), dtype=np.float64)
             for start in range(0, n_rows, chunk_size):
                 stop = min(start + chunk_size, n_rows)
-                X_chunk = result._builder.transform_new_data(train_data.slice(start, stop - start))
+                chunk = result.prepare_input(train_data.slice(start, stop - start))
+                X_chunk = result._builder.transform_new_data(chunk)
                 design_matrix[start:stop, :] = X_chunk
                 # Mark the reference dead so the chunk can be freed before the
                 # next iteration allocates.
-                del X_chunk
+                del X_chunk, chunk
     if hasattr(result, "get_bread_matrix"):
         bread_matrix = result.get_bread_matrix()
     if hasattr(result, "get_irls_weights"):
@@ -567,8 +582,12 @@ def _extract_test_arrays(
     has_exposure = False
     if isinstance(exposure_override, str):
         exposure_col = exposure_override
-    if exposure_col and exposure_col in test_data.columns:
-        exposure_test = test_data[exposure_col].to_numpy().astype(np.float64)
+    if exposure_col:
+        data_for_exposure = _data_for_model_spec(result, test_data, exposure_col)
+    else:
+        data_for_exposure = test_data
+    if exposure_col and exposure_col in data_for_exposure.columns:
+        exposure_test = data_for_exposure[exposure_col].to_numpy().astype(np.float64)
         has_exposure = True
     elif override_arr is not None and override_arr.shape[0] == len(y_test):
         exposure_test = override_arr.astype(np.float64)
@@ -1844,11 +1863,12 @@ def _resolve_weights(
     if spec is None:
         return None
     if isinstance(spec, str):
-        if spec not in train_data.columns:
+        data_for_weights = _data_for_model_spec(result, train_data, spec)
+        if spec not in data_for_weights.columns:
             if explicit:
                 raise ValidationError(f"weights column '{spec}' is not present in train_data.")
             return None
-        return train_data[spec].to_numpy().astype(np.float64)
+        return data_for_weights[spec].to_numpy().astype(np.float64)
     arr = np.asarray(spec, dtype=np.float64)
     if arr.ndim != 1 or arr.shape[0] != train_data.height:
         if explicit:
@@ -1879,7 +1899,11 @@ def _resolve_test_weights(
     if spec is None:
         return None
     if isinstance(spec, str):
-        if spec not in test_data.columns:
+        # Mirror the train side: a weights column produced by an input transform
+        # only exists after transforms are applied, so resolve through the same
+        # prepared-data helper rather than the raw test frame.
+        data_for_weights = _data_for_model_spec(result, test_data, spec)
+        if spec not in data_for_weights.columns:
             if explicit:
                 raise ValidationError(f"weights column '{spec}' is not present in test_data.")
             warnings.append(
@@ -1892,7 +1916,7 @@ def _resolve_test_weights(
                 }
             )
             return None
-        return test_data[spec].to_numpy().astype(np.float64)
+        return data_for_weights[spec].to_numpy().astype(np.float64)
 
     warnings.append(
         {

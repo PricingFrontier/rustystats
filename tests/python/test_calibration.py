@@ -820,3 +820,42 @@ class TestNoExposureBinKeys:
             assert "predicted_rate_max" in b
             assert "predicted_rate_mean" in b
             assert "predicted_score_min" not in b
+
+
+# --------------------------------------------------------------------------
+# Review regressions: balanced binning, missing-key reconciliation, isotonic
+# edge cases.
+# --------------------------------------------------------------------------
+
+
+class TestCalibrationReviewRegressions:
+    @pytest.mark.parametrize("n", [3, 11, 12, 15, 20, 25])
+    def test_binning_yields_min_n_nbins_for_uniform_data(self, n):
+        # Equal-mass binning must not collapse to a few imbalanced bins when n
+        # is close to (and not a multiple of) n_bins.
+        y = np.arange(1, n + 1, dtype=float)
+        pred = np.linspace(0.1, 1.0, n)
+        summary = rs.calibration_summary(y, pred, n_bins=10)
+        bins = summary["bins"]
+        assert len(bins) == min(n, 10)
+        counts = [b["count"] for b in bins]
+        assert sum(counts) == n
+        # No bin holds a wildly disproportionate share.
+        assert max(counts) - min(counts) <= 1
+
+    def test_by_factor_reconciles_with_null_keys(self):
+        y = np.array([1.0, 2.0, 3.0, 4.0])
+        pred = np.ones(4)
+        for region in ([1.0, 2.0, float("nan"), 2.0], ["A", "B", None, "B"]):
+            summary = rs.calibration_summary(y, pred, by={"region": region})
+            rows = summary["by_factor"]["region"]
+            assert sum(r["actual"] for r in rows) == summary["overall"]["actual"]
+            assert any(r["level"] is None for r in rows)
+
+    def test_isotonic_rejects_empty_and_zero_weight(self):
+        with pytest.raises(ValidationError, match="empty"):
+            rs.fit_isotonic_calibration(np.array([]), np.array([]))
+        with pytest.raises(ValidationError, match="total weight"):
+            rs.fit_isotonic_calibration(
+                np.array([1.0, 2.0]), np.array([0.5, 0.7]), weights=np.zeros(2)
+            )
