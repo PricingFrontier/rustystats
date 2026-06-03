@@ -383,6 +383,24 @@ def compute_standardization(
     return center, scale
 
 
+def solver_standardization(
+    center: np.ndarray | None,
+    scale: np.ndarray | None,
+    *,
+    fit_intercept: bool = True,
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """Return the affine transform to pass to the Rust solver.
+
+    The alpha-grid calculation still uses the weighted centers from
+    :func:`compute_standardization`. For the actual penalized fit, an
+    unpenalized intercept can absorb column centering exactly, while keeping a
+    scale-only design preserves sparse zero structure in one-hot-heavy models.
+    """
+    if center is None or scale is None or not fit_intercept:
+        return center, scale
+    return np.zeros_like(center), scale
+
+
 def compute_alpha_max(
     X: np.ndarray,
     y: np.ndarray,
@@ -854,6 +872,11 @@ def fit_cv_regularization_path(
 
     # Pass sign constraints so CV folds respect monotonicity/pos/neg
     nonneg_indices, nonpos_indices = _get_constraint_indices(glm_instance.feature_names)
+    solver_center, solver_scale = solver_standardization(
+        center,
+        scale,
+        fit_intercept=fit_intercept,
+    )
 
     rust_result = _fit_cv_path_rust(
         y,
@@ -874,8 +897,8 @@ def fit_cv_regularization_path(
         nonpos_indices=nonpos_indices if nonpos_indices else None,
         allow_extended_tweedie=allow_extended_tweedie,
         fit_intercept=fit_intercept,
-        center=center,
-        scale=scale,
+        center=solver_center,
+        scale=solver_scale,
     )
 
     # Convert Rust result to path_results format
@@ -1078,7 +1101,12 @@ def fit_cv_te_regularization_path(
                 fold_pen_mask,
                 fit_intercept=fit_intercept,
             )
-        fold_designs.append((x_train, x_val, names, fold_center, fold_scale))
+        solver_center, solver_scale = solver_standardization(
+            fold_center,
+            fold_scale,
+            fit_intercept=fit_intercept,
+        )
+        fold_designs.append((x_train, x_val, names, solver_center, solver_scale))
         try:
             fold_alpha_max = compute_alpha_max(
                 x_train,

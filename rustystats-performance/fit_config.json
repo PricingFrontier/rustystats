@@ -1,0 +1,17 @@
+{
+  "seed": 0,
+  "regularization": "ridge",
+  "cv": 2,
+  "selection": "1se",
+  "n_alphas": 20,
+  "response": "ClaimCount",
+  "offset": "Exposure",
+  "train_parquet": "fremtpl2_50k_rustystats_train.parquet",
+  "actual_frame_parquet": "fremtpl2_50k_actual_frame.parquet",
+  "reference_student": "reference_student.rsglm",
+  "notes": [
+    "ClaimCount in the RustyStats train parquet is the CatBoost teacher predicted mean, not the observed count.",
+    "The observed response is preserved in fremtpl2_50k_actual_frame.parquet and in ClaimCount_actual in the helper train parquet.",
+    "This reproduces the successful 50k freMTPL2 ridge CV=2 report run."
+  ]
+}

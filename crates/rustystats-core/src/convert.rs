@@ -23,18 +23,22 @@ use ndarray::{Array1, Array2, ShapeBuilder};
 #[inline]
 pub fn to_dmatrix(a: &Array2<f64>) -> DMatrix<f64> {
     let (nrows, ncols) = (a.nrows(), a.ncols());
-    let contig = if a.is_standard_layout() {
-        a.clone()
+    if let Some(slice) = a.as_slice() {
+        DMatrix::from_row_slice(nrows, ncols, slice)
     } else {
-        a.as_standard_layout().to_owned()
-    };
-    DMatrix::from_row_slice(nrows, ncols, contig.as_slice().expect("contiguous array"))
+        let contig = a.as_standard_layout();
+        DMatrix::from_row_slice(nrows, ncols, contig.as_slice().expect("contiguous array"))
+    }
 }
 
 /// Convert an ndarray Array1 to a nalgebra DVector.
 #[inline]
 pub fn to_dvector(v: &Array1<f64>) -> DVector<f64> {
-    DVector::from_row_slice(v.as_slice().unwrap_or(&v.to_vec()))
+    if let Some(slice) = v.as_slice() {
+        DVector::from_row_slice(slice)
+    } else {
+        DVector::from_row_slice(&v.to_vec())
+    }
 }
 
 // =============================================================================

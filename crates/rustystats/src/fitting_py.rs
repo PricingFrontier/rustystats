@@ -15,6 +15,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use rayon::iter::IntoParallelIterator;
 use rayon::prelude::*;
+use std::time::Instant;
 
 use rustystats_core::diagnostics::{estimate_theta_moments, estimate_theta_profile};
 use rustystats_core::families::{NegativeBinomialFamily, PoissonFamily};
@@ -485,6 +486,21 @@ struct CVPathPoint {
     cv_deviance_se: f64,
 }
 
+#[derive(Clone, Default)]
+struct CVFoldProfile {
+    fold: usize,
+    n_train: usize,
+    n_val: usize,
+    split_copy_seconds: f64,
+    standardize_seconds: f64,
+    setup_seconds: f64,
+    fit_seconds: Vec<f64>,
+    validation_dot_seconds: Vec<f64>,
+    validation_score_seconds: Vec<f64>,
+    iterations: Vec<usize>,
+    statuses: Vec<String>,
+}
+
 fn validation_deviance_score(unit_deviance: &Array1<f64>, weights: Option<&Array1<f64>>) -> f64 {
     if let Some(w) = weights {
         let denom = w.sum();
@@ -527,11 +543,15 @@ pub fn fit_cv_path_py<'py>(
     center: Option<PyReadonlyArray1<f64>>,
     scale: Option<PyReadonlyArray1<f64>>,
 ) -> PyResult<Py<PyAny>> {
+    let total_start = Instant::now();
+    let input_start = Instant::now();
     let y_array: Array1<f64> = y.as_array().to_owned();
     let x_view = x.as_array(); // Zero-copy view
     let n = y_array.len();
     let p = x_view.ncols();
+    let input_seconds = input_start.elapsed().as_secs_f64();
 
+    let validation_start = Instant::now();
     // Dimension validation BEFORE any slicing / modular arithmetic. A direct
     // caller passing mismatched arrays (or n_folds == 0) would otherwise hit an
     // out-of-bounds index or divide-by-zero panic inside the rayon closure,
@@ -572,7 +592,9 @@ pub fn fit_cv_path_py<'py>(
             "n_folds ({n_folds}) cannot exceed the number of observations ({n})"
         )));
     }
+    let validation_seconds = validation_start.elapsed().as_secs_f64();
 
+    let setup_start = Instant::now();
     let offset_array: Option<Array1<f64>> = offset.map(|o| o.as_array().to_owned());
     let weights_array: Option<Array1<f64>> = weights.map(|w| w.as_array().to_owned());
     let standardization = build_standardization(center, scale, p)?;
@@ -615,13 +637,22 @@ pub fn fit_cv_path_py<'py>(
 
     let nonneg = nonneg_indices.unwrap_or_default();
     let nonpos = nonpos_indices.unwrap_or_default();
+    let setup_seconds = setup_start.elapsed().as_secs_f64();
 
-    let fold_all_results: Vec<Vec<f64>> = (0..n_folds)
+    let cv_parallel_start = Instant::now();
+    let fold_outputs: Vec<(Vec<f64>, CVFoldProfile)> = (0..n_folds)
         .into_par_iter()
         .map(|fold| {
+            let split_start = Instant::now();
             let train_mask: Vec<bool> = fold_assignments.iter().map(|&f| f != fold).collect();
             let n_train = train_mask.iter().filter(|&&b| b).count();
             let n_val = n - n_train;
+            let mut profile = CVFoldProfile {
+                fold,
+                n_train,
+                n_val,
+                ..CVFoldProfile::default()
+            };
 
             let mut y_train = Array1::zeros(n_train);
             let mut x_train = Array2::zeros((n_train, p));
@@ -660,18 +691,28 @@ pub fn fit_cv_path_py<'py>(
                     vi += 1;
                 }
             }
+            profile.split_copy_seconds = split_start.elapsed().as_secs_f64();
 
+            let standardize_start = Instant::now();
             if let Some(std) = &standardization {
                 x_train = match std.standardize_matrix(x_train.view()) {
                     Ok(x) => x,
-                    Err(_) => return vec![f64::INFINITY; alpha_vec.len()],
+                    Err(_) => {
+                        profile.standardize_seconds = standardize_start.elapsed().as_secs_f64();
+                        return (vec![f64::INFINITY; alpha_vec.len()], profile);
+                    }
                 };
                 x_val = match std.standardize_matrix(x_val.view()) {
                     Ok(x) => x,
-                    Err(_) => return vec![f64::INFINITY; alpha_vec.len()],
+                    Err(_) => {
+                        profile.standardize_seconds = standardize_start.elapsed().as_secs_f64();
+                        return (vec![f64::INFINITY; alpha_vec.len()], profile);
+                    }
                 };
             }
+            profile.standardize_seconds = standardize_start.elapsed().as_secs_f64();
 
+            let fold_setup_start = Instant::now();
             // Safe: family/link were validated before entering the parallel loop
             let thread_fam = family_from_name_with_tweedie_support(
                 family,
@@ -686,6 +727,7 @@ pub fn fit_cv_path_py<'py>(
 
             let mut warm_coefficients: Option<Array1<f64>> = None;
             let mut fold_deviances: Vec<f64> = Vec::with_capacity(alpha_vec.len());
+            profile.setup_seconds = fold_setup_start.elapsed().as_secs_f64();
 
             for &alpha in &alpha_vec {
                 let reg_config = if alpha > 0.0 {
@@ -713,6 +755,7 @@ pub fn fit_cv_path_py<'py>(
                     standardization: None,
                 };
 
+                let fit_start = Instant::now();
                 let result = match fit_glm_unified(
                     &y_train,
                     x_train.view(),
@@ -723,15 +766,30 @@ pub fn fit_cv_path_py<'py>(
                     weights_train.as_ref(),
                     warm_coefficients.as_ref(),
                 ) {
-                    Ok(r) => r,
+                    Ok(r) => {
+                        profile.fit_seconds.push(fit_start.elapsed().as_secs_f64());
+                        profile.iterations.push(r.iterations);
+                        profile.statuses.push(r.solver_status.clone());
+                        r
+                    }
                     Err(_) => {
+                        profile.fit_seconds.push(fit_start.elapsed().as_secs_f64());
+                        profile.iterations.push(0);
+                        profile.statuses.push("error".to_string());
+                        profile.validation_dot_seconds.push(0.0);
+                        profile.validation_score_seconds.push(0.0);
                         fold_deviances.push(f64::INFINITY);
                         continue;
                     }
                 };
 
                 warm_coefficients = Some(result.coefficients.clone());
+                let dot_start = Instant::now();
                 let lp: Array1<f64> = x_val.dot(&result.coefficients);
+                profile
+                    .validation_dot_seconds
+                    .push(dot_start.elapsed().as_secs_f64());
+                let score_start = Instant::now();
                 let lp_off = if let Some(ref o) = offset_val {
                     &lp + o
                 } else {
@@ -740,11 +798,25 @@ pub fn fit_cv_path_py<'py>(
                 let mu_val = thread_link.inverse(&lp_off);
                 let unit_dev = thread_fam.unit_deviance(&y_val, &mu_val);
                 fold_deviances.push(validation_deviance_score(&unit_dev, weights_val.as_ref()));
+                profile
+                    .validation_score_seconds
+                    .push(score_start.elapsed().as_secs_f64());
             }
-            fold_deviances
+            (fold_deviances, profile)
         })
         .collect();
+    let cv_parallel_wall_seconds = cv_parallel_start.elapsed().as_secs_f64();
 
+    let fold_all_results: Vec<Vec<f64>> = fold_outputs
+        .iter()
+        .map(|(scores, _profile)| scores.clone())
+        .collect();
+    let fold_profiles: Vec<CVFoldProfile> = fold_outputs
+        .iter()
+        .map(|(_scores, profile)| profile.clone())
+        .collect();
+
+    let aggregate_start = Instant::now();
     let mut path_results: Vec<CVPathPoint> = Vec::with_capacity(alpha_vec.len());
     for (ai, &alpha) in alpha_vec.iter().enumerate() {
         let fds: Vec<f64> = fold_all_results
@@ -769,6 +841,7 @@ pub fn fit_cv_path_py<'py>(
             cv_deviance_se: se,
         });
     }
+    let aggregate_seconds = aggregate_start.elapsed().as_secs_f64();
 
     let dict = pyo3::types::PyDict::new(py);
     dict.set_item(
@@ -802,6 +875,69 @@ pub fn fit_cv_path_py<'py>(
     // (the seeded DefaultHasher partition is not reproducible outside Rust) and
     // hand-verify the per-fold weighted deviance (RS-ACT-001 backlog #5).
     dict.set_item("fold_assignments", fold_assignments)?;
+
+    let profile = pyo3::types::PyDict::new(py);
+    profile.set_item("n", n)?;
+    profile.set_item("p", p)?;
+    profile.set_item("n_folds", n_folds)?;
+    profile.set_item("n_alphas", alpha_vec.len())?;
+    profile.set_item("rayon_threads", rayon::current_num_threads())?;
+    profile.set_item("input_seconds", input_seconds)?;
+    profile.set_item("validation_seconds", validation_seconds)?;
+    profile.set_item("setup_seconds", setup_seconds)?;
+    profile.set_item("cv_parallel_wall_seconds", cv_parallel_wall_seconds)?;
+    profile.set_item("aggregate_seconds", aggregate_seconds)?;
+    profile.set_item("total_wall_seconds", total_start.elapsed().as_secs_f64())?;
+
+    let total_split_copy: f64 = fold_profiles.iter().map(|f| f.split_copy_seconds).sum();
+    let total_standardize: f64 = fold_profiles.iter().map(|f| f.standardize_seconds).sum();
+    let total_fold_setup: f64 = fold_profiles.iter().map(|f| f.setup_seconds).sum();
+    let total_fit: f64 = fold_profiles
+        .iter()
+        .flat_map(|f| f.fit_seconds.iter())
+        .sum();
+    let total_validation_dot: f64 = fold_profiles
+        .iter()
+        .flat_map(|f| f.validation_dot_seconds.iter())
+        .sum();
+    let total_validation_score: f64 = fold_profiles
+        .iter()
+        .flat_map(|f| f.validation_score_seconds.iter())
+        .sum();
+
+    let totals = pyo3::types::PyDict::new(py);
+    totals.set_item("fold_split_copy_seconds", total_split_copy)?;
+    totals.set_item("fold_standardize_seconds", total_standardize)?;
+    totals.set_item("fold_setup_seconds", total_fold_setup)?;
+    totals.set_item("alpha_fit_seconds", total_fit)?;
+    totals.set_item("alpha_validation_dot_seconds", total_validation_dot)?;
+    totals.set_item("alpha_validation_score_seconds", total_validation_score)?;
+    profile.set_item("summed_work_seconds", totals)?;
+
+    let fold_profile_list = pyo3::types::PyList::empty(py);
+    for fold_profile in &fold_profiles {
+        let fold_dict = pyo3::types::PyDict::new(py);
+        fold_dict.set_item("fold", fold_profile.fold)?;
+        fold_dict.set_item("n_train", fold_profile.n_train)?;
+        fold_dict.set_item("n_val", fold_profile.n_val)?;
+        fold_dict.set_item("split_copy_seconds", fold_profile.split_copy_seconds)?;
+        fold_dict.set_item("standardize_seconds", fold_profile.standardize_seconds)?;
+        fold_dict.set_item("setup_seconds", fold_profile.setup_seconds)?;
+        fold_dict.set_item("fit_seconds", fold_profile.fit_seconds.clone())?;
+        fold_dict.set_item(
+            "validation_dot_seconds",
+            fold_profile.validation_dot_seconds.clone(),
+        )?;
+        fold_dict.set_item(
+            "validation_score_seconds",
+            fold_profile.validation_score_seconds.clone(),
+        )?;
+        fold_dict.set_item("iterations", fold_profile.iterations.clone())?;
+        fold_dict.set_item("statuses", fold_profile.statuses.clone())?;
+        fold_profile_list.append(fold_dict)?;
+    }
+    profile.set_item("folds", fold_profile_list)?;
+    dict.set_item("profile", profile)?;
 
     let best_idx = path_results
         .iter()

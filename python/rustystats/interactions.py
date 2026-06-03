@@ -266,6 +266,7 @@ class InteractionBuilder:
 
         # Consolidated cache for categorical encodings (keyed by "varname_dropfirst")
         self._cat_encoding_cache: dict[str, CategoricalEncoding] = {}
+        self._cont_cache: dict[str, np.ndarray] = {}
         # Store spline terms with fitted knots for prediction
         self._fitted_splines: dict[str, SplineTerm] = {}
         # Store parsed formula for prediction
@@ -370,7 +371,12 @@ class InteractionBuilder:
 
     def _get_column(self, name: str) -> np.ndarray:
         """Extract column as numpy array."""
-        return self.data[name].to_numpy().astype(self.dtype)
+        cached = self._cont_cache.get(name)
+        if cached is not None:
+            return cached
+        values = self.data[name].to_numpy().astype(self.dtype, copy=False)
+        self._cont_cache[name] = values
+        return values
 
     def _get_categorical_indices(self, name: str) -> tuple[np.ndarray, list[str]]:
         """Get cached categorical indices and levels for a variable."""
@@ -800,13 +806,8 @@ class InteractionBuilder:
             )
             return result, col_names
         else:
-            # Multiple categorical - build their interaction first, then multiply using Rust
-            cat_interaction = InteractionTerm(
-                factors=cat_factors, categorical_flags=[True] * len(cat_factors)
-            )
-            cat_encoding, cat_names = self._build_categorical_interaction(cat_interaction)
-
-            # Use Rust to multiply categorical matrix by continuous
+            # Reuse the categorical interaction built above, then multiply by
+            # the continuous product. Prediction already follows this path.
             result, col_names = _multiply_matrix_cont_rust(
                 cat_encoding.astype(np.float64),
                 cont_product.astype(np.float64),

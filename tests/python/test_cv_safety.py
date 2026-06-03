@@ -813,3 +813,31 @@ class TestFoldSafeDefaultSeed:
         r1, r2 = _fit(), _fit()
         assert r1.alpha == pytest.approx(r2.alpha)
         assert r1.cv_deviance == pytest.approx(r2.cv_deviance)
+
+
+class TestCvConvergenceOverrides:
+    """CV fold convergence settings can be relaxed independently of final refit."""
+
+    def test_cv_max_iter_and_tol_are_recorded_separately(self):
+        df = make_freq_frame(n=300)
+
+        result = rs.glm_dict(
+            response="ClaimCount",
+            terms={"DrivAge": {"type": "linear"}, "VehAge": {"type": "linear"}},
+            data=df,
+            family="poisson",
+            exposure="Exposure",
+        ).fit(
+            cv=3,
+            regularization="ridge",
+            n_alphas=3,
+            max_iter=25,
+            tol=1e-8,
+            cv_max_iter=5,
+            cv_tol=1e-4,
+            cv_seed=7,
+            verbose=False,
+        )
+
+        assert result.cv_deviance is not None
+        assert result.cv_convergence == {"max_iter": 5, "tol": pytest.approx(1e-4)}

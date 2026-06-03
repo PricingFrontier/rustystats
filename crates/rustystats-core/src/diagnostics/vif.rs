@@ -16,6 +16,7 @@ use rayon::prelude::*;
 /// Rows processed per rayon task when accumulating Gram/sum moments.
 /// Sized so each chunk fits comfortably in L2 for typical `k ≤ 256`.
 const GRAM_CHUNK_ROWS: usize = 8192;
+const SPARSE_GRAM_DENSITY_THRESHOLD: f64 = 0.35;
 
 /// Compute the diagonal of M^{-1} where M is symmetric positive-definite (n x n).
 ///
@@ -132,6 +133,10 @@ fn correlation_matrix(x: ArrayView2<f64>) -> Array2<f64> {
 fn compute_sums_and_gram_contiguous(x_slice: &[f64], n: usize, k: usize) -> (Vec<f64>, Vec<f64>) {
     debug_assert_eq!(x_slice.len(), n * k);
 
+    if should_use_sparse_gram_kernel_contiguous(x_slice, n, k) {
+        return compute_sums_and_gram_contiguous_sparse(x_slice, n, k);
+    }
+
     let num_chunks = n.div_ceil(GRAM_CHUNK_ROWS);
 
     (0..num_chunks)
@@ -173,10 +178,95 @@ fn compute_sums_and_gram_contiguous(x_slice: &[f64], n: usize, k: usize) -> (Vec
         )
 }
 
+fn should_use_sparse_gram_kernel_contiguous(x_slice: &[f64], n: usize, k: usize) -> bool {
+    if n == 0 || k < 16 {
+        return false;
+    }
+
+    let sample_rows = n.min(1024);
+    let mut nonzero = 0usize;
+    for sample_idx in 0..sample_rows {
+        let row = sample_idx * n / sample_rows;
+        let row_start = row * k;
+        for j in 0..k {
+            if x_slice[row_start + j] != 0.0 {
+                nonzero += 1;
+            }
+        }
+    }
+    let density = nonzero as f64 / (sample_rows * k) as f64;
+    density <= SPARSE_GRAM_DENSITY_THRESHOLD
+}
+
+fn compute_sums_and_gram_contiguous_sparse(
+    x_slice: &[f64],
+    n: usize,
+    k: usize,
+) -> (Vec<f64>, Vec<f64>) {
+    let num_chunks = n.div_ceil(GRAM_CHUNK_ROWS);
+
+    (0..num_chunks)
+        .into_par_iter()
+        .map(|chunk_idx| {
+            let chunk_start = chunk_idx * GRAM_CHUNK_ROWS;
+            let chunk_end = (chunk_start + GRAM_CHUNK_ROWS).min(n);
+            let mut sums_local = vec![0.0_f64; k];
+            let mut gram_local = vec![0.0_f64; k * k];
+            let mut nz_idx: Vec<usize> = Vec::with_capacity(k);
+            let mut nz_val: Vec<f64> = Vec::with_capacity(k);
+
+            for r in chunk_start..chunk_end {
+                nz_idx.clear();
+                nz_val.clear();
+                let row_start = r * k;
+                for i in 0..k {
+                    // SAFETY: row_start + i < n*k = x_slice.len()
+                    let xri = unsafe { *x_slice.get_unchecked(row_start + i) };
+                    if xri != 0.0 {
+                        // SAFETY: i < k = sums_local.len()
+                        unsafe { *sums_local.get_unchecked_mut(i) += xri };
+                        nz_idx.push(i);
+                        nz_val.push(xri);
+                    }
+                }
+
+                for a in 0..nz_idx.len() {
+                    // SAFETY: a is within nz vectors populated above.
+                    let i = unsafe { *nz_idx.get_unchecked(a) };
+                    let xri = unsafe { *nz_val.get_unchecked(a) };
+                    for b in a..nz_idx.len() {
+                        // SAFETY: b is within nz vectors populated above.
+                        let j = unsafe { *nz_idx.get_unchecked(b) };
+                        let xrj = unsafe { *nz_val.get_unchecked(b) };
+                        // SAFETY: i, j < k, so i*k + j < k*k.
+                        unsafe { *gram_local.get_unchecked_mut(i * k + j) += xri * xrj };
+                    }
+                }
+            }
+            (sums_local, gram_local)
+        })
+        .reduce(
+            || (vec![0.0_f64; k], vec![0.0_f64; k * k]),
+            |(mut a_sums, mut a_gram), (b_sums, b_gram)| {
+                for i in 0..a_sums.len() {
+                    a_sums[i] += b_sums[i];
+                }
+                for i in 0..a_gram.len() {
+                    a_gram[i] += b_gram[i];
+                }
+                (a_sums, a_gram)
+            },
+        )
+}
+
 /// Strided fallback for non-contiguous matrices (e.g. `X[:, 1:]` slices that
 /// hop a stride per row). Same algorithm but uses ndarray indexing instead of
 /// raw slice access, so the compiler can't elide stride math.
 fn compute_sums_and_gram_strided(x: ArrayView2<f64>, n: usize, k: usize) -> (Vec<f64>, Vec<f64>) {
+    if should_use_sparse_gram_kernel_strided(x, n, k) {
+        return compute_sums_and_gram_strided_sparse(x, n, k);
+    }
+
     let num_chunks = n.div_ceil(GRAM_CHUNK_ROWS);
 
     (0..num_chunks)
@@ -193,6 +283,80 @@ fn compute_sums_and_gram_strided(x: ArrayView2<f64>, n: usize, k: usize) -> (Vec
                     sums_local[i] += xri;
                     for j in i..k {
                         gram_local[i * k + j] += xri * x[[r, j]];
+                    }
+                }
+            }
+            (sums_local, gram_local)
+        })
+        .reduce(
+            || (vec![0.0_f64; k], vec![0.0_f64; k * k]),
+            |(mut a_sums, mut a_gram), (b_sums, b_gram)| {
+                for i in 0..a_sums.len() {
+                    a_sums[i] += b_sums[i];
+                }
+                for i in 0..a_gram.len() {
+                    a_gram[i] += b_gram[i];
+                }
+                (a_sums, a_gram)
+            },
+        )
+}
+
+fn should_use_sparse_gram_kernel_strided(x: ArrayView2<f64>, n: usize, k: usize) -> bool {
+    if n == 0 || k < 16 {
+        return false;
+    }
+
+    let sample_rows = n.min(1024);
+    let mut nonzero = 0usize;
+    for sample_idx in 0..sample_rows {
+        let row = sample_idx * n / sample_rows;
+        for j in 0..k {
+            if x[[row, j]] != 0.0 {
+                nonzero += 1;
+            }
+        }
+    }
+    let density = nonzero as f64 / (sample_rows * k) as f64;
+    density <= SPARSE_GRAM_DENSITY_THRESHOLD
+}
+
+fn compute_sums_and_gram_strided_sparse(
+    x: ArrayView2<f64>,
+    n: usize,
+    k: usize,
+) -> (Vec<f64>, Vec<f64>) {
+    let num_chunks = n.div_ceil(GRAM_CHUNK_ROWS);
+
+    (0..num_chunks)
+        .into_par_iter()
+        .map(|chunk_idx| {
+            let chunk_start = chunk_idx * GRAM_CHUNK_ROWS;
+            let chunk_end = (chunk_start + GRAM_CHUNK_ROWS).min(n);
+            let mut sums_local = vec![0.0_f64; k];
+            let mut gram_local = vec![0.0_f64; k * k];
+            let mut nz_idx: Vec<usize> = Vec::with_capacity(k);
+            let mut nz_val: Vec<f64> = Vec::with_capacity(k);
+
+            for r in chunk_start..chunk_end {
+                nz_idx.clear();
+                nz_val.clear();
+                for i in 0..k {
+                    let xri = x[[r, i]];
+                    if xri != 0.0 {
+                        sums_local[i] += xri;
+                        nz_idx.push(i);
+                        nz_val.push(xri);
+                    }
+                }
+
+                for a in 0..nz_idx.len() {
+                    let i = nz_idx[a];
+                    let xri = nz_val[a];
+                    for b in a..nz_idx.len() {
+                        let j = nz_idx[b];
+                        let xrj = nz_val[b];
+                        gram_local[i * k + j] += xri * xrj;
                     }
                 }
             }
@@ -242,7 +406,38 @@ pub fn correlation_and_vif(x: ArrayView2<f64>, epsilon: f64) -> (Array2<f64>, Ar
 mod tests {
     use super::*;
     use approx::assert_abs_diff_eq;
-    use ndarray::array;
+    use ndarray::{array, s};
+
+    fn naive_correlation_matrix(x: ArrayView2<f64>) -> Array2<f64> {
+        let n = x.nrows();
+        let k = x.ncols();
+        let mut r = Array2::<f64>::zeros((k, k));
+        let mut means = vec![0.0; k];
+        for j in 0..k {
+            means[j] = (0..n).map(|i| x[[i, j]]).sum::<f64>() / n as f64;
+        }
+
+        for i in 0..k {
+            for j in i..k {
+                let mut cov = 0.0;
+                let mut var_i = 0.0;
+                let mut var_j = 0.0;
+                for row in 0..n {
+                    let di = x[[row, i]] - means[i];
+                    let dj = x[[row, j]] - means[j];
+                    cov += di * dj;
+                    var_i += di * di;
+                    var_j += dj * dj;
+                }
+                if var_i > 0.0 && var_j > 0.0 {
+                    let corr = (cov / (var_i.sqrt() * var_j.sqrt())).clamp(-1.0, 1.0);
+                    r[[i, j]] = corr;
+                    r[[j, i]] = corr;
+                }
+            }
+        }
+        r
+    }
 
     #[test]
     fn test_identity_matrix() {
@@ -343,6 +538,61 @@ mod tests {
         assert_abs_diff_eq!(r[[1, 1]], 0.0, epsilon = 1e-12);
         assert_abs_diff_eq!(r[[0, 1]], 0.0, epsilon = 1e-12);
         assert_abs_diff_eq!(r[[1, 0]], 0.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn test_sparse_correlation_kernel_matches_dense_formula() {
+        let n = 64;
+        let k = 32;
+        let mut x = Array2::<f64>::zeros((n, k));
+        for row in 0..n {
+            let j1 = row % k;
+            let j2 = (row * 7 + 3) % k;
+            x[[row, j1]] = 1.0 + (row % 5) as f64;
+            x[[row, j2]] += (row as f64 / 3.0).sin();
+        }
+
+        assert!(should_use_sparse_gram_kernel_contiguous(
+            x.as_slice().unwrap(),
+            n,
+            k
+        ));
+
+        let actual = correlation_matrix(x.view());
+        let expected = naive_correlation_matrix(x.view());
+        for i in 0..k {
+            for j in 0..k {
+                assert_abs_diff_eq!(actual[[i, j]], expected[[i, j]], epsilon = 1e-12);
+            }
+        }
+    }
+
+    #[test]
+    fn test_sparse_strided_correlation_kernel_matches_dense_formula() {
+        let n = 64;
+        let k = 33;
+        let mut x = Array2::<f64>::zeros((n, k));
+        for row in 0..n {
+            let j1 = 1 + row % (k - 1);
+            let j2 = 1 + (row * 5 + 2) % (k - 1);
+            x[[row, j1]] = 2.0 + (row % 3) as f64;
+            x[[row, j2]] += (row as f64 / 5.0).cos();
+        }
+
+        let view = x.slice(s![.., 1..]);
+        assert!(should_use_sparse_gram_kernel_strided(
+            view,
+            view.nrows(),
+            view.ncols()
+        ));
+
+        let actual = correlation_matrix(view);
+        let expected = naive_correlation_matrix(view);
+        for i in 0..view.ncols() {
+            for j in 0..view.ncols() {
+                assert_abs_diff_eq!(actual[[i, j]], expected[[i, j]], epsilon = 1e-12);
+            }
+        }
     }
 
     #[test]

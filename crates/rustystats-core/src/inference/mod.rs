@@ -222,6 +222,8 @@ use rayon::prelude::*;
 
 use crate::families::Family;
 
+const SPARSE_SANDWICH_DENSITY_THRESHOLD: f64 = 0.35;
+
 /// Type of heteroscedasticity-consistent (HC) standard errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HCType {
@@ -325,6 +327,12 @@ fn compute_leverage(
     // Convert cov_unscaled to a flat vec for thread-safe access
     let cov_flat: Vec<f64> = cov_unscaled.iter().copied().collect();
 
+    if let Some(x_slice) = x.as_slice() {
+        if should_use_sparse_sandwich_kernel(x_slice, n, p) {
+            return compute_leverage_sparse(x_slice, weights, &cov_flat, n, p);
+        }
+    }
+
     // PARALLEL: Compute leverage for each observation
     let leverage_vec: Vec<f64> = (0..n)
         .into_par_iter()
@@ -346,6 +354,56 @@ fn compute_leverage(
             // Clamp to avoid numerical issues (h should be in [0, 1])
             h_ii.clamp(0.0, 0.9999)
         })
+        .collect();
+
+    Array1::from_vec(leverage_vec)
+}
+
+fn compute_leverage_sparse(
+    x_slice: &[f64],
+    weights: &Array1<f64>,
+    cov_flat: &[f64],
+    n: usize,
+    p: usize,
+) -> Array1<f64> {
+    let leverage_vec: Vec<f64> = (0..n)
+        .into_par_iter()
+        .map_init(
+            || (Vec::with_capacity(p), Vec::with_capacity(p)),
+            |(nz_idx, nz_val), i| {
+                nz_idx.clear();
+                nz_val.clear();
+                let row_start = i * p;
+                for j in 0..p {
+                    // SAFETY: row_start + j < n*p = x_slice.len()
+                    let xij = unsafe { *x_slice.get_unchecked(row_start + j) };
+                    if xij != 0.0 {
+                        nz_idx.push(j);
+                        nz_val.push(xij);
+                    }
+                }
+
+                let mut h_ii = 0.0;
+                for a in 0..nz_idx.len() {
+                    // SAFETY: a is within both nz vectors populated in lockstep above.
+                    let j = unsafe { *nz_idx.get_unchecked(a) };
+                    let xij = unsafe { *nz_val.get_unchecked(a) };
+                    let mut temp_j = 0.0;
+                    for b in 0..nz_idx.len() {
+                        // SAFETY: b is within both nz vectors; j and k are column
+                        // indices < p, so j*p + k < cov_flat.len().
+                        let k = unsafe { *nz_idx.get_unchecked(b) };
+                        let xik = unsafe { *nz_val.get_unchecked(b) };
+                        // SAFETY: j and k are column indices < p, so this
+                        // flattened covariance index is within cov_flat.
+                        temp_j += unsafe { *cov_flat.get_unchecked(j * p + k) } * xik;
+                    }
+                    h_ii += xij * temp_j;
+                }
+                h_ii *= weights[i];
+                h_ii.clamp(0.0, 0.9999)
+            },
+        )
         .collect();
 
     Array1::from_vec(leverage_vec)
@@ -412,6 +470,12 @@ fn compute_meat(
     let p = x.ncols();
     let n = x.nrows();
 
+    if let Some(x_slice) = x.as_slice() {
+        if should_use_sparse_sandwich_kernel(x_slice, n, p) {
+            return compute_meat_sparse(x_slice, &omega, n, p);
+        }
+    }
+
     let meat_flat: Vec<f64> = (0..n)
         .into_par_iter()
         .fold(
@@ -449,6 +513,91 @@ fn compute_meat(
         }
     }
 
+    meat
+}
+
+fn should_use_sparse_sandwich_kernel(x_slice: &[f64], n: usize, p: usize) -> bool {
+    if n == 0 || p < 16 {
+        return false;
+    }
+
+    let sample_rows = n.min(1024);
+    let mut nonzero = 0usize;
+    for sample_idx in 0..sample_rows {
+        let row = sample_idx * n / sample_rows;
+        let row_start = row * p;
+        for j in 0..p {
+            if x_slice[row_start + j] != 0.0 {
+                nonzero += 1;
+            }
+        }
+    }
+    let density = nonzero as f64 / (sample_rows * p) as f64;
+    density <= SPARSE_SANDWICH_DENSITY_THRESHOLD
+}
+
+fn compute_meat_sparse(x_slice: &[f64], omega: &Array1<f64>, n: usize, p: usize) -> Array2<f64> {
+    let (meat_flat, _, _): (Vec<f64>, Vec<usize>, Vec<f64>) = (0..n)
+        .into_par_iter()
+        .fold(
+            || {
+                (
+                    vec![0.0; p * p],
+                    Vec::with_capacity(p),
+                    Vec::with_capacity(p),
+                )
+            },
+            |(mut acc, mut nz_idx, mut nz_val), i| {
+                let omega_i = omega[i];
+                if omega_i == 0.0 {
+                    return (acc, nz_idx, nz_val);
+                }
+
+                nz_idx.clear();
+                nz_val.clear();
+                let row_start = i * p;
+                for j in 0..p {
+                    // SAFETY: row_start + j < n*p = x_slice.len()
+                    let xij = unsafe { *x_slice.get_unchecked(row_start + j) };
+                    if xij != 0.0 {
+                        nz_idx.push(j);
+                        nz_val.push(xij);
+                    }
+                }
+
+                for a in 0..nz_idx.len() {
+                    // SAFETY: a is within both nz vectors populated in lockstep above.
+                    let j = unsafe { *nz_idx.get_unchecked(a) };
+                    let xij_omega = unsafe { *nz_val.get_unchecked(a) } * omega_i;
+                    for b in a..nz_idx.len() {
+                        // SAFETY: b is within both nz vectors populated in lockstep above.
+                        let k = unsafe { *nz_idx.get_unchecked(b) };
+                        let xik = unsafe { *nz_val.get_unchecked(b) };
+                        // SAFETY: j, k < p, so j*p + k < p*p.
+                        unsafe { *acc.get_unchecked_mut(j * p + k) += xij_omega * xik };
+                    }
+                }
+                (acc, nz_idx, nz_val)
+            },
+        )
+        .reduce(
+            || (vec![0.0; p * p], Vec::new(), Vec::new()),
+            |(mut a, a_idx, a_val), (b, _b_idx, _b_val)| {
+                for i in 0..a.len() {
+                    a[i] += b[i];
+                }
+                (a, a_idx, a_val)
+            },
+        );
+
+    let mut meat = Array2::zeros((p, p));
+    for j in 0..p {
+        for k in j..p {
+            let val = meat_flat[j * p + k];
+            meat[[j, k]] = val;
+            meat[[k, j]] = val;
+        }
+    }
     meat
 }
 
@@ -1098,6 +1247,111 @@ mod tests {
             expected_ratio,
             epsilon = 1e-10
         );
+    }
+
+    fn naive_robust_covariance(
+        x: &Array2<f64>,
+        pearson_resid: &Array1<f64>,
+        irls_weights: &Array1<f64>,
+        prior_weights: &Array1<f64>,
+        bread: &Array2<f64>,
+        hc_type: HCType,
+    ) -> Array2<f64> {
+        let n = x.nrows();
+        let p = x.ncols();
+        let combined_weights: Array1<f64> = prior_weights
+            .iter()
+            .zip(irls_weights.iter())
+            .map(|(&pw, &iw)| pw * iw)
+            .collect();
+
+        let mut leverage = Array1::<f64>::zeros(n);
+        if matches!(hc_type, HCType::HC2 | HCType::HC3) {
+            for i in 0..n {
+                let mut h_ii = 0.0;
+                for j in 0..p {
+                    let mut temp_j = 0.0;
+                    for k in 0..p {
+                        temp_j += bread[[j, k]] * x[[i, k]];
+                    }
+                    h_ii += x[[i, j]] * temp_j;
+                }
+                leverage[i] = (h_ii * combined_weights[i]).clamp(0.0, 0.9999);
+            }
+        }
+
+        let scale = if matches!(hc_type, HCType::HC1) {
+            n as f64 / (n.saturating_sub(p)) as f64
+        } else {
+            1.0
+        };
+        let mut meat = Array2::<f64>::zeros((p, p));
+        for i in 0..n {
+            let mut omega = scale * combined_weights[i] * pearson_resid[i] * pearson_resid[i];
+            if matches!(hc_type, HCType::HC2) {
+                omega /= (1.0 - leverage[i]).max(0.01);
+            } else if matches!(hc_type, HCType::HC3) {
+                let denom = (1.0 - leverage[i]).max(0.01);
+                omega /= denom * denom;
+            }
+            for j in 0..p {
+                for k in 0..p {
+                    meat[[j, k]] += omega * x[[i, j]] * x[[i, k]];
+                }
+            }
+        }
+        bread.dot(&meat).dot(bread)
+    }
+
+    #[test]
+    fn test_sparse_robust_covariance_matches_dense_formula() {
+        let n = 48;
+        let p = 24;
+        let mut x = Array2::<f64>::zeros((n, p));
+        for row in 0..n {
+            x[[row, 0]] = 1.0;
+            let j1 = 1 + row % (p - 1);
+            let j2 = 1 + (row * 5 + 3) % (p - 1);
+            x[[row, j1]] = 1.0 + (row % 4) as f64;
+            x[[row, j2]] += (row as f64 / 4.0).sin();
+        }
+        assert!(should_use_sparse_sandwich_kernel(
+            x.as_slice().unwrap(),
+            n,
+            p
+        ));
+
+        let pearson_resid: Array1<f64> = (0..n).map(|i| ((i as f64) * 0.37).sin() * 0.2).collect();
+        let irls_weights: Array1<f64> = (0..n).map(|i| 0.8 + (i % 5) as f64 * 0.03).collect();
+        let prior_weights: Array1<f64> = (0..n).map(|i| 0.9 + (i % 7) as f64 * 0.02).collect();
+        let mut bread = Array2::<f64>::zeros((p, p));
+        for j in 0..p {
+            bread[[j, j]] = 0.01 + j as f64 * 0.0001;
+        }
+
+        for hc_type in [HCType::HC1, HCType::HC3] {
+            let actual = robust_covariance(
+                &x,
+                &pearson_resid,
+                &irls_weights,
+                &prior_weights,
+                &bread,
+                hc_type,
+            );
+            let expected = naive_robust_covariance(
+                &x,
+                &pearson_resid,
+                &irls_weights,
+                &prior_weights,
+                &bread,
+                hc_type,
+            );
+            for j in 0..p {
+                for k in 0..p {
+                    assert_abs_diff_eq!(actual[[j, k]], expected[[j, k]], epsilon = 1e-12);
+                }
+            }
+        }
     }
 
     #[test]

@@ -47,9 +47,8 @@ use ndarray::ArrayView2;
 // =============================================================================
 
 use ndarray::{Array1, Array2};
-use rayon::prelude::*;
 
-use super::irls::{IRLSConfig, IRLSResult};
+use super::irls::{compute_xtwx, compute_xtwx_xtwz, IRLSConfig, IRLSResult};
 use crate::constants::ZERO_TOL;
 use crate::error::Result;
 use crate::families::Family;
@@ -209,57 +208,22 @@ pub(crate) fn fit_glm_coordinate_descent(
         let mut cd_converged = false;
         let mut cd_iteration = 0;
 
-        // Precompute X'Wz (gradient at β=0) - PARALLEL
-        let xwz: Vec<f64> = (0..p)
-            .into_par_iter()
-            .map(|j| {
-                let col = x.column(j);
-                col.iter()
-                    .zip(combined_weights.iter())
-                    .zip(working_response.iter())
-                    .map(|((&xij, &wi), &zi)| wi * xij * zi)
-                    .sum()
-            })
-            .collect();
+        let (xwx_matrix, xwz_vector) = compute_xtwx_xtwz(x, &working_response, &combined_weights)?;
 
-        // Precompute X'WX (Gram matrix) - PARALLEL with flat Vec for cache locality
-        let xwx: Vec<f64> = (0..n)
-            .into_par_iter()
-            .fold(
-                || vec![0.0; p * p],
-                |mut acc, i| {
-                    let w_i = combined_weights[i];
-                    let x_i = x.row(i);
-                    for j in 0..p {
-                        let xij_w = x_i[j] * w_i;
-                        for k in j..p {
-                            acc[j * p + k] += xij_w * x_i[k];
-                        }
-                    }
-                    acc
-                },
-            )
-            .reduce(
-                || vec![0.0; p * p],
-                |mut a, b| {
-                    for i in 0..a.len() {
-                        a[i] += b[i];
-                    }
-                    a
-                },
-            );
-
-        // Fill in lower triangle (symmetric)
-        let mut xwx_full = xwx;
+        // Keep the coordinate-update loop on a row-major flat matrix. nalgebra
+        // stores DMatrix column-major, while each gradient update scans a full
+        // row of X'WX.
+        let xwz: Vec<f64> = xwz_vector.iter().copied().collect();
+        let mut xwx = vec![0.0_f64; p * p];
         for j in 0..p {
-            for k in (j + 1)..p {
-                xwx_full[k * p + j] = xwx_full[j * p + k];
+            for k in 0..p {
+                xwx[j * p + k] = xwx_matrix[(j, k)];
             }
         }
-        let xwx = xwx_full;
 
         // Active set: track which coefficients are non-zero for faster iterations
-        let mut active_set: Vec<usize> = (0..p).collect();
+        let all_indices: Vec<usize> = (0..p).collect();
+        let mut active_set = all_indices.clone();
         let mut use_active_set = false;
 
         while cd_iteration < reg_config.max_cd_iterations {
@@ -272,7 +236,7 @@ pub(crate) fn fit_glm_coordinate_descent(
                 &active_set
             } else {
                 // Full pass every 5 iterations or initially
-                &(0..p).collect::<Vec<_>>()
+                &all_indices
             };
 
             // Update each coefficient using covariance updates
@@ -458,50 +422,50 @@ fn compute_penalized_covariance(
     x: ArrayView2<'_, f64>,
     irls_weights: &Array1<f64>,
     prior_weights: &Array1<f64>,
-    _coefficients: &Array1<f64>,
-    _pen_start: usize,
+    coefficients: &Array1<f64>,
+    pen_start: usize,
 ) -> Array2<f64> {
     let p = x.ncols();
-    let n = x.nrows();
 
-    // Compute (X'WX)⁻¹ only for the "active" (non-zero) coefficients
-    // This is a simplified approach
-    let mut cov = Array2::zeros((p, p));
-
-    // Combined weights
-    let weights: Vec<f64> = irls_weights
+    let weights: Array1<f64> = irls_weights
         .iter()
         .zip(prior_weights.iter())
         .map(|(&iw, &pw)| iw * pw)
         .collect();
 
-    // Compute X'WX
-    for i in 0..p {
-        for j in i..p {
-            let val: f64 = (0..n).map(|k| weights[k] * x[[k, i]] * x[[k, j]]).sum();
-            cov[[i, j]] = val;
-            cov[[j, i]] = val;
+    let xtwx = compute_xtwx(x, &weights);
+
+    let mut active_indices: Vec<usize> = (0..pen_start.min(p)).collect();
+    for j in pen_start..p {
+        if coefficients[j].abs() > ZERO_TOL {
+            active_indices.push(j);
         }
     }
 
-    // Try to invert (this will fail for truly sparse solutions, but okay for Ridge-like)
+    if active_indices.is_empty() {
+        return Array2::zeros((p, p));
+    }
+
     use nalgebra::DMatrix;
-    let mut xtx = DMatrix::zeros(p, p);
-    for i in 0..p {
-        for j in 0..p {
-            xtx[(i, j)] = cov[[i, j]];
+    let active_p = active_indices.len();
+    let mut xtx_active = DMatrix::zeros(active_p, active_p);
+    for (ai, &i) in active_indices.iter().enumerate() {
+        for (aj, &j) in active_indices.iter().enumerate() {
+            xtx_active[(ai, aj)] = xtwx[[i, j]];
         }
     }
 
-    if let Some(inv) = xtx.try_inverse() {
-        for i in 0..p {
-            for j in 0..p {
-                cov[[i, j]] = inv[(i, j)];
+    let mut cov = Array2::zeros((p, p));
+    if let Some(inv) = xtx_active.try_inverse() {
+        for (ai, &i) in active_indices.iter().enumerate() {
+            for (aj, &j) in active_indices.iter().enumerate() {
+                cov[[i, j]] = inv[(ai, aj)];
             }
         }
     } else {
-        // Return zeros if not invertible
-        cov.fill(0.0);
+        for &i in &active_indices {
+            cov[[i, i]] = f64::NAN;
+        }
     }
 
     cov
@@ -516,6 +480,7 @@ mod tests {
     use super::*;
     use crate::families::{GaussianFamily, PoissonFamily};
     use crate::links::{IdentityLink, LogLink};
+    use approx::assert_abs_diff_eq;
     use ndarray::array;
 
     #[test]
@@ -740,5 +705,46 @@ mod tests {
             "Slope should be ~0: {}",
             result.coefficients[1]
         );
+    }
+
+    #[test]
+    fn test_lasso_covariance_uses_active_set_when_full_design_singular() {
+        let x = Array2::from_shape_vec(
+            (8, 3),
+            vec![
+                1.0, 1.0, 0.0, 1.0, 2.0, 0.0, 1.0, 3.0, 0.0, 1.0, 4.0, 0.0, 1.0, 5.0, 0.0, 1.0,
+                6.0, 0.0, 1.0, 7.0, 0.0, 1.0, 8.0, 0.0,
+            ],
+        )
+        .expect("test setup should be valid");
+        let y = array![5.0, 8.0, 11.0, 14.0, 17.0, 20.0, 23.0, 26.0];
+
+        let family = GaussianFamily;
+        let link = IdentityLink;
+        let irls_config = IRLSConfig {
+            max_iterations: 50,
+            ..IRLSConfig::default()
+        };
+        let reg_config = RegularizationConfig::lasso(0.01);
+        let result = fit_glm_coordinate_descent(
+            &y,
+            x.view(),
+            &family,
+            &link,
+            &irls_config,
+            &reg_config,
+            None,
+            None,
+            None,
+            false,
+        )
+        .expect("test setup should be valid");
+
+        assert!(result.coefficients[1].abs() > 0.5);
+        assert!(result.covariance_unscaled[[0, 0]].is_finite());
+        assert!(result.covariance_unscaled[[1, 1]].is_finite());
+        assert!(result.covariance_unscaled[[0, 0]] > 0.0);
+        assert!(result.covariance_unscaled[[1, 1]] > 0.0);
+        assert_abs_diff_eq!(result.covariance_unscaled[[2, 2]], 0.0, epsilon = 1e-12);
     }
 }
