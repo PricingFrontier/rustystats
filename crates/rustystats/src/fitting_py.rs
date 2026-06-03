@@ -102,6 +102,7 @@ fn build_smooth_config(
             verbose: false,
             nonneg_indices: Vec::new(),
             nonpos_indices: Vec::new(),
+            skip_covariance: false,
         },
         n_lambda: 30,
         lambda_min,

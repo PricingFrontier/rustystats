@@ -101,6 +101,11 @@ pub struct IRLSConfig {
     /// Used for: neg() terms.
     /// Default: empty (no constraints)
     pub nonpos_indices: Vec<usize>,
+
+    /// Skip the O(p³) covariance inverse in WLS solves (coefficients are still
+    /// computed identically). Set by CV fold fits, which read only coefficients.
+    /// Default: false
+    pub skip_covariance: bool,
 }
 
 impl Default for IRLSConfig {
@@ -112,6 +117,7 @@ impl Default for IRLSConfig {
             verbose: false,
             nonneg_indices: Vec::new(),
             nonpos_indices: Vec::new(),
+            skip_covariance: false,
         }
     }
 }
@@ -257,6 +263,7 @@ impl FitConfig {
             verbose: self.verbose,
             nonneg_indices: self.nonneg_indices.clone(),
             nonpos_indices: self.nonpos_indices.clone(),
+            skip_covariance: self.skip_covariance,
         }
     }
 }
@@ -537,6 +544,7 @@ fn fit_glm_core(
             &prior_weights_vec,
             l2_penalty,
             penalize_intercept,
+            true, // init projection covariance is discarded
         ) {
             Ok((mut coef, _)) if !coef.iter().any(|&c| c.is_nan() || c.is_infinite()) => {
                 for &idx in &config.nonneg_indices {
@@ -623,6 +631,7 @@ fn fit_glm_core(
             &combined_weights,
             l2_penalty,
             penalize_intercept,
+            config.skip_covariance, // CV fits skip the unused per-iteration inverse
         )?;
 
         // Check for NaN in coefficients - indicates numerical instability
@@ -836,6 +845,7 @@ fn fit_glm_core(
         &combined_final_weights,
         l2_penalty,
         penalize_intercept,
+        true, // final extraction discards the covariance (the `_` below)
     ) {
         Ok((coef, _)) if !coef.iter().any(|&c| c.is_nan() || c.is_infinite()) => {
             // For constrained problems, apply projection and check if it's better than stored best
@@ -1042,14 +1052,17 @@ pub fn compute_xtwx_xtwz(
     assert_eq!(w_slice.len(), n, "w_slice length must be n");
     assert_eq!(z_slice.len(), n, "z_slice length must be n");
 
-    const CHUNK_SIZE: usize = 8192;
-    let num_chunks = n.div_ceil(CHUNK_SIZE);
+    // Core-adaptive chunking: split rows across all available threads so this
+    // kernel (the dominant per-iteration cost) saturates the CPU, instead of
+    // the ~4 chunks the old fixed 8192 produced for a 25k-row CV fold.
+    let chunk_size = n.div_ceil(rayon::current_num_threads()).max(1);
+    let num_chunks = n.div_ceil(chunk_size);
 
     let (xtx_data, xtz_data): (Vec<f64>, Vec<f64>) = (0..num_chunks)
         .into_par_iter()
         .map(|chunk_idx| {
-            let chunk_start = chunk_idx * CHUNK_SIZE;
-            let chunk_end = (chunk_start + CHUNK_SIZE).min(n);
+            let chunk_start = chunk_idx * chunk_size;
+            let chunk_end = (chunk_start + chunk_size).min(n);
             let mut xtx_local = vec![0.0; p * p];
             let mut xtz_local = vec![0.0; p];
 
@@ -1198,6 +1211,7 @@ fn solve_weighted_least_squares_penalized(
     w: &Array1<f64>,
     l2_penalty: f64,
     penalize_intercept: bool,
+    skip_covariance: bool,
 ) -> Result<(Array1<f64>, Array2<f64>)> {
     let p = x.ncols();
     let (mut xtx, xtz) = compute_xtwx_xtwz(x, z, w)?;
@@ -1211,7 +1225,7 @@ fn solve_weighted_least_squares_penalized(
         }
     }
 
-    cholesky_solve(xtx, &xtz, false)
+    cholesky_solve(xtx, &xtz, skip_covariance)
 }
 
 /// Solve weighted least squares with a full penalty matrix.
@@ -1515,9 +1529,15 @@ mod tests {
         let initial_mu = PoissonFamily.initialize_mu(&y);
         let initial_eta = LogLink.link(&initial_mu);
         let weights = Array1::ones(y.len());
-        let (initial_coef, _) =
-            solve_weighted_least_squares_penalized(x.view(), &initial_eta, &weights, 0.0, true)
-                .expect("initial projection should be valid");
+        let (initial_coef, _) = solve_weighted_least_squares_penalized(
+            x.view(),
+            &initial_eta,
+            &weights,
+            0.0,
+            true,
+            false,
+        )
+        .expect("initial projection should be valid");
         let initial_fit_eta = x.dot(&initial_coef);
         let initial_fit_mu = PoissonFamily.clamp_mu(&LogLink.inverse(&initial_fit_eta));
         let initial_model_deviance = PoissonFamily.deviance(&y, &initial_fit_mu, None);
