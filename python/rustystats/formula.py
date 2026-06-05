@@ -663,6 +663,8 @@ def _fit_glm_core(
     store_design_matrix: bool = False,
     allow_extended_tweedie: bool = False,
     standardize: bool = True,
+    standardization_center: np.ndarray | None = None,
+    standardization_scale: np.ndarray | None = None,
 ) -> tuple:
     """
     Core GLM fitting logic for FormulaGLMDict.
@@ -733,10 +735,22 @@ def _fit_glm_core(
     if standardize and alpha > 0.0:
         from rustystats.regularization_path import compute_standardization, solver_standardization
 
-        # pen_mask defaults to "all columns except the intercept"; this path
-        # does not build an alpha grid, so it need not share an explicit mask.
-        center, scale = compute_standardization(X, weights, fit_intercept=fit_intercept)
-        center, scale = solver_standardization(center, scale, fit_intercept=fit_intercept)
+        if standardization_center is not None or standardization_scale is not None:
+            if standardization_center is None or standardization_scale is None:
+                raise ValidationError(
+                    "standardization_center and standardization_scale must match."
+                )
+            center = np.asarray(standardization_center, dtype=np.float64)
+            scale = np.asarray(standardization_scale, dtype=np.float64)
+            if center.shape != (X.shape[1],) or scale.shape != (X.shape[1],):
+                raise ValidationError(
+                    "standardization_center/standardization_scale must match the design width."
+                )
+        else:
+            # pen_mask defaults to "all columns except the intercept"; this path
+            # does not build an alpha grid, so it need not share an explicit mask.
+            center, scale = compute_standardization(X, weights, fit_intercept=fit_intercept)
+            center, scale = solver_standardization(center, scale, fit_intercept=fit_intercept)
 
     result = _fit_glm_rust(
         y,
@@ -1918,6 +1932,13 @@ class GLMModel:
         if self._regularization_path_info is None:
             return None
         return self._regularization_path_info.cv_scoring_objective
+
+    @property
+    def cv_profile(self) -> dict[str, Any] | None:
+        """Rust CV timing profile, when retained by the fast array CV path."""
+        if self._regularization_path_info is None:
+            return None
+        return self._regularization_path_info.cv_profile
 
     @property
     def fold_safe_target_encoding(self) -> bool | None:
@@ -4517,6 +4538,12 @@ class FormulaGLMDict(_GLMBase):
                 store_design_matrix=store_design_matrix,
                 allow_extended_tweedie=self.allow_extended_tweedie,
                 standardize=standardize,
+                standardization_center=(
+                    path_info.final_fit_center if path_info is not None else None
+                ),
+                standardization_scale=(
+                    path_info.final_fit_scale if path_info is not None else None
+                ),
             )
             if is_negbinomial:
                 theta_metadata = {

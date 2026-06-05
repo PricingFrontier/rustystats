@@ -252,6 +252,17 @@ pub fn compute_irls_weights(
         ));
     }
 
+    if family.name().eq_ignore_ascii_case("poisson") && link.name() == "log" {
+        return Ok(compute_poisson_log_irls_weights(
+            y,
+            mu,
+            eta,
+            offset,
+            prior_weights,
+            min_weight,
+        ));
+    }
+
     let link_deriv = link.derivative(mu);
     if link_deriv.len() != n {
         return Err(RustyStatsError::dim_mismatch(
@@ -291,41 +302,84 @@ pub fn compute_irls_weights(
         }
     }
 
-    let results: Vec<(f64, f64, f64)> = (0..n)
-        .into_par_iter()
-        .map(|i| {
-            let d = link_deriv[i];
+    let mut irls_weights_vec = vec![0.0; n];
+    let mut combined_weights_vec = vec![0.0; n];
+    let mut working_response_vec = vec![0.0; n];
+    let chunk_size = irls_chunk_size(n);
+    irls_weights_vec
+        .par_chunks_mut(chunk_size)
+        .zip(combined_weights_vec.par_chunks_mut(chunk_size))
+        .zip(working_response_vec.par_chunks_mut(chunk_size))
+        .enumerate()
+        .for_each(|(chunk_idx, ((iw_chunk, cw_chunk), wr_chunk))| {
+            let start = chunk_idx * chunk_size;
+            for local_idx in 0..iw_chunk.len() {
+                let i = start + local_idx;
+                let d = link_deriv[i];
 
-            let iw = if let Some(ref hw) = hessian_weights {
-                hw[i].max(min_weight).min(MAX_IRLS_WEIGHT)
-            } else {
-                let v = variance
-                    .as_ref()
-                    .expect("variance present in Fisher branch")[i];
-                (1.0 / (v * d * d)).max(min_weight).min(MAX_IRLS_WEIGHT)
-            };
+                let iw = if let Some(ref hw) = hessian_weights {
+                    hw[i].max(min_weight).min(MAX_IRLS_WEIGHT)
+                } else {
+                    let v = variance
+                        .as_ref()
+                        .expect("variance present in Fisher branch")[i];
+                    (1.0 / (v * d * d)).max(min_weight).min(MAX_IRLS_WEIGHT)
+                };
 
-            let cw = prior_weights[i] * iw;
-            let wr = (eta[i] - offset[i]) + (y[i] - mu[i]) * d;
-
-            (iw, cw, wr)
-        })
-        .collect();
-
-    let mut irls_weights_vec = Vec::with_capacity(n);
-    let mut combined_weights_vec = Vec::with_capacity(n);
-    let mut working_response_vec = Vec::with_capacity(n);
-    for (iw, cw, wr) in results {
-        irls_weights_vec.push(iw);
-        combined_weights_vec.push(cw);
-        working_response_vec.push(wr);
-    }
+                iw_chunk[local_idx] = iw;
+                cw_chunk[local_idx] = prior_weights[i] * iw;
+                wr_chunk[local_idx] = (eta[i] - offset[i]) + (y[i] - mu[i]) * d;
+            }
+        });
 
     Ok(IRLSWeightResult {
         irls_weights: Array1::from_vec(irls_weights_vec),
         combined_weights: Array1::from_vec(combined_weights_vec),
         working_response: Array1::from_vec(working_response_vec),
     })
+}
+
+fn compute_poisson_log_irls_weights(
+    y: &Array1<f64>,
+    mu: &Array1<f64>,
+    eta: &Array1<f64>,
+    offset: &Array1<f64>,
+    prior_weights: &Array1<f64>,
+    min_weight: f64,
+) -> IRLSWeightResult {
+    let n = y.len();
+    let mut irls_weights_vec = vec![0.0; n];
+    let mut combined_weights_vec = vec![0.0; n];
+    let mut working_response_vec = vec![0.0; n];
+    let chunk_size = irls_chunk_size(n);
+    irls_weights_vec
+        .par_chunks_mut(chunk_size)
+        .zip(combined_weights_vec.par_chunks_mut(chunk_size))
+        .zip(working_response_vec.par_chunks_mut(chunk_size))
+        .enumerate()
+        .for_each(|(chunk_idx, ((iw_chunk, cw_chunk), wr_chunk))| {
+            let start = chunk_idx * chunk_size;
+            for local_idx in 0..iw_chunk.len() {
+                let i = start + local_idx;
+                let mui = mu[i];
+                let d = 1.0 / mui;
+                let iw = (1.0 / (mui * d * d)).max(min_weight).min(MAX_IRLS_WEIGHT);
+                iw_chunk[local_idx] = iw;
+                cw_chunk[local_idx] = prior_weights[i] * iw;
+                wr_chunk[local_idx] = (eta[i] - offset[i]) + (y[i] - mui) * d;
+            }
+        });
+
+    IRLSWeightResult {
+        irls_weights: Array1::from_vec(irls_weights_vec),
+        combined_weights: Array1::from_vec(combined_weights_vec),
+        working_response: Array1::from_vec(working_response_vec),
+    }
+}
+
+fn irls_chunk_size(n: usize) -> usize {
+    let target_chunks = rayon::current_num_threads().saturating_mul(4).max(1);
+    n.div_ceil(target_chunks).max(1)
 }
 
 // =============================================================================

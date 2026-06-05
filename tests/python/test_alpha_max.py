@@ -23,7 +23,10 @@ import pytest
 from rustystats._rustystats import fit_glm_py
 from rustystats.constants import ALPHA_MAX_FLOOR
 from rustystats.exceptions import ValidationError
-from rustystats.regularization_path import compute_alpha_max
+from rustystats.regularization_path import (
+    compute_alpha_max,
+    compute_standardization_with_ridge_diag,
+)
 
 
 def _design(n: int = 600, p: int = 5, seed: int = 0) -> tuple[np.ndarray, np.ndarray]:
@@ -376,6 +379,46 @@ class TestRidgeGridEndpoint:
         a1 = compute_alpha_max(X1, y, l1_ratio=0.0, family="gaussian", link="identity")
         a2 = compute_alpha_max(X2, y, l1_ratio=0.0, family="gaussian", link="identity")
         assert not np.isclose(a1, a2, rtol=0.05)
+
+    def test_ridge_alpha_max_accepts_precomputed_standardized_diag(self):
+        """The optimized standardized ridge path must match the explicit scan."""
+        X, _ = _design(n=400, seed=11)
+        y = np.linspace(0.0, 1.0, 400)
+        weights = np.linspace(0.5, 2.0, 400)
+        pen_mask = np.ones(X.shape[1], dtype=bool)
+        pen_mask[0] = False
+        center, scale, ridge_diag = compute_standardization_with_ridge_diag(
+            X,
+            weights,
+            pen_mask,
+            fit_intercept=True,
+        )
+
+        explicit = compute_alpha_max(
+            X,
+            y,
+            l1_ratio=0.0,
+            family="gaussian",
+            link="identity",
+            weights=weights,
+            center=center,
+            scale=scale,
+            pen_mask=pen_mask,
+        )
+        precomputed = compute_alpha_max(
+            X,
+            y,
+            l1_ratio=0.0,
+            family="gaussian",
+            link="identity",
+            weights=weights,
+            center=center,
+            scale=scale,
+            ridge_xtx_diag=ridge_diag,
+            pen_mask=pen_mask,
+        )
+
+        assert precomputed == pytest.approx(explicit, rel=1e-12)
 
 
 # --------------------------------------------------------------------------

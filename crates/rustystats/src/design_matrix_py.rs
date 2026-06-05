@@ -190,6 +190,45 @@ pub fn build_cat_cont_interaction_py<'py>(
     Ok((matrix.into_pyarray(py), names))
 }
 
+/// Build two-categorical × continuous interaction matrix directly.
+///
+/// This is equivalent to ``build_cat_cat_interaction_py(...); multiply_matrix_by_continuous_py(...)``
+/// but avoids materialising the intermediate dense categorical interaction block.
+#[pyfunction]
+pub fn build_two_cat_cont_interaction_py<'py>(
+    py: Python<'py>,
+    idx1: PyReadonlyArray1<i32>,
+    n_levels1: usize,
+    idx2: PyReadonlyArray1<i32>,
+    n_levels2: usize,
+    continuous: PyReadonlyArray1<f64>,
+    names1: Vec<String>,
+    names2: Vec<String>,
+    cont_name: &str,
+) -> PyResult<(Bound<'py, PyArray2<f64>>, Vec<String>)> {
+    let idx1_vec: Vec<i32> = idx1.as_array().to_vec();
+    let idx2_vec: Vec<i32> = idx2.as_array().to_vec();
+    let cont_array = continuous.as_array().to_owned();
+
+    if idx1_vec.len() != idx2_vec.len() || idx1_vec.len() != cont_array.len() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "idx1, idx2, and continuous must have matching lengths",
+        ));
+    }
+
+    let (matrix, names) = design_matrix::build_two_categorical_continuous_interaction(
+        &idx1_vec,
+        n_levels1,
+        &idx2_vec,
+        n_levels2,
+        &cont_array,
+        &names1,
+        &names2,
+        cont_name,
+    );
+    Ok((matrix.into_pyarray(py), names))
+}
+
 /// Build continuous × continuous interaction.
 ///
 /// Simple element-wise multiplication.

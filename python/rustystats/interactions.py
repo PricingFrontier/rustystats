@@ -45,12 +45,18 @@ from rustystats._rustystats import (
     build_cont_cont_interaction_py as _build_cont_cont_rust,
 )
 from rustystats._rustystats import (
+    build_two_cat_cont_interaction_py as _build_two_cat_cont_rust,
+)
+from rustystats._rustystats import (
     encode_categorical_indices_py as _encode_categorical_indices_rust,
 )
 
 # Import Rust implementations for heavy computation
 from rustystats._rustystats import (
     encode_categorical_py as _encode_categorical_rust,
+)
+from rustystats._rustystats import (
+    factorize_strings_py as _factorize_strings_rust,
 )
 from rustystats._rustystats import (
     multiply_matrix_by_continuous_py as _multiply_matrix_cont_rust,
@@ -381,10 +387,36 @@ class InteractionBuilder:
     def _get_categorical_indices(self, name: str) -> tuple[np.ndarray, list[str]]:
         """Get cached categorical indices and levels for a variable."""
         cache_key = f"{name}_True"  # Always use drop_first=True for indices
-        if cache_key not in self._cat_encoding_cache:
-            self._get_categorical_encoding(name)  # Populate cache
+        if (
+            cache_key not in self._cat_encoding_cache
+            or self._cat_encoding_cache[cache_key].indices is None
+        ):
+            self._get_categorical_indices_and_names(name)  # Populate index-only cache
         cached = self._cat_encoding_cache[cache_key]
         return cached.indices, cached.levels
+
+    def _get_categorical_indices_and_names(
+        self, name: str, drop_first: bool = True
+    ) -> tuple[np.ndarray, list[str], list[str]]:
+        """Get categorical indices/levels/names without materializing dummy columns."""
+        cache_key = f"{name}_{drop_first}"
+        cached = self._cat_encoding_cache.get(cache_key)
+        if cached is not None and cached.indices is not None:
+            return cached.indices, cached.levels, cached.names
+
+        col = self.data[name].to_numpy()
+        values = [str(v) for v in col]
+        levels, codes = _factorize_strings_rust(values)
+        indices = np.asarray(codes, dtype=np.int32)
+        start_idx = 1 if drop_first else 0
+        names = [f"{name}[T.{level}]" for level in levels[start_idx:]]
+        self._cat_encoding_cache[cache_key] = CategoricalEncoding(
+            encoding=None,
+            names=names,
+            indices=indices,
+            levels=list(levels),
+        )
+        return indices, list(levels), names
 
     def _get_categorical_levels(self, name: str) -> list[str]:
         """Get cached categorical levels for a variable."""
@@ -412,7 +444,19 @@ class InteractionBuilder:
         cache_key = f"{name}_{drop_first}"
         if cache_key in self._cat_encoding_cache:
             cached = self._cat_encoding_cache[cache_key]
-            return cached.encoding, cached.names
+            if cached.encoding is not None:
+                return cached.encoding, cached.names
+            if cached.indices is not None:
+                encoding, names = _encode_categorical_indices_rust(
+                    cached.indices,
+                    len(cached.levels),
+                    list(cached.levels),
+                    name,
+                    drop_first,
+                )
+                cached.encoding = encoding
+                cached.names = names
+                return cached.encoding, cached.names
 
         col = self.data[name].to_numpy()
 
@@ -723,21 +767,20 @@ class InteractionBuilder:
                 else:
                     cont_factors.append(factor)
 
-        # Build categorical encoding first
-        if len(cat_factors) == 1:
-            cat_name = cat_factors[0]
-            cat_encoding, cat_names = self._get_categorical_encoding(cat_name)
-        else:
-            cat_interaction = InteractionTerm(
-                factors=cat_factors, categorical_flags=[True] * len(cat_factors)
-            )
-            cat_encoding, cat_names = self._build_categorical_interaction(cat_interaction)
-
-        if cat_encoding.shape[1] == 0:
-            return np.zeros((self._n, 0), dtype=self.dtype), []
-
         # Handle spline × categorical interactions
         if spline_factors:
+            if len(cat_factors) == 1:
+                cat_name = cat_factors[0]
+                cat_encoding, cat_names = self._get_categorical_encoding(cat_name)
+            else:
+                cat_interaction = InteractionTerm(
+                    factors=cat_factors, categorical_flags=[True] * len(cat_factors)
+                )
+                cat_encoding, cat_names = self._build_categorical_interaction(cat_interaction)
+
+            if cat_encoding.shape[1] == 0:
+                return np.zeros((self._n, 0), dtype=self.dtype), []
+
             # Build spline basis for each spline factor
             all_columns = []
             all_names = []
@@ -805,9 +848,35 @@ class InteractionBuilder:
                 cont_name,
             )
             return result, col_names
+        elif len(cat_factors) == 2:
+            cat1, cat2 = cat_factors
+            idx1, levels1 = self._get_categorical_indices(cat1)
+            idx2, levels2 = self._get_categorical_indices(cat2)
+            n1 = len(levels1) - 1
+            n2 = len(levels2) - 1
+            if n1 * n2 == 0:
+                return np.zeros((self._n, 0), dtype=self.dtype), []
+            _idx1, _levels1, names1 = self._get_categorical_indices_and_names(cat1)
+            _idx2, _levels2, names2 = self._get_categorical_indices_and_names(cat2)
+            result, col_names = _build_two_cat_cont_rust(
+                idx1.astype(np.int32),
+                n1,
+                idx2.astype(np.int32),
+                n2,
+                cont_product.astype(np.float64),
+                list(names1),
+                list(names2),
+                cont_name,
+            )
+            return result, col_names
         else:
-            # Reuse the categorical interaction built above, then multiply by
-            # the continuous product. Prediction already follows this path.
+            # Fallback for rare 3+ categorical mixed interactions.
+            cat_interaction = InteractionTerm(
+                factors=cat_factors, categorical_flags=[True] * len(cat_factors)
+            )
+            cat_encoding, cat_names = self._build_categorical_interaction(cat_interaction)
+            if cat_encoding.shape[1] == 0:
+                return np.zeros((self._n, 0), dtype=self.dtype), []
             result, col_names = _multiply_matrix_cont_rust(
                 cat_encoding.astype(np.float64),
                 cont_product.astype(np.float64),
@@ -1980,23 +2049,22 @@ class InteractionBuilder:
                 else:
                     cont_factors.append(factor)
 
-        # Build categorical encoding using Rust
-        if len(cat_factors) == 1:
-            cat_enc = self._encode_categorical_new(new_data, cat_factors[0])
-            cat_names = self._get_categorical_names(cat_factors[0])
-        else:
-            # Multi-categorical: build interaction via Rust
-            cat_interaction = InteractionTerm(
-                factors=cat_factors, categorical_flags=[True] * len(cat_factors)
-            )
-            cat_enc = self._build_categorical_interaction_new(new_data, cat_interaction, n)
-            cat_names = []  # Names not needed for further multiplication
-
-        if cat_enc.shape[1] == 0:
-            return np.zeros((n, 0), dtype=self.dtype)
-
         # Handle spline × categorical interactions
         if spline_factors:
+            if len(cat_factors) == 1:
+                cat_enc = self._encode_categorical_new(new_data, cat_factors[0])
+                cat_names = self._get_categorical_names(cat_factors[0])
+            else:
+                # Multi-categorical: build interaction via Rust
+                cat_interaction = InteractionTerm(
+                    factors=cat_factors, categorical_flags=[True] * len(cat_factors)
+                )
+                cat_enc = self._build_categorical_interaction_new(new_data, cat_interaction, n)
+                cat_names = []  # Names not needed for further multiplication
+
+            if cat_enc.shape[1] == 0:
+                return np.zeros((n, 0), dtype=self.dtype)
+
             all_columns = []
 
             for _spline_str, spline in spline_factors:
@@ -2038,6 +2106,7 @@ class InteractionBuilder:
             n_levels = len(levels) - 1
             if n_levels == 0:
                 return np.zeros((n, 0), dtype=self.dtype)
+            cat_names = self._get_categorical_names(cat_factors[0])
             result, _ = _build_cat_cont_rust(
                 cat_indices.astype(np.int32),
                 n_levels,
@@ -2046,12 +2115,37 @@ class InteractionBuilder:
                 cont_name,
             )
             return np.asarray(result)
+        elif len(cat_factors) == 2:
+            cat1, cat2 = cat_factors
+            idx1, levels1 = self._map_to_training_indices(new_data, cat1)
+            idx2, levels2 = self._map_to_training_indices(new_data, cat2)
+            n1 = len(levels1) - 1
+            n2 = len(levels2) - 1
+            if n1 * n2 == 0:
+                return np.zeros((n, 0), dtype=self.dtype)
+            result, _ = _build_two_cat_cont_rust(
+                idx1.astype(np.int32),
+                n1,
+                idx2.astype(np.int32),
+                n2,
+                cont_product.astype(np.float64),
+                list(self._get_categorical_names(cat1)),
+                list(self._get_categorical_names(cat2)),
+                cont_name,
+            )
+            return np.asarray(result)
         else:
             # Multi-categorical: use matrix × continuous Rust
+            cat_interaction = InteractionTerm(
+                factors=cat_factors, categorical_flags=[True] * len(cat_factors)
+            )
+            cat_enc = self._build_categorical_interaction_new(new_data, cat_interaction, n)
+            if cat_enc.shape[1] == 0:
+                return np.zeros((n, 0), dtype=self.dtype)
             result, _ = _multiply_matrix_cont_rust(
                 cat_enc.astype(np.float64),
                 cont_product.astype(np.float64),
-                list(cat_names) if cat_names else [f"c{i}" for i in range(cat_enc.shape[1])],
+                [f"c{i}" for i in range(cat_enc.shape[1])],
                 cont_name,
             )
             return np.asarray(result)

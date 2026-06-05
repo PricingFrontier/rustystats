@@ -777,15 +777,7 @@ pub fn score_test_continuous_batch(
         .map(|(&yi, &mui)| yi - mui)
         .collect();
 
-    // Precompute weighted design matrix WX (n × p) once — independent of z.
-    // Row i of WX = weights[i] * x[i, :].
-    let mut wx = x.to_owned();
-    for i in 0..n {
-        let wi = weights[i];
-        for j in 0..p {
-            wx[[i, j]] *= wi;
-        }
-    }
+    let x_slice = x.as_slice();
 
     // Process the k columns in parallel.
     (0..k)
@@ -793,23 +785,35 @@ pub fn score_test_continuous_batch(
         .map(|col| {
             let z = zs.column(col);
 
-            // U = z' (y - mu)
-            let u: f64 = z.iter().zip(resid.iter()).map(|(&zi, &ri)| zi * ri).sum();
-
-            // Z'WZ = sum_i z_i^2 * w_i
-            let zwz: f64 = z
-                .iter()
-                .zip(weights.iter())
-                .map(|(&zi, &wi)| zi * zi * wi)
-                .sum();
-
-            // Z'WX (1 × p): inner product of z with each column of WX.
-            // Iterate by row to keep cache-friendly access on row-major WX.
+            // U, Z'WZ and Z'WX all share the same row scan. Fuse them to avoid
+            // allocating WX (n x p) and touching X once before the batched tests.
+            let mut u = 0.0_f64;
+            let mut zwz = 0.0_f64;
             let mut zwx = vec![0.0_f64; p];
-            for (i, &zi) in z.iter().enumerate() {
-                let row = wx.row(i);
-                for j in 0..p {
-                    zwx[j] += zi * row[j];
+            if let Some(xs) = x_slice {
+                for i in 0..n {
+                    let zi = z[i];
+                    let wi = weights[i];
+                    u += zi * resid[i];
+                    zwz += zi * zi * wi;
+                    let zi_wi = zi * wi;
+                    let row_start = i * p;
+                    for j in 0..p {
+                        // SAFETY: i < n and j < p, so row_start + j < n*p = xs.len().
+                        zwx[j] += zi_wi * unsafe { *xs.get_unchecked(row_start + j) };
+                    }
+                }
+            } else {
+                for i in 0..n {
+                    let zi = z[i];
+                    let wi = weights[i];
+                    u += zi * resid[i];
+                    zwz += zi * zi * wi;
+                    let zi_wi = zi * wi;
+                    let row = x.row(i);
+                    for j in 0..p {
+                        zwx[j] += zi_wi * row[j];
+                    }
                 }
             }
 
@@ -1316,7 +1320,7 @@ mod tests {
             x[[row, j2]] += (row as f64 / 4.0).sin();
         }
         assert!(should_use_sparse_sandwich_kernel(
-            x.as_slice().unwrap(),
+            x.as_slice().expect("test matrix should be contiguous"),
             n,
             p
         ));

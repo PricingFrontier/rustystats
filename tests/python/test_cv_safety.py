@@ -224,17 +224,17 @@ class TestFoldSafeTargetEncodingCV:
         y = rng.poisson(np.exp(0.2 + 0.1 * x)).astype(float)
         data = pl.DataFrame({"y": y, "x": x, "Brand": brand})
 
-        original = rust.fit_glm_py
+        original = rust.fit_fold_path_py
         seen_nonneg = []
 
-        def spy_fit_glm_py(*args, **kwargs):
-            if len(args) >= 13:
-                seen_nonneg.append(args[12])
+        def spy_fit_fold_path_py(*args, **kwargs):
+            if len(args) >= 17:
+                seen_nonneg.append(args[16])
             else:
                 seen_nonneg.append(kwargs.get("nonneg_indices"))
             return original(*args, **kwargs)
 
-        monkeypatch.setattr(rust, "fit_glm_py", spy_fit_glm_py)
+        monkeypatch.setattr(rust, "fit_fold_path_py", spy_fit_fold_path_py)
         result = rs.glm_dict(
             response="y",
             terms={
@@ -252,17 +252,23 @@ class TestFoldSafeTargetEncodingCV:
         import rustystats._rustystats as rust
 
         df = make_freq_frame()
-        original = rust.fit_glm_py
+        original = rust.fit_fold_path_py
         failed = {"alpha": None}
 
-        def spy_fit_glm_py(*args, **kwargs):
-            alpha = float(args[8])
-            if failed["alpha"] is None and alpha > 0:
-                failed["alpha"] = alpha
-                raise ValueError("forced fold failure")
-            return original(*args, **kwargs)
+        def spy_fit_fold_path_py(*args, **kwargs):
+            result = original(*args, **kwargs)
+            alphas = list(result["alphas"])
+            fold_deviances = list(result["fold_deviances"])
+            if failed["alpha"] is None:
+                for idx, alpha in enumerate(alphas):
+                    if alpha > 0:
+                        failed["alpha"] = float(alpha)
+                        fold_deviances[idx] = float("inf")
+                        break
+                result["fold_deviances"] = fold_deviances
+            return result
 
-        monkeypatch.setattr(rust, "fit_glm_py", spy_fit_glm_py)
+        monkeypatch.setattr(rust, "fit_fold_path_py", spy_fit_fold_path_py)
         result = rs.glm_dict(
             response="ClaimCount",
             terms={"DrivAge": {"type": "linear"}, "Brand": {"type": "target_encoding"}},
@@ -402,6 +408,50 @@ class TestCVWeightedScoring:
         )
         # ...but heterogeneous weights genuinely change the score.
         assert not np.allclose(base["cv_fold_scores"][0], hetero["cv_fold_scores"][0])
+
+    def test_alpha_with_any_failed_fold_is_not_selected(self):
+        """A partially failed alpha must not be averaged over surviving folds.
+
+        The Rust array CV path used to drop ``inf`` fold scores before averaging,
+        so an alpha could be selected from fewer folds than requested. Build a
+        fold-dependent predictor that is all zero in one training fold, making
+        the unregularized normal equations singular only for that fold. A ridge
+        candidate remains valid and must be selected instead.
+        """
+        from rustystats._rustystats import fit_cv_path_py
+
+        rng = np.random.default_rng(41)
+        n, n_folds, seed = 120, 3, 7
+        probe_x = np.column_stack([np.ones(n), rng.normal(size=n)])
+        y = rng.poisson(1.2, n).astype(float)
+        probe = fit_cv_path_py(
+            y,
+            probe_x,
+            "poisson",
+            "log",
+            alphas=[1.0],
+            l1_ratio=0.0,
+            n_folds=n_folds,
+            seed=seed,
+        )
+        folds = np.asarray(probe["fold_assignments"])
+
+        x_singular_in_fold0 = (folds == 0).astype(float)
+        x = np.column_stack([np.ones(n), x_singular_in_fold0])
+        result = fit_cv_path_py(
+            y,
+            x,
+            "poisson",
+            "log",
+            alphas=[0.0, 1.0],
+            l1_ratio=0.0,
+            n_folds=n_folds,
+            seed=seed,
+        )
+
+        assert np.isinf(result["cv_fold_scores"][0][0])
+        assert np.isinf(result["cv_deviance_mean"][0])
+        assert result["best_alpha"] == pytest.approx(1.0)
 
     def test_per_fold_weighted_deviance_matches_hand_computation(self):
         """RS-ACT-001 backlog #5: each fold's reported CV deviance equals a
@@ -841,3 +891,37 @@ class TestCvConvergenceOverrides:
 
         assert result.cv_deviance is not None
         assert result.cv_convergence == {"max_iter": 5, "tol": pytest.approx(1e-4)}
+
+    def test_fast_array_cv_reuses_standardization_for_final_refit(self, monkeypatch):
+        """The fast CV path already computes full-data solver standardization.
+
+        Final refit should reuse those vectors instead of scanning the full
+        design again. Patch the fallback helper to prove the CV route no longer
+        depends on it after alpha selection.
+        """
+        from rustystats import regularization_path as rp
+
+        df = make_freq_frame(n=300)
+
+        def should_not_recompute(*_args, **_kwargs):
+            raise AssertionError("final refit recomputed standardization")
+
+        monkeypatch.setattr(rp, "compute_standardization", should_not_recompute)
+        result = rs.glm_dict(
+            response="ClaimCount",
+            terms={"DrivAge": {"type": "linear"}, "VehAge": {"type": "linear"}},
+            data=df,
+            family="poisson",
+            exposure="Exposure",
+        ).fit(
+            cv=3,
+            regularization="ridge",
+            n_alphas=3,
+            include_unregularized=False,
+            cv_seed=7,
+            verbose=False,
+        )
+
+        assert result.cv_deviance is not None
+        assert result.alpha > 0.0
+        assert result.converged
