@@ -65,6 +65,7 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fitting_py::fit_glm_py, m)?)?;
     m.add_function(wrap_pyfunction!(fitting_py::fit_negbinomial_py, m)?)?;
     m.add_function(wrap_pyfunction!(fitting_py::fit_smooth_glm_unified_py, m)?)?;
+    m.add_function(wrap_pyfunction!(fitting_py::fit_fold_path_py, m)?)?;
     m.add_function(wrap_pyfunction!(fitting_py::fit_cv_path_py, m)?)?;
 
     // IRLS residual helpers
@@ -116,6 +117,10 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     m.add_function(wrap_pyfunction!(
         design_matrix_py::build_cat_cont_interaction_py,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        design_matrix_py::build_two_cat_cont_interaction_py,
         m
     )?)?;
     m.add_function(wrap_pyfunction!(

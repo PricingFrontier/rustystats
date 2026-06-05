@@ -117,6 +117,55 @@ class TestInteractionBuilder:
         assert "cat1[T.B]:cat2[T.Y]" in names
         assert "cat1[T.C]:cat2[T.Y]" in names
 
+    def test_two_categorical_continuous_interaction(self):
+        """Test direct two-categorical × continuous interaction construction."""
+        df = pl.DataFrame(
+            {
+                "y": [0, 1, 2, 3, 4, 5],
+                "x": [10.0, 20.0, 30.0, 40.0, 50.0, 60.0],
+                "cat1": ["A", "B", "C", "B", "C", "A"],
+                "cat2": ["X", "Y", "Y", "Z", "X", "Z"],
+            }
+        )
+        parsed = ParsedFormula(
+            response="y",
+            main_effects=["x"],
+            interactions=[
+                InteractionTerm(
+                    factors=["cat1", "cat2", "x"],
+                    categorical_flags=[True, True, False],
+                )
+            ],
+            categorical_vars={"cat1", "cat2"},
+            has_intercept=True,
+        )
+
+        builder = InteractionBuilder(df)
+        _y, X, names = builder.build_design_matrix_from_parsed(parsed)
+
+        expected_names = [
+            "cat1[T.B]:cat2[T.Y]:x",
+            "cat1[T.B]:cat2[T.Z]:x",
+            "cat1[T.C]:cat2[T.Y]:x",
+            "cat1[T.C]:cat2[T.Z]:x",
+        ]
+        for name in expected_names:
+            assert name in names
+
+        expected = np.array(
+            [
+                [0.0, 0.0, 0.0, 0.0],
+                [20.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 30.0, 0.0],
+                [0.0, 40.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 0.0],
+            ]
+        )
+        actual = X[:, [names.index(name) for name in expected_names]]
+        np.testing.assert_allclose(actual, expected)
+        np.testing.assert_allclose(builder.transform_new_data(df), X)
+
     def test_pure_interaction(self, sample_data):
         """Test pure interaction without main effects for some variables."""
         parsed = ParsedFormula(

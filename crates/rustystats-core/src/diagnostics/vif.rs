@@ -553,7 +553,7 @@ mod tests {
         }
 
         assert!(should_use_sparse_gram_kernel_contiguous(
-            x.as_slice().unwrap(),
+            x.as_slice().expect("test matrix should be contiguous"),
             n,
             k
         ));

@@ -9,7 +9,7 @@
 // - fit_cv_path_py: Cross-validated regularization path
 // =============================================================================
 
-use ndarray::{Array1, Array2};
+use ndarray::{Array1, Array2, ArrayView2};
 use numpy::{PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -17,8 +17,10 @@ use rayon::iter::IntoParallelIterator;
 use rayon::prelude::*;
 use std::time::Instant;
 
+use rustystats_core::constants::MU_MIN_POSITIVE;
 use rustystats_core::diagnostics::{estimate_theta_moments, estimate_theta_profile};
-use rustystats_core::families::{NegativeBinomialFamily, PoissonFamily};
+use rustystats_core::families::{Family, NegativeBinomialFamily, PoissonFamily};
+use rustystats_core::links::Link;
 use rustystats_core::regularization::{RegularizationConfig, Standardization};
 use rustystats_core::solvers::{
     fit_glm_unified, fit_smooth_glm_full_matrix, FitConfig, IRLSConfig, IRLSResult, Monotonicity,
@@ -518,6 +520,559 @@ fn validation_deviance_score(unit_deviance: &Array1<f64>, weights: Option<&Array
     }
 }
 
+fn matrix_vector_dot(x: ArrayView2<'_, f64>, coefficients: &Array1<f64>) -> Array1<f64> {
+    let n = x.nrows();
+    let p = x.ncols();
+    assert_eq!(
+        coefficients.len(),
+        p,
+        "coefficient vector length must match X columns"
+    );
+
+    let x_slice = match x.as_slice() {
+        Some(slice) => slice,
+        None => return x.dot(coefficients),
+    };
+    let coef_slice = match coefficients.as_slice() {
+        Some(slice) => slice,
+        None => return x.dot(coefficients),
+    };
+    if n.saturating_mul(p) < 1_000_000 || rayon::current_num_threads() <= 1 {
+        return x.dot(coefficients);
+    }
+
+    let target_chunks = rayon::current_num_threads().saturating_mul(4).max(1);
+    let chunk_size = n.div_ceil(target_chunks).max(1);
+    let mut output = vec![0.0; n];
+    output
+        .par_chunks_mut(chunk_size)
+        .enumerate()
+        .for_each(|(chunk_idx, output_chunk)| {
+            let row_start_idx = chunk_idx * chunk_size;
+            for (local_row, out) in output_chunk.iter_mut().enumerate() {
+                let row = row_start_idx + local_row;
+                let offset = row * p;
+                let mut sum = 0.0;
+                for j in 0..p {
+                    // SAFETY: row < n and j < p, so offset + j < n*p = x_slice.len();
+                    // j < p = coef_slice.len().
+                    sum += unsafe { *x_slice.get_unchecked(offset + j) }
+                        * unsafe { *coef_slice.get_unchecked(j) };
+                }
+                *out = sum;
+            }
+        });
+
+    Array1::from_vec(output)
+}
+
+fn poisson_log_validation_deviance_score(
+    x: ArrayView2<'_, f64>,
+    coefficients: &Array1<f64>,
+    y: &Array1<f64>,
+    offset: Option<&Array1<f64>>,
+    weights: Option<&Array1<f64>>,
+    family: &dyn Family,
+    link: &dyn Link,
+) -> Option<f64> {
+    if !family.name().eq_ignore_ascii_case("poisson") || link.name() != "log" {
+        return None;
+    }
+    let n = x.nrows();
+    let p = x.ncols();
+    if y.len() != n || coefficients.len() != p {
+        return None;
+    }
+    let x_slice = x.as_slice()?;
+    let coef_slice = coefficients.as_slice()?;
+    let y_slice = y.as_slice()?;
+    let offset_slice = match offset {
+        Some(o) => Some(o.as_slice()?),
+        None => None,
+    };
+    let weights_slice = match weights {
+        Some(w) => Some(w.as_slice()?),
+        None => None,
+    };
+
+    const EXP_MAX: f64 = 700.0;
+    const EXP_MIN: f64 = -700.0;
+    if n.saturating_mul(p) < 1_000_000 || rayon::current_num_threads() <= 1 {
+        let mut dev_sum = 0.0;
+        let mut denom = 0.0;
+        for row in 0..n {
+            let row_start = row * p;
+            let mut eta = 0.0;
+            for j in 0..p {
+                // SAFETY: row < n and j < p, so row_start + j < n*p = x_slice.len();
+                // j < p = coef_slice.len().
+                eta += unsafe { *x_slice.get_unchecked(row_start + j) }
+                    * unsafe { *coef_slice.get_unchecked(j) };
+            }
+            if let Some(o) = offset_slice {
+                eta += o[row];
+            }
+            let mu = eta.clamp(EXP_MIN, EXP_MAX).exp().max(MU_MIN_POSITIVE);
+            let yi = y_slice[row];
+            let unit_dev = if yi == 0.0 {
+                2.0 * mu
+            } else {
+                2.0 * (yi * (yi / mu).ln() - (yi - mu))
+            };
+            if let Some(w) = weights_slice {
+                dev_sum += unit_dev * w[row];
+                denom += w[row];
+            } else {
+                dev_sum += unit_dev;
+                denom += 1.0;
+            }
+        }
+        return if denom <= 0.0 || !denom.is_finite() {
+            Some(f64::INFINITY)
+        } else {
+            Some(dev_sum / denom)
+        };
+    }
+
+    let target_chunks = rayon::current_num_threads().saturating_mul(4).max(1);
+    let chunk_size = n.div_ceil(target_chunks).max(1);
+    let num_chunks = n.div_ceil(chunk_size);
+
+    let (dev_sum, denom) = (0..num_chunks)
+        .into_par_iter()
+        .map(|chunk_idx| {
+            let start = chunk_idx * chunk_size;
+            let end = (start + chunk_size).min(n);
+            let mut local_dev = 0.0;
+            let mut local_denom = 0.0;
+            for row in start..end {
+                let row_start = row * p;
+                let mut eta = 0.0;
+                for j in 0..p {
+                    // SAFETY: row < n and j < p, so row_start + j < n*p = x_slice.len();
+                    // j < p = coef_slice.len().
+                    eta += unsafe { *x_slice.get_unchecked(row_start + j) }
+                        * unsafe { *coef_slice.get_unchecked(j) };
+                }
+                if let Some(o) = offset_slice {
+                    eta += o[row];
+                }
+                let mu = eta.clamp(EXP_MIN, EXP_MAX).exp().max(MU_MIN_POSITIVE);
+                let yi = y_slice[row];
+                let unit_dev = if yi == 0.0 {
+                    2.0 * mu
+                } else {
+                    2.0 * (yi * (yi / mu).ln() - (yi - mu))
+                };
+                if let Some(w) = weights_slice {
+                    local_dev += unit_dev * w[row];
+                    local_denom += w[row];
+                } else {
+                    local_dev += unit_dev;
+                    local_denom += 1.0;
+                }
+            }
+            (local_dev, local_denom)
+        })
+        .reduce(|| (0.0, 0.0), |a, b| (a.0 + b.0, a.1 + b.1));
+
+    if denom <= 0.0 || !denom.is_finite() {
+        Some(f64::INFINITY)
+    } else {
+        Some(dev_sum / denom)
+    }
+}
+
+fn poisson_log_validation_deviance_score_rows(
+    x: ArrayView2<'_, f64>,
+    coefficients: &Array1<f64>,
+    y: &Array1<f64>,
+    offset: Option<&Array1<f64>>,
+    weights: Option<&Array1<f64>>,
+    rows: &[usize],
+) -> Option<f64> {
+    let n = x.nrows();
+    let p = x.ncols();
+    if y.len() != n || coefficients.len() != p {
+        return None;
+    }
+    let x_slice = x.as_slice()?;
+    let coef_slice = coefficients.as_slice()?;
+    let y_slice = y.as_slice()?;
+    let offset_slice = match offset {
+        Some(o) => Some(o.as_slice()?),
+        None => None,
+    };
+    let weights_slice = match weights {
+        Some(w) => Some(w.as_slice()?),
+        None => None,
+    };
+    if rows.iter().any(|&row| row >= n) {
+        return None;
+    }
+
+    const EXP_MAX: f64 = 700.0;
+    const EXP_MIN: f64 = -700.0;
+    if rows.len().saturating_mul(p) < 1_000_000 || rayon::current_num_threads() <= 1 {
+        let mut dev_sum = 0.0;
+        let mut denom = 0.0;
+        for &row in rows {
+            let row_start = row * p;
+            let mut eta = 0.0;
+            for j in 0..p {
+                // SAFETY: row < n and j < p, so row_start + j < n*p = x_slice.len();
+                // j < p = coef_slice.len().
+                eta += unsafe { *x_slice.get_unchecked(row_start + j) }
+                    * unsafe { *coef_slice.get_unchecked(j) };
+            }
+            if let Some(o) = offset_slice {
+                eta += o[row];
+            }
+            let mu = eta.clamp(EXP_MIN, EXP_MAX).exp().max(MU_MIN_POSITIVE);
+            let yi = y_slice[row];
+            let unit_dev = if yi == 0.0 {
+                2.0 * mu
+            } else {
+                2.0 * (yi * (yi / mu).ln() - (yi - mu))
+            };
+            if let Some(w) = weights_slice {
+                dev_sum += unit_dev * w[row];
+                denom += w[row];
+            } else {
+                dev_sum += unit_dev;
+                denom += 1.0;
+            }
+        }
+        return if denom <= 0.0 || !denom.is_finite() {
+            Some(f64::INFINITY)
+        } else {
+            Some(dev_sum / denom)
+        };
+    }
+
+    let target_chunks = rayon::current_num_threads().saturating_mul(4).max(1);
+    let chunk_size = rows.len().div_ceil(target_chunks).max(1);
+
+    let (dev_sum, denom) = rows
+        .par_chunks(chunk_size)
+        .map(|row_chunk| {
+            let mut local_dev = 0.0;
+            let mut local_denom = 0.0;
+            for &row in row_chunk {
+                let row_start = row * p;
+                let mut eta = 0.0;
+                for j in 0..p {
+                    // SAFETY: row < n and j < p, so row_start + j < n*p = x_slice.len();
+                    // j < p = coef_slice.len().
+                    eta += unsafe { *x_slice.get_unchecked(row_start + j) }
+                        * unsafe { *coef_slice.get_unchecked(j) };
+                }
+                if let Some(o) = offset_slice {
+                    eta += o[row];
+                }
+                let mu = eta.clamp(EXP_MIN, EXP_MAX).exp().max(MU_MIN_POSITIVE);
+                let yi = y_slice[row];
+                let unit_dev = if yi == 0.0 {
+                    2.0 * mu
+                } else {
+                    2.0 * (yi * (yi / mu).ln() - (yi - mu))
+                };
+                if let Some(w) = weights_slice {
+                    local_dev += unit_dev * w[row];
+                    local_denom += w[row];
+                } else {
+                    local_dev += unit_dev;
+                    local_denom += 1.0;
+                }
+            }
+            (local_dev, local_denom)
+        })
+        .reduce(|| (0.0, 0.0), |a, b| (a.0 + b.0, a.1 + b.1));
+
+    if denom <= 0.0 || !denom.is_finite() {
+        Some(f64::INFINITY)
+    } else {
+        Some(dev_sum / denom)
+    }
+}
+
+#[pyfunction]
+#[pyo3(signature = (y_train, x_train, y_val, x_val, family, link=None, var_power=1.5, theta=1.0, offset_train=None, weights_train=None, offset_val=None, weights_val=None, alphas=None, l1_ratio=0.0, max_iter=25, tol=1e-8, nonneg_indices=None, nonpos_indices=None, allow_extended_tweedie=false, fit_intercept=true, center=None, scale=None))]
+pub fn fit_fold_path_py<'py>(
+    py: Python<'py>,
+    y_train: PyReadonlyArray1<f64>,
+    x_train: PyReadonlyArray2<f64>,
+    y_val: PyReadonlyArray1<f64>,
+    x_val: PyReadonlyArray2<f64>,
+    family: &str,
+    link: Option<&str>,
+    var_power: f64,
+    theta: f64,
+    offset_train: Option<PyReadonlyArray1<f64>>,
+    weights_train: Option<PyReadonlyArray1<f64>>,
+    offset_val: Option<PyReadonlyArray1<f64>>,
+    weights_val: Option<PyReadonlyArray1<f64>>,
+    alphas: Option<Vec<f64>>,
+    l1_ratio: f64,
+    max_iter: usize,
+    tol: f64,
+    nonneg_indices: Option<Vec<usize>>,
+    nonpos_indices: Option<Vec<usize>>,
+    allow_extended_tweedie: bool,
+    fit_intercept: bool,
+    center: Option<PyReadonlyArray1<f64>>,
+    scale: Option<PyReadonlyArray1<f64>>,
+) -> PyResult<Py<PyAny>> {
+    let total_start = Instant::now();
+    let input_start = Instant::now();
+    let y_train_array: Array1<f64> = y_train.as_array().to_owned();
+    let y_val_array: Array1<f64> = y_val.as_array().to_owned();
+    let x_train_view = x_train.as_array();
+    let x_val_view = x_val.as_array();
+    let n_train = y_train_array.len();
+    let n_val = y_val_array.len();
+    let p = x_train_view.ncols();
+    let input_seconds = input_start.elapsed().as_secs_f64();
+
+    let validation_start = Instant::now();
+    if x_train_view.nrows() != n_train {
+        return Err(PyValueError::new_err(format!(
+            "x_train has {} rows but y_train has length {}; they must match",
+            x_train_view.nrows(),
+            n_train
+        )));
+    }
+    if x_val_view.nrows() != n_val {
+        return Err(PyValueError::new_err(format!(
+            "x_val has {} rows but y_val has length {}; they must match",
+            x_val_view.nrows(),
+            n_val
+        )));
+    }
+    if x_val_view.ncols() != p {
+        return Err(PyValueError::new_err(format!(
+            "x_val has {} columns but x_train has {}; they must match",
+            x_val_view.ncols(),
+            p
+        )));
+    }
+    if let Some(ref o) = offset_train {
+        if o.as_array().len() != n_train {
+            return Err(PyValueError::new_err(format!(
+                "offset_train has length {} but y_train has length {}; they must match",
+                o.as_array().len(),
+                n_train
+            )));
+        }
+    }
+    if let Some(ref w) = weights_train {
+        if w.as_array().len() != n_train {
+            return Err(PyValueError::new_err(format!(
+                "weights_train has length {} but y_train has length {}; they must match",
+                w.as_array().len(),
+                n_train
+            )));
+        }
+    }
+    if let Some(ref o) = offset_val {
+        if o.as_array().len() != n_val {
+            return Err(PyValueError::new_err(format!(
+                "offset_val has length {} but y_val has length {}; they must match",
+                o.as_array().len(),
+                n_val
+            )));
+        }
+    }
+    if let Some(ref w) = weights_val {
+        if w.as_array().len() != n_val {
+            return Err(PyValueError::new_err(format!(
+                "weights_val has length {} but y_val has length {}; they must match",
+                w.as_array().len(),
+                n_val
+            )));
+        }
+    }
+    let validation_seconds = validation_start.elapsed().as_secs_f64();
+
+    let setup_start = Instant::now();
+    let alpha_vec = alphas.ok_or_else(|| {
+        PyValueError::new_err("fit_fold_path_py requires an explicit `alphas=` grid")
+    })?;
+    let offset_train_array: Option<Array1<f64>> = offset_train.map(|o| o.as_array().to_owned());
+    let weights_train_array: Option<Array1<f64>> = weights_train.map(|w| w.as_array().to_owned());
+    let offset_val_array: Option<Array1<f64>> = offset_val.map(|o| o.as_array().to_owned());
+    let weights_val_array: Option<Array1<f64>> = weights_val.map(|w| w.as_array().to_owned());
+    let standardization = build_standardization(center, scale, p)?;
+
+    validate_tweedie_fit_response(family, &y_train_array, var_power, allow_extended_tweedie)?;
+    let fam =
+        family_from_name_with_tweedie_support(family, var_power, theta, allow_extended_tweedie)?;
+    let default_link = default_link_name(family);
+    let link_fn = link_from_name(link.unwrap_or(default_link))?;
+    let fit_scale_only_ridge_on_original = l1_ratio <= 0.0
+        && standardization
+            .as_ref()
+            .is_some_and(|std| std.center.iter().all(|&center| center == 0.0));
+
+    let standardize_start = Instant::now();
+    let x_train_work = if let Some(std) = &standardization {
+        if fit_scale_only_ridge_on_original {
+            x_train_view.to_owned()
+        } else {
+            std.standardize_matrix(x_train_view)
+                .map_err(|e| PyValueError::new_err(format!("Invalid standardization: {}", e)))?
+        }
+    } else {
+        x_train_view.to_owned()
+    };
+    let standardize_seconds = standardize_start.elapsed().as_secs_f64();
+
+    let nonneg = nonneg_indices.unwrap_or_default();
+    let nonpos = nonpos_indices.unwrap_or_default();
+    let setup_seconds = setup_start.elapsed().as_secs_f64();
+
+    let mut warm_coefficients: Option<Array1<f64>> = None;
+    let mut fold_deviances: Vec<f64> = Vec::with_capacity(alpha_vec.len());
+    let mut fit_seconds: Vec<f64> = Vec::with_capacity(alpha_vec.len());
+    let mut validation_dot_seconds: Vec<f64> = Vec::with_capacity(alpha_vec.len());
+    let mut validation_score_seconds: Vec<f64> = Vec::with_capacity(alpha_vec.len());
+    let mut iterations: Vec<usize> = Vec::with_capacity(alpha_vec.len());
+    let mut statuses: Vec<String> = Vec::with_capacity(alpha_vec.len());
+
+    for &alpha in &alpha_vec {
+        let reg_config = if alpha > 0.0 {
+            if l1_ratio >= 1.0 {
+                RegularizationConfig::lasso(alpha)
+            } else if l1_ratio <= 0.0 {
+                RegularizationConfig::ridge(alpha)
+            } else {
+                RegularizationConfig::elastic_net(alpha, l1_ratio)
+            }
+        } else {
+            RegularizationConfig::none()
+        }
+        .with_intercept(fit_intercept);
+
+        let cv_config = FitConfig {
+            max_iterations: max_iter,
+            tolerance: tol,
+            min_weight: 1e-10,
+            verbose: false,
+            nonneg_indices: nonneg.clone(),
+            nonpos_indices: nonpos.clone(),
+            regularization: reg_config,
+            skip_covariance: true,
+            standardization: if fit_scale_only_ridge_on_original {
+                standardization.clone()
+            } else {
+                None
+            },
+        };
+
+        let fit_start = Instant::now();
+        let result = match fit_glm_unified(
+            &y_train_array,
+            x_train_work.view(),
+            fam.as_ref(),
+            link_fn.as_ref(),
+            &cv_config,
+            offset_train_array.as_ref(),
+            weights_train_array.as_ref(),
+            warm_coefficients.as_ref(),
+        ) {
+            Ok(r) => {
+                fit_seconds.push(fit_start.elapsed().as_secs_f64());
+                iterations.push(r.iterations);
+                statuses.push(r.solver_status.clone());
+                r
+            }
+            Err(_) => {
+                fit_seconds.push(fit_start.elapsed().as_secs_f64());
+                iterations.push(0);
+                statuses.push("error".to_string());
+                validation_dot_seconds.push(0.0);
+                validation_score_seconds.push(0.0);
+                fold_deviances.push(f64::INFINITY);
+                continue;
+            }
+        };
+
+        warm_coefficients = Some(result.coefficients.clone());
+        let dot_start = Instant::now();
+        let validation_coefficients = if let Some(std) = &standardization {
+            if fit_scale_only_ridge_on_original {
+                result.coefficients.clone()
+            } else {
+                match std.to_original_coefficients(&result.coefficients, fit_intercept) {
+                    Ok(beta) => beta,
+                    Err(_) => {
+                        validation_dot_seconds.push(dot_start.elapsed().as_secs_f64());
+                        validation_score_seconds.push(0.0);
+                        fold_deviances.push(f64::INFINITY);
+                        continue;
+                    }
+                }
+            }
+        } else {
+            result.coefficients.clone()
+        };
+
+        if let Some(dev) = poisson_log_validation_deviance_score(
+            x_val_view,
+            &validation_coefficients,
+            &y_val_array,
+            offset_val_array.as_ref(),
+            weights_val_array.as_ref(),
+            fam.as_ref(),
+            link_fn.as_ref(),
+        ) {
+            validation_dot_seconds.push(dot_start.elapsed().as_secs_f64());
+            validation_score_seconds.push(0.0);
+            fold_deviances.push(dev);
+        } else {
+            let lp = matrix_vector_dot(x_val_view, &validation_coefficients);
+            validation_dot_seconds.push(dot_start.elapsed().as_secs_f64());
+            let score_start = Instant::now();
+            let lp_off = if let Some(ref o) = offset_val_array {
+                &lp + o
+            } else {
+                lp
+            };
+            let mu_val = link_fn.inverse(&lp_off);
+            let unit_dev = fam.unit_deviance(&y_val_array, &mu_val);
+            fold_deviances.push(validation_deviance_score(
+                &unit_dev,
+                weights_val_array.as_ref(),
+            ));
+            validation_score_seconds.push(score_start.elapsed().as_secs_f64());
+        }
+    }
+
+    let dict = pyo3::types::PyDict::new(py);
+    dict.set_item("alphas", alpha_vec)?;
+    dict.set_item("fold_deviances", fold_deviances)?;
+
+    let profile = pyo3::types::PyDict::new(py);
+    profile.set_item("n_train", n_train)?;
+    profile.set_item("n_val", n_val)?;
+    profile.set_item("p", p)?;
+    profile.set_item("n_alphas", fit_seconds.len())?;
+    profile.set_item("rayon_threads", rayon::current_num_threads())?;
+    profile.set_item("input_seconds", input_seconds)?;
+    profile.set_item("validation_seconds", validation_seconds)?;
+    profile.set_item("setup_seconds", setup_seconds)?;
+    profile.set_item("standardize_seconds", standardize_seconds)?;
+    profile.set_item("fit_seconds", fit_seconds)?;
+    profile.set_item("validation_dot_seconds", validation_dot_seconds)?;
+    profile.set_item("validation_score_seconds", validation_score_seconds)?;
+    profile.set_item("iterations", iterations)?;
+    profile.set_item("statuses", statuses)?;
+    profile.set_item("total_wall_seconds", total_start.elapsed().as_secs_f64())?;
+    dict.set_item("profile", profile)?;
+
+    Ok(dict.into())
+}
+
 #[pyfunction]
 #[pyo3(signature = (y, x, family, link=None, var_power=1.5, theta=1.0, offset=None, weights=None, alphas=None, l1_ratio=0.0, n_folds=5, max_iter=25, tol=1e-8, seed=None, nonneg_indices=None, nonpos_indices=None, allow_extended_tweedie=false, fit_intercept=true, center=None, scale=None))]
 pub fn fit_cv_path_py<'py>(
@@ -634,6 +1189,20 @@ pub fn fit_cv_path_py<'py>(
         family_from_name_with_tweedie_support(family, var_power, theta, allow_extended_tweedie)?;
     let default_link = default_link_name(family);
     let _link_fn = link_from_name(link.unwrap_or(default_link))?;
+    let score_validation_from_original_rows = _fam.name().eq_ignore_ascii_case("poisson")
+        && _link_fn.name() == "log"
+        && x_view.as_slice().is_some()
+        && y_array.as_slice().is_some()
+        && offset_array
+            .as_ref()
+            .is_none_or(|offset| offset.as_slice().is_some())
+        && weights_array
+            .as_ref()
+            .is_none_or(|weights| weights.as_slice().is_some());
+    let fit_scale_only_ridge_on_original = l1_ratio <= 0.0
+        && standardization
+            .as_ref()
+            .is_some_and(|std| std.center.iter().all(|&center| center == 0.0));
 
     let nonneg = nonneg_indices.unwrap_or_default();
     let nonpos = nonpos_indices.unwrap_or_default();
@@ -660,18 +1229,48 @@ pub fn fit_cv_path_py<'py>(
                 offset_array.as_ref().map(|_| Array1::zeros(n_train));
             let mut weights_train: Option<Array1<f64>> =
                 weights_array.as_ref().map(|_| Array1::zeros(n_train));
-            let mut y_val = Array1::zeros(n_val);
-            let mut x_val = Array2::zeros((n_val, p));
-            let mut offset_val: Option<Array1<f64>> =
-                offset_array.as_ref().map(|_| Array1::zeros(n_val));
-            let mut weights_val: Option<Array1<f64>> =
-                weights_array.as_ref().map(|_| Array1::zeros(n_val));
+            let mut val_indices: Vec<usize> = if score_validation_from_original_rows {
+                Vec::with_capacity(n_val)
+            } else {
+                Vec::new()
+            };
+            let mut y_val: Option<Array1<f64>> = if score_validation_from_original_rows {
+                None
+            } else {
+                Some(Array1::zeros(n_val))
+            };
+            let mut x_val: Option<Array2<f64>> = if score_validation_from_original_rows {
+                None
+            } else {
+                Some(Array2::zeros((n_val, p)))
+            };
+            let mut offset_val: Option<Array1<f64>> = if score_validation_from_original_rows {
+                None
+            } else {
+                offset_array.as_ref().map(|_| Array1::zeros(n_val))
+            };
+            let mut weights_val: Option<Array1<f64>> = if score_validation_from_original_rows {
+                None
+            } else {
+                weights_array.as_ref().map(|_| Array1::zeros(n_val))
+            };
 
+            let std_ref = standardization.as_ref();
             let (mut ti, mut vi) = (0, 0);
             for i in 0..n {
                 if train_mask[i] {
                     y_train[ti] = y_array[i];
-                    x_train.row_mut(ti).assign(&x_view.row(i));
+                    if let Some(std) = std_ref {
+                        if fit_scale_only_ridge_on_original {
+                            x_train.row_mut(ti).assign(&x_view.row(i));
+                        } else {
+                            for j in 0..p {
+                                x_train[[ti, j]] = (x_view[[i, j]] - std.center[j]) / std.scale[j];
+                            }
+                        }
+                    } else {
+                        x_train.row_mut(ti).assign(&x_view.row(i));
+                    }
                     if let (Some(ref o), Some(ref mut ot)) = (&offset_array, &mut offset_train) {
                         ot[ti] = o[i];
                     }
@@ -680,13 +1279,22 @@ pub fn fit_cv_path_py<'py>(
                     }
                     ti += 1;
                 } else {
-                    y_val[vi] = y_array[i];
-                    x_val.row_mut(vi).assign(&x_view.row(i));
-                    if let (Some(ref o), Some(ref mut ov)) = (&offset_array, &mut offset_val) {
-                        ov[vi] = o[i];
-                    }
-                    if let (Some(ref w), Some(ref mut wv)) = (&weights_array, &mut weights_val) {
-                        wv[vi] = w[i];
+                    if score_validation_from_original_rows {
+                        val_indices.push(i);
+                    } else {
+                        if let Some(ref mut yv) = y_val {
+                            yv[vi] = y_array[i];
+                        }
+                        if let Some(ref mut xv) = x_val {
+                            xv.row_mut(vi).assign(&x_view.row(i));
+                        }
+                        if let (Some(ref o), Some(ref mut ov)) = (&offset_array, &mut offset_val) {
+                            ov[vi] = o[i];
+                        }
+                        if let (Some(ref w), Some(ref mut wv)) = (&weights_array, &mut weights_val)
+                        {
+                            wv[vi] = w[i];
+                        }
                     }
                     vi += 1;
                 }
@@ -695,35 +1303,34 @@ pub fn fit_cv_path_py<'py>(
 
             let standardize_start = Instant::now();
             if let Some(std) = &standardization {
-                x_train = match std.standardize_matrix(x_train.view()) {
-                    Ok(x) => x,
-                    Err(_) => {
-                        profile.standardize_seconds = standardize_start.elapsed().as_secs_f64();
-                        return (vec![f64::INFINITY; alpha_vec.len()], profile);
-                    }
-                };
-                x_val = match std.standardize_matrix(x_val.view()) {
-                    Ok(x) => x,
-                    Err(_) => {
-                        profile.standardize_seconds = standardize_start.elapsed().as_secs_f64();
-                        return (vec![f64::INFINITY; alpha_vec.len()], profile);
-                    }
-                };
+                if let Err(_err) = std.validate(p) {
+                    profile.standardize_seconds = standardize_start.elapsed().as_secs_f64();
+                    return (vec![f64::INFINITY; alpha_vec.len()], profile);
+                }
             }
             profile.standardize_seconds = standardize_start.elapsed().as_secs_f64();
 
             let fold_setup_start = Instant::now();
-            // Safe: family/link were validated before entering the parallel loop
-            let thread_fam = family_from_name_with_tweedie_support(
+            let thread_fam = match family_from_name_with_tweedie_support(
                 family,
                 var_power,
                 theta,
                 allow_extended_tweedie,
-            )
-            .expect("family pre-validated before parallel loop");
+            ) {
+                Ok(fam) => fam,
+                Err(_) => {
+                    profile.setup_seconds = fold_setup_start.elapsed().as_secs_f64();
+                    return (vec![f64::INFINITY; alpha_vec.len()], profile);
+                }
+            };
             let link_name = link.unwrap_or(default_link);
-            let thread_link =
-                link_from_name(link_name).expect("link pre-validated before parallel loop");
+            let thread_link = match link_from_name(link_name) {
+                Ok(link) => link,
+                Err(_) => {
+                    profile.setup_seconds = fold_setup_start.elapsed().as_secs_f64();
+                    return (vec![f64::INFINITY; alpha_vec.len()], profile);
+                }
+            };
 
             let mut warm_coefficients: Option<Array1<f64>> = None;
             let mut fold_deviances: Vec<f64> = Vec::with_capacity(alpha_vec.len());
@@ -752,7 +1359,11 @@ pub fn fit_cv_path_py<'py>(
                     nonpos_indices: nonpos.clone(),
                     regularization: reg_config,
                     skip_covariance: true,
-                    standardization: None,
+                    standardization: if fit_scale_only_ridge_on_original {
+                        standardization.clone()
+                    } else {
+                        None
+                    },
                 };
 
                 let fit_start = Instant::now();
@@ -785,22 +1396,81 @@ pub fn fit_cv_path_py<'py>(
 
                 warm_coefficients = Some(result.coefficients.clone());
                 let dot_start = Instant::now();
-                let lp: Array1<f64> = x_val.dot(&result.coefficients);
-                profile
-                    .validation_dot_seconds
-                    .push(dot_start.elapsed().as_secs_f64());
-                let score_start = Instant::now();
-                let lp_off = if let Some(ref o) = offset_val {
-                    &lp + o
+                let validation_coefficients = if let Some(std) = &standardization {
+                    if fit_scale_only_ridge_on_original {
+                        result.coefficients.clone()
+                    } else {
+                        match std.to_original_coefficients(&result.coefficients, fit_intercept) {
+                            Ok(beta) => beta,
+                            Err(_) => {
+                                profile
+                                    .validation_dot_seconds
+                                    .push(dot_start.elapsed().as_secs_f64());
+                                profile.validation_score_seconds.push(0.0);
+                                fold_deviances.push(f64::INFINITY);
+                                continue;
+                            }
+                        }
+                    }
                 } else {
-                    lp
+                    result.coefficients.clone()
                 };
-                let mu_val = thread_link.inverse(&lp_off);
-                let unit_dev = thread_fam.unit_deviance(&y_val, &mu_val);
-                fold_deviances.push(validation_deviance_score(&unit_dev, weights_val.as_ref()));
-                profile
-                    .validation_score_seconds
-                    .push(score_start.elapsed().as_secs_f64());
+                if score_validation_from_original_rows {
+                    let dev = poisson_log_validation_deviance_score_rows(
+                        x_view,
+                        &validation_coefficients,
+                        &y_array,
+                        offset_array.as_ref(),
+                        weights_array.as_ref(),
+                        &val_indices,
+                    )
+                    .unwrap_or(f64::INFINITY);
+                    profile
+                        .validation_dot_seconds
+                        .push(dot_start.elapsed().as_secs_f64());
+                    profile.validation_score_seconds.push(0.0);
+                    fold_deviances.push(dev);
+                } else if let (Some(ref xv), Some(ref yv)) = (&x_val, &y_val) {
+                    if let Some(dev) = poisson_log_validation_deviance_score(
+                        xv.view(),
+                        &validation_coefficients,
+                        yv,
+                        offset_val.as_ref(),
+                        weights_val.as_ref(),
+                        thread_fam.as_ref(),
+                        thread_link.as_ref(),
+                    ) {
+                        profile
+                            .validation_dot_seconds
+                            .push(dot_start.elapsed().as_secs_f64());
+                        profile.validation_score_seconds.push(0.0);
+                        fold_deviances.push(dev);
+                    } else {
+                        let lp = matrix_vector_dot(xv.view(), &validation_coefficients);
+                        profile
+                            .validation_dot_seconds
+                            .push(dot_start.elapsed().as_secs_f64());
+                        let score_start = Instant::now();
+                        let lp_off = if let Some(ref o) = offset_val {
+                            &lp + o
+                        } else {
+                            lp
+                        };
+                        let mu_val = thread_link.inverse(&lp_off);
+                        let unit_dev = thread_fam.unit_deviance(yv, &mu_val);
+                        fold_deviances
+                            .push(validation_deviance_score(&unit_dev, weights_val.as_ref()));
+                        profile
+                            .validation_score_seconds
+                            .push(score_start.elapsed().as_secs_f64());
+                    }
+                } else {
+                    profile
+                        .validation_dot_seconds
+                        .push(dot_start.elapsed().as_secs_f64());
+                    profile.validation_score_seconds.push(0.0);
+                    fold_deviances.push(f64::INFINITY);
+                }
             }
             (fold_deviances, profile)
         })
@@ -822,18 +1492,20 @@ pub fn fit_cv_path_py<'py>(
         let fds: Vec<f64> = fold_all_results
             .iter()
             .map(|fr| fr.get(ai).copied().unwrap_or(f64::INFINITY))
-            .filter(|&x| x.is_finite())
             .collect();
-        let mean = if fds.is_empty() {
-            f64::INFINITY
-        } else {
+        let all_folds_finite = fds.len() == n_folds && fds.iter().all(|x| x.is_finite());
+        let mean = if all_folds_finite {
             fds.iter().sum::<f64>() / fds.len() as f64
+        } else {
+            f64::INFINITY
         };
-        let se = if fds.len() > 1 {
+        let se = if all_folds_finite && fds.len() > 1 {
             let var = fds.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / (fds.len() - 1) as f64;
             (var / fds.len() as f64).sqrt()
-        } else {
+        } else if all_folds_finite {
             0.0
+        } else {
+            f64::INFINITY
         };
         path_results.push(CVPathPoint {
             alpha,
@@ -952,8 +1624,13 @@ pub fn fit_cv_path_py<'py>(
 
 #[cfg(test)]
 mod tests {
-    use super::validation_deviance_score;
-    use ndarray::array;
+    use super::{
+        poisson_log_validation_deviance_score, poisson_log_validation_deviance_score_rows,
+        validation_deviance_score,
+    };
+    use ndarray::{array, Array2};
+    use rustystats_core::families::PoissonFamily;
+    use rustystats_core::links::LogLink;
 
     #[test]
     fn validation_deviance_score_uses_validation_weights() {
@@ -972,6 +1649,48 @@ mod tests {
         let score = validation_deviance_score(&unit_deviance, None);
 
         assert!((score - 12.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn poisson_log_validation_rows_match_dense_subset() {
+        let x = Array2::from_shape_vec(
+            (5, 3),
+            vec![
+                1.0, 0.2, 0.0, 1.0, -0.4, 1.0, 1.0, 0.8, 0.0, 1.0, 0.1, 1.0, 1.0, -0.2, 0.0,
+            ],
+        )
+        .expect("test design should be valid");
+        let rows = vec![1_usize, 3, 4];
+        let x_subset = Array2::from_shape_fn((rows.len(), x.ncols()), |(i, j)| x[[rows[i], j]]);
+        let y = array![0.2, 0.7, 0.4, 1.1, 0.3];
+        let y_subset = array![y[1], y[3], y[4]];
+        let offset = array![0.0, 0.1, -0.2, 0.05, 0.2];
+        let offset_subset = array![offset[1], offset[3], offset[4]];
+        let weights = array![1.0, 2.0, 1.5, 0.75, 3.0];
+        let weights_subset = array![weights[1], weights[3], weights[4]];
+        let coefficients = array![0.3, -0.15, 0.25];
+
+        let dense = poisson_log_validation_deviance_score(
+            x_subset.view(),
+            &coefficients,
+            &y_subset,
+            Some(&offset_subset),
+            Some(&weights_subset),
+            &PoissonFamily,
+            &LogLink,
+        )
+        .expect("dense scorer should handle poisson/log");
+        let by_rows = poisson_log_validation_deviance_score_rows(
+            x.view(),
+            &coefficients,
+            &y,
+            Some(&offset),
+            Some(&weights),
+            &rows,
+        )
+        .expect("row scorer should handle original rows");
+
+        assert!((dense - by_rows).abs() < 1e-12);
     }
 }
 

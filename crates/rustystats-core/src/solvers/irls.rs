@@ -397,6 +397,32 @@ pub fn fit_glm_unified(
     if let Some(standardization) = &config.standardization {
         if !config.regularization.penalty.is_none() && !config.regularization.penalty.is_smooth() {
             standardization.validate(x.ncols())?;
+            let l2_penalty = config.regularization.penalty.l2_penalty();
+            if l2_penalty > 0.0
+                && !config.regularization.penalty.requires_coordinate_descent()
+                && standardization.center.iter().all(|&center| center == 0.0)
+            {
+                let l2_penalty_factors: Vec<f64> = standardization
+                    .scale
+                    .iter()
+                    .map(|scale| scale * scale)
+                    .collect();
+                let penalize_intercept = !config.regularization.fit_intercept;
+                return fit_glm_core(
+                    y,
+                    x,
+                    family,
+                    link,
+                    &config.to_irls_config(),
+                    offset,
+                    weights,
+                    init_coefficients,
+                    l2_penalty,
+                    Some(&l2_penalty_factors),
+                    penalize_intercept,
+                    config.regularization.penalty.clone(),
+                );
+            }
             let x_work = standardization.standardize_matrix(x)?;
             let init_work = match init_coefficients {
                 Some(init) => Some(
@@ -461,6 +487,7 @@ pub fn fit_glm_unified(
             weights,
             init_coefficients,
             l2_penalty,
+            None,
             penalize_intercept,
             config.regularization.penalty.clone(),
         )
@@ -483,6 +510,7 @@ fn fit_glm_core(
     weights: Option<&Array1<f64>>,
     init_coefficients: Option<&Array1<f64>>,
     l2_penalty: f64,
+    l2_penalty_factors: Option<&[f64]>,
     penalize_intercept: bool,
     penalty: Penalty,
 ) -> Result<IRLSResult> {
@@ -510,7 +538,7 @@ fn fit_glm_core(
             ));
         }
         iter_coefficients = init.clone();
-        let eta_init = x.dot(init) + &offset_vec;
+        let eta_init = matrix_vector_dot(x, init) + &offset_vec;
         let mu_init = link.inverse(&eta_init);
         family.clamp_mu(&mu_init)
     } else {
@@ -543,6 +571,7 @@ fn fit_glm_core(
             &eta_no_offset,
             &prior_weights_vec,
             l2_penalty,
+            l2_penalty_factors,
             penalize_intercept,
             true, // init projection covariance is discarded
         ) {
@@ -566,7 +595,7 @@ fn fit_glm_core(
                 );
             }
         }
-        eta = &x.dot(&iter_coefficients) + &offset_vec;
+        eta = &matrix_vector_dot(x, &iter_coefficients) + &offset_vec;
         mu = family.clamp_mu(&link.inverse(&eta));
     }
 
@@ -574,7 +603,14 @@ fn fit_glm_core(
     // Step 3: Calculate initial deviance
     // -------------------------------------------------------------------------
     let mut deviance = family.deviance(y, &mu, Some(&prior_weights_vec));
-    let mut deviance_old: f64;
+    let mut objective = penalized_irls_objective(
+        deviance,
+        &iter_coefficients,
+        l2_penalty,
+        l2_penalty_factors,
+        penalize_intercept,
+    );
+    let mut objective_old: f64;
 
     // -------------------------------------------------------------------------
     // Step 4: IRLS iteration loop
@@ -590,9 +626,11 @@ fn fit_glm_core(
     // the final accepted state is known, not on every iteration.
     let mut final_weights = Array1::zeros(n);
 
-    // For constrained problems, track best solution seen (deviance can increase due to projection)
+    // For constrained problems, track best solution seen (projection can make
+    // either deviance or the penalized objective increase).
     let has_constraints = !config.nonneg_indices.is_empty() || !config.nonpos_indices.is_empty();
-    let mut best_deviance = f64::INFINITY; // Will be set after first iteration
+    let mut best_objective = f64::INFINITY;
+    let mut best_deviance = f64::INFINITY;
     let mut best_coefficients = iter_coefficients.clone();
     let mut best_mu = mu.clone();
     let mut best_eta = eta.clone();
@@ -629,6 +667,7 @@ fn fit_glm_core(
             &working_response,
             &combined_weights,
             l2_penalty,
+            l2_penalty_factors,
             penalize_intercept,
             true, // per-iteration inverse is unused; compute final covariance once
         )?;
@@ -667,17 +706,19 @@ fn fit_glm_core(
         // ---------------------------------------------------------------------
         // Step 4d: Update η and μ with step-halving for stability
         // ---------------------------------------------------------------------
-        // If deviance increases, reduce step size to prevent oscillation.
+        // If the optimization objective increases, reduce step size to prevent
+        // oscillation. For unregularized fits this is just deviance; for ridge
+        // it is deviance + lambda * ||beta||^2 on the penalized subset.
         // For constrained problems, we blend coefficients (not eta) and re-apply
         // projection to ensure constraints are satisfied at each step.
         // ---------------------------------------------------------------------
-        deviance_old = deviance;
+        objective_old = objective;
 
-        // Acceptance threshold: a step may not worsen the deviance by more than a
+        // Acceptance threshold: a step may not worsen the objective by more than a
         // tiny relative tolerance (RS-ACT-007). Coefficient blending is used for
         // both paths; for the unconstrained path it is algebraically identical to
         // blending eta, but keeps coefficients and (eta, mu) consistent.
-        let accept_threshold = deviance_old * IRLS_ACCEPT_REL_SLACK;
+        let accept_threshold = objective_old * IRLS_ACCEPT_REL_SLACK;
 
         let project = |coef: &mut Array1<f64>| {
             for &idx in &config.nonneg_indices {
@@ -695,17 +736,24 @@ fn fit_glm_core(
         // Try the full Newton step (with constraints projected).
         let mut trial_coefficients = new_coefficients.clone();
         project(&mut trial_coefficients);
-        let mut eta_new = &x.dot(&trial_coefficients) + &offset_vec;
+        let mut eta_new = &matrix_vector_dot(x, &trial_coefficients) + &offset_vec;
         let mut mu_new = family.clamp_mu(&link.inverse(&eta_new));
         let mut deviance_new = family.deviance(y, &mu_new, Some(&prior_weights_vec));
+        let mut objective_new = penalized_irls_objective(
+            deviance_new,
+            &trial_coefficients,
+            l2_penalty,
+            l2_penalty_factors,
+            penalize_intercept,
+        );
 
         let mut step_accepted = eta_new.iter().all(|v| v.is_finite())
             && mu_new.iter().all(|v| v.is_finite())
-            && deviance_new.is_finite()
-            && deviance_new <= accept_threshold;
+            && objective_new.is_finite()
+            && objective_new <= accept_threshold;
 
-        // Step-halving: if the full step worsened the deviance, try smaller steps
-        // and accept the first one that meets the threshold. The
+        // Step-halving: if the full step worsened the objective, try smaller
+        // steps and accept the first one that meets the threshold. The
         // `step_halving_used` flag is set only when a halved step is the one
         // ultimately accepted (RS-ACT-007), not merely when halving was attempted.
         if !step_accepted {
@@ -717,18 +765,26 @@ fn fit_glm_core(
                     .map(|(&old, &new)| (1.0 - step_size) * old + step_size * new)
                     .collect();
                 project(&mut blended);
-                let e = &x.dot(&blended) + &offset_vec;
+                let e = &matrix_vector_dot(x, &blended) + &offset_vec;
                 let m = family.clamp_mu(&link.inverse(&e));
                 let d = family.deviance(y, &m, Some(&prior_weights_vec));
+                let o = penalized_irls_objective(
+                    d,
+                    &blended,
+                    l2_penalty,
+                    l2_penalty_factors,
+                    penalize_intercept,
+                );
                 if e.iter().all(|v| v.is_finite())
                     && m.iter().all(|v| v.is_finite())
-                    && d.is_finite()
-                    && d <= accept_threshold
+                    && o.is_finite()
+                    && o <= accept_threshold
                 {
                     trial_coefficients = blended;
                     eta_new = e;
                     mu_new = m;
                     deviance_new = d;
+                    objective_new = o;
                     step_accepted = true;
                     step_halving_used = true;
                     break;
@@ -738,8 +794,9 @@ fn fit_glm_core(
         }
 
         if !step_accepted {
-            // No full or halved step reduced the deviance: retain the previous
-            // iterate (already held in iter_coefficients / eta / mu / deviance)
+            // No full or halved step reduced the objective: retain the previous
+            // iterate (already held in iter_coefficients / eta / mu / deviance /
+            // objective)
             // instead of accepting a worse one, and stop (RS-ACT-007).
             // `iteration` was incremented at the top before this (rejected) step
             // was attempted; report the index of the RETAINED iterate instead,
@@ -754,18 +811,19 @@ fn fit_glm_core(
         eta = eta_new;
         mu = mu_new;
         deviance = deviance_new;
+        objective = objective_new;
 
-        // Relative change in deviance
-        let rel_change = if deviance_old.abs() > ZERO_TOL {
-            (deviance_old - deviance).abs() / deviance_old.abs()
+        // Relative change in the same objective used for acceptance.
+        let rel_change = if objective_old.abs() > ZERO_TOL {
+            (objective_old - objective).abs() / objective_old.abs()
         } else {
-            (deviance_old - deviance).abs()
+            (objective_old - objective).abs()
         };
 
         if config.verbose {
             eprintln!(
-                "Iteration {}: deviance = {:.6}, rel_change = {:.2e}",
-                iteration, deviance, rel_change
+                "Iteration {}: deviance = {:.6}, objective = {:.6}, rel_change = {:.2e}",
+                iteration, deviance, objective, rel_change
             );
         }
 
@@ -773,7 +831,8 @@ fn fit_glm_core(
         iter_coefficients = new_coefficients;
 
         // For constrained problems, track the best solution seen
-        if has_constraints && deviance < best_deviance {
+        if has_constraints && objective < best_objective {
+            best_objective = objective;
             best_deviance = deviance;
             best_coefficients = iter_coefficients.clone();
             best_mu = mu.clone();
@@ -784,10 +843,10 @@ fn fit_glm_core(
         // Convergence requires the accepted step to be non-worsening AND small.
         // A clearly-worse step is not converged, but the non-worsening guard is
         // RELATIVE — mirroring the accept loop's `IRLS_ACCEPT_REL_SLACK`. A
-        // terminal step that nudges the deviance up by a tiny relative amount
+        // terminal step that nudges the objective up by a tiny relative amount
         // (still below `config.tolerance` relative) is treated as converged,
         // matching the acceptance contract rather than an absolute 1e-10 floor.
-        if irls_step_converged(deviance_old, deviance, rel_change, config.tolerance) {
+        if irls_step_converged(objective_old, objective, rel_change, config.tolerance) {
             converged = true;
             final_weights = irls_weights;
             break;
@@ -801,9 +860,9 @@ fn fit_glm_core(
     // Step 5: Extract final coefficients
     // -------------------------------------------------------------------------
     // For constrained problems, use the best solution found during iteration
-    // (deviance can increase due to projection, so last iteration may not be best)
+    // (objective can increase due to projection, so last iteration may not be best)
     let (final_mu, final_eta, final_deviance, use_coefficients) =
-        if has_constraints && best_deviance < deviance {
+        if has_constraints && best_objective < objective {
             // Best solution was found earlier — use it and treat as converged
             // (sign clamping can cause coefficient oscillation even when deviance
             // has stabilized, so the best-tracked solution is the correct answer).
@@ -845,6 +904,7 @@ fn fit_glm_core(
             &final_working_response,
             &combined_final_weights,
             l2_penalty,
+            l2_penalty_factors,
             penalize_intercept,
             false,
         ) {
@@ -872,7 +932,7 @@ fn fit_glm_core(
                         }
                     }
                     // Check if this extraction is better
-                    let eta_check = x.dot(&proj_coef);
+                    let eta_check = matrix_vector_dot(x, &proj_coef);
                     let eta_full: Array1<f64> = eta_check
                         .iter()
                         .zip(offset_vec.iter())
@@ -888,7 +948,7 @@ fn fit_glm_core(
                 } else {
                     // Unconstrained: guard against a final extraction that is worse
                     // than the loop's retained iterate (RS-ACT-007).
-                    let eta_full = &x.dot(&coef) + &offset_vec;
+                    let eta_full = &matrix_vector_dot(x, &coef) + &offset_vec;
                     let mu_check = family.clamp_mu(&link.inverse(&eta_full));
                     let dev_check = family.deviance(y, &mu_check, Some(&prior_weights_vec));
                     if dev_check.is_finite() && dev_check <= final_deviance {
@@ -955,7 +1015,7 @@ fn fit_glm_core(
     }
 
     // Recompute final fitted values and deviance with the chosen coefficients
-    let final_eta_base = x.dot(&final_coefficients);
+    let final_eta_base = matrix_vector_dot(x, &final_coefficients);
     let final_eta: Array1<f64> = final_eta_base
         .iter()
         .zip(offset_vec.iter())
@@ -1007,21 +1067,46 @@ fn fit_glm_core(
 /// Decide whether an accepted IRLS step satisfies the convergence criterion.
 ///
 /// Two conditions must both hold (RS-ACT-007, A2):
-/// * the relative deviance change is small: `rel_change < tolerance`;
+/// * the relative objective/metric change is small: `rel_change < tolerance`;
 /// * the step is non-worsening up to a RELATIVE slack mirroring the accept loop:
-///   `deviance <= deviance_old * (1 + tolerance)`, i.e.
-///   `signed_change >= -(tolerance * |deviance_old|)`, floored at `ZERO_TOL` so a
-///   near-zero deviance still has a tiny absolute allowance.
+///   `metric <= metric_old * (1 + tolerance)`, i.e.
+///   `signed_change >= -(tolerance * |metric_old|)`, floored at `ZERO_TOL` so a
+///   near-zero metric still has a tiny absolute allowance.
 ///
 /// Using a relative (not absolute 1e-10) non-worsening guard means a genuinely
-/// converged large-deviance fit whose terminal step nudges deviance up by a tiny
+/// converged large-metric fit whose terminal step nudges the metric up by a tiny
 /// relative amount is correctly flagged converged instead of running to
 /// `max_iterations` with a spurious warning.
 #[inline]
-fn irls_step_converged(deviance_old: f64, deviance: f64, rel_change: f64, tolerance: f64) -> bool {
-    let signed_change = deviance_old - deviance;
-    let non_worsening_threshold = -(tolerance * deviance_old.abs()).max(ZERO_TOL);
+fn irls_step_converged(metric_old: f64, metric: f64, rel_change: f64, tolerance: f64) -> bool {
+    let signed_change = metric_old - metric;
+    let non_worsening_threshold = -(tolerance * metric_old.abs()).max(ZERO_TOL);
     signed_change >= non_worsening_threshold && rel_change < tolerance
+}
+
+#[inline]
+fn penalized_irls_objective(
+    deviance: f64,
+    coefficients: &Array1<f64>,
+    l2_penalty: f64,
+    l2_penalty_factors: Option<&[f64]>,
+    penalize_intercept: bool,
+) -> f64 {
+    if l2_penalty <= 0.0 {
+        return deviance;
+    }
+    let start_idx = if penalize_intercept { 0 } else { 1 };
+    deviance
+        + l2_penalty
+            * coefficients
+                .iter()
+                .enumerate()
+                .skip(start_idx)
+                .map(|(idx, coef)| {
+                    let factor = l2_penalty_factors.map_or(1.0, |factors| factors[idx]);
+                    factor * coef * coef
+                })
+                .sum::<f64>()
 }
 
 /// Compute X'WX and X'Wz using parallel chunked computation with raw slice access.
@@ -1037,7 +1122,7 @@ fn irls_step_converged(deviance_old: f64, deviance: f64, rel_change: f64, tolera
 /// // SAFETY: All unsafe accesses are within bounds because:
 /// - k ranges from 0 to n-1, and w_slice/z_slice have length n
 /// - row_start + j = k*p + j where k < n and j < p, so max index is (n-1)*p + (p-1) < n*p = x_slice.len()
-/// - i, j range from 0 to p-1, and xtx_local has length p*p, xtz_local has length p
+/// - i, j range over the upper triangle, and xtx_local has length p*(p+1)/2
 #[inline]
 pub fn compute_xtwx_xtwz(
     x: ArrayView2<'_, f64>,
@@ -1074,7 +1159,7 @@ pub fn compute_xtwx_xtwz(
 
     // SAFETY: Bounds verification for all unsafe accesses below.
     // x_slice has length n*p, w_slice and z_slice have length n.
-    // All accesses use indices < n*p, < n, and < p*p respectively.
+    // All accesses use indices < n*p, < n, and < p*(p+1)/2 respectively.
     assert_eq!(x_slice.len(), n * p, "x_slice length must be n*p");
     assert_eq!(w_slice.len(), n, "w_slice length must be n");
     assert_eq!(z_slice.len(), n, "z_slice length must be n");
@@ -1089,12 +1174,13 @@ pub fn compute_xtwx_xtwz(
     let chunk_size = n.div_ceil(rayon::current_num_threads()).max(1);
     let num_chunks = n.div_ceil(chunk_size);
 
+    let upper_len = packed_upper_len(p);
     let (xtx_data, xtz_data): (Vec<f64>, Vec<f64>) = (0..num_chunks)
         .into_par_iter()
         .map(|chunk_idx| {
             let chunk_start = chunk_idx * chunk_size;
             let chunk_end = (chunk_start + chunk_size).min(n);
-            let mut xtx_local = vec![0.0; p * p];
+            let mut xtx_local = vec![0.0; upper_len];
             let mut xtz_local = vec![0.0; p];
 
             for k in chunk_start..chunk_end {
@@ -1104,6 +1190,7 @@ pub fn compute_xtwx_xtwz(
                 let zk = unsafe { *z_slice.get_unchecked(k) };
                 let wz = wk * zk;
                 let row_start = k * p;
+                let mut packed_idx = 0;
 
                 for i in 0..p {
                     // SAFETY: row_start + i = k*p + i where k < n and i < p,
@@ -1116,15 +1203,17 @@ pub fn compute_xtwx_xtwz(
                     for j in i..p {
                         // SAFETY: row_start + j < n*p = x_slice.len()
                         let xkj = unsafe { *x_slice.get_unchecked(row_start + j) };
-                        // SAFETY: i*p + j < p*p = xtx_local.len() (since i <= j < p)
-                        unsafe { *xtx_local.get_unchecked_mut(i * p + j) += xki_w * xkj };
+                        // SAFETY: packed_idx advances exactly once for each
+                        // upper-triangle entry, so it stays within upper_len.
+                        unsafe { *xtx_local.get_unchecked_mut(packed_idx) += xki_w * xkj };
+                        packed_idx += 1;
                     }
                 }
             }
             (xtx_local, xtz_local)
         })
         .reduce(
-            || (vec![0.0; p * p], vec![0.0; p]),
+            || (vec![0.0; upper_len], vec![0.0; p]),
             |(mut a_xtx, mut a_xtz), (b_xtx, b_xtz)| {
                 for i in 0..a_xtx.len() {
                     a_xtx[i] += b_xtx[i];
@@ -1136,18 +1225,72 @@ pub fn compute_xtwx_xtwz(
             },
         );
 
-    // Convert to nalgebra symmetric DMatrix
+    // Convert packed upper triangle to nalgebra symmetric DMatrix.
     let mut xtx = DMatrix::zeros(p, p);
+    let mut packed_idx = 0;
     for i in 0..p {
         for j in i..p {
-            let val = xtx_data[i * p + j];
+            let val = xtx_data[packed_idx];
             xtx[(i, j)] = val;
             xtx[(j, i)] = val;
+            packed_idx += 1;
         }
     }
     let xtz = DVector::from_vec(xtz_data);
 
     Ok((xtx, xtz))
+}
+
+#[inline]
+fn packed_upper_len(p: usize) -> usize {
+    p * (p + 1) / 2
+}
+
+#[inline]
+fn matrix_vector_dot(x: ArrayView2<'_, f64>, coefficients: &Array1<f64>) -> Array1<f64> {
+    let n = x.nrows();
+    let p = x.ncols();
+    assert_eq!(
+        coefficients.len(),
+        p,
+        "coefficient vector length must match X columns"
+    );
+
+    let x_slice = match x.as_slice() {
+        Some(slice) => slice,
+        None => return x.dot(coefficients),
+    };
+    let coef_slice = match coefficients.as_slice() {
+        Some(slice) => slice,
+        None => return x.dot(coefficients),
+    };
+    if n.saturating_mul(p) < 1_000_000 || rayon::current_num_threads() <= 1 {
+        return x.dot(coefficients);
+    }
+
+    let target_chunks = rayon::current_num_threads().saturating_mul(4).max(1);
+    let chunk_size = n.div_ceil(target_chunks).max(1);
+    let mut output = vec![0.0; n];
+    output
+        .par_chunks_mut(chunk_size)
+        .enumerate()
+        .for_each(|(chunk_idx, output_chunk)| {
+            let row_start_idx = chunk_idx * chunk_size;
+            for (local_row, out) in output_chunk.iter_mut().enumerate() {
+                let row = row_start_idx + local_row;
+                let offset = row * p;
+                let mut sum = 0.0;
+                for j in 0..p {
+                    // SAFETY: row < n and j < p, so offset + j < n*p = x_slice.len();
+                    // j < p = coef_slice.len().
+                    sum += unsafe { *x_slice.get_unchecked(offset + j) }
+                        * unsafe { *coef_slice.get_unchecked(j) };
+                }
+                *out = sum;
+            }
+        });
+
+    Array1::from_vec(output)
 }
 
 #[inline]
@@ -1353,10 +1496,20 @@ fn solve_weighted_least_squares_penalized(
     z: &Array1<f64>,
     w: &Array1<f64>,
     l2_penalty: f64,
+    l2_penalty_factors: Option<&[f64]>,
     penalize_intercept: bool,
     skip_covariance: bool,
 ) -> Result<(Array1<f64>, Array2<f64>)> {
     let p = x.ncols();
+    if let Some(factors) = l2_penalty_factors {
+        if factors.len() != p {
+            return Err(RustyStatsError::dim_mismatch(
+                p,
+                factors.len(),
+                "L2 penalty factors length vs X columns",
+            ));
+        }
+    }
     let (mut xtx, xtz) = compute_xtwx_xtwz(x, z, w)?;
 
     // Add L2 (Ridge) penalty to diagonal: (X'WX + λI)
@@ -1364,7 +1517,8 @@ fn solve_weighted_least_squares_penalized(
     if l2_penalty > 0.0 {
         let start_idx = if penalize_intercept { 0 } else { 1 };
         for j in start_idx..p {
-            xtx[(j, j)] += l2_penalty;
+            let factor = l2_penalty_factors.map_or(1.0, |factors| factors[j]);
+            xtx[(j, j)] += l2_penalty * factor;
         }
     }
 
@@ -1670,7 +1824,11 @@ mod tests {
         }
         let w: Array1<f64> = (0..n).map(|i| 0.75 + (i % 7) as f64 * 0.05).collect();
 
-        assert!(should_use_sparse_xtwx_kernel(x.as_slice().unwrap(), n, p));
+        assert!(should_use_sparse_xtwx_kernel(
+            x.as_slice().expect("test matrix should be contiguous"),
+            n,
+            p
+        ));
 
         let actual = compute_xtwx(x.view(), &w);
         let mut expected = Array2::<f64>::zeros((p, p));
@@ -1685,6 +1843,87 @@ mod tests {
         for i in 0..p {
             for j in 0..p {
                 assert!((actual[[i, j]] - expected[[i, j]]).abs() < 1e-12);
+            }
+        }
+    }
+
+    #[test]
+    fn test_compute_xtwx_xtwz_dense_kernel_matches_formula() {
+        let n = 48;
+        let p = 20;
+        let mut x = Array2::<f64>::zeros((n, p));
+        for row in 0..n {
+            for col in 0..p {
+                x[[row, col]] = ((row + 1) as f64 * 0.03 + (col + 2) as f64 * 0.07).sin();
+            }
+        }
+        let z: Array1<f64> = (0..n).map(|i| 0.5 + (i as f64 * 0.11).cos()).collect();
+        let w: Array1<f64> = (0..n).map(|i| 0.75 + (i % 5) as f64 * 0.08).collect();
+
+        assert!(!should_use_sparse_xtwx_kernel(
+            x.as_slice().expect("test matrix should be contiguous"),
+            n,
+            p
+        ));
+
+        let (actual_xtx, actual_xtz) =
+            compute_xtwx_xtwz(x.view(), &z, &w).expect("dense kernel should succeed");
+        let mut expected_xtx = Array2::<f64>::zeros((p, p));
+        let mut expected_xtz = Array1::<f64>::zeros(p);
+        for row in 0..n {
+            for i in 0..p {
+                expected_xtz[i] += w[row] * x[[row, i]] * z[row];
+                for j in 0..p {
+                    expected_xtx[[i, j]] += w[row] * x[[row, i]] * x[[row, j]];
+                }
+            }
+        }
+
+        for i in 0..p {
+            assert!((actual_xtz[i] - expected_xtz[i]).abs() < 1e-12);
+            for j in 0..p {
+                assert!((actual_xtx[(i, j)] - expected_xtx[[i, j]]).abs() < 1e-12);
+            }
+        }
+    }
+
+    #[test]
+    fn test_compute_xtwx_xtwz_sparse_kernel_matches_formula() {
+        let n = 72;
+        let p = 32;
+        let mut x = Array2::<f64>::zeros((n, p));
+        for row in 0..n {
+            let j1 = row % p;
+            let j2 = (row * 7 + 5) % p;
+            x[[row, j1]] = 1.0 + (row % 3) as f64;
+            x[[row, j2]] += (row as f64 * 0.13).cos();
+        }
+        let z: Array1<f64> = (0..n).map(|i| 0.25 + (i as f64 * 0.17).sin()).collect();
+        let w: Array1<f64> = (0..n).map(|i| 0.5 + (i % 11) as f64 * 0.03).collect();
+
+        assert!(should_use_sparse_xtwx_kernel(
+            x.as_slice().expect("test matrix should be contiguous"),
+            n,
+            p
+        ));
+
+        let (actual_xtx, actual_xtz) =
+            compute_xtwx_xtwz(x.view(), &z, &w).expect("sparse kernel should succeed");
+        let mut expected_xtx = Array2::<f64>::zeros((p, p));
+        let mut expected_xtz = Array1::<f64>::zeros(p);
+        for row in 0..n {
+            for i in 0..p {
+                expected_xtz[i] += w[row] * x[[row, i]] * z[row];
+                for j in 0..p {
+                    expected_xtx[[i, j]] += w[row] * x[[row, i]] * x[[row, j]];
+                }
+            }
+        }
+
+        for i in 0..p {
+            assert!((actual_xtz[i] - expected_xtz[i]).abs() < 1e-12);
+            for j in 0..p {
+                assert!((actual_xtx[(i, j)] - expected_xtx[[i, j]]).abs() < 1e-12);
             }
         }
     }
@@ -1863,6 +2102,7 @@ mod tests {
             &initial_eta,
             &weights,
             0.0,
+            None,
             true,
             false,
         )
@@ -2108,6 +2348,31 @@ mod tests {
         assert!(
             irls_step_converged(1e-12, 1e-12 + 1e-11, 1e-30, tol),
             "near-zero deviance must keep the ZERO_TOL absolute allowance"
+        );
+    }
+
+    #[test]
+    fn test_penalized_irls_objective_skips_intercept_when_configured() {
+        let coefficients = array![10.0, 2.0, -3.0];
+        let deviance = 5.0;
+        let lambda = 0.5;
+
+        assert_eq!(
+            penalized_irls_objective(deviance, &coefficients, 0.0, None, false),
+            deviance
+        );
+        assert_eq!(
+            penalized_irls_objective(deviance, &coefficients, lambda, None, false),
+            deviance + lambda * (2.0_f64.powi(2) + (-3.0_f64).powi(2))
+        );
+        assert_eq!(
+            penalized_irls_objective(deviance, &coefficients, lambda, None, true),
+            deviance + lambda * (10.0_f64.powi(2) + 2.0_f64.powi(2) + (-3.0_f64).powi(2))
+        );
+        let factors = vec![100.0, 4.0, 9.0];
+        assert_eq!(
+            penalized_irls_objective(deviance, &coefficients, lambda, Some(&factors), false),
+            deviance + lambda * (4.0 * 2.0_f64.powi(2) + 9.0 * (-3.0_f64).powi(2))
         );
     }
 

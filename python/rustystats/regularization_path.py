@@ -140,6 +140,9 @@ class RegularizationPathInfo:
     fold_safe_target_encoding: bool = False
     cv_fold_scores: dict[float, list[float]] | None = None
     cv_scoring_objective: str = "weighted_mean_unit_deviance"
+    cv_profile: dict[str, object] | None = None
+    final_fit_center: np.ndarray | None = None
+    final_fit_scale: np.ndarray | None = None
 
 
 def _apply_inverse_link(eta: np.ndarray, link: str) -> np.ndarray:
@@ -308,26 +311,35 @@ def penalized_column_mask(n_cols: int, fit_intercept: bool) -> np.ndarray:
     return mask
 
 
-def compute_standardization(
+def compute_standardization_with_ridge_diag(
     X: np.ndarray,
     weights: np.ndarray | None = None,
     pen_mask: np.ndarray | None = None,
     *,
     fit_intercept: bool = True,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Weighted center/scale vectors for internally standardized penalties.
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Weighted center/scale vectors plus ridge-grid column norms.
 
-    The returned vectors are length ``p`` and safe to pass straight to the Rust
-    fit boundary: unpenalized columns, intercept columns, constant columns and
-    no-intercept fits receive ``center=0``; non-constant penalized columns get a
-    weighted mean and population standard deviation.
+    The returned center/scale vectors are length ``p`` and safe to pass straight
+    to the Rust fit boundary: unpenalized columns, intercept columns, constant
+    columns and no-intercept fits receive ``center=0``; non-constant penalized
+    columns get a weighted mean and population standard deviation.
+
+    The third return value is also length ``p``. For each penalized column, it
+    contains ``Σ w * ((x - center) / scale)^2`` in the alpha-grid coordinate
+    system. Ridge alpha-max uses this exact diagonal, avoiding a second scan
+    over the design matrix after standardization.
     """
     x = np.asarray(X, dtype=np.float64)
     if x.ndim != 2:
         raise ValidationError(f"X must be a 2D design matrix, got shape {x.shape}.")
     n, p = x.shape
     if p == 0:
-        return np.zeros(0, dtype=np.float64), np.ones(0, dtype=np.float64)
+        return (
+            np.zeros(0, dtype=np.float64),
+            np.ones(0, dtype=np.float64),
+            np.zeros(0, dtype=np.float64),
+        )
 
     if weights is None:
         w = np.ones(n, dtype=np.float64)
@@ -357,11 +369,17 @@ def compute_standardization(
 
     center = np.zeros(p, dtype=np.float64)
     scale = np.ones(p, dtype=np.float64)
+    ridge_xtx_diag = np.zeros(p, dtype=np.float64)
     active = np.flatnonzero(mask)
     if active.size == 0:
-        return center, scale
+        return center, scale, ridge_xtx_diag
 
-    cols = x[:, active]
+    if active.size == p:
+        cols = x
+    elif active.size > 0 and np.all(active == np.arange(active[0], active[0] + active.size)):
+        cols = x[:, active[0] : active[-1] + 1]
+    else:
+        cols = x[:, active]
     mean = (w @ cols) / weight_sum
     # Two-pass weighted variance: centre before squaring. The one-pass
     # ``E[x²] - E[x]²`` loses precision to catastrophic cancellation on the
@@ -370,16 +388,42 @@ def compute_standardization(
     # genuinely varying column to "constant" below and let it escape the
     # penalty (reintroducing the RS-ACT-012 defect for that column).
     centered = cols - mean
-    var = np.maximum((w @ (centered * centered)) / weight_sum, 0.0)
+    np.square(centered, out=centered)
+    var = np.maximum((w @ centered) / weight_sum, 0.0)
     sd = np.sqrt(var)
     valid = np.isfinite(mean) & np.isfinite(sd) & (sd > MIN_WEIGHTED_STD)
     valid_cols = active[valid]
+    raw_diag = weight_sum * (var + mean * mean)
+    active_diag = raw_diag.copy()
+    if np.any(valid):
+        if fit_intercept:
+            active_diag[valid] = weight_sum
+        else:
+            active_diag[valid] = raw_diag[valid] / (sd[valid] * sd[valid])
+    ridge_xtx_diag[active] = active_diag
     if valid_cols.size == 0:
-        return center, scale
+        return center, scale, ridge_xtx_diag
 
     if fit_intercept:
         center[valid_cols] = mean[valid]
     scale[valid_cols] = sd[valid]
+    return center, scale, ridge_xtx_diag
+
+
+def compute_standardization(
+    X: np.ndarray,
+    weights: np.ndarray | None = None,
+    pen_mask: np.ndarray | None = None,
+    *,
+    fit_intercept: bool = True,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Weighted center/scale vectors for internally standardized penalties."""
+    center, scale, _ridge_xtx_diag = compute_standardization_with_ridge_diag(
+        X,
+        weights,
+        pen_mask,
+        fit_intercept=fit_intercept,
+    )
     return center, scale
 
 
@@ -415,6 +459,7 @@ def compute_alpha_max(
     intercept_col: int | None = 0,
     center: np.ndarray | None = None,
     scale: np.ndarray | None = None,
+    ridge_xtx_diag: np.ndarray | None = None,
     pen_mask: np.ndarray | None = None,
     allow_extended_tweedie: bool = False,
 ) -> float:
@@ -465,6 +510,10 @@ def compute_alpha_max(
     intercept_col : int or None
         Column index of the intercept (excluded from the score). Pass ``None``
         if the design has no intercept (rare for GLMs).
+    ridge_xtx_diag : ndarray, optional
+        Precomputed ``Σw * X_j²`` diagonal in the coordinate system used for the
+        ridge alpha grid. When supplied for ``l1_ratio == 0``, this avoids a
+        second full scan of the design matrix after standardization.
     """
     family = _alpha_family_base(family)
 
@@ -515,6 +564,16 @@ def compute_alpha_max(
         c = None
         s = None
 
+    ridge_diag = None
+    if ridge_xtx_diag is not None:
+        ridge_diag = np.asarray(ridge_xtx_diag, dtype=np.float64)
+        if ridge_diag.shape != (p,):
+            raise ValidationError(
+                f"ridge_xtx_diag must be length {p} for alpha_max, got shape {ridge_diag.shape}."
+            )
+        if np.any(~np.isfinite(ridge_diag)) or np.any(ridge_diag < 0.0):
+            raise ValidationError("ridge_xtx_diag for alpha_max must be finite and non-negative.")
+
     if l1_ratio > 0:
         beta_0 = _fit_null_intercept(
             y,
@@ -547,7 +606,9 @@ def compute_alpha_max(
         # the magnitude matches the solver's loss scale.
         if not np.any(penalty_mask):
             return ALPHA_MAX_FLOOR
-        if use_standardization:
+        if ridge_diag is not None:
+            XtX_diag = ridge_diag[penalty_mask]
+        elif use_standardization:
             x_pen = (X[:, penalty_mask] - c[penalty_mask][None, :]) / s[penalty_mask][None, :]
             XtX_diag = np.sum((x_pen**2) * w[:, None], axis=0)
         else:
@@ -820,8 +881,9 @@ def fit_cv_regularization_path(
 
     pen_mask = penalized_column_mask(X.shape[1], fit_intercept)
     center = scale = None
+    ridge_xtx_diag = None
     if standardize:
-        center, scale = compute_standardization(
+        center, scale, ridge_xtx_diag = compute_standardization_with_ridge_diag(
             X,
             weights,
             pen_mask,
@@ -842,6 +904,7 @@ def fit_cv_regularization_path(
         intercept_col=0 if fit_intercept else None,
         center=center,
         scale=scale,
+        ridge_xtx_diag=ridge_xtx_diag,
         pen_mask=pen_mask,
         allow_extended_tweedie=allow_extended_tweedie,
     )
@@ -948,6 +1011,9 @@ def fit_cv_regularization_path(
         }
         or None,
         cv_scoring_objective="weighted_mean_unit_deviance",
+        cv_profile=dict(rust_result["profile"]) if "profile" in rust_result else None,
+        final_fit_center=solver_center,
+        final_fit_scale=solver_scale,
     )
 
     return path_info
@@ -1029,7 +1095,7 @@ def fit_cv_te_regularization_path(
     mirroring the production fit -> predict pipeline. Non-target-encoded models
     should use the fast path; this one is reserved for the target-encoding case.
     """
-    from rustystats._rustystats import fit_glm_py as _fit_glm_rust
+    from rustystats._rustystats import fit_fold_path_py as _fit_fold_path_rust
 
     if regularization == "ridge":
         effective_l1_ratio = 0.0
@@ -1093,9 +1159,10 @@ def fit_cv_te_regularization_path(
         weights_train = weights[train_idx] if weights is not None else None
         offset_train = offset[train_idx] if offset is not None else None
         fold_center = fold_scale = None
+        fold_ridge_xtx_diag = None
         fold_pen_mask = penalized_column_mask(x_train.shape[1], fit_intercept)
         if standardize:
-            fold_center, fold_scale = compute_standardization(
+            fold_center, fold_scale, fold_ridge_xtx_diag = compute_standardization_with_ridge_diag(
                 x_train,
                 weights_train,
                 fold_pen_mask,
@@ -1121,6 +1188,7 @@ def fit_cv_te_regularization_path(
                 intercept_col=0 if fit_intercept else None,
                 center=fold_center,
                 scale=fold_scale,
+                ridge_xtx_diag=fold_ridge_xtx_diag,
                 pen_mask=fold_pen_mask,
                 allow_extended_tweedie=allow_extended_tweedie,
             )
@@ -1159,47 +1227,39 @@ def fit_cv_te_regularization_path(
         weights_val = weights[val_idx] if weights is not None else None
         nonneg_indices, nonpos_indices = _get_constraint_indices(names)
 
-        for alpha in candidate_alphas:
-            if alpha in failed_alphas:
-                continue
-            try:
-                result = _fit_glm_rust(
-                    y_train,
-                    x_train,
-                    family,
-                    link,
-                    var_power,
-                    theta,
-                    offset_train,
-                    weights_train,
-                    alpha,
-                    effective_l1_ratio,
-                    cv_max_iter,
-                    cv_tol,
-                    nonneg_indices if nonneg_indices else None,
-                    nonpos_indices if nonpos_indices else None,
-                    False,
-                    allow_extended_tweedie,
-                    fit_intercept,
-                    fold_center,
-                    fold_scale,
-                )
-            except ValueError:
-                failed_alphas.add(alpha)
-                continue
-            linear_pred = x_val @ result.params
-            if offset_val is not None:
-                linear_pred = linear_pred + offset_val
-            mu_val = _apply_inverse_link(linear_pred, link)
-            dev = compute_deviance(
+        active_alphas = [alpha for alpha in candidate_alphas if alpha not in failed_alphas]
+        if not active_alphas:
+            continue
+        try:
+            fold_result = _fit_fold_path_rust(
+                y_train,
+                x_train,
                 y_val,
-                mu_val,
+                x_val,
                 family,
-                theta=theta,
-                weights=weights_val,
-                var_power=var_power,
-                allow_extended_tweedie=allow_extended_tweedie,
+                link,
+                var_power,
+                theta,
+                offset_train,
+                weights_train,
+                offset_val,
+                weights_val,
+                active_alphas,
+                effective_l1_ratio,
+                cv_max_iter,
+                cv_tol,
+                nonneg_indices if nonneg_indices else None,
+                nonpos_indices if nonpos_indices else None,
+                allow_extended_tweedie,
+                fit_intercept,
+                fold_center,
+                fold_scale,
             )
+        except ValueError:
+            failed_alphas.update(active_alphas)
+            continue
+        fold_deviances = list(fold_result["fold_deviances"])
+        for alpha, dev in zip(active_alphas, fold_deviances, strict=True):
             if np.isfinite(dev):
                 deviances[alpha].append(dev)
             else:

@@ -385,36 +385,12 @@ pub fn build_categorical_continuous_interaction(
 
     let mut result = Array2::zeros((n, n_levels));
 
-    // Parallel for large data
-    if n > 50000 {
-        let rows: Vec<Vec<f64>> = (0..n)
-            .into_par_iter()
-            .map(|i| {
-                let mut row = vec![0.0; n_levels];
-                let idx = cat_indices[i];
-                if idx >= 1 {
-                    let col = (idx - 1) as usize;
-                    if col < n_levels {
-                        row[col] = continuous[i];
-                    }
-                }
-                row
-            })
-            .collect();
-
-        for (i, row) in rows.into_iter().enumerate() {
-            for (j, val) in row.into_iter().enumerate() {
-                result[[i, j]] = val;
-            }
-        }
-    } else {
-        for i in 0..n {
-            let idx = cat_indices[i];
-            if idx >= 1 {
-                let col = (idx - 1) as usize;
-                if col < n_levels {
-                    result[[i, col]] = continuous[i];
-                }
+    for i in 0..n {
+        let idx = cat_indices[i];
+        if idx >= 1 {
+            let col = (idx - 1) as usize;
+            if col < n_levels {
+                result[[i, col]] = continuous[i];
             }
         }
     }
@@ -424,6 +400,54 @@ pub fn build_categorical_continuous_interaction(
         .iter()
         .map(|name| format!("{}:{}", name, cont_name))
         .collect();
+
+    (result, col_names)
+}
+
+/// Build a two-categorical × continuous interaction matrix directly from level
+/// indices.
+///
+/// This is equivalent to first building ``cat1:cat2`` dummy columns and then
+/// multiplying each column by ``continuous``. It avoids materialising that
+/// intermediate dense categorical interaction block.
+pub fn build_two_categorical_continuous_interaction(
+    idx1: &[i32],
+    n_levels1: usize,
+    idx2: &[i32],
+    n_levels2: usize,
+    continuous: &Array1<f64>,
+    names1: &[String],
+    names2: &[String],
+    cont_name: &str,
+) -> (Array2<f64>, Vec<String>) {
+    let n = idx1.len();
+    let n_cols = n_levels1 * n_levels2;
+
+    if n_cols == 0 {
+        return (Array2::zeros((n, 0)), vec![]);
+    }
+
+    let mut result = Array2::zeros((n, n_cols));
+
+    for i in 0..n {
+        let i1 = idx1[i];
+        let i2 = idx2[i];
+        if i1 >= 1 && i2 >= 1 {
+            let col = ((i1 - 1) as usize) * n_levels2 + ((i2 - 1) as usize);
+            if col < n_cols {
+                result[[i, col]] = continuous[i];
+            }
+        }
+    }
+
+    let mut col_names = Vec::with_capacity(n_cols);
+    for i in 0..n_levels1 {
+        for j in 0..n_levels2 {
+            let name1 = names1.get(i).map(|s| s.as_str()).unwrap_or("?");
+            let name2 = names2.get(j).map(|s| s.as_str()).unwrap_or("?");
+            col_names.push(format!("{}:{}:{}", name1, name2, cont_name));
+        }
+    }
 
     (result, col_names)
 }
@@ -464,27 +488,10 @@ pub fn multiply_matrix_by_continuous(
 
     let mut result = Array2::zeros((n, n_cols));
 
-    // Parallel for large data
-    if n > 50000 {
-        let rows: Vec<Vec<f64>> = (0..n)
-            .into_par_iter()
-            .map(|i| {
-                let cont_val = continuous[i];
-                (0..n_cols).map(|j| matrix[[i, j]] * cont_val).collect()
-            })
-            .collect();
-
-        for (i, row) in rows.into_iter().enumerate() {
-            for (j, val) in row.into_iter().enumerate() {
-                result[[i, j]] = val;
-            }
-        }
-    } else {
-        for i in 0..n {
-            let cont_val = continuous[i];
-            for j in 0..n_cols {
-                result[[i, j]] = matrix[[i, j]] * cont_val;
-            }
+    for i in 0..n {
+        let cont_val = continuous[i];
+        for j in 0..n_cols {
+            result[[i, j]] = matrix[[i, j]] * cont_val;
         }
     }
 
@@ -911,6 +918,37 @@ mod tests {
 
         assert_eq!(matrix.ncols(), 0);
         assert_eq!(names.len(), 0);
+    }
+
+    #[test]
+    fn test_two_categorical_continuous_interaction_matches_composed_path() {
+        let idx1 = vec![0i32, 1, 2, 1, 2];
+        let idx2 = vec![0i32, 1, 1, 0, 2];
+        let continuous = Array1::from_vec(vec![10.0, 20.0, 30.0, 40.0, 50.0]);
+        let names1 = vec!["cat1[T.B]".to_string(), "cat1[T.C]".to_string()];
+        let names2 = vec!["cat2[T.Y]".to_string(), "cat2[T.Z]".to_string()];
+
+        let (cat_cat, cat_cat_names) =
+            build_categorical_categorical_interaction(&idx1, 2, &idx2, 2, &names1, &names2);
+        let (composed, composed_names) =
+            multiply_matrix_by_continuous(&cat_cat, &continuous, &cat_cat_names, "x");
+        let (direct, direct_names) = build_two_categorical_continuous_interaction(
+            &idx1,
+            2,
+            &idx2,
+            2,
+            &continuous,
+            &names1,
+            &names2,
+            "x",
+        );
+
+        assert_eq!(direct_names, composed_names);
+        assert_eq!(direct.shape(), composed.shape());
+        assert_eq!(direct, composed);
+        assert_eq!(direct[[1, 0]], 20.0);
+        assert_eq!(direct[[2, 2]], 30.0);
+        assert_eq!(direct[[4, 3]], 50.0);
     }
 
     #[test]

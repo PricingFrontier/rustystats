@@ -1388,6 +1388,27 @@ class TestDictCVRegularization:
         assert result.regularization_path is not None
         assert result.cv_selection_method is not None
         assert result.n_cv_folds == 3
+        assert result.cv_profile is not None
+        assert result.cv_profile["n_folds"] == 3
+        assert result.cv_profile["n_alphas"] == 11
+        assert "summed_work_seconds" in result.cv_profile
+        assert len(result.cv_profile["folds"]) == 3
+
+    def test_fold_safe_target_encoding_cv_profile_is_absent(self, simple_data):
+        data = simple_data.with_columns(
+            pl.Series("brand", np.resize(np.array(["A", "B", "C"]), simple_data.height))
+        )
+        model = rs.glm_dict(
+            response="y",
+            terms={"x1": {"type": "linear"}, "brand": {"type": "target_encoding"}},
+            data=data,
+            family="poisson",
+        )
+        result = model.fit(cv=3, regularization="ridge", n_alphas=3, verbose=False)
+
+        assert result.cv_deviance is not None
+        assert result.fold_safe_target_encoding is True
+        assert result.cv_profile is None
 
     def test_path_structure(self, simple_data):
         model = rs.glm_dict(

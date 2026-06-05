@@ -278,6 +278,30 @@ def fit_cv_path_py(
     center: npt.NDArray[np.float64] | None = None,
     scale: npt.NDArray[np.float64] | None = None,
 ) -> dict: ...
+def fit_fold_path_py(
+    y_train: npt.NDArray[np.float64],
+    x_train: npt.NDArray[np.float64],
+    y_val: npt.NDArray[np.float64],
+    x_val: npt.NDArray[np.float64],
+    family: str,
+    link: str | None = None,
+    var_power: float = 1.5,
+    theta: float = 1.0,
+    offset_train: npt.NDArray[np.float64] | None = None,
+    weights_train: npt.NDArray[np.float64] | None = None,
+    offset_val: npt.NDArray[np.float64] | None = None,
+    weights_val: npt.NDArray[np.float64] | None = None,
+    alphas: list[float] | None = None,
+    l1_ratio: float = 0.0,
+    max_iter: int = 25,
+    tol: float = 1e-8,
+    nonneg_indices: list[int] | None = None,
+    nonpos_indices: list[int] | None = None,
+    allow_extended_tweedie: bool = False,
+    fit_intercept: bool = True,
+    center: npt.NDArray[np.float64] | None = None,
+    scale: npt.NDArray[np.float64] | None = None,
+) -> dict: ...
 
 # =============================================================================
 # IRLS Residual Helpers
@@ -427,6 +451,16 @@ def build_cat_cont_interaction_py(
     cont_col: npt.NDArray[np.float64],
     n_levels: int,
     drop_first: bool = True,
+) -> tuple[npt.NDArray[np.float64], list[str]]: ...
+def build_two_cat_cont_interaction_py(
+    idx1: npt.NDArray[np.int64],
+    n_levels1: int,
+    idx2: npt.NDArray[np.int64],
+    n_levels2: int,
+    continuous: npt.NDArray[np.float64],
+    names1: list[str],
+    names2: list[str],
+    cont_name: str,
 ) -> tuple[npt.NDArray[np.float64], list[str]]: ...
 def build_cont_cont_interaction_py(
     col_a: npt.NDArray[np.float64],
