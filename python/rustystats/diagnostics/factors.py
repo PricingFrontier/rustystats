@@ -214,11 +214,13 @@ def _inference_is_valid(result: Any) -> bool:
     still surfaces a descriptive joint factor χ² — that is standard GAM practice
     and the existing diagnostics contract (e.g. comparing whether two smooth
     terms contribute), distinct from the per-coefficient Wald p-values the
-    summary suppresses. So only the ``naive_*`` (selection/regularization)
-    statuses are treated as untrustworthy here.
+    summary suppresses. The ``covariance_skipped`` status is also suppressed
+    because the bread matrix / standard errors were intentionally not computed.
     """
     status = getattr(result, "inference_status", None)
-    return not (isinstance(status, str) and status.startswith("naive_"))
+    return not (
+        isinstance(status, str) and (status.startswith("naive_") or status == "covariance_skipped")
+    )
 
 
 class _FactorFeatureIndex:
@@ -320,6 +322,7 @@ class _FactorDiagnosticsComputer:
         # cache key mismatched, the entire index was rebuilt for one
         # variable, and the cache was overwritten — repeating 30+ times.
         self._var_feature_cache: dict[str, _FactorFeature] = {}
+        self._transform_source_aliases: dict[str, list[str]] = {}
 
     @property
     def _prior_weights(self) -> np.ndarray | None:
@@ -355,8 +358,83 @@ class _FactorDiagnosticsComputer:
             self._feature_names_list = feature_names_list
 
         feature = _FactorFeatureIndex._build_for_var(var, feature_names_list)
+        aliases = getattr(self, "_transform_source_aliases", {}).get(var, [])
+        if aliases:
+            feature = self._merge_transform_alias_features(feature, aliases, feature_names_list)
         cache[var] = feature
         return feature
+
+    @staticmethod
+    def _merge_transform_alias_features(
+        feature: _FactorFeature,
+        aliases: list[str],
+        feature_names: list[str],
+    ) -> _FactorFeature:
+        """Include fitted single-source transform outputs in a source factor.
+
+        Diagnostics are usually requested with raw data column names, while a
+        model may fit a frozen/statistic lookup output such as ``Area_fts``.
+        Treating ``Area`` as absent then triggers an expensive and misleading
+        score test for a representation that is already in the model.
+        """
+        indices = list(feature.indices)
+        names = list(feature.feature_names)
+        term_type = feature.term_type
+        transformation = feature.transformation
+        seen = set(indices)
+
+        for alias in aliases:
+            alias_feature = _FactorFeatureIndex._build_for_var(alias, feature_names)
+            for idx, name in zip(alias_feature.indices, alias_feature.feature_names):
+                if idx in seen:
+                    continue
+                seen.add(idx)
+                indices.append(idx)
+                names.append(name)
+                if term_type == "unknown":
+                    term_type = alias_feature.term_type
+                if transformation is None:
+                    transformation = alias_feature.transformation
+
+        return _FactorFeature(
+            indices=indices,
+            feature_names=names,
+            term_type=term_type,
+            transformation=transformation,
+        )
+
+    def _refresh_transform_source_aliases(self, result: Any) -> None:
+        """Map raw source columns to fitted single-source transform outputs."""
+        if result is None:
+            return
+
+        feature_names = list(getattr(self, "_feature_names_list", self.feature_names))
+        aliases: dict[str, list[str]] = {}
+        for spec in getattr(result, "_input_transforms", []) or []:
+            sources = spec.get("sources") or []
+            output = spec.get("output")
+            if not isinstance(output, str) or len(sources) != 1 or not isinstance(sources[0], str):
+                continue
+
+            # Only alias outputs that actually participate in the fitted design
+            # matrix. This keeps diagnostics for unused preparation columns from
+            # being marked as in-model.
+            if not any(_match_factor(feature_name, output)[0] for feature_name in feature_names):
+                continue
+
+            source = sources[0]
+            aliases.setdefault(source, []).append(output)
+
+        if aliases == getattr(self, "_transform_source_aliases", {}):
+            return
+
+        old_sources = set(getattr(self, "_transform_source_aliases", {}))
+        new_sources = set(aliases)
+        self._transform_source_aliases = aliases
+        cache = getattr(self, "_var_feature_cache", None)
+        if cache is not None:
+            for source in old_sources | new_sources:
+                cache.pop(source, None)
 
     def compute_factor_diagnostics(
         self,
@@ -381,6 +459,7 @@ class _FactorDiagnosticsComputer:
         bread_matrix, and irls_weights are provided.
         """
         factors = []
+        self._refresh_transform_source_aliases(result)
 
         can_compute_score_test = (
             compute_score_tests
@@ -863,25 +942,25 @@ class _FactorDiagnosticsComputer:
             # that is merely untrustworthy (penalized/selected/constrained) is
             # already suppressed above via ``inference_valid``.
             bse = None
-            if hasattr(result, "bse"):
+            if inference_valid and hasattr(result, "bse"):
                 try:
                     bse = result.bse
                     if callable(bse):
                         bse = bse()
-                except AttributeError:
+                except (AttributeError, FittingError):
                     bse = None
-            elif hasattr(result, "std_errors"):
+            elif inference_valid and hasattr(result, "std_errors"):
                 bse = result.std_errors
                 if callable(bse):
                     bse = bse()
 
             pvalues = None
-            if hasattr(result, "pvalues"):
+            if inference_valid and hasattr(result, "pvalues"):
                 try:
                     pvalues = result.pvalues
                     if callable(pvalues):
                         pvalues = pvalues()
-                except AttributeError:
+                except (AttributeError, FittingError):
                     pvalues = None
 
             link = result.link if hasattr(result, "link") else None

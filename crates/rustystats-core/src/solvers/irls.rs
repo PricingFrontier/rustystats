@@ -49,13 +49,17 @@ use super::{compute_irls_weights, initialize_mu_safe, validate_glm_inputs};
 //
 // =============================================================================
 
+const CONSTRAINED_BEST_EARLY_STOP_PATIENCE: usize = 2;
+const SPARSE_XTWX_THREAD_CAP: usize = 16;
+const SPARSE_XTWX_LOCAL_MATRIX_CAP_THRESHOLD_BYTES: usize = 4 * 1024 * 1024;
+
 use nalgebra::{DMatrix, DVector};
 use ndarray::{Array1, Array2, ArrayView2};
 use rayon::prelude::*;
 
 use crate::constants::{
-    CONVERGENCE_TOL, DEFAULT_MAX_ITER, IRLS_ACCEPT_REL_SLACK, IRLS_MAX_HALF_STEPS, MIN_IRLS_WEIGHT,
-    ZERO_TOL,
+    CONVERGENCE_TOL, DEFAULT_MAX_ITER, IRLS_ACCEPT_REL_SLACK, IRLS_MAX_HALF_STEPS, MAX_IRLS_WEIGHT,
+    MIN_IRLS_WEIGHT, ZERO_TOL,
 };
 use crate::error::{Result, RustyStatsError};
 use crate::families::Family;
@@ -394,6 +398,59 @@ pub fn fit_glm_unified(
     weights: Option<&Array1<f64>>,
     init_coefficients: Option<&Array1<f64>>,
 ) -> Result<IRLSResult> {
+    fit_glm_unified_with_optional_sparse_cache(
+        y,
+        x,
+        family,
+        link,
+        config,
+        offset,
+        weights,
+        init_coefficients,
+        None,
+    )
+}
+
+/// Fit a GLM using a caller-supplied sparse row cache when it matches `x`.
+///
+/// This is used by regularization-path CV, where many alpha fits reuse the same
+/// fold design matrix. Reusing the packed sparse rows avoids repeatedly scanning
+/// and packing an unchanged wide design matrix.
+pub fn fit_glm_unified_with_sparse_cache(
+    y: &Array1<f64>,
+    x: ArrayView2<'_, f64>,
+    family: &dyn Family,
+    link: &dyn Link,
+    config: &FitConfig,
+    offset: Option<&Array1<f64>>,
+    weights: Option<&Array1<f64>>,
+    init_coefficients: Option<&Array1<f64>>,
+    sparse_cache: Option<&SparseRowCache>,
+) -> Result<IRLSResult> {
+    fit_glm_unified_with_optional_sparse_cache(
+        y,
+        x,
+        family,
+        link,
+        config,
+        offset,
+        weights,
+        init_coefficients,
+        sparse_cache,
+    )
+}
+
+fn fit_glm_unified_with_optional_sparse_cache(
+    y: &Array1<f64>,
+    x: ArrayView2<'_, f64>,
+    family: &dyn Family,
+    link: &dyn Link,
+    config: &FitConfig,
+    offset: Option<&Array1<f64>>,
+    weights: Option<&Array1<f64>>,
+    init_coefficients: Option<&Array1<f64>>,
+    sparse_cache: Option<&SparseRowCache>,
+) -> Result<IRLSResult> {
     if let Some(standardization) = &config.standardization {
         if !config.regularization.penalty.is_none() && !config.regularization.penalty.is_smooth() {
             standardization.validate(x.ncols())?;
@@ -421,6 +478,7 @@ pub fn fit_glm_unified(
                     Some(&l2_penalty_factors),
                     penalize_intercept,
                     config.regularization.penalty.clone(),
+                    sparse_cache,
                 );
             }
             let x_work = standardization.standardize_matrix(x)?;
@@ -434,7 +492,7 @@ pub fn fit_glm_unified(
             let mut work_config = config.clone();
             work_config.standardization = None;
 
-            let mut result = fit_glm_unified(
+            let mut result = fit_glm_unified_with_optional_sparse_cache(
                 y,
                 x_work.view(),
                 family,
@@ -443,6 +501,7 @@ pub fn fit_glm_unified(
                 offset,
                 weights,
                 init_work.as_ref(),
+                None,
             )?;
             result.coefficients = standardization.to_original_coefficients(
                 &result.coefficients,
@@ -490,6 +549,7 @@ pub fn fit_glm_unified(
             None,
             penalize_intercept,
             config.regularization.penalty.clone(),
+            sparse_cache,
         )
     }
 }
@@ -513,6 +573,7 @@ fn fit_glm_core(
     l2_penalty_factors: Option<&[f64]>,
     penalize_intercept: bool,
     penalty: Penalty,
+    provided_sparse_cache: Option<&SparseRowCache>,
 ) -> Result<IRLSResult> {
     // -------------------------------------------------------------------------
     // Step 0: Validate inputs and set up offset/weights
@@ -523,6 +584,13 @@ fn fit_glm_core(
     let offset_vec = validated.offset;
     let prior_weights_vec = validated.prior_weights;
     let mut warnings: Vec<String> = Vec::new();
+    let provided_sparse_cache = provided_sparse_cache.filter(|cache| cache.is_compatible_with(x));
+    let owned_sparse_cache = if provided_sparse_cache.is_none() {
+        build_sparse_row_cache_if_beneficial(x)
+    } else {
+        None
+    };
+    let sparse_cache = provided_sparse_cache.or(owned_sparse_cache.as_ref());
 
     let mut iter_coefficients = Array1::zeros(p);
 
@@ -538,7 +606,7 @@ fn fit_glm_core(
             ));
         }
         iter_coefficients = init.clone();
-        let eta_init = matrix_vector_dot(x, init) + &offset_vec;
+        let eta_init = matrix_vector_dot_cached(x, init, sparse_cache) + &offset_vec;
         let mu_init = link.inverse(&eta_init);
         family.clamp_mu(&mu_init)
     } else {
@@ -574,6 +642,7 @@ fn fit_glm_core(
             l2_penalty_factors,
             penalize_intercept,
             true, // init projection covariance is discarded
+            sparse_cache,
         ) {
             Ok((mut coef, _)) if !coef.iter().any(|&c| c.is_nan() || c.is_infinite()) => {
                 for &idx in &config.nonneg_indices {
@@ -595,7 +664,7 @@ fn fit_glm_core(
                 );
             }
         }
-        eta = &matrix_vector_dot(x, &iter_coefficients) + &offset_vec;
+        eta = &matrix_vector_dot_cached(x, &iter_coefficients, sparse_cache) + &offset_vec;
         mu = family.clamp_mu(&link.inverse(&eta));
     }
 
@@ -635,6 +704,14 @@ fn fit_glm_core(
     let mut best_mu = mu.clone();
     let mut best_eta = eta.clone();
     let mut best_weights = final_weights.clone();
+    let mut constrained_best_stale_iterations = 0usize;
+    let mut constrained_best_plateau = false;
+    let use_poisson_log_weight_buffers =
+        family.name().eq_ignore_ascii_case("poisson") && link.name() == "log";
+    let weight_buffer_len = if use_poisson_log_weight_buffers { n } else { 0 };
+    let mut irls_weights_buf = Array1::zeros(weight_buffer_len);
+    let mut combined_weights_buf = Array1::zeros(weight_buffer_len);
+    let mut working_response_buf = Array1::zeros(weight_buffer_len);
 
     while iteration < config.max_iterations {
         iteration += 1;
@@ -642,19 +719,46 @@ fn fit_glm_core(
         // ---------------------------------------------------------------------
         // Step 4a: Compute working weights W
         // ---------------------------------------------------------------------
-        let weight_result = compute_irls_weights(
-            y,
-            &mu,
-            &eta,
-            &offset_vec,
-            &prior_weights_vec,
-            family,
-            link,
-            config.min_weight,
-        )?;
-        let irls_weights = weight_result.irls_weights;
-        let combined_weights = weight_result.combined_weights;
-        let working_response = weight_result.working_response;
+        let weight_result_storage = if use_poisson_log_weight_buffers {
+            compute_poisson_log_irls_weights_in_place(
+                y,
+                &mu,
+                &eta,
+                &offset_vec,
+                &prior_weights_vec,
+                config.min_weight,
+                &mut irls_weights_buf,
+                &mut combined_weights_buf,
+                &mut working_response_buf,
+            )?;
+            None
+        } else {
+            Some(compute_irls_weights(
+                y,
+                &mu,
+                &eta,
+                &offset_vec,
+                &prior_weights_vec,
+                family,
+                link,
+                config.min_weight,
+            )?)
+        };
+
+        let (irls_weights, combined_weights, working_response) =
+            if let Some(weight_result) = weight_result_storage.as_ref() {
+                (
+                    &weight_result.irls_weights,
+                    &weight_result.combined_weights,
+                    &weight_result.working_response,
+                )
+            } else {
+                (
+                    &irls_weights_buf,
+                    &combined_weights_buf,
+                    &working_response_buf,
+                )
+            };
 
         // ---------------------------------------------------------------------
         // Step 4c: Solve weighted least squares: (X'WX)β = X'Wz
@@ -664,12 +768,13 @@ fn fit_glm_core(
         // ---------------------------------------------------------------------
         let (mut new_coefficients, _) = solve_weighted_least_squares_penalized(
             x,
-            &working_response,
-            &combined_weights,
+            working_response,
+            combined_weights,
             l2_penalty,
             l2_penalty_factors,
             penalize_intercept,
             true, // per-iteration inverse is unused; compute final covariance once
+            sparse_cache,
         )?;
 
         // Check for NaN in coefficients - indicates numerical instability
@@ -736,7 +841,8 @@ fn fit_glm_core(
         // Try the full Newton step (with constraints projected).
         let mut trial_coefficients = new_coefficients.clone();
         project(&mut trial_coefficients);
-        let mut eta_new = &matrix_vector_dot(x, &trial_coefficients) + &offset_vec;
+        let mut eta_new =
+            &matrix_vector_dot_cached(x, &trial_coefficients, sparse_cache) + &offset_vec;
         let mut mu_new = family.clamp_mu(&link.inverse(&eta_new));
         let mut deviance_new = family.deviance(y, &mu_new, Some(&prior_weights_vec));
         let mut objective_new = penalized_irls_objective(
@@ -765,7 +871,7 @@ fn fit_glm_core(
                     .map(|(&old, &new)| (1.0 - step_size) * old + step_size * new)
                     .collect();
                 project(&mut blended);
-                let e = &matrix_vector_dot(x, &blended) + &offset_vec;
+                let e = &matrix_vector_dot_cached(x, &blended, sparse_cache) + &offset_vec;
                 let m = family.clamp_mu(&link.inverse(&e));
                 let d = family.deviance(y, &m, Some(&prior_weights_vec));
                 let o = penalized_irls_objective(
@@ -803,7 +909,7 @@ fn fit_glm_core(
             // consistent with the converged / max_iterations count.
             step_halving_failed = true;
             iteration = iteration.saturating_sub(1);
-            final_weights = irls_weights.clone();
+            final_weights.assign(irls_weights);
             break;
         }
 
@@ -830,14 +936,27 @@ fn fit_glm_core(
         // Store coefficients from this iteration
         iter_coefficients = new_coefficients;
 
-        // For constrained problems, track the best solution seen
-        if has_constraints && objective < best_objective {
-            best_objective = objective;
-            best_deviance = deviance;
-            best_coefficients = iter_coefficients.clone();
-            best_mu = mu.clone();
-            best_eta = eta.clone();
-            best_weights = irls_weights.clone();
+        // For constrained problems, track the best solution seen. Projection can
+        // leave subsequent accepted IRLS steps worse than the best projected
+        // iterate; after a short stale window, adopt the best now rather than
+        // spending the remaining iteration budget only to recover it at the end.
+        if has_constraints {
+            if objective < best_objective {
+                best_objective = objective;
+                best_deviance = deviance;
+                best_coefficients = iter_coefficients.clone();
+                best_mu = mu.clone();
+                best_eta = eta.clone();
+                best_weights = irls_weights.clone();
+                constrained_best_stale_iterations = 0;
+            } else if best_objective.is_finite() {
+                constrained_best_stale_iterations += 1;
+                if constrained_best_stale_iterations >= CONSTRAINED_BEST_EARLY_STOP_PATIENCE {
+                    constrained_best_plateau = true;
+                    final_weights.assign(irls_weights);
+                    break;
+                }
+            }
         }
 
         // Convergence requires the accepted step to be non-worsening AND small.
@@ -848,12 +967,12 @@ fn fit_glm_core(
         // matching the acceptance contract rather than an absolute 1e-10 floor.
         if irls_step_converged(objective_old, objective, rel_change, config.tolerance) {
             converged = true;
-            final_weights = irls_weights;
+            final_weights.assign(irls_weights);
             break;
         }
 
         // Store for final iteration
-        final_weights = irls_weights;
+        final_weights.assign(irls_weights);
     }
 
     // -------------------------------------------------------------------------
@@ -861,37 +980,22 @@ fn fit_glm_core(
     // -------------------------------------------------------------------------
     // For constrained problems, use the best solution found during iteration
     // (objective can increase due to projection, so last iteration may not be best)
-    let (final_mu, final_eta, final_deviance, use_coefficients) =
-        if has_constraints && best_objective < objective {
-            // Best solution was found earlier — use it and treat as converged
-            // (sign clamping can cause coefficient oscillation even when deviance
-            // has stabilized, so the best-tracked solution is the correct answer).
-            // Clear the step-halving-failure flag so the reported solver_status
-            // is consistent with converged = true (the best iterate is adopted,
-            // not the worse step that triggered the halving break).
-            converged = true;
-            step_halving_failed = false;
-            final_weights = best_weights;
-            (best_mu, best_eta, best_deviance, best_coefficients)
-        } else {
-            (mu, eta, deviance, iter_coefficients)
-        };
-
-    // Compute working response accounting for offset
-    let eta_no_offset: Array1<f64> = final_eta
-        .iter()
-        .zip(offset_vec.iter())
-        .map(|(&e, &o)| e - o)
-        .collect();
-
-    // Combine prior weights with final IRLS weights
-    let combined_final_weights: Array1<f64> = prior_weights_vec
-        .iter()
-        .zip(final_weights.iter())
-        .map(|(&pw, &iw)| pw * iw)
-        .collect();
-
-    let final_working_response = compute_working_response(y, &final_mu, &eta_no_offset, link);
+    let (final_mu, final_eta, final_deviance, use_coefficients) = if has_constraints
+        && (best_objective < objective || (constrained_best_plateau && best_objective.is_finite()))
+    {
+        // Best solution was found earlier — use it and treat as converged
+        // (sign clamping can cause coefficient oscillation even when deviance
+        // has stabilized, so the best-tracked solution is the correct answer).
+        // Clear the step-halving-failure flag so the reported solver_status
+        // is consistent with converged = true (the best iterate is adopted,
+        // not the worse step that triggered the halving break).
+        converged = true;
+        step_halving_failed = false;
+        final_weights = best_weights;
+        (best_mu, best_eta, best_deviance, best_coefficients)
+    } else {
+        (mu, eta, deviance, iter_coefficients)
+    };
 
     // Try final coefficient extraction, but fall back to iteration coefficients
     // if it produces NaN. Non-CV fits compute covariance here once, after the
@@ -899,6 +1003,22 @@ fn fit_glm_core(
     let (final_coefficients, cov_unscaled) = if config.skip_covariance {
         (use_coefficients, Array2::zeros((p, p)))
     } else {
+        // Compute working response accounting for offset
+        let eta_no_offset: Array1<f64> = final_eta
+            .iter()
+            .zip(offset_vec.iter())
+            .map(|(&e, &o)| e - o)
+            .collect();
+
+        // Combine prior weights with final IRLS weights
+        let combined_final_weights: Array1<f64> = prior_weights_vec
+            .iter()
+            .zip(final_weights.iter())
+            .map(|(&pw, &iw)| pw * iw)
+            .collect();
+
+        let final_working_response = compute_working_response(y, &final_mu, &eta_no_offset, link);
+
         match solve_weighted_least_squares_penalized(
             x,
             &final_working_response,
@@ -907,6 +1027,7 @@ fn fit_glm_core(
             l2_penalty_factors,
             penalize_intercept,
             false,
+            sparse_cache,
         ) {
             Ok((coef, cov)) if !coef.iter().any(|&c| c.is_nan() || c.is_infinite()) => {
                 let cov = if cov.iter().all(|v| v.is_finite()) {
@@ -1212,18 +1333,16 @@ pub fn compute_xtwx_xtwz(
             }
             (xtx_local, xtz_local)
         })
-        .reduce(
-            || (vec![0.0; upper_len], vec![0.0; p]),
-            |(mut a_xtx, mut a_xtz), (b_xtx, b_xtz)| {
-                for i in 0..a_xtx.len() {
-                    a_xtx[i] += b_xtx[i];
-                }
-                for i in 0..a_xtz.len() {
-                    a_xtz[i] += b_xtz[i];
-                }
-                (a_xtx, a_xtz)
-            },
-        );
+        .reduce_with(|(mut a_xtx, mut a_xtz), (b_xtx, b_xtz)| {
+            for i in 0..a_xtx.len() {
+                a_xtx[i] += b_xtx[i];
+            }
+            for i in 0..a_xtz.len() {
+                a_xtz[i] += b_xtz[i];
+            }
+            (a_xtx, a_xtz)
+        })
+        .unwrap_or_else(|| (vec![0.0; upper_len], vec![0.0; p]));
 
     // Convert packed upper triangle to nalgebra symmetric DMatrix.
     let mut xtx = DMatrix::zeros(p, p);
@@ -1244,6 +1363,293 @@ pub fn compute_xtwx_xtwz(
 #[inline]
 fn packed_upper_len(p: usize) -> usize {
     p * (p + 1) / 2
+}
+
+#[inline]
+fn sparse_xtwx_chunk_count(n: usize, p: usize) -> usize {
+    let threads = rayon::current_num_threads().max(1);
+    if n <= 1 {
+        return 1;
+    }
+    let matrix_bytes = packed_upper_len(p).saturating_mul(std::mem::size_of::<f64>());
+    // Wide sparse WLS is memory-bandwidth sensitive: each worker owns a large
+    // thread-local Gram matrix and the reduction touches the whole matrix again.
+    // Capping only those large-matrix cases avoids oversaturating memory while
+    // leaving small problems free to use the whole pool.
+    let cap = if matrix_bytes >= SPARSE_XTWX_LOCAL_MATRIX_CAP_THRESHOLD_BYTES {
+        SPARSE_XTWX_THREAD_CAP
+    } else {
+        threads
+    };
+    threads.min(cap).min(n).max(1)
+}
+
+fn poisson_log_weight_chunk_size(n: usize) -> usize {
+    let target_chunks = rayon::current_num_threads().saturating_mul(4).max(1);
+    n.div_ceil(target_chunks).max(1)
+}
+
+fn compute_poisson_log_irls_weights_in_place(
+    y: &Array1<f64>,
+    mu: &Array1<f64>,
+    eta: &Array1<f64>,
+    offset: &Array1<f64>,
+    prior_weights: &Array1<f64>,
+    min_weight: f64,
+    irls_weights: &mut Array1<f64>,
+    combined_weights: &mut Array1<f64>,
+    working_response: &mut Array1<f64>,
+) -> Result<()> {
+    let n = y.len();
+    for (name, len) in [
+        ("mu length vs y length", mu.len()),
+        ("eta length vs y length", eta.len()),
+        ("offset length vs y length", offset.len()),
+        ("prior_weights length vs y length", prior_weights.len()),
+        ("irls_weights length vs y length", irls_weights.len()),
+        (
+            "combined_weights length vs y length",
+            combined_weights.len(),
+        ),
+        (
+            "working_response length vs y length",
+            working_response.len(),
+        ),
+    ] {
+        if len != n {
+            return Err(RustyStatsError::dim_mismatch(n, len, name));
+        }
+    }
+
+    let y_slice = y.as_slice().ok_or_else(|| {
+        RustyStatsError::LinearAlgebraError("Response vector y must be contiguous".to_string())
+    })?;
+    let mu_slice = mu.as_slice().ok_or_else(|| {
+        RustyStatsError::LinearAlgebraError("Mean vector mu must be contiguous".to_string())
+    })?;
+    let eta_slice = eta.as_slice().ok_or_else(|| {
+        RustyStatsError::LinearAlgebraError("Linear predictor eta must be contiguous".to_string())
+    })?;
+    let offset_slice = offset.as_slice().ok_or_else(|| {
+        RustyStatsError::LinearAlgebraError("Offset vector must be contiguous".to_string())
+    })?;
+    let prior_slice = prior_weights.as_slice().ok_or_else(|| {
+        RustyStatsError::LinearAlgebraError("Prior weights vector must be contiguous".to_string())
+    })?;
+    let irls_slice = irls_weights.as_slice_mut().ok_or_else(|| {
+        RustyStatsError::LinearAlgebraError("IRLS weights buffer must be contiguous".to_string())
+    })?;
+    let combined_slice = combined_weights.as_slice_mut().ok_or_else(|| {
+        RustyStatsError::LinearAlgebraError(
+            "Combined weights buffer must be contiguous".to_string(),
+        )
+    })?;
+    let response_slice = working_response.as_slice_mut().ok_or_else(|| {
+        RustyStatsError::LinearAlgebraError(
+            "Working response buffer must be contiguous".to_string(),
+        )
+    })?;
+
+    let chunk_size = poisson_log_weight_chunk_size(n);
+    irls_slice
+        .par_chunks_mut(chunk_size)
+        .zip(combined_slice.par_chunks_mut(chunk_size))
+        .zip(response_slice.par_chunks_mut(chunk_size))
+        .enumerate()
+        .for_each(|(chunk_idx, ((iw_chunk, cw_chunk), wr_chunk))| {
+            let start = chunk_idx * chunk_size;
+            for local_idx in 0..iw_chunk.len() {
+                let i = start + local_idx;
+                let mui = unsafe { *mu_slice.get_unchecked(i) };
+                let d = 1.0 / mui;
+                let iw = (1.0 / (mui * d * d)).max(min_weight).min(MAX_IRLS_WEIGHT);
+                unsafe {
+                    *iw_chunk.get_unchecked_mut(local_idx) = iw;
+                    *cw_chunk.get_unchecked_mut(local_idx) = *prior_slice.get_unchecked(i) * iw;
+                    *wr_chunk.get_unchecked_mut(local_idx) = (*eta_slice.get_unchecked(i)
+                        - *offset_slice.get_unchecked(i))
+                        + (*y_slice.get_unchecked(i) - mui) * d;
+                }
+            }
+        });
+
+    Ok(())
+}
+
+pub struct SparseRowCache {
+    n: usize,
+    p: usize,
+    data_ptr: usize,
+    offsets: Vec<usize>,
+    indices: Vec<u32>,
+    values: Vec<f64>,
+    packed_offsets: Vec<usize>,
+}
+
+impl SparseRowCache {
+    fn is_compatible_with(&self, x: ArrayView2<'_, f64>) -> bool {
+        x.as_slice().is_some_and(|slice| {
+            self.n == x.nrows() && self.p == x.ncols() && self.data_ptr == slice.as_ptr() as usize
+        })
+    }
+}
+
+fn sampled_density(x_slice: &[f64], n: usize, p: usize) -> f64 {
+    if n == 0 || p == 0 {
+        return 0.0;
+    }
+
+    let sample_rows = n.min(1024);
+    let mut nonzero = 0usize;
+    for sample_idx in 0..sample_rows {
+        let row = sample_idx * n / sample_rows;
+        let row_start = row * p;
+        for j in 0..p {
+            if x_slice[row_start + j] != 0.0 {
+                nonzero += 1;
+            }
+        }
+    }
+    nonzero as f64 / (sample_rows * p) as f64
+}
+
+pub fn build_sparse_row_cache_if_beneficial(x: ArrayView2<'_, f64>) -> Option<SparseRowCache> {
+    let n = x.nrows();
+    let p = x.ncols();
+    if n == 0 || p < 16 {
+        return None;
+    }
+    let x_slice = x.as_slice()?;
+    let density = sampled_density(x_slice, n, p);
+    let estimated_nnz = density * (n as f64) * (p as f64);
+    if density > 0.15 || estimated_nnz > 60_000_000.0 || n.saturating_mul(p) < 10_000_000 {
+        return None;
+    }
+
+    let reserve_nnz = estimated_nnz.ceil() as usize;
+    let mut offsets = Vec::with_capacity(n + 1);
+    let mut indices = Vec::with_capacity(reserve_nnz);
+    let mut values = Vec::with_capacity(reserve_nnz);
+    let packed_offsets = packed_upper_offsets(p);
+    offsets.push(0);
+
+    for row in 0..n {
+        let row_start = row * p;
+        for j in 0..p {
+            let value = x_slice[row_start + j];
+            if value != 0.0 {
+                indices.push(j as u32);
+                values.push(value);
+            }
+        }
+        offsets.push(indices.len());
+    }
+
+    Some(SparseRowCache {
+        n,
+        p,
+        data_ptr: x_slice.as_ptr() as usize,
+        offsets,
+        indices,
+        values,
+        packed_offsets,
+    })
+}
+
+fn packed_upper_offsets(p: usize) -> Vec<usize> {
+    let mut offsets = Vec::with_capacity(p);
+    let mut cursor = 0usize;
+    for i in 0..p {
+        offsets.push(cursor);
+        cursor += p - i;
+    }
+    offsets
+}
+
+fn compute_xtwx_xtwz_sparse_cached(
+    cache: &SparseRowCache,
+    z: &Array1<f64>,
+    w: &Array1<f64>,
+) -> Result<(DMatrix<f64>, DVector<f64>)> {
+    let n = cache.n;
+    let p = cache.p;
+    if z.len() != n || w.len() != n {
+        return Err(RustyStatsError::dim_mismatch(
+            n,
+            z.len().min(w.len()),
+            "sparse cache rows vs z/w length",
+        ));
+    }
+    let z_slice = z.as_slice().ok_or_else(|| {
+        RustyStatsError::LinearAlgebraError("Working response Z must be contiguous".to_string())
+    })?;
+    let w_slice = w.as_slice().ok_or_else(|| {
+        RustyStatsError::LinearAlgebraError("Weight vector W must be contiguous".to_string())
+    })?;
+
+    let chunk_count = sparse_xtwx_chunk_count(n, p);
+    let chunk_size = n.div_ceil(chunk_count).max(1);
+    let num_chunks = n.div_ceil(chunk_size);
+    let upper_len = packed_upper_len(p);
+
+    let (xtx_data, xtz_data): (Vec<f64>, Vec<f64>) = (0..num_chunks)
+        .into_par_iter()
+        .map(|chunk_idx| {
+            let chunk_start = chunk_idx * chunk_size;
+            let chunk_end = (chunk_start + chunk_size).min(n);
+            let mut xtx_local = vec![0.0; upper_len];
+            let mut xtz_local = vec![0.0; p];
+
+            for row in chunk_start..chunk_end {
+                let start = cache.offsets[row];
+                let end = cache.offsets[row + 1];
+                if start == end {
+                    continue;
+                }
+
+                let wk = unsafe { *w_slice.get_unchecked(row) };
+                let zk = unsafe { *z_slice.get_unchecked(row) };
+                let wz = wk * zk;
+
+                for a in start..end {
+                    let i = unsafe { *cache.indices.get_unchecked(a) as usize };
+                    let xki = unsafe { *cache.values.get_unchecked(a) };
+                    let xki_w = xki * wk;
+                    unsafe { *xtz_local.get_unchecked_mut(i) += xki * wz };
+                    let packed_row = unsafe { *cache.packed_offsets.get_unchecked(i) };
+
+                    for b in a..end {
+                        let j = unsafe { *cache.indices.get_unchecked(b) as usize };
+                        let xkj = unsafe { *cache.values.get_unchecked(b) };
+                        let packed_idx = packed_row + (j - i);
+                        unsafe { *xtx_local.get_unchecked_mut(packed_idx) += xki_w * xkj };
+                    }
+                }
+            }
+            (xtx_local, xtz_local)
+        })
+        .reduce_with(|(mut a_xtx, mut a_xtz), (b_xtx, b_xtz)| {
+            for i in 0..a_xtx.len() {
+                a_xtx[i] += b_xtx[i];
+            }
+            for i in 0..a_xtz.len() {
+                a_xtz[i] += b_xtz[i];
+            }
+            (a_xtx, a_xtz)
+        })
+        .unwrap_or_else(|| (vec![0.0; upper_len], vec![0.0; p]));
+
+    let mut xtx = DMatrix::zeros(p, p);
+    let mut packed_idx = 0usize;
+    for i in 0..p {
+        for j in i..p {
+            let val = xtx_data[packed_idx];
+            xtx[(i, j)] = val;
+            xtx[(j, i)] = val;
+            packed_idx += 1;
+        }
+    }
+    Ok((xtx, DVector::from_vec(xtz_data)))
 }
 
 #[inline]
@@ -1294,24 +1700,50 @@ fn matrix_vector_dot(x: ArrayView2<'_, f64>, coefficients: &Array1<f64>) -> Arra
 }
 
 #[inline]
+fn matrix_vector_dot_cached(
+    x: ArrayView2<'_, f64>,
+    coefficients: &Array1<f64>,
+    sparse_cache: Option<&SparseRowCache>,
+) -> Array1<f64> {
+    let Some(cache) = sparse_cache else {
+        return matrix_vector_dot(x, coefficients);
+    };
+    let coef_slice = match coefficients.as_slice() {
+        Some(slice) => slice,
+        None => return matrix_vector_dot(x, coefficients),
+    };
+    let n = cache.n;
+    let chunk_size = n
+        .div_ceil(rayon::current_num_threads().saturating_mul(4).max(1))
+        .max(1);
+    let mut output = vec![0.0; n];
+    output
+        .par_chunks_mut(chunk_size)
+        .enumerate()
+        .for_each(|(chunk_idx, output_chunk)| {
+            let row_start_idx = chunk_idx * chunk_size;
+            for (local_row, out) in output_chunk.iter_mut().enumerate() {
+                let row = row_start_idx + local_row;
+                let start = cache.offsets[row];
+                let end = cache.offsets[row + 1];
+                let mut sum = 0.0;
+                for pos in start..end {
+                    let col = unsafe { *cache.indices.get_unchecked(pos) as usize };
+                    let value = unsafe { *cache.values.get_unchecked(pos) };
+                    sum += value * unsafe { *coef_slice.get_unchecked(col) };
+                }
+                *out = sum;
+            }
+        });
+    Array1::from_vec(output)
+}
+
+#[inline]
 fn should_use_sparse_xtwx_kernel(x_slice: &[f64], n: usize, p: usize) -> bool {
     if n == 0 || p < 16 {
         return false;
     }
-
-    let sample_rows = n.min(1024);
-    let mut nonzero = 0usize;
-    for sample_idx in 0..sample_rows {
-        let row = sample_idx * n / sample_rows;
-        let row_start = row * p;
-        for j in 0..p {
-            if x_slice[row_start + j] != 0.0 {
-                nonzero += 1;
-            }
-        }
-    }
-    let density = nonzero as f64 / (sample_rows * p) as f64;
-    density <= 0.35
+    sampled_density(x_slice, n, p) <= 0.35
 }
 
 #[inline]
@@ -1322,7 +1754,8 @@ fn compute_xtwx_xtwz_sparse(
     n: usize,
     p: usize,
 ) -> Result<(DMatrix<f64>, DVector<f64>)> {
-    let chunk_size = n.div_ceil(rayon::current_num_threads()).max(1);
+    let chunk_count = sparse_xtwx_chunk_count(n, p);
+    let chunk_size = n.div_ceil(chunk_count).max(1);
     let num_chunks = n.div_ceil(chunk_size);
 
     let (xtx_data, xtz_data): (Vec<f64>, Vec<f64>) = (0..num_chunks)
@@ -1378,18 +1811,16 @@ fn compute_xtwx_xtwz_sparse(
             }
             (xtx_local, xtz_local)
         })
-        .reduce(
-            || (vec![0.0; p * p], vec![0.0; p]),
-            |(mut a_xtx, mut a_xtz), (b_xtx, b_xtz)| {
-                for i in 0..a_xtx.len() {
-                    a_xtx[i] += b_xtx[i];
-                }
-                for i in 0..a_xtz.len() {
-                    a_xtz[i] += b_xtz[i];
-                }
-                (a_xtx, a_xtz)
-            },
-        );
+        .reduce_with(|(mut a_xtx, mut a_xtz), (b_xtx, b_xtz)| {
+            for i in 0..a_xtx.len() {
+                a_xtx[i] += b_xtx[i];
+            }
+            for i in 0..a_xtz.len() {
+                a_xtz[i] += b_xtz[i];
+            }
+            (a_xtx, a_xtz)
+        })
+        .unwrap_or_else(|| (vec![0.0; p * p], vec![0.0; p]));
 
     let mut xtx = DMatrix::zeros(p, p);
     for i in 0..p {
@@ -1478,6 +1909,21 @@ fn cholesky_solve(
     Ok((coef_array, cov_array))
 }
 
+#[inline]
+fn cholesky_solve_coefficients(a: DMatrix<f64>, b: &DVector<f64>) -> Result<Array1<f64>> {
+    match a.clone().cholesky() {
+        Some(chol) => Ok(chol.solve(b).iter().copied().collect()),
+        None => match a.lu().solve(b) {
+            Some(sol) => Ok(sol.iter().copied().collect()),
+            None => Err(RustyStatsError::LinearAlgebraError(
+                "Failed to solve linear system - matrix may be singular. \
+                 This often indicates multicollinearity in predictors."
+                    .to_string(),
+            )),
+        },
+    }
+}
+
 /// Solve penalized weighted least squares: minimize Σ w_i (z_i - x_i'β)² + λ Σ β_j²
 ///
 /// Returns (coefficients, (X'WX + λI)⁻¹)
@@ -1499,6 +1945,7 @@ fn solve_weighted_least_squares_penalized(
     l2_penalty_factors: Option<&[f64]>,
     penalize_intercept: bool,
     skip_covariance: bool,
+    sparse_cache: Option<&SparseRowCache>,
 ) -> Result<(Array1<f64>, Array2<f64>)> {
     let p = x.ncols();
     if let Some(factors) = l2_penalty_factors {
@@ -1510,7 +1957,10 @@ fn solve_weighted_least_squares_penalized(
             ));
         }
     }
-    let (mut xtx, xtz) = compute_xtwx_xtwz(x, z, w)?;
+    let (mut xtx, xtz) = match sparse_cache {
+        Some(cache) => compute_xtwx_xtwz_sparse_cached(cache, z, w)?,
+        None => compute_xtwx_xtwz(x, z, w)?,
+    };
 
     // Add L2 (Ridge) penalty to diagonal: (X'WX + λI)
     // The intercept (first column) is typically NOT penalized.
@@ -1522,7 +1972,12 @@ fn solve_weighted_least_squares_penalized(
         }
     }
 
-    cholesky_solve(xtx, &xtz, skip_covariance)
+    if skip_covariance {
+        let coefficients = cholesky_solve_coefficients(xtx, &xtz)?;
+        Ok((coefficients, Array2::zeros((0, 0))))
+    } else {
+        cholesky_solve(xtx, &xtz, false)
+    }
 }
 
 /// Solve weighted least squares with a full penalty matrix.
@@ -1666,15 +2121,13 @@ fn compute_xtwx_dense_data(x_slice: &[f64], w_slice: &[f64], n: usize, p: usize)
             }
             xtx_local
         })
-        .reduce(
-            || vec![0.0; p * p],
-            |mut a, b| {
-                for i in 0..a.len() {
-                    a[i] += b[i];
-                }
-                a
-            },
-        )
+        .reduce_with(|mut a, b| {
+            for i in 0..a.len() {
+                a[i] += b[i];
+            }
+            a
+        })
+        .unwrap_or_else(|| vec![0.0; p * p])
 }
 
 #[inline]
@@ -1727,15 +2180,13 @@ fn compute_xtwx_sparse_data(x_slice: &[f64], w_slice: &[f64], n: usize, p: usize
             }
             xtx_local
         })
-        .reduce(
-            || vec![0.0; p * p],
-            |mut a, b| {
-                for i in 0..a.len() {
-                    a[i] += b[i];
-                }
-                a
-            },
-        )
+        .reduce_with(|mut a, b| {
+            for i in 0..a.len() {
+                a[i] += b[i];
+            }
+            a
+        })
+        .unwrap_or_else(|| vec![0.0; p * p])
 }
 
 fn compute_xtwx_strided_data(
@@ -1759,15 +2210,13 @@ fn compute_xtwx_strided_data(
                 xtx_local
             },
         )
-        .reduce(
-            || vec![0.0; p * p],
-            |mut a, b| {
-                for i in 0..a.len() {
-                    a[i] += b[i];
-                }
-                a
-            },
-        )
+        .reduce_with(|mut a, b| {
+            for i in 0..a.len() {
+                a[i] += b[i];
+            }
+            a
+        })
+        .unwrap_or_else(|| vec![0.0; p * p])
 }
 
 fn xtx_data_to_array2(xtx_data: Vec<f64>, p: usize) -> Array2<f64> {
@@ -1925,6 +2374,65 @@ mod tests {
             for j in 0..p {
                 assert!((actual_xtx[(i, j)] - expected_xtx[[i, j]]).abs() < 1e-12);
             }
+        }
+    }
+
+    #[test]
+    fn test_sparse_row_cache_matches_uncached_sparse_kernel_and_dot() {
+        let n = 72;
+        let p = 32;
+        let mut x = Array2::<f64>::zeros((n, p));
+        for row in 0..n {
+            let j1 = row % p;
+            let j2 = (row * 7 + 5) % p;
+            x[[row, j1]] = 1.0 + (row % 3) as f64;
+            x[[row, j2]] += (row as f64 * 0.13).cos();
+        }
+        let z: Array1<f64> = (0..n).map(|i| 0.25 + (i as f64 * 0.17).sin()).collect();
+        let w: Array1<f64> = (0..n).map(|i| 0.5 + (i % 11) as f64 * 0.03).collect();
+        let coef: Array1<f64> = (0..p).map(|j| (j as f64 * 0.07).sin()).collect();
+
+        let x_slice = x.as_slice().expect("test matrix should be contiguous");
+        let mut offsets = Vec::with_capacity(n + 1);
+        let mut indices = Vec::new();
+        let mut values = Vec::new();
+        offsets.push(0);
+        for row in 0..n {
+            let row_start = row * p;
+            for col in 0..p {
+                let value = x_slice[row_start + col];
+                if value != 0.0 {
+                    indices.push(col as u32);
+                    values.push(value);
+                }
+            }
+            offsets.push(indices.len());
+        }
+        let cache = SparseRowCache {
+            n,
+            p,
+            data_ptr: x_slice.as_ptr() as usize,
+            offsets,
+            indices,
+            values,
+            packed_offsets: packed_upper_offsets(p),
+        };
+
+        let (actual_xtx, actual_xtz) =
+            compute_xtwx_xtwz_sparse_cached(&cache, &z, &w).expect("cached kernel should succeed");
+        let (expected_xtx, expected_xtz) =
+            compute_xtwx_xtwz(x.view(), &z, &w).expect("sparse kernel should succeed");
+        for i in 0..p {
+            assert!((actual_xtz[i] - expected_xtz[i]).abs() < 1e-12);
+            for j in 0..p {
+                assert!((actual_xtx[(i, j)] - expected_xtx[(i, j)]).abs() < 1e-12);
+            }
+        }
+
+        let actual_dot = matrix_vector_dot_cached(x.view(), &coef, Some(&cache));
+        let expected_dot = x.dot(&coef);
+        for row in 0..n {
+            assert!((actual_dot[row] - expected_dot[row]).abs() < 1e-12);
         }
     }
 
@@ -2105,6 +2613,7 @@ mod tests {
             None,
             true,
             false,
+            None,
         )
         .expect("initial projection should be valid");
         let initial_fit_eta = x.dot(&initial_coef);
@@ -2296,6 +2805,10 @@ mod tests {
         )
         .expect("constrained fit should not error");
         check(&r_np);
+        assert!(
+            r_np.iterations < config_np.max_iterations,
+            "constrained best-iterate plateau should stop before exhausting the iteration budget"
+        );
     }
 
     #[test]

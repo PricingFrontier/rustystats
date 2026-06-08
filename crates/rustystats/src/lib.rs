@@ -62,6 +62,7 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyGLMResults>()?;
 
     // GLM fitting
+    m.add_function(wrap_pyfunction!(fitting_py::compute_standardization_py, m)?)?;
     m.add_function(wrap_pyfunction!(fitting_py::fit_glm_py, m)?)?;
     m.add_function(wrap_pyfunction!(fitting_py::fit_negbinomial_py, m)?)?;
     m.add_function(wrap_pyfunction!(fitting_py::fit_smooth_glm_unified_py, m)?)?;
@@ -117,6 +118,14 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     m.add_function(wrap_pyfunction!(
         design_matrix_py::build_cat_cont_interaction_py,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        design_matrix_py::build_cat_basis_interaction_py,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        design_matrix_py::predict_cat_basis_interaction_py,
         m
     )?)?;
     m.add_function(wrap_pyfunction!(
@@ -283,6 +292,10 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     m.add_function(wrap_pyfunction!(
         diagnostics_py::compute_correlation_and_vif_py,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        diagnostics_py::compute_correlation_moments_py,
         m
     )?)?;
 

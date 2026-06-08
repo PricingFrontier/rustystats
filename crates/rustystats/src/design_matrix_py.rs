@@ -190,6 +190,81 @@ pub fn build_cat_cont_interaction_py<'py>(
     Ok((matrix.into_pyarray(py), names))
 }
 
+/// Build categorical × basis interaction matrix directly.
+///
+/// Parameters
+/// ----------
+/// cat_indices : numpy.ndarray
+///     Level indices for categorical (0 = reference)
+/// n_levels : int
+///     Number of non-reference levels
+/// basis : numpy.ndarray
+///     Basis matrix with one row per observation
+/// cat_names : list[str]
+///     Column names for categorical dummies
+/// basis_names : list[str]
+///     Column names for basis columns
+///
+/// Returns
+/// -------
+/// tuple[numpy.ndarray, list[str]]
+///     (interaction_matrix, column_names)
+#[pyfunction]
+pub fn build_cat_basis_interaction_py<'py>(
+    py: Python<'py>,
+    cat_indices: PyReadonlyArray1<i32>,
+    n_levels: usize,
+    basis: PyReadonlyArray2<f64>,
+    cat_names: Vec<String>,
+    basis_names: Vec<String>,
+) -> PyResult<(Bound<'py, PyArray2<f64>>, Vec<String>)> {
+    let idx_vec: Vec<i32> = cat_indices.as_array().to_vec();
+    let basis_array = basis.as_array().to_owned();
+
+    if idx_vec.len() != basis_array.nrows() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "cat_indices and basis must have matching row counts",
+        ));
+    }
+
+    let (matrix, names) = design_matrix::build_categorical_basis_interaction(
+        &idx_vec,
+        n_levels,
+        &basis_array,
+        &cat_names,
+        &basis_names,
+    );
+    Ok((matrix.into_pyarray(py), names))
+}
+
+/// Score a categorical × basis interaction without materialising its design block.
+#[pyfunction]
+pub fn predict_cat_basis_interaction_py<'py>(
+    py: Python<'py>,
+    cat_indices: PyReadonlyArray1<i32>,
+    n_levels: usize,
+    basis: PyReadonlyArray2<f64>,
+    params: PyReadonlyArray1<f64>,
+) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    let idx = cat_indices.as_array();
+    let basis_array = basis.as_array();
+    let params_array = params.as_array();
+
+    if idx.len() != basis_array.nrows() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "cat_indices and basis must have matching row counts",
+        ));
+    }
+
+    let values = design_matrix::predict_categorical_basis_interaction_view(
+        idx,
+        n_levels,
+        basis_array,
+        params_array,
+    );
+    Ok(values.into_pyarray(py))
+}
+
 /// Build two-categorical × continuous interaction matrix directly.
 ///
 /// This is equivalent to ``build_cat_cat_interaction_py(...); multiply_matrix_by_continuous_py(...)``

@@ -15,11 +15,11 @@ use rustystats_core::diagnostics::{
     compute_ae_categorical_batch, compute_ae_continuous, compute_ae_continuous_batch,
     compute_calibration_curve, compute_discrimination_stats, compute_factor_significance_batch,
     compute_family_loss, compute_lorenz_curve, compute_residual_pattern_continuous,
-    compute_residual_pattern_continuous_batch, correlation_and_vif, cramers_v_matrix_from_codes,
-    detect_exploratory_interactions_from_codes, detect_interactions, hosmer_lemeshow_test,
-    interaction_strength_from_codes, mae, mse, null_deviance, partial_dependence_categorical_batch,
-    resid_deviance, resid_pearson, rmse, ActualExpectedBin, DevianceByLevel, FactorData,
-    FactorDevianceResult, InteractionConfig, ResidualPattern,
+    compute_residual_pattern_continuous_batch, correlation_and_vif, correlation_moments,
+    cramers_v_matrix_from_codes, detect_exploratory_interactions_from_codes, detect_interactions,
+    hosmer_lemeshow_test, interaction_strength_from_codes, mae, mse, null_deviance,
+    partial_dependence_categorical_batch, resid_deviance, resid_pearson, rmse, ActualExpectedBin,
+    DevianceByLevel, FactorData, FactorDevianceResult, InteractionConfig, ResidualPattern,
 };
 
 use crate::families_py::{family_from_name_with_tweedie_support, validate_tweedie_fit_response};
@@ -1636,4 +1636,31 @@ pub fn compute_correlation_and_vif_py<'py>(
     let view = full_view.slice(ndarray::s![.., skip_cols..]);
     let (r, vif) = py.detach(|| correlation_and_vif(view, epsilon));
     Ok((r.into_pyarray(py), vif.into_pyarray(py)))
+}
+
+/// Compute streamable correlation moments for a design matrix chunk.
+///
+/// Returns `(n_rows, sums, gram_upper)`, where `sums[j] = Σ x_ij` and
+/// `gram_upper[i, j] = Σ x_ri*x_rj` for `i <= j` (lower triangle is zero).
+/// Callers may add these outputs across row chunks, then derive the full-data
+/// correlation matrix from the merged moments.
+#[pyfunction]
+#[pyo3(signature = (x, skip_cols=0))]
+pub fn compute_correlation_moments_py<'py>(
+    py: Python<'py>,
+    x: PyReadonlyArray2<'py, f64>,
+    skip_cols: usize,
+) -> PyResult<(usize, Bound<'py, PyArray1<f64>>, Bound<'py, PyArray2<f64>>)> {
+    let full_view = x.as_array();
+    let total_cols = full_view.ncols();
+    if skip_cols >= total_cols {
+        return Err(PyValueError::new_err(format!(
+            "skip_cols ({}) must be less than the column count ({})",
+            skip_cols, total_cols
+        )));
+    }
+    let view = full_view.slice(ndarray::s![.., skip_cols..]);
+    let n_rows = view.nrows();
+    let (sums, gram_upper) = py.detach(|| correlation_moments(view));
+    Ok((n_rows, sums.into_pyarray(py), gram_upper.into_pyarray(py)))
 }

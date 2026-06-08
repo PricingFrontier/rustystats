@@ -21,6 +21,7 @@ on each method call so the same instance serves train and test surfaces.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -31,6 +32,9 @@ from rustystats._rustystats import (
 )
 from rustystats._rustystats import (
     compute_correlation_and_vif_py as _rust_correlation_and_vif,
+)
+from rustystats._rustystats import (
+    compute_correlation_moments_py as _rust_correlation_moments,
 )
 from rustystats._rustystats import (
     compute_factor_significance_batch_py as _rust_factor_significance_batch,
@@ -77,6 +81,25 @@ _RESERVED_SPEC_KEYS: frozenset[str] = frozenset(
         "prior_weight",
     }
 )
+
+
+@dataclass(frozen=True)
+class _GVIFCorrelationContext:
+    """Regularized design correlation matrix plus cached inverse for GVIF."""
+
+    matrix: np.ndarray
+    inverse: np.ndarray | None
+    vif_values: np.ndarray | None = None
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return self.matrix.shape
+
+    def __array__(self, dtype=None) -> np.ndarray:
+        return np.asarray(self.matrix, dtype=dtype)
+
+    def __getitem__(self, key: Any) -> Any:
+        return self.matrix[key]
 
 
 # =============================================================================
@@ -524,7 +547,8 @@ def _build_surface_grid(
 def _build_design_correlation_matrix(
     design_matrix: np.ndarray | None,
     epsilon: float = EPSILON,
-) -> np.ndarray | None:
+    include_inverse: bool = True,
+) -> _GVIFCorrelationContext | None:
     """Build the regularized design-matrix correlation matrix ``R + ε·I``.
 
     Computed ONCE per diagnostics call (callers cache it and pass it to
@@ -541,57 +565,140 @@ def _build_design_correlation_matrix(
     if X.ndim != 2 or X.shape[0] <= 1 or X.shape[1] == 0:
         return None
     try:
-        R, _vif = _rust_correlation_and_vif(np.ascontiguousarray(X), float(epsilon))
+        R, vif_values = _rust_correlation_and_vif(np.ascontiguousarray(X), float(epsilon))
     except (ValueError, RuntimeError, np.linalg.LinAlgError):
         return None
     R_np = np.asarray(R, dtype=np.float64)
     p = R_np.shape[0]
-    return R_np + epsilon * np.eye(p)
+    R_reg = R_np + epsilon * np.eye(p)
+    R_inv = None
+    if include_inverse:
+        try:
+            R_inv = np.linalg.inv(R_reg)
+        except np.linalg.LinAlgError:
+            R_inv = None
+    return _GVIFCorrelationContext(
+        matrix=R_reg,
+        inverse=R_inv,
+        vif_values=np.asarray(vif_values, dtype=np.float64),
+    )
+
+
+def _build_design_correlation_matrix_from_moments(
+    n_obs: int,
+    sums: np.ndarray,
+    gram_upper: np.ndarray,
+    epsilon: float = EPSILON,
+    include_inverse: bool = True,
+) -> _GVIFCorrelationContext | None:
+    """Build the regularized design correlation context from merged moments."""
+    if n_obs <= 1:
+        return None
+    sums_arr = np.asarray(sums, dtype=np.float64)
+    gram_upper_arr = np.asarray(gram_upper, dtype=np.float64)
+    if sums_arr.ndim != 1 or gram_upper_arr.ndim != 2:
+        return None
+    p = sums_arr.shape[0]
+    if p == 0 or gram_upper_arr.shape != (p, p):
+        return None
+
+    gram = gram_upper_arr + gram_upper_arr.T
+    diag_idx = np.diag_indices(p)
+    gram[diag_idx] = gram_upper_arr[diag_idx]
+
+    n_f = float(n_obs)
+    means = sums_arr / n_f
+    cov = gram - n_f * np.outer(means, means)
+    variances = np.maximum(np.diag(cov), 0.0)
+    std = np.sqrt(variances)
+    denom = np.outer(std, std)
+    R = np.divide(cov, denom, out=np.zeros_like(cov), where=denom > 0.0)
+    np.clip(R, -1.0, 1.0, out=R)
+
+    R_reg = R + epsilon * np.eye(p)
+    R_inv = None
+    try:
+        inv = np.linalg.inv(R_reg)
+    except np.linalg.LinAlgError:
+        vif_values = np.full(p, np.nan, dtype=np.float64)
+    else:
+        vif_values = np.diag(inv).astype(np.float64, copy=True)
+        if include_inverse:
+            R_inv = inv
+
+    return _GVIFCorrelationContext(
+        matrix=R_reg,
+        inverse=R_inv,
+        vif_values=vif_values,
+    )
+
+
+def _correlation_moments_for_design_chunk(
+    design_chunk: np.ndarray,
+) -> tuple[int, np.ndarray, np.ndarray]:
+    """Return streamable correlation moments for one design-matrix chunk."""
+    n_rows, sums, gram_upper = _rust_correlation_moments(
+        np.ascontiguousarray(design_chunk, dtype=np.float64)
+    )
+    return (
+        int(n_rows),
+        np.asarray(sums, dtype=np.float64),
+        np.asarray(gram_upper, dtype=np.float64),
+    )
 
 
 def _compute_block_gvif(
-    correlation_matrix: np.ndarray | None,
+    correlation_matrix: _GVIFCorrelationContext | np.ndarray | None,
     col_start: int,
     col_end: int,
 ) -> float | None:
     """Generalized VIF (Fox-Monette) on design columns ``[col_start, col_end)``.
 
-    Takes a pre-computed regularized correlation matrix
-    (see ``_build_design_correlation_matrix``) so the expensive
-    standardization happens once per diagnostics call rather than per
-    factor / per pair. The formula:
+    Takes a pre-computed regularized correlation matrix context
+    (see ``_build_design_correlation_matrix``) so both the expensive
+    standardization and the full inverse are computed once per diagnostics
+    call rather than per factor / per pair. The equivalent formulas are:
 
         GVIF = det(R_block) * det(R_complement) / det(R_full)
+             = det(R_block) * det((R^-1)_block)
 
     Returns ``None`` when the matrix is missing, the block range is
-    invalid, the complement is empty (single-block design), or any
-    sub-determinant is non-positive (rank-deficient sub-block).
+    invalid, the complement is empty (single-block design), the inverse is
+    unavailable, or any sub-determinant is non-positive.
     """
     if correlation_matrix is None:
         return None
-    R_reg = correlation_matrix
+
+    if isinstance(correlation_matrix, _GVIFCorrelationContext):
+        R_reg = correlation_matrix.matrix
+        R_inv = correlation_matrix.inverse
+    else:
+        R_reg = np.asarray(correlation_matrix, dtype=np.float64)
+        try:
+            R_inv = np.linalg.inv(R_reg)
+        except np.linalg.LinAlgError:
+            return None
+
+    if R_inv is None:
+        return None
     p = R_reg.shape[0]
     if col_start < 0 or col_end > p or col_start >= col_end:
         return None
 
-    complement = [i for i in range(p) if i < col_start or i >= col_end]
-    if not complement:
+    if col_start == 0 and col_end == p:
         return None
 
-    # Slice the block contiguously; only the complement needs np.ix_ since
-    # it's a non-contiguous index set.
     R_block = R_reg[col_start:col_end, col_start:col_end]
-    R_compl = R_reg[np.ix_(complement, complement)]
+    R_inv_block = R_inv[col_start:col_end, col_start:col_end]
 
     try:
         sign_b, logdet_b = np.linalg.slogdet(R_block)
-        sign_c, logdet_c = np.linalg.slogdet(R_compl)
-        sign_f, logdet_f = np.linalg.slogdet(R_reg)
+        sign_i, logdet_i = np.linalg.slogdet(R_inv_block)
     except np.linalg.LinAlgError:
         return None
-    if sign_b <= 0 or sign_c <= 0 or sign_f <= 0:
+    if sign_b <= 0 or sign_i <= 0:
         return None
-    log_gvif = logdet_b + logdet_c - logdet_f
+    log_gvif = logdet_b + logdet_i
     gvif = float(np.exp(log_gvif))
     if not np.isfinite(gvif) or gvif <= 0.0:
         return None

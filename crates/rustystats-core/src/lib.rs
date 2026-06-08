@@ -45,9 +45,10 @@ pub mod target_encoding;
 // Users can write `use rustystats_core::GaussianFamily` instead of
 // `use rustystats_core::families::gaussian::GaussianFamily`
 pub use design_matrix::{
-    build_categorical_categorical_interaction, build_categorical_continuous_interaction,
-    build_continuous_continuous_interaction, build_design_matrix, encode_categorical,
-    encode_categorical_from_indices, multiply_matrix_by_continuous, stack_columns_horizontal,
+    build_categorical_basis_interaction, build_categorical_categorical_interaction,
+    build_categorical_continuous_interaction, build_continuous_continuous_interaction,
+    build_design_matrix, encode_categorical, encode_categorical_from_indices,
+    multiply_matrix_by_continuous, predict_categorical_basis_interaction, stack_columns_horizontal,
     CategoricalEncoding, DesignColumn,
 };
 pub use error::{Result, RustyStatsError};

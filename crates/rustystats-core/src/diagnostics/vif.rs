@@ -127,6 +127,32 @@ fn correlation_matrix(x: ArrayView2<f64>) -> Array2<f64> {
     r
 }
 
+/// Accumulate the column sums and upper-triangle Gram moments for `x`.
+///
+/// This exposes the same sparse-aware moment kernel used by
+/// `correlation_matrix` so callers can stream row chunks, sum the returned
+/// moments, and derive a single full-data correlation matrix without
+/// materializing the full design matrix.
+pub fn correlation_moments(x: ArrayView2<f64>) -> (Array1<f64>, Array2<f64>) {
+    let n = x.nrows();
+    let k = x.ncols();
+    if k == 0 {
+        return (Array1::zeros(0), Array2::zeros((0, 0)));
+    }
+
+    let (sums, gram_upper) = if n == 0 {
+        (vec![0.0_f64; k], vec![0.0_f64; k * k])
+    } else if let Some(slice) = x.as_slice() {
+        compute_sums_and_gram_contiguous(slice, n, k)
+    } else {
+        compute_sums_and_gram_strided(x, n, k)
+    };
+
+    let gram = Array2::from_shape_vec((k, k), gram_upper)
+        .expect("internal error: gram upper triangle shape must be k x k");
+    (Array1::from_vec(sums), gram)
+}
+
 /// Fast path for C-contiguous design matrices (slice access).
 /// Returns `(column_sums, gram_upper_flat)` where `gram_upper_flat[i*k + j]`
 /// holds `Σ_r x_ri · x_rj` for `i <= j` (lower triangle is left at 0).

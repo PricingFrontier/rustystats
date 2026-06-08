@@ -580,6 +580,106 @@ class DiagnosticsComputer:
     # NEW: Enhanced diagnostics for agentic workflows
     # =========================================================================
 
+    def _format_vif_results(
+        self,
+        corr_matrix: np.ndarray,
+        vif_values: np.ndarray,
+        feature_names: list[str],
+        threshold_moderate: float,
+        threshold_severe: float,
+    ) -> list[VIFResult]:
+        """Convert a correlation matrix + VIF vector into public results."""
+        results: list[VIFResult] = []
+        k = len(vif_values)
+        for i in range(k):
+            feature_name = feature_names[i] if i < len(feature_names) else f"X{i}"
+            vif = vif_values[i]
+
+            correlations = []
+            for j in range(k):
+                if j != i:
+                    corr = corr_matrix[i, j]
+                    if not np.isnan(corr) and abs(corr) > 0.5:
+                        correlations.append((feature_names[j], abs(corr)))
+            correlations.sort(key=lambda x: -x[1])
+            collinear_with = [c[0] for c in correlations[:3]]
+
+            if np.isnan(vif) or np.isinf(vif) or vif > 100:
+                severity = "severe"
+                vif = 999.0 if np.isnan(vif) or np.isinf(vif) else vif
+            elif vif > threshold_severe:
+                severity = "severe"
+            elif vif > threshold_moderate:
+                severity = "moderate"
+            else:
+                severity = "none"
+
+            if severity in ("moderate", "severe") and collinear_with:
+                base_var = _extract_base_variable(feature_name)
+                collinear_bases = [_extract_base_variable(c) for c in collinear_with]
+                if all(cb == base_var for cb in collinear_bases):
+                    severity = "expected"
+
+            results.append(
+                VIFResult(
+                    feature=feature_name,
+                    vif=round(float(vif), 2),
+                    severity=severity,
+                    collinear_with=collinear_with if collinear_with else None,
+                )
+            )
+
+        results.sort(key=lambda x: -x.vif if not np.isnan(x.vif) else 0)
+        return results
+
+    def compute_vif_from_correlation_context(
+        self,
+        correlation_context: Any,
+        feature_names: list[str],
+        threshold_moderate: float = 5.0,
+        threshold_severe: float = 10.0,
+    ) -> list[VIFResult] | None:
+        """Compute VIF results from the shared diagnostics correlation context."""
+        vif_values = getattr(correlation_context, "vif_values", None)
+        corr_matrix = getattr(correlation_context, "matrix", None)
+        if vif_values is None or corr_matrix is None:
+            return None
+
+        corr_arr = np.asarray(corr_matrix, dtype=np.float64)
+        vif_arr = np.asarray(vif_values, dtype=np.float64)
+        has_intercept = feature_names and feature_names[0] == "Intercept"
+        start_idx = 1 if has_intercept else 0
+        names_no_int = (
+            feature_names[start_idx:]
+            if feature_names
+            else [f"X{i}" for i in range(start_idx, corr_arr.shape[0])]
+        )
+
+        if corr_arr.shape[0] == len(feature_names):
+            corr_no_int = corr_arr[start_idx:, start_idx:]
+            vif_no_int = vif_arr[start_idx:]
+        else:
+            corr_no_int = corr_arr
+            vif_no_int = vif_arr
+
+        if len(vif_no_int) <= 1:
+            return [
+                VIFResult(
+                    feature=names_no_int[i] if i < len(names_no_int) else f"X{i}",
+                    vif=1.0,
+                    severity="none",
+                    collinear_with=None,
+                )
+                for i in range(len(vif_no_int))
+            ]
+        return self._format_vif_results(
+            corr_no_int,
+            vif_no_int,
+            names_no_int,
+            threshold_moderate,
+            threshold_severe,
+        )
+
     def compute_vif(
         self,
         X: np.ndarray,
@@ -639,7 +739,6 @@ class DiagnosticsComputer:
             if feature_names
             else [f"X{i}" for i in range(start_idx, n_features)]
         )
-        k = n_features - start_idx
 
         # Fast VIF via correlation matrix inverse
         # VIF_j = diag((R^{-1}))_j where R is correlation matrix
@@ -694,53 +793,13 @@ class DiagnosticsComputer:
                 "combinations of others. Check for duplicate or constant columns."
             ) from e
 
-        # Build results
-        for i in range(k):
-            feature_name = names_no_int[i] if i < len(names_no_int) else f"X{i}"
-            vif = vif_values[i]
-
-            # Find most correlated features first (needed for severity assessment)
-            correlations = []
-            for j in range(k):
-                if j != i:
-                    corr = corr_matrix[i, j]
-                    if not np.isnan(corr) and abs(corr) > 0.5:
-                        correlations.append((names_no_int[j], abs(corr)))
-            correlations.sort(key=lambda x: -x[1])
-            collinear_with = [c[0] for c in correlations[:3]]  # Top 3
-
-            # Determine initial severity based on VIF value
-            if np.isnan(vif) or np.isinf(vif) or vif > 100:
-                severity = "severe"
-                vif = 999.0 if np.isnan(vif) or np.isinf(vif) else vif
-            elif vif > threshold_severe:
-                severity = "severe"
-            elif vif > threshold_moderate:
-                severity = "moderate"
-            else:
-                severity = "none"
-
-            # Downgrade to "expected" if high VIF is only due to same-variable terms
-            # (e.g., BonusMalus correlated with I(BonusMalus ** 2) is expected)
-            if severity in ("moderate", "severe") and collinear_with:
-                base_var = _extract_base_variable(feature_name)
-                collinear_bases = [_extract_base_variable(c) for c in collinear_with]
-                # If ALL correlated features share the same base variable, it's expected
-                if all(cb == base_var for cb in collinear_bases):
-                    severity = "expected"
-
-            results.append(
-                VIFResult(
-                    feature=feature_name,
-                    vif=round(float(vif), 2),
-                    severity=severity,
-                    collinear_with=collinear_with if collinear_with else None,
-                )
-            )
-
-        # Sort by VIF (highest first)
-        results.sort(key=lambda x: -x.vif if not np.isnan(x.vif) else 0)
-        return results
+        return self._format_vif_results(
+            corr_matrix,
+            vif_values,
+            names_no_int,
+            threshold_moderate,
+            threshold_severe,
+        )
 
     def compute_coefficient_summary(
         self,

@@ -195,6 +195,16 @@ class GLMResults:
 # GLM Fitting Functions
 # =============================================================================
 
+def compute_standardization_py(
+    x: npt.NDArray[np.float64],
+    weights: npt.NDArray[np.float64] | None = None,
+    pen_mask: npt.NDArray[np.bool_] | None = None,
+    fit_intercept: bool = True,
+) -> tuple[
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+]: ...
 def fit_glm_py(
     y: npt.NDArray[np.float64],
     x: npt.NDArray[np.float64],
@@ -215,6 +225,7 @@ def fit_glm_py(
     fit_intercept: bool = True,
     center: npt.NDArray[np.float64] | None = None,
     scale: npt.NDArray[np.float64] | None = None,
+    skip_covariance: bool = False,
 ) -> GLMResults: ...
 def fit_negbinomial_py(
     y: npt.NDArray[np.float64],
@@ -452,6 +463,19 @@ def build_cat_cont_interaction_py(
     n_levels: int,
     drop_first: bool = True,
 ) -> tuple[npt.NDArray[np.float64], list[str]]: ...
+def build_cat_basis_interaction_py(
+    cat_indices: npt.NDArray[np.int64],
+    n_levels: int,
+    basis: npt.NDArray[np.float64],
+    cat_names: list[str],
+    basis_names: list[str],
+) -> tuple[npt.NDArray[np.float64], list[str]]: ...
+def predict_cat_basis_interaction_py(
+    cat_indices: npt.NDArray[np.int64],
+    n_levels: int,
+    basis: npt.NDArray[np.float64],
+    params: npt.NDArray[np.float64],
+) -> npt.NDArray[np.float64]: ...
 def build_two_cat_cont_interaction_py(
     idx1: npt.NDArray[np.int64],
     n_levels1: int,
@@ -634,6 +658,13 @@ def compute_correlation_and_vif_py(
     requiring a Python-side slice. Returns (R, vif_diagonal) of shape
     ((k - skip_cols), (k - skip_cols)) and (k - skip_cols,).
     """
+    ...
+
+def compute_correlation_moments_py(
+    x: npt.NDArray[np.float64],
+    skip_cols: int = 0,
+) -> tuple[int, npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Compute streamable column sums and upper-triangle Gram moments for X."""
     ...
 
 def aggregate_pair_cells_py(
