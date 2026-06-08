@@ -38,8 +38,9 @@ pub mod smooth_glm;
 
 pub use gcv_optimizer::{brent_minimize, MultiTermGCVOptimizer};
 pub use irls::{
-    compute_xtwx, compute_xtwx_xtwz, solve_weighted_least_squares_with_penalty_matrix,
-    solve_wls_from_precomputed,
+    build_sparse_row_cache_if_beneficial, compute_xtwx, compute_xtwx_xtwz,
+    fit_glm_unified_with_sparse_cache, solve_weighted_least_squares_with_penalty_matrix,
+    solve_wls_from_precomputed, SparseRowCache,
 };
 pub use irls::{fit_glm_unified, FitConfig, IRLSConfig, IRLSResult};
 pub use nnls::{

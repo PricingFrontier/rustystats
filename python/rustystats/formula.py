@@ -47,6 +47,7 @@ from rustystats.constants import (
     NEGBINOMIAL_ALIASES,
 )
 from rustystats.exceptions import (
+    FittingError,
     PredictionError,
     ValidationError,
 )
@@ -164,6 +165,9 @@ def get_default_link(family: str) -> str:
 # budget so the design-matrix allocation stays bounded regardless of width.
 _PREDICT_ROW_CHUNK_DEFAULT = 200_000
 _PREDICT_CHUNK_BYTES_BUDGET = 200_000_000  # ~200 MB per-chunk design matrix cap
+_PREDICT_TERMWISE_FEATURE_THRESHOLD = 512
+_PREDICT_TERMWISE_ROW_CHUNK_DEFAULT = 500_000
+_PREDICT_TERMWISE_CHUNK_BYTES_BUDGET = 900_000_000  # cap widest term block, not full X
 
 
 def _compute_predict_chunk_size(n_features: int) -> int:
@@ -178,6 +182,17 @@ def _compute_predict_chunk_size(n_features: int) -> int:
         return _PREDICT_ROW_CHUNK_DEFAULT
     budget_rows = _PREDICT_CHUNK_BYTES_BUDGET // (n_features * 8)
     return max(1000, min(_PREDICT_ROW_CHUNK_DEFAULT, budget_rows))
+
+
+def _compute_termwise_predict_chunk_size(builder: Any, n_features: int) -> int:
+    """Rows per chunk for wide-model term-wise prediction scoring."""
+    slots = getattr(builder, "_term_slots", None) or []
+    max_term_width = 1
+    for slot in slots:
+        max_term_width = max(max_term_width, int(slot.col_end) - int(slot.col_start))
+    max_term_width = min(max_term_width, max(1, n_features))
+    budget_rows = _PREDICT_TERMWISE_CHUNK_BYTES_BUDGET // (max_term_width * 8)
+    return max(1000, min(_PREDICT_TERMWISE_ROW_CHUNK_DEFAULT, budget_rows))
 
 
 def apply_link(mu: np.ndarray, link: str) -> np.ndarray:
@@ -665,6 +680,8 @@ def _fit_glm_core(
     standardize: bool = True,
     standardization_center: np.ndarray | None = None,
     standardization_scale: np.ndarray | None = None,
+    inputs_validated: bool = False,
+    compute_covariance: bool = True,
 ) -> tuple:
     """
     Core GLM fitting logic for FormulaGLMDict.
@@ -686,22 +703,23 @@ def _fit_glm_core(
     from rustystats._rustystats import fit_glm_py as _fit_glm_rust
     from rustystats.validation import validate_glm_inputs
 
-    # Validate inputs before fitting - catches NaN, Inf, invalid response values, etc.
-    # Note: is_exposure_offset=False because offset is already log-transformed by _process_offset
-    # (raw exposure validation happens there before log-transform).
-    # RS-ACT-006: thread var_power + allow_extended_tweedie so the Tweedie
-    # regime table is enforced before any deviance is evaluated.
-    y, X, weights, offset = validate_glm_inputs(
-        y,
-        X,
-        family,
-        weights,
-        offset,
-        feature_names,
-        is_exposure_offset=False,
-        var_power=var_power,
-        allow_extended_tweedie=allow_extended_tweedie,
-    )
+    if not inputs_validated:
+        # Validate inputs before fitting - catches NaN, Inf, invalid response values, etc.
+        # Note: is_exposure_offset=False because offset is already log-transformed by _process_offset
+        # (raw exposure validation happens there before log-transform).
+        # RS-ACT-006: thread var_power + allow_extended_tweedie so the Tweedie
+        # regime table is enforced before any deviance is evaluated.
+        y, X, weights, offset = validate_glm_inputs(
+            y,
+            X,
+            family,
+            weights,
+            offset,
+            feature_names,
+            is_exposure_offset=False,
+            var_power=var_power,
+            allow_extended_tweedie=allow_extended_tweedie,
+        )
 
     # Check for smooth terms (s() terms with automatic lambda selection)
     smooth_terms, smooth_col_indices = builder.get_smooth_terms()
@@ -772,6 +790,7 @@ def _fit_glm_core(
         fit_intercept,
         center,
         scale,
+        not compute_covariance,
     )
     return result, None, None, None
 
@@ -843,6 +862,7 @@ def _build_results(
     complement_values: np.ndarray | None = None,
     array_exposure_requires_prediction_override: bool = False,
     regularization_standardized: bool = False,
+    covariance_available: bool = True,
 ) -> GLMModel:
     """Build GLMModel with all metadata."""
     # Clear builder caches to free memory (keep TE stats for prediction)
@@ -870,6 +890,7 @@ def _build_results(
         complement_values=complement_values,
         array_exposure_requires_prediction_override=array_exposure_requires_prediction_override,
         regularization_standardized=regularization_standardized,
+        covariance_available=covariance_available,
     )
 
 
@@ -1365,6 +1386,7 @@ class GLMModel:
         complement_values: np.ndarray | None = None,
         array_exposure_requires_prediction_override: bool = False,
         regularization_standardized: bool = False,
+        covariance_available: bool = True,
     ):
         self._result = result
         self._is_deserialized = isinstance(result, _DeserializedResult)
@@ -1401,6 +1423,7 @@ class GLMModel:
         self._complement_spec = complement_spec
         self._complement_values = complement_values
         self._regularization_standardized = bool(regularization_standardized)
+        self._covariance_available = bool(covariance_available)
         # Post-fit intercept shift applied by ``relevel()``; zero for ordinary
         # fits. Stored Python-side rather than mutating the Rust result so the
         # underlying ``self._result`` stays the original immutable fit.
@@ -1643,25 +1666,37 @@ class GLMModel:
         out[0, 1] = corr["ci_hi"]
         return out
 
+    def _require_covariance_available(self) -> None:
+        if not getattr(self, "_covariance_available", True):
+            raise FittingError(
+                "Covariance was skipped for this fit. Refit with "
+                "compute_covariance=True to access standard errors, "
+                "confidence intervals, or bread-matrix diagnostics."
+            )
+
     def bse(self) -> np.ndarray:
         """Model-based standard errors with relevel calibration variance applied."""
+        self._require_covariance_available()
         se = np.asarray(self._result.bse(), dtype=np.float64)
         return self._with_releveled_intercept_stat(se, se, "se")
 
     def tvalues(self) -> np.ndarray:
         """Wald z/t values with a releveled intercept recentred when applicable."""
+        self._require_covariance_available()
         z = np.asarray(self._result.tvalues(), dtype=np.float64)
         raw_se = np.asarray(self._result.bse(), dtype=np.float64)
         return self._with_releveled_intercept_stat(z, raw_se, "z")
 
     def pvalues(self) -> np.ndarray:
         """Two-sided Wald p-values with a releveled intercept recentred when applicable."""
+        self._require_covariance_available()
         p = np.asarray(self._result.pvalues(), dtype=np.float64)
         raw_se = np.asarray(self._result.bse(), dtype=np.float64)
         return self._with_releveled_intercept_stat(p, raw_se, "p")
 
     def significance_codes(self) -> list[str]:
         """Significance codes aligned to :meth:`pvalues`."""
+        self._require_covariance_available()
         codes = list(self._result.significance_codes())
         raw_se = np.asarray(self._result.bse(), dtype=np.float64)
         corr = self._releveled_intercept_inference(raw_se[0]) if len(raw_se) else None
@@ -1671,29 +1706,34 @@ class GLMModel:
 
     def conf_int(self, alpha: float = 0.05) -> np.ndarray:
         """Model-based confidence intervals with a releveled intercept recentred."""
+        self._require_covariance_available()
         ci = np.asarray(self._result.conf_int(alpha), dtype=np.float64)
         raw_se = np.asarray(self._result.bse(), dtype=np.float64)
         return self._with_releveled_intercept_ci(ci, raw_se)
 
     def bse_robust(self, hc_type: str = "HC1") -> np.ndarray:
         """Robust standard errors with relevel calibration variance applied."""
+        self._require_covariance_available()
         se = np.asarray(self._result.bse_robust(hc_type), dtype=np.float64)
         return self._with_releveled_intercept_stat(se, se, "se")
 
     def tvalues_robust(self, hc_type: str = "HC1") -> np.ndarray:
         """Robust Wald z/t values with a releveled intercept recentred."""
+        self._require_covariance_available()
         z = np.asarray(self._result.tvalues_robust(hc_type), dtype=np.float64)
         raw_se = np.asarray(self._result.bse_robust(hc_type), dtype=np.float64)
         return self._with_releveled_intercept_stat(z, raw_se, "z")
 
     def pvalues_robust(self, hc_type: str = "HC1") -> np.ndarray:
         """Robust two-sided Wald p-values with a releveled intercept recentred."""
+        self._require_covariance_available()
         p = np.asarray(self._result.pvalues_robust(hc_type), dtype=np.float64)
         raw_se = np.asarray(self._result.bse_robust(hc_type), dtype=np.float64)
         return self._with_releveled_intercept_stat(p, raw_se, "p")
 
     def conf_int_robust(self, alpha: float = 0.05, cov_type: str = "HC1") -> np.ndarray:
         """Robust confidence intervals with a releveled intercept recentred."""
+        self._require_covariance_available()
         ci = np.asarray(
             self._result.conf_int_robust(alpha=alpha, cov_type=cov_type),
             dtype=np.float64,
@@ -1805,6 +1845,8 @@ class GLMModel:
 
     def get_bread_matrix(self) -> np.ndarray | None:
         """Get the (X'WX)^-1 matrix (unscaled covariance)."""
+        if not getattr(self, "_covariance_available", True):
+            return None
         try:
             return np.asarray(self._result.cov_params_unscaled)
         except AttributeError:
@@ -2340,6 +2382,7 @@ class GLMModel:
         max_interaction_factors: int = 10,
         # User-specified interaction pairs for per-pair surface diagnostics.
         interactions: list[Any] | None = None,
+        include_fitted_interactions: bool = False,
         # Test data for overfitting detection (response/exposure auto-inferred)
         test_data: pl.DataFrame | None = None,
         # Control enhanced diagnostics
@@ -2386,6 +2429,9 @@ class GLMModel:
             ``InteractionDiagnostics.in_model`` is set from TermSlot membership.
             Independent of ``detect_interactions=`` (which fills
             ``interaction_candidates``); both can be used simultaneously.
+        include_fitted_interactions : bool, default=False
+            Include diagnostics for the model's fitted interaction specs. This
+            is opt-in because wide interaction surfaces can be expensive.
         test_data : pl.DataFrame, optional
             Test/holdout data for overfitting detection. Response and exposure
             columns are automatically inferred from the model's formula. When
@@ -2479,6 +2525,7 @@ class GLMModel:
             detect_interactions=detect_interactions,
             max_interaction_factors=max_interaction_factors,
             interactions=interactions,
+            include_fitted_interactions=include_fitted_interactions,
             test_data=test_data,
             compute_vif=compute_vif,
             compute_coefficients=compute_coefficients,
@@ -2505,6 +2552,7 @@ class GLMModel:
         detect_interactions: bool = False,
         max_interaction_factors: int = 10,
         interactions: list[Any] | None = None,
+        include_fitted_interactions: bool = False,
         test_data: pl.DataFrame | None = None,
         compute_score_tests: bool = True,
         ranking: str = "auto",
@@ -2550,6 +2598,7 @@ class GLMModel:
             detect_interactions=detect_interactions,
             max_interaction_factors=max_interaction_factors,
             interactions=interactions,
+            include_fitted_interactions=include_fitted_interactions,
             test_data=test_data,
             compute_score_tests=compute_score_tests,
             ranking=ranking,
@@ -2643,25 +2692,48 @@ class GLMModel:
         n_features = len(self.params)
         chunk_size = _compute_predict_chunk_size(n_features)
         params = np.asarray(self.params, dtype=np.float64)
+        termwise_chunk_size = _compute_termwise_predict_chunk_size(self._builder, n_features)
+        use_termwise_score = (
+            n_features >= _PREDICT_TERMWISE_FEATURE_THRESHOLD
+            and hasattr(self._builder, "linear_predict_new_data")
+            and termwise_chunk_size > chunk_size * 2
+        )
+        if use_termwise_score:
+            chunk_size = termwise_chunk_size
         prepared_all: pl.DataFrame | None = None
         if n_rows <= chunk_size:
             # Small input: skip slicing overhead, keep behavior identical to
             # the pre-chunking implementation.
             prepared_all = self._apply_model_input_transforms(new_data)
-            X_new = self._builder.transform_new_data(prepared_all)
-            linear_pred = X_new @ params
-            del X_new
+            if use_termwise_score:
+                linear_pred = self._builder.linear_predict_new_data(prepared_all, params)
+            else:
+                X_new = self._builder.transform_new_data(prepared_all)
+                linear_pred = X_new @ params
+                del X_new
         else:
+            design_data = new_data
+            if self._compiled_input_transforms:
+                # Input transforms are usually much narrower than the dense
+                # design matrix. Preparing them once avoids repeating lookup /
+                # join work for every row chunk while preserving the chunked
+                # X allocation bound below.
+                prepared_all = self._apply_model_input_transforms(new_data)
+                design_data = prepared_all
             linear_pred = np.empty(n_rows, dtype=np.float64)
             for start in range(0, n_rows, chunk_size):
                 stop = min(start + chunk_size, n_rows)
-                chunk = self._apply_model_input_transforms(new_data.slice(start, stop - start))
-                X_chunk = self._builder.transform_new_data(chunk)
-                # Write directly into the pre-allocated output slice; the
-                # X_chunk reference is rebound on the next iteration so the
-                # ~chunk_size × p matrix is freed before the next one is built.
-                linear_pred[start:stop] = X_chunk @ params
-                del X_chunk, chunk
+                chunk = design_data.slice(start, stop - start)
+                if use_termwise_score:
+                    linear_pred[start:stop] = self._builder.linear_predict_new_data(chunk, params)
+                    del chunk
+                else:
+                    X_chunk = self._builder.transform_new_data(chunk)
+                    # Write directly into the pre-allocated output slice; the
+                    # X_chunk reference is rebound on the next iteration so the
+                    # ~chunk_size × p matrix is freed before the next one is built.
+                    linear_pred[start:stop] = X_chunk @ params
+                    del X_chunk, chunk
 
         aux_data = new_data
         if self._prediction_aux_needs_prepared_data(
@@ -3232,6 +3304,7 @@ class GLMModel:
             "solver_status": self.__dict__.get("solver_status"),
             "step_halving_used": self.__dict__.get("step_halving_used"),
             "regularization_standardized": self.__dict__.get("_regularization_standardized", False),
+            "covariance_available": self.__dict__.get("_covariance_available", True),
         }
 
         # Extract builder state for prediction
@@ -3392,6 +3465,7 @@ class GLMModel:
             regularization_standardized=bool(
                 result_state.get("regularization_standardized", False)
             ),
+            covariance_available=bool(result_state.get("covariance_available", True)),
         )
         model.theta = result_state.get("theta")
         model.theta_metadata = result_state.get("theta_metadata")
@@ -4388,6 +4462,7 @@ class FormulaGLMDict(_GLMBase):
         verbose: bool = False,
         # Memory optimization
         store_design_matrix: bool = False,
+        compute_covariance: bool = True,
     ) -> GLMModel:
         """
         Fit the GLM model, optionally with regularization.
@@ -4444,6 +4519,12 @@ class FormulaGLMDict(_GLMBase):
         verbose : bool, default=False
             Print progress.
 
+        compute_covariance : bool, default=True
+            Compute and store the unscaled covariance ("bread") matrix used for
+            standard errors, confidence intervals, and bread-matrix diagnostics.
+            Set False for faster large standard GLM fits when coefficient
+            inference is not needed.
+
         Returns
         -------
         GLMModel
@@ -4471,7 +4552,7 @@ class FormulaGLMDict(_GLMBase):
         # Tweedie regimes must not reach fold fitting or deviance scoring first.
         from rustystats.validation import validate_glm_inputs
 
-        validate_glm_inputs(
+        fit_y, fit_X, fit_weights, fit_offset = validate_glm_inputs(
             self.y,
             self.X,
             self.family,
@@ -4508,8 +4589,8 @@ class FormulaGLMDict(_GLMBase):
                 self.y,
                 self.X,
                 self.link,
-                self.offset,
-                self.weights,
+                fit_offset,
+                fit_weights,
                 self.feature_names,
                 max_iter=max_iter,
                 tol=tol,
@@ -4520,14 +4601,14 @@ class FormulaGLMDict(_GLMBase):
         else:
             # Use shared core fitting logic
             result, smooth_results, total_edf, gcv = _fit_glm_core(
-                self.y,
-                self.X,
+                fit_y,
+                fit_X,
                 self.family,
                 self.link,
                 self.var_power,
                 theta,
-                self.offset,
-                self.weights,
+                fit_offset,
+                fit_weights,
                 alpha,
                 l1_ratio,
                 max_iter,
@@ -4544,6 +4625,8 @@ class FormulaGLMDict(_GLMBase):
                 standardization_scale=(
                     path_info.final_fit_scale if path_info is not None else None
                 ),
+                inputs_validated=True,
+                compute_covariance=compute_covariance,
             )
             if is_negbinomial:
                 theta_metadata = {
@@ -4563,6 +4646,7 @@ class FormulaGLMDict(_GLMBase):
         self._gcv = gcv
 
         result_family = _format_result_family(self.family, self.var_power, theta)
+        covariance_available = bool(compute_covariance or nb_estimate or smooth_results is not None)
 
         results = _build_results(
             result,
@@ -4587,6 +4671,7 @@ class FormulaGLMDict(_GLMBase):
                 self._exposure_spec is not None and not isinstance(self._exposure_spec, str)
             ),
             regularization_standardized=bool(standardize and alpha > 0.0),
+            covariance_available=covariance_available,
         )
         # RS-ACT-010: surface the theta actually used and its estimation provenance.
         results.theta = theta if is_negbinomial else None
@@ -4595,6 +4680,8 @@ class FormulaGLMDict(_GLMBase):
         results.inference_status, results.optimizer_route = self._inference_status_and_route(
             requested_alpha, requested_l1, cv, regularization, path_info
         )
+        if not covariance_available and not str(results.inference_status).startswith("naive_"):
+            results.inference_status = "covariance_skipped"
         results.solver_status = getattr(result, "solver_status", "converged")
         results.step_halving_used = bool(getattr(result, "step_halving_used", False))
         # RS-ACT-004 backlog #1: carry the fitted prior-weights spec so

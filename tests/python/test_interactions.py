@@ -166,6 +166,45 @@ class TestInteractionBuilder:
         np.testing.assert_allclose(actual, expected)
         np.testing.assert_allclose(builder.transform_new_data(df), X)
 
+    def test_linear_predict_new_data_matches_dense_transform_with_interactions(self):
+        """Prediction-only scorer preserves dense design column order."""
+        rng = np.random.default_rng(123)
+        n = 200
+        df = pl.DataFrame(
+            {
+                "y": rng.poisson(1.0, n),
+                "x": rng.normal(size=n),
+                "age": rng.uniform(18.0, 80.0, n),
+                "cat1": rng.choice([f"A{i}" for i in range(6)], n),
+                "cat2": rng.choice([f"B{i}" for i in range(5)], n),
+            }
+        )
+        spline = SplineTerm(var_name="age", spline_type="bs", df=5, degree=3)
+        parsed = ParsedFormula(
+            response="y",
+            main_effects=["cat1", "x"],
+            interactions=[
+                InteractionTerm(factors=["cat1", "cat2"], categorical_flags=[True, True]),
+                InteractionTerm(
+                    factors=["cat1", "cat2", "x"],
+                    categorical_flags=[True, True, False],
+                ),
+                InteractionTerm(factors=["cat1", "age"], categorical_flags=[True, False]),
+                InteractionTerm(factors=["age", "x"], categorical_flags=[False, False]),
+            ],
+            categorical_vars={"cat1"},
+            spline_terms=[spline],
+            has_intercept=True,
+        )
+
+        builder = InteractionBuilder(df)
+        _y, X, _names = builder.build_design_matrix_from_parsed(parsed)
+        params = rng.normal(size=X.shape[1])
+
+        dense_eta = builder.transform_new_data(df) @ params
+        direct_eta = builder.linear_predict_new_data(df, params)
+        np.testing.assert_allclose(direct_eta, dense_eta, rtol=1e-12, atol=1e-12)
+
     def test_pure_interaction(self, sample_data):
         """Test pure interaction without main effects for some variables."""
         parsed = ParsedFormula(

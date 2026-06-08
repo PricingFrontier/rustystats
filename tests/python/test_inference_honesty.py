@@ -90,6 +90,36 @@ class TestInferenceStatus:
         result = _fit(_frame(), alpha=0.1, l1_ratio=0.0)
         assert result.inference_status == "naive_after_regularization"
 
+    def test_compute_covariance_false_suppresses_direct_inference(self):
+        df = _frame()
+        result = _fit(df, compute_covariance=False)
+        assert result.inference_status == "covariance_skipped"
+        assert result.get_bread_matrix() is None
+        with pytest.raises(rs.FittingError, match="Covariance was skipped"):
+            result.bse()
+
+        summary = result.summary()
+        assert "covariance_skipped" in summary
+        assert "Std.Err" not in summary
+
+        diagnostics = result.diagnostics(
+            df,
+            continuous_factors=["x"],
+            compute_vif=False,
+            compute_deviance_by_level=False,
+            compute_lift=False,
+            compute_partial_dep=False,
+            compute_score_tests=False,
+        )
+        assert diagnostics.coefficient_summary is None
+        assert all(f.significance is None for f in diagnostics.factors)
+
+        loaded = rs.GLMModel.from_bytes(result.to_bytes())
+        assert loaded.inference_status == "covariance_skipped"
+        assert loaded.get_bread_matrix() is None
+        with pytest.raises(rs.FittingError, match="Covariance was skipped"):
+            loaded.bse()
+
     def test_cv_selection_is_never_valid_standard(self):
         """011.3: a CV-selected fit (even pure ridge) is naive_after_cv_selection."""
         result = _fit(_frame(), cv=3, regularization="ridge", n_alphas=3)

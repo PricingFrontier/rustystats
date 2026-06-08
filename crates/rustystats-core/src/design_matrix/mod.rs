@@ -13,7 +13,7 @@
 //
 // =============================================================================
 
-use ndarray::{s, Array1, Array2, ArrayView2};
+use ndarray::{s, Array1, Array2, ArrayView1, ArrayView2};
 use rayon::prelude::*;
 use std::collections::HashMap;
 
@@ -402,6 +402,198 @@ pub fn build_categorical_continuous_interaction(
         .collect();
 
     (result, col_names)
+}
+
+/// Build categorical × basis interaction directly from level indices.
+///
+/// The output column order is basis-major, then categorical level:
+/// ``cat_1:basis_1, cat_2:basis_1, ..., cat_1:basis_2, ...``.
+/// This matches the Python builder's historical nested loop while avoiding
+/// dense dummy-matrix multiplication for mostly-zero categorical columns.
+pub fn build_categorical_basis_interaction(
+    cat_indices: &[i32],
+    n_levels: usize,
+    basis: &Array2<f64>,
+    cat_names: &[String],
+    basis_names: &[String],
+) -> (Array2<f64>, Vec<String>) {
+    let n = cat_indices.len();
+    let n_basis = basis.ncols();
+    let n_cols = n_levels * n_basis;
+
+    if n_cols == 0 {
+        return (Array2::zeros((n, 0)), vec![]);
+    }
+
+    let mut result = Array2::zeros((n, n_cols));
+
+    for i in 0..n {
+        let idx = cat_indices[i];
+        if idx >= 1 {
+            let cat_col = (idx - 1) as usize;
+            if cat_col < n_levels {
+                for basis_col in 0..n_basis {
+                    let out_col = basis_col * n_levels + cat_col;
+                    result[[i, out_col]] = basis[[i, basis_col]];
+                }
+            }
+        }
+    }
+
+    let mut col_names = Vec::with_capacity(n_cols);
+    for basis_name in basis_names.iter() {
+        for cat_name in cat_names.iter() {
+            col_names.push(format!("{}:{}", cat_name, basis_name));
+        }
+    }
+
+    (result, col_names)
+}
+
+/// Score a categorical × basis interaction without materialising its design block.
+///
+/// ``params`` must be ordered basis-major, then categorical level, matching
+/// ``build_categorical_basis_interaction``.
+pub fn predict_categorical_basis_interaction(
+    cat_indices: &[i32],
+    n_levels: usize,
+    basis: &Array2<f64>,
+    params: &[f64],
+) -> Array1<f64> {
+    predict_categorical_basis_interaction_view(
+        ArrayView1::from(cat_indices),
+        n_levels,
+        basis.view(),
+        ArrayView1::from(params),
+    )
+}
+
+/// View-based variant used by the Python bridge to avoid copying NumPy inputs.
+pub fn predict_categorical_basis_interaction_view(
+    cat_indices: ArrayView1<'_, i32>,
+    n_levels: usize,
+    basis: ArrayView2<'_, f64>,
+    params: ArrayView1<'_, f64>,
+) -> Array1<f64> {
+    let n = cat_indices.len();
+    let n_basis = basis.ncols();
+
+    if n_levels == 0 || n_basis == 0 {
+        return Array1::zeros(n);
+    }
+
+    if let (Some(idx_slice), Some(basis_slice), Some(params_slice)) =
+        (cat_indices.as_slice(), basis.as_slice(), params.as_slice())
+    {
+        let required_params = n_levels.saturating_mul(n_basis);
+        let values: Vec<f64> = if n > 50_000 {
+            (0..n)
+                .into_par_iter()
+                .map(|i| {
+                    score_categorical_basis_row(
+                        idx_slice[i],
+                        n_levels,
+                        &basis_slice[i * n_basis..(i + 1) * n_basis],
+                        params_slice,
+                        required_params,
+                    )
+                })
+                .collect()
+        } else {
+            (0..n)
+                .map(|i| {
+                    score_categorical_basis_row(
+                        idx_slice[i],
+                        n_levels,
+                        &basis_slice[i * n_basis..(i + 1) * n_basis],
+                        params_slice,
+                        required_params,
+                    )
+                })
+                .collect()
+        };
+        return Array1::from_vec(values);
+    }
+
+    let required_params = n_levels.saturating_mul(n_basis);
+    let values: Vec<f64> = if n > 50_000 {
+        (0..n)
+            .into_par_iter()
+            .map(|i| {
+                let idx = cat_indices[i];
+                if idx < 1 {
+                    return 0.0;
+                }
+                let cat_col = (idx - 1) as usize;
+                if cat_col >= n_levels {
+                    return 0.0;
+                }
+                let mut total = 0.0;
+                for basis_col in 0..n_basis {
+                    let param_idx = basis_col * n_levels + cat_col;
+                    if required_params <= params.len() || param_idx < params.len() {
+                        total += basis[[i, basis_col]] * params[param_idx];
+                    }
+                }
+                total
+            })
+            .collect()
+    } else {
+        (0..n)
+            .map(|i| {
+                let idx = cat_indices[i];
+                if idx < 1 {
+                    return 0.0;
+                }
+                let cat_col = (idx - 1) as usize;
+                if cat_col >= n_levels {
+                    return 0.0;
+                }
+                let mut total = 0.0;
+                for basis_col in 0..n_basis {
+                    let param_idx = basis_col * n_levels + cat_col;
+                    if required_params <= params.len() || param_idx < params.len() {
+                        total += basis[[i, basis_col]] * params[param_idx];
+                    }
+                }
+                total
+            })
+            .collect()
+    };
+
+    Array1::from_vec(values)
+}
+
+#[inline]
+fn score_categorical_basis_row(
+    idx: i32,
+    n_levels: usize,
+    basis_row: &[f64],
+    params: &[f64],
+    required_params: usize,
+) -> f64 {
+    if idx < 1 {
+        return 0.0;
+    }
+    let cat_col = (idx - 1) as usize;
+    if cat_col >= n_levels {
+        return 0.0;
+    }
+
+    let mut total = 0.0;
+    if required_params <= params.len() {
+        for (basis_col, value) in basis_row.iter().enumerate() {
+            total += value * params[basis_col * n_levels + cat_col];
+        }
+    } else {
+        for (basis_col, value) in basis_row.iter().enumerate() {
+            let param_idx = basis_col * n_levels + cat_col;
+            if param_idx < params.len() {
+                total += value * params[param_idx];
+            }
+        }
+    }
+    total
 }
 
 /// Build a two-categorical × continuous interaction matrix directly from level
@@ -918,6 +1110,47 @@ mod tests {
 
         assert_eq!(matrix.ncols(), 0);
         assert_eq!(names.len(), 0);
+    }
+
+    #[test]
+    fn test_categorical_basis_interaction() {
+        let cat_idx = vec![0i32, 1, 2, 1];
+        let basis =
+            Array2::from_shape_vec((4, 2), vec![1.0, 10.0, 2.0, 20.0, 3.0, 30.0, 4.0, 40.0])
+                .unwrap();
+        let cat_names = vec!["cat[T.B]".to_string(), "cat[T.C]".to_string()];
+        let basis_names = vec!["bs(x, 1/2)".to_string(), "bs(x, 2/2)".to_string()];
+
+        let (matrix, names) =
+            build_categorical_basis_interaction(&cat_idx, 2, &basis, &cat_names, &basis_names);
+
+        assert_eq!(
+            names,
+            vec![
+                "cat[T.B]:bs(x, 1/2)",
+                "cat[T.C]:bs(x, 1/2)",
+                "cat[T.B]:bs(x, 2/2)",
+                "cat[T.C]:bs(x, 2/2)",
+            ]
+        );
+        assert_eq!(matrix.shape(), &[4, 4]);
+        assert_eq!(matrix.row(0).to_vec(), vec![0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(matrix.row(1).to_vec(), vec![2.0, 0.0, 20.0, 0.0]);
+        assert_eq!(matrix.row(2).to_vec(), vec![0.0, 3.0, 0.0, 30.0]);
+        assert_eq!(matrix.row(3).to_vec(), vec![4.0, 0.0, 40.0, 0.0]);
+    }
+
+    #[test]
+    fn test_predict_categorical_basis_interaction() {
+        let cat_idx = vec![0i32, 1, 2, 1];
+        let basis =
+            Array2::from_shape_vec((4, 2), vec![1.0, 10.0, 2.0, 20.0, 3.0, 30.0, 4.0, 40.0])
+                .unwrap();
+        let params = vec![0.5, 1.5, 2.0, 3.0];
+
+        let values = predict_categorical_basis_interaction(&cat_idx, 2, &basis, &params);
+
+        assert_eq!(values.to_vec(), vec![0.0, 41.0, 94.5, 82.0]);
     }
 
     #[test]

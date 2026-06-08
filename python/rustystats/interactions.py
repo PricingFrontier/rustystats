@@ -21,6 +21,8 @@ Example
 
 from __future__ import annotations
 
+import hashlib
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -34,6 +36,9 @@ from rustystats._rustystats import (
 )
 from rustystats._rustystats import (
     apply_target_encoding_py as _apply_target_encoding_rust,
+)
+from rustystats._rustystats import (
+    build_cat_basis_interaction_py as _build_cat_basis_rust,
 )
 from rustystats._rustystats import (
     build_cat_cat_interaction_py as _build_cat_cat_rust,
@@ -62,6 +67,9 @@ from rustystats._rustystats import (
     multiply_matrix_by_continuous_py as _multiply_matrix_cont_rust,
 )
 from rustystats._rustystats import (
+    predict_cat_basis_interaction_py as _predict_cat_basis_rust,
+)
+from rustystats._rustystats import (
     stack_columns_horizontal_py as _stack_columns_rust,
 )
 from rustystats._rustystats import (
@@ -83,6 +91,9 @@ from rustystats.exceptions import (
 
 if TYPE_CHECKING:
     import polars as pl
+
+_PREDICT_SPLINE_CACHE_MIN_ROWS = 100_000
+_PREDICT_SPLINE_CACHE_MAX_BYTES = 256_000_000
 
 
 @dataclass
@@ -273,6 +284,8 @@ class InteractionBuilder:
         # Consolidated cache for categorical encodings (keyed by "varname_dropfirst")
         self._cat_encoding_cache: dict[str, CategoricalEncoding] = {}
         self._cont_cache: dict[str, np.ndarray] = {}
+        self._spline_basis_predict_cache: OrderedDict[tuple, tuple[np.ndarray, int]] = OrderedDict()
+        self._spline_basis_predict_cache_bytes = 0
         # Store spline terms with fitted knots for prediction
         self._fitted_splines: dict[str, SplineTerm] = {}
         # Store parsed formula for prediction
@@ -589,7 +602,7 @@ class InteractionBuilder:
                     all_columns.append(col)
 
             if all_columns:
-                return np.column_stack(all_columns), all_names
+                return self._stack_columns(all_columns, self._n, self.dtype), all_names
             return np.zeros((self._n, 0), dtype=self.dtype), []
 
         # Handle continuous × TE interactions
@@ -631,7 +644,7 @@ class InteractionBuilder:
                 all_columns.append(col)
 
             if all_columns:
-                return np.column_stack(all_columns), all_names
+                return self._stack_columns(all_columns, self._n, self.dtype), all_names
             return np.zeros((self._n, 0), dtype=self.dtype), []
 
         # Standard continuous × continuous (no splines or TE)
@@ -769,16 +782,26 @@ class InteractionBuilder:
 
         # Handle spline × categorical interactions
         if spline_factors:
+            single_cat_indices = None
+            single_cat_levels = None
             if len(cat_factors) == 1:
                 cat_name = cat_factors[0]
-                cat_encoding, cat_names = self._get_categorical_encoding(cat_name)
+                single_cat_indices, single_cat_levels, cat_names = (
+                    self._get_categorical_indices_and_names(cat_name)
+                )
+                cat_encoding = None
             else:
                 cat_interaction = InteractionTerm(
                     factors=cat_factors, categorical_flags=[True] * len(cat_factors)
                 )
                 cat_encoding, cat_names = self._build_categorical_interaction(cat_interaction)
 
-            if cat_encoding.shape[1] == 0:
+            n_cat_cols = (
+                len(single_cat_levels) - 1
+                if single_cat_levels is not None
+                else cat_encoding.shape[1]
+            )
+            if n_cat_cols == 0:
                 return np.zeros((self._n, 0), dtype=self.dtype), []
 
             # Build spline basis for each spline factor
@@ -791,12 +814,29 @@ class InteractionBuilder:
                 # Store fitted spline for prediction
                 self._fitted_splines[spline.var_name] = spline
 
-                # Multiply each spline column by each categorical column
-                for j, spl_name in enumerate(spline_names):
-                    for i, cat_name in enumerate(cat_names):
-                        col = cat_encoding[:, i] * spline_basis[:, j]
-                        all_columns.append(col)
-                        all_names.append(f"{cat_name}:{spl_name}")
+                if single_cat_indices is not None and single_cat_levels is not None:
+                    result, col_names = _build_cat_basis_rust(
+                        single_cat_indices.astype(np.int32, copy=False),
+                        len(single_cat_levels) - 1,
+                        spline_basis.astype(np.float64, copy=False),
+                        list(cat_names),
+                        list(spline_names),
+                    )
+                    all_columns.append(np.asarray(result))
+                    all_names.extend(col_names)
+                else:
+                    # Multiply each categorical block by each spline column in Rust.
+                    # The returned order is cat columns inside each spline basis,
+                    # matching the previous nested Python loop.
+                    for j, spl_name in enumerate(spline_names):
+                        result, col_names = _multiply_matrix_cont_rust(
+                            cat_encoding.astype(np.float64, copy=False),
+                            spline_basis[:, j].astype(np.float64, copy=False),
+                            list(cat_names),
+                            spl_name,
+                        )
+                        all_columns.append(np.asarray(result))
+                        all_names.extend(col_names)
 
             # Also include any regular continuous factors
             if cont_factors:
@@ -815,7 +855,7 @@ class InteractionBuilder:
                 all_names = final_names
 
             if all_columns:
-                return np.column_stack(all_columns), all_names
+                return self._stack_columns(all_columns, self._n, self.dtype), all_names
             return np.zeros((self._n, 0), dtype=self.dtype), []
 
         # Standard continuous × categorical (no splines)
@@ -1865,6 +1905,567 @@ class InteractionBuilder:
         # Stack all columns using pre-allocated helper
         return self._stack_columns(columns, n_new, self.dtype)
 
+    @staticmethod
+    def _accumulate_linear_prediction_block(
+        eta: np.ndarray,
+        block: np.ndarray,
+        params: np.ndarray,
+        col_start: int,
+    ) -> int:
+        """Add one design block's contribution to eta and return next column index."""
+        if block.ndim == 1:
+            eta += block.astype(np.float64, copy=False) * params[col_start]
+            return col_start + 1
+
+        n_cols = block.shape[1]
+        if n_cols:
+            eta += block.astype(np.float64, copy=False) @ params[col_start : col_start + n_cols]
+        return col_start + n_cols
+
+    def _map_to_training_indices_cached(
+        self,
+        new_data: pl.DataFrame,
+        var_name: str,
+        cache: dict[str, tuple[np.ndarray, list[str]]] | None,
+    ) -> tuple[np.ndarray, list[str]]:
+        if cache is None:
+            return self._map_to_training_indices(new_data, var_name)
+        cached = cache.get(var_name)
+        if cached is None:
+            cached = self._map_to_training_indices(new_data, var_name)
+            cache[var_name] = cached
+        return cached
+
+    def _prediction_categorical_vars(self, parsed: ParsedFormula) -> list[str]:
+        seen: set[str] = set()
+        variables: list[str] = []
+
+        for var in parsed.main_effects:
+            if var in parsed.categorical_vars and var not in seen:
+                seen.add(var)
+                variables.append(var)
+
+        for interaction in parsed.interactions:
+            for factor, is_cat in zip(interaction.factors, interaction.categorical_flags):
+                if is_cat and factor not in seen:
+                    seen.add(factor)
+                    variables.append(factor)
+
+        return variables
+
+    def _prepare_prediction_categorical_index_cache(
+        self,
+        new_data: pl.DataFrame,
+        parsed: ParsedFormula,
+    ) -> dict[str, tuple[np.ndarray, list[str]]]:
+        """Map all categorical prediction factors in one Polars pass."""
+        import polars as pl
+
+        cache: dict[str, tuple[np.ndarray, list[str]]] = {}
+        pending: list[tuple[str, list[str]]] = []
+        exprs: list[pl.Expr] = []
+
+        for var_name in self._prediction_categorical_vars(parsed):
+            levels = self._get_categorical_levels(var_name)
+            series = new_data[var_name]
+            if len(series) == 0:
+                cache[var_name] = (np.empty(0, dtype=np.int32), levels)
+                continue
+
+            level_to_idx = self._get_categorical_level_to_idx(var_name, levels)
+            if series.estimated_size() <= 1024 and series.n_unique() == 1:
+                value = series[0]
+                idx = 0 if value is None else level_to_idx.get(str(value), 0)
+                cache[var_name] = (np.full(len(series), idx, dtype=np.int32), levels)
+                continue
+
+            exprs.append(
+                pl.col(var_name)
+                .cast(pl.Utf8)
+                .replace_strict(level_to_idx, default=0, return_dtype=pl.Int32)
+                .alias(var_name)
+            )
+            pending.append((var_name, levels))
+
+        if exprs:
+            mapped = new_data.select(exprs)
+            for var_name, levels in pending:
+                cache[var_name] = (mapped[var_name].to_numpy(), levels)
+
+        return cache
+
+    def _accumulate_categorical_prediction_new(
+        self,
+        eta: np.ndarray,
+        new_data: pl.DataFrame,
+        var_name: str,
+        params: np.ndarray,
+        col_start: int,
+        cat_index_cache: dict[str, tuple[np.ndarray, list[str]]] | None,
+    ) -> int:
+        indices, levels = self._map_to_training_indices_cached(new_data, var_name, cat_index_cache)
+        n_levels = len(levels) - 1
+        if n_levels:
+            lookup = np.empty(n_levels + 1, dtype=np.float64)
+            lookup[0] = 0.0
+            lookup[1:] = params[col_start : col_start + n_levels]
+            eta += lookup[indices]
+        return col_start + n_levels
+
+    def _spline_basis_new_cached(
+        self,
+        new_data: pl.DataFrame,
+        spline: SplineTerm,
+        cache: dict[str, np.ndarray] | None,
+    ) -> np.ndarray:
+        if cache is None:
+            basis = self._constant_spline_basis_new(new_data, spline)
+            if basis is not None:
+                return basis
+            x = new_data[spline.var_name].to_numpy().astype(self.dtype)
+            return self._cached_spline_basis_from_values(spline, x)
+        cached = cache.get(spline.var_name)
+        if cached is None:
+            cached = self._constant_spline_basis_new(new_data, spline)
+            if cached is None:
+                x = new_data[spline.var_name].to_numpy().astype(self.dtype)
+                cached = self._cached_spline_basis_from_values(spline, x)
+            cache[spline.var_name] = cached
+        return cached
+
+    def _cached_spline_basis_from_values(
+        self,
+        spline: SplineTerm,
+        values: np.ndarray,
+    ) -> np.ndarray:
+        fitted_spline = self._fitted_splines.get(spline.var_name, spline)
+        if values.shape[0] < _PREDICT_SPLINE_CACHE_MIN_ROWS:
+            basis, _ = fitted_spline.transform(values)
+            return basis
+
+        if not hasattr(self, "_spline_basis_predict_cache"):
+            self._spline_basis_predict_cache = OrderedDict()
+            self._spline_basis_predict_cache_bytes = 0
+
+        values = np.ascontiguousarray(values, dtype=np.float64)
+        digest = hashlib.blake2b(values.view(np.uint8), digest_size=16).digest()
+        key = (
+            spline.var_name,
+            fitted_spline.spline_type,
+            fitted_spline.df,
+            fitted_spline.degree,
+            fitted_spline.boundary_knots,
+            tuple(getattr(fitted_spline, "_computed_boundary_knots", ()) or ()),
+            tuple(getattr(fitted_spline, "_computed_internal_knots", ()) or ()),
+            values.shape,
+            digest,
+        )
+        cached = self._spline_basis_predict_cache.get(key)
+        if cached is not None:
+            self._spline_basis_predict_cache.move_to_end(key)
+            return cached[0]
+
+        basis, _ = fitted_spline.transform(values)
+        basis_bytes = int(basis.nbytes)
+        self._spline_basis_predict_cache[key] = (basis, basis_bytes)
+        self._spline_basis_predict_cache_bytes += basis_bytes
+        while (
+            self._spline_basis_predict_cache_bytes > _PREDICT_SPLINE_CACHE_MAX_BYTES
+            and self._spline_basis_predict_cache
+        ):
+            _old_key, (_old_basis, old_bytes) = self._spline_basis_predict_cache.popitem(last=False)
+            self._spline_basis_predict_cache_bytes -= old_bytes
+        return basis
+
+    def _constant_spline_basis_new(
+        self,
+        new_data: pl.DataFrame,
+        spline: SplineTerm,
+    ) -> np.ndarray | None:
+        """Return a broadcast spline basis when the source column is constant."""
+        series = new_data[spline.var_name]
+        if len(series) == 0:
+            return None
+        min_value = series.min()
+        max_value = series.max()
+        if min_value is None or min_value != max_value:
+            return None
+
+        x = np.asarray([min_value], dtype=self.dtype)
+        fitted_spline = self._fitted_splines.get(spline.var_name, spline)
+        basis_one, _ = fitted_spline.transform(x)
+        return np.broadcast_to(basis_one, (len(series), basis_one.shape[1]))
+
+    @staticmethod
+    def _continuous_product_new(
+        new_data: pl.DataFrame,
+        factors: list[str],
+        dtype: np.dtype,
+    ) -> np.ndarray:
+        product = new_data[factors[0]].to_numpy().astype(dtype, copy=False)
+        for factor in factors[1:]:
+            product = product * new_data[factor].to_numpy().astype(dtype, copy=False)
+        return product
+
+    @staticmethod
+    def _two_cat_lookup_indices(
+        idx1: np.ndarray,
+        n_levels1: int,
+        idx2: np.ndarray,
+        n_levels2: int,
+    ) -> np.ndarray:
+        flat = np.zeros(idx1.shape[0], dtype=np.intp)
+        valid = (idx1 >= 1) & (idx1 <= n_levels1) & (idx2 >= 1) & (idx2 <= n_levels2)
+        flat[valid] = (
+            (idx1[valid].astype(np.intp) - 1) * n_levels2 + (idx2[valid].astype(np.intp) - 1) + 1
+        )
+        return flat
+
+    def _accumulate_categorical_interaction_prediction_new(
+        self,
+        eta: np.ndarray,
+        new_data: pl.DataFrame,
+        interaction: InteractionTerm,
+        params: np.ndarray,
+        col_start: int,
+        cat_index_cache: dict[str, tuple[np.ndarray, list[str]]] | None,
+    ) -> int:
+        factors = interaction.factors
+        if len(factors) != 2:
+            block = self._build_categorical_interaction_new(new_data, interaction, len(new_data))
+            return self._accumulate_linear_prediction_block(eta, block, params, col_start)
+
+        idx1, levels1 = self._map_to_training_indices_cached(new_data, factors[0], cat_index_cache)
+        idx2, levels2 = self._map_to_training_indices_cached(new_data, factors[1], cat_index_cache)
+        n1 = len(levels1) - 1
+        n2 = len(levels2) - 1
+        n_cols = n1 * n2
+        if n_cols:
+            flat = self._two_cat_lookup_indices(idx1, n1, idx2, n2)
+            lookup = np.empty(n_cols + 1, dtype=np.float64)
+            lookup[0] = 0.0
+            lookup[1:] = params[col_start : col_start + n_cols]
+            eta += lookup[flat]
+        return col_start + n_cols
+
+    def _accumulate_continuous_interaction_prediction_new(
+        self,
+        eta: np.ndarray,
+        new_data: pl.DataFrame,
+        interaction: InteractionTerm,
+        n: int,
+        params: np.ndarray,
+        col_start: int,
+        spline_basis_cache: dict[str, np.ndarray] | None,
+    ) -> int:
+        resolved = [
+            self._resolve_factor_new(new_data, f, interaction.force_linear, spline_basis_cache)
+            for f in interaction.factors
+        ]
+        bases = [r if r.ndim == 2 else r.reshape(-1, 1) for r in resolved]
+        if all(b.shape[1] == 1 for b in bases):
+            product = bases[0][:, 0]
+            for basis in bases[1:]:
+                product = product * basis[:, 0]
+            eta += product.astype(np.float64, copy=False) * params[col_start]
+            return col_start + 1
+
+        from itertools import product as cartesian_product
+
+        constant_flags = [basis.shape[0] > 0 and basis.strides[0] == 0 for basis in bases]
+        if any(constant_flags):
+            ranges = [range(basis.shape[1]) for basis in bases]
+            variable_positions = [
+                i for i, is_constant in enumerate(constant_flags) if not is_constant
+            ]
+            adjusted: dict[tuple[int, ...], float] = {}
+            col = col_start
+            for idx_combo in cartesian_product(*ranges):
+                const_product = 1.0
+                variable_key = []
+                for i, j in enumerate(idx_combo):
+                    if constant_flags[i]:
+                        const_product *= float(bases[i][0, j])
+                    else:
+                        variable_key.append(j)
+                key = tuple(variable_key)
+                adjusted[key] = adjusted.get(key, 0.0) + params[col] * const_product
+                col += 1
+
+            if not variable_positions:
+                eta += adjusted.get((), 0.0)
+                return col
+
+            variable_ranges = [range(bases[i].shape[1]) for i in variable_positions]
+            for variable_combo in cartesian_product(*variable_ranges):
+                coef = adjusted.get(tuple(variable_combo), 0.0)
+                if coef == 0.0:
+                    continue
+                values = bases[variable_positions[0]][:, variable_combo[0]]
+                for pos, j in zip(variable_positions[1:], variable_combo[1:]):
+                    values = values * bases[pos][:, j]
+                eta += values.astype(np.float64, copy=False) * coef
+            return col
+
+        multi_positions = [i for i, basis in enumerate(bases) if basis.shape[1] > 1]
+        if 0 < len(multi_positions) <= 2:
+            scalar_product = None
+            for i, basis in enumerate(bases):
+                if i in multi_positions:
+                    continue
+                values = basis[:, 0]
+                scalar_product = values if scalar_product is None else scalar_product * values
+
+            if len(multi_positions) == 1:
+                basis = bases[multi_positions[0]].astype(np.float64, copy=False)
+                n_cols = basis.shape[1]
+                contribution = basis @ params[col_start : col_start + n_cols]
+                col = col_start + n_cols
+            else:
+                left = bases[multi_positions[0]].astype(np.float64, copy=False)
+                right = bases[multi_positions[1]].astype(np.float64, copy=False)
+                left_cols = left.shape[1]
+                right_cols = right.shape[1]
+                coef = params[col_start : col_start + left_cols * right_cols].reshape(
+                    left_cols, right_cols
+                )
+                contribution = np.einsum("ij,ik,jk->i", left, right, coef, optimize=True)
+                col = col_start + left_cols * right_cols
+
+            if scalar_product is not None:
+                contribution = contribution * scalar_product
+            eta += contribution
+            return col
+
+        col = col_start
+        indices = [range(b.shape[1]) for b in bases]
+        for idx_combo in cartesian_product(*indices):
+            values = bases[0][:, idx_combo[0]]
+            for i, j in enumerate(idx_combo[1:], start=1):
+                values = values * bases[i][:, j]
+            eta += values.astype(np.float64, copy=False) * params[col]
+            col += 1
+        return col
+
+    def _accumulate_mixed_interaction_prediction_new(
+        self,
+        eta: np.ndarray,
+        new_data: pl.DataFrame,
+        interaction: InteractionTerm,
+        n: int,
+        params: np.ndarray,
+        col_start: int,
+        cat_index_cache: dict[str, tuple[np.ndarray, list[str]]] | None,
+        spline_basis_cache: dict[str, np.ndarray] | None,
+    ) -> int:
+        cat_factors = []
+        cont_factors = []
+        spline_factors = []
+
+        force_linear = interaction.force_linear or set()
+        for factor, is_cat in zip(interaction.factors, interaction.categorical_flags):
+            if is_cat:
+                cat_factors.append(factor)
+            elif factor in force_linear:
+                cont_factors.append(factor)
+            else:
+                spline = self._parse_spline_factor(factor)
+                if spline is not None:
+                    spline_factors.append((factor, spline))
+                else:
+                    cont_factors.append(factor)
+
+        if len(cat_factors) > 2:
+            block = self._build_mixed_interaction_new(new_data, interaction, n)
+            return self._accumulate_linear_prediction_block(eta, block, params, col_start)
+
+        cont_product = (
+            self._continuous_product_new(new_data, cont_factors, self.dtype)
+            if cont_factors
+            else None
+        )
+
+        if len(cat_factors) == 1:
+            idx, levels = self._map_to_training_indices_cached(
+                new_data, cat_factors[0], cat_index_cache
+            )
+            n_cat_cols = len(levels) - 1
+            flat = idx
+        else:
+            idx1, levels1 = self._map_to_training_indices_cached(
+                new_data, cat_factors[0], cat_index_cache
+            )
+            idx2, levels2 = self._map_to_training_indices_cached(
+                new_data, cat_factors[1], cat_index_cache
+            )
+            n1 = len(levels1) - 1
+            n2 = len(levels2) - 1
+            n_cat_cols = n1 * n2
+            flat = self._two_cat_lookup_indices(idx1, n1, idx2, n2)
+
+        if n_cat_cols == 0:
+            return col_start
+
+        def add_lookup_contribution(values: np.ndarray | None, col: int) -> int:
+            nonlocal eta
+            lookup = np.empty(n_cat_cols + 1, dtype=np.float64)
+            lookup[0] = 0.0
+            lookup[1:] = params[col : col + n_cat_cols]
+            contribution = lookup[flat]
+            if values is not None:
+                contribution = contribution * values
+            if cont_product is not None:
+                contribution = contribution * cont_product
+            eta += contribution
+            return col + n_cat_cols
+
+        col = col_start
+        if spline_factors:
+            for _spline_str, spline in spline_factors:
+                spline_basis = self._spline_basis_new_cached(new_data, spline, spline_basis_cache)
+                if spline_basis.shape[0] > 0 and spline_basis.strides[0] == 0:
+                    lookup = np.zeros(n_cat_cols + 1, dtype=np.float64)
+                    for j in range(spline_basis.shape[1]):
+                        lookup[1:] += params[col : col + n_cat_cols] * float(spline_basis[0, j])
+                        col += n_cat_cols
+                    contribution = lookup[flat]
+                    if cont_product is not None:
+                        contribution = contribution * cont_product
+                    eta += contribution
+                else:
+                    n_basis = spline_basis.shape[1]
+                    contribution = np.asarray(
+                        _predict_cat_basis_rust(
+                            flat.astype(np.int32, copy=False),
+                            n_cat_cols,
+                            spline_basis.astype(np.float64, copy=False),
+                            params[col : col + n_cat_cols * n_basis].astype(np.float64, copy=False),
+                        )
+                    )
+                    col += n_cat_cols * n_basis
+                    if cont_product is not None:
+                        contribution = contribution * cont_product
+                    eta += contribution
+            return col
+
+        if cont_product is None:
+            block = self._build_mixed_interaction_new(new_data, interaction, n)
+            return self._accumulate_linear_prediction_block(eta, block, params, col_start)
+        return add_lookup_contribution(None, col)
+
+    def _accumulate_interaction_prediction_new(
+        self,
+        eta: np.ndarray,
+        new_data: pl.DataFrame,
+        interaction: InteractionTerm,
+        n: int,
+        params: np.ndarray,
+        col_start: int,
+        cat_index_cache: dict[str, tuple[np.ndarray, list[str]]] | None,
+        spline_basis_cache: dict[str, np.ndarray] | None,
+    ) -> int:
+        if interaction.is_pure_continuous:
+            return self._accumulate_continuous_interaction_prediction_new(
+                eta, new_data, interaction, n, params, col_start, spline_basis_cache
+            )
+        if interaction.is_pure_categorical:
+            return self._accumulate_categorical_interaction_prediction_new(
+                eta, new_data, interaction, params, col_start, cat_index_cache
+            )
+        return self._accumulate_mixed_interaction_prediction_new(
+            eta,
+            new_data,
+            interaction,
+            n,
+            params,
+            col_start,
+            cat_index_cache,
+            spline_basis_cache,
+        )
+
+    def linear_predict_new_data(
+        self,
+        new_data: pl.DataFrame,
+        params: np.ndarray,
+    ) -> np.ndarray:
+        """Score new data without materializing the full dense design matrix.
+
+        This mirrors ``transform_new_data()`` column order, but accumulates
+        ``X_block @ beta_block`` term by term. It is useful for wide prediction
+        workloads where stacking every block into one large ``X`` dominates
+        memory traffic.
+        """
+        if self._parsed_formula is None:
+            raise PredictionError(
+                "Must call build_design_matrix_from_parsed() before linear_predict_new_data(). "
+                "No parsed formula has been fitted yet."
+            )
+
+        parsed = self._parsed_formula
+        n_new = len(new_data)
+        params = np.asarray(params, dtype=np.float64)
+        eta = np.zeros(n_new, dtype=np.float64)
+        col = 0
+        cat_index_cache = self._prepare_prediction_categorical_index_cache(new_data, parsed)
+        spline_basis_cache: dict[str, np.ndarray] = {}
+
+        if parsed.has_intercept:
+            eta += params[col]
+            col += 1
+
+        for var in parsed.main_effects:
+            if var in parsed.categorical_vars:
+                col = self._accumulate_categorical_prediction_new(
+                    eta, new_data, var, params, col, cat_index_cache
+                )
+                continue
+            else:
+                block = new_data[var].to_numpy().astype(self.dtype)
+            col = self._accumulate_linear_prediction_block(eta, block, params, col)
+
+        for spline in parsed.spline_terms:
+            block = self._spline_basis_new_cached(new_data, spline, spline_basis_cache)
+            col = self._accumulate_linear_prediction_block(eta, block, params, col)
+
+        for te_term in parsed.target_encoding_terms:
+            block = self._encode_target_new(new_data, te_term)
+            col = self._accumulate_linear_prediction_block(eta, block, params, col)
+
+        for fe_term in parsed.frequency_encoding_terms:
+            block = self._encode_frequency_new(new_data, fe_term)
+            col = self._accumulate_linear_prediction_block(eta, block, params, col)
+
+        for interaction in parsed.interactions:
+            col = self._accumulate_interaction_prediction_new(
+                eta,
+                new_data,
+                interaction,
+                n_new,
+                params,
+                col,
+                cat_index_cache,
+                spline_basis_cache,
+            )
+
+        for identity in parsed.identity_terms:
+            block, _ = self._build_identity_columns(identity, new_data)
+            col = self._accumulate_linear_prediction_block(eta, block, params, col)
+
+        for constraint in parsed.constraint_terms:
+            block, _ = self._build_constraint_columns(constraint, new_data)
+            col = self._accumulate_linear_prediction_block(eta, block, params, col)
+
+        for cat_term in parsed.categorical_terms:
+            block, _ = self._build_categorical_level_indicators_new(cat_term, new_data)
+            col = self._accumulate_linear_prediction_block(eta, block, params, col)
+
+        if col != params.shape[0]:
+            raise PredictionError(
+                f"Prediction design produced {col} columns, but model has "
+                f"{params.shape[0]} coefficients."
+            )
+        return eta
+
     def _map_to_training_indices(
         self,
         new_data: pl.DataFrame,
@@ -1878,17 +2479,39 @@ class InteractionBuilder:
         import polars as pl
 
         levels = self._get_categorical_levels(var_name)
-        level_to_idx = {level: i for i, level in enumerate(levels)}
+        level_to_idx = self._get_categorical_level_to_idx(var_name, levels)
+
+        series = new_data[var_name]
+        if len(series) == 0:
+            return np.empty(0, dtype=np.int32), levels
+        if series.estimated_size() <= 1024 and series.n_unique() == 1:
+            value = series[0]
+            idx = 0 if value is None else level_to_idx.get(str(value), 0)
+            return np.full(len(series), idx, dtype=np.int32), levels
 
         # Polars-native mapping is ~4x faster than a Python list comprehension
         # over to_numpy() (avoids per-element str() and dict.get()).
         indices = (
-            new_data[var_name]
-            .cast(pl.Utf8)
+            series.cast(pl.Utf8)
             .replace_strict(level_to_idx, default=0, return_dtype=pl.Int32)
             .to_numpy()
         )
         return indices, levels
+
+    def _get_categorical_level_to_idx(
+        self,
+        var_name: str,
+        levels: list[str],
+    ) -> dict[str, int]:
+        cache = getattr(self, "_cat_level_to_idx_cache", None)
+        if cache is None:
+            cache = {}
+            self._cat_level_to_idx_cache = cache
+        cached = cache.get(var_name)
+        if cached is None:
+            cached = {level: i for i, level in enumerate(levels)}
+            cache[var_name] = cached
+        return cached
 
     def _encode_categorical_new(
         self,
@@ -1925,6 +2548,7 @@ class InteractionBuilder:
         new_data: pl.DataFrame,
         factor: str,
         force_linear: set[str] | None = None,
+        spline_basis_cache: dict[str, np.ndarray] | None = None,
     ) -> np.ndarray:
         """Resolve a single interaction factor to column(s) for new data.
 
@@ -1937,10 +2561,7 @@ class InteractionBuilder:
         if factor not in _force_linear:
             spline = self._parse_spline_factor(factor)
             if spline is not None:
-                x = new_data[spline.var_name].to_numpy().astype(self.dtype)
-                fitted_spline = self._fitted_splines.get(spline.var_name, spline)
-                basis, _ = fitted_spline.transform(x)
-                return basis  # 2-D
+                return self._spline_basis_new_cached(new_data, spline, spline_basis_cache)
         return new_data[factor].to_numpy().astype(self.dtype)
 
     def _build_continuous_interaction_new(
@@ -1975,7 +2596,7 @@ class InteractionBuilder:
                 for i, j in enumerate(idx_combo):
                     col = col * bases[i][:, j]
                 all_columns.append(col)
-            return np.column_stack(all_columns)
+            return self._stack_columns(all_columns, n, self.dtype)
 
     def _get_categorical_names(self, var_name: str) -> list[str]:
         """Get cached categorical column names from training."""
@@ -2091,7 +2712,7 @@ class InteractionBuilder:
                 all_columns = [col * cont_product.reshape(-1, 1) for col in all_columns]
 
             if all_columns:
-                return np.column_stack(all_columns)
+                return self._stack_columns(all_columns, n, self.dtype)
             return np.zeros((n, 0), dtype=self.dtype)
 
         # Standard continuous × categorical (no splines) — use Rust

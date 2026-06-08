@@ -3013,6 +3013,65 @@ class TestPairDiagnostics:
         )
         assert diag.interactions == []
 
+    def test_include_fitted_interactions_prepares_transform_outputs(self):
+        """Fitted interaction diagnostics can use model-owned transform outputs."""
+        import polars as pl
+        import rustystats as rs
+
+        data = self._make_data(n=600).with_columns(
+            pl.when(pl.col("age") >= 45.0)
+            .then(pl.lit("older"))
+            .otherwise(pl.lit("younger"))
+            .alias("age_band")
+        )
+        transforms = [
+            {
+                "type": "lookup",
+                "name": "age_band_lookup",
+                "sources": ["age_band"],
+                "output": "age_band_score",
+                "output_dtype": "float64",
+                "keys": [["younger"], ["older"]],
+                "values": [0.0, 1.0],
+                "default": 0.0,
+                "on_unseen": "default",
+                "on_null": "default",
+            }
+        ]
+
+        result = rs.glm_dict(
+            response="y",
+            terms={
+                "age": {"type": "linear"},
+                "region": {"type": "categorical"},
+            },
+            interactions=[
+                {
+                    "age_band_score": {"type": "linear"},
+                    "region": {"type": "categorical"},
+                    "include_main": False,
+                }
+            ],
+            data=data,
+            family="poisson",
+            exposure="exposure",
+            input_transforms=transforms,
+        ).fit()
+
+        assert "age_band_score" not in data.columns
+        diag = result.diagnostics(
+            train_data=data,
+            test_data=data[:200],
+            categorical_factors=["region"],
+            continuous_factors=["age"],
+            include_fitted_interactions=True,
+        )
+
+        assert len(diag.interactions) == 1
+        assert diag.interactions[0].name == "age_band_score:region"
+        assert diag.interactions[0].in_model is True
+        assert diag.interaction_blocks == []
+
     def test_post_fit_basic_shape(self):
         """One requested pair → one InteractionDiagnostics. Cells contain
         raw aggregates; axis labels match the input columns.
@@ -3412,6 +3471,108 @@ class TestFactorExtensions:
 
 
 class TestDestylerMethodologyExtensions:
+    def test_factor_diagnostics_treat_single_source_transform_output_as_in_model(self):
+        import rustystats as rs
+
+        rng = np.random.default_rng(20)
+        n = 240
+        area = rng.choice(["A", "B", "C"], n)
+        exposure = rng.uniform(0.7, 1.3, n)
+        area_lookup = {"A": -0.2, "B": 0.0, "C": 0.25}
+        eta = -1.8 + np.array([area_lookup[v] for v in area])
+        y = rng.poisson(np.exp(eta) * exposure)
+        data = pl.DataFrame({"y": y, "area": area, "exposure": exposure})
+
+        result = rs.glm_dict(
+            response="y",
+            terms={"area_fts": {"type": "linear"}},
+            input_transforms=[
+                {
+                    "type": "lookup",
+                    "name": "area_frozen_statistic",
+                    "sources": ["area"],
+                    "output": "area_fts",
+                    "keys": [["A"], ["B"], ["C"]],
+                    "values": [-0.2, 0.0, 0.25],
+                    "default": 0.0,
+                    "output_dtype": "float64",
+                    "on_unseen": "default",
+                    "on_null": "default",
+                }
+            ],
+            data=data,
+            family="poisson",
+            exposure="exposure",
+        ).fit()
+
+        diag = result.diagnostics(
+            train_data=data,
+            categorical_factors=["area"],
+            continuous_factors=[],
+            compute_vif=False,
+            compute_deviance_by_level=False,
+            compute_lift=False,
+            compute_partial_dep=False,
+            compute_robust_se=False,
+            compute_coefficients=False,
+            compute_score_tests=True,
+        )
+
+        area_diag = next(f for f in diag.factors if f.name == "area")
+        assert area_diag.in_model is True
+        assert area_diag.transform == "area_fts"
+        assert area_diag.score_test is None
+        assert area_diag.coefficients is not None
+        assert area_diag.coefficients[0].term == "area_fts"
+
+    def test_score_test_design_gate_treats_transform_alias_as_fitted(self):
+        from rustystats.diagnostics.api import _score_tests_need_design_matrix
+        from rustystats.diagnostics.computer import DiagnosticsComputer
+
+        y = np.array([0.0, 1.0, 0.0, 2.0])
+        mu = np.array([0.4, 0.7, 0.5, 1.1])
+        computer = DiagnosticsComputer(
+            y=y,
+            mu=mu,
+            linear_predictor=np.log(mu),
+            family="poisson",
+            n_params=2,
+            deviance=1.0,
+            feature_names=["Intercept", "area_fts"],
+        )
+
+        class Result:
+            pass
+
+        result = Result()
+        result._input_transforms = [
+            {
+                "sources": ["area"],
+                "output": "area_fts",
+            }
+        ]
+
+        assert (
+            _score_tests_need_design_matrix(
+                computer,
+                result,
+                categorical_factors=["area"],
+                continuous_factors=[],
+                compute_score_tests=True,
+            )
+            is False
+        )
+        assert (
+            _score_tests_need_design_matrix(
+                computer,
+                result,
+                categorical_factors=["unfitted"],
+                continuous_factors=[],
+                compute_score_tests=True,
+            )
+            is True
+        )
+
     def test_partial_dependence_and_encoding_metadata(self):
         import rustystats as rs
 
@@ -3883,6 +4044,49 @@ class TestPairDiagnosticsHelpers:
         assert _build_design_correlation_matrix(None) is None
         assert _build_design_correlation_matrix(np.array([[1.0]])) is None  # n<=1
         assert _build_design_correlation_matrix(np.empty((10, 0))) is None  # p==0
+
+    def test_streamed_correlation_moments_match_full_context(self):
+        from rustystats.diagnostics.pair_diagnostics import (
+            _build_design_correlation_matrix,
+            _build_design_correlation_matrix_from_moments,
+            _compute_block_gvif,
+            _correlation_moments_for_design_chunk,
+        )
+
+        rng = np.random.default_rng(8)
+        X = rng.normal(size=(240, 6))
+        X[:, 2] = 0.5 * X[:, 0] + rng.normal(scale=0.1, size=X.shape[0])
+
+        sums_total = None
+        gram_total = None
+        total_rows = 0
+        for chunk in np.array_split(X, 5):
+            n_rows, sums, gram_upper = _correlation_moments_for_design_chunk(chunk)
+            total_rows += n_rows
+            sums_total = sums if sums_total is None else sums_total + sums
+            gram_total = gram_upper if gram_total is None else gram_total + gram_upper
+
+        full = _build_design_correlation_matrix(X)
+        streamed = _build_design_correlation_matrix_from_moments(
+            total_rows,
+            sums_total,
+            gram_total,
+        )
+        assert full is not None
+        assert streamed is not None
+
+        np.testing.assert_allclose(streamed.matrix, full.matrix, rtol=1e-12, atol=1e-12)
+        np.testing.assert_allclose(
+            streamed.vif_values,
+            full.vif_values,
+            rtol=1e-9,
+            atol=1e-9,
+        )
+        assert _compute_block_gvif(streamed, 0, 3) == pytest.approx(
+            _compute_block_gvif(full, 0, 3),
+            rel=1e-9,
+            abs=1e-9,
+        )
 
     # ----- representation tagging -----
 
@@ -4786,7 +4990,7 @@ class TestPairDiagnosticsDeterminism:
     def test_gvif_correlation_matrix_computed_once(self):
         """The expensive O(n·p²) correlation-matrix computation runs ONCE per
         diagnostics call regardless of how many fitted blocks need a GVIF.
-        Spies on ``_build_design_correlation_matrix`` and asserts the call
+        Spies on the dense and streamed context builders and asserts the call
         count, guarding against a future refactor that recomputes per-block.
         """
         import polars as pl
@@ -4829,14 +5033,20 @@ class TestPairDiagnosticsDeterminism:
         # ``from .pair_diagnostics import _build_design_correlation_matrix``).
         from rustystats.diagnostics import api as diag_api
 
-        original = diag_api._build_design_correlation_matrix
-        call_count = {"n": 0}
+        original_dense = diag_api._build_design_correlation_matrix
+        original_streamed = diag_api._build_design_correlation_context_from_model
+        call_count = {"dense": 0, "streamed": 0}
 
-        def counting_builder(*args, **kwargs):
-            call_count["n"] += 1
-            return original(*args, **kwargs)
+        def counting_dense_builder(*args, **kwargs):
+            call_count["dense"] += 1
+            return original_dense(*args, **kwargs)
 
-        diag_api._build_design_correlation_matrix = counting_builder
+        def counting_streamed_builder(*args, **kwargs):
+            call_count["streamed"] += 1
+            return original_streamed(*args, **kwargs)
+
+        diag_api._build_design_correlation_matrix = counting_dense_builder
+        diag_api._build_design_correlation_context_from_model = counting_streamed_builder
         try:
             diag = result.diagnostics(
                 train_data=data,
@@ -4846,11 +5056,13 @@ class TestPairDiagnosticsDeterminism:
                 interactions=[("x1", "region"), ("x2", "region")],
             )
         finally:
-            diag_api._build_design_correlation_matrix = original
+            diag_api._build_design_correlation_matrix = original_dense
+            diag_api._build_design_correlation_context_from_model = original_streamed
 
-        # Exactly one O(n·p²) standardize per diagnostics call — not one per
-        # factor and not one per interaction.
-        assert call_count["n"] == 1, f"expected 1 correlation-matrix build, got {call_count['n']}"
+        # Exactly one O(n·p²) context build per diagnostics call — not one per
+        # factor and not one per interaction. All factors are fitted, so the
+        # optimized streamed path should be used instead of dense materialize.
+        assert call_count == {"dense": 0, "streamed": 1}
         # And the GVIFs that depend on it are populated.
         assert sum(1 for f in diag.factors if f.gvif is not None) >= 3
 

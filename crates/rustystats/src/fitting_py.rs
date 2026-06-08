@@ -10,7 +10,7 @@
 // =============================================================================
 
 use ndarray::{Array1, Array2, ArrayView2};
-use numpy::{PyReadonlyArray1, PyReadonlyArray2};
+use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use rayon::iter::IntoParallelIterator;
@@ -23,8 +23,9 @@ use rustystats_core::families::{Family, NegativeBinomialFamily, PoissonFamily};
 use rustystats_core::links::Link;
 use rustystats_core::regularization::{RegularizationConfig, Standardization};
 use rustystats_core::solvers::{
-    fit_glm_unified, fit_smooth_glm_full_matrix, FitConfig, IRLSConfig, IRLSResult, Monotonicity,
-    SmoothGLMConfig, SmoothTermSpec,
+    build_sparse_row_cache_if_beneficial, fit_glm_unified, fit_glm_unified_with_sparse_cache,
+    fit_smooth_glm_full_matrix, FitConfig, IRLSConfig, IRLSResult, Monotonicity, SmoothGLMConfig,
+    SmoothTermSpec,
 };
 
 use crate::families_py::{
@@ -32,6 +33,8 @@ use crate::families_py::{
     resolve_negbinomial_theta, resolve_tweedie_var_power, validate_tweedie_fit_response,
 };
 use crate::results_py::PyGLMResults;
+
+const MIN_WEIGHTED_STD: f64 = 1e-12;
 
 // =============================================================================
 // Helpers: reduce boilerplate for smooth result conversion
@@ -150,12 +153,224 @@ fn build_standardization(
     }
 }
 
+#[pyfunction]
+#[pyo3(signature = (x, weights=None, pen_mask=None, fit_intercept=true))]
+pub fn compute_standardization_py<'py>(
+    py: Python<'py>,
+    x: PyReadonlyArray2<f64>,
+    weights: Option<PyReadonlyArray1<f64>>,
+    pen_mask: Option<PyReadonlyArray1<bool>>,
+    fit_intercept: bool,
+) -> PyResult<(
+    Bound<'py, PyArray1<f64>>,
+    Bound<'py, PyArray1<f64>>,
+    Bound<'py, PyArray1<f64>>,
+)> {
+    let x_view = x.as_array();
+    let (n, p) = x_view.dim();
+    let weights_view = weights.as_ref().map(|w| w.as_array());
+    if let Some(w) = weights_view.as_ref() {
+        if w.ndim() != 1 || w.len() != n {
+            return Err(PyValueError::new_err(format!(
+                "weights must be length {} for standardization, got length {}.",
+                n,
+                w.len()
+            )));
+        }
+    }
+
+    let mut mask = vec![true; p];
+    if let Some(pm) = pen_mask.as_ref() {
+        let pm_view = pm.as_array();
+        if pm_view.ndim() != 1 || pm_view.len() != p {
+            return Err(PyValueError::new_err(format!(
+                "pen_mask must be length {} for standardization, got length {}.",
+                p,
+                pm_view.len()
+            )));
+        }
+        for (dst, src) in mask.iter_mut().zip(pm_view.iter()) {
+            *dst = *src;
+        }
+    }
+    if fit_intercept && p > 0 {
+        mask[0] = false;
+    }
+
+    let active: Vec<usize> = mask
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, active)| active.then_some(idx))
+        .collect();
+
+    let (center, scale, ridge_xtx_diag) = py.detach(|| {
+        let mut center = vec![0.0; p];
+        let mut scale = vec![1.0; p];
+        let mut ridge_xtx_diag = vec![0.0; p];
+        if p == 0 || active.is_empty() {
+            return Ok((center, scale, ridge_xtx_diag));
+        }
+
+        let weight_sum = match weights_view.as_ref() {
+            Some(w) => w.iter().copied().sum::<f64>(),
+            None => n as f64,
+        };
+        if !weight_sum.is_finite() || weight_sum <= 0.0 {
+            return Err(PyValueError::new_err(format!(
+                "standardization requires positive finite sum(weights), got {}.",
+                weight_sum
+            )));
+        }
+
+        let active_len = active.len();
+        let x_slice = if x_view.is_standard_layout() {
+            x_view.as_slice()
+        } else {
+            None
+        };
+        let weights_slice = weights_view.as_ref().and_then(|w| w.as_slice());
+        let target_chunks = rayon::current_num_threads().max(1);
+        let chunk_size = n.div_ceil(target_chunks).max(1);
+        let num_chunks = n.div_ceil(chunk_size);
+
+        let sums = (0..num_chunks)
+            .into_par_iter()
+            .map(|chunk_idx| {
+                let start = chunk_idx * chunk_size;
+                let end = (start + chunk_size).min(n);
+                let mut local = vec![0.0; active_len];
+                match (x_slice, weights_slice) {
+                    (Some(xs), Some(ws)) => {
+                        for row in start..end {
+                            let w = unsafe { *ws.get_unchecked(row) };
+                            let row_start = row * p;
+                            for (slot, &col) in active.iter().enumerate() {
+                                local[slot] += w * unsafe { *xs.get_unchecked(row_start + col) };
+                            }
+                        }
+                    }
+                    (Some(xs), None) => {
+                        for row in start..end {
+                            let row_start = row * p;
+                            for (slot, &col) in active.iter().enumerate() {
+                                local[slot] += unsafe { *xs.get_unchecked(row_start + col) };
+                            }
+                        }
+                    }
+                    _ => {
+                        for row in start..end {
+                            let w = weights_view.as_ref().map_or(1.0, |wv| wv[row]);
+                            for (slot, &col) in active.iter().enumerate() {
+                                local[slot] += w * x_view[[row, col]];
+                            }
+                        }
+                    }
+                }
+                local
+            })
+            .reduce(
+                || vec![0.0; active_len],
+                |mut a, b| {
+                    for i in 0..active_len {
+                        a[i] += b[i];
+                    }
+                    a
+                },
+            );
+
+        let means: Vec<f64> = sums.iter().map(|sum| sum / weight_sum).collect();
+
+        let variances = (0..num_chunks)
+            .into_par_iter()
+            .map(|chunk_idx| {
+                let start = chunk_idx * chunk_size;
+                let end = (start + chunk_size).min(n);
+                let mut local = vec![0.0; active_len];
+                match (x_slice, weights_slice) {
+                    (Some(xs), Some(ws)) => {
+                        for row in start..end {
+                            let w = unsafe { *ws.get_unchecked(row) };
+                            let row_start = row * p;
+                            for (slot, &col) in active.iter().enumerate() {
+                                let delta =
+                                    unsafe { *xs.get_unchecked(row_start + col) } - means[slot];
+                                local[slot] += w * delta * delta;
+                            }
+                        }
+                    }
+                    (Some(xs), None) => {
+                        for row in start..end {
+                            let row_start = row * p;
+                            for (slot, &col) in active.iter().enumerate() {
+                                let delta =
+                                    unsafe { *xs.get_unchecked(row_start + col) } - means[slot];
+                                local[slot] += delta * delta;
+                            }
+                        }
+                    }
+                    _ => {
+                        for row in start..end {
+                            let w = weights_view.as_ref().map_or(1.0, |wv| wv[row]);
+                            for (slot, &col) in active.iter().enumerate() {
+                                let delta = x_view[[row, col]] - means[slot];
+                                local[slot] += w * delta * delta;
+                            }
+                        }
+                    }
+                }
+                local
+            })
+            .reduce(
+                || vec![0.0; active_len],
+                |mut a, b| {
+                    for i in 0..active_len {
+                        a[i] += b[i];
+                    }
+                    a
+                },
+            );
+
+        for (slot, &col) in active.iter().enumerate() {
+            let mean = means[slot];
+            let var = (variances[slot] / weight_sum).max(0.0);
+            let sd = var.sqrt();
+            let raw_diag = weight_sum * (var + mean * mean);
+            let valid = mean.is_finite() && sd.is_finite() && sd > MIN_WEIGHTED_STD;
+
+            ridge_xtx_diag[col] = if valid {
+                if fit_intercept {
+                    weight_sum
+                } else {
+                    raw_diag / (sd * sd)
+                }
+            } else {
+                raw_diag
+            };
+
+            if valid {
+                if fit_intercept {
+                    center[col] = mean;
+                }
+                scale[col] = sd;
+            }
+        }
+
+        Ok((center, scale, ridge_xtx_diag))
+    })?;
+
+    Ok((
+        center.into_pyarray(py),
+        scale.into_pyarray(py),
+        ridge_xtx_diag.into_pyarray(py),
+    ))
+}
+
 // =============================================================================
 // fit_glm_py — Standard GLM
 // =============================================================================
 
 #[pyfunction]
-#[pyo3(signature = (y, x, family, link=None, var_power=1.5, theta=1.0, offset=None, weights=None, alpha=0.0, l1_ratio=0.0, max_iter=25, tol=1e-8, nonneg_indices=None, nonpos_indices=None, store_design_matrix=false, allow_extended_tweedie=false, fit_intercept=true, center=None, scale=None))]
+#[pyo3(signature = (y, x, family, link=None, var_power=1.5, theta=1.0, offset=None, weights=None, alpha=0.0, l1_ratio=0.0, max_iter=25, tol=1e-8, nonneg_indices=None, nonpos_indices=None, store_design_matrix=false, allow_extended_tweedie=false, fit_intercept=true, center=None, scale=None, skip_covariance=false))]
 pub fn fit_glm_py(
     y: PyReadonlyArray1<f64>,
     x: PyReadonlyArray2<f64>,
@@ -176,6 +391,7 @@ pub fn fit_glm_py(
     fit_intercept: bool,
     center: Option<PyReadonlyArray1<f64>>,
     scale: Option<PyReadonlyArray1<f64>>,
+    skip_covariance: bool,
 ) -> PyResult<PyGLMResults> {
     let y_array: Array1<f64> = y.as_array().to_owned();
     let x_view = x.as_array(); // Zero-copy view of numpy array
@@ -206,7 +422,7 @@ pub fn fit_glm_py(
         nonneg_indices: nonneg_indices.unwrap_or_default(),
         nonpos_indices: nonpos_indices.unwrap_or_default(),
         regularization: reg_config,
-        skip_covariance: false,
+        skip_covariance,
         standardization,
     };
 
@@ -494,6 +710,7 @@ struct CVFoldProfile {
     n_train: usize,
     n_val: usize,
     split_copy_seconds: f64,
+    sparse_cache_seconds: f64,
     standardize_seconds: f64,
     setup_seconds: f64,
     fit_seconds: Vec<f64>,
@@ -926,6 +1143,9 @@ pub fn fit_fold_path_py<'py>(
         x_train_view.to_owned()
     };
     let standardize_seconds = standardize_start.elapsed().as_secs_f64();
+    let sparse_cache_start = Instant::now();
+    let sparse_cache = build_sparse_row_cache_if_beneficial(x_train_work.view());
+    let sparse_cache_seconds = sparse_cache_start.elapsed().as_secs_f64();
 
     let nonneg = nonneg_indices.unwrap_or_default();
     let nonpos = nonpos_indices.unwrap_or_default();
@@ -970,7 +1190,7 @@ pub fn fit_fold_path_py<'py>(
         };
 
         let fit_start = Instant::now();
-        let result = match fit_glm_unified(
+        let result = match fit_glm_unified_with_sparse_cache(
             &y_train_array,
             x_train_work.view(),
             fam.as_ref(),
@@ -979,6 +1199,7 @@ pub fn fit_fold_path_py<'py>(
             offset_train_array.as_ref(),
             weights_train_array.as_ref(),
             warm_coefficients.as_ref(),
+            sparse_cache.as_ref(),
         ) {
             Ok(r) => {
                 fit_seconds.push(fit_start.elapsed().as_secs_f64());
@@ -1062,6 +1283,7 @@ pub fn fit_fold_path_py<'py>(
     profile.set_item("validation_seconds", validation_seconds)?;
     profile.set_item("setup_seconds", setup_seconds)?;
     profile.set_item("standardize_seconds", standardize_seconds)?;
+    profile.set_item("sparse_cache_seconds", sparse_cache_seconds)?;
     profile.set_item("fit_seconds", fit_seconds)?;
     profile.set_item("validation_dot_seconds", validation_dot_seconds)?;
     profile.set_item("validation_score_seconds", validation_score_seconds)?;
@@ -1309,6 +1531,9 @@ pub fn fit_cv_path_py<'py>(
                 }
             }
             profile.standardize_seconds = standardize_start.elapsed().as_secs_f64();
+            let sparse_cache_start = Instant::now();
+            let fold_sparse_cache = build_sparse_row_cache_if_beneficial(x_train.view());
+            profile.sparse_cache_seconds = sparse_cache_start.elapsed().as_secs_f64();
 
             let fold_setup_start = Instant::now();
             let thread_fam = match family_from_name_with_tweedie_support(
@@ -1367,7 +1592,7 @@ pub fn fit_cv_path_py<'py>(
                 };
 
                 let fit_start = Instant::now();
-                let result = match fit_glm_unified(
+                let result = match fit_glm_unified_with_sparse_cache(
                     &y_train,
                     x_train.view(),
                     thread_fam.as_ref(),
@@ -1376,6 +1601,7 @@ pub fn fit_cv_path_py<'py>(
                     offset_train.as_ref(),
                     weights_train.as_ref(),
                     warm_coefficients.as_ref(),
+                    fold_sparse_cache.as_ref(),
                 ) {
                     Ok(r) => {
                         profile.fit_seconds.push(fit_start.elapsed().as_secs_f64());
@@ -1562,6 +1788,7 @@ pub fn fit_cv_path_py<'py>(
     profile.set_item("total_wall_seconds", total_start.elapsed().as_secs_f64())?;
 
     let total_split_copy: f64 = fold_profiles.iter().map(|f| f.split_copy_seconds).sum();
+    let total_sparse_cache: f64 = fold_profiles.iter().map(|f| f.sparse_cache_seconds).sum();
     let total_standardize: f64 = fold_profiles.iter().map(|f| f.standardize_seconds).sum();
     let total_fold_setup: f64 = fold_profiles.iter().map(|f| f.setup_seconds).sum();
     let total_fit: f64 = fold_profiles
@@ -1579,6 +1806,7 @@ pub fn fit_cv_path_py<'py>(
 
     let totals = pyo3::types::PyDict::new(py);
     totals.set_item("fold_split_copy_seconds", total_split_copy)?;
+    totals.set_item("fold_sparse_cache_seconds", total_sparse_cache)?;
     totals.set_item("fold_standardize_seconds", total_standardize)?;
     totals.set_item("fold_setup_seconds", total_fold_setup)?;
     totals.set_item("alpha_fit_seconds", total_fit)?;
@@ -1593,6 +1821,7 @@ pub fn fit_cv_path_py<'py>(
         fold_dict.set_item("n_train", fold_profile.n_train)?;
         fold_dict.set_item("n_val", fold_profile.n_val)?;
         fold_dict.set_item("split_copy_seconds", fold_profile.split_copy_seconds)?;
+        fold_dict.set_item("sparse_cache_seconds", fold_profile.sparse_cache_seconds)?;
         fold_dict.set_item("standardize_seconds", fold_profile.standardize_seconds)?;
         fold_dict.set_item("setup_seconds", fold_profile.setup_seconds)?;
         fold_dict.set_item("fit_seconds", fold_profile.fit_seconds.clone())?;

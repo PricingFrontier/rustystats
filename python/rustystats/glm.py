@@ -50,6 +50,7 @@ _INFERENCE_CAVEATS = {
     "naive_after_cv_selection": "alpha was chosen by cross-validation",
     "constrained_boundary": "sign/monotonicity constraints are active",
     "unavailable": "penalized smooth terms (use effective df)",
+    "covariance_skipped": "covariance computation was skipped",
 }
 
 

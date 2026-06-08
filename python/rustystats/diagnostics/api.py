@@ -35,7 +35,9 @@ from rustystats.constants import (
 from rustystats.diagnostics.computer import DiagnosticsComputer, rank_sort_idx
 from rustystats.diagnostics.pair_diagnostics import (
     _build_design_correlation_matrix,
+    _build_design_correlation_matrix_from_moments,
     _compute_block_gvif,
+    _correlation_moments_for_design_chunk,
 )
 from rustystats.diagnostics.types import (
     BasePredictionsByRole,
@@ -391,9 +393,49 @@ def _precompute_data_caches(
     return cat_cache, cat_unique_cache, cont_cache
 
 
+def _fit_design_source_data(result: Any, train_data: pl.DataFrame) -> pl.DataFrame | None:
+    """Return the fit-time prepared frame when it aligns with ``train_data``."""
+    builder = getattr(result, "_builder", None)
+    fit_data = getattr(builder, "data", None)
+    if isinstance(fit_data, pl.DataFrame) and fit_data.height == train_data.height:
+        return fit_data
+    return None
+
+
+def _iter_design_matrix_chunks(result: Any, train_data: pl.DataFrame):
+    """Yield design-matrix row chunks for ``train_data`` using the fitted builder."""
+    if not (hasattr(result, "_builder") and result._builder is not None):
+        return
+
+    from rustystats.formula import _compute_predict_chunk_size
+
+    n_rows = len(train_data)
+    n_features = len(result.params)
+    chunk_size = _compute_predict_chunk_size(n_features)
+    prepared_train = _fit_design_source_data(result, train_data)
+
+    if n_rows <= chunk_size:
+        prepared = (
+            prepared_train if prepared_train is not None else result.prepare_input(train_data)
+        )
+        yield result._builder.transform_new_data(prepared)
+        return
+
+    for start in range(0, n_rows, chunk_size):
+        stop = min(start + chunk_size, n_rows)
+        chunk = (
+            prepared_train.slice(start, stop - start)
+            if prepared_train is not None
+            else result.prepare_input(train_data.slice(start, stop - start))
+        )
+        yield result._builder.transform_new_data(chunk)
+
+
 def _extract_score_test_matrices(
     result: Any,
     train_data: pl.DataFrame,
+    *,
+    build_design_matrix: bool = True,
 ) -> tuple[Any, Any, Any]:
     """Return (design_matrix, bread_matrix, irls_weights) for Rao score tests.
 
@@ -403,38 +445,102 @@ def _extract_score_test_matrices(
     design_matrix = None
     bread_matrix = None
     irls_weights = None
-    if hasattr(result, "get_design_matrix"):
+    if build_design_matrix and hasattr(result, "get_design_matrix"):
         design_matrix = result.get_design_matrix()
-    if design_matrix is None and hasattr(result, "_builder") and result._builder is not None:
+    if (
+        build_design_matrix
+        and design_matrix is None
+        and hasattr(result, "_builder")
+        and result._builder is not None
+    ):
         # Chunked rebuild: for large n we write row-blocks into a preallocated
         # (n, p) output, so transient peak is ~2*(chunk_size*p*8) rather than
         # doubling during Rust's horizontal stack of the full build. Mirrors
         # the chunked predict() path in formula.py.
-        from rustystats.formula import _compute_predict_chunk_size
-
         n_rows = len(train_data)
         n_features = len(result.params)
-        chunk_size = _compute_predict_chunk_size(n_features)
-        if n_rows <= chunk_size:
-            # Small input: keep the single-shot fast path (bit-exact to
-            # pre-refactor behavior).
-            prepared = result.prepare_input(train_data)
-            design_matrix = result._builder.transform_new_data(prepared)
-        else:
+        chunks = _iter_design_matrix_chunks(result, train_data)
+        if chunks is not None:
             design_matrix = np.empty((n_rows, n_features), dtype=np.float64)
-            for start in range(0, n_rows, chunk_size):
-                stop = min(start + chunk_size, n_rows)
-                chunk = result.prepare_input(train_data.slice(start, stop - start))
-                X_chunk = result._builder.transform_new_data(chunk)
-                design_matrix[start:stop, :] = X_chunk
+            cursor = 0
+            for X_chunk in chunks:
+                stop = cursor + X_chunk.shape[0]
+                design_matrix[cursor:stop, :] = X_chunk
+                cursor = stop
                 # Mark the reference dead so the chunk can be freed before the
                 # next iteration allocates.
-                del X_chunk, chunk
+                del X_chunk
     if hasattr(result, "get_bread_matrix"):
         bread_matrix = result.get_bread_matrix()
     if hasattr(result, "get_irls_weights"):
         irls_weights = result.get_irls_weights()
     return design_matrix, bread_matrix, irls_weights
+
+
+def _score_tests_need_design_matrix(
+    computer: DiagnosticsComputer,
+    result: Any,
+    categorical_factors: list[str],
+    continuous_factors: list[str],
+    compute_score_tests: bool,
+) -> bool:
+    """Whether any requested factor needs the expanded design for a score test."""
+    if not compute_score_tests:
+        return False
+
+    factor_computer = getattr(computer, "_factors", None)
+    if factor_computer is None:
+        return bool(categorical_factors or continuous_factors)
+
+    refresh_aliases = getattr(factor_computer, "_refresh_transform_source_aliases", None)
+    if callable(refresh_aliases):
+        refresh_aliases(result)
+
+    get_feature = getattr(factor_computer, "_get_feature_for", None)
+    if not callable(get_feature):
+        return bool(categorical_factors or continuous_factors)
+
+    return any(not get_feature(name).indices for name in categorical_factors + continuous_factors)
+
+
+def _build_design_correlation_context_from_model(
+    result: Any,
+    train_data: pl.DataFrame,
+    *,
+    include_inverse: bool,
+) -> Any:
+    """Stream design chunks into a VIF/GVIF correlation context."""
+    chunks = _iter_design_matrix_chunks(result, train_data)
+    if chunks is None:
+        return None
+
+    total_rows = 0
+    sums_total: np.ndarray | None = None
+    gram_total: np.ndarray | None = None
+    for X_chunk in chunks:
+        n_rows, sums, gram_upper = _correlation_moments_for_design_chunk(X_chunk)
+        if sums_total is None:
+            sums_total = np.zeros_like(sums)
+            gram_total = np.zeros_like(gram_upper)
+        if (
+            sums_total.shape != sums.shape
+            or gram_total is None
+            or gram_total.shape != gram_upper.shape
+        ):
+            return None
+        total_rows += n_rows
+        sums_total += sums
+        gram_total += gram_upper
+        del X_chunk
+
+    if sums_total is None or gram_total is None:
+        return None
+    return _build_design_correlation_matrix_from_moments(
+        total_rows,
+        sums_total,
+        gram_total,
+        include_inverse=include_inverse,
+    )
 
 
 def _maybe_compute_interactions(
@@ -605,9 +711,19 @@ def _maybe_compute_vif(
     computer: DiagnosticsComputer,
     design_matrix: Any,
     feature_names: list[str],
+    correlation_context: Any = None,
 ) -> Any:
     """Compute VIF/multicollinearity scores when enabled and design matrix available."""
-    if not compute_vif or design_matrix is None:
+    if not compute_vif:
+        return None
+    if correlation_context is not None:
+        vif_results = computer.compute_vif_from_correlation_context(
+            correlation_context,
+            feature_names,
+        )
+        if vif_results is not None:
+            return vif_results
+    if design_matrix is None:
         return None
     return computer.compute_vif(design_matrix, feature_names)
 
@@ -1338,6 +1454,59 @@ def _split_interaction_specs(interactions: list[Any] | None) -> tuple[list[Any],
     return pairs, blocks
 
 
+def _resolve_diagnostics_interactions(
+    result: Any,
+    interactions: list[Any] | None,
+    include_fitted_interactions: bool,
+) -> list[Any] | None:
+    """Merge caller-requested interactions with fitted model interactions."""
+    if not include_fitted_interactions:
+        return interactions
+    fitted = list(getattr(result, "_interactions_spec", None) or [])
+    if not fitted:
+        return interactions
+    if interactions is None:
+        return fitted
+    resolved = list(interactions)
+    for spec in fitted:
+        if spec not in resolved:
+            resolved.append(spec)
+    return resolved
+
+
+def _interaction_diagnostics_data(
+    result: Any,
+    train_data: pl.DataFrame,
+    test_data: pl.DataFrame | None,
+    interaction_specs: list[Any] | None,
+) -> tuple[pl.DataFrame, pl.DataFrame | None]:
+    """Prepare data for interaction diagnostics when specs use transform outputs."""
+    if not interaction_specs or not hasattr(result, "prepare_input"):
+        return train_data, test_data
+    transform_outputs = {
+        spec.get("output")
+        for spec in getattr(result, "_input_transforms", [])
+        if isinstance(spec, dict) and spec.get("output")
+    }
+    if not transform_outputs:
+        return train_data, test_data
+    factors = {
+        factor for spec in interaction_specs for factor in _extract_interaction_spec_factors(spec)
+    }
+    needed_outputs = factors & transform_outputs
+    if not needed_outputs:
+        return train_data, test_data
+    train_has_outputs = needed_outputs.issubset(set(train_data.columns))
+    test_has_outputs = test_data is None or needed_outputs.issubset(set(test_data.columns))
+    if train_has_outputs and test_has_outputs:
+        return train_data, test_data
+    prepared_train = train_data if train_has_outputs else result.prepare_input(train_data)
+    prepared_test = (
+        test_data if test_has_outputs or test_data is None else result.prepare_input(test_data)
+    )
+    return prepared_train, prepared_test
+
+
 def _find_interaction_slot(model: Any, factors: list[str]) -> Any | None:
     builder = getattr(model, "_builder", None)
     slots = getattr(builder, "_term_slots", None) if builder is not None else None
@@ -1947,6 +2116,7 @@ def compute_diagnostics(
     # do NOT need to appear in the fitted model — diagnostics work on raw
     # columns; ``in_model`` is set from TermSlot membership.
     interactions: list[Any] | None = None,
+    include_fitted_interactions: bool = False,
     # Test data for overfitting detection (response/exposure auto-inferred from model)
     test_data: pl.DataFrame | None = None,
     # Control which enhanced diagnostics to compute
@@ -2004,6 +2174,10 @@ def compute_diagnostics(
         ``test_surface_grid`` cell-aligned with the train surface (same bin
         edges / level lists), so the caller can compute element-wise
         train/test divergence in a single subtraction.
+    include_fitted_interactions : bool, default=False
+        When true, include the model's fitted interaction specs in the
+        post-fit interaction diagnostics output. This is opt-in because
+        surface diagnostics can be comparatively expensive for wide models.
     test_data : pl.DataFrame, optional
         Test/holdout data for overfitting detection. Response and exposure
         columns are automatically inferred from the model's formula.
@@ -2125,8 +2299,19 @@ def compute_diagnostics(
     cat_cache_train, cat_unique_cache_train, cont_cache_train = _precompute_data_caches(
         train_data, categorical_factors, continuous_factors
     )
+    score_tests_need_design = _score_tests_need_design_matrix(
+        computer,
+        result,
+        categorical_factors,
+        continuous_factors,
+        compute_score_tests,
+    )
     score_test_design_matrix, score_test_bread_matrix, score_test_irls_weights = (
-        _extract_score_test_matrices(result, train_data)
+        _extract_score_test_matrices(
+            result,
+            train_data,
+            build_design_matrix=score_tests_need_design,
+        )
     )
 
     # 4. Compute core diagnostics
@@ -2195,8 +2380,51 @@ def compute_diagnostics(
         )
     )
 
+    interaction_specs = _resolve_diagnostics_interactions(
+        result,
+        interactions,
+        include_fitted_interactions,
+    )
+    pair_interactions, block_interactions = _split_interaction_specs(interaction_specs)
+
+    needs_block_gvif = bool(
+        pair_interactions or block_interactions or any(f.in_model for f in factors)
+    )
+    block_gvif_correlation = None
+    if compute_vif or needs_block_gvif:
+        if score_test_design_matrix is not None:
+            block_gvif_correlation = _build_design_correlation_matrix(
+                score_test_design_matrix,
+                include_inverse=needs_block_gvif,
+            )
+        else:
+            block_gvif_correlation = _build_design_correlation_context_from_model(
+                result,
+                train_data,
+                include_inverse=needs_block_gvif,
+            )
+            if block_gvif_correlation is None:
+                score_test_design_matrix, score_test_bread_matrix, score_test_irls_weights = (
+                    _extract_score_test_matrices(
+                        result,
+                        train_data,
+                        build_design_matrix=True,
+                    )
+                )
+                if score_test_design_matrix is not None:
+                    block_gvif_correlation = _build_design_correlation_matrix(
+                        score_test_design_matrix,
+                        include_inverse=needs_block_gvif,
+                    )
+
     # 5. Optional enhanced diagnostics for agentic workflows
-    vif_results = _maybe_compute_vif(compute_vif, computer, score_test_design_matrix, feature_names)
+    vif_results = _maybe_compute_vif(
+        compute_vif,
+        computer,
+        score_test_design_matrix,
+        feature_names,
+        correlation_context=block_gvif_correlation,
+    )
     coef_summary, robust_se_enriched = _maybe_compute_coefficients(
         compute_coefficients, compute_robust_se, computer, result, link, warnings
     )
@@ -2254,19 +2482,12 @@ def compute_diagnostics(
         ranking=ranking,
     )
 
-    pair_interactions, block_interactions = _split_interaction_specs(interactions)
-
-    # 6b. Pre-build the regularized design correlation matrix ONCE per
-    # diagnostics call. Both the per-factor GVIF (step 6d) and the
-    # per-pair GVIF (step 6c) reuse it. This amortizes the O(n·p²)
-    # standardize + ``Z.T @ Z`` work over all blocks rather than paying
-    # it per factor and per interaction. Uses the same Rust path as the
-    # existing per-column VIF computation (compute_correlation_and_vif).
-    block_gvif_correlation: np.ndarray | None = None
-    if score_test_design_matrix is not None and (
-        pair_interactions or block_interactions or any(f.in_model for f in factors)
-    ):
-        block_gvif_correlation = _build_design_correlation_matrix(score_test_design_matrix)
+    pair_train_data, pair_test_data = _interaction_diagnostics_data(
+        result,
+        train_data,
+        test_data,
+        interaction_specs,
+    )
 
     # 6c. User-specified pair (interaction) diagnostics. Only fires when the
     # caller passed ``interactions=[...]``. Independent of the auto-detector
@@ -2276,13 +2497,13 @@ def compute_diagnostics(
         interaction_diagnostics = _compute_pair_diagnostics(
             computer=computer,
             interactions=pair_interactions,
-            train_data=train_data,
+            train_data=pair_train_data,
             result=result,
             response_col=response_col,
             exposure_col=exposure_col,
             score_test_design_matrix=score_test_design_matrix,
             score_test_bread_matrix=score_test_bread_matrix,
-            test_data=test_data,
+            test_data=pair_test_data,
             link=link,
             correlation_matrix=block_gvif_correlation,
             test_y=test_y_arr,

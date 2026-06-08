@@ -367,6 +367,13 @@ def compute_standardization_with_ridge_diag(
     if fit_intercept and p > 0:
         mask[0] = False
 
+    try:
+        from rustystats._rustystats import compute_standardization_py as _rust_standardization
+
+        return _rust_standardization(x, w, mask, fit_intercept)
+    except ImportError:
+        pass
+
     center = np.zeros(p, dtype=np.float64)
     scale = np.ones(p, dtype=np.float64)
     ridge_xtx_diag = np.zeros(p, dtype=np.float64)

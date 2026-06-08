@@ -8,7 +8,7 @@ objects cache Polars lookup frames for fast repeated scoring.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import polars as pl
@@ -32,6 +32,9 @@ class CompiledLookupTransform:
 
     spec: dict[str, Any]
     normalized_sources: tuple[str, ...]
+    _single_source_default_cache: dict[
+        tuple[str, str], tuple[list[Any], list[Any], pl.DataType]
+    ] = field(default_factory=dict, compare=False, repr=False)
 
     @property
     def name(self) -> str:
@@ -251,8 +254,28 @@ def apply_input_transforms(
         data = data.collect()
     compiled = _ensure_compiled(compiled_or_specs)
     out = data
+
+    pending_exprs: list[pl.Expr] = []
+    pending_outputs: set[str] = set()
+
+    def flush_pending() -> None:
+        nonlocal out, pending_exprs, pending_outputs
+        if pending_exprs:
+            out = out.with_columns(pending_exprs)
+            pending_exprs = []
+            pending_outputs = set()
+
     for transform in compiled:
+        if any(source in pending_outputs for source in transform.sources):
+            flush_pending()
+        fast_expr = _single_source_default_lookup_expr(out, transform)
+        if fast_expr is not None:
+            pending_exprs.append(fast_expr)
+            pending_outputs.add(transform.output)
+            continue
+        flush_pending()
         out = _apply_lookup(out, transform)
+    flush_pending()
     return out
 
 
@@ -492,6 +515,73 @@ def _apply_lookup(data: pl.DataFrame, transform: CompiledLookupTransform) -> pl.
 
     drop_cols = [match_id, *normalized_sources]
     return joined.drop([c for c in drop_cols if c in joined.columns])
+
+
+def _single_source_default_lookup_expr(
+    data: pl.DataFrame,
+    transform: CompiledLookupTransform,
+) -> pl.Expr | None:
+    """Build a no-join expression for simple one-column defaulting lookups.
+
+    Most score-time lookup transforms are small one-source maps with default
+    handling for null/unseen values. A vectorized replace avoids temp join keys
+    and right-hand lookup frames for those cases. The generic join path remains
+    the source of truth for multi-source joins, null-key matching, and
+    raise-policy diagnostics.
+    """
+    spec = transform.spec
+    if (
+        len(transform.sources) != 1
+        or spec["on_unseen"] != "default"
+        or spec["on_null"] != "default"
+    ):
+        return None
+
+    raw_vals = [key[0] for key in spec["keys"]]
+    if any(value is None for value in raw_vals):
+        return None
+
+    output = transform.output
+    if output in data.columns and not bool(spec["replace_existing"]):
+        raise PredictionError(
+            f"input transform {transform.name!r} output {output!r} already exists in data."
+        )
+
+    source = transform.sources[0]
+    norm = transform.normalized_sources[0]
+    dtype = data.schema[source]
+    cache_key = (source, repr(dtype))
+    cached = transform._single_source_default_cache.get(cache_key)
+    if cached is None:
+        key_series, source_expr = _normalize_key_and_source(
+            transform, source, dtype, raw_vals, norm
+        )
+        match_id = _unique_temp_name([*data.columns, transform.output, norm], _MATCH_ID)
+        key_frame = pl.DataFrame(
+            {
+                norm: key_series,
+                match_id: pl.Series(match_id, list(range(len(raw_vals))), dtype=pl.Int64),
+            }
+        )
+        _check_unique_normalized_keys(key_frame, transform, [norm], match_id)
+        return_dtype = pl.Float64 if spec["output_dtype"] == "float64" else pl.Utf8
+        cached = (key_series.to_list(), list(spec["values"]), return_dtype)
+        transform._single_source_default_cache[cache_key] = cached
+    else:
+        source_expr = (
+            pl.col(source).cast(pl.Utf8).alias(norm)
+            if dtype == pl.Null or _is_string_like(dtype)
+            else pl.col(source).alias(norm)
+        )
+
+    old_values, values, return_dtype = cached
+    expr = source_expr.replace_strict(
+        old_values,
+        values,
+        default=pl.lit(spec["default"]),
+        return_dtype=return_dtype,
+    ).alias(output)
+    return expr
 
 
 def _any_null_mask(data: pl.DataFrame, columns: list[str]) -> pl.Series:

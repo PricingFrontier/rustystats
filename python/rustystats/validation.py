@@ -69,22 +69,35 @@ def coerce_to_float64(
             f"Ensure all values are numeric (int, float, Decimal). Error: {e}"
         )
 
-    # Check for NaN
-    nan_count = np.isnan(result).sum()
-    if nan_count > 0 and not allow_nan:
-        nan_pct = 100 * nan_count / len(result)
-        raise ValidationError(
-            f"{name} contains {nan_count} NaN values ({nan_pct:.1f}%). "
-            "Either remove rows with missing values or impute them before fitting."
-        )
-
-    # Check for Inf
-    inf_count = np.isinf(result).sum()
-    if inf_count > 0 and not allow_inf:
-        raise ValidationError(
-            f"{name} contains {inf_count} infinite values. "
-            "Replace Inf/-Inf with finite values or remove those rows."
-        )
+    if not allow_nan and not allow_inf:
+        nonfinite = ~np.isfinite(result)
+        if nonfinite.any():
+            invalid = result[nonfinite]
+            nan_count = int(np.isnan(invalid).sum())
+            if nan_count > 0:
+                nan_pct = 100 * nan_count / result.size
+                raise ValidationError(
+                    f"{name} contains {nan_count} NaN values ({nan_pct:.1f}%). "
+                    "Either remove rows with missing values or impute them before fitting."
+                )
+            raise ValidationError(
+                f"{name} contains {invalid.size} infinite values. "
+                "Replace Inf/-Inf with finite values."
+            )
+    elif not allow_nan:
+        nan_count = int(np.isnan(result).sum())
+        if nan_count > 0:
+            nan_pct = 100 * nan_count / result.size
+            raise ValidationError(
+                f"{name} contains {nan_count} NaN values ({nan_pct:.1f}%). "
+                "Either remove rows with missing values or impute them before fitting."
+            )
+    elif not allow_inf:
+        inf_count = int(np.isinf(result).sum())
+        if inf_count > 0:
+            raise ValidationError(
+                f"{name} contains {inf_count} infinite values. Replace Inf/-Inf with finite values."
+            )
 
     return result
 
@@ -401,25 +414,6 @@ def validate_design_matrix(
             f"{name} has fewer observations ({n_obs}) than features ({n_features}). "
             "Model will be underdetermined. Consider regularization (alpha > 0).",
             UserWarning,
-        )
-
-    # Check for NaN/Inf (should be caught by coerce_to_float64, but double-check)
-    nan_mask = np.isnan(X)
-    if nan_mask.any():
-        nan_cols = np.where(nan_mask.any(axis=0))[0]
-        col_names = [feature_names[i] if feature_names else f"column {i}" for i in nan_cols[:5]]
-        raise ValidationError(
-            f"{name} contains NaN values in columns: {col_names}. "
-            "Remove or impute missing values before fitting."
-        )
-
-    inf_mask = np.isinf(X)
-    if inf_mask.any():
-        inf_cols = np.where(inf_mask.any(axis=0))[0]
-        col_names = [feature_names[i] if feature_names else f"column {i}" for i in inf_cols[:5]]
-        raise ValidationError(
-            f"{name} contains infinite values in columns: {col_names}. "
-            "Replace Inf/-Inf with finite values."
         )
 
     return X
