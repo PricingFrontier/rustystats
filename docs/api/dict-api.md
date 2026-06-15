@@ -158,8 +158,13 @@ result.decision_function(new_data)
 result.predict(new_data)
 result.predict_top_k(new_data, k=2)
 result.tier_mix(new_data)
-result.diagnostics()
-result.diagnostics_json()
+result.diagnostics(
+    train_data=quotes,
+    test_data=holdout,
+    categorical_factors=["Region", "Channel"],
+    continuous_factors=["DriverAge", "VehicleValue"],
+)
+result.diagnostics_json(train_data=quotes, test_data=holdout)
 ```
 
 Unpenalized fits are invariant to the chosen reference class up to coefficient
@@ -167,11 +172,13 @@ reparametrization. Baseline ridge is reference-dependent because it shrinks
 non-reference utilities toward the selected reference.
 
 `result.diagnostics()` returns a `MultinomialDiagnostics` object with weighted
-log loss, deviance/null deviance, AIC/BIC when likelihood inference is
-well-defined, a `K x K` confusion matrix, accuracy, top-2 accuracy, and actual
-versus predicted class mix. Class-weighted and regularized fits keep the
-diagnostics available but label coefficient/AIC-style inference as naive or not
-applicable.
+log loss, deviance/null deviance, McFadden pseudo R2, AIC/BIC when likelihood
+inference is well-defined, a `K x K` confusion matrix, accuracy, balanced
+accuracy, macro/per-class precision/recall/F1, actual versus predicted class
+mix, class-wise calibration curves and expected calibration error, reliability
+by predicted winning class, factor-level class-mix diagnostics, and optional
+train/test comparison. Class-weighted and regularized fits keep diagnostics
+available but label coefficient/AIC-style inference as naive or not applicable.
 
 ---
 

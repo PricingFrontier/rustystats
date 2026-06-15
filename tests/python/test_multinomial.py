@@ -98,6 +98,84 @@ def test_multinomial_diagnostics_summary_and_json():
     assert "Top-2 Accuracy" in summary
 
 
+def test_multinomial_phase2_diagnostics_train_test_calibration_and_factors():
+    data = _tier_frame(n=420, seed=1357).with_columns(
+        w=pl.when(pl.col("channel") == "agent").then(2.0).otherwise(1.0)
+    )
+    train = data.slice(0, 300)
+    test = data.slice(300)
+    classes = ["none", "basic", "standard", "premium"]
+
+    result = rs.multinomial_dict(
+        response="tier",
+        terms={"x": {"type": "linear"}, "channel": {"type": "categorical"}},
+        data=train,
+        classes=classes,
+        reference="none",
+        weights="w",
+    ).fit(compute_covariance=False)
+
+    diagnostics = result.diagnostics(
+        train_data=train.lazy(),
+        test_data=test,
+        categorical_factors=["channel"],
+        continuous_factors=["x"],
+    )
+
+    assert isinstance(diagnostics.train, rs.MultinomialDatasetDiagnostics)
+    assert isinstance(diagnostics, rs.MultinomialDiagnostics)
+    assert diagnostics.test is not None
+    assert diagnostics.train_test_comparison is not None
+    assert set(diagnostics.per_class_metrics) == set(classes)
+    assert set(diagnostics.class_calibration) == set(classes)
+    assert set(diagnostics.expected_calibration_error_by_class) == set(classes)
+    assert 0.0 <= diagnostics.multiclass_expected_calibration_error <= 1.0
+    assert diagnostics.mcfadden_pseudo_r2 is not None
+    assert diagnostics.balanced_accuracy is not None
+    assert diagnostics.macro_f1 is not None
+    for class_label in classes:
+        np.testing.assert_allclose(
+            diagnostics.class_mix_error[class_label],
+            diagnostics.actual_class_mix[class_label]
+            - diagnostics.predicted_class_mix[class_label],
+        )
+
+    np.testing.assert_allclose(diagnostics.train.confusion_matrix.sum(), train["w"].sum())
+    np.testing.assert_allclose(diagnostics.test.confusion_matrix.sum(), test["w"].sum())
+    assert diagnostics.train_test_comparison["class_mix_mae_test"] >= 0.0
+
+    factor_rows = diagnostics.factor_diagnostics
+    assert {row["dataset"] for row in factor_rows} == {"train", "test"}
+    assert {"channel", "x"}.issubset({row["factor"] for row in factor_rows})
+    channel_agent = next(
+        row
+        for row in factor_rows
+        if row["dataset"] == "train" and row["factor"] == "channel" and row["level"] == "agent"
+    )
+    np.testing.assert_allclose(sum(channel_agent["actual_class_mix"].values()), 1.0)
+    np.testing.assert_allclose(sum(channel_agent["predicted_class_mix"].values()), 1.0)
+    for class_label in classes:
+        np.testing.assert_allclose(
+            channel_agent["class_mix_error"][class_label],
+            channel_agent["actual_class_mix"][class_label]
+            - channel_agent["predicted_class_mix"][class_label],
+        )
+    assert channel_agent["observed_winning_class"] in classes
+    assert channel_agent["predicted_winning_class"] in classes
+    assert channel_agent["chi_square_class_mix"] is not None
+
+    payload = diagnostics.to_dict()
+    assert payload["train"]["name"] == "train"
+    assert payload["test"]["name"] == "test"
+    assert "factor_diagnostics" in result.diagnostics_json(
+        train_data=train,
+        test_data=test,
+        categorical_factors=["channel"],
+        continuous_factors=["x"],
+        indent=None,
+    )
+
+
 def test_multinomial_class_weighted_diagnostics_are_labelled_naive():
     data = _tier_frame(n=180, seed=246)
 
@@ -230,6 +308,7 @@ def test_serialization_round_trip_preserves_predictions():
     np.testing.assert_allclose(result.predict_proba(data), loaded.predict_proba(data))
     assert loaded.classes_ == result.classes_
     assert loaded.reference_ == result.reference_
+    assert loaded.diagnostics(train_data=data).nobs == data.height
 
 
 def test_array_availability_requires_prediction_override():
@@ -268,6 +347,20 @@ def test_rejects_unsupported_target_encoding_and_smooth_defaults():
             terms={"x": {"type": "bs"}},
             data=data,
         )
+
+
+def test_multinomial_relevel_raises_clear_error():
+    data = _tier_frame(n=80)
+    result = rs.multinomial_dict(
+        response="tier",
+        terms={"x": {"type": "linear"}},
+        data=data,
+        classes=["none", "basic", "standard", "premium"],
+        reference="none",
+    ).fit(compute_covariance=False)
+
+    with pytest.raises(ValidationError, match="relevel"):
+        result.relevel()
 
 
 def test_string_weights_must_be_finite():

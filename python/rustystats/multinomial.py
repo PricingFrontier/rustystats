@@ -325,6 +325,67 @@ def _masked_softmax(logits: np.ndarray, availability: np.ndarray) -> np.ndarray:
     return exp_eta / denom
 
 
+def _optional_ratio(numerator: float, denominator: float) -> float | None:
+    if denominator <= 0.0:
+        return None
+    return float(numerator / denominator)
+
+
+def _optional_f1(precision: float | None, recall: float | None) -> float | None:
+    if precision is None or recall is None or precision + recall <= 0.0:
+        return None
+    return float(2.0 * precision * recall / (precision + recall))
+
+
+def _mean_defined(values: list[float | None]) -> float | None:
+    defined = [value for value in values if value is not None and np.isfinite(value)]
+    if not defined:
+        return None
+    return float(np.mean(defined))
+
+
+def _stringify_factor_values(values: Any) -> np.ndarray:
+    labels: list[str] = []
+    for value in values:
+        if value is None:
+            labels.append("<null>")
+        else:
+            try:
+                if bool(np.asarray(value).shape == ()) and bool(np.isnan(value)):  # type: ignore[arg-type]
+                    labels.append("<null>")
+                    continue
+            except Exception:
+                pass
+            labels.append(str(value))
+    return np.asarray(labels, dtype=object)
+
+
+def _continuous_factor_bins(values: Any, *, max_bins: int = 10) -> np.ndarray:
+    arr = np.asarray(values, dtype=np.float64)
+    labels = np.full(arr.shape[0], "<null>", dtype=object)
+    finite = np.isfinite(arr)
+    if not np.any(finite):
+        return labels
+    finite_values = arr[finite]
+    unique = np.unique(finite_values)
+    if unique.size <= max_bins:
+        labels[finite] = [f"{value:.6g}" for value in finite_values]
+        return labels
+
+    edges = np.unique(np.quantile(finite_values, np.linspace(0.0, 1.0, max_bins + 1)))
+    if edges.size <= 2:
+        labels[finite] = [f"{value:.6g}" for value in finite_values]
+        return labels
+    bin_codes = np.searchsorted(edges[1:-1], finite_values, side="right")
+    bin_labels = []
+    for code in bin_codes:
+        left = edges[code]
+        right = edges[code + 1]
+        bin_labels.append(f"[{left:.6g}, {right:.6g}]")
+    labels[finite] = bin_labels
+    return labels
+
+
 @dataclass
 class _DeserializedMultinomialResult:
     params: np.ndarray
@@ -367,8 +428,64 @@ class _DeserializedMultinomialResult:
 
 
 @dataclass
+class MultinomialDatasetDiagnostics:
+    """Model diagnostics for one evaluated multinomial dataset."""
+
+    name: str
+    classes: list[str]
+    nobs: int
+    total_weight: float
+    log_loss: float
+    deviance: float
+    accuracy: float
+    top_2_accuracy: float
+    balanced_accuracy: float | None
+    macro_precision: float | None
+    macro_recall: float | None
+    macro_f1: float | None
+    confusion_matrix: np.ndarray
+    actual_class_counts: dict[str, float]
+    predicted_class_counts: dict[str, float]
+    actual_class_mix: dict[str, float]
+    predicted_class_mix: dict[str, float]
+    class_mix_error: dict[str, float]
+    per_class_metrics: dict[str, dict[str, float | None]]
+    class_calibration: dict[str, list[dict[str, Any]]]
+    expected_calibration_error_by_class: dict[str, float]
+    multiclass_expected_calibration_error: float
+    reliability_by_winning_class: dict[str, dict[str, Any]]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "classes": list(self.classes),
+            "nobs": self.nobs,
+            "total_weight": self.total_weight,
+            "log_loss": self.log_loss,
+            "deviance": self.deviance,
+            "accuracy": self.accuracy,
+            "top_2_accuracy": self.top_2_accuracy,
+            "balanced_accuracy": self.balanced_accuracy,
+            "macro_precision": self.macro_precision,
+            "macro_recall": self.macro_recall,
+            "macro_f1": self.macro_f1,
+            "confusion_matrix": self.confusion_matrix.tolist(),
+            "actual_class_counts": dict(self.actual_class_counts),
+            "predicted_class_counts": dict(self.predicted_class_counts),
+            "actual_class_mix": dict(self.actual_class_mix),
+            "predicted_class_mix": dict(self.predicted_class_mix),
+            "class_mix_error": dict(self.class_mix_error),
+            "per_class_metrics": self.per_class_metrics,
+            "class_calibration": self.class_calibration,
+            "expected_calibration_error_by_class": dict(self.expected_calibration_error_by_class),
+            "multiclass_expected_calibration_error": self.multiclass_expected_calibration_error,
+            "reliability_by_winning_class": self.reliability_by_winning_class,
+        }
+
+
+@dataclass
 class MultinomialDiagnostics:
-    """Minimal diagnostics for a fitted multinomial model."""
+    """Pricing-grade diagnostics for a fitted multinomial model."""
 
     model_type: str
     classes: list[str]
@@ -378,15 +495,31 @@ class MultinomialDiagnostics:
     log_likelihood: float
     deviance: float
     null_deviance: float
+    mcfadden_pseudo_r2: float | None
     aic: float | None
     bic: float | None
     log_loss: float
     accuracy: float
     top_2_accuracy: float
+    balanced_accuracy: float | None
+    macro_precision: float | None
+    macro_recall: float | None
+    macro_f1: float | None
     confusion_matrix: np.ndarray
+    actual_class_counts: dict[str, float]
+    predicted_class_counts: dict[str, float]
     actual_class_mix: dict[str, float]
     predicted_class_mix: dict[str, float]
     class_mix_error: dict[str, float]
+    per_class_metrics: dict[str, dict[str, float | None]]
+    class_calibration: dict[str, list[dict[str, Any]]]
+    expected_calibration_error_by_class: dict[str, float]
+    multiclass_expected_calibration_error: float
+    reliability_by_winning_class: dict[str, dict[str, Any]]
+    factor_diagnostics: list[dict[str, Any]]
+    train: MultinomialDatasetDiagnostics
+    test: MultinomialDatasetDiagnostics | None
+    train_test_comparison: dict[str, float | None] | None
     inference_status: str
     solver_status: str
     converged: bool
@@ -402,15 +535,31 @@ class MultinomialDiagnostics:
             "log_likelihood": self.log_likelihood,
             "deviance": self.deviance,
             "null_deviance": self.null_deviance,
+            "mcfadden_pseudo_r2": self.mcfadden_pseudo_r2,
             "aic": self.aic,
             "bic": self.bic,
             "log_loss": self.log_loss,
             "accuracy": self.accuracy,
             "top_2_accuracy": self.top_2_accuracy,
+            "balanced_accuracy": self.balanced_accuracy,
+            "macro_precision": self.macro_precision,
+            "macro_recall": self.macro_recall,
+            "macro_f1": self.macro_f1,
             "confusion_matrix": self.confusion_matrix.tolist(),
+            "actual_class_counts": dict(self.actual_class_counts),
+            "predicted_class_counts": dict(self.predicted_class_counts),
             "actual_class_mix": dict(self.actual_class_mix),
             "predicted_class_mix": dict(self.predicted_class_mix),
             "class_mix_error": dict(self.class_mix_error),
+            "per_class_metrics": self.per_class_metrics,
+            "class_calibration": self.class_calibration,
+            "expected_calibration_error_by_class": dict(self.expected_calibration_error_by_class),
+            "multiclass_expected_calibration_error": self.multiclass_expected_calibration_error,
+            "reliability_by_winning_class": self.reliability_by_winning_class,
+            "factor_diagnostics": list(self.factor_diagnostics),
+            "train": self.train.to_dict(),
+            "test": None if self.test is None else self.test.to_dict(),
+            "train_test_comparison": self.train_test_comparison,
             "inference_status": self.inference_status,
             "solver_status": self.solver_status,
             "converged": self.converged,
@@ -441,6 +590,7 @@ class MultinomialModel:
         self,
         *,
         result: Any,
+        response: str | None,
         classes: list[str],
         reference: str,
         feature_names: list[str],
@@ -451,11 +601,13 @@ class MultinomialModel:
         compiled_input_transforms: list[CompiledInputTransform] | None,
         availability_spec: Any,
         offset_spec: Any,
+        weights_spec: str | None,
         array_availability_requires_prediction_override: bool,
         array_offset_requires_prediction_override: bool,
         inference_status: str,
     ):
         self._result = result
+        self.response = response
         self.classes_ = list(classes)
         self.reference_ = reference
         self.reference_index_ = self.classes_.index(reference)
@@ -471,6 +623,7 @@ class MultinomialModel:
         )
         self._availability_spec = copy.deepcopy(availability_spec)
         self._offset_spec = copy.deepcopy(offset_spec)
+        self._weights_spec = weights_spec
         self._array_availability_requires_prediction_override = bool(
             array_availability_requires_prediction_override
         )
@@ -565,14 +718,186 @@ class MultinomialModel:
             return None
         return -2.0 * self.log_likelihood + self.n_params * math.log(self.nobs)
 
-    def diagnostics(self) -> MultinomialDiagnostics:
-        probabilities = self.fitted_probabilities
-        y_codes = np.asarray(self._result.y_codes, dtype=np.int64)
-        weights = np.asarray(self._result.prior_weights, dtype=np.float64)
+    def _class_codes_from_values(self, values: Any, *, name: str) -> np.ndarray:
+        labels = _string_labels(values)
+        class_to_code = {label: idx for idx, label in enumerate(self.classes_)}
+        unknown = sorted(set(labels) - set(class_to_code))
+        if unknown:
+            raise ValidationError(
+                f"{name} contains labels not present in model classes: {unknown}."
+            )
+        return np.asarray([class_to_code[label] for label in labels], dtype=np.int64)
+
+    def _diagnostic_weight_array(self, data: Any) -> np.ndarray:
+        if self._weights_spec is None:
+            return np.ones(len(data), dtype=np.float64)
+        if self._weights_spec not in data.columns:
+            raise PredictionError(f"weights column {self._weights_spec!r} is not present in data.")
+        weights = _as_float_array(
+            data[self._weights_spec].to_numpy(), name="weights", length=len(data)
+        )
+        if np.any(weights < 0.0):
+            raise ValidationError("weights must be non-negative.")
+        return weights
+
+    def _collect_diagnostic_data(
+        self,
+        data: Any,
+        *,
+        categorical_factors: list[str],
+        continuous_factors: list[str],
+    ) -> Any:
+        if self.response is None:
+            raise PredictionError(
+                "Cannot compute diagnostics on supplied data: this model has no stored response "
+                "column metadata."
+            )
+
+        requested = {self.response, *categorical_factors, *continuous_factors}
+        if self._weights_spec is not None:
+            requested.add(self._weights_spec)
+        produced = {
+            spec.get("output")
+            for spec in self._input_transforms
+            if isinstance(spec, dict) and isinstance(spec.get("output"), str)
+        }
+        needed = {column for column in requested if column not in produced}
+        needed |= set(input_transform_source_columns(self._input_transforms))
+        collected = _collect_lazyframe(data, needed)
+        if self._compiled_input_transforms:
+            drop_outputs = [
+                spec["output"]
+                for spec in self._input_transforms
+                if spec["output"] in collected.columns
+            ]
+            if drop_outputs:
+                collected = collected.drop(drop_outputs)
+            collected = apply_input_transforms(collected, self._compiled_input_transforms)
+        return collected
+
+    def _diagnostic_arrays_from_data(
+        self,
+        data: Any,
+        *,
+        categorical_factors: list[str],
+        continuous_factors: list[str],
+    ) -> tuple[Any, np.ndarray, np.ndarray, np.ndarray]:
+        diagnostic_data = self._collect_diagnostic_data(
+            data,
+            categorical_factors=categorical_factors,
+            continuous_factors=continuous_factors,
+        )
+        probabilities = self.predict_proba(data, return_format="numpy")
+        if probabilities.shape[0] != len(diagnostic_data):
+            raise PredictionError("Diagnostic data and prediction row counts do not match.")
+        y_codes = self._class_codes_from_values(
+            diagnostic_data[self.response].to_list(), name=self.response or "response"
+        )
+        weights = self._diagnostic_weight_array(diagnostic_data)
+        return diagnostic_data, probabilities, y_codes, weights
+
+    def _calibration_by_class(
+        self,
+        probabilities: np.ndarray,
+        y_codes: np.ndarray,
+        weights: np.ndarray,
+        *,
+        n_bins: int = 10,
+    ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, float]]:
+        total_weight = float(weights.sum())
+        curves: dict[str, list[dict[str, Any]]] = {}
+        ece_by_class: dict[str, float] = {}
+        for class_idx, class_label in enumerate(self.classes_):
+            scores = probabilities[:, class_idx]
+            actual = (y_codes == class_idx).astype(np.float64)
+            bin_codes = np.minimum((scores * n_bins).astype(np.int64), n_bins - 1)
+            rows: list[dict[str, Any]] = []
+            ece = 0.0
+            for bin_idx in range(n_bins):
+                mask = bin_codes == bin_idx
+                bin_weight = float(weights[mask].sum())
+                if bin_weight <= 0.0:
+                    continue
+                predicted_mean = float(np.sum(weights[mask] * scores[mask]) / bin_weight)
+                actual_rate = float(np.sum(weights[mask] * actual[mask]) / bin_weight)
+                ece += (bin_weight / total_weight) * abs(actual_rate - predicted_mean)
+                rows.append(
+                    {
+                        "bin": bin_idx,
+                        "lower": bin_idx / n_bins,
+                        "upper": (bin_idx + 1) / n_bins,
+                        "n_rows": int(np.sum(mask)),
+                        "weight": bin_weight,
+                        "predicted_mean": predicted_mean,
+                        "actual_rate": actual_rate,
+                        "error": actual_rate - predicted_mean,
+                    }
+                )
+            curves[class_label] = rows
+            ece_by_class[class_label] = float(ece)
+        return curves, ece_by_class
+
+    def _multiclass_ece_and_reliability(
+        self,
+        probabilities: np.ndarray,
+        y_codes: np.ndarray,
+        weights: np.ndarray,
+        *,
+        n_bins: int = 10,
+    ) -> tuple[float, dict[str, dict[str, Any]]]:
+        total_weight = float(weights.sum())
+        predicted_codes = np.argmax(probabilities, axis=1)
+        confidence = probabilities[np.arange(probabilities.shape[0]), predicted_codes]
+        correct = (predicted_codes == y_codes).astype(np.float64)
+
+        bin_codes = np.minimum((confidence * n_bins).astype(np.int64), n_bins - 1)
+        ece = 0.0
+        for bin_idx in range(n_bins):
+            mask = bin_codes == bin_idx
+            bin_weight = float(weights[mask].sum())
+            if bin_weight <= 0.0:
+                continue
+            accuracy = float(np.sum(weights[mask] * correct[mask]) / bin_weight)
+            mean_confidence = float(np.sum(weights[mask] * confidence[mask]) / bin_weight)
+            ece += (bin_weight / total_weight) * abs(accuracy - mean_confidence)
+
+        reliability: dict[str, dict[str, Any]] = {}
+        for class_idx, class_label in enumerate(self.classes_):
+            mask = predicted_codes == class_idx
+            class_weight = float(weights[mask].sum())
+            if class_weight <= 0.0:
+                reliability[class_label] = {
+                    "n_rows": 0,
+                    "weight": 0.0,
+                    "accuracy": None,
+                    "mean_confidence": None,
+                }
+                continue
+            reliability[class_label] = {
+                "n_rows": int(np.sum(mask)),
+                "weight": class_weight,
+                "accuracy": float(np.sum(weights[mask] * correct[mask]) / class_weight),
+                "mean_confidence": float(np.sum(weights[mask] * confidence[mask]) / class_weight),
+            }
+        return float(ece), reliability
+
+    def _dataset_diagnostics_from_arrays(
+        self,
+        *,
+        name: str,
+        probabilities: np.ndarray,
+        y_codes: np.ndarray,
+        weights: np.ndarray,
+    ) -> MultinomialDatasetDiagnostics:
+        probabilities = np.asarray(probabilities, dtype=np.float64)
+        y_codes = np.asarray(y_codes, dtype=np.int64)
+        weights = np.asarray(weights, dtype=np.float64)
         if y_codes.shape[0] != probabilities.shape[0]:
-            raise PredictionError("Cannot compute diagnostics: fitted response length mismatch.")
+            raise PredictionError("Cannot compute diagnostics: response length mismatch.")
         if weights.shape[0] != probabilities.shape[0]:
-            raise PredictionError("Cannot compute diagnostics: fitted weight length mismatch.")
+            raise PredictionError("Cannot compute diagnostics: weight length mismatch.")
+        if np.any(weights < 0.0) or not np.all(np.isfinite(weights)):
+            raise ValidationError("weights must be finite and non-negative.")
         total_weight = float(weights.sum())
         if total_weight <= 0.0:
             raise PredictionError("Cannot compute diagnostics: fitted weights have zero total.")
@@ -593,46 +918,332 @@ class MultinomialModel:
         np.add.at(confusion, (y_codes, predicted_codes), weights)
 
         actual_counts = np.bincount(y_codes, weights=weights, minlength=k).astype(np.float64)
+        predicted_counts = (probabilities * weights[:, None]).sum(axis=0)
         actual_mix = actual_counts / total_weight
-        predicted_mix = (probabilities * weights[:, None]).sum(axis=0) / total_weight
+        predicted_mix = predicted_counts / total_weight
+
+        per_class_metrics: dict[str, dict[str, float | None]] = {}
+        precision_values: list[float | None] = []
+        recall_values: list[float | None] = []
+        f1_values: list[float | None] = []
+        predicted_hard_counts = confusion.sum(axis=0)
+        actual_hard_counts = confusion.sum(axis=1)
+        for class_idx, class_label in enumerate(self.classes_):
+            true_positive = float(confusion[class_idx, class_idx])
+            precision = _optional_ratio(true_positive, float(predicted_hard_counts[class_idx]))
+            recall = _optional_ratio(true_positive, float(actual_hard_counts[class_idx]))
+            f1 = _optional_f1(precision, recall)
+            precision_values.append(precision)
+            recall_values.append(recall)
+            f1_values.append(f1)
+            per_class_metrics[class_label] = {
+                "precision": precision,
+                "recall": recall,
+                "f1": f1,
+                "actual_weight": float(actual_hard_counts[class_idx]),
+                "predicted_hard_weight": float(predicted_hard_counts[class_idx]),
+                "true_positive_weight": true_positive,
+            }
+
+        class_calibration, ece_by_class = self._calibration_by_class(
+            probabilities, y_codes, weights
+        )
+        multiclass_ece, reliability = self._multiclass_ece_and_reliability(
+            probabilities, y_codes, weights
+        )
 
         actual_class_mix = {
             label: float(actual_mix[idx]) for idx, label in enumerate(self.classes_)
+        }
+        actual_class_counts = {
+            label: float(actual_counts[idx]) for idx, label in enumerate(self.classes_)
+        }
+        predicted_class_counts = {
+            label: float(predicted_counts[idx]) for idx, label in enumerate(self.classes_)
         }
         predicted_class_mix = {
             label: float(predicted_mix[idx]) for idx, label in enumerate(self.classes_)
         }
         class_mix_error = {
-            label: float(predicted_mix[idx] - actual_mix[idx])
+            label: float(actual_mix[idx] - predicted_mix[idx])
             for idx, label in enumerate(self.classes_)
         }
+
+        return MultinomialDatasetDiagnostics(
+            name=name,
+            classes=list(self.classes_),
+            nobs=int(probabilities.shape[0]),
+            total_weight=total_weight,
+            log_loss=log_loss,
+            deviance=float(-2.0 * np.sum(weights * np.log(observed_prob))),
+            accuracy=accuracy,
+            top_2_accuracy=top_2_accuracy,
+            balanced_accuracy=_mean_defined(recall_values),
+            macro_precision=_mean_defined(precision_values),
+            macro_recall=_mean_defined(recall_values),
+            macro_f1=_mean_defined(f1_values),
+            confusion_matrix=confusion,
+            actual_class_counts=actual_class_counts,
+            predicted_class_counts=predicted_class_counts,
+            actual_class_mix=actual_class_mix,
+            predicted_class_mix=predicted_class_mix,
+            class_mix_error=class_mix_error,
+            per_class_metrics=per_class_metrics,
+            class_calibration=class_calibration,
+            expected_calibration_error_by_class=ece_by_class,
+            multiclass_expected_calibration_error=multiclass_ece,
+            reliability_by_winning_class=reliability,
+        )
+
+    def _factor_diagnostics(
+        self,
+        *,
+        dataset_name: str,
+        data: Any,
+        y_codes: np.ndarray,
+        probabilities: np.ndarray,
+        weights: np.ndarray,
+        categorical_factors: list[str],
+        continuous_factors: list[str],
+    ) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        factor_specs = [(factor, "categorical") for factor in categorical_factors]
+        factor_specs.extend((factor, "continuous") for factor in continuous_factors)
+        for factor, factor_type in factor_specs:
+            if factor not in data.columns:
+                raise PredictionError(f"diagnostic factor {factor!r} is not present in data.")
+            if factor_type == "continuous":
+                labels = _continuous_factor_bins(data[factor].to_numpy())
+            else:
+                labels = _stringify_factor_values(data[factor].to_list())
+
+            for level in sorted(set(labels.tolist())):
+                mask = labels == level
+                level_weight = float(weights[mask].sum())
+                if level_weight <= 0.0:
+                    continue
+                actual_counts = np.bincount(
+                    y_codes[mask], weights=weights[mask], minlength=len(self.classes_)
+                ).astype(np.float64)
+                predicted_counts = (probabilities[mask] * weights[mask, None]).sum(axis=0)
+                actual_mix = actual_counts / level_weight
+                predicted_mix = predicted_counts / level_weight
+                expected_positive = predicted_counts > 0.0
+                chi_square = (
+                    float(
+                        np.sum(
+                            (actual_counts[expected_positive] - predicted_counts[expected_positive])
+                            ** 2
+                            / predicted_counts[expected_positive]
+                        )
+                    )
+                    if np.any(expected_positive)
+                    else None
+                )
+                rows.append(
+                    {
+                        "dataset": dataset_name,
+                        "factor": factor,
+                        "factor_type": factor_type,
+                        "level": str(level),
+                        "n_rows": int(np.sum(mask)),
+                        "weight": level_weight,
+                        "actual_class_mix": {
+                            label: float(actual_mix[idx]) for idx, label in enumerate(self.classes_)
+                        },
+                        "predicted_class_mix": {
+                            label: float(predicted_mix[idx])
+                            for idx, label in enumerate(self.classes_)
+                        },
+                        "class_mix_error": {
+                            label: float(actual_mix[idx] - predicted_mix[idx])
+                            for idx, label in enumerate(self.classes_)
+                        },
+                        "observed_winning_class": self.classes_[int(np.argmax(actual_counts))],
+                        "predicted_winning_class": self.classes_[int(np.argmax(predicted_counts))],
+                        "chi_square_class_mix": chi_square,
+                    }
+                )
+        return rows
+
+    def _train_test_comparison(
+        self,
+        train: MultinomialDatasetDiagnostics,
+        test: MultinomialDatasetDiagnostics,
+    ) -> dict[str, float | None]:
+        train_mae = float(np.mean([abs(value) for value in train.class_mix_error.values()]))
+        test_mae = float(np.mean([abs(value) for value in test.class_mix_error.values()]))
+
+        def delta(test_value: float | None, train_value: float | None) -> float | None:
+            if test_value is None or train_value is None:
+                return None
+            return float(test_value - train_value)
+
+        return {
+            "log_loss_delta": test.log_loss - train.log_loss,
+            "accuracy_delta": test.accuracy - train.accuracy,
+            "top_2_accuracy_delta": test.top_2_accuracy - train.top_2_accuracy,
+            "balanced_accuracy_delta": delta(test.balanced_accuracy, train.balanced_accuracy),
+            "macro_f1_delta": delta(test.macro_f1, train.macro_f1),
+            "class_mix_mae_train": train_mae,
+            "class_mix_mae_test": test_mae,
+            "class_mix_mae_delta": test_mae - train_mae,
+        }
+
+    def diagnostics(
+        self,
+        train_data: Any | None = None,
+        test_data: Any | None = None,
+        categorical_factors: list[str] | None = None,
+        continuous_factors: list[str] | None = None,
+    ) -> MultinomialDiagnostics:
+        categorical_factors = list(categorical_factors or [])
+        continuous_factors = list(continuous_factors or [])
+        factor_diagnostics: list[dict[str, Any]] = []
+
+        using_fitted_training = train_data is None
+        if using_fitted_training:
+            if categorical_factors or continuous_factors:
+                raise ValidationError("factor diagnostics require train_data.")
+            train = self._dataset_diagnostics_from_arrays(
+                name="train",
+                probabilities=self.fitted_probabilities,
+                y_codes=np.asarray(self._result.y_codes, dtype=np.int64),
+                weights=np.asarray(self._result.prior_weights, dtype=np.float64),
+            )
+        else:
+            train_frame, train_probabilities, train_y, train_weights = (
+                self._diagnostic_arrays_from_data(
+                    train_data,
+                    categorical_factors=categorical_factors,
+                    continuous_factors=continuous_factors,
+                )
+            )
+            train = self._dataset_diagnostics_from_arrays(
+                name="train",
+                probabilities=train_probabilities,
+                y_codes=train_y,
+                weights=train_weights,
+            )
+            factor_diagnostics.extend(
+                self._factor_diagnostics(
+                    dataset_name="train",
+                    data=train_frame,
+                    y_codes=train_y,
+                    probabilities=train_probabilities,
+                    weights=train_weights,
+                    categorical_factors=categorical_factors,
+                    continuous_factors=continuous_factors,
+                )
+            )
+
+        test = None
+        if test_data is not None:
+            test_frame, test_probabilities, test_y, test_weights = (
+                self._diagnostic_arrays_from_data(
+                    test_data,
+                    categorical_factors=categorical_factors,
+                    continuous_factors=continuous_factors,
+                )
+            )
+            test = self._dataset_diagnostics_from_arrays(
+                name="test",
+                probabilities=test_probabilities,
+                y_codes=test_y,
+                weights=test_weights,
+            )
+            factor_diagnostics.extend(
+                self._factor_diagnostics(
+                    dataset_name="test",
+                    data=test_frame,
+                    y_codes=test_y,
+                    probabilities=test_probabilities,
+                    weights=test_weights,
+                    categorical_factors=categorical_factors,
+                    continuous_factors=continuous_factors,
+                )
+            )
+
+        train_test_comparison = None if test is None else self._train_test_comparison(train, test)
+        fit_aic = self.aic()
+        fit_bic = self.bic()
+        if using_fitted_training:
+            aic = fit_aic
+            bic = fit_bic
+        else:
+            aic = None if fit_aic is None else train.deviance + 2.0 * self.n_params
+            bic = (
+                None
+                if fit_bic is None
+                else train.deviance + self.n_params * math.log(max(train.nobs, 1))
+            )
+        pseudo_r2 = None
+        if self.null_deviance > 0.0:
+            pseudo_r2 = 1.0 - train.deviance / self.null_deviance
 
         return MultinomialDiagnostics(
             model_type="baseline-category multinomial logit",
             classes=list(self.classes_),
             reference=self.reference_,
-            nobs=self.nobs,
+            nobs=train.nobs,
             n_params=self.n_params,
-            log_likelihood=self.log_likelihood,
-            deviance=self.deviance,
+            log_likelihood=-0.5 * train.deviance,
+            deviance=train.deviance,
             null_deviance=self.null_deviance,
-            aic=self.aic(),
-            bic=self.bic(),
-            log_loss=log_loss,
-            accuracy=accuracy,
-            top_2_accuracy=top_2_accuracy,
-            confusion_matrix=confusion,
-            actual_class_mix=actual_class_mix,
-            predicted_class_mix=predicted_class_mix,
-            class_mix_error=class_mix_error,
+            mcfadden_pseudo_r2=pseudo_r2,
+            aic=aic,
+            bic=bic,
+            log_loss=train.log_loss,
+            accuracy=train.accuracy,
+            top_2_accuracy=train.top_2_accuracy,
+            balanced_accuracy=train.balanced_accuracy,
+            macro_precision=train.macro_precision,
+            macro_recall=train.macro_recall,
+            macro_f1=train.macro_f1,
+            confusion_matrix=train.confusion_matrix,
+            actual_class_counts=train.actual_class_counts,
+            predicted_class_counts=train.predicted_class_counts,
+            actual_class_mix=train.actual_class_mix,
+            predicted_class_mix=train.predicted_class_mix,
+            class_mix_error=train.class_mix_error,
+            per_class_metrics=train.per_class_metrics,
+            class_calibration=train.class_calibration,
+            expected_calibration_error_by_class=train.expected_calibration_error_by_class,
+            multiclass_expected_calibration_error=train.multiclass_expected_calibration_error,
+            reliability_by_winning_class=train.reliability_by_winning_class,
+            factor_diagnostics=factor_diagnostics,
+            train=train,
+            test=test,
+            train_test_comparison=train_test_comparison,
             inference_status=self.inference_status,
             solver_status=self.solver_status,
             converged=self.converged,
             warnings=self.warnings,
         )
 
-    def diagnostics_json(self, *, indent: int | None = 2) -> str:
-        return self.diagnostics().to_json(indent=indent)
+    def diagnostics_json(
+        self,
+        train_data: Any | None = None,
+        test_data: Any | None = None,
+        categorical_factors: list[str] | None = None,
+        continuous_factors: list[str] | None = None,
+        *,
+        indent: int | None = 2,
+    ) -> str:
+        return self.diagnostics(
+            train_data=train_data,
+            test_data=test_data,
+            categorical_factors=categorical_factors,
+            continuous_factors=continuous_factors,
+        ).to_json(indent=indent)
+
+    def relevel(self, *args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        raise ValidationError(
+            "relevel() is not defined for multinomial models. Use diagnostics to assess "
+            "class-mix calibration; explicit multinomial calibration objects are planned "
+            "for a later phase."
+        )
 
     def _prepare_prediction_data(self, data: Any, availability: Any, offset: Any) -> Any:
         if self._builder is None:
@@ -973,6 +1584,7 @@ class MultinomialModel:
                 "l1_ratio": self.l1_ratio,
                 "fit_intercept": bool(getattr(self._result, "fit_intercept", True)),
             },
+            "response": self.response,
             "classes": self.classes_,
             "reference": self.reference_,
             "feature_names": self.feature_names,
@@ -986,6 +1598,7 @@ class MultinomialModel:
             "offset_spec": None
             if self._array_offset_requires_prediction_override
             else self._offset_spec,
+            "weights_spec": self._weights_spec,
             "array_availability_requires_prediction_override": self._array_availability_requires_prediction_override,
             "array_offset_requires_prediction_override": self._array_offset_requires_prediction_override,
             "inference_status": self.inference_status,
@@ -1006,6 +1619,7 @@ class MultinomialModel:
             builder = _DeserializedBuilder(state["builder_state"])
         return cls(
             result=result,
+            response=state.get("response"),
             classes=state["classes"],
             reference=state["reference"],
             feature_names=state["feature_names"],
@@ -1016,6 +1630,7 @@ class MultinomialModel:
             compiled_input_transforms=None,
             availability_spec=state.get("availability_spec"),
             offset_spec=state.get("offset_spec"),
+            weights_spec=state.get("weights_spec"),
             array_availability_requires_prediction_override=state.get(
                 "array_availability_requires_prediction_override", False
             ),
@@ -1225,6 +1840,7 @@ class MultinomialDict:
 
         return MultinomialModel(
             result=result,
+            response=self.response,
             classes=self.classes_,
             reference=self.reference_,
             feature_names=self.feature_names,
@@ -1239,6 +1855,7 @@ class MultinomialDict:
             offset_spec=None
             if self._array_offset_requires_prediction_override
             else self.offset_spec,
+            weights_spec=self.weights_spec if isinstance(self.weights_spec, str) else None,
             array_availability_requires_prediction_override=self._array_availability_requires_prediction_override,
             array_offset_requires_prediction_override=self._array_offset_requires_prediction_override,
             inference_status=inference_status,
@@ -1288,6 +1905,7 @@ def multinomial_dict(
 
 
 __all__ = [
+    "MultinomialDatasetDiagnostics",
     "MultinomialDiagnostics",
     "MultinomialDict",
     "MultinomialModel",

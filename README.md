@@ -128,10 +128,11 @@ probs = result.predict_proba(new_quotes)
 mix = result.tier_mix(new_quotes)
 ```
 
-The initial multinomial path supports shared covariates, row/class weights,
-availability masks, class-specific utility offsets, ridge, summaries, and
-diagnostics, and pickle serialization. Alternative-specific covariates and
-multinomial target encoding are reserved for later native support.
+The multinomial path supports shared covariates, row/class weights,
+availability masks, class-specific utility offsets, ridge, summaries,
+pricing-grade diagnostics, and pickle serialization. Alternative-specific
+covariates and multinomial target encoding are reserved for later native
+support.
 
 ### Term Types
 

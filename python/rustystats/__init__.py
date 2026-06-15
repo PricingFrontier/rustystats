@@ -133,6 +133,7 @@ from rustystats.input_transforms import (
     validate_input_transforms,
 )
 from rustystats.multinomial import (
+    MultinomialDatasetDiagnostics,
     MultinomialDiagnostics,
     MultinomialDict,
     MultinomialModel,
@@ -176,6 +177,7 @@ __all__ = [
     "GLMResults",
     "glm_dict",
     "FormulaGLMDict",
+    "MultinomialDatasetDiagnostics",
     "MultinomialDiagnostics",
     "MultinomialDict",
     "MultinomialModel",
