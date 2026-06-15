@@ -147,11 +147,12 @@ result = model.fit(
 ```
 
 The multinomial path supports unpenalized and ridge dense Newton fits for shared
-covariates. With `alternative_terms`, Phase 3 supports unpenalized native
-alternative-specific choice models; regularized alternative-term fits are
-reserved for the Phase 4 regularization path. Lasso, elastic net, CV, automatic
-smooth penalties, target encoding, monotonic constraints, exposure, and
-PMML/ONNX export are rejected with explicit validation errors.
+covariates and `alternative_terms`. Alternative-term ridge uses the same
+standardization/back-transform policy as shared covariates, with inference
+labelled as naive after regularization. Lasso, elastic net, CV, automatic smooth
+penalties, target encoding, monotonic constraints, exposure, symmetric
+reference-invariant ridge, and PMML/ONNX export are rejected with explicit
+validation errors or reserved for later native support.
 
 Alternative terms use wide-format columns:
 

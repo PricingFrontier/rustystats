@@ -32,6 +32,7 @@ from rustystats.interactions import InteractionBuilder
 
 _DEFAULT_HESSIAN_MEMORY_LIMIT_BYTES = 256 * 1024 * 1024
 _DEFAULT_MAX_DENSE_PARAMETERS = 5000
+_MIN_WEIGHTED_STD = 1e-12
 _SCHEMA_VERSION = 1
 
 
@@ -258,6 +259,66 @@ def _resolve_alternative_arrays(
             )
 
     return generic, specific, generic_names, specific_names
+
+
+def _weighted_standardization_scale(values: np.ndarray, weights: np.ndarray) -> float:
+    weight_sum = float(np.sum(weights))
+    if not np.isfinite(weight_sum) or weight_sum <= 0.0:
+        return 1.0
+    mean = float(weights @ values / weight_sum)
+    centered = values - mean
+    variance = float(weights @ (centered * centered) / weight_sum)
+    scale = math.sqrt(max(variance, 0.0))
+    if not np.isfinite(scale) or scale <= _MIN_WEIGHTED_STD:
+        return 1.0
+    return scale
+
+
+def _alternative_standardization(
+    alternative_generic: np.ndarray,
+    alternative_specific: np.ndarray,
+    availability: np.ndarray,
+    weights: np.ndarray | None,
+    reference_index: int,
+) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None, np.ndarray | None]:
+    """Scale-only standardization metadata for penalized alternative terms."""
+    row_weights = (
+        np.ones(alternative_generic.shape[0], dtype=np.float64)
+        if weights is None
+        else np.asarray(weights, dtype=np.float64)
+    )
+    n_generic = alternative_generic.shape[2]
+    generic_center = generic_scale = None
+    if n_generic:
+        generic_center = np.zeros(n_generic, dtype=np.float64)
+        generic_scale = np.ones(n_generic, dtype=np.float64)
+        cell_weights = row_weights[:, None] * availability.astype(np.float64, copy=False)
+        active = availability
+        for term_idx in range(n_generic):
+            generic_scale[term_idx] = _weighted_standardization_scale(
+                alternative_generic[:, :, term_idx][active],
+                cell_weights[active],
+            )
+
+    n_specific = alternative_specific.shape[2]
+    specific_center = specific_scale = None
+    if n_specific:
+        non_reference = [
+            class_idx
+            for class_idx in range(alternative_specific.shape[1])
+            if class_idx != reference_index
+        ]
+        specific_center = np.zeros((len(non_reference), n_specific), dtype=np.float64)
+        specific_scale = np.ones((len(non_reference), n_specific), dtype=np.float64)
+        for block_idx, class_idx in enumerate(non_reference):
+            active = availability[:, class_idx]
+            for term_idx in range(n_specific):
+                specific_scale[block_idx, term_idx] = _weighted_standardization_scale(
+                    alternative_specific[:, class_idx, term_idx][active],
+                    row_weights[active],
+                )
+
+    return generic_center, generic_scale, specific_center, specific_scale
 
 
 def _validate_supported_term_spec(var_name: str, spec: dict[str, Any], *, context: str) -> None:
@@ -1897,7 +1958,7 @@ class MultinomialModel:
         generic_size = alternative_generic.size
         if cov is not None:
             se_flat = np.sqrt(np.maximum(np.diag(cov), 0.0))
-            se = se_flat.reshape(n_blocks, p)
+            se = se_flat[:shared_size].reshape(n_blocks, p)
             generic_se = se_flat[shared_size : shared_size + generic_size]
             specific_se = se_flat[shared_size + generic_size :].reshape(
                 n_blocks, len(self.alternative_specific_feature_names)
@@ -2283,20 +2344,21 @@ class MultinomialDict:
         if cv is not None:
             raise ValidationError("cross-validation is not yet supported for multinomial_dict.")
         if regularization not in {None, "ridge"}:
-            raise ValidationError("multinomial_dict Phase 1 supports only regularization='ridge'.")
+            raise ValidationError("multinomial_dict supports only regularization='ridge'.")
         if l1_ratio != 0.0:
-            raise ValidationError("multinomial_dict Phase 1 supports ridge only; use l1_ratio=0.0.")
-        if self.alternative_terms and (regularization is not None or alpha > 0.0):
-            raise ValidationError(
-                "regularization with multinomial alternative_terms is reserved for Phase 4; "
-                "fit Phase 3 alternative-specific choice models unpenalized."
-            )
+            raise ValidationError("multinomial_dict supports ridge only; use l1_ratio=0.0.")
         if alpha < 0.0 or not np.isfinite(alpha):
             raise ValidationError("alpha must be finite and non-negative.")
         if tol <= 0.0 or not np.isfinite(tol):
             raise ValidationError("tol must be finite and positive.")
 
         center = scale = None
+        (
+            alternative_generic_center,
+            alternative_generic_scale,
+            alternative_specific_center,
+            alternative_specific_scale,
+        ) = (None, None, None, None)
         if alpha > 0.0 and standardize:
             from rustystats.regularization_path import (
                 compute_standardization,
@@ -2307,6 +2369,18 @@ class MultinomialDict:
                 self.X, self.weights, fit_intercept=self.intercept
             )
             center, scale = solver_standardization(center, scale, fit_intercept=self.intercept)
+            (
+                alternative_generic_center,
+                alternative_generic_scale,
+                alternative_specific_center,
+                alternative_specific_scale,
+            ) = _alternative_standardization(
+                self.alternative_generic,
+                self.alternative_specific,
+                self.availability,
+                self.weights,
+                self.reference_index_,
+            )
 
         result = _fit_multinomial_rust(
             self.y_codes,
@@ -2330,6 +2404,10 @@ class MultinomialDict:
             verbose,
             self.alternative_generic,
             self.alternative_specific,
+            alternative_generic_center,
+            alternative_generic_scale,
+            alternative_specific_center,
+            alternative_specific_scale,
         )
         self._builder.clear_caches()
 

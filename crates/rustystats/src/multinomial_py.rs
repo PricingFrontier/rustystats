@@ -5,8 +5,10 @@ use numpy::{
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
+use rustystats_core::regularization::Standardization;
 use rustystats_core::solvers::{
-    fit_multinomial_with_alternatives, MultinomialConfig, MultinomialResult,
+    fit_multinomial_with_alternatives, AlternativeSpecificStandardization, MultinomialConfig,
+    MultinomialResult,
 };
 
 use crate::fitting_py::build_standardization;
@@ -258,9 +260,13 @@ impl PyMultinomialResults {
     max_dense_parameters=5000,
     store_design_matrix=false,
     verbose=false,
-    alternative_generic=None,
-    alternative_specific=None
-))]
+	    alternative_generic=None,
+	    alternative_specific=None,
+	    alternative_generic_center=None,
+	    alternative_generic_scale=None,
+	    alternative_specific_center=None,
+	    alternative_specific_scale=None
+	))]
 #[allow(clippy::too_many_arguments)]
 pub fn fit_multinomial_py(
     y_codes: PyReadonlyArray1<i64>,
@@ -284,6 +290,10 @@ pub fn fit_multinomial_py(
     verbose: bool,
     alternative_generic: Option<PyReadonlyArray3<f64>>,
     alternative_specific: Option<PyReadonlyArray3<f64>>,
+    alternative_generic_center: Option<PyReadonlyArray1<f64>>,
+    alternative_generic_scale: Option<PyReadonlyArray1<f64>>,
+    alternative_specific_center: Option<PyReadonlyArray2<f64>>,
+    alternative_specific_scale: Option<PyReadonlyArray2<f64>>,
 ) -> PyResult<PyMultinomialResults> {
     let y_codes_array = y_codes
         .as_array()
@@ -308,6 +318,27 @@ pub fn fit_multinomial_py(
     let alternative_generic_array = alternative_generic.map(|a| a.as_array().to_owned());
     let alternative_specific_array = alternative_specific.map(|a| a.as_array().to_owned());
     let standardization = build_standardization(center, scale, n_params)?;
+    let alternative_generic_standardization = build_vector_standardization(
+        alternative_generic_center,
+        alternative_generic_scale,
+        alternative_generic_array
+            .as_ref()
+            .map_or(0, |array| array.dim().2),
+        "alternative_generic",
+    )?;
+    let alternative_specific_standardization = build_alternative_specific_standardization(
+        alternative_specific_center,
+        alternative_specific_scale,
+        alternative_specific_array
+            .as_ref()
+            .map_or((n_classes.saturating_sub(1), 0), |array| {
+                (n_classes.saturating_sub(1), array.dim().2)
+            }),
+    )?;
+
+    let use_standardization = standardization.is_some()
+        || alternative_generic_standardization.is_some()
+        || alternative_specific_standardization.is_some();
 
     let config = MultinomialConfig {
         max_iterations: max_iter,
@@ -315,7 +346,7 @@ pub fn fit_multinomial_py(
         alpha,
         l1_ratio,
         fit_intercept,
-        standardize: standardization.is_some(),
+        standardize: use_standardization,
         skip_covariance,
         hessian_memory_limit_bytes,
         max_dense_parameters,
@@ -334,6 +365,8 @@ pub fn fit_multinomial_py(
         standardization.as_ref(),
         alternative_generic_array.as_ref().map(|a| a.view()),
         alternative_specific_array.as_ref().map(|a| a.view()),
+        alternative_generic_standardization.as_ref(),
+        alternative_specific_standardization.as_ref(),
     )
     .map_err(|err| PyValueError::new_err(format!("multinomial fitting failed: {}", err)))?;
 
@@ -344,4 +377,83 @@ pub fn fit_multinomial_py(
         fit_intercept,
         store_design_matrix.then(|| x_view.to_owned()),
     )))
+}
+
+fn build_vector_standardization(
+    center: Option<PyReadonlyArray1<f64>>,
+    scale: Option<PyReadonlyArray1<f64>>,
+    expected_len: usize,
+    name: &str,
+) -> PyResult<Option<Standardization>> {
+    match (center, scale) {
+        (None, None) => Ok(None),
+        (Some(c), Some(s)) => {
+            let center_vec = c.as_array().to_vec();
+            let scale_vec = s.as_array().to_vec();
+            if center_vec.len() != expected_len {
+                return Err(PyValueError::new_err(format!(
+                    "{}_center length {} does not match expected {}",
+                    name,
+                    center_vec.len(),
+                    expected_len
+                )));
+            }
+            if scale_vec.len() != expected_len {
+                return Err(PyValueError::new_err(format!(
+                    "{}_scale length {} does not match expected {}",
+                    name,
+                    scale_vec.len(),
+                    expected_len
+                )));
+            }
+            Standardization::new(center_vec, scale_vec)
+                .map(Some)
+                .map_err(|e| {
+                    PyValueError::new_err(format!("Invalid {} standardization: {}", name, e))
+                })
+        }
+        _ => Err(PyValueError::new_err(format!(
+            "{}_center and {}_scale must be provided together for standardization",
+            name, name
+        ))),
+    }
+}
+
+fn build_alternative_specific_standardization(
+    center: Option<PyReadonlyArray2<f64>>,
+    scale: Option<PyReadonlyArray2<f64>>,
+    expected_shape: (usize, usize),
+) -> PyResult<Option<AlternativeSpecificStandardization>> {
+    match (center, scale) {
+        (None, None) => Ok(None),
+        (Some(c), Some(s)) => {
+            let center_array = c.as_array().to_owned();
+            let scale_array = s.as_array().to_owned();
+            if center_array.dim() != expected_shape {
+                return Err(PyValueError::new_err(format!(
+                    "alternative_specific_center shape {:?} does not match expected {:?}",
+                    center_array.dim(),
+                    expected_shape
+                )));
+            }
+            if scale_array.dim() != expected_shape {
+                return Err(PyValueError::new_err(format!(
+                    "alternative_specific_scale shape {:?} does not match expected {:?}",
+                    scale_array.dim(),
+                    expected_shape
+                )));
+            }
+            AlternativeSpecificStandardization::new(center_array, scale_array)
+                .map(Some)
+                .map_err(|e| {
+                    PyValueError::new_err(format!(
+                        "Invalid alternative_specific standardization: {}",
+                        e
+                    ))
+                })
+        }
+        _ => Err(PyValueError::new_err(
+            "alternative_specific_center and alternative_specific_scale must be provided together for standardization",
+        )),
+    }
 }

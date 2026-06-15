@@ -141,11 +141,11 @@ scenario = result.scenario(new_quotes, changes={"price_premium": 1.03})
 ```
 
 The multinomial path supports shared covariates, row/class weights,
-availability masks, class-specific utility offsets, ridge, summaries,
-pricing-grade diagnostics, wide-format alternative-specific covariates,
-price-change scenarios, and pickle serialization. Regularized
-alternative-specific fits and multinomial target encoding are reserved for later
-native support.
+availability masks, class-specific utility offsets, ridge for shared and
+alternative-specific terms, summaries, pricing-grade diagnostics, wide-format
+alternative-specific covariates, price-change scenarios, and pickle
+serialization. Lasso/elastic net, CV, symmetric reference-invariant ridge, and
+multinomial target encoding are reserved for later native support.
 
 ### Term Types
 

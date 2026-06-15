@@ -140,7 +140,7 @@ def test_direct_rust_binding_with_alternative_tensors():
     np.testing.assert_allclose(result.fitted_probabilities.sum(axis=1), 1.0)
 
 
-def test_direct_rust_binding_rejects_regularized_alternative_tensors():
+def test_direct_rust_binding_accepts_regularized_alternative_tensors():
     x = np.array(
         [[1.0, -1.0], [1.0, -0.5], [1.0, 0.2], [1.0, 0.7], [1.0, 1.2], [1.0, 1.8]],
         dtype=np.float64,
@@ -150,16 +150,21 @@ def test_direct_rust_binding_rejects_regularized_alternative_tensors():
     alternative_generic[:, 1, 0] = 1.0
     alternative_generic[:, 2, 0] = 1.5
 
-    with pytest.raises(ValueError, match="regularization with multinomial alternative_terms"):
-        fit_multinomial_py(
-            y,
-            x,
-            3,
-            0,
-            alpha=0.1,
-            skip_covariance=True,
-            alternative_generic=alternative_generic,
-        )
+    result = fit_multinomial_py(
+        y,
+        x,
+        3,
+        0,
+        alpha=0.1,
+        skip_covariance=True,
+        alternative_generic=alternative_generic,
+        alternative_generic_center=np.array([0.0]),
+        alternative_generic_scale=np.array([2.0]),
+    )
+
+    assert result.alpha == 0.1
+    assert result.alternative_generic_coefficients.shape == (1,)
+    np.testing.assert_allclose(result.fitted_probabilities.sum(axis=1), 1.0)
 
 
 def test_multinomial_dict_fit_predict_and_coef_table():
@@ -285,6 +290,108 @@ def test_multinomial_phase3_alternative_terms_and_scenario_engine():
     loaded_scenario = loaded.scenario(data, changes={"price_premium": 1.15}, weights="w")
     np.testing.assert_allclose(
         scenario.scenario_probabilities, loaded_scenario.scenario_probabilities
+    )
+
+
+def test_multinomial_phase4_ridge_supports_alternative_terms():
+    data = _tier_price_frame(n=500, seed=2468)
+    classes = ["none", "basic", "standard", "premium"]
+    alternative_terms = {
+        "log_price": {
+            "columns": {
+                "basic": "price_basic",
+                "standard": "price_standard",
+                "premium": "price_premium",
+            },
+            "coefficient": "generic",
+            "transform": "log",
+        },
+        "richness": {
+            "columns": {
+                "basic": "richness_basic",
+                "standard": "richness_standard",
+                "premium": "richness_premium",
+            },
+            "coefficient": "class_specific",
+        },
+    }
+
+    result = rs.multinomial_dict(
+        response="tier",
+        terms={"x": {"type": "linear"}, "channel": {"type": "categorical"}},
+        alternative_terms=alternative_terms,
+        data=data,
+        classes=classes,
+        reference="none",
+        availability={"premium": "premium_available"},
+        weights="w",
+    ).fit(alpha=1.0, compute_covariance=False)
+
+    assert result.converged
+    assert result.alpha == 1.0
+    assert "naive_after_regularization" in result.inference_status
+    assert result.alternative_generic_coefficients[0] < 0.0
+    assert result.alternative_specific_coefficients.shape == (3, 1)
+    probabilities = result.predict_proba(data)
+    np.testing.assert_allclose(probabilities.sum(axis=1), 1.0, atol=1e-10)
+
+
+def test_ridge_standardizes_generic_alternative_terms():
+    data = _tier_price_frame(n=420, seed=1357)
+    classes = ["none", "basic", "standard", "premium"]
+    factor = 11.0
+    scaled = data.with_columns(
+        (pl.col("price_basic") * factor).alias("price_basic"),
+        (pl.col("price_standard") * factor).alias("price_standard"),
+        (pl.col("price_premium") * factor).alias("price_premium"),
+    )
+    alternative_terms = {
+        "price": {
+            "columns": {
+                "basic": "price_basic",
+                "standard": "price_standard",
+                "premium": "price_premium",
+            },
+            "coefficient": "generic",
+        }
+    }
+
+    fit_a = rs.multinomial_dict(
+        response="tier",
+        terms={"x": {"type": "linear"}, "channel": {"type": "categorical"}},
+        alternative_terms=alternative_terms,
+        data=data,
+        classes=classes,
+        reference="none",
+    ).fit(alpha=2.0)
+    fit_b = rs.multinomial_dict(
+        response="tier",
+        terms={"x": {"type": "linear"}, "channel": {"type": "categorical"}},
+        alternative_terms=alternative_terms,
+        data=scaled,
+        classes=classes,
+        reference="none",
+    ).fit(alpha=2.0)
+
+    np.testing.assert_allclose(
+        fit_a.predict_proba(data),
+        fit_b.predict_proba(scaled),
+        atol=2e-7,
+    )
+    np.testing.assert_allclose(
+        fit_b.alternative_generic_coefficients[0] * factor,
+        fit_a.alternative_generic_coefficients[0],
+        rtol=1e-5,
+        atol=1e-10,
+    )
+    table_a = fit_a.coef_table().filter(pl.col("coefficient_type") == "alternative_generic")
+    table_b = fit_b.coef_table().filter(pl.col("coefficient_type") == "alternative_generic")
+    assert np.isfinite(table_a["std_error"][0])
+    np.testing.assert_allclose(
+        table_b["std_error"][0] * factor,
+        table_a["std_error"][0],
+        rtol=1e-5,
+        atol=1e-10,
     )
 
 

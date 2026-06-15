@@ -78,6 +78,54 @@ struct PreparedInputs {
     non_reference_classes: Vec<usize>,
 }
 
+#[derive(Debug, Clone)]
+pub struct AlternativeSpecificStandardization {
+    pub center: Array2<f64>,
+    pub scale: Array2<f64>,
+}
+
+impl AlternativeSpecificStandardization {
+    pub fn new(center: Array2<f64>, scale: Array2<f64>) -> Result<Self> {
+        let std = Self { center, scale };
+        std.validate(std.center.dim())?;
+        Ok(std)
+    }
+
+    pub fn validate(&self, expected: (usize, usize)) -> Result<()> {
+        if self.center.dim() != expected {
+            return Err(RustyStatsError::InvalidValue(format!(
+                "class-specific alternative standardization center has shape {:?}, expected {:?}",
+                self.center.dim(),
+                expected
+            )));
+        }
+        if self.scale.dim() != expected {
+            return Err(RustyStatsError::InvalidValue(format!(
+                "class-specific alternative standardization scale has shape {:?}, expected {:?}",
+                self.scale.dim(),
+                expected
+            )));
+        }
+        if self.center.iter().any(|v| !v.is_finite()) {
+            return Err(RustyStatsError::InvalidValue(
+                "class-specific alternative standardization center values must be finite"
+                    .to_string(),
+            ));
+        }
+        if self.scale.iter().any(|v| !v.is_finite() || *v <= 0.0) {
+            return Err(RustyStatsError::InvalidValue(
+                "class-specific alternative standardization scale values must be finite and > 0"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+struct MultinomialTransform {
+    rows: Vec<Vec<(usize, f64)>>,
+}
+
 #[derive(Debug)]
 struct Evaluation {
     objective: f64,
@@ -109,6 +157,8 @@ pub fn fit_multinomial(
         standardization,
         None,
         None,
+        None,
+        None,
     )
 }
 
@@ -127,6 +177,8 @@ pub fn fit_multinomial_with_alternatives(
     standardization: Option<&Standardization>,
     alternative_generic: Option<ArrayView3<'_, f64>>,
     alternative_specific: Option<ArrayView3<'_, f64>>,
+    alternative_generic_standardization: Option<&Standardization>,
+    alternative_specific_standardization: Option<&AlternativeSpecificStandardization>,
 ) -> Result<MultinomialResult> {
     fit_multinomial_internal(
         y_codes,
@@ -140,6 +192,8 @@ pub fn fit_multinomial_with_alternatives(
         standardization,
         alternative_generic,
         alternative_specific,
+        alternative_generic_standardization,
+        alternative_specific_standardization,
         true,
     )
 }
@@ -157,9 +211,11 @@ fn fit_multinomial_internal(
     standardization: Option<&Standardization>,
     alternative_generic: Option<ArrayView3<'_, f64>>,
     alternative_specific: Option<ArrayView3<'_, f64>>,
+    alternative_generic_standardization: Option<&Standardization>,
+    alternative_specific_standardization: Option<&AlternativeSpecificStandardization>,
     compute_null_deviance: bool,
 ) -> Result<MultinomialResult> {
-    let prepared = validate_and_prepare(
+    let mut prepared = validate_and_prepare(
         y_codes,
         x,
         n_classes,
@@ -172,15 +228,6 @@ fn fit_multinomial_internal(
         alternative_specific,
     )?;
 
-    let alternative_params = alternative_parameter_count(&prepared);
-    if config.alpha > 0.0 && alternative_params > 0 {
-        return Err(RustyStatsError::InvalidValue(
-            "regularization with multinomial alternative_terms is reserved for \
-             the Phase 4 regularization path; fit unpenalized alternative-term \
-             models in Phase 3."
-                .to_string(),
-        ));
-    }
     let use_standardization = config.alpha > 0.0 && config.standardize && standardization.is_some();
     let x_work = if use_standardization {
         standardization
@@ -191,6 +238,14 @@ fn fit_multinomial_internal(
     };
     let x_fit = x_work.view();
     let sparse_cache = build_sparse_row_cache_if_beneficial(x_fit);
+    let alternative_generic_raw = prepared.alternative_generic.clone();
+    let alternative_specific_raw = prepared.alternative_specific.clone();
+    standardize_alternative_inputs(
+        &mut prepared,
+        config,
+        alternative_generic_standardization,
+        alternative_specific_standardization,
+    )?;
 
     let mut theta = initialize_coefficients(x_fit.ncols(), n_classes, &prepared, config);
     let mut warnings = Vec::new();
@@ -341,32 +396,38 @@ fn fit_multinomial_internal(
 
     let n_alt_generic = prepared.alternative_generic.dim().2;
     let n_alt_specific = prepared.alternative_specific.dim().2;
-    let coefficients_work = unflatten_coefficients(&theta, n_classes, x_fit.ncols());
-    let alternative_generic_coefficients =
-        unflatten_alternative_generic_coefficients(&theta, x_fit.ncols(), n_classes, n_alt_generic);
+    let original_transform = original_parameter_transform(
+        x_fit.ncols(),
+        n_classes,
+        n_alt_generic,
+        n_alt_specific,
+        config.fit_intercept,
+        if use_standardization {
+            standardization
+        } else {
+            None
+        },
+        active_alternative_generic_standardization(config, alternative_generic_standardization),
+        active_alternative_specific_standardization(config, alternative_specific_standardization),
+    )?;
+    let theta_original = transform_parameter_vector(&theta, &original_transform)?;
+    let coefficients = unflatten_coefficients(&theta_original, n_classes, x_fit.ncols());
+    let alternative_generic_coefficients = unflatten_alternative_generic_coefficients(
+        &theta_original,
+        x_fit.ncols(),
+        n_classes,
+        n_alt_generic,
+    );
     let alternative_specific_coefficients = unflatten_alternative_specific_coefficients(
-        &theta,
+        &theta_original,
         x_fit.ncols(),
         n_classes,
         n_alt_generic,
         n_alt_specific,
     );
-    let (coefficients, covariance_unscaled) = if use_standardization {
-        let std = standardization.expect("checked is_some");
-        let coefficients = to_original_coefficient_matrix(&coefficients_work, std, config)?;
-        let covariance = match covariance_work {
-            Some(cov) => Some(to_original_multinomial_covariance(
-                &cov,
-                x_fit.ncols(),
-                n_classes - 1,
-                std,
-                config.fit_intercept,
-            )?),
-            None => None,
-        };
-        (coefficients, covariance)
-    } else {
-        (coefficients_work, covariance_work)
+    let covariance_unscaled = match covariance_work {
+        Some(covariance) => Some(transform_covariance(&covariance, &original_transform)?),
+        None => None,
     };
 
     let (linear_predictor, fitted_probabilities) = linear_predictor_and_probabilities(
@@ -374,8 +435,8 @@ fn fit_multinomial_internal(
         &alternative_generic_coefficients,
         &alternative_specific_coefficients,
         x,
-        &prepared.alternative_generic,
-        &prepared.alternative_specific,
+        &alternative_generic_raw,
+        &alternative_specific_raw,
         n_classes,
         &prepared.class_to_block,
         &prepared.availability,
@@ -759,9 +820,68 @@ fn specific_parameter_index(
     alternative_specific_start(p, n_classes, n_alt_generic) + block_idx * n_alt_specific + term_idx
 }
 
-fn alternative_parameter_count(prepared: &PreparedInputs) -> usize {
-    prepared.alternative_generic.dim().2
-        + prepared.alternative_specific.dim().2 * prepared.non_reference_classes.len()
+fn active_alternative_generic_standardization<'a>(
+    config: &MultinomialConfig,
+    standardization: Option<&'a Standardization>,
+) -> Option<&'a Standardization> {
+    (config.alpha > 0.0 && config.standardize)
+        .then_some(standardization)
+        .flatten()
+}
+
+fn active_alternative_specific_standardization<'a>(
+    config: &MultinomialConfig,
+    standardization: Option<&'a AlternativeSpecificStandardization>,
+) -> Option<&'a AlternativeSpecificStandardization> {
+    (config.alpha > 0.0 && config.standardize)
+        .then_some(standardization)
+        .flatten()
+}
+
+fn standardize_alternative_inputs(
+    prepared: &mut PreparedInputs,
+    config: &MultinomialConfig,
+    generic_standardization: Option<&Standardization>,
+    specific_standardization: Option<&AlternativeSpecificStandardization>,
+) -> Result<()> {
+    if let Some(std) = active_alternative_generic_standardization(config, generic_standardization) {
+        std.validate(prepared.alternative_generic.dim().2)?;
+        for term_idx in 0..prepared.alternative_generic.dim().2 {
+            let center = std.center[term_idx];
+            let scale = std.scale[term_idx];
+            if center == 0.0 && scale == 1.0 {
+                continue;
+            }
+            for row in 0..prepared.alternative_generic.dim().0 {
+                for class_idx in 0..prepared.alternative_generic.dim().1 {
+                    prepared.alternative_generic[[row, class_idx, term_idx]] =
+                        (prepared.alternative_generic[[row, class_idx, term_idx]] - center) / scale;
+                }
+            }
+        }
+    }
+
+    if let Some(std) = active_alternative_specific_standardization(config, specific_standardization)
+    {
+        let n_alt_specific = prepared.alternative_specific.dim().2;
+        std.validate((prepared.non_reference_classes.len(), n_alt_specific))?;
+        for (block_idx, &class_idx) in prepared.non_reference_classes.iter().enumerate() {
+            for term_idx in 0..n_alt_specific {
+                let center = std.center[[block_idx, term_idx]];
+                let scale = std.scale[[block_idx, term_idx]];
+                if center == 0.0 && scale == 1.0 {
+                    continue;
+                }
+                for row in 0..prepared.alternative_specific.dim().0 {
+                    prepared.alternative_specific[[row, class_idx, term_idx]] =
+                        (prepared.alternative_specific[[row, class_idx, term_idx]] - center)
+                            / scale;
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn initialize_coefficients(
@@ -1489,119 +1609,164 @@ fn unflatten_alternative_specific_coefficients(
     coefficients
 }
 
-fn to_original_coefficient_matrix(
-    coefficients: &Array2<f64>,
-    standardization: &Standardization,
-    config: &MultinomialConfig,
-) -> Result<Array2<f64>> {
-    let (blocks, p) = coefficients.dim();
-    let mut out = Array2::zeros((blocks, p));
-    for block_idx in 0..blocks {
-        let beta = coefficients.row(block_idx).to_owned();
-        let original = standardization.to_original_coefficients(&beta, config.fit_intercept)?;
+#[allow(clippy::too_many_arguments)]
+fn original_parameter_transform(
+    p: usize,
+    n_classes: usize,
+    n_alt_generic: usize,
+    n_alt_specific: usize,
+    fit_intercept: bool,
+    shared_standardization: Option<&Standardization>,
+    generic_standardization: Option<&Standardization>,
+    specific_standardization: Option<&AlternativeSpecificStandardization>,
+) -> Result<MultinomialTransform> {
+    let n_blocks = n_classes - 1;
+    let q = total_parameter_count(p, n_classes, n_alt_generic, n_alt_specific)?;
+    if let Some(std) = shared_standardization {
+        std.validate(p)?;
+    }
+    if let Some(std) = generic_standardization {
+        std.validate(n_alt_generic)?;
+    }
+    if let Some(std) = specific_standardization {
+        std.validate((n_blocks, n_alt_specific))?;
+    }
+
+    let mut rows = Vec::with_capacity(q);
+    for block_idx in 0..n_blocks {
         for feature_idx in 0..p {
-            out[[block_idx, feature_idx]] = original[feature_idx];
+            let source_idx = block_idx * p + feature_idx;
+            let mut row = vec![(
+                source_idx,
+                shared_scale_factor(shared_standardization, feature_idx, fit_intercept),
+            )];
+            if fit_intercept && feature_idx == 0 {
+                if let Some(std) = shared_standardization {
+                    for centered_feature in 1..p {
+                        let factor = -std.center[centered_feature] / std.scale[centered_feature];
+                        if factor != 0.0 {
+                            row.push((block_idx * p + centered_feature, factor));
+                        }
+                    }
+                }
+                if let Some(std) = specific_standardization {
+                    for term_idx in 0..n_alt_specific {
+                        let factor =
+                            -std.center[[block_idx, term_idx]] / std.scale[[block_idx, term_idx]];
+                        if factor != 0.0 {
+                            row.push((
+                                specific_parameter_index(
+                                    p,
+                                    n_classes,
+                                    n_alt_generic,
+                                    block_idx,
+                                    term_idx,
+                                    n_alt_specific,
+                                ),
+                                factor,
+                            ));
+                        }
+                    }
+                }
+            }
+            rows.push(row);
         }
+    }
+
+    for term_idx in 0..n_alt_generic {
+        rows.push(vec![(
+            alternative_generic_start(p, n_classes) + term_idx,
+            generic_standardization
+                .map(|std| 1.0 / std.scale[term_idx])
+                .unwrap_or(1.0),
+        )]);
+    }
+
+    for block_idx in 0..n_blocks {
+        for term_idx in 0..n_alt_specific {
+            rows.push(vec![(
+                specific_parameter_index(
+                    p,
+                    n_classes,
+                    n_alt_generic,
+                    block_idx,
+                    term_idx,
+                    n_alt_specific,
+                ),
+                specific_standardization
+                    .map(|std| 1.0 / std.scale[[block_idx, term_idx]])
+                    .unwrap_or(1.0),
+            )]);
+        }
+    }
+
+    Ok(MultinomialTransform { rows })
+}
+
+fn shared_scale_factor(
+    standardization: Option<&Standardization>,
+    feature_idx: usize,
+    fit_intercept: bool,
+) -> f64 {
+    if fit_intercept && feature_idx == 0 {
+        1.0
+    } else {
+        standardization
+            .map(|std| 1.0 / std.scale[feature_idx])
+            .unwrap_or(1.0)
+    }
+}
+
+fn transform_parameter_vector(
+    theta: &Array1<f64>,
+    transform: &MultinomialTransform,
+) -> Result<Array1<f64>> {
+    if theta.len() != transform.rows.len() {
+        return Err(RustyStatsError::dim_mismatch(
+            transform.rows.len(),
+            theta.len(),
+            "parameter transform vs theta length",
+        ));
+    }
+    let mut out = Array1::zeros(theta.len());
+    for (row_idx, row) in transform.rows.iter().enumerate() {
+        out[row_idx] = row
+            .iter()
+            .map(|(source_idx, factor)| theta[*source_idx] * factor)
+            .sum::<f64>();
     }
     Ok(out)
 }
 
-fn to_original_multinomial_covariance(
+fn transform_covariance(
     covariance: &Array2<f64>,
-    p: usize,
-    n_blocks: usize,
-    standardization: &Standardization,
-    fit_intercept: bool,
+    transform: &MultinomialTransform,
 ) -> Result<Array2<f64>> {
-    if covariance.nrows() != p * n_blocks || covariance.ncols() != p * n_blocks {
+    let q = transform.rows.len();
+    if covariance.nrows() != q || covariance.ncols() != q {
         return Err(RustyStatsError::InvalidValue(format!(
             "multinomial covariance has shape ({}, {}), expected ({}, {})",
             covariance.nrows(),
             covariance.ncols(),
-            p * n_blocks,
-            p * n_blocks
+            q,
+            q
         )));
     }
-    standardization.validate(p)?;
 
-    let mut out = Array2::zeros(covariance.dim());
-    for block_row in 0..n_blocks {
-        for block_col in 0..n_blocks {
-            transform_covariance_block(
-                covariance,
-                &mut out,
-                block_row * p,
-                block_col * p,
-                p,
-                standardization,
-                fit_intercept,
-            );
+    let mut out = Array2::zeros((q, q));
+    for row_idx in 0..q {
+        for col_idx in row_idx..q {
+            let mut value = 0.0;
+            for (source_row, row_factor) in &transform.rows[row_idx] {
+                for (source_col, col_factor) in &transform.rows[col_idx] {
+                    value += row_factor * col_factor * covariance[[*source_row, *source_col]];
+                }
+            }
+            out[[row_idx, col_idx]] = value;
+            out[[col_idx, row_idx]] = value;
         }
     }
     Ok(out)
-}
-
-fn transform_covariance_block(
-    source: &Array2<f64>,
-    target: &mut Array2<f64>,
-    row_start: usize,
-    col_start: usize,
-    p: usize,
-    standardization: &Standardization,
-    fit_intercept: bool,
-) {
-    if !fit_intercept || p == 0 {
-        for row in 0..p {
-            let row_scale = standardization.scale[row];
-            for col in 0..p {
-                target[[row_start + row, col_start + col]] = source
-                    [[row_start + row, col_start + col]]
-                    / (row_scale * standardization.scale[col]);
-            }
-        }
-        return;
-    }
-
-    for row in 1..p {
-        let row_scale = standardization.scale[row];
-        for col in 1..p {
-            target[[row_start + row, col_start + col]] = source[[row_start + row, col_start + col]]
-                / (row_scale * standardization.scale[col]);
-        }
-    }
-
-    for col in 1..p {
-        let mut value = source[[row_start, col_start + col]];
-        for j in 1..p {
-            value -= (standardization.center[j] / standardization.scale[j])
-                * source[[row_start + j, col_start + col]];
-        }
-        target[[row_start, col_start + col]] = value / standardization.scale[col];
-    }
-
-    for row in 1..p {
-        let mut value = source[[row_start + row, col_start]];
-        for j in 1..p {
-            value -= (standardization.center[j] / standardization.scale[j])
-                * source[[row_start + row, col_start + j]];
-        }
-        target[[row_start + row, col_start]] = value / standardization.scale[row];
-    }
-
-    let mut intercept = source[[row_start, col_start]];
-    for j in 1..p {
-        let factor_j = standardization.center[j] / standardization.scale[j];
-        intercept -= factor_j * source[[row_start + j, col_start]];
-        intercept -= factor_j * source[[row_start, col_start + j]];
-    }
-    for j in 1..p {
-        let factor_j = standardization.center[j] / standardization.scale[j];
-        for l in 1..p {
-            let factor_l = standardization.center[l] / standardization.scale[l];
-            intercept += factor_j * factor_l * source[[row_start + j, col_start + l]];
-        }
-    }
-    target[[row_start, col_start]] = intercept;
 }
 
 fn compute_null_deviance_value(
@@ -1643,6 +1808,8 @@ fn compute_null_deviance_value(
         Some(&prepared.availability),
         Some(&prepared.offset),
         Some(&prepared.weights),
+        None,
+        None,
         None,
         None,
         None,

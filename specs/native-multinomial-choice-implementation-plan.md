@@ -495,6 +495,12 @@ For `alpha > 0` and `standardize=True`:
 
 - compute weighted center/scale in Python or Rust consistently with scalar GLM,
 - use the same center/scale vector for each non-reference class block,
+- compute scale-only standardization metadata for alternative-generic and
+  alternative-class-specific tensors before calling Rust,
+- for alternative-generic terms, compute one weighted scale per generic term
+  across available row-class cells,
+- for alternative-class-specific terms, compute one weighted scale per
+  non-reference class/term block using rows where that class is available,
 - do not standardize intercept columns; local feature index 0 is the intercept
   in every class block when `fit_intercept=True`,
 - use scale-only if no intercept exists,
@@ -518,6 +524,12 @@ block. Implement this either as an explicit block-pair operation or by building
 the Kronecker transform when `q` is small enough. Prefer block-pair operations
 to avoid a second large dense matrix allocation.
 
+Alternative-term coefficients use the same sparse affine transform as shared
+coefficients. The high-level Python API passes zero centers and weighted scales
+for alternative tensors, preserving sparse zeros while giving ridge a
+scale-comparable coordinate system. The Rust core also accepts explicit
+alternative centers/scales through the binding for direct callers.
+
 ### 6.4 Tests
 
 Rust/Python tests:
@@ -525,6 +537,9 @@ Rust/Python tests:
 - ridge shrinks coefficients,
 - ridge improves convergence in a separation-like example,
 - standardized ridge predictions are invariant to rescaling a feature,
+- standardized ridge predictions are invariant to rescaling a generic
+  alternative term,
+- ridge works with both generic and class-specific alternative terms,
 - baseline ridge changes when reference changes,
 - covariance back-transform has correct dimensions and sanity.
 - standardized covariance back-transform matches an equivalent externally
@@ -722,6 +737,7 @@ Resolve offsets similarly. Missing class offsets default to zero.
 - builds design,
 - computes weights and class weights,
 - computes standardization for ridge if requested,
+- computes alternative-term standardization for ridge if requested,
 - calls `_rustystats.fit_multinomial_py`,
 - wraps result in `MultinomialModel`,
 - sets inference status.
@@ -925,7 +941,8 @@ Example should show:
 - `predict_proba`,
 - tier mix,
 - held-out log loss,
-- note that price scenario modeling requires future `alternative_terms`.
+- tier price/richness `alternative_terms`,
+- price-change scenarios.
 
 Acceptance:
 

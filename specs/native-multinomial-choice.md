@@ -1004,8 +1004,8 @@ Report:
 - class mix error by class.
 
 Use the same estimated-parameter count as `summary()` for AIC/BIC:
-`(K - 1) * p` for Phase 1 shared-covariate models, plus any future estimated
-alternative-specific parameters.
+`(K - 1) * p` for shared-covariate blocks, plus any estimated
+alternative-generic and alternative-class-specific parameters.
 
 ### 9.2 Calibration
 
@@ -1256,22 +1256,23 @@ Deliver:
 This is the phase that turns native multinomial into a practical pricing
 scenario engine.
 
-### Phase 4 - Regularization and CV
+### Phase 4 - Ridge Regularization
 
 Deliver:
 
-- ridge CV path,
-- lasso/elastic net solver route,
 - standardization with coefficient back-transform,
-- multinomial alpha-max computation,
-- fold-safe CV for future target encoding,
+- ridge support for shared covariates and `alternative_terms`,
+- scale-only standardization for alternative-generic and
+  alternative-class-specific tensors,
 - inference-honesty labels.
 
 Implementation options:
 
 - dense Newton for ridge,
-- proximal gradient or coordinate descent for lasso/elastic net,
 - later L-BFGS/Newton-CG for large models.
+
+Defer ridge CV, lasso/elastic net, multinomial alpha-max, and fold-safe CV for
+future target encoding to later phases.
 
 ### Phase 5 - Smooths, Target Encoding, Export
 
@@ -1408,7 +1409,7 @@ Remaining questions:
 
 1. Should Phase 1 expose knobs for the dense-Hessian memory/parameter guard, or
    keep them private until a user hits the limit?
-2. Should a symmetric/sum-to-zero ridge penalty be designed as the Phase 4
+2. Should a symmetric/sum-to-zero ridge penalty be designed as a future
    reference-invariant regularization route?
 3. Should empty classes ever be allowed as prediction-only metadata, and if so
    what explicit opt-in flag should control that behavior?
@@ -1436,7 +1437,7 @@ That slice is native, coherent, and useful for tier conversion. It also creates
 the right foundation for alternative-specific price terms, which is where the
 feature becomes especially valuable for pricing teams.
 
-Important limitation: the shared-covariate MVP can model tier mix, but it cannot
-answer tier-specific price-change scenarios such as "raise premium price by 3%"
-unless price is represented in future `alternative_terms`. Phase 3 should be
-co-designed early with pricing stakeholders even if it ships after Phase 1.
+Important limitation: shared covariates alone can model tier mix, but they cannot
+answer tier-specific price-change scenarios such as "raise premium price by 3%".
+Use `alternative_terms` for those price, deductible, limit, and richness
+variables.

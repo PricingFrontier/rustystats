@@ -81,7 +81,7 @@ def main() -> None:
         data=quotes,
         classes=["none", "basic", "standard", "premium"],
         reference="none",
-    ).fit(compute_covariance=False)
+    ).fit(alpha=0.25, compute_covariance=False)
 
     base_mix = result.tier_mix(quotes)
     scenario = result.scenario(quotes, changes={"price_premium": 1.03})
