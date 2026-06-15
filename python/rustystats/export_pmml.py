@@ -863,6 +863,8 @@ def to_pmml(
     str
         The PMML XML document as a string.
     """
+    if model.__class__.__name__ == "MultinomialModel":
+        raise ValidationError("to_pmml does not yet support MultinomialModel.")
     input_transforms = getattr(model, "_input_transforms", [])
     if input_transforms:
         names = [spec["name"] for spec in input_transforms]

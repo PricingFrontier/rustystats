@@ -2087,6 +2087,19 @@ class MultinomialModel:
             lines.extend(f"  - {message}" for message in solver_warnings)
         return "\n".join(lines)
 
+    def to_pmml(self, path: str | None = None, n_grid_points: int = 200) -> str:
+        del path, n_grid_points
+        raise ValidationError("to_pmml does not yet support MultinomialModel.")
+
+    def to_onnx(
+        self,
+        path: str | None = None,
+        n_grid_points: int = 200,
+        mode: str = "scoring",
+    ) -> bytes:
+        del path, n_grid_points, mode
+        raise ValidationError("to_onnx does not yet support MultinomialModel.")
+
     def to_bytes(self) -> bytes:
         builder_state = None
         if self._builder is not None:

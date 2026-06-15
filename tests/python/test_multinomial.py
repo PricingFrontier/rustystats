@@ -428,6 +428,26 @@ def test_multinomial_diagnostics_summary_and_json():
     assert "Top-2 Accuracy" in summary
 
 
+def test_multinomial_export_fails_explicitly():
+    data = _tier_frame(n=80)
+    result = rs.multinomial_dict(
+        response="tier",
+        terms={"x": {"type": "linear"}},
+        data=data,
+        classes=["none", "basic", "standard", "premium"],
+        reference="none",
+    ).fit(compute_covariance=False)
+
+    with pytest.raises(ValidationError, match="to_pmml does not yet support MultinomialModel"):
+        result.to_pmml()
+    with pytest.raises(ValidationError, match="to_onnx does not yet support MultinomialModel"):
+        result.to_onnx()
+    with pytest.raises(ValidationError, match="to_pmml does not yet support MultinomialModel"):
+        rs.to_pmml(result)
+    with pytest.raises(ValidationError, match="to_onnx does not yet support MultinomialModel"):
+        rs.to_onnx(result)
+
+
 def test_multinomial_phase2_diagnostics_train_test_calibration_and_factors():
     data = _tier_frame(n=420, seed=1357).with_columns(
         w=pl.when(pl.col("channel") == "agent").then(2.0).otherwise(1.0)
