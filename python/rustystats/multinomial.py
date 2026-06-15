@@ -1219,6 +1219,8 @@ class MultinomialDict:
             inference_notes.append("naive_class_weighted")
         if not compute_covariance:
             inference_notes.append("covariance_skipped")
+        elif result.cov_params_unscaled is None:
+            inference_notes.append("covariance_unavailable")
         inference_status = "+".join(inference_notes) if inference_notes else "valid_standard"
 
         return MultinomialModel(

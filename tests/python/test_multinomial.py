@@ -303,6 +303,9 @@ def test_singular_design_degrades_covariance_and_surfaces_warning():
 
     assert result.converged
     assert result._covariance() is None
+    assert "covariance_unavailable" in result.inference_status
+    assert result.aic() is not None
+    assert result.bic() is not None
     assert any("could not invert" in message for message in result.warnings)
     assert "Warnings:" in result.summary()
     table = result.coef_table()
