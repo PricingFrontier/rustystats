@@ -132,6 +132,12 @@ from rustystats.input_transforms import (
     compile_input_transforms,
     validate_input_transforms,
 )
+from rustystats.multinomial import (
+    MultinomialDiagnostics,
+    MultinomialDict,
+    MultinomialModel,
+    multinomial_dict,
+)
 
 # Rate-table export (resolved deployment tables), sibling to to_pmml / to_onnx
 from rustystats.rate_tables import to_rate_tables
@@ -170,6 +176,10 @@ __all__ = [
     "GLMResults",
     "glm_dict",
     "FormulaGLMDict",
+    "MultinomialDiagnostics",
+    "MultinomialDict",
+    "MultinomialModel",
+    "multinomial_dict",
     "summary",
     "summary_relativities",
     # Spline functions

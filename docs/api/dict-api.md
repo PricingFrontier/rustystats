@@ -88,6 +88,93 @@ Set `exposure=` explicitly to recover that behaviour.
 
 ---
 
+## multinomial_dict
+
+Create a native baseline-category multinomial logit specification for mutually
+exclusive class outcomes, such as insurance product-tier conversion.
+
+```python
+rustystats.multinomial_dict(
+    response,
+    data,
+    terms=None,
+    shared_terms=None,
+    interactions=None,
+    intercept=True,
+    classes=None,
+    reference=None,
+    availability=None,
+    weights=None,
+    class_weights=None,
+    offset=None,
+    seed=None,
+    input_transforms=None,
+)
+```
+
+### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `response` | str | Categorical response column |
+| `data` | DataFrame | Polars DataFrame or LazyFrame |
+| `terms` / `shared_terms` | dict | Shared-covariate term specifications. Pass only one. |
+| `interactions` | list | Standard interaction specifications |
+| `intercept` | bool | Include a shared-design intercept. Default `True`. |
+| `classes` | list | Explicit output class order. Recommended for pricing workflows. |
+| `reference` | str | Baseline class. Defaults to the first class. |
+| `availability` | dict or array | Optional class availability mask. Dict values may be booleans, column names, or arrays. |
+| `weights` | str or array | Row weights |
+| `class_weights` | dict | Multipliers applied by observed response class |
+| `offset` | dict or array | Class-specific utility/logit offsets. This is not exposure. |
+| `seed` | int | Random seed for deterministic design components |
+| `input_transforms` | list[dict] | Deterministic raw-input transforms applied before design construction |
+
+Fit with:
+
+```python
+result = model.fit(
+    alpha=0.0,
+    l1_ratio=0.0,
+    regularization=None,
+    max_iter=100,
+    tol=1e-8,
+    standardize=True,
+    compute_covariance=True,
+)
+```
+
+Phase 1 supports unpenalized and ridge dense Newton fits. Lasso, elastic net,
+CV, automatic smooth penalties, target encoding, monotonic constraints,
+exposure, PMML/ONNX export, and alternative-specific covariates are rejected
+with explicit validation errors.
+
+Prediction methods:
+
+```python
+result.predict_proba(new_data)
+result.predict_log_proba(new_data)
+result.decision_function(new_data)
+result.predict(new_data)
+result.predict_top_k(new_data, k=2)
+result.tier_mix(new_data)
+result.diagnostics()
+result.diagnostics_json()
+```
+
+Unpenalized fits are invariant to the chosen reference class up to coefficient
+reparametrization. Baseline ridge is reference-dependent because it shrinks
+non-reference utilities toward the selected reference.
+
+`result.diagnostics()` returns a `MultinomialDiagnostics` object with weighted
+log loss, deviance/null deviance, AIC/BIC when likelihood inference is
+well-defined, a `K x K` confusion matrix, accuracy, top-2 accuracy, and actual
+versus predicted class mix. Class-weighted and regularized fits keep the
+diagnostics available but label coefficient/AIC-style inference as naive or not
+applicable.
+
+---
+
 ## Term Types
 
 Each term in the `terms` dict maps a variable name to a specification dict.

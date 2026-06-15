@@ -23,6 +23,7 @@ See [CHANGELOG.md](CHANGELOG.md) for release notes.
 - **Lasso Credibility** - Shrink toward a prior model instead of zero (CAS Monograph 13)
 - **Validation** - Design matrix checks with fix suggestions before fitting
 - **Complete** - 8 families, robust SEs, full diagnostics, VIF, partial dependence
+- **Multinomial Choice** - Native baseline-category multinomial logit for product-tier conversion
 - **Minimal** - Only `numpy` and `polars` required
 
 ## Installation
@@ -104,6 +105,33 @@ result = rs.glm_dict(
     seed=42,
 ).fit(regularization="elastic_net")
 ```
+
+### Multinomial Choice
+
+Use `multinomial_dict` for mutually exclusive class outcomes such as insurance
+product-tier conversion.
+
+```python
+result = rs.multinomial_dict(
+    response="PurchasedTier",
+    terms={
+        "DriverAge": {"type": "bs", "df": 6},
+        "VehicleValue": {"type": "linear"},
+        "Channel": {"type": "categorical"},
+    },
+    data=quotes,
+    classes=["none", "basic", "standard", "premium"],
+    reference="none",
+).fit(alpha=0.1, regularization="ridge")
+
+probs = result.predict_proba(new_quotes)
+mix = result.tier_mix(new_quotes)
+```
+
+The initial multinomial path supports shared covariates, row/class weights,
+availability masks, class-specific utility offsets, ridge, summaries, and
+diagnostics, and pickle serialization. Alternative-specific covariates and
+multinomial target encoding are reserved for later native support.
 
 ### Term Types
 

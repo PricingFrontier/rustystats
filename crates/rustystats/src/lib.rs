@@ -24,6 +24,7 @@ mod export_onnx_py;
 mod families_py;
 mod fitting_py;
 mod inference_py;
+mod multinomial_py;
 mod residuals_py;
 mod results_py;
 mod splines_py;
@@ -60,6 +61,7 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // GLM results
     m.add_class::<PyGLMResults>()?;
+    m.add_class::<multinomial_py::PyMultinomialResults>()?;
 
     // GLM fitting
     m.add_function(wrap_pyfunction!(fitting_py::compute_standardization_py, m)?)?;
@@ -68,6 +70,7 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fitting_py::fit_smooth_glm_unified_py, m)?)?;
     m.add_function(wrap_pyfunction!(fitting_py::fit_fold_path_py, m)?)?;
     m.add_function(wrap_pyfunction!(fitting_py::fit_cv_path_py, m)?)?;
+    m.add_function(wrap_pyfunction!(multinomial_py::fit_multinomial_py, m)?)?;
 
     // IRLS residual helpers
     m.add_function(wrap_pyfunction!(
