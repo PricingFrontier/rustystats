@@ -26,6 +26,60 @@ def _tier_frame(n: int = 240, seed: int = 123) -> pl.DataFrame:
     return pl.DataFrame({"tier": y, "x": x, "channel": channel})
 
 
+def _tier_price_frame(n: int = 1200, seed: int = 8642) -> pl.DataFrame:
+    rng = np.random.default_rng(seed)
+    x = rng.normal(size=n)
+    channel = rng.choice(["direct", "agent"], size=n)
+    channel_agent = (channel == "agent").astype(float)
+    price_basic = np.exp(np.log(320.0) + 0.08 * x + rng.normal(scale=0.25, size=n))
+    price_standard = np.exp(np.log(460.0) + 0.06 * x + rng.normal(scale=0.25, size=n))
+    price_premium = np.exp(np.log(640.0) + 0.04 * x + rng.normal(scale=0.25, size=n))
+    richness_basic = 1.0 + 0.10 * x + rng.normal(scale=0.12, size=n)
+    richness_standard = 1.4 + 0.08 * x + rng.normal(scale=0.12, size=n)
+    richness_premium = 1.9 + 0.06 * x + rng.normal(scale=0.12, size=n)
+
+    eta = np.column_stack(
+        [
+            np.zeros(n),
+            6.0
+            + 0.55 * x
+            - 0.20 * channel_agent
+            - 1.05 * np.log(price_basic)
+            + 0.30 * richness_basic,
+            6.5
+            + 0.20 * x
+            + 0.25 * channel_agent
+            - 1.05 * np.log(price_standard)
+            + 0.55 * richness_standard,
+            7.1
+            + 0.10 * x
+            + 0.10 * channel_agent
+            - 1.05 * np.log(price_premium)
+            + 0.85 * richness_premium,
+        ]
+    )
+    exp_eta = np.exp(eta - eta.max(axis=1, keepdims=True))
+    probs = exp_eta / exp_eta.sum(axis=1, keepdims=True)
+    classes = np.array(["none", "basic", "standard", "premium"], dtype=object)
+    y = [rng.choice(classes, p=row) for row in probs]
+    premium_available = (x > -0.6) | (np.asarray(y, dtype=object) == "premium")
+    return pl.DataFrame(
+        {
+            "tier": y,
+            "x": x,
+            "channel": channel,
+            "price_basic": price_basic,
+            "price_standard": price_standard,
+            "price_premium": price_premium,
+            "richness_basic": richness_basic,
+            "richness_standard": richness_standard,
+            "richness_premium": richness_premium,
+            "premium_available": premium_available,
+            "w": np.where(channel == "agent", 1.5, 1.0),
+        }
+    )
+
+
 def test_direct_rust_binding_shapes_and_skip_covariance():
     x = np.array(
         [[1.0, -1.0], [1.0, -0.5], [1.0, 0.2], [1.0, 0.7], [1.0, 1.2], [1.0, 1.8]],
@@ -39,6 +93,73 @@ def test_direct_rust_binding_shapes_and_skip_covariance():
     assert result.fitted_probabilities.shape == (6, 3)
     assert result.cov_params_unscaled is None
     np.testing.assert_allclose(result.fitted_probabilities.sum(axis=1), 1.0)
+
+
+def test_direct_rust_binding_with_alternative_tensors():
+    rng = np.random.default_rng(4567)
+    n = 90
+    z = rng.normal(size=n)
+    x = np.column_stack([np.ones(n), z]).astype(np.float64)
+    alternative_generic = np.zeros((n, 3, 1), dtype=np.float64)
+    alternative_generic[:, 1, 0] = rng.normal(loc=1.0, scale=0.3, size=n)
+    alternative_generic[:, 2, 0] = rng.normal(loc=1.4, scale=0.3, size=n)
+    alternative_specific = np.zeros((n, 3, 1), dtype=np.float64)
+    alternative_specific[:, 1, 0] = rng.normal(loc=0.6, scale=0.2, size=n)
+    alternative_specific[:, 2, 0] = rng.normal(loc=1.0, scale=0.2, size=n)
+    eta = np.column_stack(
+        [
+            np.zeros(n),
+            -0.2
+            + 0.4 * z
+            - 0.5 * alternative_generic[:, 1, 0]
+            + 0.4 * alternative_specific[:, 1, 0],
+            0.1
+            - 0.3 * z
+            - 0.5 * alternative_generic[:, 2, 0]
+            + 0.7 * alternative_specific[:, 2, 0],
+        ]
+    )
+    exp_eta = np.exp(eta - eta.max(axis=1, keepdims=True))
+    probs = exp_eta / exp_eta.sum(axis=1, keepdims=True)
+    y = np.asarray([rng.choice(3, p=row) for row in probs], dtype=np.int64)
+
+    result = fit_multinomial_py(
+        y,
+        x,
+        3,
+        0,
+        skip_covariance=True,
+        alternative_generic=alternative_generic,
+        alternative_specific=alternative_specific,
+    )
+
+    assert result.params.shape == (2, 2)
+    assert result.alternative_generic_coefficients.shape == (1,)
+    assert result.alternative_specific_coefficients.shape == (2, 1)
+    assert result.n_params == 7
+    np.testing.assert_allclose(result.fitted_probabilities.sum(axis=1), 1.0)
+
+
+def test_direct_rust_binding_rejects_regularized_alternative_tensors():
+    x = np.array(
+        [[1.0, -1.0], [1.0, -0.5], [1.0, 0.2], [1.0, 0.7], [1.0, 1.2], [1.0, 1.8]],
+        dtype=np.float64,
+    )
+    y = np.array([0, 1, 2, 0, 1, 2], dtype=np.int64)
+    alternative_generic = np.zeros((len(y), 3, 1), dtype=np.float64)
+    alternative_generic[:, 1, 0] = 1.0
+    alternative_generic[:, 2, 0] = 1.5
+
+    with pytest.raises(ValueError, match="regularization with multinomial alternative_terms"):
+        fit_multinomial_py(
+            y,
+            x,
+            3,
+            0,
+            alpha=0.1,
+            skip_covariance=True,
+            alternative_generic=alternative_generic,
+        )
 
 
 def test_multinomial_dict_fit_predict_and_coef_table():
@@ -63,6 +184,108 @@ def test_multinomial_dict_fit_predict_and_coef_table():
     table = result.coef_table()
     assert table.height == 9
     assert {"class", "feature", "estimate", "std_error"}.issubset(set(table.columns))
+
+
+def test_multinomial_phase3_alternative_terms_and_scenario_engine():
+    data = _tier_price_frame()
+    classes = ["none", "basic", "standard", "premium"]
+    alternative_terms = {
+        "log_price": {
+            "columns": {
+                "basic": "price_basic",
+                "standard": "price_standard",
+                "premium": "price_premium",
+            },
+            "coefficient": "generic",
+            "transform": "log",
+        },
+        "richness": {
+            "columns": {
+                "basic": "richness_basic",
+                "standard": "richness_standard",
+                "premium": "richness_premium",
+            },
+            "coefficient": "class_specific",
+        },
+    }
+
+    result = rs.multinomial_dict(
+        response="tier",
+        terms={"x": {"type": "linear"}, "channel": {"type": "categorical"}},
+        alternative_terms=alternative_terms,
+        data=data,
+        classes=classes,
+        reference="none",
+        availability={"premium": "premium_available"},
+        weights="w",
+    ).fit(compute_covariance=False)
+
+    assert result.converged
+    assert result.alternative_generic_feature_names == ["log_price"]
+    assert result.alternative_specific_feature_names == ["richness"]
+    assert result.alternative_generic_coefficients.shape == (1,)
+    assert result.alternative_specific_coefficients.shape == (3, 1)
+    assert result.n_params == result.params.size + 4
+    assert result.alternative_generic_coefficients[0] < 0.0
+
+    table = result.coef_table()
+    assert table.height == result.n_params
+    assert {"alternative_generic", "alternative_class_specific"}.issubset(
+        set(table["coefficient_type"].to_list())
+    )
+
+    probabilities = result.predict_proba(data)
+    np.testing.assert_allclose(probabilities.sum(axis=1), 1.0, atol=1e-10)
+    unavailable = ~data["premium_available"].to_numpy()
+    assert np.all(probabilities[unavailable, classes.index("premium")] == 0.0)
+
+    scenario = result.scenario(
+        data,
+        changes={"price_premium": 1.15},
+        weights="w",
+        value_columns={
+            "basic": "price_basic",
+            "standard": "price_standard",
+            "premium": "price_premium",
+        },
+        categorical_factors=["channel"],
+    )
+
+    assert isinstance(scenario, rs.MultinomialScenario)
+    assert scenario.class_mix_delta["premium"] < 0.0
+    assert scenario.scenario_class_mix["premium"] < scenario.base_class_mix["premium"]
+    assert scenario.expected_value is not None
+    weights = data["w"].to_numpy()
+    base_values = np.zeros_like(scenario.base_probabilities)
+    scenario_values = np.zeros_like(scenario.scenario_probabilities)
+    for class_label, column in {
+        "basic": "price_basic",
+        "standard": "price_standard",
+        "premium": "price_premium",
+    }.items():
+        class_idx = classes.index(class_label)
+        base_values[:, class_idx] = data[column].to_numpy()
+        multiplier = 1.15 if column == "price_premium" else 1.0
+        scenario_values[:, class_idx] = data[column].to_numpy() * multiplier
+    expected_base = np.sum(
+        weights * np.sum(scenario.base_probabilities * base_values, axis=1)
+    ) / np.sum(weights)
+    expected_scenario = np.sum(
+        weights * np.sum(scenario.scenario_probabilities * scenario_values, axis=1)
+    ) / np.sum(weights)
+    assert scenario.expected_value["base"] == pytest.approx(expected_base)
+    assert scenario.expected_value["scenario"] == pytest.approx(expected_scenario)
+    assert scenario.expected_value["delta"] == pytest.approx(expected_scenario - expected_base)
+    assert {row["factor"] for row in scenario.segment_mix} == {"channel"}
+    scenario_dict = scenario.to_dict()
+    assert "scenario_class_mix" in scenario.to_json(indent=None)
+    assert "probability_delta_by_class" not in scenario_dict
+
+    loaded = rs.MultinomialModel.from_bytes(result.to_bytes())
+    loaded_scenario = loaded.scenario(data, changes={"price_premium": 1.15}, weights="w")
+    np.testing.assert_allclose(
+        scenario.scenario_probabilities, loaded_scenario.scenario_probabilities
+    )
 
 
 def test_multinomial_diagnostics_summary_and_json():

@@ -114,25 +114,38 @@ product-tier conversion.
 ```python
 result = rs.multinomial_dict(
     response="PurchasedTier",
-    terms={
+    shared_terms={
         "DriverAge": {"type": "bs", "df": 6},
         "VehicleValue": {"type": "linear"},
         "Channel": {"type": "categorical"},
     },
+    alternative_terms={
+        "price": {
+            "columns": {
+                "basic": "price_basic",
+                "standard": "price_standard",
+                "premium": "price_premium",
+            },
+            "coefficient": "generic",
+            "transform": "log",
+        }
+    },
     data=quotes,
     classes=["none", "basic", "standard", "premium"],
     reference="none",
-).fit(alpha=0.1, regularization="ridge")
+).fit()
 
 probs = result.predict_proba(new_quotes)
 mix = result.tier_mix(new_quotes)
+scenario = result.scenario(new_quotes, changes={"price_premium": 1.03})
 ```
 
 The multinomial path supports shared covariates, row/class weights,
 availability masks, class-specific utility offsets, ridge, summaries,
-pricing-grade diagnostics, and pickle serialization. Alternative-specific
-covariates and multinomial target encoding are reserved for later native
-support.
+pricing-grade diagnostics, wide-format alternative-specific covariates,
+price-change scenarios, and pickle serialization. Regularized
+alternative-specific fits and multinomial target encoding are reserved for later
+native support.
 
 ### Term Types
 

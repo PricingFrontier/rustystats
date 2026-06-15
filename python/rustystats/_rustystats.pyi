@@ -199,6 +199,10 @@ class MultinomialResults:
     @property
     def coef_matrix(self) -> npt.NDArray[np.float64]: ...
     @property
+    def alternative_generic_coefficients(self) -> npt.NDArray[np.float64]: ...
+    @property
+    def alternative_specific_coefficients(self) -> npt.NDArray[np.float64]: ...
+    @property
     def fitted_probabilities(self) -> npt.NDArray[np.float64]: ...
     @property
     def fittedvalues(self) -> npt.NDArray[np.float64]: ...
@@ -304,6 +308,8 @@ def fit_multinomial_py(
     max_dense_parameters: int = 5000,
     store_design_matrix: bool = False,
     verbose: bool = False,
+    alternative_generic: npt.NDArray[np.float64] | None = None,
+    alternative_specific: npt.NDArray[np.float64] | None = None,
 ) -> MultinomialResults: ...
 def fit_negbinomial_py(
     y: npt.NDArray[np.float64],

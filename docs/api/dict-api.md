@@ -99,6 +99,7 @@ rustystats.multinomial_dict(
     data,
     terms=None,
     shared_terms=None,
+    alternative_terms=None,
     interactions=None,
     intercept=True,
     classes=None,
@@ -119,6 +120,7 @@ rustystats.multinomial_dict(
 | `response` | str | Categorical response column |
 | `data` | DataFrame | Polars DataFrame or LazyFrame |
 | `terms` / `shared_terms` | dict | Shared-covariate term specifications. Pass only one. |
+| `alternative_terms` | dict | Wide-format class-specific covariates such as tier price, deductible, limit, or richness |
 | `interactions` | list | Standard interaction specifications |
 | `intercept` | bool | Include a shared-design intercept. Default `True`. |
 | `classes` | list | Explicit output class order. Recommended for pricing workflows. |
@@ -144,10 +146,48 @@ result = model.fit(
 )
 ```
 
-Phase 1 supports unpenalized and ridge dense Newton fits. Lasso, elastic net,
-CV, automatic smooth penalties, target encoding, monotonic constraints,
-exposure, PMML/ONNX export, and alternative-specific covariates are rejected
-with explicit validation errors.
+The multinomial path supports unpenalized and ridge dense Newton fits for shared
+covariates. With `alternative_terms`, Phase 3 supports unpenalized native
+alternative-specific choice models; regularized alternative-term fits are
+reserved for the Phase 4 regularization path. Lasso, elastic net, CV, automatic
+smooth penalties, target encoding, monotonic constraints, exposure, and
+PMML/ONNX export are rejected with explicit validation errors.
+
+Alternative terms use wide-format columns:
+
+```python
+result = rustystats.multinomial_dict(
+    response="PurchasedTier",
+    shared_terms={"DriverAge": {"type": "bs", "df": 6}},
+    alternative_terms={
+        "price": {
+            "columns": {
+                "basic": "price_basic",
+                "standard": "price_standard",
+                "premium": "price_premium",
+            },
+            "coefficient": "generic",
+            "transform": "log",
+        },
+        "richness": {
+            "columns": {
+                "basic": "richness_basic",
+                "standard": "richness_standard",
+                "premium": "richness_premium",
+            },
+            "coefficient": "class_specific",
+        },
+    },
+    data=quotes,
+    classes=["none", "basic", "standard", "premium"],
+    reference="none",
+).fit()
+```
+
+`coefficient="generic"` estimates one shared coefficient across alternatives.
+`coefficient="class_specific"` estimates one coefficient per non-reference
+class. Missing classes in an alternative term default to zero, which is useful
+for a `"none"` reference with no offered price.
 
 Prediction methods:
 
@@ -158,6 +198,7 @@ result.decision_function(new_data)
 result.predict(new_data)
 result.predict_top_k(new_data, k=2)
 result.tier_mix(new_data)
+result.scenario(new_data, changes={"price_premium": 1.03})
 result.diagnostics(
     train_data=quotes,
     test_data=holdout,
@@ -179,6 +220,13 @@ mix, class-wise calibration curves and expected calibration error, reliability
 by predicted winning class, factor-level class-mix diagnostics, and optional
 train/test comparison. Class-weighted and regularized fits keep diagnostics
 available but label coefficient/AIC-style inference as naive or not applicable.
+
+`result.scenario()` returns a `MultinomialScenario` with base/scenario class
+mix, class-mix deltas, optional expected value comparison via `value_columns=`,
+and optional segment-level mix deltas via `categorical_factors=` /
+`continuous_factors=`. If a scenario change updates a column named in
+`value_columns`, the scenario expected value uses the changed column values
+while the base expected value uses the original values.
 
 ---
 

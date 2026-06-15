@@ -1,9 +1,13 @@
 use ndarray::{Array1, Array2};
-use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
+use numpy::{
+    IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3,
+};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-use rustystats_core::solvers::{fit_multinomial, MultinomialConfig, MultinomialResult};
+use rustystats_core::solvers::{
+    fit_multinomial_with_alternatives, MultinomialConfig, MultinomialResult,
+};
 
 use crate::fitting_py::build_standardization;
 
@@ -11,6 +15,8 @@ use crate::fitting_py::build_standardization;
 #[derive(Clone)]
 pub struct PyMultinomialResults {
     pub(crate) coefficients: Array2<f64>,
+    pub(crate) alternative_generic_coefficients: Array1<f64>,
+    pub(crate) alternative_specific_coefficients: Array2<f64>,
     pub(crate) fitted_probabilities: Array2<f64>,
     pub(crate) linear_predictor: Array2<f64>,
     pub(crate) log_likelihood: f64,
@@ -42,6 +48,8 @@ impl From<(MultinomialResult, f64, f64, bool, Option<Array2<f64>>)> for PyMultin
     ) -> Self {
         Self {
             coefficients: result.coefficients,
+            alternative_generic_coefficients: result.alternative_generic_coefficients,
+            alternative_specific_coefficients: result.alternative_specific_coefficients,
             fitted_probabilities: result.fitted_probabilities,
             linear_predictor: result.linear_predictor,
             log_likelihood: result.log_likelihood,
@@ -78,6 +86,20 @@ impl PyMultinomialResults {
     #[getter]
     fn coef_matrix<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         self.coefficients.clone().into_pyarray(py)
+    }
+
+    #[getter]
+    fn alternative_generic_coefficients<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        self.alternative_generic_coefficients
+            .clone()
+            .into_pyarray(py)
+    }
+
+    #[getter]
+    fn alternative_specific_coefficients<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        self.alternative_specific_coefficients
+            .clone()
+            .into_pyarray(py)
     }
 
     #[getter]
@@ -164,6 +186,8 @@ impl PyMultinomialResults {
     #[getter]
     fn n_params(&self) -> usize {
         self.coefficients.len()
+            + self.alternative_generic_coefficients.len()
+            + self.alternative_specific_coefficients.len()
     }
 
     #[getter]
@@ -233,7 +257,9 @@ impl PyMultinomialResults {
     hessian_memory_limit_bytes=268435456,
     max_dense_parameters=5000,
     store_design_matrix=false,
-    verbose=false
+    verbose=false,
+    alternative_generic=None,
+    alternative_specific=None
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn fit_multinomial_py(
@@ -256,6 +282,8 @@ pub fn fit_multinomial_py(
     max_dense_parameters: usize,
     store_design_matrix: bool,
     verbose: bool,
+    alternative_generic: Option<PyReadonlyArray3<f64>>,
+    alternative_specific: Option<PyReadonlyArray3<f64>>,
 ) -> PyResult<PyMultinomialResults> {
     let y_codes_array = y_codes
         .as_array()
@@ -277,6 +305,8 @@ pub fn fit_multinomial_py(
     let availability_array = availability.map(|a| a.as_array().to_owned());
     let offset_array = offset.map(|o| o.as_array().to_owned());
     let weights_array = weights.map(|w| w.as_array().to_owned());
+    let alternative_generic_array = alternative_generic.map(|a| a.as_array().to_owned());
+    let alternative_specific_array = alternative_specific.map(|a| a.as_array().to_owned());
     let standardization = build_standardization(center, scale, n_params)?;
 
     let config = MultinomialConfig {
@@ -292,7 +322,7 @@ pub fn fit_multinomial_py(
         verbose,
     };
 
-    let result = fit_multinomial(
+    let result = fit_multinomial_with_alternatives(
         &y_codes_array,
         x_view,
         n_classes,
@@ -302,6 +332,8 @@ pub fn fit_multinomial_py(
         offset_array.as_ref(),
         weights_array.as_ref(),
         standardization.as_ref(),
+        alternative_generic_array.as_ref().map(|a| a.view()),
+        alternative_specific_array.as_ref().map(|a| a.view()),
     )
     .map_err(|err| PyValueError::new_err(format!("multinomial fitting failed: {}", err)))?;
 

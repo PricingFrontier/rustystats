@@ -1,5 +1,5 @@
 use nalgebra::{DMatrix, DVector};
-use ndarray::{Array1, Array2, ArrayView2};
+use ndarray::{Array1, Array2, Array3, ArrayView2, ArrayView3};
 
 use crate::error::{Result, RustyStatsError};
 use crate::regularization::Standardization;
@@ -49,6 +49,8 @@ impl Default for MultinomialConfig {
 #[derive(Debug, Clone)]
 pub struct MultinomialResult {
     pub coefficients: Array2<f64>,
+    pub alternative_generic_coefficients: Array1<f64>,
+    pub alternative_specific_coefficients: Array2<f64>,
     pub fitted_probabilities: Array2<f64>,
     pub linear_predictor: Array2<f64>,
     pub log_likelihood: f64,
@@ -70,6 +72,8 @@ struct PreparedInputs {
     availability: Array2<bool>,
     offset: Array2<f64>,
     weights: Array1<f64>,
+    alternative_generic: Array3<f64>,
+    alternative_specific: Array3<f64>,
     class_to_block: Vec<Option<usize>>,
     non_reference_classes: Vec<usize>,
 }
@@ -93,6 +97,37 @@ pub fn fit_multinomial(
     weights: Option<&Array1<f64>>,
     standardization: Option<&Standardization>,
 ) -> Result<MultinomialResult> {
+    fit_multinomial_with_alternatives(
+        y_codes,
+        x,
+        n_classes,
+        reference_index,
+        config,
+        availability,
+        offset,
+        weights,
+        standardization,
+        None,
+        None,
+    )
+}
+
+/// Fit a baseline-category multinomial logit model with wide-format
+/// alternative-specific covariates.
+#[allow(clippy::too_many_arguments)]
+pub fn fit_multinomial_with_alternatives(
+    y_codes: &Array1<usize>,
+    x: ArrayView2<'_, f64>,
+    n_classes: usize,
+    reference_index: usize,
+    config: &MultinomialConfig,
+    availability: Option<&Array2<bool>>,
+    offset: Option<&Array2<f64>>,
+    weights: Option<&Array1<f64>>,
+    standardization: Option<&Standardization>,
+    alternative_generic: Option<ArrayView3<'_, f64>>,
+    alternative_specific: Option<ArrayView3<'_, f64>>,
+) -> Result<MultinomialResult> {
     fit_multinomial_internal(
         y_codes,
         x,
@@ -103,6 +138,8 @@ pub fn fit_multinomial(
         offset,
         weights,
         standardization,
+        alternative_generic,
+        alternative_specific,
         true,
     )
 }
@@ -118,6 +155,8 @@ fn fit_multinomial_internal(
     offset: Option<&Array2<f64>>,
     weights: Option<&Array1<f64>>,
     standardization: Option<&Standardization>,
+    alternative_generic: Option<ArrayView3<'_, f64>>,
+    alternative_specific: Option<ArrayView3<'_, f64>>,
     compute_null_deviance: bool,
 ) -> Result<MultinomialResult> {
     let prepared = validate_and_prepare(
@@ -129,8 +168,19 @@ fn fit_multinomial_internal(
         availability,
         offset,
         weights,
+        alternative_generic,
+        alternative_specific,
     )?;
 
+    let alternative_params = alternative_parameter_count(&prepared);
+    if config.alpha > 0.0 && alternative_params > 0 {
+        return Err(RustyStatsError::InvalidValue(
+            "regularization with multinomial alternative_terms is reserved for \
+             the Phase 4 regularization path; fit unpenalized alternative-term \
+             models in Phase 3."
+                .to_string(),
+        ));
+    }
     let use_standardization = config.alpha > 0.0 && config.standardize && standardization.is_some();
     let x_work = if use_standardization {
         standardization
@@ -289,7 +339,18 @@ fn fit_multinomial_internal(
         }
     };
 
+    let n_alt_generic = prepared.alternative_generic.dim().2;
+    let n_alt_specific = prepared.alternative_specific.dim().2;
     let coefficients_work = unflatten_coefficients(&theta, n_classes, x_fit.ncols());
+    let alternative_generic_coefficients =
+        unflatten_alternative_generic_coefficients(&theta, x_fit.ncols(), n_classes, n_alt_generic);
+    let alternative_specific_coefficients = unflatten_alternative_specific_coefficients(
+        &theta,
+        x_fit.ncols(),
+        n_classes,
+        n_alt_generic,
+        n_alt_specific,
+    );
     let (coefficients, covariance_unscaled) = if use_standardization {
         let std = standardization.expect("checked is_some");
         let coefficients = to_original_coefficient_matrix(&coefficients_work, std, config)?;
@@ -310,7 +371,11 @@ fn fit_multinomial_internal(
 
     let (linear_predictor, fitted_probabilities) = linear_predictor_and_probabilities(
         &coefficients,
+        &alternative_generic_coefficients,
+        &alternative_specific_coefficients,
         x,
+        &prepared.alternative_generic,
+        &prepared.alternative_specific,
         n_classes,
         &prepared.class_to_block,
         &prepared.availability,
@@ -336,6 +401,8 @@ fn fit_multinomial_internal(
 
     Ok(MultinomialResult {
         coefficients,
+        alternative_generic_coefficients,
+        alternative_specific_coefficients,
         fitted_probabilities,
         linear_predictor,
         log_likelihood,
@@ -362,6 +429,8 @@ fn validate_and_prepare(
     availability: Option<&Array2<bool>>,
     offset: Option<&Array2<f64>>,
     weights: Option<&Array1<f64>>,
+    alternative_generic: Option<ArrayView3<'_, f64>>,
+    alternative_specific: Option<ArrayView3<'_, f64>>,
 ) -> Result<PreparedInputs> {
     let n = x.nrows();
     let p = x.ncols();
@@ -414,7 +483,18 @@ fn validate_and_prepare(
             "multinomial Phase 1 supports ridge only; use l1_ratio=0.0".to_string(),
         ));
     }
-    check_dense_parameter_guard(p, n_classes, config)?;
+    let alternative_generic_matrix =
+        validate_alternative_tensor(alternative_generic, n, n_classes, "alternative_generic")?;
+    let alternative_specific_matrix =
+        validate_alternative_tensor(alternative_specific, n, n_classes, "alternative_specific")?;
+
+    check_dense_parameter_guard(
+        p,
+        n_classes,
+        alternative_generic_matrix.dim().2,
+        alternative_specific_matrix.dim().2,
+        config,
+    )?;
 
     let weights_vec = match weights {
         Some(w) => {
@@ -539,27 +619,66 @@ fn validate_and_prepare(
         availability: availability_matrix,
         offset: offset_matrix,
         weights: weights_vec,
+        alternative_generic: alternative_generic_matrix,
+        alternative_specific: alternative_specific_matrix,
         class_to_block,
         non_reference_classes,
     })
 }
 
+fn validate_alternative_tensor(
+    values: Option<ArrayView3<'_, f64>>,
+    n: usize,
+    n_classes: usize,
+    name: &str,
+) -> Result<Array3<f64>> {
+    match values {
+        Some(tensor) => {
+            let (rows, classes, _) = tensor.dim();
+            if rows != n || classes != n_classes {
+                return Err(RustyStatsError::InvalidValue(format!(
+                    "{} must have shape ({}, {}, n_terms), got ({}, {}, {})",
+                    name,
+                    n,
+                    n_classes,
+                    rows,
+                    classes,
+                    tensor.dim().2
+                )));
+            }
+            if tensor.iter().any(|value| !value.is_finite()) {
+                return Err(RustyStatsError::InvalidValue(format!(
+                    "{} values must be finite",
+                    name
+                )));
+            }
+            Ok(tensor.to_owned())
+        }
+        None => Ok(Array3::zeros((n, n_classes, 0))),
+    }
+}
+
 fn check_dense_parameter_guard(
     p: usize,
     n_classes: usize,
+    n_alt_generic: usize,
+    n_alt_specific: usize,
     config: &MultinomialConfig,
 ) -> Result<()> {
-    let k_nonref = n_classes - 1;
-    let q = p.checked_mul(k_nonref).ok_or_else(|| {
-        RustyStatsError::InvalidValue("multinomial parameter count overflowed usize".to_string())
-    })?;
+    let q = total_parameter_count(p, n_classes, n_alt_generic, n_alt_specific)?;
     if q > config.max_dense_parameters {
         return Err(RustyStatsError::InvalidValue(format!(
             "multinomial dense Newton would estimate q={} parameters \
-             (p={} columns x K-1={} non-reference classes), exceeding \
+             (shared p={} columns x K-1={} non-reference classes, \
+             {} generic alternative terms, {} class-specific alternative terms), exceeding \
              max_dense_parameters={}. Reduce design width/classes or wait for \
              the large-p solver.",
-            q, p, k_nonref, config.max_dense_parameters
+            q,
+            p,
+            n_classes - 1,
+            n_alt_generic,
+            n_alt_specific,
+            config.max_dense_parameters
         )));
     }
     let hessian_bytes = q
@@ -575,14 +694,74 @@ fn check_dense_parameter_guard(
         let limit_mb = config.hessian_memory_limit_bytes as f64 / (1024.0 * 1024.0);
         return Err(RustyStatsError::InvalidValue(format!(
             "multinomial dense Hessian would require {:.1} MB for q={} \
-             parameters (p={} columns x K-1={} non-reference classes), exceeding \
+             parameters (shared p={} columns x K-1={} non-reference classes, \
+             {} generic alternative terms, {} class-specific alternative terms), exceeding \
              the configured {:.1} MB limit. Reduce high-cardinality terms, \
              remove classes, or set compute_covariance=false only if the \
              coefficient solve itself remains within the dense guard.",
-            estimated_mb, q, p, k_nonref, limit_mb
+            estimated_mb,
+            q,
+            p,
+            n_classes - 1,
+            n_alt_generic,
+            n_alt_specific,
+            limit_mb
         )));
     }
     Ok(())
+}
+
+fn shared_parameter_count(p: usize, n_classes: usize) -> Result<usize> {
+    p.checked_mul(n_classes - 1).ok_or_else(|| {
+        RustyStatsError::InvalidValue("multinomial shared parameter count overflowed usize".into())
+    })
+}
+
+fn total_parameter_count(
+    p: usize,
+    n_classes: usize,
+    n_alt_generic: usize,
+    n_alt_specific: usize,
+) -> Result<usize> {
+    let k_nonref = n_classes - 1;
+    let shared = shared_parameter_count(p, n_classes)?;
+    let specific = n_alt_specific.checked_mul(k_nonref).ok_or_else(|| {
+        RustyStatsError::InvalidValue(
+            "multinomial class-specific alternative parameter count overflowed usize".into(),
+        )
+    })?;
+    shared
+        .checked_add(n_alt_generic)
+        .and_then(|value| value.checked_add(specific))
+        .ok_or_else(|| {
+            RustyStatsError::InvalidValue(
+                "multinomial total parameter count overflowed usize".into(),
+            )
+        })
+}
+
+fn alternative_generic_start(p: usize, n_classes: usize) -> usize {
+    p * (n_classes - 1)
+}
+
+fn alternative_specific_start(p: usize, n_classes: usize, n_alt_generic: usize) -> usize {
+    alternative_generic_start(p, n_classes) + n_alt_generic
+}
+
+fn specific_parameter_index(
+    p: usize,
+    n_classes: usize,
+    n_alt_generic: usize,
+    block_idx: usize,
+    term_idx: usize,
+    n_alt_specific: usize,
+) -> usize {
+    alternative_specific_start(p, n_classes, n_alt_generic) + block_idx * n_alt_specific + term_idx
+}
+
+fn alternative_parameter_count(prepared: &PreparedInputs) -> usize {
+    prepared.alternative_generic.dim().2
+        + prepared.alternative_specific.dim().2 * prepared.non_reference_classes.len()
 }
 
 fn initialize_coefficients(
@@ -591,7 +770,13 @@ fn initialize_coefficients(
     prepared: &PreparedInputs,
     config: &MultinomialConfig,
 ) -> Array1<f64> {
-    let q = p * (n_classes - 1);
+    let q = total_parameter_count(
+        p,
+        n_classes,
+        prepared.alternative_generic.dim().2,
+        prepared.alternative_specific.dim().2,
+    )
+    .expect("validated parameter count");
     let mut theta = Array1::zeros(q);
     if !config.fit_intercept || p == 0 || !all_classes_available(&prepared.availability) {
         return theta;
@@ -646,10 +831,12 @@ fn evaluate(
         &prepared.class_to_block,
         &prepared.availability,
         &prepared.offset,
+        &prepared.alternative_generic,
+        &prepared.alternative_specific,
     )?;
     let log_likelihood =
         log_likelihood_from_probabilities(&probabilities, &prepared.y_codes, &prepared.weights)?;
-    let ridge = ridge_penalty(theta, x.ncols(), alpha, fit_intercept);
+    let ridge = ridge_penalty(theta, x.ncols(), n_classes, alpha, fit_intercept);
     let objective = -log_likelihood + ridge;
     let gradient = gradient(theta, x, prepared, &probabilities, alpha, fit_intercept);
     let hessian = hessian(
@@ -684,22 +871,31 @@ fn objective_only(
         &prepared.class_to_block,
         &prepared.availability,
         &prepared.offset,
+        &prepared.alternative_generic,
+        &prepared.alternative_specific,
     )?;
     let log_likelihood =
         log_likelihood_from_probabilities(&probabilities, &prepared.y_codes, &prepared.weights)?;
-    Ok(-log_likelihood + ridge_penalty(theta, x.ncols(), alpha, fit_intercept))
+    Ok(-log_likelihood + ridge_penalty(theta, x.ncols(), n_classes, alpha, fit_intercept))
 }
 
-fn ridge_penalty(theta: &Array1<f64>, p: usize, alpha: f64, fit_intercept: bool) -> f64 {
+fn ridge_penalty(
+    theta: &Array1<f64>,
+    p: usize,
+    n_classes: usize,
+    alpha: f64,
+    fit_intercept: bool,
+) -> f64 {
     if alpha <= 0.0 {
         return 0.0;
     }
+    let shared_count = p * (n_classes - 1);
     theta
         .iter()
         .enumerate()
         .filter_map(|(idx, value)| {
-            let local_feature = idx % p;
-            (!(fit_intercept && local_feature == 0)).then_some(value * value)
+            let is_shared_intercept = idx < shared_count && p > 0 && fit_intercept && idx % p == 0;
+            (!is_shared_intercept).then_some(value * value)
         })
         .sum::<f64>()
         * 0.5
@@ -713,19 +909,37 @@ fn linear_predictor_and_probabilities_from_theta(
     class_to_block: &[Option<usize>],
     availability: &Array2<bool>,
     offset: &Array2<f64>,
+    alternative_generic: &Array3<f64>,
+    alternative_specific: &Array3<f64>,
 ) -> Result<(Array2<f64>, Array2<f64>)> {
     let p = x.ncols();
-    if theta.len() != p * (n_classes - 1) {
+    let n_alt_generic = alternative_generic.dim().2;
+    let n_alt_specific = alternative_specific.dim().2;
+    let expected = total_parameter_count(p, n_classes, n_alt_generic, n_alt_specific)?;
+    if theta.len() != expected {
         return Err(RustyStatsError::dim_mismatch(
-            p * (n_classes - 1),
+            expected,
             theta.len(),
             "theta length vs multinomial parameter count",
         ));
     }
     let coefficients = unflatten_coefficients(theta, n_classes, p);
+    let alternative_generic_coefficients =
+        unflatten_alternative_generic_coefficients(theta, p, n_classes, n_alt_generic);
+    let alternative_specific_coefficients = unflatten_alternative_specific_coefficients(
+        theta,
+        p,
+        n_classes,
+        n_alt_generic,
+        n_alt_specific,
+    );
     linear_predictor_and_probabilities(
         &coefficients,
+        &alternative_generic_coefficients,
+        &alternative_specific_coefficients,
         x,
+        alternative_generic,
+        alternative_specific,
         n_classes,
         class_to_block,
         availability,
@@ -735,7 +949,11 @@ fn linear_predictor_and_probabilities_from_theta(
 
 fn linear_predictor_and_probabilities(
     coefficients: &Array2<f64>,
+    alternative_generic_coefficients: &Array1<f64>,
+    alternative_specific_coefficients: &Array2<f64>,
     x: ArrayView2<'_, f64>,
+    alternative_generic: &Array3<f64>,
+    alternative_specific: &Array3<f64>,
     n_classes: usize,
     class_to_block: &[Option<usize>],
     availability: &Array2<bool>,
@@ -752,17 +970,52 @@ fn linear_predictor_and_probabilities(
             coefficients.ncols()
         )));
     }
+    if alternative_generic.dim().0 != n
+        || alternative_generic.dim().1 != n_classes
+        || alternative_generic.dim().2 != alternative_generic_coefficients.len()
+    {
+        return Err(RustyStatsError::InvalidValue(format!(
+            "generic alternative tensor shape {:?} is incompatible with {} rows, {} classes, \
+             and {} coefficients",
+            alternative_generic.dim(),
+            n,
+            n_classes,
+            alternative_generic_coefficients.len()
+        )));
+    }
+    if alternative_specific.dim().0 != n
+        || alternative_specific.dim().1 != n_classes
+        || alternative_specific.dim().2 != alternative_specific_coefficients.ncols()
+        || alternative_specific_coefficients.nrows() != n_classes - 1
+    {
+        return Err(RustyStatsError::InvalidValue(format!(
+            "class-specific alternative tensor shape {:?} is incompatible with {} rows, \
+             {} classes, and coefficient shape {:?}",
+            alternative_specific.dim(),
+            n,
+            n_classes,
+            alternative_specific_coefficients.dim()
+        )));
+    }
 
     let mut logits = Array2::zeros((n, n_classes));
     for row in 0..n {
         for class_idx in 0..n_classes {
             let mut eta = offset[[row, class_idx]];
+            for term_idx in 0..alternative_generic_coefficients.len() {
+                eta += alternative_generic[[row, class_idx, term_idx]]
+                    * alternative_generic_coefficients[term_idx];
+            }
             if let Some(block_idx) = class_to_block[class_idx] {
                 let mut dot = 0.0;
                 for feature_idx in 0..p {
                     dot += x[[row, feature_idx]] * coefficients[[block_idx, feature_idx]];
                 }
                 eta += dot;
+                for term_idx in 0..alternative_specific_coefficients.ncols() {
+                    eta += alternative_specific[[row, class_idx, term_idx]]
+                        * alternative_specific_coefficients[[block_idx, term_idx]];
+                }
             }
             logits[[row, class_idx]] = eta;
         }
@@ -861,6 +1114,10 @@ fn gradient(
     let n = x.nrows();
     let p = x.ncols();
     let mut gradient = Array1::zeros(theta.len());
+    let n_classes = probabilities.ncols();
+    let n_alt_generic = prepared.alternative_generic.dim().2;
+    let n_alt_specific = prepared.alternative_specific.dim().2;
+    let generic_start = alternative_generic_start(p, n_classes);
 
     for (block_idx, &class_idx) in prepared.non_reference_classes.iter().enumerate() {
         for row in 0..n {
@@ -876,10 +1133,45 @@ fn gradient(
         }
     }
 
+    for term_idx in 0..n_alt_generic {
+        for row in 0..n {
+            let mut expected = 0.0;
+            for class_idx in 0..n_classes {
+                expected += probabilities[[row, class_idx]]
+                    * prepared.alternative_generic[[row, class_idx, term_idx]];
+            }
+            let observed = prepared.alternative_generic[[row, prepared.y_codes[row], term_idx]];
+            gradient[generic_start + term_idx] += prepared.weights[row] * (expected - observed);
+        }
+    }
+
+    for (block_idx, &class_idx) in prepared.non_reference_classes.iter().enumerate() {
+        for term_idx in 0..n_alt_specific {
+            let param_idx = specific_parameter_index(
+                p,
+                n_classes,
+                n_alt_generic,
+                block_idx,
+                term_idx,
+                n_alt_specific,
+            );
+            for row in 0..n {
+                let observed = if prepared.y_codes[row] == class_idx {
+                    1.0
+                } else {
+                    0.0
+                };
+                let residual = prepared.weights[row] * (probabilities[[row, class_idx]] - observed);
+                gradient[param_idx] +=
+                    prepared.alternative_specific[[row, class_idx, term_idx]] * residual;
+            }
+        }
+    }
+
     if alpha > 0.0 {
         for idx in 0..theta.len() {
-            let local_feature = idx % p;
-            if !(fit_intercept && local_feature == 0) {
+            let is_shared_intercept = idx < generic_start && p > 0 && fit_intercept && idx % p == 0;
+            if !is_shared_intercept {
                 gradient[idx] += alpha * theta[idx];
             }
         }
@@ -901,6 +1193,10 @@ fn hessian(
     let n = x.nrows();
     let p = x.ncols();
     let q = theta.len();
+    let n_classes = probabilities.ncols();
+    let n_alt_generic = prepared.alternative_generic.dim().2;
+    let n_alt_specific = prepared.alternative_specific.dim().2;
+    let generic_start = alternative_generic_start(p, n_classes);
     let mut hessian = Array2::zeros((q, q));
     let mut pair_weights = Array1::zeros(n);
 
@@ -922,16 +1218,165 @@ fn hessian(
         }
     }
 
+    let mut generic_expected = Array2::zeros((n, n_alt_generic));
+    for row in 0..n {
+        for term_idx in 0..n_alt_generic {
+            let mut expected = 0.0;
+            for class_idx in 0..n_classes {
+                expected += probabilities[[row, class_idx]]
+                    * prepared.alternative_generic[[row, class_idx, term_idx]];
+            }
+            generic_expected[[row, term_idx]] = expected;
+        }
+    }
+
+    for (block_idx, &class_idx) in prepared.non_reference_classes.iter().enumerate() {
+        for feature_idx in 0..p {
+            let shared_idx = block_idx * p + feature_idx;
+            for term_idx in 0..n_alt_generic {
+                let mut value = 0.0;
+                for row in 0..n {
+                    value += prepared.weights[row]
+                        * x[[row, feature_idx]]
+                        * probabilities[[row, class_idx]]
+                        * (prepared.alternative_generic[[row, class_idx, term_idx]]
+                            - generic_expected[[row, term_idx]]);
+                }
+                set_symmetric(&mut hessian, shared_idx, generic_start + term_idx, value);
+            }
+        }
+    }
+
+    for (block_l, &class_l) in prepared.non_reference_classes.iter().enumerate() {
+        for feature_idx in 0..p {
+            let shared_idx = block_l * p + feature_idx;
+            for (block_m, &class_m) in prepared.non_reference_classes.iter().enumerate() {
+                for term_idx in 0..n_alt_specific {
+                    let specific_idx = specific_parameter_index(
+                        p,
+                        n_classes,
+                        n_alt_generic,
+                        block_m,
+                        term_idx,
+                        n_alt_specific,
+                    );
+                    let mut value = 0.0;
+                    for row in 0..n {
+                        let delta = if class_l == class_m { 1.0 } else { 0.0 };
+                        value += prepared.weights[row]
+                            * x[[row, feature_idx]]
+                            * probabilities[[row, class_l]]
+                            * (delta - probabilities[[row, class_m]])
+                            * prepared.alternative_specific[[row, class_m, term_idx]];
+                    }
+                    set_symmetric(&mut hessian, shared_idx, specific_idx, value);
+                }
+            }
+        }
+    }
+
+    for term_j in 0..n_alt_generic {
+        let param_j = generic_start + term_j;
+        for term_m in term_j..n_alt_generic {
+            let param_m = generic_start + term_m;
+            let mut value = 0.0;
+            for row in 0..n {
+                let mut expected_product = 0.0;
+                for class_idx in 0..n_classes {
+                    expected_product += probabilities[[row, class_idx]]
+                        * prepared.alternative_generic[[row, class_idx, term_j]]
+                        * prepared.alternative_generic[[row, class_idx, term_m]];
+                }
+                value += prepared.weights[row]
+                    * (expected_product
+                        - generic_expected[[row, term_j]] * generic_expected[[row, term_m]]);
+            }
+            set_symmetric(&mut hessian, param_j, param_m, value);
+        }
+    }
+
+    for term_j in 0..n_alt_generic {
+        let generic_idx = generic_start + term_j;
+        for (block_m, &class_m) in prepared.non_reference_classes.iter().enumerate() {
+            for term_m in 0..n_alt_specific {
+                let specific_idx = specific_parameter_index(
+                    p,
+                    n_classes,
+                    n_alt_generic,
+                    block_m,
+                    term_m,
+                    n_alt_specific,
+                );
+                let mut value = 0.0;
+                for row in 0..n {
+                    value += prepared.weights[row]
+                        * probabilities[[row, class_m]]
+                        * prepared.alternative_specific[[row, class_m, term_m]]
+                        * (prepared.alternative_generic[[row, class_m, term_j]]
+                            - generic_expected[[row, term_j]]);
+                }
+                set_symmetric(&mut hessian, generic_idx, specific_idx, value);
+            }
+        }
+    }
+
+    for (block_l, &class_l) in prepared.non_reference_classes.iter().enumerate() {
+        for term_l in 0..n_alt_specific {
+            let idx_l = specific_parameter_index(
+                p,
+                n_classes,
+                n_alt_generic,
+                block_l,
+                term_l,
+                n_alt_specific,
+            );
+            for (block_m, &class_m) in prepared
+                .non_reference_classes
+                .iter()
+                .enumerate()
+                .skip(block_l)
+            {
+                let start_term = if block_l == block_m { term_l } else { 0 };
+                for term_m in start_term..n_alt_specific {
+                    let idx_m = specific_parameter_index(
+                        p,
+                        n_classes,
+                        n_alt_generic,
+                        block_m,
+                        term_m,
+                        n_alt_specific,
+                    );
+                    let mut value = 0.0;
+                    for row in 0..n {
+                        let delta = if class_l == class_m { 1.0 } else { 0.0 };
+                        value += prepared.weights[row]
+                            * probabilities[[row, class_l]]
+                            * prepared.alternative_specific[[row, class_l, term_l]]
+                            * (delta * prepared.alternative_specific[[row, class_l, term_m]]
+                                - probabilities[[row, class_m]]
+                                    * prepared.alternative_specific[[row, class_m, term_m]]);
+                    }
+                    set_symmetric(&mut hessian, idx_l, idx_m, value);
+                }
+            }
+        }
+    }
+
     if alpha > 0.0 {
         for idx in 0..q {
-            let local_feature = idx % p;
-            if !(fit_intercept && local_feature == 0) {
+            let is_shared_intercept = idx < generic_start && p > 0 && fit_intercept && idx % p == 0;
+            if !is_shared_intercept {
                 hessian[[idx, idx]] += alpha;
             }
         }
     }
 
     Ok(hessian)
+}
+
+fn set_symmetric(hessian: &mut Array2<f64>, row: usize, col: usize, value: f64) {
+    hessian[[row, col]] = value;
+    hessian[[col, row]] = value;
 }
 
 fn copy_hessian_block(
@@ -1006,6 +1451,39 @@ fn unflatten_coefficients(theta: &Array1<f64>, n_classes: usize, p: usize) -> Ar
     for block_idx in 0..(n_classes - 1) {
         for feature_idx in 0..p {
             coefficients[[block_idx, feature_idx]] = theta[block_idx * p + feature_idx];
+        }
+    }
+    coefficients
+}
+
+fn unflatten_alternative_generic_coefficients(
+    theta: &Array1<f64>,
+    p: usize,
+    n_classes: usize,
+    n_alt_generic: usize,
+) -> Array1<f64> {
+    let start = alternative_generic_start(p, n_classes);
+    Array1::from_iter((0..n_alt_generic).map(|term_idx| theta[start + term_idx]))
+}
+
+fn unflatten_alternative_specific_coefficients(
+    theta: &Array1<f64>,
+    p: usize,
+    n_classes: usize,
+    n_alt_generic: usize,
+    n_alt_specific: usize,
+) -> Array2<f64> {
+    let mut coefficients = Array2::zeros((n_classes - 1, n_alt_specific));
+    for block_idx in 0..(n_classes - 1) {
+        for term_idx in 0..n_alt_specific {
+            coefficients[[block_idx, term_idx]] = theta[specific_parameter_index(
+                p,
+                n_classes,
+                n_alt_generic,
+                block_idx,
+                term_idx,
+                n_alt_specific,
+            )];
         }
     }
     coefficients
@@ -1165,6 +1643,8 @@ fn compute_null_deviance_value(
         Some(&prepared.availability),
         Some(&prepared.offset),
         Some(&prepared.weights),
+        None,
+        None,
         None,
         false,
     )?;
@@ -1343,8 +1823,72 @@ mod tests {
         let y = array![0usize, 1, 2, 1];
         let config = default_config();
         let prepared =
-            validate_and_prepare(&y, x.view(), 3, 0, &config, None, None, None).expect("prepare");
+            validate_and_prepare(&y, x.view(), 3, 0, &config, None, None, None, None, None)
+                .expect("prepare");
         let theta = array![0.2, -0.3, -0.1, 0.4];
+        let eval = evaluate(&theta, x.view(), 3, &prepared, 0.0, true, None).expect("eval");
+        let eps = 1e-5;
+
+        for idx in 0..theta.len() {
+            let mut plus = theta.clone();
+            let mut minus = theta.clone();
+            plus[idx] += eps;
+            minus[idx] -= eps;
+            let obj_plus =
+                objective_only(&plus, x.view(), 3, &prepared, 0.0, true).expect("obj plus");
+            let obj_minus =
+                objective_only(&minus, x.view(), 3, &prepared, 0.0, true).expect("obj minus");
+            let fd_grad = (obj_plus - obj_minus) / (2.0 * eps);
+            assert_abs_diff_eq!(eval.gradient[idx], fd_grad, epsilon = 1e-5);
+        }
+
+        for row in 0..theta.len() {
+            for col in 0..theta.len() {
+                let mut plus = theta.clone();
+                let mut minus = theta.clone();
+                plus[col] += eps;
+                minus[col] -= eps;
+                let grad_plus =
+                    evaluate(&plus, x.view(), 3, &prepared, 0.0, true, None).expect("plus");
+                let grad_minus =
+                    evaluate(&minus, x.view(), 3, &prepared, 0.0, true, None).expect("minus");
+                let fd_hessian = (grad_plus.gradient[row] - grad_minus.gradient[row]) / (2.0 * eps);
+                assert_abs_diff_eq!(eval.hessian[[row, col]], fd_hessian, epsilon = 1e-5);
+            }
+        }
+    }
+
+    #[test]
+    fn alternative_hessian_matches_objective_finite_difference() {
+        let x = array![[1.0, -0.5], [1.0, 0.2], [1.0, 1.0], [1.0, 1.5]];
+        let y = array![0usize, 1, 2, 1];
+        let alternative_generic = array![
+            [[0.0], [1.2], [1.8]],
+            [[0.0], [0.9], [1.3]],
+            [[0.0], [1.6], [1.0]],
+            [[0.0], [1.1], [2.1]],
+        ];
+        let alternative_specific = array![
+            [[0.0], [0.4], [0.8]],
+            [[0.0], [0.3], [0.7]],
+            [[0.0], [0.6], [0.5]],
+            [[0.0], [0.2], [0.9]],
+        ];
+        let config = default_config();
+        let prepared = validate_and_prepare(
+            &y,
+            x.view(),
+            3,
+            0,
+            &config,
+            None,
+            None,
+            None,
+            Some(alternative_generic.view()),
+            Some(alternative_specific.view()),
+        )
+        .expect("prepare");
+        let theta = array![0.2, -0.3, -0.1, 0.4, -0.5, 0.25, -0.15];
         let eval = evaluate(&theta, x.view(), 3, &prepared, 0.0, true, None).expect("eval");
         let eps = 1e-5;
 

@@ -137,6 +137,7 @@ from rustystats.multinomial import (
     MultinomialDiagnostics,
     MultinomialDict,
     MultinomialModel,
+    MultinomialScenario,
     multinomial_dict,
 )
 
@@ -181,6 +182,7 @@ __all__ = [
     "MultinomialDiagnostics",
     "MultinomialDict",
     "MultinomialModel",
+    "MultinomialScenario",
     "multinomial_dict",
     "summary",
     "summary_relativities",

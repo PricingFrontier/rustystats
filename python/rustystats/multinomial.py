@@ -124,6 +124,142 @@ def _extra_needed_columns(
     return needed
 
 
+def _alternative_columns_raw(alternative_terms: dict[str, Any] | None) -> set[str]:
+    if alternative_terms is None:
+        return set()
+    if not isinstance(alternative_terms, dict):
+        raise ValidationError("alternative_terms must be a dict.")
+    columns: set[str] = set()
+    for term_name, spec in alternative_terms.items():
+        if not isinstance(spec, dict):
+            raise ValidationError(f"alternative_terms[{term_name!r}] must be a dict.")
+        term_columns = spec.get("columns")
+        if not isinstance(term_columns, dict) or not term_columns:
+            raise ValidationError(
+                f"alternative_terms[{term_name!r}] must define a non-empty columns dict."
+            )
+        for class_label, column in term_columns.items():
+            if not isinstance(column, str):
+                raise ValidationError(
+                    f"alternative_terms[{term_name!r}].columns[{class_label!r}] "
+                    "must be a column name."
+                )
+            columns.add(column)
+    return columns
+
+
+def _alternative_needed_columns(
+    alternative_terms: dict[str, Any] | None,
+    input_transforms: list[dict[str, Any]] | None,
+) -> set[str]:
+    produced = {
+        spec.get("output")
+        for spec in (input_transforms or [])
+        if isinstance(spec, dict) and isinstance(spec.get("output"), str)
+    }
+    return {
+        column for column in _alternative_columns_raw(alternative_terms) if column not in produced
+    }
+
+
+def _normalize_alternative_terms(
+    alternative_terms: dict[str, Any] | None,
+    classes: list[str],
+) -> dict[str, dict[str, Any]]:
+    if alternative_terms is None:
+        return {}
+    class_set = set(classes)
+    normalized: dict[str, dict[str, Any]] = {}
+    for raw_name, spec in alternative_terms.items():
+        term_name = str(raw_name)
+        if term_name in normalized:
+            raise ValidationError(f"duplicate alternative term name {term_name!r}.")
+        if not isinstance(spec, dict):
+            raise ValidationError(f"alternative_terms[{term_name!r}] must be a dict.")
+        coefficient = str(spec.get("coefficient", "generic")).replace("-", "_")
+        if coefficient not in {"generic", "class_specific"}:
+            raise ValidationError(
+                f"alternative_terms[{term_name!r}].coefficient must be "
+                "'generic' or 'class_specific'."
+            )
+        transform = str(spec.get("transform", "identity")).lower()
+        if transform not in {"identity", "log"}:
+            raise ValidationError(
+                f"alternative_terms[{term_name!r}].transform must be 'identity' or 'log'."
+            )
+        columns: dict[str, str] = {}
+        for class_label, column in spec["columns"].items():
+            label = str(class_label)
+            if label not in class_set:
+                raise ValidationError(
+                    f"alternative_terms[{term_name!r}] references unknown class {label!r}."
+                )
+            columns[label] = column
+        normalized[term_name] = {
+            "columns": columns,
+            "coefficient": coefficient,
+            "transform": transform,
+        }
+    return normalized
+
+
+def _alternative_names_by_kind(
+    alternative_terms: dict[str, dict[str, Any]],
+) -> tuple[list[str], list[str]]:
+    generic = [name for name, spec in alternative_terms.items() if spec["coefficient"] == "generic"]
+    specific = [
+        name for name, spec in alternative_terms.items() if spec["coefficient"] == "class_specific"
+    ]
+    return generic, specific
+
+
+def _apply_alternative_transform(
+    values: np.ndarray, *, term_name: str, transform: str
+) -> np.ndarray:
+    if transform == "identity":
+        return values
+    if transform == "log":
+        if np.any(values <= 0.0):
+            raise ValidationError(
+                f"alternative term {term_name!r} uses transform='log' but contains "
+                "non-positive values."
+            )
+        return np.log(values)
+    raise AssertionError(f"unsupported alternative transform {transform!r}")
+
+
+def _resolve_alternative_arrays(
+    data: Any,
+    classes: list[str],
+    alternative_terms: dict[str, dict[str, Any]],
+) -> tuple[np.ndarray, np.ndarray, list[str], list[str]]:
+    generic_names, specific_names = _alternative_names_by_kind(alternative_terms)
+    generic = np.zeros((len(data), len(classes), len(generic_names)), dtype=np.float64)
+    specific = np.zeros((len(data), len(classes), len(specific_names)), dtype=np.float64)
+
+    generic_pos = {name: idx for idx, name in enumerate(generic_names)}
+    specific_pos = {name: idx for idx, name in enumerate(specific_names)}
+    for term_name, spec in alternative_terms.items():
+        target = generic if spec["coefficient"] == "generic" else specific
+        term_idx = (
+            generic_pos[term_name] if spec["coefficient"] == "generic" else specific_pos[term_name]
+        )
+        for class_idx, class_label in enumerate(classes):
+            column = spec["columns"].get(class_label)
+            if column is None:
+                continue
+            if column not in data.columns:
+                raise ValidationError(f"alternative term {term_name!r} requires column {column!r}.")
+            values = _as_float_array(
+                data[column].to_numpy(), name=f"alternative_terms[{term_name!r}]", length=len(data)
+            )
+            target[:, class_idx, term_idx] = _apply_alternative_transform(
+                values, term_name=term_name, transform=spec["transform"]
+            )
+
+    return generic, specific, generic_names, specific_names
+
+
 def _validate_supported_term_spec(var_name: str, spec: dict[str, Any], *, context: str) -> None:
     term_type = spec.get("type", "linear")
     if term_type == "target_encoding":
@@ -389,6 +525,8 @@ def _continuous_factor_bins(values: Any, *, max_bins: int = 10) -> np.ndarray:
 @dataclass
 class _DeserializedMultinomialResult:
     params: np.ndarray
+    alternative_generic_coefficients: np.ndarray
+    alternative_specific_coefficients: np.ndarray
     fitted_probabilities: np.ndarray
     linear_predictor: np.ndarray
     log_likelihood: float
@@ -570,6 +708,37 @@ class MultinomialDiagnostics:
         return json.dumps(self.to_dict(), indent=indent, sort_keys=True)
 
 
+@dataclass
+class MultinomialScenario:
+    """Aggregate result for an alternative-specific pricing scenario."""
+
+    classes: list[str]
+    nobs: int
+    total_weight: float
+    base_class_mix: dict[str, float]
+    scenario_class_mix: dict[str, float]
+    class_mix_delta: dict[str, float]
+    base_probabilities: np.ndarray
+    scenario_probabilities: np.ndarray
+    expected_value: dict[str, float] | None
+    segment_mix: list[dict[str, Any]]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "classes": list(self.classes),
+            "nobs": self.nobs,
+            "total_weight": self.total_weight,
+            "base_class_mix": dict(self.base_class_mix),
+            "scenario_class_mix": dict(self.scenario_class_mix),
+            "class_mix_delta": dict(self.class_mix_delta),
+            "expected_value": None if self.expected_value is None else dict(self.expected_value),
+            "segment_mix": list(self.segment_mix),
+        }
+
+    def to_json(self, *, indent: int | None = 2) -> str:
+        return json.dumps(self.to_dict(), indent=indent, sort_keys=True)
+
+
 class _DeserializedBuilder(InteractionBuilder):
     def __init__(self, state: dict[str, Any]):
         self._parsed_formula = state["parsed_formula"]
@@ -596,6 +765,7 @@ class MultinomialModel:
         feature_names: list[str],
         builder: InteractionBuilder | None,
         terms: dict[str, dict[str, Any]],
+        alternative_terms: dict[str, dict[str, Any]] | None,
         interactions: list[dict[str, Any]] | None,
         input_transforms: list[dict[str, Any]] | None,
         compiled_input_transforms: list[CompiledInputTransform] | None,
@@ -614,6 +784,10 @@ class MultinomialModel:
         self.feature_names = list(feature_names)
         self._builder = builder
         self._terms_dict = copy.deepcopy(terms)
+        self._alternative_terms_spec = copy.deepcopy(alternative_terms or {})
+        self.alternative_generic_feature_names, self.alternative_specific_feature_names = (
+            _alternative_names_by_kind(self._alternative_terms_spec)
+        )
         self._interactions_spec = copy.deepcopy(interactions)
         self._input_transforms = validate_input_transforms(input_transforms)
         self._compiled_input_transforms = (
@@ -639,6 +813,23 @@ class MultinomialModel:
     @property
     def coef_matrix(self) -> np.ndarray:
         return self.params
+
+    @property
+    def alternative_generic_coefficients(self) -> np.ndarray:
+        values = getattr(self._result, "alternative_generic_coefficients", None)
+        if values is None:
+            return np.zeros(len(self.alternative_generic_feature_names), dtype=np.float64)
+        return np.asarray(values, dtype=np.float64)
+
+    @property
+    def alternative_specific_coefficients(self) -> np.ndarray:
+        values = getattr(self._result, "alternative_specific_coefficients", None)
+        if values is None:
+            return np.zeros(
+                (len(self.classes_) - 1, len(self.alternative_specific_feature_names)),
+                dtype=np.float64,
+            )
+        return np.asarray(values, dtype=np.float64)
 
     @property
     def intercepts(self) -> np.ndarray:
@@ -703,7 +894,11 @@ class MultinomialModel:
 
     @property
     def n_params(self) -> int:
-        return int(self.params.size)
+        return int(
+            self.params.size
+            + self.alternative_generic_coefficients.size
+            + self.alternative_specific_coefficients.size
+        )
 
     def llf(self) -> float:
         return self.log_likelihood
@@ -1245,7 +1440,13 @@ class MultinomialModel:
             "for a later phase."
         )
 
-    def _prepare_prediction_data(self, data: Any, availability: Any, offset: Any) -> Any:
+    def _prepare_prediction_data(
+        self,
+        data: Any,
+        availability: Any,
+        offset: Any,
+        extra_columns: set[str] | None = None,
+    ) -> Any:
         if self._builder is None:
             raise PredictionError("Cannot predict: this model has no stored design builder.")
         availability_to_use = availability if availability is not None else self._availability_spec
@@ -1258,6 +1459,8 @@ class MultinomialModel:
         needed |= _extra_needed_columns(
             [availability_to_use, offset_to_use], self._input_transforms
         )
+        needed |= _alternative_needed_columns(self._alternative_terms_spec, self._input_transforms)
+        needed |= set(extra_columns or set())
         data = _collect_lazyframe(data, needed)
         if self._compiled_input_transforms:
             drop_outputs = [
@@ -1267,6 +1470,12 @@ class MultinomialModel:
                 data = data.drop(drop_outputs)
             data = apply_input_transforms(data, self._compiled_input_transforms)
         return data
+
+    def _prediction_alternative_arrays(self, data: Any) -> tuple[np.ndarray, np.ndarray]:
+        generic, specific, _generic_names, _specific_names = _resolve_alternative_arrays(
+            data, self.classes_, self._alternative_terms_spec
+        )
+        return generic, specific
 
     def _resolve_prediction_availability(self, data: Any, availability: Any) -> np.ndarray:
         spec = availability if availability is not None else self._availability_spec
@@ -1318,6 +1527,8 @@ class MultinomialModel:
         chunk_size = _compute_predict_chunk_size(n_features)
         logits = np.empty((n_rows, len(self.classes_)), dtype=np.float64)
         params = self.params
+        alternative_generic_coefficients = self.alternative_generic_coefficients
+        alternative_specific_coefficients = self.alternative_specific_coefficients
 
         for start in range(0, n_rows, chunk_size):
             stop = min(start + chunk_size, n_rows)
@@ -1325,11 +1536,21 @@ class MultinomialModel:
             x_chunk = self._builder.transform_new_data(chunk)
             offset_chunk = self._resolve_prediction_offset(chunk, offset)
             logits_chunk = offset_chunk
+            alternative_generic, alternative_specific = self._prediction_alternative_arrays(chunk)
+            if alternative_generic_coefficients.size:
+                logits_chunk += np.tensordot(
+                    alternative_generic, alternative_generic_coefficients, axes=([2], [0])
+                )
             block = 0
             for class_idx, class_label in enumerate(self.classes_):
                 if class_label == self.reference_:
                     continue
                 logits_chunk[:, class_idx] += x_chunk @ params[block, :]
+                if alternative_specific_coefficients.size:
+                    logits_chunk[:, class_idx] += (
+                        alternative_specific[:, class_idx, :]
+                        @ alternative_specific_coefficients[block, :]
+                    )
                 block += 1
             logits[start:stop, :] = logits_chunk
 
@@ -1457,6 +1678,209 @@ class MultinomialModel:
             return pl.DataFrame({"class": self.classes_, "probability": mix})
         raise ValidationError("return_format must be 'dict' or 'polars'.")
 
+    def _scenario_weights(self, data: Any, weights: str | np.ndarray | None) -> np.ndarray:
+        if weights is None:
+            return np.ones(len(data), dtype=np.float64)
+        if isinstance(weights, str):
+            if weights not in data.columns:
+                raise PredictionError(f"weights column {weights!r} is not present in data.")
+            resolved = _as_float_array(data[weights].to_numpy(), name="weights", length=len(data))
+        else:
+            resolved = _as_float_array(weights, name="weights", length=len(data))
+        if np.any(resolved < 0.0):
+            raise ValidationError("weights must be non-negative.")
+        if float(np.sum(resolved)) <= 0.0:
+            raise ValidationError("scenario weights must have positive total.")
+        return resolved
+
+    def _weighted_class_mix(self, probabilities: np.ndarray, weights: np.ndarray) -> np.ndarray:
+        return (probabilities * weights[:, None]).sum(axis=0) / float(np.sum(weights))
+
+    def _scenario_expected_value(
+        self,
+        base_data: Any,
+        scenario_data: Any,
+        base_probabilities: np.ndarray,
+        scenario_probabilities: np.ndarray,
+        weights: np.ndarray,
+        value_columns: dict[str, str] | None,
+    ) -> dict[str, float] | None:
+        if value_columns is None:
+            return None
+        base_values = np.zeros_like(base_probabilities)
+        scenario_values = np.zeros_like(scenario_probabilities)
+        for class_idx, class_label in enumerate(self.classes_):
+            column = value_columns.get(class_label)
+            if column is None:
+                continue
+            if column not in base_data.columns:
+                raise PredictionError(f"value column {column!r} is not present in data.")
+            if column not in scenario_data.columns:
+                raise PredictionError(f"value column {column!r} is not present in scenario data.")
+            base_values[:, class_idx] = _as_float_array(
+                base_data[column].to_numpy(),
+                name=f"value_columns[{class_label!r}]",
+                length=len(base_data),
+            )
+            scenario_values[:, class_idx] = _as_float_array(
+                scenario_data[column].to_numpy(),
+                name=f"value_columns[{class_label!r}]",
+                length=len(scenario_data),
+            )
+        total_weight = float(np.sum(weights))
+        base = float(
+            np.sum(weights * np.sum(base_probabilities * base_values, axis=1)) / total_weight
+        )
+        scenario = float(
+            np.sum(weights * np.sum(scenario_probabilities * scenario_values, axis=1))
+            / total_weight
+        )
+        return {"base": base, "scenario": scenario, "delta": scenario - base}
+
+    def _scenario_segment_mix(
+        self,
+        data: Any,
+        base_probabilities: np.ndarray,
+        scenario_probabilities: np.ndarray,
+        weights: np.ndarray,
+        categorical_factors: list[str],
+        continuous_factors: list[str],
+    ) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        factor_specs = [(factor, "categorical") for factor in categorical_factors]
+        factor_specs.extend((factor, "continuous") for factor in continuous_factors)
+        for factor, factor_type in factor_specs:
+            if factor not in data.columns:
+                raise PredictionError(f"scenario factor {factor!r} is not present in data.")
+            labels = (
+                _continuous_factor_bins(data[factor].to_numpy())
+                if factor_type == "continuous"
+                else _stringify_factor_values(data[factor].to_list())
+            )
+            for level in sorted(set(labels.tolist())):
+                mask = labels == level
+                level_weight = float(weights[mask].sum())
+                if level_weight <= 0.0:
+                    continue
+                base_mix = self._weighted_class_mix(base_probabilities[mask], weights[mask])
+                scenario_mix = self._weighted_class_mix(scenario_probabilities[mask], weights[mask])
+                rows.append(
+                    {
+                        "factor": factor,
+                        "factor_type": factor_type,
+                        "level": str(level),
+                        "n_rows": int(np.sum(mask)),
+                        "weight": level_weight,
+                        "base_class_mix": {
+                            label: float(base_mix[idx]) for idx, label in enumerate(self.classes_)
+                        },
+                        "scenario_class_mix": {
+                            label: float(scenario_mix[idx])
+                            for idx, label in enumerate(self.classes_)
+                        },
+                        "class_mix_delta": {
+                            label: float(scenario_mix[idx] - base_mix[idx])
+                            for idx, label in enumerate(self.classes_)
+                        },
+                    }
+                )
+        return rows
+
+    def scenario(
+        self,
+        new_data: Any,
+        changes: dict[str, float | np.ndarray],
+        *,
+        weights: str | np.ndarray | None = None,
+        availability: dict[str, str | bool | np.ndarray] | np.ndarray | None = None,
+        offset: dict[str, str | np.ndarray] | np.ndarray | None = None,
+        value_columns: dict[str, str] | None = None,
+        categorical_factors: list[str] | None = None,
+        continuous_factors: list[str] | None = None,
+    ) -> MultinomialScenario:
+        if not self._alternative_terms_spec:
+            raise ValidationError("scenario() requires a model fit with alternative_terms.")
+        if not isinstance(changes, dict) or not changes:
+            raise ValidationError("changes must be a non-empty dict of column changes.")
+        alternative_columns = _alternative_columns_raw(self._alternative_terms_spec)
+        unknown = sorted(set(changes) - alternative_columns)
+        if unknown:
+            raise ValidationError(
+                f"scenario changes reference columns not used by alternative_terms: {unknown}."
+            )
+
+        categorical_factors = list(categorical_factors or [])
+        continuous_factors = list(continuous_factors or [])
+        extra_columns = set(changes)
+        extra_columns.update(categorical_factors)
+        extra_columns.update(continuous_factors)
+        if isinstance(weights, str):
+            extra_columns.add(weights)
+        if value_columns is not None:
+            extra_columns.update(value_columns.values())
+
+        data = self._prepare_prediction_data(
+            new_data, availability, offset, extra_columns=extra_columns
+        )
+        import polars as pl
+
+        scenario_data = data
+        for column, change in changes.items():
+            if column not in scenario_data.columns:
+                raise PredictionError(f"scenario change column {column!r} is not present in data.")
+            if np.isscalar(change):
+                multiplier = float(change)
+                if not np.isfinite(multiplier):
+                    raise ValidationError(f"scenario multiplier for {column!r} must be finite.")
+                scenario_data = scenario_data.with_columns(
+                    (pl.col(column) * multiplier).alias(column)
+                )
+            else:
+                values = _as_float_array(change, name=f"changes[{column!r}]", length=len(data))
+                scenario_data = scenario_data.with_columns(pl.Series(column, values))
+
+        base_probabilities = self.predict_proba(
+            data, availability=availability, offset=offset, return_format="numpy"
+        )
+        scenario_probabilities = self.predict_proba(
+            scenario_data, availability=availability, offset=offset, return_format="numpy"
+        )
+        resolved_weights = self._scenario_weights(data, weights)
+        base_mix = self._weighted_class_mix(base_probabilities, resolved_weights)
+        scenario_mix = self._weighted_class_mix(scenario_probabilities, resolved_weights)
+
+        return MultinomialScenario(
+            classes=list(self.classes_),
+            nobs=len(data),
+            total_weight=float(np.sum(resolved_weights)),
+            base_class_mix={label: float(base_mix[idx]) for idx, label in enumerate(self.classes_)},
+            scenario_class_mix={
+                label: float(scenario_mix[idx]) for idx, label in enumerate(self.classes_)
+            },
+            class_mix_delta={
+                label: float(scenario_mix[idx] - base_mix[idx])
+                for idx, label in enumerate(self.classes_)
+            },
+            base_probabilities=base_probabilities,
+            scenario_probabilities=scenario_probabilities,
+            expected_value=self._scenario_expected_value(
+                data,
+                scenario_data,
+                base_probabilities,
+                scenario_probabilities,
+                resolved_weights,
+                value_columns,
+            ),
+            segment_mix=self._scenario_segment_mix(
+                data,
+                base_probabilities,
+                scenario_probabilities,
+                resolved_weights,
+                categorical_factors,
+                continuous_factors,
+            ),
+        )
+
     def _covariance(self) -> np.ndarray | None:
         cov = getattr(self._result, "cov_params_unscaled", None)
         if cov is None:
@@ -1465,15 +1889,56 @@ class MultinomialModel:
 
     def coef_table(self, return_format: str = "polars") -> Any:
         estimates = self.params
+        alternative_generic = self.alternative_generic_coefficients
+        alternative_specific = self.alternative_specific_coefficients
         cov = self._covariance()
         n_blocks, p = estimates.shape
+        shared_size = estimates.size
+        generic_size = alternative_generic.size
         if cov is not None:
             se_flat = np.sqrt(np.maximum(np.diag(cov), 0.0))
             se = se_flat.reshape(n_blocks, p)
+            generic_se = se_flat[shared_size : shared_size + generic_size]
+            specific_se = se_flat[shared_size + generic_size :].reshape(
+                n_blocks, len(self.alternative_specific_feature_names)
+            )
         else:
             se = np.full_like(estimates, np.nan)
+            generic_se = np.full_like(alternative_generic, np.nan)
+            specific_se = np.full_like(alternative_specific, np.nan)
 
         rows = []
+
+        def append_row(
+            *,
+            class_label: str,
+            feature: str,
+            estimate: float,
+            std_error: float,
+            coefficient_type: str,
+        ) -> None:
+            if np.isfinite(std_error) and std_error > 0.0:
+                z_value = estimate / std_error
+                p_value = _normal_two_sided_p(z_value)
+                ci_low = estimate - 1.959963984540054 * std_error
+                ci_high = estimate + 1.959963984540054 * std_error
+            else:
+                z_value = p_value = ci_low = ci_high = float("nan")
+            rows.append(
+                {
+                    "class": class_label,
+                    "feature": feature,
+                    "coefficient_type": coefficient_type,
+                    "estimate": estimate,
+                    "std_error": std_error,
+                    "z": z_value,
+                    "p_value": p_value,
+                    "ci_lower": ci_low,
+                    "ci_upper": ci_high,
+                    "odds_ratio": math.exp(estimate) if np.isfinite(estimate) else np.nan,
+                }
+            )
+
         block = 0
         for class_label in self.classes_:
             if class_label == self.reference_:
@@ -1481,25 +1946,35 @@ class MultinomialModel:
             for feature_idx, feature in enumerate(self.feature_names):
                 estimate = float(estimates[block, feature_idx])
                 std_error = float(se[block, feature_idx])
-                if np.isfinite(std_error) and std_error > 0.0:
-                    z_value = estimate / std_error
-                    p_value = _normal_two_sided_p(z_value)
-                    ci_low = estimate - 1.959963984540054 * std_error
-                    ci_high = estimate + 1.959963984540054 * std_error
-                else:
-                    z_value = p_value = ci_low = ci_high = float("nan")
-                rows.append(
-                    {
-                        "class": class_label,
-                        "feature": feature,
-                        "estimate": estimate,
-                        "std_error": std_error,
-                        "z": z_value,
-                        "p_value": p_value,
-                        "ci_lower": ci_low,
-                        "ci_upper": ci_high,
-                        "odds_ratio": math.exp(estimate) if np.isfinite(estimate) else np.nan,
-                    }
+                append_row(
+                    class_label=class_label,
+                    feature=feature,
+                    estimate=estimate,
+                    std_error=std_error,
+                    coefficient_type="shared",
+                )
+            block += 1
+
+        for term_idx, term_name in enumerate(self.alternative_generic_feature_names):
+            append_row(
+                class_label="all",
+                feature=term_name,
+                estimate=float(alternative_generic[term_idx]),
+                std_error=float(generic_se[term_idx]),
+                coefficient_type="alternative_generic",
+            )
+
+        block = 0
+        for class_label in self.classes_:
+            if class_label == self.reference_:
+                continue
+            for term_idx, term_name in enumerate(self.alternative_specific_feature_names):
+                append_row(
+                    class_label=class_label,
+                    feature=term_name,
+                    estimate=float(alternative_specific[block, term_idx]),
+                    std_error=float(specific_se[block, term_idx]),
+                    coefficient_type="alternative_class_specific",
                 )
             block += 1
 
@@ -1567,6 +2042,8 @@ class MultinomialModel:
             "schema_version": _SCHEMA_VERSION,
             "result_state": {
                 "params": self.params,
+                "alternative_generic_coefficients": self.alternative_generic_coefficients,
+                "alternative_specific_coefficients": self.alternative_specific_coefficients,
                 "fitted_probabilities": self.fitted_probabilities,
                 "linear_predictor": self.linear_predictor,
                 "log_likelihood": self.log_likelihood,
@@ -1590,6 +2067,7 @@ class MultinomialModel:
             "feature_names": self.feature_names,
             "builder_state": builder_state,
             "terms": self._terms_dict,
+            "alternative_terms": self._alternative_terms_spec,
             "interactions": self._interactions_spec,
             "input_transforms": self._input_transforms,
             "availability_spec": None
@@ -1613,7 +2091,13 @@ class MultinomialModel:
                 f"Cannot load multinomial model: serialized schema_version "
                 f"{state.get('schema_version')!r} is not supported."
             )
-        result = _DeserializedMultinomialResult(**state["result_state"])
+        result_state = dict(state["result_state"])
+        result_state.setdefault("alternative_generic_coefficients", np.zeros(0, dtype=np.float64))
+        result_state.setdefault(
+            "alternative_specific_coefficients",
+            np.zeros((len(state["classes"]) - 1, 0), dtype=np.float64),
+        )
+        result = _DeserializedMultinomialResult(**result_state)
         builder = None
         if state["builder_state"] is not None:
             builder = _DeserializedBuilder(state["builder_state"])
@@ -1625,6 +2109,7 @@ class MultinomialModel:
             feature_names=state["feature_names"],
             builder=builder,
             terms=state["terms"],
+            alternative_terms=state.get("alternative_terms", {}),
             interactions=state["interactions"],
             input_transforms=state.get("input_transforms", []),
             compiled_input_transforms=None,
@@ -1655,6 +2140,7 @@ class MultinomialDict:
         *,
         response: str,
         terms: dict[str, dict[str, Any]],
+        alternative_terms: dict[str, dict[str, Any]] | None,
         data: Any,
         interactions: list[dict[str, Any]] | None,
         intercept: bool,
@@ -1671,6 +2157,7 @@ class MultinomialDict:
 
         self.response = response
         self.terms = copy.deepcopy(terms)
+        self._raw_alternative_terms = copy.deepcopy(alternative_terms)
         self.interactions_spec = copy.deepcopy(interactions)
         self.intercept = intercept
         self.availability_spec = copy.deepcopy(availability)
@@ -1691,6 +2178,7 @@ class MultinomialDict:
             weights=weights,
         )
         needed |= _extra_needed_columns([availability, offset], self._input_transforms)
+        needed |= _alternative_needed_columns(alternative_terms, self._input_transforms)
         needed |= set(input_transform_source_columns(self._input_transforms))
         data = _collect_lazyframe(data, needed)
         self._compiled_input_transforms = compile_input_transforms(
@@ -1712,6 +2200,7 @@ class MultinomialDict:
             self.y_codes,
         ) = _resolve_classes(response_values, data[response], classes, reference)
         self.reference_index_ = self._class_to_code[self.reference_]
+        self.alternative_terms = _normalize_alternative_terms(alternative_terms, self.classes_)
 
         dummy_response = _unique_temp_column(data.columns, "__rustystats_multinomial_y__")
         import polars as pl
@@ -1727,8 +2216,18 @@ class MultinomialDict:
         _dummy_y, self.X, self.feature_names = self._builder.build_design_matrix_from_parsed(
             parsed, seed=seed
         )
+        (
+            self.alternative_generic,
+            self.alternative_specific,
+            self.alternative_generic_feature_names,
+            self.alternative_specific_feature_names,
+        ) = _resolve_alternative_arrays(data, self.classes_, self.alternative_terms)
         self.n_obs = len(data)
-        self.n_params = self.X.shape[1]
+        self.n_params = (
+            self.X.shape[1] * (len(self.classes_) - 1)
+            + self.alternative_generic.shape[2]
+            + self.alternative_specific.shape[2] * (len(self.classes_) - 1)
+        )
 
         self.availability = _resolve_class_matrix(
             data,
@@ -1787,6 +2286,11 @@ class MultinomialDict:
             raise ValidationError("multinomial_dict Phase 1 supports only regularization='ridge'.")
         if l1_ratio != 0.0:
             raise ValidationError("multinomial_dict Phase 1 supports ridge only; use l1_ratio=0.0.")
+        if self.alternative_terms and (regularization is not None or alpha > 0.0):
+            raise ValidationError(
+                "regularization with multinomial alternative_terms is reserved for Phase 4; "
+                "fit Phase 3 alternative-specific choice models unpenalized."
+            )
         if alpha < 0.0 or not np.isfinite(alpha):
             raise ValidationError("alpha must be finite and non-negative.")
         if tol <= 0.0 or not np.isfinite(tol):
@@ -1824,6 +2328,8 @@ class MultinomialDict:
             int(max_dense_parameters),
             store_design_matrix,
             verbose,
+            self.alternative_generic,
+            self.alternative_specific,
         )
         self._builder.clear_caches()
 
@@ -1846,6 +2352,7 @@ class MultinomialDict:
             feature_names=self.feature_names,
             builder=self._builder,
             terms=self.terms,
+            alternative_terms=self.alternative_terms,
             interactions=self.interactions_spec,
             input_transforms=self._input_transforms,
             compiled_input_transforms=self._compiled_input_transforms,
@@ -1868,6 +2375,7 @@ def multinomial_dict(
     *,
     terms: dict[str, dict[str, Any]] | None = None,
     shared_terms: dict[str, dict[str, Any]] | None = None,
+    alternative_terms: dict[str, dict[str, Any]] | None = None,
     interactions: list[dict[str, Any]] | None = None,
     intercept: bool = True,
     classes: list[str] | None = None,
@@ -1890,6 +2398,7 @@ def multinomial_dict(
     return MultinomialDict(
         response=response,
         terms=resolved_terms,
+        alternative_terms=alternative_terms,
         data=data,
         interactions=interactions,
         intercept=intercept,
@@ -1909,5 +2418,6 @@ __all__ = [
     "MultinomialDiagnostics",
     "MultinomialDict",
     "MultinomialModel",
+    "MultinomialScenario",
     "multinomial_dict",
 ]

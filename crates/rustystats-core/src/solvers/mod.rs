@@ -44,7 +44,9 @@ pub use irls::{
     solve_weighted_least_squares_with_penalty_matrix, solve_wls_from_precomputed, SparseRowCache,
 };
 pub use irls::{fit_glm_unified, FitConfig, IRLSConfig, IRLSResult};
-pub use multinomial::{fit_multinomial, MultinomialConfig, MultinomialResult};
+pub use multinomial::{
+    fit_multinomial, fit_multinomial_with_alternatives, MultinomialConfig, MultinomialResult,
+};
 pub use nnls::{
     nnls, nnls_penalized, nnls_weighted, nnls_weighted_penalized, NNLSConfig, NNLSResult,
 };
