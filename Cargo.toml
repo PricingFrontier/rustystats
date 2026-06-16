@@ -50,7 +50,7 @@ ndarray = { version = "0.17", features = ["approx"] }
 nalgebra = { version = "0.34", features = ["matrixmultiply"] }
 
 # --- Python Integration ---
-pyo3 = { version = "0.28", features = ["extension-module", "generate-import-lib"] }  # Rust <-> Python bridge
+pyo3 = { version = "0.29", features = ["extension-module", "generate-import-lib"] }  # Rust <-> Python bridge
 numpy = "0.28"                             # NumPy array support for PyO3
 
 # --- Utilities ---
