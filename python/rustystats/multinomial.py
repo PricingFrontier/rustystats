@@ -166,6 +166,7 @@ def _alternative_needed_columns(
 def _normalize_alternative_terms(
     alternative_terms: dict[str, Any] | None,
     classes: list[str],
+    reference: str | None = None,
 ) -> dict[str, dict[str, Any]]:
     if alternative_terms is None:
         return {}
@@ -194,6 +195,18 @@ def _normalize_alternative_terms(
             if label not in class_set:
                 raise ValidationError(
                     f"alternative_terms[{term_name!r}] references unknown class {label!r}."
+                )
+            if (
+                coefficient == "class_specific"
+                and reference is not None
+                and label == str(reference)
+            ):
+                raise ValidationError(
+                    f"alternative_terms[{term_name!r}] is class_specific but defines a column "
+                    f"for the reference class {label!r}. Class-specific alternative coefficients "
+                    "are baseline-relative, so the reference column would be silently ignored. "
+                    "Remove it, or use coefficient='generic' (which legitimately uses the "
+                    "reference alternative)."
                 )
             columns[label] = column
         normalized[term_name] = {
@@ -422,7 +435,16 @@ def _resolve_weights(
     weights: str | np.ndarray | None,
     class_weights: dict[str, float] | None,
     response_values: list[str],
-) -> tuple[np.ndarray | None, bool]:
+) -> tuple[np.ndarray | None, bool, np.ndarray | None]:
+    """Resolve fit weights.
+
+    Returns ``(effective_weights, is_class_weighted, row_weights)`` where
+    ``effective_weights`` folds the class multipliers (what the solver fits on)
+    and ``row_weights`` is the unfolded observation-weight vector (``None`` when
+    no row weights were supplied). Diagnostics use ``row_weights`` so the
+    reported class mix reflects the data distribution rather than the
+    class-reweighted training objective.
+    """
     row_weights = None
     if weights is not None:
         if isinstance(weights, str):
@@ -433,7 +455,7 @@ def _resolve_weights(
             raise ValidationError("weights must be finite and non-negative.")
 
     if class_weights is None:
-        return row_weights, False
+        return row_weights, False, row_weights
 
     resolved = {str(key): float(value) for key, value in class_weights.items()}
     bad = [key for key, value in resolved.items() if not np.isfinite(value) or value < 0.0]
@@ -442,7 +464,7 @@ def _resolve_weights(
 
     class_multiplier = np.asarray([resolved.get(label, 1.0) for label in response_values])
     effective = class_multiplier if row_weights is None else row_weights * class_multiplier
-    return effective.astype(np.float64, copy=False), True
+    return effective.astype(np.float64, copy=False), True, row_weights
 
 
 def _resolve_class_matrix(
@@ -564,6 +586,17 @@ def _weighted_probability_mix(probabilities: np.ndarray, weights: np.ndarray) ->
     if total_weight <= 0.0:
         raise ValidationError("weights must have positive total.")
     return (probabilities * weights[:, None]).sum(axis=0) / total_weight
+
+
+def _share_based_null_deviance(class_counts: dict[str, float], total_weight: float) -> float | None:
+    """Intercept-only null deviance from weighted class counts: -2 sum_k n_k log(n_k/N)."""
+    if total_weight <= 0.0:
+        return None
+    log_likelihood = 0.0
+    for count in class_counts.values():
+        if count > 0.0:
+            log_likelihood += count * math.log(count / total_weight)
+    return -2.0 * log_likelihood
 
 
 def _optional_ratio(numerator: float, denominator: float) -> float | None:
@@ -1050,6 +1083,8 @@ class MultinomialModel:
         array_availability_requires_prediction_override: bool,
         array_offset_requires_prediction_override: bool,
         inference_status: str,
+        fit_row_weights: np.ndarray | None = None,
+        array_weighted: bool = False,
     ):
         self._result = result
         self.response = response
@@ -1079,6 +1114,10 @@ class MultinomialModel:
         self._array_offset_requires_prediction_override = bool(
             array_offset_requires_prediction_override
         )
+        self._fit_row_weights = (
+            None if fit_row_weights is None else np.asarray(fit_row_weights, dtype=np.float64)
+        )
+        self._array_weighted = bool(array_weighted)
         self.inference_status = inference_status
 
     @property
@@ -1198,16 +1237,26 @@ class MultinomialModel:
             )
         return np.asarray([class_to_code[label] for label in labels], dtype=np.int64)
 
-    def _diagnostic_weight_array(self, data: Any) -> np.ndarray:
-        if self._weights_spec is None:
+    def _diagnostic_weight_array(
+        self, data: Any, weights_override: str | None = None
+    ) -> np.ndarray:
+        column = weights_override if weights_override is not None else self._weights_spec
+        if column is None:
+            if self._array_weighted:
+                raise PredictionError(
+                    "This model was fit with an in-memory array weight vector, which cannot be "
+                    "re-resolved for supplied diagnostic data. Pass weights='<column>' to "
+                    "diagnostics(), or call diagnostics() without train_data to use the fitted "
+                    "weights."
+                )
             return np.ones(len(data), dtype=np.float64)
-        if self._weights_spec not in data.columns:
-            raise PredictionError(f"weights column {self._weights_spec!r} is not present in data.")
-        weights = _as_float_array(
-            data[self._weights_spec].to_numpy(), name="weights", length=len(data)
-        )
-        if np.any(weights < 0.0):
-            raise ValidationError("weights must be non-negative.")
+        if not isinstance(column, str):
+            raise ValidationError("diagnostics weights override must be a column name.")
+        if column not in data.columns:
+            raise PredictionError(f"weights column {column!r} is not present in data.")
+        weights = _as_float_array(data[column].to_numpy(), name="weights", length=len(data))
+        if np.any(~np.isfinite(weights)) or np.any(weights < 0.0):
+            raise ValidationError("weights must be finite and non-negative.")
         return weights
 
     def _collect_diagnostic_data(
@@ -1216,6 +1265,7 @@ class MultinomialModel:
         *,
         categorical_factors: list[str],
         continuous_factors: list[str],
+        weights_override: str | None = None,
     ) -> Any:
         if self.response is None:
             raise PredictionError(
@@ -1226,6 +1276,8 @@ class MultinomialModel:
         requested = {self.response, *categorical_factors, *continuous_factors}
         if self._weights_spec is not None:
             requested.add(self._weights_spec)
+        if isinstance(weights_override, str):
+            requested.add(weights_override)
         produced = {
             spec.get("output")
             for spec in self._input_transforms
@@ -1251,11 +1303,13 @@ class MultinomialModel:
         *,
         categorical_factors: list[str],
         continuous_factors: list[str],
+        weights_override: str | None = None,
     ) -> tuple[Any, np.ndarray, np.ndarray, np.ndarray]:
         diagnostic_data = self._collect_diagnostic_data(
             data,
             categorical_factors=categorical_factors,
             continuous_factors=continuous_factors,
+            weights_override=weights_override,
         )
         probabilities = self.predict_proba(data, return_format="numpy")
         if probabilities.shape[0] != len(diagnostic_data):
@@ -1263,7 +1317,7 @@ class MultinomialModel:
         y_codes = self._class_codes_from_values(
             diagnostic_data[self.response].to_list(), name=self.response or "response"
         )
-        weights = self._diagnostic_weight_array(diagnostic_data)
+        weights = self._diagnostic_weight_array(diagnostic_data, weights_override)
         return diagnostic_data, probabilities, y_codes, weights
 
     def _calibration_by_class(
@@ -1566,6 +1620,8 @@ class MultinomialModel:
         test_data: Any | None = None,
         categorical_factors: list[str] | None = None,
         continuous_factors: list[str] | None = None,
+        *,
+        weights: str | None = None,
     ) -> MultinomialDiagnostics:
         categorical_factors = list(categorical_factors or [])
         continuous_factors = list(continuous_factors or [])
@@ -1575,11 +1631,20 @@ class MultinomialModel:
         if using_fitted_training:
             if categorical_factors or continuous_factors:
                 raise ValidationError("factor diagnostics require train_data.")
+            # Use the unfolded observation weights so the reported class mix
+            # reflects the data distribution, not the class-reweighted training
+            # objective (consistent with the supplied-data path below).
+            n_train = len(np.asarray(self._result.y_codes))
+            fitted_weights = (
+                self._fit_row_weights
+                if self._fit_row_weights is not None
+                else np.ones(n_train, dtype=np.float64)
+            )
             train = self._dataset_diagnostics_from_arrays(
                 name="train",
                 probabilities=self.fitted_probabilities,
                 y_codes=np.asarray(self._result.y_codes, dtype=np.int64),
-                weights=np.asarray(self._result.prior_weights, dtype=np.float64),
+                weights=np.asarray(fitted_weights, dtype=np.float64),
             )
         else:
             train_frame, train_probabilities, train_y, train_weights = (
@@ -1587,6 +1652,7 @@ class MultinomialModel:
                     train_data,
                     categorical_factors=categorical_factors,
                     continuous_factors=continuous_factors,
+                    weights_override=weights,
                 )
             )
             train = self._dataset_diagnostics_from_arrays(
@@ -1614,6 +1680,7 @@ class MultinomialModel:
                     test_data,
                     categorical_factors=categorical_factors,
                     continuous_factors=continuous_factors,
+                    weights_override=weights,
                 )
             )
             test = self._dataset_diagnostics_from_arrays(
@@ -1647,9 +1714,18 @@ class MultinomialModel:
                 if fit_bic is None
                 else train.deviance + self.n_params * math.log(max(train.nobs, 1))
             )
+        # McFadden's pseudo-R2 must pair the model deviance with an intercept-only
+        # null on the SAME rows. The no-train_data path uses the fit-time null
+        # (which the solver computed honouring availability/offset); the
+        # supplied-data path derives a class-share null on the supplied rows so
+        # the ratio is not a cross-basis number.
+        if using_fitted_training:
+            null_for_r2 = self.null_deviance
+        else:
+            null_for_r2 = _share_based_null_deviance(train.actual_class_counts, train.total_weight)
         pseudo_r2 = None
-        if self.null_deviance > 0.0:
-            pseudo_r2 = 1.0 - train.deviance / self.null_deviance
+        if null_for_r2 is not None and null_for_r2 > 0.0:
+            pseudo_r2 = 1.0 - train.deviance / null_for_r2
 
         return MultinomialDiagnostics(
             model_type="baseline-category multinomial logit",
@@ -2684,6 +2760,10 @@ class MultinomialModel:
             if self._array_offset_requires_prediction_override
             else self._offset_spec,
             "weights_spec": self._weights_spec,
+            "fit_row_weights": None
+            if self._fit_row_weights is None
+            else np.asarray(self._fit_row_weights, dtype=np.float64),
+            "array_weighted": self._array_weighted,
             "array_availability_requires_prediction_override": self._array_availability_requires_prediction_override,
             "array_offset_requires_prediction_override": self._array_offset_requires_prediction_override,
             "inference_status": self.inference_status,
@@ -2730,6 +2810,8 @@ class MultinomialModel:
                 "array_offset_requires_prediction_override", False
             ),
             inference_status=state.get("inference_status", "valid_standard"),
+            fit_row_weights=state.get("fit_row_weights"),
+            array_weighted=state.get("array_weighted", False),
         )
 
     def __repr__(self) -> str:
@@ -2807,7 +2889,9 @@ class MultinomialDict:
             self.y_codes,
         ) = _resolve_classes(response_values, data[response], classes, reference)
         self.reference_index_ = self._class_to_code[self.reference_]
-        self.alternative_terms = _normalize_alternative_terms(alternative_terms, self.classes_)
+        self.alternative_terms = _normalize_alternative_terms(
+            alternative_terms, self.classes_, self.reference_
+        )
 
         dummy_response = _unique_temp_column(data.columns, "__rustystats_multinomial_y__")
         import polars as pl
@@ -2854,9 +2938,10 @@ class MultinomialDict:
             name="offset",
             allow_arrays=True,
         )
-        self.weights, self._class_weighted = _resolve_weights(
+        self.weights, self._class_weighted, self._row_weights = _resolve_weights(
             data, weights, class_weights, response_values
         )
+        self._array_weighted = weights is not None and not isinstance(weights, str)
         self._array_availability_requires_prediction_override = _spec_has_array(availability)
         self._array_offset_requires_prediction_override = _spec_has_array(offset)
 
@@ -2990,6 +3075,8 @@ class MultinomialDict:
             array_availability_requires_prediction_override=self._array_availability_requires_prediction_override,
             array_offset_requires_prediction_override=self._array_offset_requires_prediction_override,
             inference_status=inference_status,
+            fit_row_weights=self._row_weights,
+            array_weighted=self._array_weighted,
         )
 
 

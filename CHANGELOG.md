@@ -20,6 +20,19 @@
   with quick/full grids, RSS sampling, Hessian sizing, guard checks, and
   prediction-throughput reporting.
 
+### Multinomial diagnostics and validation hardening
+
+- Multinomial `diagnostics()` now reports the row-weighted data distribution
+  rather than the class-reweighted training objective, so the headline class
+  mix is consistent whether or not `train_data` is supplied; added a `weights=`
+  column override and a clear error when a model fit with array weights is asked
+  for supplied-data diagnostics.
+- McFadden pseudo-R² now pairs the model deviance with an intercept-only null on
+  the same rows (no cross-basis ratio when `train_data` differs from the fit
+  sample).
+- `class_specific` alternative terms now reject a reference-class column instead
+  of silently ignoring it.
+
 ### Deferred
 
 - Multinomial lasso/elastic net, cross-validation, target encoding, automatic

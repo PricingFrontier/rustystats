@@ -25,7 +25,7 @@ result = rs.glm_dict(
     },
     data=data,
     family="poisson",
-    offset="exposure",  # log(exposure) applied automatically
+    exposure="exposure",  # rate model: log(exposure) used as the offset automatically
 ).fit()
 
 # Rich output

@@ -767,7 +767,17 @@ def test_multinomial_class_weighted_diagnostics_are_labelled_naive():
     assert result.bic() is None
     diagnostics = result.diagnostics()
     assert diagnostics.aic is None
-    assert diagnostics.confusion_matrix.sum() > data.height
+    # Diagnostics report the row-weighted data distribution, not the
+    # class-reweighted training objective: confusion totals the raw rows, and
+    # the no-train_data path agrees with the supplied-data path.
+    assert np.isclose(diagnostics.confusion_matrix.sum(), data.height)
+    supplied = result.diagnostics(train_data=data)
+    for class_label in result.classes_:
+        np.testing.assert_allclose(
+            diagnostics.actual_class_mix[class_label],
+            supplied.actual_class_mix[class_label],
+            atol=1e-12,
+        )
 
 
 def test_availability_affects_fit_not_just_prediction():
@@ -1209,3 +1219,190 @@ def test_prediction_methods_are_consistent():
     np.testing.assert_allclose([weighted_mix[label] for label in classes], expected, atol=1e-10)
     mix_pl = result.tier_mix(data, return_format="polars")
     assert set(mix_pl["class"].to_list()) == set(classes)
+
+
+def test_class_specific_alternative_term_rejects_reference_column():
+    data = _tier_price_frame(n=120)
+    with pytest.raises(ValidationError, match="reference class"):
+        rs.multinomial_dict(
+            response="tier",
+            terms={"x": {"type": "linear"}},
+            alternative_terms={
+                "richness": {
+                    "columns": {
+                        "none": "x",  # reference-class column on a class_specific term
+                        "basic": "richness_basic",
+                        "standard": "richness_standard",
+                        "premium": "richness_premium",
+                    },
+                    "coefficient": "class_specific",
+                }
+            },
+            data=data,
+            classes=["none", "basic", "standard", "premium"],
+            reference="none",
+        )
+
+
+def test_array_fit_weights_diagnostics_requires_column_override():
+    data = _tier_frame(n=160, seed=99)
+    weights = np.linspace(0.5, 2.0, data.height)
+    result = rs.multinomial_dict(
+        response="tier",
+        terms={"x": {"type": "linear"}},
+        data=data,
+        classes=["none", "basic", "standard", "premium"],
+        reference="none",
+        weights=weights,
+    ).fit(compute_covariance=False)
+
+    # No-train_data diagnostics use the fitted (array) row weights.
+    diag = result.diagnostics()
+    np.testing.assert_allclose(diag.train.total_weight, weights.sum())
+
+    # Supplied-data diagnostics cannot reconstruct array weights -> loud error.
+    with pytest.raises(PredictionError, match="array weight"):
+        result.diagnostics(train_data=data)
+
+    # ... unless a weights column is provided for the supplied data.
+    data_with_weights = data.with_columns(wcol=pl.Series(weights))
+    diag2 = result.diagnostics(train_data=data_with_weights, weights="wcol")
+    np.testing.assert_allclose(diag2.train.total_weight, weights.sum())
+    for class_label in result.classes_:
+        np.testing.assert_allclose(
+            diag.actual_class_mix[class_label],
+            diag2.actual_class_mix[class_label],
+            atol=1e-12,
+        )
+
+
+def test_mcfadden_pseudo_r2_is_self_consistent():
+    data = _tier_frame(n=240, seed=11)
+    result = rs.multinomial_dict(
+        response="tier",
+        terms={"x": {"type": "linear"}, "channel": {"type": "categorical"}},
+        data=data,
+        classes=["none", "basic", "standard", "premium"],
+        reference="none",
+    ).fit(compute_covariance=False)
+    no_arg = result.diagnostics().mcfadden_pseudo_r2
+    supplied = result.diagnostics(train_data=data).mcfadden_pseudo_r2
+    assert no_arg is not None and supplied is not None
+    assert supplied <= 1.0
+    np.testing.assert_allclose(no_arg, supplied, atol=1e-8)
+
+
+def test_weighted_fit_matches_row_replication():
+    rng = np.random.default_rng(303)
+    n = 70
+    x = rng.normal(size=n)
+    tier = rng.choice(["a", "b", "c"], size=n)
+    base = pl.DataFrame({"tier": tier, "x": x})
+    reps = rng.integers(1, 4, size=n)
+    weighted = base.with_columns(w=pl.Series(reps.astype(np.float64)))
+    replicated = base[np.repeat(np.arange(n), reps).tolist()]
+    classes = ["a", "b", "c"]
+
+    weighted_fit = rs.multinomial_dict(
+        response="tier",
+        terms={"x": {"type": "linear"}},
+        data=weighted,
+        classes=classes,
+        reference="a",
+        weights="w",
+    ).fit(compute_covariance=False)
+    replicated_fit = rs.multinomial_dict(
+        response="tier",
+        terms={"x": {"type": "linear"}},
+        data=replicated,
+        classes=classes,
+        reference="a",
+    ).fit(compute_covariance=False)
+
+    np.testing.assert_allclose(weighted_fit.params, replicated_fit.params, rtol=1e-5, atol=1e-6)
+
+
+def test_multinomial_fixed_spline_and_interaction_fit():
+    data = _tier_frame(n=320, seed=77)
+    classes = ["none", "basic", "standard", "premium"]
+
+    bs_result = rs.multinomial_dict(
+        response="tier",
+        terms={"x": {"type": "bs", "df": 4}, "channel": {"type": "categorical"}},
+        interactions=[
+            {"x": {"type": "linear"}, "channel": {"type": "categorical"}, "include_main": False}
+        ],
+        data=data,
+        classes=classes,
+        reference="none",
+    ).fit(compute_covariance=False)
+    assert bs_result.converged
+    np.testing.assert_allclose(bs_result.predict_proba(data).sum(axis=1), 1.0, atol=1e-10)
+
+    ns_result = rs.multinomial_dict(
+        response="tier",
+        terms={"x": {"type": "ns", "df": 3}, "channel": {"type": "categorical"}},
+        data=data,
+        classes=classes,
+        reference="none",
+    ).fit(compute_covariance=False)
+    assert ns_result.converged
+    np.testing.assert_allclose(ns_result.predict_proba(data).sum(axis=1), 1.0, atol=1e-10)
+
+
+def test_ridge_alt_class_specific_se_scale_invariant():
+    data = _tier_price_frame(n=400, seed=909)
+    classes = ["none", "basic", "standard", "premium"]
+    alt = {
+        "richness": {
+            "columns": {
+                "basic": "richness_basic",
+                "standard": "richness_standard",
+                "premium": "richness_premium",
+            },
+            "coefficient": "class_specific",
+        }
+    }
+    factor = 9.0
+    scaled = data.with_columns(
+        (pl.col("richness_basic") * factor).alias("richness_basic"),
+        (pl.col("richness_standard") * factor).alias("richness_standard"),
+        (pl.col("richness_premium") * factor).alias("richness_premium"),
+    )
+    fit_a = rs.multinomial_dict(
+        response="tier",
+        terms={"x": {"type": "linear"}},
+        alternative_terms=alt,
+        data=data,
+        classes=classes,
+        reference="none",
+    ).fit(alpha=2.0)
+    fit_b = rs.multinomial_dict(
+        response="tier",
+        terms={"x": {"type": "linear"}},
+        alternative_terms=alt,
+        data=scaled,
+        classes=classes,
+        reference="none",
+    ).fit(alpha=2.0)
+
+    np.testing.assert_allclose(fit_a.predict_proba(data), fit_b.predict_proba(scaled), atol=1e-7)
+    ta = {
+        (r["class"], r["coefficient_type"]): r
+        for r in fit_a.coef_table(return_format="records")
+        if r["coefficient_type"] == "alternative_class_specific"
+    }
+    tb = {
+        (r["class"], r["coefficient_type"]): r
+        for r in fit_b.coef_table(return_format="records")
+        if r["coefficient_type"] == "alternative_class_specific"
+    }
+    for class_label in ["basic", "standard", "premium"]:
+        key = (class_label, "alternative_class_specific")
+        assert np.isfinite(ta[key]["std_error"])
+        np.testing.assert_allclose(
+            tb[key]["estimate"] * factor, ta[key]["estimate"], rtol=1e-5, atol=1e-8
+        )
+        np.testing.assert_allclose(
+            tb[key]["std_error"] * factor, ta[key]["std_error"], rtol=1e-5, atol=1e-8
+        )
