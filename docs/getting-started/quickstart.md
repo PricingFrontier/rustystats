@@ -25,7 +25,7 @@ result = rs.glm_dict(
     },
     data=data,
     family="poisson",
-    offset="exposure",  # log(exposure) applied automatically
+    exposure="exposure",  # rate model: log(exposure) used as the offset automatically
 ).fit()
 
 # Rich output
@@ -71,6 +71,53 @@ result = rs.glm_dict(response="y", terms=terms, data=data, family="poisson").fit
 result = rs.glm_dict(response="y", terms=terms, data=data, family="binomial").fit()     # Binary outcomes
 result = rs.glm_dict(response="y", terms=terms, data=data, family="gamma").fit()        # Positive continuous
 result = rs.glm_dict(response="y", terms=terms, data=data, family="tweedie", var_power=1.5).fit()  # Pure premium
+```
+
+## Product-Tier Conversion
+
+Use `multinomial_dict` when each row has one mutually exclusive outcome, such as
+which insurance product tier a quote converts to. Pass explicit `classes` so
+prediction columns and tier-mix reports stay stable across training runs.
+
+```python
+result = rs.multinomial_dict(
+    response="PurchasedTier",
+    shared_terms={
+        "DriverAge": {"type": "bs", "df": 5},
+        "VehicleValueLog": {"type": "linear"},
+        "Channel": {"type": "categorical"},
+    },
+    alternative_terms={
+        "log_price": {
+            "columns": {
+                "basic": "price_basic",
+                "standard": "price_standard",
+                "premium": "price_premium",
+            },
+            "coefficient": "generic",
+            "transform": "log",
+        },
+    },
+    data=quotes,
+    classes=["none", "basic", "standard", "premium"],
+    reference="none",
+    availability={"premium": "premium_available"},
+).fit(alpha=0.25, compute_covariance=False)
+
+probabilities = result.predict_proba(holdout)
+tier_mix = result.tier_mix(holdout)
+scenario = result.scenario(holdout, changes={"price_premium": 1.03})
+
+print(result.summary())
+print(tier_mix)
+print(scenario.class_mix_delta)
+```
+
+For a full pricing-style workflow with held-out log loss, vector-intercept
+calibration, tier-specific price/richness columns, and price scenarios, run:
+
+```bash
+uv run python examples/tier_conversion_multinomial.py
 ```
 
 ## Working with Categorical Variables

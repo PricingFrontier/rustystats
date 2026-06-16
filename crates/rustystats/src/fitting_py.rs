@@ -119,7 +119,7 @@ fn build_smooth_config(
     }
 }
 
-fn build_standardization(
+pub(crate) fn build_standardization(
     center: Option<PyReadonlyArray1<f64>>,
     scale: Option<PyReadonlyArray1<f64>>,
     n_params: usize,

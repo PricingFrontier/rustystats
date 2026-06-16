@@ -88,6 +88,158 @@ Set `exposure=` explicitly to recover that behaviour.
 
 ---
 
+## multinomial_dict
+
+Create a native baseline-category multinomial logit specification for mutually
+exclusive class outcomes, such as insurance product-tier conversion.
+
+```python
+rustystats.multinomial_dict(
+    response,
+    data,
+    terms=None,
+    shared_terms=None,
+    alternative_terms=None,
+    interactions=None,
+    intercept=True,
+    classes=None,
+    reference=None,
+    availability=None,
+    weights=None,
+    class_weights=None,
+    offset=None,
+    seed=None,
+    input_transforms=None,
+)
+```
+
+### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `response` | str | Categorical response column |
+| `data` | DataFrame | Polars DataFrame or LazyFrame |
+| `terms` / `shared_terms` | dict | Shared-covariate term specifications. Pass only one. |
+| `alternative_terms` | dict | Wide-format class-specific covariates such as tier price, deductible, limit, or richness |
+| `interactions` | list | Standard interaction specifications |
+| `intercept` | bool | Include a shared-design intercept. Default `True`. |
+| `classes` | list | Explicit output class order. Recommended for pricing workflows. |
+| `reference` | str | Baseline class. Defaults to the first class. |
+| `availability` | dict or array | Optional class availability mask. Dict values may be booleans, column names, or arrays. |
+| `weights` | str or array | Row weights |
+| `class_weights` | dict | Multipliers applied by observed response class |
+| `offset` | dict or array | Class-specific utility/logit offsets. This is not exposure. |
+| `seed` | int | Random seed for deterministic design components |
+| `input_transforms` | list[dict] | Deterministic raw-input transforms applied before design construction |
+
+Fit with:
+
+```python
+result = model.fit(
+    alpha=0.0,
+    l1_ratio=0.0,
+    regularization=None,
+    max_iter=100,
+    tol=1e-8,
+    standardize=True,
+    compute_covariance=True,
+)
+```
+
+The multinomial path supports unpenalized and ridge dense Newton fits for shared
+covariates and `alternative_terms`. Alternative-term ridge uses the same
+standardization/back-transform policy as shared covariates, with inference
+labelled as naive after regularization. Lasso, elastic net, CV, automatic smooth
+penalties, target encoding, monotonic constraints, exposure, symmetric
+reference-invariant ridge, and PMML/ONNX export are rejected with explicit
+validation errors or reserved for later native support.
+
+Alternative terms use wide-format columns:
+
+```python
+result = rustystats.multinomial_dict(
+    response="PurchasedTier",
+    shared_terms={"DriverAge": {"type": "bs", "df": 6}},
+    alternative_terms={
+        "price": {
+            "columns": {
+                "basic": "price_basic",
+                "standard": "price_standard",
+                "premium": "price_premium",
+            },
+            "coefficient": "generic",
+            "transform": "log",
+        },
+        "richness": {
+            "columns": {
+                "basic": "richness_basic",
+                "standard": "richness_standard",
+                "premium": "richness_premium",
+            },
+            "coefficient": "class_specific",
+        },
+    },
+    data=quotes,
+    classes=["none", "basic", "standard", "premium"],
+    reference="none",
+).fit()
+```
+
+`coefficient="generic"` estimates one shared coefficient across alternatives.
+`coefficient="class_specific"` estimates one coefficient per non-reference
+class. Missing classes in an alternative term default to zero, which is useful
+for a `"none"` reference with no offered price.
+
+Prediction methods:
+
+```python
+result.predict_proba(new_data)
+result.predict_log_proba(new_data)
+result.decision_function(new_data)
+result.predict(new_data)
+result.predict_top_k(new_data, k=2)
+result.tier_mix(new_data)
+calibration = result.fit_calibration(holdout)
+result.tier_mix(new_data, calibration=calibration)
+result.scenario(new_data, changes={"price_premium": 1.03})
+result.diagnostics(
+    train_data=quotes,
+    test_data=holdout,
+    categorical_factors=["Region", "Channel"],
+    continuous_factors=["DriverAge", "VehicleValue"],
+)
+result.diagnostics_json(train_data=quotes, test_data=holdout)
+```
+
+Unpenalized fits are invariant to the chosen reference class up to coefficient
+reparametrization. Baseline ridge is reference-dependent because it shrinks
+non-reference utilities toward the selected reference.
+
+`result.diagnostics()` returns a `MultinomialDiagnostics` object with weighted
+log loss, deviance/null deviance, McFadden pseudo R2, AIC/BIC when likelihood
+inference is well-defined, a `K x K` confusion matrix, accuracy, balanced
+accuracy, macro/per-class precision/recall/F1, actual versus predicted class
+mix, class-wise calibration curves and expected calibration error, reliability
+by predicted winning class, factor-level class-mix diagnostics, and optional
+train/test comparison. Class-weighted and regularized fits keep diagnostics
+available but label coefficient/AIC-style inference as naive or not applicable.
+
+`result.fit_calibration(holdout, method="intercept")` returns a standalone
+`MultinomialInterceptCalibration` that shifts class logits to align the global
+weighted class mix on calibration data. Prefer a held-out calibration fold or
+out-of-fold predictions; fitting calibration on the same rows used to fit the
+model overstates calibration quality. Vector-intercept calibration fixes global
+class mix, not segment-varying miscalibration.
+
+`result.scenario()` returns a `MultinomialScenario` with base/scenario class
+mix, class-mix deltas, optional expected value comparison via `value_columns=`,
+and optional segment-level mix deltas via `categorical_factors=` /
+`continuous_factors=`. If a scenario change updates a column named in
+`value_columns`, the scenario expected value uses the changed column values
+while the base expected value uses the original values.
+
+---
+
 ## Term Types
 
 Each term in the `terms` dict maps a variable name to a specification dict.

@@ -2091,6 +2091,92 @@ pub fn compute_xtwx(x: ArrayView2<'_, f64>, w: &Array1<f64>) -> Array2<f64> {
     xtx_data_to_array2(xtx_data, p)
 }
 
+/// Compute `X.T @ diag(w) @ X`, reusing a pre-built sparse row cache when it
+/// matches `x`.
+///
+/// The cache is independent of `w`, so callers that need many weighted Gram
+/// matrices over the same design can build it once and avoid repeatedly
+/// scanning sparse categorical rows. If the cache is absent or incompatible,
+/// this falls back to [`compute_xtwx`].
+pub fn compute_xtwx_with_sparse_cache(
+    x: ArrayView2<'_, f64>,
+    w: &Array1<f64>,
+    sparse_cache: Option<&SparseRowCache>,
+) -> Result<Array2<f64>> {
+    let n = x.nrows();
+    let p = x.ncols();
+    if w.len() != n {
+        return Err(RustyStatsError::dim_mismatch(
+            n,
+            w.len(),
+            "X rows vs weight length",
+        ));
+    }
+
+    let Some(cache) = sparse_cache.filter(|cache| cache.is_compatible_with(x)) else {
+        return Ok(compute_xtwx(x, w));
+    };
+
+    let w_slice = w.as_slice().ok_or_else(|| {
+        RustyStatsError::LinearAlgebraError("Weight vector W must be contiguous".to_string())
+    })?;
+
+    let chunk_count = sparse_xtwx_chunk_count(n, p);
+    let chunk_size = n.div_ceil(chunk_count).max(1);
+    let num_chunks = n.div_ceil(chunk_size);
+    let upper_len = packed_upper_len(p);
+
+    let xtx_data = (0..num_chunks)
+        .into_par_iter()
+        .map(|chunk_idx| {
+            let chunk_start = chunk_idx * chunk_size;
+            let chunk_end = (chunk_start + chunk_size).min(n);
+            let mut xtx_local = vec![0.0; upper_len];
+
+            for row in chunk_start..chunk_end {
+                let start = cache.offsets[row];
+                let end = cache.offsets[row + 1];
+                if start == end {
+                    continue;
+                }
+
+                let wk = unsafe { *w_slice.get_unchecked(row) };
+                for a in start..end {
+                    let i = unsafe { *cache.indices.get_unchecked(a) as usize };
+                    let xki_w = unsafe { *cache.values.get_unchecked(a) } * wk;
+                    let packed_row = unsafe { *cache.packed_offsets.get_unchecked(i) };
+
+                    for b in a..end {
+                        let j = unsafe { *cache.indices.get_unchecked(b) as usize };
+                        let xkj = unsafe { *cache.values.get_unchecked(b) };
+                        let packed_idx = packed_row + (j - i);
+                        unsafe { *xtx_local.get_unchecked_mut(packed_idx) += xki_w * xkj };
+                    }
+                }
+            }
+            xtx_local
+        })
+        .reduce_with(|mut a, b| {
+            for i in 0..a.len() {
+                a[i] += b[i];
+            }
+            a
+        })
+        .unwrap_or_else(|| vec![0.0; upper_len]);
+
+    let mut xtwx = Array2::zeros((p, p));
+    let mut packed_idx = 0usize;
+    for i in 0..p {
+        for j in i..p {
+            let val = xtx_data[packed_idx];
+            xtwx[[i, j]] = val;
+            xtwx[[j, i]] = val;
+            packed_idx += 1;
+        }
+    }
+    Ok(xtwx)
+}
+
 #[inline]
 fn compute_xtwx_dense_data(x_slice: &[f64], w_slice: &[f64], n: usize, p: usize) -> Vec<f64> {
     let chunk_size = n.div_ceil(rayon::current_num_threads()).max(1);

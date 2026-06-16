@@ -654,6 +654,8 @@ def to_onnx(
         Raw ONNX protobuf bytes.  Can be loaded with
         ``onnxruntime.InferenceSession(onnx_bytes)`` or written to disk.
     """
+    if model.__class__.__name__ == "MultinomialModel":
+        raise ValidationError("to_onnx does not yet support MultinomialModel.")
     if mode == "full":
         input_transforms = getattr(model, "_input_transforms", [])
         if input_transforms:
