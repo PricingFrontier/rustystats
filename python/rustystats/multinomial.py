@@ -2482,6 +2482,19 @@ class MultinomialModel:
         aic = self.aic()
         bic = self.bic()
         diagnostics = self.diagnostics()
+
+        def fmt(value: float | None, *, width: int = 10, precision: int = 4) -> str:
+            if value is None or not np.isfinite(value):
+                return f"{'NA':>{width}}"
+            return f"{value:>{width}.{precision}f}"
+
+        def fmt_p(value: float | None) -> str:
+            if value is None or not np.isfinite(value):
+                return f"{'NA':>8}"
+            if value < 0.0001:
+                return f"{'<0.0001':>8}"
+            return f"{value:>8.4f}"
+
         lines = [
             "=" * 78,
             "Multinomial Logit Results".center(78),
@@ -2506,6 +2519,48 @@ class MultinomialModel:
             f"{'Inference:':<20} {self.inference_status}",
             "=" * 78,
         ]
+
+        lines.extend(["", "Class Mix:", "-" * 78])
+        lines.append(f"{'Class':<20} {'Actual':>12} {'Predicted':>12} {'Error':>12}")
+        lines.append("-" * 78)
+        for class_label in self.classes_:
+            lines.append(
+                f"{class_label:<20} "
+                f"{diagnostics.actual_class_mix[class_label]:>12.4f} "
+                f"{diagnostics.predicted_class_mix[class_label]:>12.4f} "
+                f"{diagnostics.class_mix_error[class_label]:>12.4f}"
+            )
+        lines.append("-" * 78)
+
+        coef_rows = self.coef_table(return_format="records")
+        coefficient_type_labels = {
+            "shared": "shared",
+            "alternative_generic": "alt_gen",
+            "alternative_class_specific": "alt_class",
+        }
+        class_width = 9
+        feature_width = 18
+        type_width = 10
+        lines.extend(["", "Coefficients:", "-" * 78])
+        lines.append(
+            f"{'Class':<{class_width}} {'Feature':<{feature_width}} "
+            f"{'Type':<{type_width}} {'Coef':>9} {'Std.Err':>9} {'z':>7} {'P>|z|':>8}"
+        )
+        lines.append("-" * 78)
+        for row in coef_rows:
+            class_label = str(row["class"])[:class_width]
+            feature = str(row["feature"])[:feature_width]
+            coefficient_type = coefficient_type_labels.get(
+                str(row["coefficient_type"]), str(row["coefficient_type"])
+            )[:type_width]
+            lines.append(
+                f"{class_label:<{class_width}} {feature:<{feature_width}} "
+                f"{coefficient_type:<{type_width}} "
+                f"{fmt(row['estimate'], width=9)} {fmt(row['std_error'], width=9)} "
+                f"{fmt(row['z'], width=7, precision=3)} {fmt_p(row['p_value'])}"
+            )
+        lines.append("-" * 78)
+
         if self.alpha > 0.0:
             lines.append(
                 "Note: baseline ridge is reference-dependent; unpenalized fits are the "

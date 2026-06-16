@@ -240,6 +240,11 @@ def test_multinomial_phase3_alternative_terms_and_scenario_engine():
     assert {"alternative_generic", "alternative_class_specific"}.issubset(
         set(table["coefficient_type"].to_list())
     )
+    summary = result.summary()
+    assert "alt_gen" in summary
+    assert "alt_class" in summary
+    assert "log_price" in summary
+    assert "richness" in summary
 
     probabilities = result.predict_proba(data)
     np.testing.assert_allclose(probabilities.sum(axis=1), 1.0, atol=1e-10)
@@ -421,6 +426,11 @@ def test_multinomial_diagnostics_summary_and_json():
     assert diagnostics.bic == result.bic()
     assert result.aic() is not None
     assert result.bic() is not None
+    assert result.n_params == (len(result.classes_) - 1) * len(result.feature_names)
+    np.testing.assert_allclose(result.aic(), result.deviance + 2.0 * result.n_params)
+    np.testing.assert_allclose(
+        result.bic(), result.deviance + result.n_params * np.log(result.nobs)
+    )
 
     payload = diagnostics.to_dict()
     assert payload["classes"] == result.classes_
@@ -428,6 +438,18 @@ def test_multinomial_diagnostics_summary_and_json():
     summary = result.summary()
     assert "Log Loss" in summary
     assert "Top-2 Accuracy" in summary
+    assert "Class Mix:" in summary
+    assert "Actual" in summary
+    assert "Predicted" in summary
+    assert "Coefficients:" in summary
+    assert "P>|z|" in summary
+    for class_label in result.classes_:
+        assert class_label in summary
+    for non_reference in [label for label in result.classes_ if label != result.reference_]:
+        assert any(
+            line.startswith(non_reference) and " Intercept " in line
+            for line in summary.splitlines()
+        )
 
 
 def test_multinomial_export_fails_explicitly():
