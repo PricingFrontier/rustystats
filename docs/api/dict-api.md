@@ -199,6 +199,8 @@ result.decision_function(new_data)
 result.predict(new_data)
 result.predict_top_k(new_data, k=2)
 result.tier_mix(new_data)
+calibration = result.fit_calibration(holdout)
+result.tier_mix(new_data, calibration=calibration)
 result.scenario(new_data, changes={"price_premium": 1.03})
 result.diagnostics(
     train_data=quotes,
@@ -221,6 +223,13 @@ mix, class-wise calibration curves and expected calibration error, reliability
 by predicted winning class, factor-level class-mix diagnostics, and optional
 train/test comparison. Class-weighted and regularized fits keep diagnostics
 available but label coefficient/AIC-style inference as naive or not applicable.
+
+`result.fit_calibration(holdout, method="intercept")` returns a standalone
+`MultinomialInterceptCalibration` that shifts class logits to align the global
+weighted class mix on calibration data. Prefer a held-out calibration fold or
+out-of-fold predictions; fitting calibration on the same rows used to fit the
+model overstates calibration quality. Vector-intercept calibration fixes global
+class mix, not segment-varying miscalibration.
 
 `result.scenario()` returns a `MultinomialScenario` with base/scenario class
 mix, class-mix deltas, optional expected value comparison via `value_columns=`,

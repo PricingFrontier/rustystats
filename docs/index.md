@@ -9,6 +9,7 @@ RustyStats is a statistical modeling library designed for actuarial and data sci
 - **Parallel IRLS Solver** — Multi-threaded via Rayon
 - **Native Polars Support** — Formula API with Polars DataFrames
 - **Built-in Lasso/Elastic Net** — Regularization across all GLM families
+- **Native Multinomial Choice** — Product-tier conversion models with tier mix diagnostics and pricing scenarios
 
 ## Quick Example
 
@@ -81,6 +82,7 @@ This documentation is organized for maintainers who may be new to Rust and/or GL
 - **[Coefficient Constraints](components/constraints.md)** - Monotonicity constraints on coefficients
 - **Robust Standard Errors** - HC0, HC1, HC2, HC3 sandwich estimators
 - **[Model Diagnostics](components/diagnostics.md)** - Calibration, discrimination, base model comparison
+- **[Multinomial Choice](api/dict-api.md#multinomial_dict)** - Baseline-category logit for mutually exclusive product tiers
 
 ## Installation
 

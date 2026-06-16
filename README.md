@@ -23,7 +23,7 @@ See [CHANGELOG.md](CHANGELOG.md) for release notes.
 - **Lasso Credibility** - Shrink toward a prior model instead of zero (CAS Monograph 13)
 - **Validation** - Design matrix checks with fix suggestions before fitting
 - **Complete** - 8 families, robust SEs, full diagnostics, VIF, partial dependence
-- **Multinomial Choice** - Native baseline-category multinomial logit for product-tier conversion
+- **Multinomial Choice** - Native baseline-category multinomial logit for product-tier conversion, calibration, and pricing scenarios
 - **Minimal** - Only `numpy` and `polars` required
 
 ## Installation
@@ -146,6 +146,11 @@ alternative-specific terms, summaries, pricing-grade diagnostics, wide-format
 alternative-specific covariates, price-change scenarios, and pickle
 serialization. Lasso/elastic net, CV, symmetric reference-invariant ridge, and
 multinomial target encoding are reserved for later native support.
+
+See [`examples/tier_conversion_multinomial.py`](examples/tier_conversion_multinomial.py)
+for a complete train/holdout workflow with availability, held-out log loss,
+alternative-specific price and richness terms, vector-intercept calibration, and
+premium price scenarios.
 
 ### Term Types
 
