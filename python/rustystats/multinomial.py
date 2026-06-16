@@ -7,7 +7,7 @@ import json
 import math
 import pickle
 import weakref
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -522,6 +522,13 @@ def _masked_softmax(logits: np.ndarray, availability: np.ndarray) -> np.ndarray:
     return exp_eta / denom
 
 
+def _weighted_probability_mix(probabilities: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    total_weight = float(np.sum(weights))
+    if total_weight <= 0.0:
+        raise ValidationError("weights must have positive total.")
+    return (probabilities * weights[:, None]).sum(axis=0) / total_weight
+
+
 def _optional_ratio(numerator: float, denominator: float) -> float | None:
     if denominator <= 0.0:
         return None
@@ -767,6 +774,176 @@ class MultinomialDiagnostics:
 
     def to_json(self, *, indent: int | None = 2) -> str:
         return json.dumps(self.to_dict(), indent=indent, sort_keys=True)
+
+
+@dataclass
+class MultinomialInterceptCalibration:
+    """Vector-intercept calibration for a fitted multinomial model.
+
+    The calibration is an additive class-level logit shift. The reference class
+    shift is fixed at zero for identifiability; fitted model coefficients are
+    never mutated.
+    """
+
+    classes: list[str]
+    reference: str
+    shifts: dict[str, float]
+    actual_class_mix: dict[str, float] = field(default_factory=dict)
+    base_predicted_class_mix: dict[str, float] = field(default_factory=dict)
+    calibrated_class_mix: dict[str, float] = field(default_factory=dict)
+    nobs: int = 0
+    total_weight: float = 0.0
+    iterations: int = 0
+    converged: bool = True
+    method: str = "vector_intercept"
+    warnings: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.method = str(self.method)
+        if self.method != "vector_intercept":
+            raise ValidationError(
+                "MultinomialInterceptCalibration only supports method='vector_intercept'."
+            )
+        self.classes = [str(label) for label in self.classes]
+        if len(self.classes) < 2:
+            raise ValidationError("calibration classes must contain at least two labels.")
+        if len(set(self.classes)) != len(self.classes):
+            raise ValidationError("calibration classes must be unique.")
+        self.reference = str(self.reference)
+        if self.reference not in self.classes:
+            raise ValidationError("calibration reference must be present in classes.")
+        self.shifts = self._normalize_required_class_dict(self.shifts, "shifts")
+        if abs(self.shifts[self.reference]) > 1e-12:
+            raise ValidationError("calibration reference shift must be 0.0.")
+        self.actual_class_mix = self._normalize_optional_class_dict(
+            self.actual_class_mix, "actual_class_mix"
+        )
+        self.base_predicted_class_mix = self._normalize_optional_class_dict(
+            self.base_predicted_class_mix, "base_predicted_class_mix"
+        )
+        self.calibrated_class_mix = self._normalize_optional_class_dict(
+            self.calibrated_class_mix, "calibrated_class_mix"
+        )
+        self.nobs = int(self.nobs)
+        if self.nobs < 0:
+            raise ValidationError("calibration nobs must be non-negative.")
+        self.total_weight = float(self.total_weight)
+        if not np.isfinite(self.total_weight) or self.total_weight < 0.0:
+            raise ValidationError("calibration total_weight must be finite and non-negative.")
+        self.iterations = int(self.iterations)
+        if self.iterations < 0:
+            raise ValidationError("calibration iterations must be non-negative.")
+        self.converged = bool(self.converged)
+        self.warnings = [str(message) for message in self.warnings]
+
+    def _normalize_required_class_dict(
+        self, values: dict[str, float], name: str
+    ) -> dict[str, float]:
+        if not isinstance(values, dict):
+            raise ValidationError(f"calibration {name} must be a dict.")
+        normalized = {str(key): float(value) for key, value in values.items()}
+        missing = [label for label in self.classes if label not in normalized]
+        extras = sorted(set(normalized) - set(self.classes))
+        if missing or extras:
+            raise ValidationError(
+                f"calibration {name} must contain exactly the model classes; "
+                f"missing={missing}, extras={extras}."
+            )
+        bad = [label for label, value in normalized.items() if not np.isfinite(value)]
+        if bad:
+            raise ValidationError(f"calibration {name} contains non-finite values: {bad}.")
+        return {label: normalized[label] for label in self.classes}
+
+    def _normalize_optional_class_dict(
+        self, values: dict[str, float], name: str
+    ) -> dict[str, float]:
+        if values is None:
+            return {}
+        if not isinstance(values, dict):
+            raise ValidationError(f"calibration {name} must be a dict.")
+        normalized = {str(key): float(value) for key, value in values.items()}
+        extras = sorted(set(normalized) - set(self.classes))
+        if extras:
+            raise ValidationError(f"calibration {name} contains unknown classes: {extras}.")
+        bad = [label for label, value in normalized.items() if not np.isfinite(value)]
+        if bad:
+            raise ValidationError(f"calibration {name} contains non-finite values: {bad}.")
+        return {label: normalized[label] for label in self.classes if label in normalized}
+
+    @property
+    def shift_vector(self) -> np.ndarray:
+        return np.asarray([self.shifts[label] for label in self.classes], dtype=np.float64)
+
+    def adjust_logits(self, logits: np.ndarray) -> np.ndarray:
+        logits = np.asarray(logits, dtype=np.float64)
+        if logits.ndim != 2 or logits.shape[1] != len(self.classes):
+            raise ValidationError(
+                f"logits must have shape (n_rows, {len(self.classes)}); got {logits.shape}."
+            )
+        return logits + self.shift_vector[None, :]
+
+    def predict_proba_from_logits(
+        self, logits: np.ndarray, availability: np.ndarray | None = None
+    ) -> np.ndarray:
+        adjusted = self.adjust_logits(logits)
+        if availability is None:
+            availability = np.ones_like(adjusted, dtype=bool)
+        return _masked_softmax(adjusted, availability)
+
+    def predict_proba(
+        self,
+        model: Any,
+        new_data: Any,
+        *,
+        availability: dict[str, str | bool | np.ndarray] | np.ndarray | None = None,
+        offset: dict[str, str | np.ndarray] | np.ndarray | None = None,
+        return_format: str = "numpy",
+    ) -> np.ndarray:
+        return model.predict_proba(
+            new_data,
+            availability=availability,
+            offset=offset,
+            return_format=return_format,
+            calibration=self,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "method": self.method,
+            "classes": list(self.classes),
+            "reference": self.reference,
+            "shifts": dict(self.shifts),
+            "actual_class_mix": dict(self.actual_class_mix),
+            "base_predicted_class_mix": dict(self.base_predicted_class_mix),
+            "calibrated_class_mix": dict(self.calibrated_class_mix),
+            "nobs": self.nobs,
+            "total_weight": self.total_weight,
+            "iterations": self.iterations,
+            "converged": self.converged,
+            "warnings": list(self.warnings),
+        }
+
+    def to_json(self, *, indent: int | None = 2) -> str:
+        return json.dumps(self.to_dict(), indent=indent, sort_keys=True)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> MultinomialInterceptCalibration:
+        if not isinstance(payload, dict):
+            raise ValidationError("calibration payload must be a dict.")
+        return cls(
+            classes=payload["classes"],
+            reference=payload["reference"],
+            shifts=payload["shifts"],
+            actual_class_mix=payload.get("actual_class_mix", {}),
+            base_predicted_class_mix=payload.get("base_predicted_class_mix", {}),
+            calibrated_class_mix=payload.get("calibrated_class_mix", {}),
+            nobs=payload.get("nobs", 0),
+            total_weight=payload.get("total_weight", 0.0),
+            iterations=payload.get("iterations", 0),
+            converged=payload.get("converged", True),
+            method=payload.get("method", "vector_intercept"),
+            warnings=payload.get("warnings", []),
+        )
 
 
 @dataclass
@@ -1497,8 +1674,226 @@ class MultinomialModel:
         del args, kwargs
         raise ValidationError(
             "relevel() is not defined for multinomial models. Use diagnostics to assess "
-            "class-mix calibration; explicit multinomial calibration objects are planned "
-            "for a later phase."
+            "class-mix calibration, or fit_calibration(method='intercept') for vector "
+            "intercept calibration."
+        )
+
+    def _calibration_shift_vector(
+        self, calibration: MultinomialInterceptCalibration | None
+    ) -> np.ndarray | None:
+        if calibration is None:
+            return None
+        if not isinstance(calibration, MultinomialInterceptCalibration):
+            raise ValidationError("calibration must be a MultinomialInterceptCalibration.")
+        if calibration.classes != self.classes_:
+            raise ValidationError("calibration classes must match the model classes and ordering.")
+        if calibration.reference != self.reference_:
+            raise ValidationError("calibration reference must match the model reference.")
+        return calibration.shift_vector
+
+    def _calibration_weights(
+        self,
+        data: Any,
+        weights: str | np.ndarray | None,
+    ) -> np.ndarray:
+        weights_to_use = self._weights_spec if weights is None and self._weights_spec else weights
+        if weights_to_use is None:
+            resolved = np.ones(len(data), dtype=np.float64)
+        elif isinstance(weights_to_use, str):
+            if weights_to_use not in data.columns:
+                raise PredictionError(f"weights column {weights_to_use!r} is not present in data.")
+            resolved = _as_float_array(
+                data[weights_to_use].to_numpy(), name="weights", length=len(data)
+            )
+        else:
+            resolved = _as_float_array(weights_to_use, name="weights", length=len(data))
+        if np.any(resolved < 0.0):
+            raise ValidationError("calibration weights must be finite and non-negative.")
+        if float(np.sum(resolved)) <= 0.0:
+            raise ValidationError("calibration weights must have positive total.")
+        return resolved
+
+    def fit_calibration(
+        self,
+        data: Any,
+        *,
+        method: str = "intercept",
+        weights: str | np.ndarray | None = None,
+        availability: dict[str, str | bool | np.ndarray] | np.ndarray | None = None,
+        offset: dict[str, str | np.ndarray] | np.ndarray | None = None,
+        max_iter: int = 100,
+        tol: float = 1e-10,
+    ) -> MultinomialInterceptCalibration:
+        """Fit a standalone multinomial calibration object.
+
+        Phase 6 supports vector-intercept calibration only. It shifts class
+        logits so weighted predicted class mix matches the calibration data,
+        without mutating the fitted model coefficients.
+
+        Prefer a held-out calibration fold or out-of-fold predictions: fitting
+        calibration on the training rows overstates calibration quality, and
+        vector-intercept calibration only corrects global class mix rather than
+        segment-varying miscalibration.
+        """
+
+        normalized_method = str(method).replace("-", "_").lower()
+        if normalized_method not in {"intercept", "vector_intercept"}:
+            raise ValidationError(
+                "fit_calibration currently supports method='intercept' only; "
+                "temperature, isotonic, and segment-level calibration are not yet implemented."
+            )
+        if self.response is None:
+            raise PredictionError(
+                "Cannot fit calibration: this model has no stored response column metadata."
+            )
+        if max_iter <= 0:
+            raise ValidationError("max_iter must be positive.")
+        if not np.isfinite(tol) or tol <= 0.0:
+            raise ValidationError("tol must be positive and finite.")
+
+        extra_columns = {self.response}
+        weights_to_use = self._weights_spec if weights is None and self._weights_spec else weights
+        if isinstance(weights_to_use, str):
+            extra_columns.add(weights_to_use)
+        calibration_data = self._prepare_prediction_data(
+            data, availability, offset, extra_columns=extra_columns
+        )
+        y_codes = self._class_codes_from_values(
+            calibration_data[self.response].to_list(), name=self.response
+        )
+        resolved_weights = self._calibration_weights(calibration_data, weights)
+        availability_matrix = self._resolve_prediction_availability(calibration_data, availability)
+        if not np.all(availability_matrix[np.arange(len(y_codes)), y_codes]):
+            raise ValidationError("calibration data contains an observed class marked unavailable.")
+
+        class_counts = np.bincount(
+            y_codes, weights=resolved_weights, minlength=len(self.classes_)
+        ).astype(np.float64)
+        missing = [
+            class_label
+            for class_label, class_weight in zip(self.classes_, class_counts, strict=True)
+            if class_weight <= 0.0
+        ]
+        if missing:
+            raise ValidationError(
+                "vector intercept calibration requires positive weighted observations "
+                f"for every class; missing classes: {missing}."
+            )
+
+        logits = self.decision_function(calibration_data, availability=availability, offset=offset)
+        if logits.shape != availability_matrix.shape:
+            raise PredictionError("calibration logits and availability shapes do not match.")
+
+        row_idx = np.arange(len(y_codes))
+        non_reference = [
+            idx for idx, class_label in enumerate(self.classes_) if class_label != self.reference_
+        ]
+        shifts = np.zeros(len(self.classes_), dtype=np.float64)
+        total_weight = float(np.sum(resolved_weights))
+
+        def objective(candidate_shifts: np.ndarray) -> float:
+            shifted = logits + candidate_shifts[None, :]
+            masked = np.where(availability_matrix, shifted, -np.inf)
+            max_eta = np.max(masked, axis=1)
+            if not np.all(np.isfinite(max_eta)):
+                raise PredictionError(
+                    "availability leaves at least one calibration row with no classes."
+                )
+            exp_eta = np.where(availability_matrix, np.exp(masked - max_eta[:, None]), 0.0)
+            log_denom = max_eta + np.log(exp_eta.sum(axis=1))
+            return float(np.sum(resolved_weights * (log_denom - shifted[row_idx, y_codes])))
+
+        current_objective = objective(shifts)
+        converged = False
+        warnings: list[str] = []
+        iterations = 0
+        for iteration in range(max_iter):
+            iterations = iteration
+            probabilities = _masked_softmax(logits + shifts[None, :], availability_matrix)
+            actual = np.zeros_like(probabilities)
+            actual[row_idx, y_codes] = 1.0
+            gradient = (
+                resolved_weights[:, None]
+                * (probabilities[:, non_reference] - actual[:, non_reference])
+            ).sum(axis=0)
+            gradient_norm = float(np.max(np.abs(gradient)) / total_weight)
+            if gradient_norm <= tol:
+                converged = True
+                break
+
+            p_non_reference = probabilities[:, non_reference]
+            hessian = -(p_non_reference * resolved_weights[:, None]).T @ p_non_reference
+            hessian += np.diag((resolved_weights[:, None] * p_non_reference).sum(axis=0))
+            try:
+                step = np.linalg.solve(hessian, gradient)
+            except np.linalg.LinAlgError as exc:
+                raise ValidationError(
+                    "Could not fit vector intercept calibration because the calibration "
+                    "Hessian is singular. This usually means the calibration sample has "
+                    "disconnected availability patterns or too little support by class."
+                ) from exc
+
+            accepted = False
+            step_scale = 1.0
+            for _ in range(40):
+                candidate = shifts.copy()
+                candidate[non_reference] -= step_scale * step
+                candidate[self.reference_index_] = 0.0
+                candidate_objective = objective(candidate)
+                if candidate_objective <= current_objective + 1e-12:
+                    shifts = candidate
+                    current_objective = candidate_objective
+                    accepted = True
+                    break
+                step_scale *= 0.5
+            if not accepted:
+                warnings.append(
+                    "vector intercept calibration stopped because the Newton step "
+                    "could not improve the likelihood."
+                )
+                break
+
+        if not converged:
+            probabilities = _masked_softmax(logits + shifts[None, :], availability_matrix)
+            actual = np.zeros_like(probabilities)
+            actual[row_idx, y_codes] = 1.0
+            gradient = (
+                resolved_weights[:, None]
+                * (probabilities[:, non_reference] - actual[:, non_reference])
+            ).sum(axis=0)
+            gradient_norm = float(np.max(np.abs(gradient)) / total_weight)
+            if gradient_norm <= tol:
+                converged = True
+            else:
+                warnings.append(
+                    "vector intercept calibration did not converge within "
+                    f"{max_iter} iterations; max normalized gradient={gradient_norm:.3e}."
+                )
+
+        base_probabilities = _masked_softmax(logits, availability_matrix)
+        calibrated_probabilities = _masked_softmax(logits + shifts[None, :], availability_matrix)
+        actual_mix = class_counts / total_weight
+        base_mix = _weighted_probability_mix(base_probabilities, resolved_weights)
+        calibrated_mix = _weighted_probability_mix(calibrated_probabilities, resolved_weights)
+
+        return MultinomialInterceptCalibration(
+            classes=list(self.classes_),
+            reference=self.reference_,
+            shifts={label: float(shifts[idx]) for idx, label in enumerate(self.classes_)},
+            actual_class_mix={
+                label: float(actual_mix[idx]) for idx, label in enumerate(self.classes_)
+            },
+            base_predicted_class_mix={
+                label: float(base_mix[idx]) for idx, label in enumerate(self.classes_)
+            },
+            calibrated_class_mix={
+                label: float(calibrated_mix[idx]) for idx, label in enumerate(self.classes_)
+            },
+            nobs=len(calibration_data),
+            total_weight=total_weight,
+            iterations=iterations,
+            converged=converged,
+            warnings=warnings,
         )
 
     def _prepare_prediction_data(
@@ -1626,10 +2021,14 @@ class MultinomialModel:
         *,
         availability: dict[str, str | bool | np.ndarray] | np.ndarray | None = None,
         offset: dict[str, str | np.ndarray] | np.ndarray | None = None,
+        calibration: MultinomialInterceptCalibration | None = None,
         return_format: str = "numpy",
     ) -> np.ndarray:
         data = self._prepare_prediction_data(new_data, availability, offset)
         logits = self.decision_function(data, availability=availability, offset=offset)
+        calibration_shift = self._calibration_shift_vector(calibration)
+        if calibration_shift is not None:
+            logits = logits + calibration_shift[None, :]
         availability_matrix = self._resolve_prediction_availability(data, availability)
         probabilities = _masked_softmax(logits, availability_matrix)
         if return_format == "numpy":
@@ -1648,10 +2047,15 @@ class MultinomialModel:
         *,
         availability: dict[str, str | bool | np.ndarray] | np.ndarray | None = None,
         offset: dict[str, str | np.ndarray] | np.ndarray | None = None,
+        calibration: MultinomialInterceptCalibration | None = None,
         return_format: str = "numpy",
     ) -> np.ndarray:
         probabilities = self.predict_proba(
-            new_data, availability=availability, offset=offset, return_format="numpy"
+            new_data,
+            availability=availability,
+            offset=offset,
+            calibration=calibration,
+            return_format="numpy",
         )
         with np.errstate(divide="ignore"):
             log_probabilities = np.log(probabilities)
@@ -1674,9 +2078,14 @@ class MultinomialModel:
         *,
         availability: dict[str, str | bool | np.ndarray] | np.ndarray | None = None,
         offset: dict[str, str | np.ndarray] | np.ndarray | None = None,
+        calibration: MultinomialInterceptCalibration | None = None,
     ) -> np.ndarray:
         probabilities = self.predict_proba(
-            new_data, availability=availability, offset=offset, return_format="numpy"
+            new_data,
+            availability=availability,
+            offset=offset,
+            calibration=calibration,
+            return_format="numpy",
         )
         labels = np.asarray(self.classes_, dtype=object)
         return labels[np.argmax(probabilities, axis=1)]
@@ -1688,11 +2097,16 @@ class MultinomialModel:
         k: int = 2,
         availability: dict[str, str | bool | np.ndarray] | np.ndarray | None = None,
         offset: dict[str, str | np.ndarray] | np.ndarray | None = None,
+        calibration: MultinomialInterceptCalibration | None = None,
     ) -> Any:
         if k <= 0 or k > len(self.classes_):
             raise ValidationError(f"k must be in [1, {len(self.classes_)}].")
         probabilities = self.predict_proba(
-            new_data, availability=availability, offset=offset, return_format="numpy"
+            new_data,
+            availability=availability,
+            offset=offset,
+            calibration=calibration,
+            return_format="numpy",
         )
         order = np.argsort(-probabilities, axis=1)[:, :k]
         import polars as pl
@@ -1711,11 +2125,19 @@ class MultinomialModel:
         weights: str | np.ndarray | None = None,
         availability: dict[str, str | bool | np.ndarray] | np.ndarray | None = None,
         offset: dict[str, str | np.ndarray] | np.ndarray | None = None,
+        calibration: MultinomialInterceptCalibration | None = None,
         return_format: str = "dict",
     ) -> dict[str, float]:
-        data = self._prepare_prediction_data(new_data, availability, offset)
+        extra_columns = {weights} if isinstance(weights, str) else None
+        data = self._prepare_prediction_data(
+            new_data, availability, offset, extra_columns=extra_columns
+        )
         probabilities = self.predict_proba(
-            data, availability=availability, offset=offset, return_format="numpy"
+            data,
+            availability=availability,
+            offset=offset,
+            calibration=calibration,
+            return_format="numpy",
         )
         if weights is None:
             mix = probabilities.mean(axis=0)
@@ -1855,6 +2277,7 @@ class MultinomialModel:
         weights: str | np.ndarray | None = None,
         availability: dict[str, str | bool | np.ndarray] | np.ndarray | None = None,
         offset: dict[str, str | np.ndarray] | np.ndarray | None = None,
+        calibration: MultinomialInterceptCalibration | None = None,
         value_columns: dict[str, str] | None = None,
         categorical_factors: list[str] | None = None,
         continuous_factors: list[str] | None = None,
@@ -1901,10 +2324,18 @@ class MultinomialModel:
                 scenario_data = scenario_data.with_columns(pl.Series(column, values))
 
         base_probabilities = self.predict_proba(
-            data, availability=availability, offset=offset, return_format="numpy"
+            data,
+            availability=availability,
+            offset=offset,
+            calibration=calibration,
+            return_format="numpy",
         )
         scenario_probabilities = self.predict_proba(
-            scenario_data, availability=availability, offset=offset, return_format="numpy"
+            scenario_data,
+            availability=availability,
+            offset=offset,
+            calibration=calibration,
+            return_format="numpy",
         )
         resolved_weights = self._scenario_weights(data, weights)
         base_mix = self._weighted_class_mix(base_probabilities, resolved_weights)

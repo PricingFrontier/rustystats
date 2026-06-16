@@ -448,6 +448,128 @@ def test_multinomial_export_fails_explicitly():
         rs.to_onnx(result)
 
 
+def test_multinomial_phase6_intercept_calibration_matches_class_mix_and_serializes():
+    train = _tier_frame(n=420, seed=97531)
+    calibration_data = _tier_frame(n=260, seed=86420)
+    classes = ["none", "basic", "standard", "premium"]
+    y = np.asarray(calibration_data["tier"].to_list(), dtype=object)
+    for source, target, count in [
+        ("none", "premium", 18),
+        ("standard", "basic", 10),
+    ]:
+        source_idx = np.flatnonzero(y == source)
+        take = source_idx[: max(0, min(count, len(source_idx) - 3))]
+        y[take] = target
+    calibration_data = calibration_data.with_columns(pl.Series("tier", y.tolist()))
+
+    result = rs.multinomial_dict(
+        response="tier",
+        terms={"x": {"type": "linear"}, "channel": {"type": "categorical"}},
+        data=train,
+        classes=classes,
+        reference="none",
+    ).fit(compute_covariance=False)
+
+    params_before = result.params.copy()
+    calibration = result.fit_calibration(calibration_data)
+
+    assert isinstance(calibration, rs.MultinomialInterceptCalibration)
+    assert calibration.converged
+    assert calibration.shifts["none"] == pytest.approx(0.0)
+    assert calibration.classes == classes
+    assert "vector_intercept" in calibration.to_json(indent=None)
+    np.testing.assert_allclose(result.params, params_before)
+
+    class_to_code = {label: idx for idx, label in enumerate(classes)}
+    y_codes = np.asarray([class_to_code[label] for label in y], dtype=np.int64)
+    actual_mix = np.bincount(y_codes, minlength=len(classes)) / len(y_codes)
+    base_probabilities = result.predict_proba(calibration_data)
+    calibrated_probabilities = result.predict_proba(calibration_data, calibration=calibration)
+    base_mix = base_probabilities.mean(axis=0)
+    calibrated_mix = calibrated_probabilities.mean(axis=0)
+
+    np.testing.assert_allclose(calibrated_mix, actual_mix, atol=1e-8)
+    assert np.abs(calibrated_mix - actual_mix).sum() < np.abs(base_mix - actual_mix).sum()
+    np.testing.assert_allclose(
+        [calibration.calibrated_class_mix[label] for label in classes],
+        calibrated_mix,
+        atol=1e-8,
+    )
+    np.testing.assert_allclose(
+        [result.tier_mix(calibration_data, calibration=calibration)[label] for label in classes],
+        calibrated_mix,
+        atol=1e-8,
+    )
+
+    round_tripped = rs.MultinomialInterceptCalibration.from_dict(calibration.to_dict())
+    np.testing.assert_allclose(
+        result.predict_proba(calibration_data, calibration=round_tripped),
+        calibrated_probabilities,
+    )
+    np.testing.assert_allclose(
+        round_tripped.predict_proba(result, calibration_data),
+        calibrated_probabilities,
+    )
+
+
+def test_multinomial_intercept_calibration_respects_availability_and_weights():
+    data = _tier_price_frame(n=520, seed=112233)
+    classes = ["none", "basic", "standard", "premium"]
+    result = rs.multinomial_dict(
+        response="tier",
+        terms={"x": {"type": "linear"}, "channel": {"type": "categorical"}},
+        data=data,
+        classes=classes,
+        reference="none",
+        availability={"premium": "premium_available"},
+        weights="w",
+    ).fit(compute_covariance=False)
+
+    calibration = result.fit_calibration(data)
+    probabilities = result.predict_proba(data, calibration=calibration)
+
+    unavailable = ~data["premium_available"].to_numpy()
+    assert np.all(probabilities[unavailable, classes.index("premium")] == 0.0)
+    weights = data["w"].to_numpy()
+    class_to_code = {label: idx for idx, label in enumerate(classes)}
+    y_codes = np.asarray([class_to_code[label] for label in data["tier"].to_list()])
+    actual_mix = np.bincount(y_codes, weights=weights, minlength=len(classes)) / weights.sum()
+    calibrated_mix = (probabilities * weights[:, None]).sum(axis=0) / weights.sum()
+    np.testing.assert_allclose(calibrated_mix, actual_mix, atol=1e-8)
+    np.testing.assert_allclose(
+        [result.tier_mix(data, weights="w", calibration=calibration)[label] for label in classes],
+        calibrated_mix,
+        atol=1e-8,
+    )
+
+
+def test_multinomial_intercept_calibration_validation_errors():
+    data = _tier_frame(n=120, seed=54321)
+    classes = ["none", "basic", "standard", "premium"]
+    result = rs.multinomial_dict(
+        response="tier",
+        terms={"x": {"type": "linear"}},
+        data=data,
+        classes=classes,
+        reference="none",
+    ).fit(compute_covariance=False)
+
+    with pytest.raises(ValidationError, match="method='intercept'"):
+        result.fit_calibration(data, method="temperature")
+
+    missing_premium = data.filter(pl.col("tier") != "premium")
+    with pytest.raises(ValidationError, match="positive weighted observations"):
+        result.fit_calibration(missing_premium)
+
+    wrong_classes = rs.MultinomialInterceptCalibration(
+        classes=["none", "basic"],
+        reference="none",
+        shifts={"none": 0.0, "basic": 0.1},
+    )
+    with pytest.raises(ValidationError, match="classes"):
+        result.predict_proba(data, calibration=wrong_classes)
+
+
 def test_multinomial_phase2_diagnostics_train_test_calibration_and_factors():
     data = _tier_frame(n=420, seed=1357).with_columns(
         w=pl.when(pl.col("channel") == "agent").then(2.0).otherwise(1.0)
