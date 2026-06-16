@@ -1991,7 +1991,7 @@ class MultinomialModel:
             chunk = data.slice(start, stop - start)
             x_chunk = self._builder.transform_new_data(chunk)
             offset_chunk = self._resolve_prediction_offset(chunk, offset)
-            logits_chunk = offset_chunk
+            logits_chunk = offset_chunk.copy()
             alternative_generic, alternative_specific = self._prediction_alternative_arrays(chunk)
             if alternative_generic_coefficients.size:
                 logits_chunk += np.tensordot(

@@ -1,3 +1,5 @@
+import pickle
+
 import numpy as np
 import polars as pl
 import pytest
@@ -783,6 +785,22 @@ def test_serialization_round_trip_preserves_predictions():
     assert loaded.diagnostics(train_data=data).nobs == data.height
 
 
+def test_serialization_schema_mismatch_fails_clearly():
+    data = _tier_frame(n=80, seed=2026)
+    result = rs.multinomial_dict(
+        response="tier",
+        terms={"x": {"type": "linear"}},
+        data=data,
+        classes=["none", "basic", "standard", "premium"],
+        reference="none",
+    ).fit(compute_covariance=False)
+    state = pickle.loads(result.to_bytes())
+    state["schema_version"] = -1
+
+    with pytest.raises(ValidationError, match="serialized schema_version"):
+        rs.MultinomialModel.from_bytes(pickle.dumps(state))
+
+
 def test_array_availability_requires_prediction_override():
     data = _tier_frame(n=80, seed=42)
     classes = ["none", "basic", "standard", "premium"]
@@ -801,6 +819,32 @@ def test_array_availability_requires_prediction_override():
 
     probs = result.predict_proba(data, availability=availability)
     np.testing.assert_allclose(probs.sum(axis=1), 1.0)
+
+
+def test_array_offset_requires_prediction_override_after_serialization():
+    data = _tier_frame(n=90, seed=4242)
+    classes = ["none", "basic", "standard", "premium"]
+    offset = np.zeros((data.height, len(classes)), dtype=np.float64)
+    offset[:, classes.index("premium")] = np.linspace(-0.4, 0.4, data.height)
+    result = rs.multinomial_dict(
+        response="tier",
+        terms={"x": {"type": "linear"}},
+        data=data,
+        classes=classes,
+        reference="none",
+        offset=offset,
+    ).fit(compute_covariance=False)
+    loaded = rs.MultinomialModel.from_bytes(result.to_bytes())
+
+    with pytest.raises(PredictionError, match="array offsets"):
+        loaded.predict_proba(data)
+
+    offset_before = offset.copy()
+    np.testing.assert_allclose(
+        result.predict_proba(data, offset=offset),
+        loaded.predict_proba(data, offset=offset),
+    )
+    np.testing.assert_allclose(offset, offset_before)
 
 
 def test_rejects_unsupported_target_encoding_and_smooth_defaults():

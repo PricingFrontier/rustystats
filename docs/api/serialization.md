@@ -39,6 +39,22 @@ with open("model.bin", "rb") as f:
 predictions = loaded.predict(new_data)
 ```
 
+Native multinomial models use the same pattern:
+
+```python
+result = rs.multinomial_dict(
+    response="PurchasedTier",
+    terms={"DriverAge": {"type": "linear"}, "Channel": {"type": "categorical"}},
+    data=quotes,
+    classes=["none", "basic", "standard", "premium"],
+    reference="none",
+).fit()
+
+model_bytes = result.to_bytes()
+loaded = rs.MultinomialModel.from_bytes(model_bytes)
+probabilities = loaded.predict_proba(new_quotes)
+```
+
 Models fitted with deterministic `input_transforms` are also self-contained.
 The serialized payload stores the canonical transform specs and recompiles
 lookup tables when loaded, so production callers can pass the same raw columns
@@ -73,6 +89,18 @@ loaded = rs.GLMModel.from_bytes(model_bytes)
 
 **Returns:** `GLMModel` - Loaded model ready for prediction.
 
+### MultinomialModel.from_bytes()
+
+Load a native multinomial model from bytes.
+
+```python
+loaded = rs.MultinomialModel.from_bytes(model_bytes)
+```
+
+**Returns:** `MultinomialModel` - Loaded model ready for `predict_proba`,
+`predict`, `predict_top_k`, `tier_mix`, diagnostics on supplied data, and
+scenario scoring when the original model used `alternative_terms`.
+
 ---
 
 ## What's Preserved
@@ -91,6 +119,17 @@ The serialized model includes everything needed for prediction:
 | Input transforms | ✓ | Deterministic lookup specs for raw-data scoring |
 | Formula/term specs | ✓ | For design matrix construction |
 
+For `MultinomialModel`, serialization also preserves class order, reference
+class, the coefficient matrix, alternative-term specifications and
+coefficients, class availability and offset specs when they were column/scalar
+based, the weight-column spec, regularization metadata, solver status, warnings,
+and inference-status labels.
+
+If multinomial availability or offset was supplied as an in-memory array at fit
+time, that array is treated as training-row data and is not serialized. Loaded
+models require a fresh `availability=` or `offset=` override for prediction in
+that case.
+
 ## What's NOT Preserved
 
 Training-only artifacts are excluded to minimize size:
@@ -101,6 +140,11 @@ Training-only artifacts are excluded to minimize size:
 | Covariance matrix | ✗ | Can recompute if needed |
 | Residuals | ✗ | Training-specific |
 | Diagnostics | ✗ | Training-specific |
+
+Standalone calibration objects are separate deployment artifacts. Serialize a
+`MultinomialInterceptCalibration` with `to_dict()` / `to_json()` and restore it
+with `MultinomialInterceptCalibration.from_dict(...)`; then pass it as
+`calibration=` when scoring.
 
 ---
 
