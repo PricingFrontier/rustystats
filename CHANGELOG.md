@@ -16,6 +16,9 @@
 - `examples/tier_conversion_multinomial.py`, a complete train/holdout pricing
   workflow with held-out log loss, tier-specific price/richness terms,
   availability, calibration, and a premium price scenario.
+- `benchmarks/bench_multinomial.py`, a dense native multinomial benchmark harness
+  with quick/full grids, RSS sampling, Hessian sizing, guard checks, and
+  prediction-throughput reporting.
 
 ### Deferred
 

@@ -279,6 +279,50 @@ for n in [10000, 100000, 500000]:
     benchmark(n, 20)
 ```
 
+### Native Multinomial Benchmarks
+
+Use the multinomial harness to measure the dense Newton solver separately from
+public API design-building overhead:
+
+```bash
+uv run python benchmarks/bench_multinomial.py
+uv run python benchmarks/bench_multinomial.py --preset full --repeat 3 --save-csv multinomial.csv
+```
+
+The full preset covers the implementation-plan matrix:
+
+- `n = 10k, 50k, 200k`
+- dense design width `p = 20, 100, 500` including the intercept column
+- `K = 3, 4, 8`
+- all-available and masked-availability cases
+- unpenalized and ridge fits
+
+The report includes fit wall time, peak RSS delta, iteration count, Hessian
+size, convergence count, prediction latency, and prediction rows per second.
+The script also runs a tiny dense-Hessian guard probe by default, so a benchmark
+run fails early if the configured byte guard no longer rejects before large
+allocations.
+
+For targeted sweeps:
+
+```bash
+uv run python benchmarks/bench_multinomial.py \
+  --rows 10000,50000 \
+  --features 100,500 \
+  --classes 4,8 \
+  --hessian-memory-limit-mb 512 \
+  --max-dense-parameters 8000
+```
+
+The production default guard is intentionally conservative:
+`hessian_memory_limit_bytes = 256 MiB` and `max_dense_parameters = 5000`.
+The dense Hessian itself is `q x q`, where `q` is the total estimated parameter
+count. Covariance computation can temporarily require roughly two to three
+times the Hessian memory because the Hessian, inverse, and factorization
+workspace may coexist; use `compute_covariance=False` for large pricing runs
+where coefficient estimates and predictions are needed but standard errors are
+not.
+
 ---
 
 ## Common Bottlenecks
@@ -345,4 +389,3 @@ for &val in data.iter() {
 - [ ] Prefer row-major access patterns
 - [ ] Profile to find actual bottlenecks
 - [ ] Benchmark before and after changes
-

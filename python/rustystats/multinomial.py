@@ -506,6 +506,43 @@ def _resolve_class_matrix(
     return out
 
 
+def _slice_class_matrix_override(
+    spec: Any,
+    *,
+    start: int,
+    stop: int,
+    n_rows: int,
+    n_classes: int,
+    name: str,
+) -> Any:
+    if spec is None:
+        return None
+    if isinstance(spec, np.ndarray):
+        arr = np.asarray(spec)
+        if arr.shape != (n_rows, n_classes):
+            raise ValidationError(
+                f"{name} array must have shape ({n_rows}, {n_classes}); got {arr.shape}."
+            )
+        return arr[start:stop, :]
+    if not isinstance(spec, dict):
+        return spec
+
+    sliced = {}
+    for class_label, value in spec.items():
+        if isinstance(value, (str, bool, np.bool_)):
+            sliced[class_label] = value
+        elif _array_like_not_string(value):
+            arr = np.asarray(value)
+            if arr.ndim != 1 or arr.shape[0] != n_rows:
+                raise ValidationError(
+                    f"{name}[{class_label!r}] must have length {n_rows}; got shape {arr.shape}."
+                )
+            sliced[class_label] = arr[start:stop]
+        else:
+            sliced[class_label] = value
+    return sliced
+
+
 def _masked_softmax(logits: np.ndarray, availability: np.ndarray) -> np.ndarray:
     logits = np.asarray(logits, dtype=np.float64)
     availability = np.asarray(availability, dtype=bool)
@@ -1990,7 +2027,17 @@ class MultinomialModel:
             stop = min(start + chunk_size, n_rows)
             chunk = data.slice(start, stop - start)
             x_chunk = self._builder.transform_new_data(chunk)
-            offset_chunk = self._resolve_prediction_offset(chunk, offset)
+            offset_chunk = self._resolve_prediction_offset(
+                chunk,
+                _slice_class_matrix_override(
+                    offset,
+                    start=start,
+                    stop=stop,
+                    n_rows=n_rows,
+                    n_classes=len(self.classes_),
+                    name="offset",
+                ),
+            )
             logits_chunk = offset_chunk.copy()
             alternative_generic, alternative_specific = self._prediction_alternative_arrays(chunk)
             if alternative_generic_coefficients.size:

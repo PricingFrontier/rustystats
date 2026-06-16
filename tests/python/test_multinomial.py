@@ -4,6 +4,7 @@ import numpy as np
 import polars as pl
 import pytest
 import rustystats as rs
+import rustystats.multinomial as multinomial_module
 from rustystats._rustystats import fit_multinomial_py
 from rustystats.exceptions import PredictionError, ValidationError
 
@@ -297,6 +298,83 @@ def test_multinomial_phase3_alternative_terms_and_scenario_engine():
     loaded_scenario = loaded.scenario(data, changes={"price_premium": 1.15}, weights="w")
     np.testing.assert_allclose(
         scenario.scenario_probabilities, loaded_scenario.scenario_probabilities
+    )
+
+
+def test_multinomial_chunked_prediction_matches_single_shot(monkeypatch):
+    data = _tier_price_frame(n=260, seed=7777)
+    classes = ["none", "basic", "standard", "premium"]
+    alternative_terms = {
+        "log_price": {
+            "columns": {
+                "basic": "price_basic",
+                "standard": "price_standard",
+                "premium": "price_premium",
+            },
+            "coefficient": "generic",
+            "transform": "log",
+        },
+        "richness": {
+            "columns": {
+                "basic": "richness_basic",
+                "standard": "richness_standard",
+                "premium": "richness_premium",
+            },
+            "coefficient": "class_specific",
+        },
+    }
+    result = rs.multinomial_dict(
+        response="tier",
+        terms={"x": {"type": "linear"}, "channel": {"type": "categorical"}},
+        alternative_terms=alternative_terms,
+        data=data,
+        classes=classes,
+        reference="none",
+        availability={"premium": "premium_available"},
+        weights="w",
+    ).fit(compute_covariance=False)
+    calibration = result.fit_calibration(data)
+    offset = np.zeros((data.height, len(classes)), dtype=np.float64)
+    offset[:, classes.index("basic")] = np.linspace(-0.15, 0.15, data.height)
+    offset[:, classes.index("premium")] = np.where(data["premium_available"].to_numpy(), 0.2, -0.2)
+
+    single_logits = result.decision_function(data, offset=offset)
+    single_proba = result.predict_proba(data, offset=offset, calibration=calibration)
+    single_log_proba = result.predict_log_proba(data, offset=offset, calibration=calibration)
+    single_top2 = result.predict_top_k(data, k=2, offset=offset, calibration=calibration)
+
+    chunk_sizes: list[int] = []
+    original_transform = result._builder.transform_new_data
+
+    def record_transform(chunk):
+        chunk_sizes.append(len(chunk))
+        return original_transform(chunk)
+
+    monkeypatch.setattr(result._builder, "transform_new_data", record_transform)
+    monkeypatch.setattr(multinomial_module, "_compute_predict_chunk_size", lambda n_features: 17)
+
+    chunked_logits = result.decision_function(data, offset=offset)
+    assert len(chunk_sizes) > 1
+    assert max(chunk_sizes) <= 17
+    np.testing.assert_allclose(chunked_logits, single_logits, atol=1e-12)
+    np.testing.assert_allclose(
+        result.predict_proba(data, offset=offset, calibration=calibration),
+        single_proba,
+        atol=1e-12,
+    )
+    np.testing.assert_allclose(
+        result.predict_log_proba(data, offset=offset, calibration=calibration),
+        single_log_proba,
+        atol=1e-12,
+    )
+    chunked_top2 = result.predict_top_k(data, k=2, offset=offset, calibration=calibration)
+    assert chunked_top2["class_1"].to_list() == single_top2["class_1"].to_list()
+    assert chunked_top2["class_2"].to_list() == single_top2["class_2"].to_list()
+    np.testing.assert_allclose(
+        chunked_top2["prob_1"].to_numpy(), single_top2["prob_1"].to_numpy(), atol=1e-12
+    )
+    np.testing.assert_allclose(
+        chunked_top2["prob_2"].to_numpy(), single_top2["prob_2"].to_numpy(), atol=1e-12
     )
 
 
@@ -914,6 +992,22 @@ def test_string_weights_must_be_finite():
             classes=["none", "basic", "standard", "premium"],
             reference="none",
             weights="w",
+        )
+
+
+def test_multinomial_hessian_memory_limit_rejects_at_public_fit_boundary():
+    data = _tier_frame(n=80, seed=707)
+    with pytest.raises(ValueError, match="dense Hessian"):
+        rs.multinomial_dict(
+            response="tier",
+            terms={"x": {"type": "linear"}, "channel": {"type": "categorical"}},
+            data=data,
+            classes=["none", "basic", "standard", "premium"],
+            reference="none",
+        ).fit(
+            compute_covariance=False,
+            hessian_memory_limit_bytes=64,
+            max_dense_parameters=1_000,
         )
 
 
