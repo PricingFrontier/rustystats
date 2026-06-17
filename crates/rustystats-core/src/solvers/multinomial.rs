@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use nalgebra::{DMatrix, DVector};
 use ndarray::{Array1, Array2, Array3, ArrayView2, ArrayView3};
 
@@ -126,6 +128,337 @@ struct MultinomialTransform {
     rows: Vec<Vec<(usize, f64)>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MultinomialParameterLayout {
+    n_shared: usize,
+    n_non_reference: usize,
+    n_alt_generic: usize,
+    n_alt_specific: usize,
+    fit_intercept: bool,
+}
+
+impl MultinomialParameterLayout {
+    fn new(
+        n_shared: usize,
+        n_classes: usize,
+        n_alt_generic: usize,
+        n_alt_specific: usize,
+        fit_intercept: bool,
+    ) -> Result<Self> {
+        if n_classes < 2 {
+            return Err(RustyStatsError::InvalidValue(
+                "multinomial layout requires at least two classes".to_string(),
+            ));
+        }
+        Ok(Self {
+            n_shared,
+            n_non_reference: n_classes - 1,
+            n_alt_generic,
+            n_alt_specific,
+            fit_intercept,
+        })
+    }
+
+    fn len(&self) -> Result<usize> {
+        let shared = self.shared_len()?;
+        let specific = self
+            .n_alt_specific
+            .checked_mul(self.n_non_reference)
+            .ok_or_else(|| {
+                RustyStatsError::InvalidValue(
+                    "multinomial class-specific alternative parameter count overflowed usize"
+                        .into(),
+                )
+            })?;
+        shared
+            .checked_add(self.n_alt_generic)
+            .and_then(|value| value.checked_add(specific))
+            .ok_or_else(|| {
+                RustyStatsError::InvalidValue(
+                    "multinomial total parameter count overflowed usize".into(),
+                )
+            })
+    }
+
+    fn shared_len(&self) -> Result<usize> {
+        self.n_shared
+            .checked_mul(self.n_non_reference)
+            .ok_or_else(|| {
+                RustyStatsError::InvalidValue(
+                    "multinomial shared parameter count overflowed usize".into(),
+                )
+            })
+    }
+
+    fn shared(&self, block_idx: usize, feature_idx: usize) -> Result<usize> {
+        if block_idx >= self.n_non_reference {
+            return Err(RustyStatsError::InvalidValue(format!(
+                "non-reference block {} is out of range for {} blocks",
+                block_idx, self.n_non_reference
+            )));
+        }
+        if feature_idx >= self.n_shared {
+            return Err(RustyStatsError::InvalidValue(format!(
+                "shared feature {} is out of range for {} shared features",
+                feature_idx, self.n_shared
+            )));
+        }
+        block_idx
+            .checked_mul(self.n_shared)
+            .and_then(|value| value.checked_add(feature_idx))
+            .ok_or_else(|| {
+                RustyStatsError::InvalidValue(
+                    "multinomial shared parameter index overflowed usize".into(),
+                )
+            })
+    }
+
+    #[allow(dead_code)] // Stage 6 smooth penalties will consume whole shared class blocks.
+    fn shared_block_range(&self, block_idx: usize) -> Result<Range<usize>> {
+        let start = self.shared(block_idx, 0)?;
+        start
+            .checked_add(self.n_shared)
+            .map(|end| start..end)
+            .ok_or_else(|| {
+                RustyStatsError::InvalidValue(
+                    "multinomial shared parameter range overflowed usize".into(),
+                )
+            })
+    }
+
+    fn alternative_generic_start(&self) -> Result<usize> {
+        self.shared_len()
+    }
+
+    fn alternative_generic(&self, term_idx: usize) -> Result<usize> {
+        if term_idx >= self.n_alt_generic {
+            return Err(RustyStatsError::InvalidValue(format!(
+                "generic alternative term {} is out of range for {} terms",
+                term_idx, self.n_alt_generic
+            )));
+        }
+        self.alternative_generic_start()?
+            .checked_add(term_idx)
+            .ok_or_else(|| {
+                RustyStatsError::InvalidValue(
+                    "multinomial generic alternative parameter index overflowed usize".into(),
+                )
+            })
+    }
+
+    fn alternative_specific_start(&self) -> Result<usize> {
+        self.alternative_generic_start()?
+            .checked_add(self.n_alt_generic)
+            .ok_or_else(|| {
+                RustyStatsError::InvalidValue(
+                    "multinomial class-specific alternative start overflowed usize".into(),
+                )
+            })
+    }
+
+    fn alternative_specific(&self, block_idx: usize, term_idx: usize) -> Result<usize> {
+        if block_idx >= self.n_non_reference {
+            return Err(RustyStatsError::InvalidValue(format!(
+                "non-reference block {} is out of range for {} blocks",
+                block_idx, self.n_non_reference
+            )));
+        }
+        if term_idx >= self.n_alt_specific {
+            return Err(RustyStatsError::InvalidValue(format!(
+                "class-specific alternative term {} is out of range for {} terms",
+                term_idx, self.n_alt_specific
+            )));
+        }
+        self.alternative_specific_start()?
+            .checked_add(block_idx.checked_mul(self.n_alt_specific).ok_or_else(|| {
+                RustyStatsError::InvalidValue(
+                    "multinomial class-specific alternative block offset overflowed usize".into(),
+                )
+            })?)
+            .and_then(|value| value.checked_add(term_idx))
+            .ok_or_else(|| {
+                RustyStatsError::InvalidValue(
+                    "multinomial class-specific alternative parameter index overflowed usize"
+                        .into(),
+                )
+            })
+    }
+
+    fn is_shared_intercept(&self, idx: usize) -> bool {
+        self.fit_intercept
+            && self.n_shared > 0
+            && idx < self.shared_len().unwrap_or(0)
+            && idx.is_multiple_of(self.n_shared)
+    }
+
+    #[allow(dead_code)] // Later Python-derived constraint/penalty indices validate through this.
+    fn validate_index(&self, idx: usize) -> Result<()> {
+        let len = self.len()?;
+        if idx >= len {
+            return Err(RustyStatsError::InvalidValue(format!(
+                "multinomial parameter index {} is out of range for {} parameters",
+                idx, len
+            )));
+        }
+        Ok(())
+    }
+
+    #[allow(dead_code)] // Stage 4+ maps Python-owned column masks into flattened Rust indices.
+    fn map_shared_columns_to_indices(&self, columns: &[usize]) -> Result<Vec<usize>> {
+        let mut indices = Vec::with_capacity(columns.len() * self.n_non_reference);
+        for block_idx in 0..self.n_non_reference {
+            for &feature_idx in columns {
+                indices.push(self.shared(block_idx, feature_idx)?);
+            }
+        }
+        Ok(indices)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DenseMultinomialOperation {
+    Fit,
+    #[allow(dead_code)] // Reserved for covariance preflight once that path is split out.
+    Covariance,
+    #[allow(dead_code)] // Reserved for Stage 6 smooth EDF preflight.
+    Edf,
+    #[allow(dead_code)] // Reserved for export paths that materialize dense scoring matrices.
+    Export,
+}
+
+impl DenseMultinomialOperation {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Fit => "fit",
+            Self::Covariance => "covariance",
+            Self::Edf => "edf",
+            Self::Export => "export",
+        }
+    }
+
+    fn peak_factor(self) -> usize {
+        match self {
+            Self::Fit | Self::Export => 1,
+            Self::Covariance | Self::Edf => 3,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct QuadraticPenaltyBlock {
+    indices: Vec<usize>,
+    matrix: Array2<f64>,
+    weight: f64,
+}
+
+impl QuadraticPenaltyBlock {
+    fn validate(&self, q: usize) -> Result<()> {
+        if self.matrix.nrows() != self.indices.len() || self.matrix.ncols() != self.indices.len() {
+            return Err(RustyStatsError::InvalidValue(format!(
+                "quadratic penalty matrix has shape {:?}, expected ({}, {})",
+                self.matrix.dim(),
+                self.indices.len(),
+                self.indices.len()
+            )));
+        }
+        if !self.weight.is_finite() || self.weight < 0.0 {
+            return Err(RustyStatsError::InvalidValue(
+                "quadratic penalty weight must be finite and non-negative".to_string(),
+            ));
+        }
+        for &idx in &self.indices {
+            if idx >= q {
+                return Err(RustyStatsError::InvalidValue(format!(
+                    "quadratic penalty index {} is out of range for {} parameters",
+                    idx, q
+                )));
+            }
+        }
+        if self.matrix.iter().any(|value| !value.is_finite()) {
+            return Err(RustyStatsError::InvalidValue(
+                "quadratic penalty matrix values must be finite".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+struct L1Penalty {
+    alpha: f64,
+    mask: Vec<bool>,
+}
+
+impl L1Penalty {
+    fn inert(q: usize) -> Self {
+        Self {
+            alpha: 0.0,
+            mask: vec![false; q],
+        }
+    }
+
+    fn validate(&self, q: usize) -> Result<()> {
+        if self.mask.len() != q {
+            return Err(RustyStatsError::dim_mismatch(
+                q,
+                self.mask.len(),
+                "L1 penalty mask vs parameter count",
+            ));
+        }
+        if !self.alpha.is_finite() || self.alpha < 0.0 {
+            return Err(RustyStatsError::InvalidValue(
+                "L1 penalty alpha must be finite and non-negative".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct BoundConstraints {
+    nonneg_indices: Vec<usize>,
+    nonpos_indices: Vec<usize>,
+}
+
+impl BoundConstraints {
+    fn validate(&self, q: usize) -> Result<()> {
+        for &idx in self.nonneg_indices.iter().chain(self.nonpos_indices.iter()) {
+            if idx >= q {
+                return Err(RustyStatsError::InvalidValue(format!(
+                    "bound constraint index {} is out of range for {} parameters",
+                    idx, q
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+struct OptimizationExtensions {
+    quadratic_penalties: Vec<QuadraticPenaltyBlock>,
+    l1_penalty: L1Penalty,
+    bound_constraints: BoundConstraints,
+}
+
+impl OptimizationExtensions {
+    fn inert(q: usize) -> Self {
+        Self {
+            quadratic_penalties: Vec::new(),
+            l1_penalty: L1Penalty::inert(q),
+            bound_constraints: BoundConstraints::default(),
+        }
+    }
+
+    fn validate(&self, q: usize) -> Result<()> {
+        for penalty in &self.quadratic_penalties {
+            penalty.validate(q)?;
+        }
+        self.l1_penalty.validate(q)?;
+        self.bound_constraints.validate(q)
+    }
+}
+
 #[derive(Debug)]
 struct Evaluation {
     objective: f64,
@@ -227,6 +560,15 @@ fn fit_multinomial_internal(
         alternative_generic,
         alternative_specific,
     )?;
+    let layout = MultinomialParameterLayout::new(
+        x.ncols(),
+        n_classes,
+        prepared.alternative_generic.dim().2,
+        prepared.alternative_specific.dim().2,
+        config.fit_intercept,
+    )?;
+    let optimization_extensions = OptimizationExtensions::inert(layout.len()?);
+    optimization_extensions.validate(layout.len()?)?;
 
     let use_standardization = config.alpha > 0.0 && config.standardize && standardization.is_some();
     let x_work = if use_standardization {
@@ -247,7 +589,7 @@ fn fit_multinomial_internal(
         alternative_specific_standardization,
     )?;
 
-    let mut theta = initialize_coefficients(x_fit.ncols(), n_classes, &prepared, config);
+    let mut theta = initialize_coefficients(&layout, n_classes, &prepared, config);
     let mut warnings = Vec::new();
     let mut solver_status = "max_iterations".to_string();
     let mut converged = false;
@@ -397,11 +739,7 @@ fn fit_multinomial_internal(
     let n_alt_generic = prepared.alternative_generic.dim().2;
     let n_alt_specific = prepared.alternative_specific.dim().2;
     let original_transform = original_parameter_transform(
-        x_fit.ncols(),
-        n_classes,
-        n_alt_generic,
-        n_alt_specific,
-        config.fit_intercept,
+        &layout,
         if use_standardization {
             standardization
         } else {
@@ -549,12 +887,19 @@ fn validate_and_prepare(
     let alternative_specific_matrix =
         validate_alternative_tensor(alternative_specific, n, n_classes, "alternative_specific")?;
 
-    check_dense_parameter_guard(
+    let layout = MultinomialParameterLayout::new(
         p,
         n_classes,
         alternative_generic_matrix.dim().2,
         alternative_specific_matrix.dim().2,
+        config.fit_intercept,
+    )?;
+    validate_dense_multinomial_size(
+        &layout,
         config,
+        DenseMultinomialOperation::Fit,
+        false,
+        false,
     )?;
 
     let weights_vec = match weights {
@@ -719,26 +1064,27 @@ fn validate_alternative_tensor(
     }
 }
 
-fn check_dense_parameter_guard(
-    p: usize,
-    n_classes: usize,
-    n_alt_generic: usize,
-    n_alt_specific: usize,
+fn validate_dense_multinomial_size(
+    layout: &MultinomialParameterLayout,
     config: &MultinomialConfig,
+    operation: DenseMultinomialOperation,
+    compute_covariance: bool,
+    compute_edf: bool,
 ) -> Result<()> {
-    let q = total_parameter_count(p, n_classes, n_alt_generic, n_alt_specific)?;
+    let q = layout.len()?;
     if q > config.max_dense_parameters {
         return Err(RustyStatsError::InvalidValue(format!(
-            "multinomial dense Newton would estimate q={} parameters \
+            "multinomial dense {} would estimate q={} parameters \
              (shared p={} columns x K-1={} non-reference classes, \
              {} generic alternative terms, {} class-specific alternative terms), exceeding \
              max_dense_parameters={}. Reduce design width/classes or wait for \
              the large-p solver.",
+            operation.label(),
             q,
-            p,
-            n_classes - 1,
-            n_alt_generic,
-            n_alt_specific,
+            layout.n_shared,
+            layout.n_non_reference,
+            layout.n_alt_generic,
+            layout.n_alt_specific,
             config.max_dense_parameters
         )));
     }
@@ -750,6 +1096,18 @@ fn check_dense_parameter_guard(
                 "multinomial Hessian memory estimate overflowed usize".to_string(),
             )
         })?;
+    let peak_factor = operation
+        .peak_factor()
+        .max(if compute_covariance || compute_edf {
+            3
+        } else {
+            1
+        });
+    let peak_bytes = hessian_bytes.checked_mul(peak_factor).ok_or_else(|| {
+        RustyStatsError::InvalidValue(
+            "multinomial dense workspace memory estimate overflowed usize".to_string(),
+        )
+    })?;
     if hessian_bytes > config.hessian_memory_limit_bytes {
         let estimated_mb = hessian_bytes as f64 / (1024.0 * 1024.0);
         let limit_mb = config.hessian_memory_limit_bytes as f64 / (1024.0 * 1024.0);
@@ -762,20 +1120,27 @@ fn check_dense_parameter_guard(
              coefficient solve itself remains within the dense guard.",
             estimated_mb,
             q,
-            p,
-            n_classes - 1,
-            n_alt_generic,
-            n_alt_specific,
+            layout.n_shared,
+            layout.n_non_reference,
+            layout.n_alt_generic,
+            layout.n_alt_specific,
+            limit_mb
+        )));
+    }
+    if peak_bytes > config.hessian_memory_limit_bytes && peak_factor > 1 {
+        let estimated_mb = peak_bytes as f64 / (1024.0 * 1024.0);
+        let limit_mb = config.hessian_memory_limit_bytes as f64 / (1024.0 * 1024.0);
+        return Err(RustyStatsError::InvalidValue(format!(
+            "multinomial dense {} workspace may require {:.1} MB for q={} \
+             parameters, exceeding the configured {:.1} MB limit. Disable \
+             covariance/edf computation where possible or reduce design width/classes.",
+            operation.label(),
+            estimated_mb,
+            q,
             limit_mb
         )));
     }
     Ok(())
-}
-
-fn shared_parameter_count(p: usize, n_classes: usize) -> Result<usize> {
-    p.checked_mul(n_classes - 1).ok_or_else(|| {
-        RustyStatsError::InvalidValue("multinomial shared parameter count overflowed usize".into())
-    })
 }
 
 fn total_parameter_count(
@@ -784,40 +1149,7 @@ fn total_parameter_count(
     n_alt_generic: usize,
     n_alt_specific: usize,
 ) -> Result<usize> {
-    let k_nonref = n_classes - 1;
-    let shared = shared_parameter_count(p, n_classes)?;
-    let specific = n_alt_specific.checked_mul(k_nonref).ok_or_else(|| {
-        RustyStatsError::InvalidValue(
-            "multinomial class-specific alternative parameter count overflowed usize".into(),
-        )
-    })?;
-    shared
-        .checked_add(n_alt_generic)
-        .and_then(|value| value.checked_add(specific))
-        .ok_or_else(|| {
-            RustyStatsError::InvalidValue(
-                "multinomial total parameter count overflowed usize".into(),
-            )
-        })
-}
-
-fn alternative_generic_start(p: usize, n_classes: usize) -> usize {
-    p * (n_classes - 1)
-}
-
-fn alternative_specific_start(p: usize, n_classes: usize, n_alt_generic: usize) -> usize {
-    alternative_generic_start(p, n_classes) + n_alt_generic
-}
-
-fn specific_parameter_index(
-    p: usize,
-    n_classes: usize,
-    n_alt_generic: usize,
-    block_idx: usize,
-    term_idx: usize,
-    n_alt_specific: usize,
-) -> usize {
-    alternative_specific_start(p, n_classes, n_alt_generic) + block_idx * n_alt_specific + term_idx
+    MultinomialParameterLayout::new(p, n_classes, n_alt_generic, n_alt_specific, true)?.len()
 }
 
 fn active_alternative_generic_standardization<'a>(
@@ -885,18 +1217,13 @@ fn standardize_alternative_inputs(
 }
 
 fn initialize_coefficients(
-    p: usize,
+    layout: &MultinomialParameterLayout,
     n_classes: usize,
     prepared: &PreparedInputs,
     config: &MultinomialConfig,
 ) -> Array1<f64> {
-    let q = total_parameter_count(
-        p,
-        n_classes,
-        prepared.alternative_generic.dim().2,
-        prepared.alternative_specific.dim().2,
-    )
-    .expect("validated parameter count");
+    let p = layout.n_shared;
+    let q = layout.len().expect("validated parameter count");
     let mut theta = Array1::zeros(q);
     if !config.fit_intercept || p == 0 || !all_classes_available(&prepared.availability) {
         return theta;
@@ -925,7 +1252,10 @@ fn initialize_coefficients(
     for (block_idx, &class_idx) in prepared.non_reference_classes.iter().enumerate() {
         let class_total = totals[class_idx];
         if class_total > 0.0 {
-            theta[block_idx * p] = (class_total / reference_total).ln();
+            let intercept_idx = layout
+                .shared(block_idx, 0)
+                .expect("validated shared intercept index");
+            theta[intercept_idx] = (class_total / reference_total).ln();
         }
     }
     theta
@@ -958,7 +1288,7 @@ fn evaluate(
         log_likelihood_from_probabilities(&probabilities, &prepared.y_codes, &prepared.weights)?;
     let ridge = ridge_penalty(theta, x.ncols(), n_classes, alpha, fit_intercept);
     let objective = -log_likelihood + ridge;
-    let gradient = gradient(theta, x, prepared, &probabilities, alpha, fit_intercept);
+    let gradient = gradient(theta, x, prepared, &probabilities, alpha, fit_intercept)?;
     let hessian = hessian(
         theta,
         x,
@@ -1009,14 +1339,12 @@ fn ridge_penalty(
     if alpha <= 0.0 {
         return 0.0;
     }
-    let shared_count = p * (n_classes - 1);
+    let layout = MultinomialParameterLayout::new(p, n_classes, 0, 0, fit_intercept)
+        .expect("validated multinomial layout");
     theta
         .iter()
         .enumerate()
-        .filter_map(|(idx, value)| {
-            let is_shared_intercept = idx < shared_count && p > 0 && fit_intercept && idx % p == 0;
-            (!is_shared_intercept).then_some(value * value)
-        })
+        .filter_map(|(idx, value)| (!layout.is_shared_intercept(idx)).then_some(value * value))
         .sum::<f64>()
         * 0.5
         * alpha
@@ -1230,14 +1558,21 @@ fn gradient(
     probabilities: &Array2<f64>,
     alpha: f64,
     fit_intercept: bool,
-) -> Array1<f64> {
+) -> Result<Array1<f64>> {
     let n = x.nrows();
     let p = x.ncols();
     let mut gradient = Array1::zeros(theta.len());
     let n_classes = probabilities.ncols();
     let n_alt_generic = prepared.alternative_generic.dim().2;
     let n_alt_specific = prepared.alternative_specific.dim().2;
-    let generic_start = alternative_generic_start(p, n_classes);
+    let layout = MultinomialParameterLayout::new(
+        p,
+        n_classes,
+        n_alt_generic,
+        n_alt_specific,
+        fit_intercept,
+    )?;
+    let generic_start = layout.alternative_generic_start()?;
 
     for (block_idx, &class_idx) in prepared.non_reference_classes.iter().enumerate() {
         for row in 0..n {
@@ -1248,7 +1583,8 @@ fn gradient(
             };
             let residual = prepared.weights[row] * (probabilities[[row, class_idx]] - observed);
             for feature_idx in 0..p {
-                gradient[block_idx * p + feature_idx] += x[[row, feature_idx]] * residual;
+                let param_idx = layout.shared(block_idx, feature_idx)?;
+                gradient[param_idx] += x[[row, feature_idx]] * residual;
             }
         }
     }
@@ -1267,14 +1603,7 @@ fn gradient(
 
     for (block_idx, &class_idx) in prepared.non_reference_classes.iter().enumerate() {
         for term_idx in 0..n_alt_specific {
-            let param_idx = specific_parameter_index(
-                p,
-                n_classes,
-                n_alt_generic,
-                block_idx,
-                term_idx,
-                n_alt_specific,
-            );
+            let param_idx = layout.alternative_specific(block_idx, term_idx)?;
             for row in 0..n {
                 let observed = if prepared.y_codes[row] == class_idx {
                     1.0
@@ -1290,14 +1619,13 @@ fn gradient(
 
     if alpha > 0.0 {
         for idx in 0..theta.len() {
-            let is_shared_intercept = idx < generic_start && p > 0 && fit_intercept && idx % p == 0;
-            if !is_shared_intercept {
+            if !layout.is_shared_intercept(idx) {
                 gradient[idx] += alpha * theta[idx];
             }
         }
     }
 
-    gradient
+    Ok(gradient)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1316,7 +1644,14 @@ fn hessian(
     let n_classes = probabilities.ncols();
     let n_alt_generic = prepared.alternative_generic.dim().2;
     let n_alt_specific = prepared.alternative_specific.dim().2;
-    let generic_start = alternative_generic_start(p, n_classes);
+    let layout = MultinomialParameterLayout::new(
+        p,
+        n_classes,
+        n_alt_generic,
+        n_alt_specific,
+        fit_intercept,
+    )?;
+    let generic_start = layout.alternative_generic_start()?;
     let mut hessian = Array2::zeros((q, q));
     let mut pair_weights = Array1::zeros(n);
 
@@ -1352,7 +1687,7 @@ fn hessian(
 
     for (block_idx, &class_idx) in prepared.non_reference_classes.iter().enumerate() {
         for feature_idx in 0..p {
-            let shared_idx = block_idx * p + feature_idx;
+            let shared_idx = layout.shared(block_idx, feature_idx)?;
             for term_idx in 0..n_alt_generic {
                 let mut value = 0.0;
                 for row in 0..n {
@@ -1369,17 +1704,10 @@ fn hessian(
 
     for (block_l, &class_l) in prepared.non_reference_classes.iter().enumerate() {
         for feature_idx in 0..p {
-            let shared_idx = block_l * p + feature_idx;
+            let shared_idx = layout.shared(block_l, feature_idx)?;
             for (block_m, &class_m) in prepared.non_reference_classes.iter().enumerate() {
                 for term_idx in 0..n_alt_specific {
-                    let specific_idx = specific_parameter_index(
-                        p,
-                        n_classes,
-                        n_alt_generic,
-                        block_m,
-                        term_idx,
-                        n_alt_specific,
-                    );
+                    let specific_idx = layout.alternative_specific(block_m, term_idx)?;
                     let mut value = 0.0;
                     for row in 0..n {
                         let delta = if class_l == class_m { 1.0 } else { 0.0 };
@@ -1419,14 +1747,7 @@ fn hessian(
         let generic_idx = generic_start + term_j;
         for (block_m, &class_m) in prepared.non_reference_classes.iter().enumerate() {
             for term_m in 0..n_alt_specific {
-                let specific_idx = specific_parameter_index(
-                    p,
-                    n_classes,
-                    n_alt_generic,
-                    block_m,
-                    term_m,
-                    n_alt_specific,
-                );
+                let specific_idx = layout.alternative_specific(block_m, term_m)?;
                 let mut value = 0.0;
                 for row in 0..n {
                     value += prepared.weights[row]
@@ -1442,14 +1763,7 @@ fn hessian(
 
     for (block_l, &class_l) in prepared.non_reference_classes.iter().enumerate() {
         for term_l in 0..n_alt_specific {
-            let idx_l = specific_parameter_index(
-                p,
-                n_classes,
-                n_alt_generic,
-                block_l,
-                term_l,
-                n_alt_specific,
-            );
+            let idx_l = layout.alternative_specific(block_l, term_l)?;
             for (block_m, &class_m) in prepared
                 .non_reference_classes
                 .iter()
@@ -1458,14 +1772,7 @@ fn hessian(
             {
                 let start_term = if block_l == block_m { term_l } else { 0 };
                 for term_m in start_term..n_alt_specific {
-                    let idx_m = specific_parameter_index(
-                        p,
-                        n_classes,
-                        n_alt_generic,
-                        block_m,
-                        term_m,
-                        n_alt_specific,
-                    );
+                    let idx_m = layout.alternative_specific(block_m, term_m)?;
                     let mut value = 0.0;
                     for row in 0..n {
                         let delta = if class_l == class_m { 1.0 } else { 0.0 };
@@ -1484,8 +1791,7 @@ fn hessian(
 
     if alpha > 0.0 {
         for idx in 0..q {
-            let is_shared_intercept = idx < generic_start && p > 0 && fit_intercept && idx % p == 0;
-            if !is_shared_intercept {
+            if !layout.is_shared_intercept(idx) {
                 hessian[[idx, idx]] += alpha;
             }
         }
@@ -1567,10 +1873,15 @@ fn array2_to_dmatrix(values: &Array2<f64>) -> DMatrix<f64> {
 }
 
 fn unflatten_coefficients(theta: &Array1<f64>, n_classes: usize, p: usize) -> Array2<f64> {
+    let layout =
+        MultinomialParameterLayout::new(p, n_classes, 0, 0, true).expect("validated layout");
     let mut coefficients = Array2::zeros((n_classes - 1, p));
     for block_idx in 0..(n_classes - 1) {
         for feature_idx in 0..p {
-            coefficients[[block_idx, feature_idx]] = theta[block_idx * p + feature_idx];
+            let source_idx = layout
+                .shared(block_idx, feature_idx)
+                .expect("validated shared coefficient index");
+            coefficients[[block_idx, feature_idx]] = theta[source_idx];
         }
     }
     coefficients
@@ -1582,7 +1893,11 @@ fn unflatten_alternative_generic_coefficients(
     n_classes: usize,
     n_alt_generic: usize,
 ) -> Array1<f64> {
-    let start = alternative_generic_start(p, n_classes);
+    let layout = MultinomialParameterLayout::new(p, n_classes, n_alt_generic, 0, true)
+        .expect("validated multinomial layout");
+    let start = layout
+        .alternative_generic_start()
+        .expect("validated generic alternative start");
     Array1::from_iter((0..n_alt_generic).map(|term_idx| theta[start + term_idx]))
 }
 
@@ -1593,35 +1908,32 @@ fn unflatten_alternative_specific_coefficients(
     n_alt_generic: usize,
     n_alt_specific: usize,
 ) -> Array2<f64> {
+    let layout = MultinomialParameterLayout::new(p, n_classes, n_alt_generic, n_alt_specific, true)
+        .expect("validated multinomial layout");
     let mut coefficients = Array2::zeros((n_classes - 1, n_alt_specific));
     for block_idx in 0..(n_classes - 1) {
         for term_idx in 0..n_alt_specific {
-            coefficients[[block_idx, term_idx]] = theta[specific_parameter_index(
-                p,
-                n_classes,
-                n_alt_generic,
-                block_idx,
-                term_idx,
-                n_alt_specific,
-            )];
+            let source_idx = layout
+                .alternative_specific(block_idx, term_idx)
+                .expect("validated class-specific alternative index");
+            coefficients[[block_idx, term_idx]] = theta[source_idx];
         }
     }
     coefficients
 }
 
-#[allow(clippy::too_many_arguments)]
 fn original_parameter_transform(
-    p: usize,
-    n_classes: usize,
-    n_alt_generic: usize,
-    n_alt_specific: usize,
-    fit_intercept: bool,
+    layout: &MultinomialParameterLayout,
     shared_standardization: Option<&Standardization>,
     generic_standardization: Option<&Standardization>,
     specific_standardization: Option<&AlternativeSpecificStandardization>,
 ) -> Result<MultinomialTransform> {
-    let n_blocks = n_classes - 1;
-    let q = total_parameter_count(p, n_classes, n_alt_generic, n_alt_specific)?;
+    let p = layout.n_shared;
+    let n_blocks = layout.n_non_reference;
+    let n_alt_generic = layout.n_alt_generic;
+    let n_alt_specific = layout.n_alt_specific;
+    let fit_intercept = layout.fit_intercept;
+    let q = layout.len()?;
     if let Some(std) = shared_standardization {
         std.validate(p)?;
     }
@@ -1635,7 +1947,7 @@ fn original_parameter_transform(
     let mut rows = Vec::with_capacity(q);
     for block_idx in 0..n_blocks {
         for feature_idx in 0..p {
-            let source_idx = block_idx * p + feature_idx;
+            let source_idx = layout.shared(block_idx, feature_idx)?;
             let mut row = vec![(
                 source_idx,
                 shared_scale_factor(shared_standardization, feature_idx, fit_intercept),
@@ -1645,7 +1957,7 @@ fn original_parameter_transform(
                     for centered_feature in 1..p {
                         let factor = -std.center[centered_feature] / std.scale[centered_feature];
                         if factor != 0.0 {
-                            row.push((block_idx * p + centered_feature, factor));
+                            row.push((layout.shared(block_idx, centered_feature)?, factor));
                         }
                     }
                 }
@@ -1654,17 +1966,7 @@ fn original_parameter_transform(
                         let factor =
                             -std.center[[block_idx, term_idx]] / std.scale[[block_idx, term_idx]];
                         if factor != 0.0 {
-                            row.push((
-                                specific_parameter_index(
-                                    p,
-                                    n_classes,
-                                    n_alt_generic,
-                                    block_idx,
-                                    term_idx,
-                                    n_alt_specific,
-                                ),
-                                factor,
-                            ));
+                            row.push((layout.alternative_specific(block_idx, term_idx)?, factor));
                         }
                     }
                 }
@@ -1675,7 +1977,7 @@ fn original_parameter_transform(
 
     for term_idx in 0..n_alt_generic {
         rows.push(vec![(
-            alternative_generic_start(p, n_classes) + term_idx,
+            layout.alternative_generic(term_idx)?,
             generic_standardization
                 .map(|std| 1.0 / std.scale[term_idx])
                 .unwrap_or(1.0),
@@ -1685,14 +1987,7 @@ fn original_parameter_transform(
     for block_idx in 0..n_blocks {
         for term_idx in 0..n_alt_specific {
             rows.push(vec![(
-                specific_parameter_index(
-                    p,
-                    n_classes,
-                    n_alt_generic,
-                    block_idx,
-                    term_idx,
-                    n_alt_specific,
-                ),
+                layout.alternative_specific(block_idx, term_idx)?,
                 specific_standardization
                     .map(|std| 1.0 / std.scale[[block_idx, term_idx]])
                     .unwrap_or(1.0),
@@ -1829,6 +2124,101 @@ mod tests {
             skip_covariance: true,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn parameter_layout_maps_shared_and_alternative_blocks() {
+        let layout = MultinomialParameterLayout::new(3, 4, 2, 5, true).expect("valid layout");
+
+        assert_eq!(layout.len().expect("len"), 26);
+        assert_eq!(layout.shared(0, 0).expect("shared"), 0);
+        assert_eq!(layout.shared(1, 2).expect("shared"), 5);
+        assert_eq!(layout.shared_block_range(2).expect("range"), 6..9);
+        assert_eq!(
+            layout.alternative_generic_start().expect("generic start"),
+            9
+        );
+        assert_eq!(layout.alternative_generic(1).expect("generic"), 10);
+        assert_eq!(
+            layout.alternative_specific_start().expect("specific start"),
+            11
+        );
+        assert_eq!(layout.alternative_specific(2, 4).expect("specific"), 25);
+        assert!(layout.validate_index(25).is_ok());
+        assert!(layout.validate_index(26).is_err());
+    }
+
+    #[test]
+    fn parameter_layout_maps_python_owned_shared_columns() {
+        let layout = MultinomialParameterLayout::new(3, 4, 0, 0, true).expect("valid layout");
+
+        let indices = layout
+            .map_shared_columns_to_indices(&[1, 2])
+            .expect("column mapping");
+        assert_eq!(indices, vec![1, 2, 4, 5, 7, 8]);
+        assert!(layout.map_shared_columns_to_indices(&[3]).is_err());
+    }
+
+    #[test]
+    fn dense_guard_reports_operation_peak_workspace() {
+        let layout = MultinomialParameterLayout::new(1, 4, 0, 0, true).expect("valid layout");
+        let config = MultinomialConfig {
+            hessian_memory_limit_bytes: 100,
+            max_dense_parameters: 100,
+            ..default_config()
+        };
+
+        validate_dense_multinomial_size(
+            &layout,
+            &config,
+            DenseMultinomialOperation::Fit,
+            false,
+            false,
+        )
+        .expect("single Hessian fits under the limit");
+        let err = validate_dense_multinomial_size(
+            &layout,
+            &config,
+            DenseMultinomialOperation::Covariance,
+            false,
+            false,
+        )
+        .expect_err("covariance workspace should exceed the limit");
+        assert!(err.to_string().contains("covariance workspace"));
+    }
+
+    #[test]
+    fn optimization_extensions_validate_inert_and_reject_bad_metadata() {
+        let inert = OptimizationExtensions::inert(4);
+        inert.validate(4).expect("inert extensions are valid");
+
+        let bad_l1 = OptimizationExtensions {
+            l1_penalty: L1Penalty {
+                alpha: 1.0,
+                mask: vec![true],
+            },
+            ..OptimizationExtensions::inert(4)
+        };
+        assert!(bad_l1.validate(4).is_err());
+
+        let bad_quadratic = OptimizationExtensions {
+            quadratic_penalties: vec![QuadraticPenaltyBlock {
+                indices: vec![0, 1],
+                matrix: Array2::ones((1, 1)),
+                weight: 1.0,
+            }],
+            ..OptimizationExtensions::inert(4)
+        };
+        assert!(bad_quadratic.validate(4).is_err());
+
+        let bad_bound = OptimizationExtensions {
+            bound_constraints: BoundConstraints {
+                nonneg_indices: vec![4],
+                nonpos_indices: Vec::new(),
+            },
+            ..OptimizationExtensions::inert(4)
+        };
+        assert!(bad_bound.validate(4).is_err());
     }
 
     #[test]

@@ -141,11 +141,18 @@ Required methods:
 - `alternative_generic(term) -> usize`
 - `alternative_specific(block, term) -> usize`
 - `shared_block_range(block) -> Range<usize>`
+- `is_shared_intercept(idx) -> bool`
 - `validate_index(idx)`
 
 Rules:
 
 - Intercept columns are recognized only in shared `X`.
+- Intercept identity is pure flattening metadata and is Rust-owned through
+  `is_shared_intercept(idx)`.
+- Penalty eligibility masks are Python-owned design metadata, derived from
+  `InteractionBuilder` output, and passed to Rust explicitly through
+  `L1Penalty.mask` or future penalty metadata. Rust must not infer penalty
+  masks from names or term semantics.
 - Alternative generic coefficients have one coefficient total per term.
 - Alternative class-specific coefficients have one coefficient per
   non-reference class and term.
@@ -173,7 +180,8 @@ Tests:
 
 - Layout length equals `n_params`.
 - Every `coef_table()` row maps to exactly one flattened index.
-- Intercepts are excluded from the penalty mask.
+- Shared intercept positions are identified by `is_shared_intercept(idx)` and
+  Python-derived penalty masks exclude them.
 - Alternative generic and class-specific blocks map to the same order used by
   Rust coefficient arrays.
 - Python-derived masks/ranges map to the expected flattened Rust indices.
