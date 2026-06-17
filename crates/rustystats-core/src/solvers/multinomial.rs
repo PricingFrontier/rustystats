@@ -1,5 +1,3 @@
-use std::ops::Range;
-
 use nalgebra::{DMatrix, DVector};
 use ndarray::{Array1, Array2, Array3, ArrayView2, ArrayView3};
 
@@ -35,6 +33,8 @@ pub struct MultinomialConfig {
     pub verbose: bool,
     pub initial_theta: Option<Array1<f64>>,
     pub smooth_penalties: Vec<MultinomialSmoothPenalty>,
+    pub nonneg_indices: Vec<usize>,
+    pub nonpos_indices: Vec<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -60,6 +60,8 @@ impl Default for MultinomialConfig {
             verbose: false,
             initial_theta: None,
             smooth_penalties: Vec::new(),
+            nonneg_indices: Vec::new(),
+            nonpos_indices: Vec::new(),
         }
     }
 }
@@ -231,19 +233,6 @@ impl MultinomialParameterLayout {
             })
     }
 
-    #[allow(dead_code)] // Stage 6 smooth penalties will consume whole shared class blocks.
-    fn shared_block_range(&self, block_idx: usize) -> Result<Range<usize>> {
-        let start = self.shared(block_idx, 0)?;
-        start
-            .checked_add(self.n_shared)
-            .map(|end| start..end)
-            .ok_or_else(|| {
-                RustyStatsError::InvalidValue(
-                    "multinomial shared parameter range overflowed usize".into(),
-                )
-            })
-    }
-
     fn alternative_generic_start(&self) -> Result<usize> {
         self.shared_len()
     }
@@ -308,40 +297,14 @@ impl MultinomialParameterLayout {
             && idx < self.shared_len().unwrap_or(0)
             && idx.is_multiple_of(self.n_shared)
     }
-
-    #[allow(dead_code)] // Later Python-derived constraint/penalty indices validate through this.
-    fn validate_index(&self, idx: usize) -> Result<()> {
-        let len = self.len()?;
-        if idx >= len {
-            return Err(RustyStatsError::InvalidValue(format!(
-                "multinomial parameter index {} is out of range for {} parameters",
-                idx, len
-            )));
-        }
-        Ok(())
-    }
-
-    #[allow(dead_code)] // Stage 4+ maps Python-owned column masks into flattened Rust indices.
-    fn map_shared_columns_to_indices(&self, columns: &[usize]) -> Result<Vec<usize>> {
-        let mut indices = Vec::with_capacity(columns.len() * self.n_non_reference);
-        for block_idx in 0..self.n_non_reference {
-            for &feature_idx in columns {
-                indices.push(self.shared(block_idx, feature_idx)?);
-            }
-        }
-        Ok(indices)
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DenseMultinomialOperation {
     Fit,
-    #[allow(dead_code)] // Reserved for covariance preflight once that path is split out.
+    #[allow(dead_code)]
+    // Constructed by the dense-guard test to exercise the covariance-workspace peak.
     Covariance,
-    #[allow(dead_code)] // Reserved for Stage 6 smooth EDF preflight.
-    Edf,
-    #[allow(dead_code)] // Reserved for export paths that materialize dense scoring matrices.
-    Export,
 }
 
 impl DenseMultinomialOperation {
@@ -349,15 +312,13 @@ impl DenseMultinomialOperation {
         match self {
             Self::Fit => "fit",
             Self::Covariance => "covariance",
-            Self::Edf => "edf",
-            Self::Export => "export",
         }
     }
 
     fn peak_factor(self) -> usize {
         match self {
-            Self::Fit | Self::Export => 1,
-            Self::Covariance | Self::Edf => 3,
+            Self::Fit => 1,
+            Self::Covariance => 3,
         }
     }
 }
@@ -439,16 +400,47 @@ struct BoundConstraints {
 }
 
 impl BoundConstraints {
-    fn validate(&self, q: usize) -> Result<()> {
-        for &idx in self.nonneg_indices.iter().chain(self.nonpos_indices.iter()) {
+    fn is_empty(&self) -> bool {
+        self.nonneg_indices.is_empty() && self.nonpos_indices.is_empty()
+    }
+
+    fn signs(&self, q: usize) -> Result<Vec<i8>> {
+        let mut signs = vec![0_i8; q];
+        for &idx in &self.nonneg_indices {
             if idx >= q {
                 return Err(RustyStatsError::InvalidValue(format!(
                     "bound constraint index {} is out of range for {} parameters",
                     idx, q
                 )));
             }
+            if signs[idx] != 0 {
+                return Err(RustyStatsError::InvalidValue(format!(
+                    "bound constraint index {} appears more than once or has conflicting signs",
+                    idx
+                )));
+            }
+            signs[idx] = 1;
         }
-        Ok(())
+        for &idx in &self.nonpos_indices {
+            if idx >= q {
+                return Err(RustyStatsError::InvalidValue(format!(
+                    "bound constraint index {} is out of range for {} parameters",
+                    idx, q
+                )));
+            }
+            if signs[idx] != 0 {
+                return Err(RustyStatsError::InvalidValue(format!(
+                    "bound constraint index {} appears more than once or has conflicting signs",
+                    idx
+                )));
+            }
+            signs[idx] = -1;
+        }
+        Ok(signs)
+    }
+
+    fn validate(&self, q: usize) -> Result<()> {
+        self.signs(q).map(|_| ())
     }
 }
 
@@ -481,6 +473,8 @@ fn optimization_extensions_from_config(
     layout: &MultinomialParameterLayout,
     l1_alpha: f64,
     smooth_penalties: &[MultinomialSmoothPenalty],
+    nonneg_indices: &[usize],
+    nonpos_indices: &[usize],
 ) -> Result<OptimizationExtensions> {
     let q = layout.len()?;
     let mut extensions = OptimizationExtensions::inert(q);
@@ -495,6 +489,10 @@ fn optimization_extensions_from_config(
             mask: default_l1_penalty_mask(layout)?,
         };
     }
+    extensions.bound_constraints = BoundConstraints {
+        nonneg_indices: nonneg_indices.to_vec(),
+        nonpos_indices: nonpos_indices.to_vec(),
+    };
     Ok(extensions)
 }
 
@@ -528,6 +526,15 @@ fn expand_smooth_penalty(
         return Err(RustyStatsError::InvalidValue(
             "smooth penalty matrix values must be finite".to_string(),
         ));
+    }
+    for row in 0..width {
+        for col in (row + 1)..width {
+            if (smooth.penalty[[row, col]] - smooth.penalty[[col, row]]).abs() > 1e-10 {
+                return Err(RustyStatsError::InvalidValue(
+                    "smooth penalty matrix must be symmetric".to_string(),
+                ));
+            }
+        }
     }
 
     let mut blocks = Vec::with_capacity(layout.n_non_reference);
@@ -671,8 +678,13 @@ fn fit_multinomial_internal(
     )?;
     let l1_alpha = config.alpha * config.l1_ratio;
     let l2_alpha = config.alpha * (1.0 - config.l1_ratio);
-    let optimization_extensions =
-        optimization_extensions_from_config(&layout, l1_alpha, &config.smooth_penalties)?;
+    let optimization_extensions = optimization_extensions_from_config(
+        &layout,
+        l1_alpha,
+        &config.smooth_penalties,
+        &config.nonneg_indices,
+        &config.nonpos_indices,
+    )?;
     optimization_extensions.validate(layout.len()?)?;
 
     let use_standardization = config.alpha > 0.0 && config.standardize && standardization.is_some();
@@ -695,6 +707,7 @@ fn fit_multinomial_internal(
     )?;
 
     let mut theta = initialize_coefficients(&layout, n_classes, &prepared, config)?;
+    theta = apply_bound_projection(theta, &optimization_extensions);
     let mut warnings = Vec::new();
     let mut solver_status = "max_iterations".to_string();
     let mut converged = false;
@@ -717,10 +730,11 @@ fn fit_multinomial_internal(
             &optimization_extensions.l1_penalty,
         );
 
-        let optimality = check_l1_kkt(
+        let optimality = check_kkt(
             &theta,
             &evaluation.gradient,
             &optimization_extensions.l1_penalty,
+            &optimization_extensions.bound_constraints,
         )?;
         if optimality <= config.tolerance {
             converged = true;
@@ -729,7 +743,8 @@ fn fit_multinomial_internal(
             break;
         }
 
-        let proposal = solve_newton_proposal(&theta, &evaluation, &optimization_extensions)?;
+        let proposal =
+            solve_newton_proposal(&theta, &evaluation, &optimization_extensions, &mut warnings)?;
         let step_norm = proposal
             .target
             .iter()
@@ -808,9 +823,28 @@ fn fit_multinomial_internal(
             (previous_objective - new_objective).abs() / (1.0 + previous_objective.abs());
         let scaled_step_norm = step_fraction * step_norm / (1.0 + coefficient_norm);
         if relative_improvement <= config.tolerance || scaled_step_norm <= config.tolerance {
-            converged = true;
-            solver_status = "converged".to_string();
-            break;
+            // Gradient-only recheck: check_kkt consumes only the gradient, so avoid
+            // rebuilding the full Hessian that evaluate(...) would discard here.
+            let recheck_gradient = evaluate_gradient(
+                &theta,
+                x_fit,
+                n_classes,
+                &prepared,
+                l2_alpha,
+                config.fit_intercept,
+                &optimization_extensions.quadratic_penalties,
+            )?;
+            let next_optimality = check_kkt(
+                &theta,
+                &recheck_gradient,
+                &optimization_extensions.l1_penalty,
+                &optimization_extensions.bound_constraints,
+            )?;
+            if next_optimality <= config.tolerance {
+                converged = true;
+                solver_status = "converged".to_string();
+                break;
+            }
         }
 
         if config.verbose {
@@ -1048,8 +1082,8 @@ fn validate_and_prepare(
         &layout,
         config,
         DenseMultinomialOperation::Fit,
-        false,
-        false,
+        !config.skip_covariance,
+        !config.smooth_penalties.is_empty(),
     )?;
 
     let weights_vec = match weights {
@@ -1474,6 +1508,28 @@ fn evaluate(
         gradient,
         hessian,
     })
+}
+
+/// Gradient-only evaluation for the end-of-iteration KKT recheck.
+///
+/// `evaluate` unconditionally assembles the full q x q Hessian, but the
+/// convergence recheck only feeds the (penalized) gradient into `check_kkt`.
+/// Reuse the existing probability and gradient kernels and skip the Hessian
+/// assembly so a slow-progress fit near the optimum does not re-pay the
+/// O(K^2 * n * p^2) Hessian build every iteration.
+fn evaluate_gradient(
+    theta: &Array1<f64>,
+    x: ArrayView2<'_, f64>,
+    n_classes: usize,
+    prepared: &PreparedInputs,
+    alpha: f64,
+    fit_intercept: bool,
+    quadratic_penalties: &[QuadraticPenaltyBlock],
+) -> Result<Array1<f64>> {
+    let probabilities = final_evaluation_probabilities(theta, x, n_classes, prepared)?;
+    let mut gradient = gradient(theta, x, prepared, &probabilities, alpha, fit_intercept)?;
+    add_quadratic_gradient(&mut gradient, theta, quadratic_penalties);
+    Ok(gradient)
 }
 
 fn final_evaluation_probabilities(
@@ -2098,6 +2154,7 @@ fn solve_newton_proposal(
     theta: &Array1<f64>,
     evaluation: &Evaluation,
     extensions: &OptimizationExtensions,
+    warnings: &mut Vec<String>,
 ) -> Result<NewtonProposal> {
     if extensions.l1_penalty.alpha > 0.0 {
         solve_proximal_newton_subproblem(
@@ -2105,6 +2162,14 @@ fn solve_newton_proposal(
             &evaluation.gradient,
             &evaluation.hessian,
             &extensions.l1_penalty,
+            &extensions.bound_constraints,
+            warnings,
+        )
+    } else if !extensions.bound_constraints.is_empty() {
+        solve_bound_projected_newton_step(
+            theta,
+            &evaluation.gradient,
+            &evaluation.hessian,
             &extensions.bound_constraints,
         )
     } else {
@@ -2119,12 +2184,73 @@ fn solve_newton_proposal(
     }
 }
 
+fn solve_bound_projected_newton_step(
+    theta: &Array1<f64>,
+    gradient: &Array1<f64>,
+    hessian: &Array2<f64>,
+    bounds: &BoundConstraints,
+) -> Result<NewtonProposal> {
+    let q = theta.len();
+    if gradient.len() != q || hessian.nrows() != q || hessian.ncols() != q {
+        return Err(RustyStatsError::InvalidValue(
+            "bound-projected Newton inputs have inconsistent dimensions".to_string(),
+        ));
+    }
+    let signs = bounds.signs(q)?;
+    let mut free_indices = Vec::with_capacity(q);
+    for idx in 0..q {
+        let active_lower =
+            signs[idx] > 0 && theta[idx] <= PROXIMAL_NEWTON_ZERO_TOLERANCE && gradient[idx] >= 0.0;
+        let active_upper =
+            signs[idx] < 0 && theta[idx] >= -PROXIMAL_NEWTON_ZERO_TOLERANCE && gradient[idx] <= 0.0;
+        if !active_lower && !active_upper {
+            free_indices.push(idx);
+        }
+    }
+
+    if free_indices.is_empty() {
+        return Ok(NewtonProposal {
+            target: project_with_signs(theta.clone(), &signs),
+        });
+    }
+    if free_indices.len() == q {
+        let step = solve_newton_step(hessian, gradient)?;
+        let target = theta
+            .iter()
+            .zip(step.iter())
+            .map(|(coef, delta)| coef - delta)
+            .collect::<Array1<f64>>();
+        return Ok(NewtonProposal {
+            target: project_with_signs(target, &signs),
+        });
+    }
+
+    let free_q = free_indices.len();
+    let mut reduced_hessian = Array2::zeros((free_q, free_q));
+    let mut reduced_gradient = Array1::zeros(free_q);
+    for (row_pos, &row_idx) in free_indices.iter().enumerate() {
+        reduced_gradient[row_pos] = gradient[row_idx];
+        for (col_pos, &col_idx) in free_indices.iter().enumerate() {
+            reduced_hessian[[row_pos, col_pos]] = hessian[[row_idx, col_idx]];
+        }
+    }
+    let reduced_step = solve_newton_step(&reduced_hessian, &reduced_gradient)?;
+    let mut target = theta.clone();
+    for (pos, &idx) in free_indices.iter().enumerate() {
+        target[idx] -= reduced_step[pos];
+    }
+    Ok(NewtonProposal {
+        target: project_with_signs(target, &signs),
+    })
+}
+
 fn solve_proximal_newton_subproblem(
     theta: &Array1<f64>,
     gradient: &Array1<f64>,
     hessian: &Array2<f64>,
     l1_penalty: &L1Penalty,
     bounds: &BoundConstraints,
+    warnings: &mut Vec<String>,
 ) -> Result<NewtonProposal> {
     let q = theta.len();
     if gradient.len() != q || hessian.nrows() != q || hessian.ncols() != q {
@@ -2197,9 +2323,18 @@ fn solve_proximal_newton_subproblem(
     }
 
     if !cd_converged {
-        return Err(RustyStatsError::NumericalError(
-            "multinomial proximal Newton coordinate descent did not converge".to_string(),
-        ));
+        // Degrade-and-warn rather than abort: `beta` started at `theta` and is only
+        // ever updated by finite soft-threshold/bound-projected steps, so it is a
+        // usable best-effort descent target. The outer line search (objective-gated)
+        // and the KKT check vet acceptance. Mirrors coordinate_descent.rs and this
+        // solver's own degrade-and-warn contract (covariance, step-halving).
+        let warning = "multinomial proximal-Newton inner coordinate descent did not \
+                       fully converge; continuing with best-effort coefficients. \
+                       Increase max_iter or add ridge if this warning persists."
+            .to_string();
+        if !warnings.contains(&warning) {
+            warnings.push(warning);
+        }
     }
 
     Ok(NewtonProposal { target: beta })
@@ -2229,10 +2364,25 @@ fn active_l1_indices(
     indices
 }
 
+#[cfg(test)]
 fn check_l1_kkt(
     theta: &Array1<f64>,
     smooth_gradient: &Array1<f64>,
     l1_penalty: &L1Penalty,
+) -> Result<f64> {
+    check_kkt(
+        theta,
+        smooth_gradient,
+        l1_penalty,
+        &BoundConstraints::default(),
+    )
+}
+
+fn check_kkt(
+    theta: &Array1<f64>,
+    smooth_gradient: &Array1<f64>,
+    l1_penalty: &L1Penalty,
+    bounds: &BoundConstraints,
 ) -> Result<f64> {
     if smooth_gradient.len() != theta.len() {
         return Err(RustyStatsError::dim_mismatch(
@@ -2242,17 +2392,34 @@ fn check_l1_kkt(
         ));
     }
     l1_penalty.validate(theta.len())?;
-    if l1_penalty.alpha <= 0.0 {
-        return Ok(smooth_gradient
-            .iter()
-            .fold(0.0_f64, |acc, value| acc.max(value.abs())));
-    }
+    let signs = bounds.signs(theta.len())?;
     let mut max_violation = 0.0_f64;
     for idx in 0..theta.len() {
-        let violation = if l1_penalty.mask[idx] {
-            l1_coordinate_violation(theta[idx], smooth_gradient[idx], l1_penalty.alpha)
+        let alpha = if l1_penalty.alpha > 0.0 && l1_penalty.mask[idx] {
+            l1_penalty.alpha
         } else {
-            smooth_gradient[idx].abs()
+            0.0
+        };
+        let violation = match signs[idx] {
+            1 => {
+                let feasibility = (-theta[idx]).max(0.0);
+                let stationarity = if theta[idx] <= PROXIMAL_NEWTON_ZERO_TOLERANCE {
+                    (-(smooth_gradient[idx] + alpha)).max(0.0)
+                } else {
+                    l1_coordinate_violation(theta[idx], smooth_gradient[idx], alpha)
+                };
+                feasibility.max(stationarity)
+            }
+            -1 => {
+                let feasibility = theta[idx].max(0.0);
+                let stationarity = if theta[idx] >= -PROXIMAL_NEWTON_ZERO_TOLERANCE {
+                    (smooth_gradient[idx] - alpha).max(0.0)
+                } else {
+                    l1_coordinate_violation(theta[idx], smooth_gradient[idx], alpha)
+                };
+                feasibility.max(stationarity)
+            }
+            _ => l1_coordinate_violation(theta[idx], smooth_gradient[idx], alpha),
         };
         max_violation = max_violation.max(violation);
     }
@@ -2260,6 +2427,9 @@ fn check_l1_kkt(
 }
 
 fn l1_coordinate_violation(theta_j: f64, gradient_j: f64, alpha: f64) -> f64 {
+    if alpha <= 0.0 {
+        return gradient_j.abs();
+    }
     if theta_j > PROXIMAL_NEWTON_ZERO_TOLERANCE {
         (gradient_j + alpha).abs()
     } else if theta_j < -PROXIMAL_NEWTON_ZERO_TOLERANCE {
@@ -2278,6 +2448,16 @@ fn apply_bound_projection(theta: Array1<f64>, extensions: &OptimizationExtension
     }
     for &idx in &extensions.bound_constraints.nonpos_indices {
         if idx < projected.len() && projected[idx] > 0.0 {
+            projected[idx] = 0.0;
+        }
+    }
+    projected
+}
+
+fn project_with_signs(theta: Array1<f64>, signs: &[i8]) -> Array1<f64> {
+    let mut projected = theta;
+    for (idx, sign) in signs.iter().enumerate().take(projected.len()) {
+        if (*sign > 0 && projected[idx] < 0.0) || (*sign < 0 && projected[idx] > 0.0) {
             projected[idx] = 0.0;
         }
     }
@@ -2353,26 +2533,21 @@ fn smooth_edf_diagnostics(
         )));
     }
 
-    let hp = array2_to_dmatrix(hessian_penalized);
-    let hu = array2_to_dmatrix(hessian_unpenalized);
-    let influence = if let Some(chol) = hp.clone().cholesky() {
-        chol.solve(&hu)
-    } else {
-        hp.lu().solve(&hu).ok_or_else(|| {
-            RustyStatsError::LinearAlgebraError(
-                "failed to solve multinomial penalized Hessian for smooth EDF".to_string(),
-            )
-        })?
-    };
+    // Reuse the crate's hat-matrix solver (Cholesky -> LU -> SVD pseudo-inverse).
+    // It never fails: a singular/ill-conditioned penalized Hessian must not discard
+    // an otherwise-usable fit -- the covariance path degrades identically, and EDF is
+    // a diagnostics-only quantity, so a pseudo-inverse value is acceptable here.
+    // influence = (H_unpen + P)^-1 H_unpen, whose trace is the effective dof.
+    let influence = crate::convert::solve_symmetric_matrix(hessian_penalized, hessian_unpenalized);
 
-    let total_edf = (0..q).map(|idx| influence[(idx, idx)]).sum::<f64>();
+    let total_edf = (0..q).map(|idx| influence[[idx, idx]]).sum::<f64>();
     let mut smooth_edfs = Vec::with_capacity(smooth_penalties.len());
     for smooth in smooth_penalties {
         let mut edf = 0.0;
         for block_idx in 0..layout.n_non_reference {
             for feature_idx in smooth.col_start..smooth.col_end {
                 let idx = layout.shared(block_idx, feature_idx)?;
-                edf += influence[(idx, idx)];
+                edf += influence[[idx, idx]];
             }
         }
         smooth_edfs.push(edf);
@@ -2607,6 +2782,8 @@ fn compute_null_deviance_value(
     null_config.standardize = false;
     null_config.initial_theta = None;
     null_config.smooth_penalties.clear();
+    null_config.nonneg_indices.clear();
+    null_config.nonpos_indices.clear();
     null_config.max_dense_parameters = null_config.max_dense_parameters.max(n_classes - 1);
 
     let result = fit_multinomial_internal(
@@ -2648,7 +2825,6 @@ mod tests {
         assert_eq!(layout.len().expect("len"), 26);
         assert_eq!(layout.shared(0, 0).expect("shared"), 0);
         assert_eq!(layout.shared(1, 2).expect("shared"), 5);
-        assert_eq!(layout.shared_block_range(2).expect("range"), 6..9);
         assert_eq!(
             layout.alternative_generic_start().expect("generic start"),
             9
@@ -2659,19 +2835,6 @@ mod tests {
             11
         );
         assert_eq!(layout.alternative_specific(2, 4).expect("specific"), 25);
-        assert!(layout.validate_index(25).is_ok());
-        assert!(layout.validate_index(26).is_err());
-    }
-
-    #[test]
-    fn parameter_layout_maps_python_owned_shared_columns() {
-        let layout = MultinomialParameterLayout::new(3, 4, 0, 0, true).expect("valid layout");
-
-        let indices = layout
-            .map_shared_columns_to_indices(&[1, 2])
-            .expect("column mapping");
-        assert_eq!(indices, vec![1, 2, 4, 5, 7, 8]);
-        assert!(layout.map_shared_columns_to_indices(&[3]).is_err());
     }
 
     #[test]
@@ -2734,6 +2897,15 @@ mod tests {
             ..OptimizationExtensions::inert(4)
         };
         assert!(bad_bound.validate(4).is_err());
+
+        let duplicate_bound = OptimizationExtensions {
+            bound_constraints: BoundConstraints {
+                nonneg_indices: vec![1],
+                nonpos_indices: vec![1],
+            },
+            ..OptimizationExtensions::inert(4)
+        };
+        assert!(duplicate_bound.validate(4).is_err());
     }
 
     #[test]
@@ -2746,8 +2918,8 @@ mod tests {
             lambda: 4.0,
         };
 
-        let extensions =
-            optimization_extensions_from_config(&layout, 0.0, &[smooth]).expect("extensions");
+        let extensions = optimization_extensions_from_config(&layout, 0.0, &[smooth], &[], &[])
+            .expect("extensions");
 
         assert_eq!(extensions.quadratic_penalties.len(), 2);
         assert_eq!(extensions.quadratic_penalties[0].indices, vec![1, 2]);
@@ -2834,6 +3006,141 @@ mod tests {
 
         assert!(edf_high[0] < edf_low[0]);
         assert!(total_high < total_low);
+    }
+
+    #[test]
+    fn smooth_edf_matches_hand_computed_trace_and_limits() {
+        // K=3 (n_non_reference=2) so the per-block EDF summation loop is exercised.
+        // Shared design p=3: col 0 is an unpenalized intercept-like column, cols 1..3
+        // are the smooth basis penalized by S = I_2. With H_unpenalized = I the
+        // influence matrix (H+P)^-1 H is diagonal and the EDF is closed-form:
+        //   total_edf  = 2 (unpenalized cols) + 4/(1+lambda)
+        //   smooth_edf = 4/(1+lambda)   (two basis cols across both class blocks)
+        let layout = MultinomialParameterLayout::new(3, 3, 0, 0, true).expect("valid layout");
+        let s = array![[1.0, 0.0], [0.0, 1.0]];
+        let q = layout.len().expect("len");
+        let mut hessian_unpenalized = Array2::zeros((q, q));
+        for idx in 0..q {
+            hessian_unpenalized[[idx, idx]] = 1.0;
+        }
+
+        let edf_for = |lambda: f64| -> (f64, f64) {
+            let smooth = MultinomialSmoothPenalty {
+                col_start: 1,
+                col_end: 3,
+                penalty: s.clone(),
+                lambda,
+            };
+            let mut hessian_penalized = hessian_unpenalized.clone();
+            add_quadratic_hessian(
+                &mut hessian_penalized,
+                &expand_smooth_penalty(&layout, &smooth).expect("penalty"),
+            );
+            let (smooth_edfs, total_edf) = smooth_edf_diagnostics(
+                &hessian_unpenalized,
+                &hessian_penalized,
+                &layout,
+                std::slice::from_ref(&smooth),
+            )
+            .expect("edf");
+            (smooth_edfs[0], total_edf)
+        };
+
+        // lambda = 1 => closed-form total = 4.0, smooth = 2.0.
+        let (smooth_one, total_one) = edf_for(1.0);
+        assert_abs_diff_eq!(total_one, 4.0, epsilon = 1e-9);
+        assert_abs_diff_eq!(smooth_one, 2.0, epsilon = 1e-9);
+
+        // lambda -> 0: smooth EDF -> (2 basis cols) * (K-1 = 2) = 4, total -> q = 6.
+        let (smooth_small, total_small) = edf_for(1e-8);
+        assert_abs_diff_eq!(smooth_small, 4.0, epsilon = 1e-6);
+        assert_abs_diff_eq!(total_small, 6.0, epsilon = 1e-6);
+
+        // lambda -> large: smooth EDF -> 0, total -> 2 unpenalized columns.
+        let (smooth_large, total_large) = edf_for(1e8);
+        assert!(smooth_large < 1e-6);
+        assert_abs_diff_eq!(total_large, 2.0, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn smooth_penalty_rejects_non_symmetric_matrix() {
+        let layout = MultinomialParameterLayout::new(3, 2, 0, 0, true).expect("valid layout");
+        let penalty = MultinomialSmoothPenalty {
+            col_start: 1,
+            col_end: 3,
+            penalty: array![[1.0, 2.0], [0.0, 1.0]],
+            lambda: 1.0,
+        };
+
+        let err = expand_smooth_penalty(&layout, &penalty)
+            .expect_err("non-symmetric smooth penalty should be rejected");
+        assert!(err.to_string().contains("symmetric"));
+    }
+
+    #[test]
+    fn smooth_edf_degrades_on_singular_penalized_hessian() {
+        // A rank-deficient penalized Hessian must not abort the fit: EDF is a
+        // diagnostics-only quantity, so smooth_edf_diagnostics returns finite
+        // pseudo-inverse values (mirroring the covariance degrade-and-warn path)
+        // instead of propagating a LinearAlgebraError.
+        let layout = MultinomialParameterLayout::new(2, 3, 0, 0, true).expect("valid layout");
+        let q = layout.len().expect("len");
+        let mut hessian_unpenalized = Array2::zeros((q, q));
+        for idx in 0..q {
+            hessian_unpenalized[[idx, idx]] = 1.0;
+        }
+        // Zero a diagonal entry so both Hessians are singular and the (empty)
+        // penalty does not cover the null space -- Cholesky and LU both fail.
+        hessian_unpenalized[[1, 1]] = 0.0;
+        let hessian_penalized = hessian_unpenalized.clone();
+        let smooth = MultinomialSmoothPenalty {
+            col_start: 1,
+            col_end: 2,
+            penalty: array![[0.0]],
+            lambda: 0.0,
+        };
+
+        let (smooth_edfs, total_edf) = smooth_edf_diagnostics(
+            &hessian_unpenalized,
+            &hessian_penalized,
+            &layout,
+            std::slice::from_ref(&smooth),
+        )
+        .expect("singular penalized Hessian must degrade to finite EDF, not error");
+        assert!(total_edf.is_finite());
+        assert!(smooth_edfs.iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn proximal_newton_nonconvergence_degrades_with_warning() {
+        // A positive-definite but severely ill-conditioned Hessian makes the inner
+        // Gauss-Seidel coordinate descent converge far slower than the iteration cap,
+        // so it exits unconverged while beta stays finite. The solver must
+        // degrade-and-warn -- return a best-effort proposal plus a warning -- rather
+        // than abort the whole fit, matching coordinate_descent.rs and this solver's
+        // other degrade paths (covariance, step-halving).
+        let theta = array![0.0, 0.0];
+        let gradient = array![1.0, -1.0];
+        let hessian = array![[1.0, 0.999], [0.999, 1.0]];
+        let l1_penalty = L1Penalty {
+            alpha: 0.01,
+            mask: vec![true, true],
+        };
+        let bounds = BoundConstraints::default();
+        let mut warnings = Vec::new();
+
+        let proposal = solve_proximal_newton_subproblem(
+            &theta,
+            &gradient,
+            &hessian,
+            &l1_penalty,
+            &bounds,
+            &mut warnings,
+        )
+        .expect("inner non-convergence must degrade, not error");
+
+        assert!(proposal.target.iter().all(|value| value.is_finite()));
+        assert!(warnings.iter().any(|warning| warning.contains("did not")));
     }
 
     #[test]
@@ -3340,6 +3647,97 @@ mod tests {
             check_l1_kkt(&theta, &evaluation.gradient, &l1_penalty).expect("kkt violation");
 
         assert!(violation <= 1e-5, "KKT violation was {violation}");
+    }
+
+    #[test]
+    fn bound_constrained_fit_hits_boundary_when_data_fights_constraint() {
+        let x = array![
+            [1.0, -2.0],
+            [1.0, -1.5],
+            [1.0, -1.0],
+            [1.0, 1.0],
+            [1.0, 1.5],
+            [1.0, 2.0],
+        ];
+        let y = array![0usize, 0, 0, 1, 1, 1];
+        let config = MultinomialConfig {
+            nonpos_indices: vec![1],
+            max_iterations: 50,
+            ..default_config()
+        };
+
+        let result =
+            fit_multinomial(&y, x.view(), 2, 0, &config, None, None, None, None).expect("fit");
+
+        assert!(result.converged);
+        assert_abs_diff_eq!(result.coefficients[[0, 1]], 0.0, epsilon = 1e-10);
+
+        let prepared =
+            validate_and_prepare(&y, x.view(), 2, 0, &config, None, None, None, None, None)
+                .expect("prepare");
+        let theta = Array1::from_iter(result.coefficients.iter().copied());
+        let evaluation =
+            evaluate(&theta, x.view(), 2, &prepared, 0.0, true, None, &[]).expect("eval");
+        let violation = check_kkt(
+            &theta,
+            &evaluation.gradient,
+            &L1Penalty::inert(theta.len()),
+            &BoundConstraints {
+                nonneg_indices: Vec::new(),
+                nonpos_indices: vec![1],
+            },
+        )
+        .expect("kkt");
+        assert!(violation <= 1e-8, "KKT violation was {violation}");
+    }
+
+    #[test]
+    fn bound_constraints_allow_interior_solution_and_combine_with_penalties() {
+        let x = array![
+            [1.0, -2.0],
+            [1.0, -1.5],
+            [1.0, -1.0],
+            [1.0, -0.5],
+            [1.0, 0.5],
+            [1.0, 1.0],
+            [1.0, 1.5],
+            [1.0, 2.0],
+        ];
+        let y = array![0usize, 0, 0, 0, 1, 1, 1, 1];
+        let config = MultinomialConfig {
+            nonneg_indices: vec![1],
+            max_iterations: 50,
+            ..default_config()
+        };
+
+        let result =
+            fit_multinomial(&y, x.view(), 2, 0, &config, None, None, None, None).expect("fit");
+        assert!(result.converged);
+        assert!(result.coefficients[[0, 1]] > 0.0);
+
+        for (alpha, l1_ratio) in [(1.0, 0.0), (0.5, 1.0)] {
+            let penalized_config = MultinomialConfig {
+                alpha,
+                l1_ratio,
+                nonneg_indices: vec![1],
+                max_iterations: 100,
+                ..default_config()
+            };
+            let penalized = fit_multinomial(
+                &y,
+                x.view(),
+                2,
+                0,
+                &penalized_config,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("penalized");
+            assert!(penalized.converged);
+            assert!(penalized.coefficients[[0, 1]] >= -1e-10);
+        }
     }
 
     #[test]

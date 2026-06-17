@@ -248,6 +248,10 @@ class MultinomialResults:
     @property
     def penalty_type(self) -> str: ...
     @property
+    def smooth_edfs(self) -> npt.NDArray[np.float64]: ...
+    @property
+    def total_edf(self) -> float | None: ...
+    @property
     def fit_intercept(self) -> bool: ...
     @property
     def get_design_matrix(self) -> npt.NDArray[np.float64] | None: ...
@@ -318,6 +322,8 @@ def fit_multinomial_py(
     smooth_col_ranges: list[tuple[int, int]] | None = None,
     smooth_penalties: list[npt.NDArray[np.float64]] | None = None,
     smooth_lambdas: list[float] | None = None,
+    nonneg_indices: list[int] | None = None,
+    nonpos_indices: list[int] | None = None,
 ) -> MultinomialResults: ...
 def fit_negbinomial_py(
     y: npt.NDArray[np.float64],
@@ -597,50 +603,64 @@ def stack_columns_horizontal_py(
 # =============================================================================
 
 def target_encode_py(
-    values: npt.NDArray[np.int64],
+    categories: list[str],
     target: npt.NDArray[np.float64],
-    n_permutations: int = 1,
-    seed: int = 42,
-) -> tuple[npt.NDArray[np.float64], dict]: ...
+    var_name: str,
+    prior_weight: float = 1.0,
+    n_permutations: int = 4,
+    seed: int | None = None,
+) -> tuple[npt.NDArray[np.float64], str, float, dict[str, tuple[float, int]]]: ...
 def apply_target_encoding_py(
-    values: npt.NDArray[np.int64],
-    encoding_map: dict,
-    global_mean: float,
+    categories: list[str],
+    level_stats: dict[str, tuple[float, int]],
+    prior: float,
+    prior_weight: float = 1.0,
 ) -> npt.NDArray[np.float64]: ...
 def target_encode_with_exposure_py(
-    values: npt.NDArray[np.int64],
-    target: npt.NDArray[np.float64],
+    categories: list[str],
+    claims: npt.NDArray[np.float64],
     exposure: npt.NDArray[np.float64],
-    n_permutations: int = 1,
-    seed: int = 42,
-) -> tuple[npt.NDArray[np.float64], dict]: ...
+    var_name: str,
+    prior_weight: float = 1.0,
+    n_permutations: int = 4,
+    seed: int | None = None,
+) -> tuple[npt.NDArray[np.float64], str, float, dict[str, tuple[float, float]]]: ...
 def apply_exposure_weighted_target_encoding_py(
-    values: npt.NDArray[np.int64],
-    encoding_map: dict,
-    global_mean: float,
+    categories: list[str],
+    level_stats: dict[str, tuple[float, float]],
+    prior: float,
+    prior_weight: float = 1.0,
 ) -> npt.NDArray[np.float64]: ...
 def frequency_encode_py(
-    values: npt.NDArray[np.int64],
-) -> tuple[npt.NDArray[np.float64], dict]: ...
+    categories: list[str],
+    var_name: str,
+) -> tuple[npt.NDArray[np.float64], str, dict[str, int], int, int]: ...
 def apply_frequency_encoding_py(
-    values: npt.NDArray[np.int64],
-    encoding_map: dict,
+    categories: list[str],
+    level_counts: dict[str, int],
+    max_count: int,
 ) -> npt.NDArray[np.float64]: ...
 def target_encode_interaction_py(
-    col_a: npt.NDArray[np.int64],
-    col_b: npt.NDArray[np.int64],
+    cat1: list[str],
+    cat2: list[str],
     target: npt.NDArray[np.float64],
-    n_permutations: int = 1,
-    seed: int = 42,
-) -> tuple[npt.NDArray[np.float64], dict]: ...
+    var_name1: str,
+    var_name2: str,
+    prior_weight: float = 1.0,
+    n_permutations: int = 4,
+    seed: int | None = None,
+) -> tuple[npt.NDArray[np.float64], str, float, dict[str, tuple[float, int]]]: ...
 def target_encode_interaction_with_exposure_py(
-    col_a: npt.NDArray[np.int64],
-    col_b: npt.NDArray[np.int64],
-    target: npt.NDArray[np.float64],
+    cat1: list[str],
+    cat2: list[str],
+    claims: npt.NDArray[np.float64],
     exposure: npt.NDArray[np.float64],
-    n_permutations: int = 1,
-    seed: int = 42,
-) -> tuple[npt.NDArray[np.float64], dict]: ...
+    var_name1: str,
+    var_name2: str,
+    prior_weight: float = 1.0,
+    n_permutations: int = 4,
+    seed: int | None = None,
+) -> tuple[npt.NDArray[np.float64], str, float, dict[str, tuple[float, float]]]: ...
 
 # =============================================================================
 # Diagnostics Functions
@@ -928,8 +948,37 @@ def compute_unit_deviance_py(
 
 def build_onnx_glm_scoring_py(
     coefficients: npt.NDArray[np.float64],
+    intercept: float,
+    n_features: int,
     link: str,
-    feature_names: list[str],
-    model_name: str = "glm",
-) -> dict: ...
-def serialize_onnx_graph_py(graph: dict) -> bytes: ...
+    family: str,
+    metadata_keys: list[str],
+    metadata_values: list[str],
+) -> bytes: ...
+def serialize_onnx_graph_py(
+    node_ops: list[str],
+    node_inputs: list[list[str]],
+    node_outputs: list[list[str]],
+    node_attr_names: list[list[str]],
+    node_attr_types: list[list[str]],
+    node_attr_ints: list[list[int]],
+    node_attr_floats: list[list[float]],
+    init_names_f64: list[str],
+    init_data_f64: list[list[float]],
+    init_shapes_f64: list[list[int]],
+    init_names_i64: list[str],
+    init_data_i64: list[list[int]],
+    init_shapes_i64: list[list[int]],
+    input_names: list[str],
+    input_types: list[int],
+    input_shapes: list[list[int]],
+    output_names: list[str],
+    output_types: list[int],
+    output_shapes: list[list[int]],
+    ir_version: int,
+    opset_version: int,
+    producer: str,
+    doc_string: str,
+    meta_keys: list[str],
+    meta_values: list[str],
+) -> bytes: ...

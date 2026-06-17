@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 
@@ -56,6 +56,9 @@ from rustystats.constants import (
     DEFAULT_TOLERANCE,
 )
 from rustystats.exceptions import FittingError, ValidationError
+
+if TYPE_CHECKING:
+    from rustystats.formula import ParsedFormula
 
 
 @dataclass
@@ -74,14 +77,18 @@ class RegularizationPathResult:
     cv_deviance_se : float
         Standard error of CV deviance
     n_nonzero : int
-        Number of non-zero coefficients at this alpha. NOTE: the fold-safe
-        target-encoding CV path selects alpha by validation deviance without
-        refitting coefficients per alpha, so on that route this reports the
-        full-data design column count (the design width), not a post-fit count.
+        Number of non-zero coefficients at this alpha. NOTE: the scalar GLM
+        fold-safe target-encoding CV route selects alpha by validation deviance
+        without refitting coefficients per alpha, so on that route this reports
+        the full-data design column count (the design width), not a post-fit
+        count. The multinomial fold-safe-TE CV path refits per (fold, alpha) and
+        reports the genuine averaged post-fit non-zero count.
     max_coef : float
         Maximum absolute coefficient value at this alpha, or ``0.0`` on the
-        fold-safe target-encoding CV path, which does not refit coefficients
-        during alpha selection.
+        scalar GLM fold-safe target-encoding CV route, which does not refit
+        coefficients during alpha selection. The multinomial fold-safe-TE CV
+        path reports the genuine maximum absolute coefficient from its per-fold
+        refits.
     """
 
     alpha: float
@@ -1026,6 +1033,26 @@ def fit_cv_regularization_path(
     return path_info
 
 
+def reset_fold_local_spline_state(parsed: ParsedFormula) -> None:
+    """Reset mutable per-fit ``SplineTerm`` state on a (deep-copied) ParsedFormula.
+
+    The full-data model transforms splines once before CV, caching computed knots
+    that may contain validation-only values. Fold copies must refit spline state
+    from fold-training rows only, just like target encoders. Shared by the scalar
+    fold-safe CV path and the multinomial fold builder so a new mutable SplineTerm
+    field only needs updating in one place.
+    """
+    for spline in getattr(parsed, "spline_terms", []):
+        spline._computed_boundary_knots = None
+        spline._computed_internal_knots = None
+        spline._penalty_matrix = None
+        spline._lambda = None
+        spline._edf = None
+    for attr in ("_spline_by_var", "_te_by_var"):
+        if hasattr(parsed, attr):
+            setattr(parsed, attr, None)
+
+
 def build_fold_design_matrices(
     data,
     parsed,
@@ -1055,19 +1082,7 @@ def build_fold_design_matrices(
     exposure_train = raw_exposure[train_idx] if raw_exposure is not None else None
 
     parsed_fold = copy.deepcopy(parsed)
-    # ``ParsedFormula`` carries mutable ``SplineTerm`` objects. The full-data
-    # model has already transformed them once before CV, so their computed
-    # knots may contain validation-only values. Reset fold copies so spline
-    # state is fit from fold-training rows only, just like target encoders.
-    for spline in getattr(parsed_fold, "spline_terms", []):
-        spline._computed_boundary_knots = None
-        spline._computed_internal_knots = None
-        spline._penalty_matrix = None
-        spline._lambda = None
-        spline._edf = None
-    for attr in ("_spline_by_var", "_te_by_var"):
-        if hasattr(parsed_fold, attr):
-            setattr(parsed_fold, attr, None)
+    reset_fold_local_spline_state(parsed_fold)
 
     builder = InteractionBuilder(data_train)
     _y_train, x_train, names = builder.build_design_matrix_from_parsed(

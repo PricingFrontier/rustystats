@@ -289,7 +289,9 @@ impl PyMultinomialResults {
     initial_theta=None,
     smooth_col_ranges=None,
     smooth_penalties=None,
-    smooth_lambdas=None
+    smooth_lambdas=None,
+    nonneg_indices=None,
+    nonpos_indices=None
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn fit_multinomial_py(
@@ -322,6 +324,8 @@ pub fn fit_multinomial_py(
     smooth_col_ranges: Option<Vec<(usize, usize)>>,
     smooth_penalties: Option<Vec<PyReadonlyArray2<f64>>>,
     smooth_lambdas: Option<Vec<f64>>,
+    nonneg_indices: Option<Vec<usize>>,
+    nonpos_indices: Option<Vec<usize>>,
 ) -> PyResult<PyMultinomialResults> {
     let y_codes_array = y_codes
         .as_array()
@@ -384,6 +388,8 @@ pub fn fit_multinomial_py(
         verbose,
         initial_theta: initial_theta_array,
         smooth_penalties: smooth_penalty_specs,
+        nonneg_indices: nonneg_indices.unwrap_or_default(),
+        nonpos_indices: nonpos_indices.unwrap_or_default(),
     };
 
     let result = fit_multinomial_with_alternatives(

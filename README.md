@@ -145,9 +145,13 @@ availability masks, class-specific utility offsets, ridge/lasso/elastic-net
 regularization with CV, multinomial target encoding, automatic smooth penalties
 for shared `bs`/`ns` main effects, summaries, pricing-grade diagnostics,
 wide-format alternative-specific covariates, price-change scenarios,
-vector-intercept calibration, and pickle serialization. Monotonic constraints,
-exposure, symmetric reference-invariant ridge, and PMML/ONNX export are reserved
-for later native support and fail explicitly where applicable.
+vector-intercept calibration, utility-level monotonicity for shared
+linear/expression/fixed-df `bs` terms, Level-1 PMML/ONNX export for shared
+design-matrix scoring, and pickle serialization. Smooth monotone splines,
+target-encoded or alternative-specific monotonicity, exposure, symmetric
+reference-invariant ridge, and richer PMML/ONNX export for target-encoded,
+alternative-specific, availability, or offset models are reserved for later
+native support and fail explicitly where applicable.
 
 See [`examples/tier_conversion_multinomial.py`](examples/tier_conversion_multinomial.py)
 for a complete train/holdout workflow with availability, held-out log loss,
@@ -717,6 +721,12 @@ import onnxruntime as ort
 session = ort.InferenceSession("model_full.onnx")
 preds = session.run(None, {"input": raw_features})[0]
 ```
+
+For `MultinomialModel`, PMML/ONNX export is currently Level-1 scoring only:
+the consumer supplies the pre-built shared design matrix without the intercept
+column. Multinomial `mode="full"`, target encoding, alternative terms,
+availability masks, and class-specific offsets fail closed with validation
+errors.
 | Size | Smaller | Larger |
 
 ---

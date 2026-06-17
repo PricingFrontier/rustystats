@@ -154,9 +154,17 @@ regularization paths, multinomial target encoding, and automatic smooth
 penalties for shared `bs`/`ns` main effects. Alternative-term regularization
 uses the same standardization/back-transform policy as shared covariates, with
 inference labelled as naive after regularization or selection where applicable.
-Monotonic constraints, exposure, symmetric reference-invariant ridge, PMML/ONNX
-export, smooth interactions, and smooth + CV/elastic-net combinations are
-rejected with explicit validation errors or reserved for later native support.
+Utility-level monotonic constraints are supported for shared linear,
+expression, and fixed-df `bs` terms; they constrain each non-reference class
+utility relative to the reference class and do not imply class-probability
+monotonicity. Level-1 PMML/ONNX export is supported for shared-covariate
+models without target encoding, alternative terms, availability masks, or
+class-specific offsets, and consumes the pre-built shared design matrix without
+the intercept column. Smooth monotone splines, target-encoded or alternative-specific
+monotonicity, exposure, symmetric reference-invariant ridge, richer PMML/ONNX
+export for target-encoded, alternative-specific, availability, or offset models, smooth
+interactions, and smooth + CV/elastic-net combinations are rejected with explicit
+validation errors or reserved for later native support.
 
 Alternative terms use wide-format columns:
 
@@ -653,6 +661,6 @@ if not results['valid']:
 | Complex interactions | ✓ Explicit | Limited syntax |
 | TE interactions | ✓ Yes | Limited |
 | FE interactions | ✓ Yes | No |
-| Monotonicity constraints | ✓ All term types | Limited |
+| Monotonicity constraints | ✓ Linear/expression/bs terms | Limited |
 
 The Dict API is recommended for production systems and automated workflows.

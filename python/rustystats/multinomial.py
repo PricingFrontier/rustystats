@@ -39,6 +39,7 @@ from rustystats.formula import (
     _collect_lazyframe,
     _compute_predict_chunk_size,
     _extract_needed_columns,
+    _get_constraint_indices,
     dict_to_parsed_formula,
 )
 from rustystats.glm import _normal_two_sided_p
@@ -54,7 +55,7 @@ from rustystats.interactions import InteractionBuilder, ParsedFormula, TargetEnc
 _DEFAULT_HESSIAN_MEMORY_LIMIT_BYTES = 256 * 1024 * 1024
 _DEFAULT_MAX_DENSE_PARAMETERS = 5000
 _MIN_WEIGHTED_STD = 1e-12
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 
 def _resolve_regularization(
@@ -503,16 +504,10 @@ class MultinomialSmoothTermResult:
 
 
 def _fold_local_parsed_formula(parsed: ParsedFormula) -> ParsedFormula:
+    from rustystats.regularization_path import reset_fold_local_spline_state
+
     parsed_fold = copy.deepcopy(parsed)
-    for spline in getattr(parsed_fold, "spline_terms", []):
-        spline._computed_boundary_knots = None
-        spline._computed_internal_knots = None
-        spline._penalty_matrix = None
-        spline._lambda = None
-        spline._edf = None
-    for attr in ("_spline_by_var", "_te_by_var"):
-        if hasattr(parsed_fold, attr):
-            setattr(parsed_fold, attr, None)
+    reset_fold_local_spline_state(parsed_fold)
     return parsed_fold
 
 
@@ -1151,6 +1146,60 @@ def _multinomial_validation_deviance(
     return float(-2.0 * np.sum(w * np.log(selected)) / denom)
 
 
+def _multinomial_bound_indices(
+    feature_names: list[str],
+    *,
+    n_classes: int,
+    reference_index: int,
+) -> tuple[list[int], list[int], list[int], list[int]]:
+    shared_nonneg, shared_nonpos = _get_constraint_indices(feature_names)
+    p = len(feature_names)
+
+    def expand(shared_indices: list[int]) -> list[int]:
+        expanded: list[int] = []
+        block = 0
+        for class_idx in range(n_classes):
+            if class_idx == reference_index:
+                continue
+            block_offset = block * p
+            expanded.extend(block_offset + int(idx) for idx in shared_indices)
+            block += 1
+        return expanded
+
+    return expand(shared_nonneg), expand(shared_nonpos), list(shared_nonneg), list(shared_nonpos)
+
+
+def _multinomial_constraint_metadata(
+    feature_names: list[str],
+    classes: list[str],
+    reference: str,
+    shared_nonneg: list[int],
+    shared_nonpos: list[int],
+) -> list[dict[str, Any]]:
+    p = len(feature_names)
+    non_reference_classes = [label for label in classes if label != reference]
+    sign_by_shared_index = {int(idx): "nonnegative" for idx in shared_nonneg} | {
+        int(idx): "nonpositive" for idx in shared_nonpos
+    }
+    records = []
+    for shared_idx in sorted(sign_by_shared_index):
+        records.append(
+            {
+                "coefficient_type": "shared",
+                "feature": feature_names[shared_idx],
+                "shared_column_index": int(shared_idx),
+                "sign": sign_by_shared_index[shared_idx],
+                "classes": list(non_reference_classes),
+                "parameter_indices": [
+                    int(block * p + shared_idx) for block in range(len(non_reference_classes))
+                ],
+                "target": "class_utility_vs_reference",
+                "probability_monotonicity": False,
+            }
+        )
+    return records
+
+
 def _fit_multinomial_arrays(
     *,
     y_codes: np.ndarray,
@@ -1177,6 +1226,8 @@ def _fit_multinomial_arrays(
     smooth_col_ranges: list[tuple[int, int]] | None = None,
     smooth_penalties: list[np.ndarray] | None = None,
     smooth_lambdas: list[float] | np.ndarray | None = None,
+    bound_nonneg_indices: list[int] | None = None,
+    bound_nonpos_indices: list[int] | None = None,
 ) -> Any:
     (
         center,
@@ -1236,6 +1287,8 @@ def _fit_multinomial_arrays(
         smooth_col_ranges,
         smooth_penalties,
         None if smooth_lambdas is None else list(map(float, smooth_lambdas)),
+        bound_nonneg_indices,
+        bound_nonpos_indices,
     )
 
 
@@ -1356,6 +1409,8 @@ def _fit_multinomial_smooth_path(
             smooth_col_ranges=smooth_col_ranges,
             smooth_penalties=smooth_penalties,
             smooth_lambdas=trial_lambdas,
+            bound_nonneg_indices=model._bound_nonneg_indices,
+            bound_nonpos_indices=model._bound_nonpos_indices,
         )
         result_total_edf = result.total_edf
         return result, _weighted_multinomial_gcv(
@@ -1365,6 +1420,7 @@ def _fit_multinomial_smooth_path(
         )
 
     previous_selected = None
+    candidate_gcvs_by_term: dict[int, list[tuple[float, float]]] = {}
     for outer_iter in range(int(max_lambda_iter)):
         start_lambdas = lambdas.copy()
         for term_idx in range(len(smooth_terms)):
@@ -1372,6 +1428,7 @@ def _fit_multinomial_smooth_path(
             term_best_gcv = float("inf")
             term_best_lambda = lambdas[term_idx]
             previous_candidate = previous_selected
+            term_candidate_gcvs: list[tuple[float, float]] = []
             for candidate in candidate_lambdas:
                 trial = lambdas.copy()
                 trial[term_idx] = float(candidate)
@@ -1387,6 +1444,7 @@ def _fit_multinomial_smooth_path(
                     previous_candidate = None
                     continue
                 previous_candidate = candidate_result
+                term_candidate_gcvs.append((float(candidate), float(candidate_gcv)))
                 if candidate_gcv < term_best_gcv:
                     term_best_gcv = candidate_gcv
                     term_best_lambda = float(candidate)
@@ -1397,6 +1455,7 @@ def _fit_multinomial_smooth_path(
                     "check the smooth terms, lambda range, and convergence settings."
                 )
             lambdas[term_idx] = term_best_lambda
+            candidate_gcvs_by_term[term_idx] = term_candidate_gcvs
             previous_selected = term_best_result
             if term_best_gcv < best_gcv:
                 best_gcv = term_best_gcv
@@ -1439,6 +1498,8 @@ def _fit_multinomial_smooth_path(
         smooth_col_ranges=smooth_col_ranges,
         smooth_penalties=smooth_penalties,
         smooth_lambdas=lambdas,
+        bound_nonneg_indices=model._bound_nonneg_indices,
+        bound_nonpos_indices=model._bound_nonpos_indices,
     )
     raw_total_edf = getattr(final_result, "total_edf", None)
     if raw_total_edf is None or not np.isfinite(raw_total_edf):
@@ -1481,13 +1542,17 @@ def _fit_multinomial_smooth_path(
         "selected_lambdas": [float(value) for value in lambdas],
         "gcv": float(gcv),
         "total_edf": float(total_edf),
+        "candidate_gcvs": {
+            smooth_terms[idx].var_name: [[float(lam), float(g)] for lam, g in candidates]
+            for idx, candidates in candidate_gcvs_by_term.items()
+        },
     }
     return final_result, smooth_results, total_edf, gcv, profile
 
 
 def _normalize_multinomial_cv_alphas(
     model: MultinomialDict,
-    folds: list[tuple[np.ndarray, np.ndarray]],
+    fold_designs: list[MultinomialFoldDesign],
     effective_l1_ratio: float,
     *,
     alphas: np.ndarray | list[float] | None,
@@ -1495,7 +1560,6 @@ def _normalize_multinomial_cv_alphas(
     alpha_min_ratio: float,
     include_unregularized: bool,
     standardize: bool,
-    cv_seed: int,
 ) -> np.ndarray:
     if alphas is not None:
         arr = np.asarray(alphas, dtype=np.float64)
@@ -1514,8 +1578,7 @@ def _normalize_multinomial_cv_alphas(
     from rustystats.regularization_path import generate_alpha_path
 
     fold_alpha_maxes: list[float] = []
-    for fold_idx, (train_idx, val_idx) in enumerate(folds):
-        fold = build_multinomial_fold_design(model, train_idx, val_idx, seed=cv_seed)
+    for fold_idx, fold in enumerate(fold_designs):
         try:
             alpha_max = _multinomial_alpha_max_from_arrays(
                 fold.y_train,
@@ -1584,16 +1647,32 @@ def _fit_multinomial_cv_path(
         int(cv),
         cv_seed,
     )
+    # Build each fold's design (including the expensive ordered/permutation TE
+    # encode) exactly once and reuse it for both alpha-max computation and the
+    # per-fold fit loop, rather than rebuilding it on the default-grid path.
+    fold_designs = [
+        build_multinomial_fold_design(model, train_idx, val_idx, seed=cv_seed)
+        for train_idx, val_idx in folds
+    ]
+    for fold_idx, fold in enumerate(fold_designs):
+        _validate_multinomial_dense_fit_size(
+            n_shared=fold.x_train.shape[1],
+            n_classes=len(model.classes_),
+            n_alt_generic=fold.alternative_generic_train.shape[2],
+            n_alt_specific=fold.alternative_specific_train.shape[2],
+            hessian_memory_limit_bytes=hessian_memory_limit_bytes,
+            max_dense_parameters=max_dense_parameters,
+            context=f"CV fold {fold_idx}",
+        )
     candidate_alphas = _normalize_multinomial_cv_alphas(
         model,
-        folds,
+        fold_designs,
         effective_l1_ratio,
         alphas=alphas,
         n_alphas=n_alphas,
         alpha_min_ratio=alpha_min_ratio,
         include_unregularized=include_unregularized,
         standardize=standardize,
-        cv_seed=cv_seed,
     )
     if verbose:
         print(
@@ -1604,16 +1683,13 @@ def _fit_multinomial_cv_path(
     nonzero_counts: dict[float, list[int]] = {float(alpha): [] for alpha in candidate_alphas}
     max_coefs: dict[float, list[float]] = {float(alpha): [] for alpha in candidate_alphas}
 
-    for fold_idx, (train_idx, val_idx) in enumerate(folds):
-        fold = build_multinomial_fold_design(model, train_idx, val_idx, seed=cv_seed)
-        _validate_multinomial_dense_fit_size(
-            n_shared=fold.x_train.shape[1],
-            n_classes=len(model.classes_),
-            n_alt_generic=fold.alternative_generic_train.shape[2],
-            n_alt_specific=fold.alternative_specific_train.shape[2],
-            hessian_memory_limit_bytes=hessian_memory_limit_bytes,
-            max_dense_parameters=max_dense_parameters,
-            context=f"CV fold {fold_idx}",
+    for fold_idx, fold in enumerate(fold_designs):
+        fold_nonneg_indices, fold_nonpos_indices, _shared_nonneg, _shared_nonpos = (
+            _multinomial_bound_indices(
+                fold.feature_names,
+                n_classes=len(model.classes_),
+                reference_index=model.reference_index_,
+            )
         )
         previous_fold_result = None
         for alpha in candidate_alphas:
@@ -1642,6 +1718,8 @@ def _fit_multinomial_cv_path(
                     alternative_generic=fold.alternative_generic_train,
                     alternative_specific=fold.alternative_specific_train,
                     initial_result=previous_fold_result,
+                    bound_nonneg_indices=fold_nonneg_indices,
+                    bound_nonpos_indices=fold_nonpos_indices,
                 )
                 previous_fold_result = fold_result
                 probabilities = _multinomial_probabilities_from_result(
@@ -1790,6 +1868,8 @@ def _full_data_multinomial_warm_start_result(
                 alternative_generic=model.alternative_generic,
                 alternative_specific=model.alternative_specific,
                 initial_result=previous_result,
+                bound_nonneg_indices=model._bound_nonneg_indices,
+                bound_nonpos_indices=model._bound_nonpos_indices,
             )
         except (ValueError, ValidationError, RuntimeError) as exc:
             if verbose:
@@ -1839,20 +1919,50 @@ def _target_encoding_options(
 
 def _validate_supported_term_spec(var_name: str, spec: dict[str, Any], *, context: str) -> None:
     term_type = spec.get("type", "linear")
+    monotonicity = spec.get("monotonicity")
     if term_type in {"ms", "s"}:
         raise ValidationError(
             f"{term_type} smooth/monotonic spline terms are not yet supported for "
             "multinomial_dict. Use bs/ns smooth terms without monotonicity."
         )
-    if spec.get("monotonicity") is not None:
-        raise ValidationError(
-            f"monotonicity constraints are not yet supported for multinomial_dict "
-            f"({context} term {var_name!r})."
-        )
+    smooth_requested = term_type in {"bs", "ns"} and (
+        spec.get("k") is not None or (spec.get("df") is None and spec.get("knots") is None)
+    )
+    if monotonicity is not None:
+        if monotonicity not in {"increasing", "decreasing"}:
+            raise ValidationError(
+                f"monotonicity must be 'increasing' or 'decreasing' for multinomial_dict "
+                f"({context} term {var_name!r})."
+            )
+        if context != "main":
+            raise ValidationError(
+                f"monotonicity constraints are only supported for multinomial main effects "
+                f"({context} term {var_name!r})."
+            )
+        if term_type in {"linear", "expression"}:
+            pass
+        elif term_type == "bs":
+            if smooth_requested:
+                raise ValidationError(
+                    "monotonic smooth bs terms are not yet supported for multinomial_dict. "
+                    f"Use a fixed basis with df= or knots= ({context} term {var_name!r})."
+                )
+        elif term_type == "ns":
+            raise ValidationError(
+                "monotonicity constraints are not supported for multinomial natural splines "
+                f"({context} term {var_name!r}); use type='bs' with df= or knots= instead."
+            )
+        elif term_type in {"categorical", "target_encoding", "frequency_encoding"}:
+            raise ValidationError(
+                f"monotonicity constraints are not supported for multinomial {term_type} terms "
+                f"({context} term {var_name!r})."
+            )
+        else:
+            raise ValidationError(
+                f"term type {term_type!r} is not supported for multinomial monotonicity "
+                f"({context} term {var_name!r})."
+            )
     if term_type in {"bs", "ns"}:
-        smooth_requested = spec.get("k") is not None or (
-            spec.get("df") is None and spec.get("knots") is None
-        )
         if smooth_requested and context != "main":
             raise ValidationError(
                 f"automatic smooth penalties for {term_type} terms are only supported "
@@ -2602,6 +2712,7 @@ class MultinomialModel:
         total_edf: float | None = None,
         gcv: float | None = None,
         smooth_profile: dict[str, Any] | None = None,
+        constraint_metadata: list[dict[str, Any]] | None = None,
     ):
         self._result = result
         self.response = response
@@ -2646,6 +2757,7 @@ class MultinomialModel:
         self._total_edf = None if total_edf is None else float(total_edf)
         self._gcv = None if gcv is None else float(gcv)
         self._smooth_profile = copy.deepcopy(smooth_profile)
+        self._constraint_metadata = copy.deepcopy(constraint_metadata or [])
 
     @property
     def params(self) -> np.ndarray:
@@ -2846,6 +2958,27 @@ class MultinomialModel:
         return None if self._smooth_profile is None else copy.deepcopy(self._smooth_profile)
 
     @property
+    def constraint_metadata(self) -> list[dict[str, Any]]:
+        return copy.deepcopy(self._constraint_metadata)
+
+    @property
+    def active_constraints(self) -> list[dict[str, Any]]:
+        active = []
+        flat_params = self.params.ravel()
+        for record in self._constraint_metadata:
+            parameter_indices = record.get("parameter_indices", [])
+            active_indices = [
+                int(idx)
+                for idx in parameter_indices
+                if 0 <= int(idx) < flat_params.size and abs(float(flat_params[int(idx)])) <= 1e-8
+            ]
+            if active_indices:
+                item = copy.deepcopy(record)
+                item["active_parameter_indices"] = active_indices
+                active.append(item)
+        return active
+
+    @property
     def nobs(self) -> int:
         return int(self.fitted_probabilities.shape[0])
 
@@ -2861,14 +2994,22 @@ class MultinomialModel:
         return self.log_likelihood
 
     def aic(self) -> float | None:
-        if self.alpha > 0.0 or "class_weighted" in self.inference_status:
+        if (
+            self.alpha > 0.0
+            or "class_weighted" in self.inference_status
+            or "constrained_boundary" in self.inference_status
+        ):
             return None
         if self.total_edf is not None:
             return -2.0 * self.log_likelihood + 2.0 * self.total_edf
         return -2.0 * self.log_likelihood + 2.0 * self.n_params
 
     def bic(self) -> float | None:
-        if self.alpha > 0.0 or "class_weighted" in self.inference_status:
+        if (
+            self.alpha > 0.0
+            or "class_weighted" in self.inference_status
+            or "constrained_boundary" in self.inference_status
+        ):
             return None
         if self.total_edf is not None:
             return -2.0 * self.log_likelihood + self.total_edf * math.log(self.nobs)
@@ -4373,6 +4514,11 @@ class MultinomialModel:
                 "Note: baseline-category penalties are reference-dependent; unpenalized "
                 "fits are the reference-invariant path."
             )
+        if self._constraint_metadata:
+            lines.append(
+                "Note: monotonicity constraints apply to class utilities versus the "
+                "reference class, not to class probabilities."
+            )
         solver_warnings = self.warnings
         if solver_warnings:
             lines.append("")
@@ -4381,8 +4527,9 @@ class MultinomialModel:
         return "\n".join(lines)
 
     def to_pmml(self, path: str | None = None, n_grid_points: int = 200) -> str:
-        del path, n_grid_points
-        raise ValidationError("to_pmml does not yet support MultinomialModel.")
+        from rustystats.export_pmml import to_pmml
+
+        return to_pmml(self, path=path, n_grid_points=n_grid_points)
 
     def to_onnx(
         self,
@@ -4390,8 +4537,9 @@ class MultinomialModel:
         n_grid_points: int = 200,
         mode: str = "scoring",
     ) -> bytes:
-        del path, n_grid_points, mode
-        raise ValidationError("to_onnx does not yet support MultinomialModel.")
+        from rustystats.export_onnx import to_onnx
+
+        return to_onnx(self, path=path, n_grid_points=n_grid_points, mode=mode)
 
     def to_bytes(self) -> bytes:
         builder_state = None
@@ -4462,16 +4610,18 @@ class MultinomialModel:
             "total_edf": self._total_edf,
             "gcv": self._gcv,
             "smooth_profile": self._smooth_profile,
+            "constraint_metadata": self._constraint_metadata,
         }
         return pickle.dumps(state, protocol=pickle.HIGHEST_PROTOCOL)
 
     @classmethod
     def from_bytes(cls, data: bytes) -> MultinomialModel:
         state = pickle.loads(data)
-        if state.get("schema_version") != _SCHEMA_VERSION:
+        schema_version = state.get("schema_version")
+        if schema_version != _SCHEMA_VERSION:
             raise ValidationError(
                 f"Cannot load multinomial model: serialized schema_version "
-                f"{state.get('schema_version')!r} is not supported."
+                f"{schema_version!r} is not supported."
             )
         result_state = dict(state["result_state"])
         result_state.setdefault("alternative_generic_coefficients", np.zeros(0, dtype=np.float64))
@@ -4515,6 +4665,7 @@ class MultinomialModel:
             total_edf=state.get("total_edf"),
             gcv=state.get("gcv"),
             smooth_profile=state.get("smooth_profile"),
+            constraint_metadata=state.get("constraint_metadata", []),
         )
 
     def __repr__(self) -> str:
@@ -4558,8 +4709,13 @@ class MultinomialDict:
         self.offset_spec = copy.deepcopy(offset)
         self._seed = seed
 
+        data_schema = None
+        if hasattr(data, "collect_schema"):
+            data_schema = dict(data.collect_schema())
+        elif hasattr(data, "schema"):
+            data_schema = dict(data.schema)
         self._input_transforms = validate_input_transforms(
-            input_transforms, data_schema=None if not hasattr(data, "schema") else dict(data.schema)
+            input_transforms, data_schema=data_schema
         )
 
         needed = _extract_needed_columns(
@@ -4584,8 +4740,8 @@ class MultinomialDict:
         )
         if self._compiled_input_transforms:
             data = apply_input_transforms(data, self._compiled_input_transforms)
-        self._owned_transformed_data = data if self._compiled_input_transforms else None
-        self._data_ref = weakref.ref(data)
+        self._owned_transformed_data = data
+        self._data_ref = weakref.ref(self._owned_transformed_data)
 
         if response not in data.columns:
             raise ValidationError(f"response column {response!r} is not present in data.")
@@ -4615,6 +4771,23 @@ class MultinomialDict:
         self._builder = InteractionBuilder(build_data)
         _dummy_y, self.X, self.feature_names = self._builder.build_design_matrix_from_parsed(
             shared_parsed, seed=seed
+        )
+        (
+            self._bound_nonneg_indices,
+            self._bound_nonpos_indices,
+            self._shared_bound_nonneg_indices,
+            self._shared_bound_nonpos_indices,
+        ) = _multinomial_bound_indices(
+            self.feature_names,
+            n_classes=len(self.classes_),
+            reference_index=self.reference_index_,
+        )
+        self._constraint_metadata = _multinomial_constraint_metadata(
+            self.feature_names,
+            self.classes_,
+            self.reference_,
+            self._shared_bound_nonneg_indices,
+            self._shared_bound_nonpos_indices,
         )
         (
             self.alternative_generic,
@@ -4768,6 +4941,8 @@ class MultinomialDict:
             self._builder.clear_caches()
 
             inference_notes: list[str] = ["naive_after_regularization"]
+            if self._bound_nonneg_indices or self._bound_nonpos_indices:
+                inference_notes.append("constrained_boundary")
             if self._class_weighted:
                 inference_notes.append("naive_class_weighted")
             if not compute_covariance:
@@ -4806,6 +4981,7 @@ class MultinomialDict:
                 total_edf=total_edf,
                 gcv=gcv,
                 smooth_profile=smooth_profile,
+                constraint_metadata=self._constraint_metadata,
             )
 
         l1_active = alpha > 0.0 and l1_ratio > 0.0
@@ -4844,6 +5020,8 @@ class MultinomialDict:
             alternative_generic=self.alternative_generic,
             alternative_specific=self.alternative_specific,
             initial_result=final_initial_result,
+            bound_nonneg_indices=self._bound_nonneg_indices,
+            bound_nonpos_indices=self._bound_nonpos_indices,
         )
         self._builder.clear_caches()
 
@@ -4856,6 +5034,8 @@ class MultinomialDict:
             )
         if self._class_weighted:
             inference_notes.append("naive_class_weighted")
+        if self._bound_nonneg_indices or self._bound_nonpos_indices:
+            inference_notes.append("constrained_boundary")
         if not compute_covariance:
             inference_notes.append("covariance_skipped")
         elif l1_active or result.cov_params_unscaled is None:
@@ -4888,6 +5068,7 @@ class MultinomialDict:
             fit_row_weights=self._row_weights,
             array_weighted=self._array_weighted,
             regularization_path_info=path_info,
+            constraint_metadata=self._constraint_metadata,
         )
 
 
@@ -4917,6 +5098,14 @@ def build_multinomial_fold_design(
         raise ValidationError("train_idx contains row indices outside the training data.")
     if np.any(val_idx < 0) or np.any(val_idx >= n):
         raise ValidationError("val_idx contains row indices outside the training data.")
+    if np.unique(train_idx).size != train_idx.size:
+        raise ValidationError("train_idx contains duplicate row indices.")
+    if np.unique(val_idx).size != val_idx.size:
+        raise ValidationError("val_idx contains duplicate row indices.")
+    if np.intersect1d(train_idx, val_idx, assume_unique=True).size:
+        raise ValidationError(
+            "train_idx and val_idx must be disjoint; overlapping rows would leak validation data."
+        )
 
     data = model.data
     data_train = data[train_idx]

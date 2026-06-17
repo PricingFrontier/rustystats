@@ -720,6 +720,27 @@ def test_multinomial_cv_ridge_selects_from_grid_and_is_reproducible():
     np.testing.assert_allclose(first.predict_proba(data), second.predict_proba(data))
 
 
+def test_multinomial_cv_owns_collected_lazyframe_data():
+    data = _tier_frame(n=120, seed=8765)
+
+    result = rs.multinomial_dict(
+        response="tier",
+        terms={"x": {"type": "linear"}, "channel": {"type": "categorical"}},
+        data=data.lazy(),
+        classes=["none", "basic", "standard", "premium"],
+        reference="none",
+    ).fit(
+        cv=2,
+        regularization="ridge",
+        alphas=[0.5, 0.1],
+        cv_seed=17,
+        compute_covariance=False,
+    )
+
+    assert result.n_cv_folds == 2
+    assert result.cv_profile["candidate_fit_count"] == 4
+
+
 def test_multinomial_cv_one_se_is_at_least_as_regularized_as_min():
     data = _tier_frame(n=180, seed=1234)
     kwargs = {
@@ -995,7 +1016,9 @@ def test_multinomial_diagnostics_summary_and_json():
         )
 
 
-def test_multinomial_export_fails_explicitly():
+def test_multinomial_level1_pmml_onnx_export_and_fail_closed(tmp_path):
+    import xml.etree.ElementTree as ET
+
     data = _tier_frame(n=80)
     result = rs.multinomial_dict(
         response="tier",
@@ -1005,14 +1028,210 @@ def test_multinomial_export_fails_explicitly():
         reference="none",
     ).fit(compute_covariance=False)
 
-    with pytest.raises(ValidationError, match="to_pmml does not yet support MultinomialModel"):
-        result.to_pmml()
-    with pytest.raises(ValidationError, match="to_onnx does not yet support MultinomialModel"):
-        result.to_onnx()
-    with pytest.raises(ValidationError, match="to_pmml does not yet support MultinomialModel"):
-        rs.to_pmml(result)
-    with pytest.raises(ValidationError, match="to_onnx does not yet support MultinomialModel"):
-        rs.to_onnx(result)
+    onnx_bytes = result.to_onnx()
+    assert isinstance(onnx_bytes, bytes)
+    assert b"Softmax" in onnx_bytes
+    assert b"baseline_category_multinomial_logit" in onnx_bytes
+    assert b"prebuilt_shared_design_without_intercept" in onnx_bytes
+    assert b"probabilities" in onnx_bytes
+    assert rs.to_onnx(result) == onnx_bytes
+    onnx_path = tmp_path / "tier.onnx"
+    assert result.to_onnx(path=str(onnx_path)) == onnx_path.read_bytes()
+    with pytest.raises(ValidationError, match="full raw-data export"):
+        result.to_onnx(mode="full")
+
+    pmml = result.to_pmml()
+    assert isinstance(pmml, str)
+    assert "RegressionModel" in pmml
+    assert 'normalizationMethod="softmax"' in pmml
+    assert "RegressionTable" in pmml
+    assert "NumericPredictor" in pmml
+    standalone_pmml = rs.to_pmml(result)
+    assert 'normalizationMethod="softmax"' in standalone_pmml
+    pmml_path = tmp_path / "tier.pmml"
+    assert result.to_pmml(path=str(pmml_path)) == pmml_path.read_text()
+
+    root = ET.fromstring(pmml)
+    ns = root.tag.split("}")[0] + "}" if root.tag.startswith("{") else ""
+    regression_model = root.find(f".//{ns}RegressionModel")
+    assert regression_model is not None
+    assert regression_model.get("normalizationMethod") == "softmax"
+    tables = root.findall(f".//{ns}RegressionTable")
+    assert [table.get("targetCategory") for table in tables] == result.classes_
+
+    feature_names = [name for name in result.feature_names if name != "Intercept"]
+    block_by_class = {}
+    block = 0
+    for class_idx, class_label in enumerate(result.classes_):
+        if class_idx == result.reference_index_:
+            continue
+        block_by_class[class_label] = block
+        block += 1
+    for table in tables:
+        class_label = table.get("targetCategory")
+        if class_label == result.reference_:
+            assert float(table.get("intercept")) == pytest.approx(0.0)
+            assert table.findall(f"{ns}NumericPredictor") == []
+            continue
+        block = block_by_class[class_label]
+        assert float(table.get("intercept")) == pytest.approx(result.params[block, 0])
+        predictors = {
+            predictor.get("name"): float(predictor.get("coefficient"))
+            for predictor in table.findall(f"{ns}NumericPredictor")
+        }
+        assert set(predictors) == set(feature_names)
+        for feature in feature_names:
+            feature_idx = result.feature_names.index(feature)
+            assert predictors[feature] == pytest.approx(result.params[block, feature_idx])
+
+    alt_result = rs.multinomial_dict(
+        response="tier",
+        terms={"x": {"type": "linear"}},
+        alternative_terms={
+            "price": {
+                "coefficient": "generic",
+                "transform": "log",
+                "columns": {
+                    "basic": "price_basic",
+                    "standard": "price_standard",
+                    "premium": "price_premium",
+                },
+            }
+        },
+        data=_tier_price_frame(n=120, seed=808),
+        classes=["none", "basic", "standard", "premium"],
+        reference="none",
+    ).fit(compute_covariance=False)
+    with pytest.raises(ValidationError, match="alternative-generic"):
+        alt_result.to_onnx()
+    with pytest.raises(ValidationError, match="alternative-generic"):
+        alt_result.to_pmml()
+
+    availability = np.ones((len(data), 4), dtype=bool)
+    availability_result = rs.multinomial_dict(
+        response="tier",
+        terms={"x": {"type": "linear"}},
+        data=data,
+        classes=["none", "basic", "standard", "premium"],
+        reference="none",
+        availability=availability,
+    ).fit(compute_covariance=False)
+    with pytest.raises(ValidationError, match="availability"):
+        availability_result.to_onnx()
+    with pytest.raises(ValidationError, match="availability"):
+        availability_result.to_pmml()
+
+    target_encoding_result = rs.multinomial_dict(
+        response="tier",
+        terms={
+            "x": {"type": "linear"},
+            "brand": {"type": "target_encoding", "n_permutations": 1},
+        },
+        data=_tier_target_encoding_frame(n=120, seed=909),
+        classes=["none", "basic", "premium"],
+        reference="none",
+        seed=909,
+    ).fit(compute_covariance=False)
+    with pytest.raises(ValidationError, match="alternative-specific"):
+        target_encoding_result.to_onnx()
+    with pytest.raises(ValidationError, match="alternative-specific"):
+        target_encoding_result.to_pmml()
+
+    offset_data = data.with_columns(pl.lit(0.0).alias("offset_premium"))
+    offset_result = rs.multinomial_dict(
+        response="tier",
+        terms={"x": {"type": "linear"}},
+        data=offset_data,
+        classes=["none", "basic", "standard", "premium"],
+        reference="none",
+        offset={"premium": "offset_premium"},
+    ).fit(compute_covariance=False)
+    with pytest.raises(ValidationError, match="offset"):
+        offset_result.to_onnx()
+    with pytest.raises(ValidationError, match="offset"):
+        offset_result.to_pmml()
+
+
+def test_multinomial_level1_onnx_numeric_parity_nonzero_reference():
+    import xml.etree.ElementTree as ET
+
+    data = _tier_frame(n=160, seed=24601)
+    spec = rs.multinomial_dict(
+        response="tier",
+        terms={"x": {"type": "linear"}, "channel": {"type": "categorical"}},
+        data=data,
+        classes=["none", "basic", "standard", "premium"],
+        reference="standard",
+    )
+    result = spec.fit(compute_covariance=False)
+
+    onnx_bytes = result.to_onnx()
+    assert b"rustystats_version" in onnx_bytes
+    assert result.reference_index_ == 2
+
+    feature_indices = [idx for idx, name in enumerate(result.feature_names) if name != "Intercept"]
+    x_scoring = np.ascontiguousarray(spec.X[:, feature_indices], dtype=np.float64)
+    coefficients = np.zeros((len(feature_indices), len(result.classes_)), dtype=np.float64)
+    intercepts = np.zeros(len(result.classes_), dtype=np.float64)
+    intercept_idx = result.feature_names.index("Intercept")
+    block = 0
+    for class_idx in range(len(result.classes_)):
+        if class_idx == result.reference_index_:
+            continue
+        intercepts[class_idx] = result.params[block, intercept_idx]
+        coefficients[:, class_idx] = result.params[block, feature_indices]
+        block += 1
+
+    assert intercepts[result.reference_index_] == pytest.approx(0.0)
+    np.testing.assert_array_equal(coefficients[:, result.reference_index_], 0.0)
+
+    logits = x_scoring @ coefficients + intercepts
+    exp_logits = np.exp(logits - logits.max(axis=1, keepdims=True))
+    manual_probabilities = exp_logits / exp_logits.sum(axis=1, keepdims=True)
+    expected_probabilities = result.predict_proba(data)
+    np.testing.assert_allclose(
+        manual_probabilities,
+        expected_probabilities,
+        rtol=1e-12,
+        atol=1e-12,
+    )
+
+    root = ET.fromstring(result.to_pmml())
+    ns = root.tag.split("}")[0] + "}" if root.tag.startswith("{") else ""
+    scoring_feature_names = [
+        name for idx, name in enumerate(result.feature_names) if idx in feature_indices
+    ]
+    feature_position = {name: idx for idx, name in enumerate(scoring_feature_names)}
+    pmml_logits = np.zeros((len(data), len(result.classes_)), dtype=np.float64)
+    for table in root.findall(f".//{ns}RegressionTable"):
+        class_idx = result.classes_.index(table.get("targetCategory"))
+        pmml_logits[:, class_idx] = float(table.get("intercept"))
+        for predictor in table.findall(f"{ns}NumericPredictor"):
+            pmml_logits[:, class_idx] += x_scoring[
+                :, feature_position[predictor.get("name")]
+            ] * float(predictor.get("coefficient"))
+    exp_pmml_logits = np.exp(pmml_logits - pmml_logits.max(axis=1, keepdims=True))
+    pmml_probabilities = exp_pmml_logits / exp_pmml_logits.sum(axis=1, keepdims=True)
+    np.testing.assert_allclose(
+        pmml_probabilities,
+        expected_probabilities,
+        rtol=1e-9,
+        atol=1e-9,
+    )
+
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        ort = None
+    if ort is not None:
+        session = ort.InferenceSession(onnx_bytes, providers=["CPUExecutionProvider"])
+        [onnx_probabilities] = session.run(None, {"X": x_scoring})
+        np.testing.assert_allclose(
+            onnx_probabilities,
+            expected_probabilities,
+            rtol=1e-12,
+            atol=1e-12,
+        )
 
 
 def test_multinomial_phase6_intercept_calibration_matches_class_mix_and_serializes():
@@ -1352,7 +1571,10 @@ def test_serialization_round_trip_preserves_predictions():
         reference="none",
     ).fit(compute_covariance=False)
 
-    loaded = rs.MultinomialModel.from_bytes(result.to_bytes())
+    payload = result.to_bytes()
+    state = pickle.loads(payload)
+    assert state["schema_version"] == 2
+    loaded = rs.MultinomialModel.from_bytes(payload)
 
     np.testing.assert_allclose(result.predict_proba(data), loaded.predict_proba(data))
     assert loaded.classes_ == result.classes_
@@ -1751,6 +1973,40 @@ def test_multinomial_fold_design_matches_manual_components_and_is_deterministic(
     ]
 
 
+def test_multinomial_fold_design_rejects_duplicate_or_overlapping_indices():
+    data = _tier_target_encoding_frame(n=90, seed=2026)
+    model = rs.multinomial_dict(
+        response="tier",
+        terms={
+            "x": {"type": "linear"},
+            "brand": {"type": "target_encoding", "n_permutations": 2},
+        },
+        data=data,
+        classes=["none", "basic", "premium"],
+        reference="none",
+        seed=33,
+    )
+
+    with pytest.raises(ValidationError, match="duplicate"):
+        multinomial_module.build_multinomial_fold_design(
+            model,
+            np.array([0, 1, 1, 2], dtype=np.int64),
+            np.array([3, 4, 5], dtype=np.int64),
+        )
+    with pytest.raises(ValidationError, match="duplicate"):
+        multinomial_module.build_multinomial_fold_design(
+            model,
+            np.array([0, 1, 2], dtype=np.int64),
+            np.array([3, 4, 4], dtype=np.int64),
+        )
+    with pytest.raises(ValidationError, match="disjoint"):
+        multinomial_module.build_multinomial_fold_design(
+            model,
+            np.array([0, 1, 2], dtype=np.int64),
+            np.array([2, 3, 4], dtype=np.int64),
+        )
+
+
 def test_multinomial_fold_design_validation_labels_do_not_affect_validation_te():
     data = pl.DataFrame(
         {
@@ -2025,6 +2281,33 @@ def test_multinomial_hessian_memory_limit_rejects_at_public_fit_boundary():
             compute_covariance=False,
             hessian_memory_limit_bytes=64,
             max_dense_parameters=1_000,
+        )
+
+
+def test_multinomial_covariance_workspace_memory_guard_rejects_peak_allocation():
+    rng = np.random.default_rng(708)
+    n = 90
+    data = pl.DataFrame(
+        {
+            "tier": np.tile(["a", "b", "c"], n // 3),
+            "x0": rng.normal(size=n),
+            "x1": rng.normal(size=n),
+            "x2": rng.normal(size=n),
+            "x3": rng.normal(size=n),
+        }
+    )
+
+    with pytest.raises(ValueError, match="workspace"):
+        rs.multinomial_dict(
+            response="tier",
+            terms={f"x{idx}": {"type": "linear"} for idx in range(4)},
+            data=data,
+            classes=["a", "b", "c"],
+            reference="a",
+        ).fit(
+            compute_covariance=True,
+            hessian_memory_limit_bytes=1_000,
+            max_dense_parameters=100,
         )
 
 
@@ -2361,6 +2644,183 @@ def test_multinomial_fixed_spline_and_interaction_fit():
     assert bs_result.gcv is None
 
 
+def test_multinomial_linear_and_expression_monotonic_constraints_apply_to_all_blocks():
+    data = _tier_frame(n=360, seed=771).with_columns(
+        pl.Series("z", np.sin(np.arange(360, dtype=np.float64) * 0.17))
+    )
+    classes = ["none", "basic", "standard", "premium"]
+
+    result = rs.multinomial_dict(
+        response="tier",
+        terms={
+            "x": {"type": "linear", "monotonicity": "increasing"},
+            "z": {"type": "linear", "monotonicity": "decreasing"},
+            "z2": {"type": "expression", "expr": "z * z", "monotonicity": "increasing"},
+        },
+        data=data,
+        classes=classes,
+        reference="none",
+    ).fit(compute_covariance=False)
+
+    assert result.converged
+    assert "constrained_boundary" in result.inference_status
+    assert result.aic() is None
+    assert result.bic() is None
+    assert result.feature_names[result.feature_names.index("pos(x)")] == "pos(x)"
+    assert result.feature_names[result.feature_names.index("neg(z)")] == "neg(z)"
+    expr_idx = next(
+        idx
+        for idx, feature in enumerate(result.feature_names)
+        if feature.startswith("pos(I(z * z))")
+    )
+    pos_idx = result.feature_names.index("pos(x)")
+    neg_idx = result.feature_names.index("neg(z)")
+    assert np.all(result.params[:, pos_idx] >= -1e-8)
+    assert np.all(result.params[:, expr_idx] >= -1e-8)
+    assert np.all(result.params[:, neg_idx] <= 1e-8)
+    assert {item["feature"] for item in result.constraint_metadata} >= {
+        "pos(x)",
+        "neg(z)",
+        "pos(I(z * z))",
+    }
+    assert all(
+        item["target"] == "class_utility_vs_reference" for item in result.constraint_metadata
+    )
+    assert all(item["probability_monotonicity"] is False for item in result.constraint_metadata)
+    assert "class utilities versus the reference class" in result.summary()
+
+    loaded = rs.MultinomialModel.from_bytes(result.to_bytes())
+    assert loaded.constraint_metadata == result.constraint_metadata
+    np.testing.assert_allclose(loaded.predict_proba(data), result.predict_proba(data))
+
+
+def test_multinomial_fixed_bs_monotonic_constraints_use_generated_basis_columns():
+    data = _tier_frame(n=300, seed=772)
+    classes = ["none", "basic", "standard", "premium"]
+
+    result = rs.multinomial_dict(
+        response="tier",
+        terms={"x": {"type": "bs", "df": 5, "monotonicity": "increasing"}},
+        data=data,
+        classes=classes,
+        reference="none",
+    ).fit(compute_covariance=False)
+
+    spline_indices = [
+        idx
+        for idx, feature in enumerate(result.feature_names)
+        if feature.startswith("bs(x,") and ", +)" in feature
+    ]
+    assert spline_indices
+    assert len(result.constraint_metadata) == len(spline_indices)
+    np.testing.assert_array_less(-1e-8, result.params[:, spline_indices] + 1e-12)
+
+
+def test_multinomial_monotonic_rejections_are_fail_closed():
+    data = _tier_frame(n=120, seed=773)
+    classes = ["none", "basic", "standard", "premium"]
+
+    with pytest.raises(ValidationError, match="monotonic smooth bs terms"):
+        rs.multinomial_dict(
+            response="tier",
+            terms={"x": {"type": "bs", "k": 5, "monotonicity": "increasing"}},
+            data=data,
+            classes=classes,
+            reference="none",
+        )
+    with pytest.raises(ValidationError, match="natural splines"):
+        rs.multinomial_dict(
+            response="tier",
+            terms={"x": {"type": "ns", "df": 4, "monotonicity": "increasing"}},
+            data=data,
+            classes=classes,
+            reference="none",
+        )
+    with pytest.raises(ValidationError, match="target_encoding terms"):
+        rs.multinomial_dict(
+            response="tier",
+            terms={"channel": {"type": "target_encoding", "monotonicity": "increasing"}},
+            data=data,
+            classes=classes,
+            reference="none",
+        )
+    with pytest.raises(ValidationError, match="main effects"):
+        rs.multinomial_dict(
+            response="tier",
+            terms={"x": {"type": "linear"}, "channel": {"type": "categorical"}},
+            interactions=[
+                {
+                    "x": {"type": "linear", "monotonicity": "increasing"},
+                    "channel": {"type": "categorical"},
+                    "include_main": False,
+                }
+            ],
+            data=data,
+            classes=classes,
+            reference="none",
+        )
+
+
+def test_multinomial_cv_preserves_monotonic_constraints_in_fold_refits():
+    data = _tier_frame(n=360, seed=774)
+    classes = ["none", "basic", "standard", "premium"]
+
+    result = rs.multinomial_dict(
+        response="tier",
+        terms={"x": {"type": "linear", "monotonicity": "increasing"}},
+        data=data,
+        classes=classes,
+        reference="none",
+    ).fit(
+        regularization="ridge",
+        cv=3,
+        n_alphas=3,
+        include_unregularized=False,
+        compute_covariance=False,
+    )
+
+    pos_idx = result.feature_names.index("pos(x)")
+    assert np.all(result.params[:, pos_idx] >= -1e-8)
+    assert "constrained_boundary" in result.inference_status
+    assert result.regularization_path is not None
+    assert result.cv_profile["n_folds"] == 3
+
+
+def test_multinomial_smooth_terms_compose_with_separate_monotonic_terms():
+    rng = np.random.default_rng(775)
+    data = _tier_frame(n=260, seed=775).with_columns(pl.Series("z", rng.normal(size=260)))
+    classes = ["none", "basic", "standard", "premium"]
+
+    result = rs.multinomial_dict(
+        response="tier",
+        terms={
+            "x": {"type": "bs"},
+            "z": {"type": "linear", "monotonicity": "increasing"},
+        },
+        data=data,
+        classes=classes,
+        reference="none",
+    ).fit(
+        n_lambda=2,
+        lambda_min=0.1,
+        lambda_max=1.0,
+        max_lambda_iter=1,
+        compute_covariance=False,
+    )
+
+    assert result.converged
+    assert result.regularization_type == "smooth"
+    assert len(result.smooth_terms) == 1
+    assert result.smooth_terms[0]["variable"] == "x"
+    pos_idx = result.feature_names.index("pos(z)")
+    assert np.all(result.params[:, pos_idx] >= -1e-8)
+    assert "naive_after_regularization" in result.inference_status
+    assert "constrained_boundary" in result.inference_status
+    assert result.aic() is None
+    assert any(item["feature"] == "pos(z)" for item in result.constraint_metadata)
+    np.testing.assert_allclose(result.predict_proba(data).sum(axis=1), 1.0, atol=1e-10)
+
+
 def test_multinomial_default_bs_smooth_fit_metadata_and_serialization():
     data = _tier_frame(n=260, seed=606)
     classes = ["none", "basic", "standard", "premium"]
@@ -2512,3 +2972,128 @@ def test_ridge_alt_class_specific_se_scale_invariant():
         np.testing.assert_allclose(
             tb[key]["std_error"] * factor, ta[key]["std_error"], rtol=1e-5, atol=1e-8
         )
+
+
+def test_multinomial_cv_min_selects_argmin_of_cv_deviance():
+    data = _tier_frame(n=200, seed=4242)
+    result = rs.multinomial_dict(
+        response="tier",
+        terms={"x": {"type": "linear"}, "channel": {"type": "categorical"}},
+        data=data,
+        classes=["none", "basic", "standard", "premium"],
+        reference="none",
+    ).fit(
+        cv=3,
+        regularization="ridge",
+        alphas=[3.0, 1.0, 0.3, 0.1, 0.0],
+        cv_seed=11,
+        compute_covariance=False,
+    )
+
+    path = result.regularization_path
+    assert path is not None
+    best = min(path, key=lambda row: row["cv_deviance_mean"])
+    assert result.alpha == pytest.approx(best["alpha"])
+    assert result.cv_deviance == pytest.approx(best["cv_deviance_mean"])
+
+
+def test_multinomial_cv_one_se_selects_most_regularized_within_band():
+    kwargs = {
+        "response": "tier",
+        "terms": {"x": {"type": "linear"}, "channel": {"type": "categorical"}},
+        "data": _tier_frame(n=200, seed=4242),
+        "classes": ["none", "basic", "standard", "premium"],
+        "reference": "none",
+    }
+    alphas = [3.0, 1.0, 0.3, 0.1, 0.0]
+    fit_1se = rs.multinomial_dict(**kwargs).fit(
+        cv=3,
+        regularization="ridge",
+        selection="1se",
+        alphas=alphas,
+        cv_seed=11,
+        compute_covariance=False,
+    )
+
+    path = fit_1se.regularization_path
+    best_min = min(path, key=lambda row: row["cv_deviance_mean"])
+    threshold = best_min["cv_deviance_mean"] + best_min["cv_deviance_se"]
+    within_band = [row for row in path if row["cv_deviance_mean"] <= threshold]
+    expected_alpha = max(within_band, key=lambda row: row["alpha"])["alpha"]
+    assert fit_1se.alpha == pytest.approx(expected_alpha)
+    assert fit_1se.alpha >= best_min["alpha"]
+
+
+def test_multinomial_cv_drops_alpha_when_a_fold_fails(monkeypatch):
+    data = _tier_frame(n=180, seed=515)
+    n_rows = data.height
+    failing_alpha = 0.5
+    real_fit = multinomial_module._fit_multinomial_arrays
+
+    def flaky_fit(*args, **kwargs):
+        # Fail only for CV fold fits (subset rows), never the full-data refit or
+        # warm-start, so the selected model still fits cleanly.
+        if kwargs.get("alpha") == failing_alpha and np.asarray(kwargs["x"]).shape[0] < n_rows:
+            raise RuntimeError("induced CV fold failure")
+        return real_fit(*args, **kwargs)
+
+    monkeypatch.setattr(multinomial_module, "_fit_multinomial_arrays", flaky_fit)
+
+    result = rs.multinomial_dict(
+        response="tier",
+        terms={"x": {"type": "linear"}, "channel": {"type": "categorical"}},
+        data=data,
+        classes=["none", "basic", "standard", "premium"],
+        reference="none",
+    ).fit(
+        cv=3,
+        regularization="ridge",
+        alphas=[2.0, 0.5, 0.0],
+        cv_seed=3,
+        compute_covariance=False,
+    )
+
+    path_alphas = {row["alpha"] for row in result.regularization_path}
+    assert failing_alpha not in path_alphas
+    assert result.alpha in path_alphas
+    assert result.alpha != failing_alpha
+    # The dropped alpha still appears in the raw fold scores with non-finite entries.
+    assert any(not np.isfinite(score) for score in result.cv_fold_scores[failing_alpha])
+
+
+def test_multinomial_predict_rejects_all_unavailable_row():
+    data = _tier_frame(n=120, seed=77)
+    result = rs.multinomial_dict(
+        response="tier",
+        terms={"x": {"type": "linear"}},
+        data=data,
+        classes=["none", "basic", "standard", "premium"],
+        reference="none",
+    ).fit(compute_covariance=False)
+
+    new_data = data.head(3)
+    availability = np.ones((3, len(result.classes_)), dtype=bool)
+    availability[0, :] = False
+    with pytest.raises(PredictionError, match="no classes"):
+        result.predict_proba(new_data, availability=availability)
+
+
+def test_multinomial_smooth_lambda_is_gcv_argmin():
+    data = _tier_frame(n=320, seed=909)
+    result = rs.multinomial_dict(
+        response="tier",
+        terms={"x": {"type": "bs", "k": 6}},
+        data=data,
+        classes=["none", "basic", "standard", "premium"],
+        reference="none",
+    ).fit(compute_covariance=False)
+
+    profile = result.smooth_profile
+    assert profile is not None
+    candidate_gcvs = profile["candidate_gcvs"]
+    assert len(candidate_gcvs) == 1  # single smooth term
+    (candidates,) = candidate_gcvs.values()
+    assert len(candidates) >= 2
+    argmin_lambda = min(candidates, key=lambda lam_gcv: lam_gcv[1])[0]
+    # The reported selected lambda must be the GCV argmin of its final candidate sweep.
+    assert result.smooth_lambdas[0] == pytest.approx(argmin_lambda)
