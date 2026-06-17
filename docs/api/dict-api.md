@@ -139,6 +139,8 @@ result = model.fit(
     alpha=0.0,
     l1_ratio=0.0,
     regularization=None,
+    cv=None,
+    n_lambda=6,
     max_iter=100,
     tol=1e-8,
     standardize=True,
@@ -146,12 +148,22 @@ result = model.fit(
 )
 ```
 
-The multinomial path supports unpenalized and ridge dense Newton fits for shared
-covariates and `alternative_terms`. Alternative-term ridge uses the same
-standardization/back-transform policy as shared covariates, with inference
-labelled as naive after regularization. Lasso, elastic net, CV, automatic smooth
-penalties, target encoding, monotonic constraints, exposure, symmetric
-reference-invariant ridge, and PMML/ONNX export are rejected with explicit
+The multinomial path supports dense Newton fits for shared covariates and
+`alternative_terms`, ridge/lasso/elastic-net regularization, CV-selected
+regularization paths, multinomial target encoding, and automatic smooth
+penalties for shared `bs`/`ns` main effects. Alternative-term regularization
+uses the same standardization/back-transform policy as shared covariates, with
+inference labelled as naive after regularization or selection where applicable.
+Utility-level monotonic constraints are supported for shared linear,
+expression, and fixed-df `bs` terms; they constrain each non-reference class
+utility relative to the reference class and do not imply class-probability
+monotonicity. Level-1 PMML/ONNX export is supported for shared-covariate
+models without target encoding, alternative terms, availability masks, or
+class-specific offsets, and consumes the pre-built shared design matrix without
+the intercept column. Smooth monotone splines, target-encoded or alternative-specific
+monotonicity, exposure, symmetric reference-invariant ridge, richer PMML/ONNX
+export for target-encoded, alternative-specific, availability, or offset models, smooth
+interactions, and smooth + CV/elastic-net combinations are rejected with explicit
 validation errors or reserved for later native support.
 
 Alternative terms use wide-format columns:
@@ -649,6 +661,6 @@ if not results['valid']:
 | Complex interactions | ✓ Explicit | Limited syntax |
 | TE interactions | ✓ Yes | Limited |
 | FE interactions | ✓ Yes | No |
-| Monotonicity constraints | ✓ All term types | Limited |
+| Monotonicity constraints | ✓ Linear/expression/bs terms | Limited |
 
 The Dict API is recommended for production systems and automated workflows.

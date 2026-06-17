@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 from collections import OrderedDict, defaultdict
+from importlib.metadata import PackageNotFoundError, version
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -30,7 +31,11 @@ if TYPE_CHECKING:
     from rustystats.formula import GLMModel
 
 from rustystats.exceptions import ValidationError
-from rustystats.export_pmml import _classify_feature
+from rustystats.export_pmml import (
+    _classify_feature,
+    _multinomial_scoring_components,
+    _validate_multinomial_level1_export,
+)
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -64,6 +69,13 @@ def _get_all_levels(model: GLMModel, var: str) -> list[str]:
     if cached is not None:
         return list(cached.levels)
     return []
+
+
+def _rustystats_version() -> str:
+    try:
+        return version("rustystats")
+    except PackageNotFoundError:
+        return "unknown"
 
 
 # ── Level 1: scoring mode ───────────────────────────────────────────────────
@@ -112,6 +124,73 @@ def _build_scoring_model(model: GLMModel) -> bytes:
             n_features,
             model.link,
             model.family,
+            meta_keys,
+            meta_values,
+        )
+    )
+
+
+def _build_multinomial_scoring_model(model: Any) -> bytes:
+    """Build Level-1 multinomial ONNX: shared design matrix -> probabilities."""
+    from rustystats._rustystats import serialize_onnx_graph_py
+
+    _validate_multinomial_level1_export(model, mode="scoring")
+    feature_names, coefficients, intercepts = _multinomial_scoring_components(model)
+    n_features, n_classes = coefficients.shape
+
+    g = _GraphAccumulator()
+    g.add_init_f64("W", coefficients)
+    g.add_init_f64("b", intercepts)
+    g.add_node("MatMul", ["X", "W"], ["logits_raw"])
+    g.add_node("Add", ["logits_raw", "b"], ["logits"])
+    g.add_node("Softmax", ["logits"], ["probabilities"], [("axis", "int", 1)])
+
+    meta_keys = [
+        "model_type",
+        "input_convention",
+        "feature_names",
+        "classes",
+        "reference",
+        "reference_index",
+        "probability_output",
+        "rustystats_version",
+    ]
+    meta_values = [
+        "baseline_category_multinomial_logit",
+        "prebuilt_shared_design_without_intercept",
+        json.dumps(feature_names),
+        json.dumps(list(model.classes_)),
+        str(model.reference_),
+        str(int(model.reference_index_)),
+        "softmax_probabilities_in_class_order",
+        _rustystats_version(),
+    ]
+
+    return bytes(
+        serialize_onnx_graph_py(
+            g.node_ops,
+            g.node_inputs,
+            g.node_outputs,
+            g.node_attr_names,
+            g.node_attr_types,
+            g.node_attr_ints,
+            g.node_attr_floats,
+            g.init_names_f64,
+            g.init_data_f64,
+            g.init_shapes_f64,
+            g.init_names_i64,
+            g.init_data_i64,
+            g.init_shapes_i64,
+            ["X"],
+            [11],
+            [[-1, n_features]],
+            ["probabilities"],
+            [11],
+            [[-1, n_classes]],
+            8,
+            18,
+            "RustyStats",
+            "RustyStats baseline-category multinomial logit",
             meta_keys,
             meta_values,
         )
@@ -655,8 +734,11 @@ def to_onnx(
         ``onnxruntime.InferenceSession(onnx_bytes)`` or written to disk.
     """
     if model.__class__.__name__ == "MultinomialModel":
-        raise ValidationError("to_onnx does not yet support MultinomialModel.")
-    if mode == "full":
+        onnx_bytes = _build_multinomial_scoring_model(model) if mode == "scoring" else None
+        if onnx_bytes is None:
+            _validate_multinomial_level1_export(model, mode=mode)
+            raise AssertionError("unreachable")
+    elif mode == "full":
         input_transforms = getattr(model, "_input_transforms", [])
         if input_transforms:
             names = [spec["name"] for spec in input_transforms]

@@ -9,8 +9,6 @@
 
 **Codebase Documentation**: [pricingfrontier.github.io/rustystats/](https://pricingfrontier.github.io/rustystats/)
 
-See [CHANGELOG.md](CHANGELOG.md) for release notes.
-
 ## Features
 
 - **Dict-First API** - Programmatic model building ideal for automated workflows and agents
@@ -23,7 +21,6 @@ See [CHANGELOG.md](CHANGELOG.md) for release notes.
 - **Lasso Credibility** - Shrink toward a prior model instead of zero (CAS Monograph 13)
 - **Validation** - Design matrix checks with fix suggestions before fitting
 - **Complete** - 8 families, robust SEs, full diagnostics, VIF, partial dependence
-- **Multinomial Choice** - Native baseline-category multinomial logit for product-tier conversion, calibration, and pricing scenarios
 - **Minimal** - Only `numpy` and `polars` required
 
 ## Installation
@@ -114,8 +111,8 @@ product-tier conversion.
 ```python
 result = rs.multinomial_dict(
     response="PurchasedTier",
-    shared_terms={
-        "DriverAge": {"type": "bs", "df": 6},
+    terms={
+        "DriverAge": {"type": "bs"},
         "VehicleValue": {"type": "linear"},
         "Channel": {"type": "categorical"},
     },
@@ -141,12 +138,16 @@ scenario = result.scenario(new_quotes, changes={"price_premium": 1.03})
 ```
 
 The multinomial path supports shared covariates, row/class weights,
-availability masks, class-specific utility offsets, ridge for shared and
-alternative-specific terms, summaries, pricing-grade diagnostics, wide-format
-alternative-specific covariates, price-change scenarios, vector-intercept
-calibration, and pickle serialization. Lasso/elastic net, CV, multinomial target
-encoding, automatic smooth penalties, monotonic constraints, exposure,
-symmetric reference-invariant ridge, and PMML/ONNX export are reserved for later
+availability masks, class-specific utility offsets, ridge/lasso/elastic-net
+regularization with CV, multinomial target encoding, automatic smooth penalties
+for shared `bs`/`ns` main effects, summaries, pricing-grade diagnostics,
+wide-format alternative-specific covariates, price-change scenarios,
+vector-intercept calibration, utility-level monotonicity for shared
+linear/expression/fixed-df `bs` terms, Level-1 PMML/ONNX export for shared
+design-matrix scoring, and pickle serialization. Smooth monotone splines,
+target-encoded or alternative-specific monotonicity, exposure, symmetric
+reference-invariant ridge, and richer PMML/ONNX export for target-encoded,
+alternative-specific, availability, or offset models are reserved for later
 native support and fail explicitly where applicable.
 
 See [`examples/tier_conversion_multinomial.py`](examples/tier_conversion_multinomial.py)
@@ -717,6 +718,12 @@ import onnxruntime as ort
 session = ort.InferenceSession("model_full.onnx")
 preds = session.run(None, {"input": raw_features})[0]
 ```
+
+For `MultinomialModel`, PMML/ONNX export is currently Level-1 scoring only:
+the consumer supplies the pre-built shared design matrix without the intercept
+column. Multinomial `mode="full"`, target encoding, alternative terms,
+availability masks, and class-specific offsets fail closed with validation
+errors.
 | Size | Smaller | Larger |
 
 ---

@@ -1117,7 +1117,7 @@ mod tests {
         let cat_idx = vec![0i32, 1, 2, 1];
         let basis =
             Array2::from_shape_vec((4, 2), vec![1.0, 10.0, 2.0, 20.0, 3.0, 30.0, 4.0, 40.0])
-                .unwrap();
+                .expect("valid test basis shape");
         let cat_names = vec!["cat[T.B]".to_string(), "cat[T.C]".to_string()];
         let basis_names = vec!["bs(x, 1/2)".to_string(), "bs(x, 2/2)".to_string()];
 
@@ -1145,7 +1145,7 @@ mod tests {
         let cat_idx = vec![0i32, 1, 2, 1];
         let basis =
             Array2::from_shape_vec((4, 2), vec![1.0, 10.0, 2.0, 20.0, 3.0, 30.0, 4.0, 40.0])
-                .unwrap();
+                .expect("valid test basis shape");
         let params = vec![0.5, 1.5, 2.0, 3.0];
 
         let values = predict_categorical_basis_interaction(&cat_idx, 2, &basis, &params);

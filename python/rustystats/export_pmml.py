@@ -681,14 +681,7 @@ class PMMLExporter:
             self._xml_transformation_dictionary(root)
         self._xml_grm(root)
 
-        rough = ET.tostring(root, encoding="unicode", xml_declaration=False)
-        dom = minidom.parseString(rough)
-        xml_str = dom.toprettyxml(indent="  ")
-        # Replace the minidom declaration with a clean one
-        lines = xml_str.split("\n")
-        if lines and lines[0].startswith("<?xml"):
-            lines[0] = '<?xml version="1.0" encoding="UTF-8"?>'
-        return "\n".join(line for line in lines if line.strip())
+        return _pretty_pmml(root)
 
     def _xml_header(self, root: ET.Element):
         hdr = ET.SubElement(
@@ -838,6 +831,170 @@ class PMMLExporter:
             )
 
 
+def _validate_multinomial_level1_export(model, *, mode: str = "scoring") -> None:
+    """Fail closed for multinomial export states beyond Level 1.
+
+    Shared by the PMML exporter and the ONNX scoring exporter so the supported
+    surface and its messages stay in sync. ``mode`` is the ONNX scoring/full
+    selector; PMML uses the default ("scoring").
+    """
+    if mode != "scoring":
+        raise ValidationError(
+            "full raw-data export mode is not yet supported for MultinomialModel. "
+            "Use scoring mode, which expects a pre-built shared design matrix "
+            "without the intercept column."
+        )
+    if model.alternative_generic_coefficients.size:
+        raise ValidationError(
+            "MultinomialModel Level-1 export does not yet support alternative-generic "
+            "terms. Export a shared-covariate model or score with RustyStats directly."
+        )
+    if model.alternative_specific_coefficients.size:
+        raise ValidationError(
+            "MultinomialModel Level-1 export does not yet support alternative-specific "
+            "terms, including multinomial target encoding. Export a shared-covariate "
+            "model or score with RustyStats directly."
+        )
+    if getattr(model, "_availability_spec", None) is not None or bool(
+        getattr(model, "_array_availability_requires_prediction_override", False)
+    ):
+        raise ValidationError(
+            "MultinomialModel Level-1 export does not yet support availability masks. "
+            "Fit without availability= or score with RustyStats directly."
+        )
+    if getattr(model, "_offset_spec", None) is not None or bool(
+        getattr(model, "_array_offset_requires_prediction_override", False)
+    ):
+        raise ValidationError(
+            "MultinomialModel Level-1 export does not yet support class-specific "
+            "offsets. Fit without offset= or score with RustyStats directly."
+        )
+
+
+def _multinomial_scoring_components(model) -> tuple[list[str], np.ndarray, np.ndarray]:
+    feature_names = list(model.feature_names)
+    params = np.asarray(model.params, dtype=np.float64)
+    classes = list(model.classes_)
+    reference_index = int(model.reference_index_)
+    intercept_idx = feature_names.index("Intercept") if "Intercept" in feature_names else None
+    feature_indices = [idx for idx, name in enumerate(feature_names) if name != "Intercept"]
+    scoring_feature_names = [feature_names[idx] for idx in feature_indices]
+
+    coefficients = np.zeros((len(feature_indices), len(classes)), dtype=np.float64)
+    intercepts = np.zeros(len(classes), dtype=np.float64)
+    block = 0
+    for class_idx in range(len(classes)):
+        if class_idx == reference_index:
+            continue
+        if intercept_idx is not None:
+            intercepts[class_idx] = params[block, intercept_idx]
+        if feature_indices:
+            coefficients[:, class_idx] = params[block, feature_indices]
+        block += 1
+    return scoring_feature_names, coefficients, intercepts
+
+
+def _pretty_pmml(root: ET.Element) -> str:
+    rough = ET.tostring(root, encoding="unicode", xml_declaration=False)
+    dom = minidom.parseString(rough)
+    xml_str = dom.toprettyxml(indent="  ")
+    lines = xml_str.split("\n")
+    if lines and lines[0].startswith("<?xml"):
+        lines[0] = '<?xml version="1.0" encoding="UTF-8"?>'
+    return "\n".join(line for line in lines if line.strip())
+
+
+def _multinomial_response_name(model) -> str:
+    response = getattr(model, "response", None)
+    return str(response) if response else "class"
+
+
+def _multinomial_to_pmml(model, path: str | None = None) -> str:
+    _validate_multinomial_level1_export(model)
+    feature_names, coefficients, intercepts = _multinomial_scoring_components(model)
+    classes = [str(label) for label in model.classes_]
+    response = _multinomial_response_name(model)
+
+    root = ET.Element(
+        "PMML",
+        {
+            "version": PMMLExporter.PMML_VERSION,
+            "xmlns": PMMLExporter.PMML_NS,
+        },
+    )
+    header = ET.SubElement(
+        root,
+        "Header",
+        {
+            "copyright": "RustyStats",
+            "description": "Multinomial logit scoring model",
+        },
+    )
+    ET.SubElement(header, "Application", {"name": "RustyStats"})
+    timestamp = ET.SubElement(header, "Timestamp")
+    timestamp.text = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    data_dictionary = ET.SubElement(
+        root, "DataDictionary", {"numberOfFields": str(len(feature_names) + 1)}
+    )
+    target_field = ET.SubElement(
+        data_dictionary,
+        "DataField",
+        {"name": response, "optype": "categorical", "dataType": "string"},
+    )
+    for class_label in classes:
+        ET.SubElement(target_field, "Value", {"value": class_label})
+    for feature in feature_names:
+        ET.SubElement(
+            data_dictionary,
+            "DataField",
+            {"name": feature, "optype": "continuous", "dataType": "double"},
+        )
+
+    model_elem = ET.SubElement(
+        root,
+        "RegressionModel",
+        {
+            "modelName": "RustyStatsMultinomialLogit",
+            "functionName": "classification",
+            "algorithmName": "baseline-category multinomial logit",
+            "normalizationMethod": "softmax",
+            "targetFieldName": response,
+        },
+    )
+    mining_schema = ET.SubElement(model_elem, "MiningSchema")
+    ET.SubElement(mining_schema, "MiningField", {"name": response, "usageType": "target"})
+    for feature in feature_names:
+        ET.SubElement(mining_schema, "MiningField", {"name": feature, "usageType": "active"})
+
+    for class_idx, class_label in enumerate(classes):
+        table = ET.SubElement(
+            model_elem,
+            "RegressionTable",
+            {
+                "targetCategory": class_label,
+                "intercept": f"{float(intercepts[class_idx]):.10g}",
+            },
+        )
+        if class_idx == int(model.reference_index_):
+            continue
+        for feature, coefficient in zip(feature_names, coefficients[:, class_idx]):
+            ET.SubElement(
+                table,
+                "NumericPredictor",
+                {
+                    "name": feature,
+                    "coefficient": f"{float(coefficient):.10g}",
+                },
+            )
+
+    xml = _pretty_pmml(root)
+    if path is not None:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(xml)
+    return xml
+
+
 # ── Public API ───────────────────────────────────────────────────────────────
 
 
@@ -864,7 +1021,7 @@ def to_pmml(
         The PMML XML document as a string.
     """
     if model.__class__.__name__ == "MultinomialModel":
-        raise ValidationError("to_pmml does not yet support MultinomialModel.")
+        return _multinomial_to_pmml(model, path=path)
     input_transforms = getattr(model, "_input_transforms", [])
     if input_transforms:
         names = [spec["name"] for spec in input_transforms]
