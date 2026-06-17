@@ -139,6 +139,7 @@ from rustystats.multinomial import (
     MultinomialInterceptCalibration,
     MultinomialModel,
     MultinomialScenario,
+    multinomial_alpha_max,
     multinomial_dict,
 )
 
@@ -185,6 +186,7 @@ __all__ = [
     "MultinomialInterceptCalibration",
     "MultinomialModel",
     "MultinomialScenario",
+    "multinomial_alpha_max",
     "multinomial_dict",
     "summary",
     "summary_relativities",

@@ -219,10 +219,14 @@ impl PyMultinomialResults {
 
     #[getter]
     fn penalty_type(&self) -> &str {
-        if self.alpha > 0.0 {
-            "ridge"
-        } else {
+        if self.alpha <= 0.0 {
             "none"
+        } else if self.l1_ratio >= 1.0 {
+            "lasso"
+        } else if self.l1_ratio > 0.0 {
+            "elastic_net"
+        } else {
+            "ridge"
         }
     }
 
@@ -260,13 +264,14 @@ impl PyMultinomialResults {
     max_dense_parameters=5000,
     store_design_matrix=false,
     verbose=false,
-	    alternative_generic=None,
-	    alternative_specific=None,
-	    alternative_generic_center=None,
-	    alternative_generic_scale=None,
-	    alternative_specific_center=None,
-	    alternative_specific_scale=None
-	))]
+    alternative_generic=None,
+    alternative_specific=None,
+    alternative_generic_center=None,
+    alternative_generic_scale=None,
+    alternative_specific_center=None,
+    alternative_specific_scale=None,
+    initial_theta=None
+))]
 #[allow(clippy::too_many_arguments)]
 pub fn fit_multinomial_py(
     y_codes: PyReadonlyArray1<i64>,
@@ -294,6 +299,7 @@ pub fn fit_multinomial_py(
     alternative_generic_scale: Option<PyReadonlyArray1<f64>>,
     alternative_specific_center: Option<PyReadonlyArray2<f64>>,
     alternative_specific_scale: Option<PyReadonlyArray2<f64>>,
+    initial_theta: Option<PyReadonlyArray1<f64>>,
 ) -> PyResult<PyMultinomialResults> {
     let y_codes_array = y_codes
         .as_array()
@@ -317,6 +323,7 @@ pub fn fit_multinomial_py(
     let weights_array = weights.map(|w| w.as_array().to_owned());
     let alternative_generic_array = alternative_generic.map(|a| a.as_array().to_owned());
     let alternative_specific_array = alternative_specific.map(|a| a.as_array().to_owned());
+    let initial_theta_array = initial_theta.map(|theta| theta.as_array().to_owned());
     let standardization = build_standardization(center, scale, n_params)?;
     let alternative_generic_standardization = build_vector_standardization(
         alternative_generic_center,
@@ -351,6 +358,7 @@ pub fn fit_multinomial_py(
         hessian_memory_limit_bytes,
         max_dense_parameters,
         verbose,
+        initial_theta: initial_theta_array,
     };
 
     let result = fit_multinomial_with_alternatives(

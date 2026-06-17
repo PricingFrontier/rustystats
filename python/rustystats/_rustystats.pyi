@@ -314,6 +314,7 @@ def fit_multinomial_py(
     alternative_generic_scale: npt.NDArray[np.float64] | None = None,
     alternative_specific_center: npt.NDArray[np.float64] | None = None,
     alternative_specific_scale: npt.NDArray[np.float64] | None = None,
+    initial_theta: npt.NDArray[np.float64] | None = None,
 ) -> MultinomialResults: ...
 def fit_negbinomial_py(
     y: npt.NDArray[np.float64],

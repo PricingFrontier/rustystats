@@ -726,6 +726,12 @@ For final refit:
 - initialize from a nearby full-data path solution if available,
 - otherwise use current intercept/null initialization.
 
+Implementation note: the path still requires `n_alphas * cv` dense candidate
+fits, but candidates warm-start within each fold and the final full-data refit
+warms from the selected point on a full-data path. The dense preflight remains
+the hard memory guard; warm starts reduce Newton iterations rather than the
+number of candidate fits.
+
 ### 7.5 Metadata
 
 Expose on `MultinomialModel`:

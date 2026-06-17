@@ -12,7 +12,25 @@ from typing import Any
 
 import numpy as np
 
+from rustystats._rustystats import (
+    apply_exposure_weighted_target_encoding_py as _apply_exposure_weighted_te_rust,
+)
 from rustystats._rustystats import fit_multinomial_py as _fit_multinomial_rust
+from rustystats._rustystats import (
+    target_encode_interaction_with_exposure_py as _target_encode_interaction_with_exposure_rust,
+)
+from rustystats._rustystats import (
+    target_encode_with_exposure_py as _target_encode_with_exposure_rust,
+)
+from rustystats.constants import (
+    ALPHA_MAX_FLOOR,
+    DEFAULT_ALPHA_MIN_RATIO,
+    DEFAULT_CV_SEED,
+    DEFAULT_ELASTIC_NET_L1_RATIO,
+    DEFAULT_N_ALPHAS,
+    DEFAULT_N_PERMUTATIONS,
+    DEFAULT_PRIOR_WEIGHT,
+)
 from rustystats.exceptions import PredictionError, ValidationError
 from rustystats.formula import (
     _collect_lazyframe,
@@ -28,12 +46,33 @@ from rustystats.input_transforms import (
     input_transform_source_columns,
     validate_input_transforms,
 )
-from rustystats.interactions import InteractionBuilder
+from rustystats.interactions import InteractionBuilder, ParsedFormula, TargetEncodingTermSpec
 
 _DEFAULT_HESSIAN_MEMORY_LIMIT_BYTES = 256 * 1024 * 1024
 _DEFAULT_MAX_DENSE_PARAMETERS = 5000
 _MIN_WEIGHTED_STD = 1e-12
 _SCHEMA_VERSION = 1
+
+
+def _resolve_regularization(
+    alpha: float,
+    l1_ratio: float,
+    regularization: str | None,
+) -> tuple[float, float]:
+    if alpha < 0.0 or not np.isfinite(alpha):
+        raise ValidationError("alpha must be finite and non-negative.")
+    if not np.isfinite(l1_ratio) or l1_ratio < 0.0 or l1_ratio > 1.0:
+        raise ValidationError("l1_ratio must be finite and in [0, 1].")
+    if regularization is None:
+        return float(alpha), float(l1_ratio if alpha > 0.0 else 0.0)
+    if regularization == "ridge":
+        return float(alpha), 0.0
+    if regularization == "lasso":
+        return float(alpha), 1.0 if alpha > 0.0 else 0.0
+    if regularization == "elastic_net":
+        effective_l1 = l1_ratio if l1_ratio > 0.0 else DEFAULT_ELASTIC_NET_L1_RATIO
+        return float(alpha), float(effective_l1 if alpha > 0.0 else 0.0)
+    raise ValidationError("regularization must be one of None, 'ridge', 'lasso', or 'elastic_net'.")
 
 
 def _as_float_array(values: Any, *, name: str, length: int | None = None) -> np.ndarray:
@@ -274,6 +313,292 @@ def _resolve_alternative_arrays(
     return generic, specific, generic_names, specific_names
 
 
+def _parsed_without_target_encoding(parsed: ParsedFormula) -> ParsedFormula:
+    """Return a shared-X parsed formula with multinomial TE terms removed."""
+    stripped = copy.copy(parsed)
+    stripped.target_encoding_terms = []
+    stripped._te_by_var = None
+    return stripped
+
+
+def _target_encoding_feature_name(term: TargetEncodingTermSpec) -> str:
+    if term.interaction_vars is not None and len(term.interaction_vars) >= 2:
+        return f"TE({':'.join(term.interaction_vars)})"
+    return f"TE({term.var_name})"
+
+
+def _target_encoding_source_columns(
+    terms: dict[str, dict[str, Any]],
+    interactions: list[dict[str, Any]] | None,
+    input_transforms: list[dict[str, Any]] | None,
+) -> set[str]:
+    transform_outputs = {
+        spec.get("output")
+        for spec in (input_transforms or [])
+        if isinstance(spec, dict) and isinstance(spec.get("output"), str)
+    }
+    columns: set[str] = set()
+    for var_name, spec in terms.items():
+        if spec.get("type") == "target_encoding":
+            column = str(spec.get("variable", var_name))
+            if column not in transform_outputs:
+                columns.add(column)
+    reserved = {
+        "include_main",
+        "target_encoding",
+        "frequency_encoding",
+        "prior_weight",
+        "n_permutations",
+        "mode",
+    }
+    for interaction in interactions or []:
+        if not interaction.get("target_encoding"):
+            continue
+        for var_name in interaction:
+            if var_name in reserved:
+                continue
+            if var_name not in transform_outputs:
+                columns.add(var_name)
+    return columns
+
+
+def _target_encoding_categories(data: Any, term: TargetEncodingTermSpec) -> list[str]:
+    import polars as pl
+
+    if term.interaction_vars is not None and len(term.interaction_vars) >= 2:
+        missing = [var for var in term.interaction_vars if var not in data.columns]
+        if missing:
+            raise PredictionError(
+                f"target encoding interaction requires missing columns {missing}."
+            )
+        return data.select(
+            pl.concat_str(
+                [pl.col(var).cast(pl.Utf8) for var in term.interaction_vars],
+                separator=":",
+            ).alias("__rustystats_te_key__")
+        )["__rustystats_te_key__"].to_list()
+    if term.var_name not in data.columns:
+        raise PredictionError(f"target encoding requires column {term.var_name!r}.")
+    return data[term.var_name].cast(pl.Utf8).to_list()
+
+
+@dataclass
+class _MultinomialTargetEncodingTermState:
+    feature_name: str
+    var_name: str
+    interaction_vars: list[str] | None
+    prior_weight: float
+    n_permutations: int
+    class_stats: dict[str, dict[str, Any]]
+
+    def transform(self, data: Any, classes: list[str]) -> np.ndarray:
+        categories = _target_encoding_categories(
+            data,
+            TargetEncodingTermSpec(
+                var_name=self.var_name,
+                prior_weight=self.prior_weight,
+                n_permutations=self.n_permutations,
+                interaction_vars=None
+                if self.interaction_vars is None
+                else list(self.interaction_vars),
+            ),
+        )
+        encoded = np.zeros((len(data), len(classes)), dtype=np.float64)
+        for class_idx, class_label in enumerate(classes):
+            state = self.class_stats.get(class_label)
+            if state is None:
+                continue
+            encoded[:, class_idx] = np.asarray(
+                _apply_exposure_weighted_te_rust(
+                    categories,
+                    state["stats"],
+                    float(state["prior"]),
+                    self.prior_weight,
+                ),
+                dtype=np.float64,
+            )
+        return encoded
+
+
+@dataclass
+class _MultinomialTargetEncodingState:
+    classes: list[str]
+    reference: str
+    non_reference_classes: list[str]
+    mode: str
+    fallback: str
+    terms: list[_MultinomialTargetEncodingTermState]
+
+    @property
+    def feature_names(self) -> list[str]:
+        return [term.feature_name for term in self.terms]
+
+    def transform(self, data: Any) -> np.ndarray:
+        tensor = np.zeros((len(data), len(self.classes), len(self.terms)), dtype=np.float64)
+        for term_idx, term in enumerate(self.terms):
+            tensor[:, :, term_idx] = term.transform(data, self.classes)
+        return tensor
+
+
+@dataclass
+class MultinomialFoldPreprocessingState:
+    """Fold-local preprocessing state for future multinomial CV paths."""
+
+    builder: InteractionBuilder
+    parsed_formula: ParsedFormula
+    target_encoding_state: _MultinomialTargetEncodingState | None
+    alternative_generic_feature_names: list[str]
+    alternative_specific_feature_names: list[str]
+
+
+@dataclass
+class MultinomialFoldDesign:
+    """All solver inputs for one fold-safe multinomial preprocessing split."""
+
+    x_train: np.ndarray
+    x_val: np.ndarray
+    alternative_generic_train: np.ndarray
+    alternative_generic_val: np.ndarray
+    alternative_specific_train: np.ndarray
+    alternative_specific_val: np.ndarray
+    availability_train: np.ndarray
+    availability_val: np.ndarray
+    offset_train: np.ndarray
+    offset_val: np.ndarray
+    weights_train: np.ndarray | None
+    weights_val: np.ndarray | None
+    y_train: np.ndarray
+    y_val: np.ndarray
+    feature_names: list[str]
+    preprocessing_state: MultinomialFoldPreprocessingState
+
+
+def _fold_local_parsed_formula(parsed: ParsedFormula) -> ParsedFormula:
+    parsed_fold = copy.deepcopy(parsed)
+    for spline in getattr(parsed_fold, "spline_terms", []):
+        spline._computed_boundary_knots = None
+        spline._computed_internal_knots = None
+        spline._penalty_matrix = None
+        spline._lambda = None
+        spline._edf = None
+    for attr in ("_spline_by_var", "_te_by_var"):
+        if hasattr(parsed_fold, attr):
+            setattr(parsed_fold, attr, None)
+    return parsed_fold
+
+
+def _fit_target_encoding_term_for_class(
+    data: Any,
+    term: TargetEncodingTermSpec,
+    claims: np.ndarray,
+    exposure: np.ndarray,
+    seed: int | None,
+) -> tuple[np.ndarray, float, dict[str, tuple[float, float]]]:
+    if term.interaction_vars is not None and len(term.interaction_vars) == 2:
+        import polars as pl
+
+        var1, var2 = term.interaction_vars
+        encoded, _name, prior, stats = _target_encode_interaction_with_exposure_rust(
+            data[var1].cast(pl.Utf8).to_list(),
+            data[var2].cast(pl.Utf8).to_list(),
+            claims,
+            exposure,
+            var1,
+            var2,
+            term.prior_weight,
+            term.n_permutations,
+            seed,
+        )
+    else:
+        categories = _target_encoding_categories(data, term)
+        encoded, _name, prior, stats = _target_encode_with_exposure_rust(
+            categories,
+            claims,
+            exposure,
+            _target_encoding_feature_name(term)[3:-1],
+            term.prior_weight,
+            term.n_permutations,
+            seed,
+        )
+    return np.asarray(encoded, dtype=np.float64), float(prior), stats
+
+
+def _build_multinomial_target_encoding(
+    data: Any,
+    terms: list[TargetEncodingTermSpec],
+    *,
+    classes: list[str],
+    reference: str,
+    y_codes: np.ndarray,
+    availability: np.ndarray,
+    row_weights: np.ndarray | None,
+    seed: int | None,
+) -> tuple[np.ndarray, _MultinomialTargetEncodingState | None]:
+    if not terms:
+        return np.zeros((len(data), len(classes), 0), dtype=np.float64), None
+
+    weights = (
+        np.ones(len(data), dtype=np.float64)
+        if row_weights is None
+        else np.asarray(row_weights, dtype=np.float64)
+    )
+    tensor = np.zeros((len(data), len(classes), len(terms)), dtype=np.float64)
+    non_reference = [label for label in classes if label != reference]
+    term_states: list[_MultinomialTargetEncodingTermState] = []
+    for term_idx, term in enumerate(terms):
+        feature_name = _target_encoding_feature_name(term)
+        class_stats: dict[str, dict[str, Any]] = {}
+        for class_idx, class_label in enumerate(classes):
+            if class_label == reference:
+                continue
+            claims = weights * (y_codes == class_idx).astype(np.float64)
+            exposure = weights * availability[:, class_idx].astype(np.float64)
+            encoded, prior, stats = _fit_target_encoding_term_for_class(
+                data,
+                term,
+                claims.astype(np.float64, copy=False),
+                exposure.astype(np.float64, copy=False),
+                seed,
+            )
+            tensor[:, class_idx, term_idx] = encoded
+            class_stats[class_label] = {
+                "prior": prior,
+                "stats": stats,
+            }
+        term_states.append(
+            _MultinomialTargetEncodingTermState(
+                feature_name=feature_name,
+                var_name=term.var_name,
+                interaction_vars=None
+                if term.interaction_vars is None
+                else list(term.interaction_vars),
+                prior_weight=float(term.prior_weight),
+                n_permutations=int(term.n_permutations),
+                class_stats=class_stats,
+            )
+        )
+
+    return tensor, _MultinomialTargetEncodingState(
+        classes=list(classes),
+        reference=reference,
+        non_reference_classes=non_reference,
+        mode="alternative_specific_diagonal",
+        fallback="prior",
+        terms=term_states,
+    )
+
+
+def _append_alternative_specific_terms(
+    existing: np.ndarray,
+    extra: np.ndarray,
+) -> np.ndarray:
+    if extra.shape[2] == 0:
+        return existing
+    if existing.shape[2] == 0:
+        return extra
+    return np.concatenate([existing, extra], axis=2)
+
+
 def _weighted_standardization_scale(values: np.ndarray, weights: np.ndarray) -> float:
     weight_sum = float(np.sum(weights))
     if not np.isfinite(weight_sum) or weight_sum <= 0.0:
@@ -334,13 +659,905 @@ def _alternative_standardization(
     return generic_center, generic_scale, specific_center, specific_scale
 
 
+def _multinomial_standardization_metadata(
+    x: np.ndarray,
+    alternative_generic: np.ndarray,
+    alternative_specific: np.ndarray,
+    availability: np.ndarray,
+    weights: np.ndarray | None,
+    reference_index: int,
+    *,
+    fit_intercept: bool,
+    standardize: bool,
+) -> tuple[
+    np.ndarray | None,
+    np.ndarray | None,
+    np.ndarray | None,
+    np.ndarray | None,
+    np.ndarray | None,
+    np.ndarray | None,
+]:
+    if not standardize:
+        return None, None, None, None, None, None
+
+    from rustystats.regularization_path import compute_standardization, solver_standardization
+
+    center, scale = compute_standardization(
+        x,
+        weights,
+        fit_intercept=fit_intercept,
+    )
+    center, scale = solver_standardization(center, scale, fit_intercept=fit_intercept)
+    (
+        generic_center,
+        generic_scale,
+        specific_center,
+        specific_scale,
+    ) = _alternative_standardization(
+        alternative_generic,
+        alternative_specific,
+        availability,
+        weights,
+        reference_index,
+    )
+    return center, scale, generic_center, generic_scale, specific_center, specific_scale
+
+
+def _initial_theta_from_multinomial_result(
+    result: Any | None,
+    *,
+    center: np.ndarray | None,
+    scale: np.ndarray | None,
+    alternative_generic_center: np.ndarray | None,
+    alternative_generic_scale: np.ndarray | None,
+    alternative_specific_center: np.ndarray | None,
+    alternative_specific_scale: np.ndarray | None,
+    fit_intercept: bool,
+) -> np.ndarray | None:
+    if result is None:
+        return None
+
+    params_original = np.asarray(result.params, dtype=np.float64)
+    params_solver = params_original.copy()
+    generic_solver = np.asarray(result.alternative_generic_coefficients, dtype=np.float64).copy()
+    specific_solver = np.asarray(result.alternative_specific_coefficients, dtype=np.float64).copy()
+
+    if alternative_generic_scale is not None and generic_solver.size:
+        generic_solver *= np.asarray(alternative_generic_scale, dtype=np.float64)
+    if alternative_specific_scale is not None and specific_solver.size:
+        specific_solver *= np.asarray(alternative_specific_scale, dtype=np.float64)
+
+    if center is not None and scale is not None and params_solver.size:
+        center_arr = np.asarray(center, dtype=np.float64)
+        scale_arr = np.asarray(scale, dtype=np.float64)
+        start_feature = 1 if fit_intercept and params_solver.shape[1] > 0 else 0
+        params_solver[:, start_feature:] = (
+            params_original[:, start_feature:] * scale_arr[start_feature:]
+        )
+
+    if fit_intercept and params_solver.shape[1] > 0:
+        intercept_adjustment = np.zeros(params_solver.shape[0], dtype=np.float64)
+        if center is not None and scale is not None and params_solver.shape[1] > 1:
+            center_arr = np.asarray(center, dtype=np.float64)
+            scale_arr = np.asarray(scale, dtype=np.float64)
+            intercept_adjustment += np.sum(
+                params_solver[:, 1:] * (-center_arr[1:] / scale_arr[1:]),
+                axis=1,
+            )
+        if (
+            alternative_specific_center is not None
+            and alternative_specific_scale is not None
+            and specific_solver.size
+        ):
+            specific_center = np.asarray(alternative_specific_center, dtype=np.float64)
+            specific_scale = np.asarray(alternative_specific_scale, dtype=np.float64)
+            intercept_adjustment += np.sum(
+                specific_solver * (-specific_center / specific_scale),
+                axis=1,
+            )
+        params_solver[:, 0] = params_original[:, 0] - intercept_adjustment
+
+    _ = alternative_generic_center  # Generic centering adds a utility constant that cancels.
+    initial_theta = np.concatenate(
+        [
+            params_solver.ravel(),
+            generic_solver.ravel(),
+            specific_solver.ravel(),
+        ]
+    ).astype(np.float64, copy=False)
+    if np.any(~np.isfinite(initial_theta)):
+        raise ValidationError("multinomial warm-start coefficients must be finite.")
+    return np.ascontiguousarray(initial_theta, dtype=np.float64)
+
+
+def _standardized_multinomial_design_for_penalty(
+    x: np.ndarray,
+    alternative_generic: np.ndarray,
+    alternative_specific: np.ndarray,
+    availability: np.ndarray,
+    weights: np.ndarray | None,
+    reference_index: int,
+    *,
+    fit_intercept: bool,
+    standardize: bool,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    x_work = np.asarray(x, dtype=np.float64)
+    generic_work = np.asarray(alternative_generic, dtype=np.float64).copy()
+    specific_work = np.asarray(alternative_specific, dtype=np.float64).copy()
+    (
+        center,
+        scale,
+        generic_center,
+        generic_scale,
+        specific_center,
+        specific_scale,
+    ) = _multinomial_standardization_metadata(
+        x_work,
+        generic_work,
+        specific_work,
+        availability,
+        weights,
+        reference_index,
+        fit_intercept=fit_intercept,
+        standardize=standardize,
+    )
+    if center is not None and scale is not None:
+        x_work = (x_work - center[None, :]) / scale[None, :]
+    if generic_center is not None and generic_scale is not None:
+        generic_work = (generic_work - generic_center[None, None, :]) / generic_scale[None, None, :]
+    if specific_center is not None and specific_scale is not None:
+        block = 0
+        for class_idx in range(specific_work.shape[1]):
+            if class_idx == reference_index:
+                continue
+            specific_work[:, class_idx, :] = (
+                specific_work[:, class_idx, :] - specific_center[block][None, :]
+            ) / specific_scale[block][None, :]
+            block += 1
+    return x_work, generic_work, specific_work
+
+
+def _multinomial_null_probabilities(
+    y_codes: np.ndarray,
+    n_classes: int,
+    reference_index: int,
+    availability: np.ndarray,
+    offset: np.ndarray,
+    weights: np.ndarray | None,
+    *,
+    fit_intercept: bool,
+) -> np.ndarray:
+    if fit_intercept:
+        x_null = np.ones((len(y_codes), 1), dtype=np.float64)
+        null_result = _fit_multinomial_rust(
+            y_codes,
+            x_null,
+            n_classes,
+            reference_index,
+            availability,
+            offset,
+            weights,
+            0.0,
+            0.0,
+            100,
+            1e-8,
+            True,
+            None,
+            None,
+            True,
+            _DEFAULT_HESSIAN_MEMORY_LIMIT_BYTES,
+            max(_DEFAULT_MAX_DENSE_PARAMETERS, n_classes - 1),
+            False,
+            False,
+        )
+        return np.asarray(null_result.fitted_probabilities, dtype=np.float64)
+
+    logits = np.asarray(offset, dtype=np.float64)
+    masked = np.where(availability, logits, -np.inf)
+    max_eta = np.max(masked, axis=1, keepdims=True)
+    exp_eta = np.where(availability, np.exp(masked - max_eta), 0.0)
+    denom = exp_eta.sum(axis=1, keepdims=True)
+    return exp_eta / denom
+
+
+def _multinomial_alpha_max_from_arrays(
+    y_codes: np.ndarray,
+    x: np.ndarray,
+    alternative_generic: np.ndarray,
+    alternative_specific: np.ndarray,
+    availability: np.ndarray,
+    offset: np.ndarray,
+    weights: np.ndarray | None,
+    n_classes: int,
+    reference_index: int,
+    l1_ratio: float = 1.0,
+    *,
+    fit_intercept: bool,
+    standardize: bool = True,
+) -> float:
+    if not np.isfinite(l1_ratio) or l1_ratio < 0.0 or l1_ratio > 1.0:
+        raise ValidationError("l1_ratio must be finite and in [0, 1].")
+
+    x_work, generic_work, specific_work = _standardized_multinomial_design_for_penalty(
+        x,
+        alternative_generic,
+        alternative_specific,
+        availability,
+        weights,
+        reference_index,
+        fit_intercept=fit_intercept,
+        standardize=standardize,
+    )
+    weights = (
+        np.ones(len(y_codes), dtype=np.float64)
+        if weights is None
+        else np.asarray(weights, dtype=np.float64)
+    )
+
+    penalized_scores: list[np.ndarray] = []
+    probabilities = _multinomial_null_probabilities(
+        y_codes,
+        n_classes,
+        reference_index,
+        availability,
+        offset,
+        weights,
+        fit_intercept=fit_intercept,
+    )
+    for class_idx in range(n_classes):
+        if class_idx == reference_index:
+            continue
+        residual = weights * (probabilities[:, class_idx] - (y_codes == class_idx))
+        shared_scores = x_work.T @ residual
+        if fit_intercept and shared_scores.size:
+            shared_scores = shared_scores[1:]
+        penalized_scores.append(shared_scores)
+        if specific_work.shape[2]:
+            penalized_scores.append(specific_work[:, class_idx, :].T @ residual)
+
+    if generic_work.shape[2]:
+        expected = np.sum(probabilities[:, :, None] * generic_work, axis=1)
+        observed = generic_work[np.arange(len(y_codes)), y_codes, :]
+        penalized_scores.append(np.sum(weights[:, None] * (expected - observed), axis=0))
+
+    nonempty_scores = [
+        np.asarray(scores, dtype=np.float64) for scores in penalized_scores if scores.size
+    ]
+    if not nonempty_scores:
+        return ALPHA_MAX_FLOOR
+
+    if l1_ratio > 0.0:
+        max_score = max(float(np.max(np.abs(scores))) for scores in nonempty_scores)
+        return max(max_score / l1_ratio, ALPHA_MAX_FLOOR)
+
+    weighted_diags: list[np.ndarray] = []
+    if x_work.shape[1] > 0:
+        shared = x_work[:, 1:] if fit_intercept else x_work
+        if shared.size:
+            weighted_diags.append(np.sum((shared**2) * weights[:, None], axis=0))
+    if generic_work.shape[2]:
+        cell_weights = weights[:, None] * availability.astype(np.float64, copy=False)
+        weighted_diags.append(np.sum((generic_work**2) * cell_weights[:, :, None], axis=(0, 1)))
+    if specific_work.shape[2]:
+        for class_idx in range(n_classes):
+            if class_idx == reference_index:
+                continue
+            active_weights = weights * availability[:, class_idx].astype(np.float64)
+            weighted_diags.append(
+                np.sum((specific_work[:, class_idx, :] ** 2) * active_weights[:, None], axis=0)
+            )
+    nonempty_diags = [diag for diag in weighted_diags if diag.size]
+    if not nonempty_diags:
+        return ALPHA_MAX_FLOOR
+    diag_values = np.concatenate(nonempty_diags)
+    return max(float(np.median(diag_values)) * 10.0, ALPHA_MAX_FLOOR)
+
+
+def multinomial_alpha_max(
+    model: MultinomialDict,
+    l1_ratio: float = 1.0,
+    *,
+    standardize: bool = True,
+) -> float:
+    """Return an alpha-grid anchor for a fitted-design multinomial dict model.
+
+    For ``l1_ratio > 0`` this is the KKT value that zeroes all penalized
+    non-intercept coefficients in the standardized coordinate system used by
+    :meth:`MultinomialDict.fit`. For pure ridge, no finite all-zero KKT value
+    exists, so the helper returns the same style of weighted Gram heuristic used
+    by the scalar GLM regularization path.
+    """
+    if not isinstance(model, MultinomialDict):
+        raise ValidationError("multinomial_alpha_max expects a MultinomialDict instance.")
+    return _multinomial_alpha_max_from_arrays(
+        model.y_codes,
+        model.X,
+        model.alternative_generic,
+        model.alternative_specific,
+        model.availability,
+        model.offset,
+        model.weights,
+        len(model.classes_),
+        model.reference_index_,
+        l1_ratio,
+        fit_intercept=model.intercept,
+        standardize=standardize,
+    )
+
+
+def _multinomial_parameter_count(
+    n_shared: int,
+    n_classes: int,
+    n_alt_generic: int,
+    n_alt_specific: int,
+) -> int:
+    return n_shared * (n_classes - 1) + n_alt_generic + n_alt_specific * (n_classes - 1)
+
+
+def _validate_multinomial_dense_fit_size(
+    *,
+    n_shared: int,
+    n_classes: int,
+    n_alt_generic: int,
+    n_alt_specific: int,
+    hessian_memory_limit_bytes: int,
+    max_dense_parameters: int,
+    context: str,
+) -> None:
+    q = _multinomial_parameter_count(n_shared, n_classes, n_alt_generic, n_alt_specific)
+    if q > max_dense_parameters:
+        raise ValidationError(
+            f"multinomial {context} would estimate q={q} parameters, exceeding "
+            f"max_dense_parameters={max_dense_parameters}."
+        )
+    hessian_bytes = q * q * 8
+    if hessian_bytes > hessian_memory_limit_bytes:
+        estimated_mb = hessian_bytes / (1024.0 * 1024.0)
+        limit_mb = hessian_memory_limit_bytes / (1024.0 * 1024.0)
+        raise ValidationError(
+            f"multinomial {context} dense Hessian would require {estimated_mb:.1f} MB "
+            f"for q={q} parameters, exceeding the configured {limit_mb:.1f} MB limit."
+        )
+
+
+def _stratified_multinomial_cv_folds(
+    y_codes: np.ndarray,
+    weights: np.ndarray | None,
+    n_classes: int,
+    cv: int,
+    seed: int | None,
+    *,
+    max_attempts: int = 100,
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    if cv < 2:
+        raise ValidationError("cv must be at least 2.")
+    n = len(y_codes)
+    if cv > n:
+        raise ValidationError(f"cv={cv} cannot exceed the number of rows ({n}).")
+    w = np.ones(n, dtype=np.float64) if weights is None else np.asarray(weights, dtype=np.float64)
+    if w.shape != (n,) or np.any(~np.isfinite(w)) or np.any(w < 0.0):
+        raise ValidationError("CV weights must be finite and non-negative.")
+    for class_idx in range(n_classes):
+        if float(np.sum(w[y_codes == class_idx])) <= 0.0:
+            raise ValidationError(
+                f"class {class_idx} has zero positive effective weight; CV cannot proceed."
+            )
+
+    base_seed = DEFAULT_CV_SEED if seed is None else int(seed)
+    all_indices = np.arange(n, dtype=np.int64)
+    for attempt in range(max_attempts):
+        rng = np.random.default_rng(base_seed + attempt)
+        fold_bins = [[] for _ in range(cv)]
+        for class_idx in range(n_classes):
+            class_indices = np.flatnonzero(y_codes == class_idx)
+            rng.shuffle(class_indices)
+            fold_offset = int(rng.integers(0, cv))
+            for position, row_idx in enumerate(class_indices):
+                fold_bins[(position + fold_offset) % cv].append(int(row_idx))
+
+        folds: list[tuple[np.ndarray, np.ndarray]] = []
+        valid = True
+        for fold_rows in fold_bins:
+            if not fold_rows:
+                valid = False
+                break
+            val_idx = np.asarray(sorted(fold_rows), dtype=np.int64)
+            val_mask = np.zeros(n, dtype=bool)
+            val_mask[val_idx] = True
+            train_idx = all_indices[~val_mask]
+            for class_idx in range(n_classes):
+                if float(np.sum(w[train_idx][y_codes[train_idx] == class_idx])) <= 0.0:
+                    valid = False
+                    break
+            if not valid:
+                break
+            folds.append((train_idx, val_idx))
+        if valid and len(folds) == cv:
+            return folds
+
+    raise ValidationError(
+        "could not construct CV folds whose training splits contain every observed class "
+        f"with positive effective weight after {max_attempts} deterministic attempts. "
+        "Reduce cv or combine rare classes."
+    )
+
+
+def _multinomial_probabilities_from_result(
+    result: Any,
+    x: np.ndarray,
+    alternative_generic: np.ndarray,
+    alternative_specific: np.ndarray,
+    availability: np.ndarray,
+    offset: np.ndarray,
+    n_classes: int,
+    reference_index: int,
+) -> np.ndarray:
+    logits = np.asarray(offset, dtype=np.float64).copy()
+    generic_coef = np.asarray(result.alternative_generic_coefficients, dtype=np.float64)
+    if generic_coef.size:
+        logits += np.tensordot(alternative_generic, generic_coef, axes=([2], [0]))
+    params = np.asarray(result.params, dtype=np.float64)
+    specific_coef = np.asarray(result.alternative_specific_coefficients, dtype=np.float64)
+    block = 0
+    for class_idx in range(n_classes):
+        if class_idx == reference_index:
+            continue
+        logits[:, class_idx] += x @ params[block, :]
+        if specific_coef.size:
+            logits[:, class_idx] += alternative_specific[:, class_idx, :] @ specific_coef[block, :]
+        block += 1
+    return _masked_softmax(logits, availability)
+
+
+def _multinomial_validation_deviance(
+    probabilities: np.ndarray,
+    y_codes: np.ndarray,
+    weights: np.ndarray | None,
+) -> float:
+    w = np.ones(len(y_codes), dtype=np.float64) if weights is None else np.asarray(weights)
+    denom = float(np.sum(w))
+    if denom <= 0.0 or not np.isfinite(denom):
+        return float("inf")
+    selected = np.maximum(probabilities[np.arange(len(y_codes)), y_codes], 1e-300)
+    return float(-2.0 * np.sum(w * np.log(selected)) / denom)
+
+
+def _fit_multinomial_arrays(
+    *,
+    y_codes: np.ndarray,
+    x: np.ndarray,
+    n_classes: int,
+    reference_index: int,
+    availability: np.ndarray,
+    offset: np.ndarray,
+    weights: np.ndarray | None,
+    alpha: float,
+    l1_ratio: float,
+    max_iter: int,
+    tol: float,
+    fit_intercept: bool,
+    standardize: bool,
+    compute_covariance: bool,
+    store_design_matrix: bool,
+    verbose: bool,
+    hessian_memory_limit_bytes: int,
+    max_dense_parameters: int,
+    alternative_generic: np.ndarray,
+    alternative_specific: np.ndarray,
+    initial_result: Any | None = None,
+) -> Any:
+    (
+        center,
+        scale,
+        alternative_generic_center,
+        alternative_generic_scale,
+        alternative_specific_center,
+        alternative_specific_scale,
+    ) = _multinomial_standardization_metadata(
+        x,
+        alternative_generic,
+        alternative_specific,
+        availability,
+        weights,
+        reference_index,
+        fit_intercept=fit_intercept,
+        standardize=alpha > 0.0 and standardize,
+    )
+    l1_active = alpha > 0.0 and l1_ratio > 0.0
+    initial_theta = _initial_theta_from_multinomial_result(
+        initial_result,
+        center=center,
+        scale=scale,
+        alternative_generic_center=alternative_generic_center,
+        alternative_generic_scale=alternative_generic_scale,
+        alternative_specific_center=alternative_specific_center,
+        alternative_specific_scale=alternative_specific_scale,
+        fit_intercept=fit_intercept,
+    )
+    return _fit_multinomial_rust(
+        y_codes,
+        np.ascontiguousarray(x, dtype=np.float64),
+        n_classes,
+        reference_index,
+        availability,
+        offset,
+        weights,
+        alpha,
+        0.0 if alpha == 0.0 else l1_ratio,
+        max_iter,
+        tol,
+        fit_intercept,
+        center,
+        scale,
+        not (compute_covariance and not l1_active),
+        int(hessian_memory_limit_bytes),
+        int(max_dense_parameters),
+        store_design_matrix,
+        verbose,
+        alternative_generic,
+        alternative_specific,
+        alternative_generic_center,
+        alternative_generic_scale,
+        alternative_specific_center,
+        alternative_specific_scale,
+        initial_theta,
+    )
+
+
+def _normalize_multinomial_cv_alphas(
+    model: MultinomialDict,
+    folds: list[tuple[np.ndarray, np.ndarray]],
+    effective_l1_ratio: float,
+    *,
+    alphas: np.ndarray | list[float] | None,
+    n_alphas: int,
+    alpha_min_ratio: float,
+    include_unregularized: bool,
+    standardize: bool,
+    cv_seed: int,
+) -> np.ndarray:
+    if alphas is not None:
+        arr = np.asarray(alphas, dtype=np.float64)
+        if arr.ndim != 1 or arr.size == 0:
+            raise ValidationError("alphas must be a non-empty one-dimensional sequence.")
+        if np.any(~np.isfinite(arr)) or np.any(arr < 0.0):
+            raise ValidationError("alphas must be finite and non-negative.")
+        values = sorted({float(value) for value in arr}, reverse=True)
+        return np.asarray(values, dtype=np.float64)
+
+    if n_alphas <= 0:
+        raise ValidationError("n_alphas must be positive.")
+    if alpha_min_ratio <= 0.0 or alpha_min_ratio >= 1.0 or not np.isfinite(alpha_min_ratio):
+        raise ValidationError("alpha_min_ratio must be finite and between 0 and 1.")
+
+    from rustystats.regularization_path import generate_alpha_path
+
+    fold_alpha_maxes: list[float] = []
+    for fold_idx, (train_idx, val_idx) in enumerate(folds):
+        fold = build_multinomial_fold_design(model, train_idx, val_idx, seed=cv_seed)
+        try:
+            alpha_max = _multinomial_alpha_max_from_arrays(
+                fold.y_train,
+                fold.x_train,
+                fold.alternative_generic_train,
+                fold.alternative_specific_train,
+                fold.availability_train,
+                fold.offset_train,
+                fold.weights_train,
+                len(model.classes_),
+                model.reference_index_,
+                effective_l1_ratio,
+                fit_intercept=model.intercept,
+                standardize=standardize,
+            )
+        except (ValidationError, ValueError, RuntimeError) as exc:
+            if model._target_encoding_state is not None:
+                alpha_max = ALPHA_MAX_FLOOR
+            else:
+                raise ValidationError(
+                    f"failed to compute alpha_max for CV fold {fold_idx}: {exc}"
+                ) from exc
+        fold_alpha_maxes.append(alpha_max)
+    alpha_max = max(fold_alpha_maxes) if fold_alpha_maxes else ALPHA_MAX_FLOOR
+    path = list(generate_alpha_path(alpha_max, n_alphas, alpha_min_ratio))
+    if include_unregularized and 0.0 not in path:
+        path.append(0.0)
+    return np.asarray(path, dtype=np.float64)
+
+
+def _fit_multinomial_cv_path(
+    model: MultinomialDict,
+    *,
+    regularization: str,
+    l1_ratio: float,
+    cv: int,
+    selection: str,
+    n_alphas: int,
+    alphas: np.ndarray | list[float] | None,
+    alpha_min_ratio: float,
+    cv_seed: int | None,
+    include_unregularized: bool,
+    max_iter: int,
+    tol: float,
+    standardize: bool,
+    verbose: bool,
+    hessian_memory_limit_bytes: int,
+    max_dense_parameters: int,
+) -> Any:
+    from rustystats.regularization_path import (
+        RegularizationPathInfo,
+        RegularizationPathResult,
+        select_optimal_alpha,
+    )
+
+    if regularization is None:
+        raise ValidationError(
+            "When cv is specified, regularization must be 'ridge', 'lasso', or 'elastic_net'."
+        )
+    _unused_alpha, effective_l1_ratio = _resolve_regularization(1.0, l1_ratio, regularization)
+    cv_seed = DEFAULT_CV_SEED if cv_seed is None else int(cv_seed)
+    folds = _stratified_multinomial_cv_folds(
+        model.y_codes,
+        model.weights,
+        len(model.classes_),
+        int(cv),
+        cv_seed,
+    )
+    candidate_alphas = _normalize_multinomial_cv_alphas(
+        model,
+        folds,
+        effective_l1_ratio,
+        alphas=alphas,
+        n_alphas=n_alphas,
+        alpha_min_ratio=alpha_min_ratio,
+        include_unregularized=include_unregularized,
+        standardize=standardize,
+        cv_seed=cv_seed,
+    )
+    if verbose:
+        print(
+            f"Multinomial CV: {regularization}, {len(folds)} folds, {len(candidate_alphas)} alphas"
+        )
+
+    fold_scores: dict[float, list[float]] = {float(alpha): [] for alpha in candidate_alphas}
+    nonzero_counts: dict[float, list[int]] = {float(alpha): [] for alpha in candidate_alphas}
+    max_coefs: dict[float, list[float]] = {float(alpha): [] for alpha in candidate_alphas}
+
+    for fold_idx, (train_idx, val_idx) in enumerate(folds):
+        fold = build_multinomial_fold_design(model, train_idx, val_idx, seed=cv_seed)
+        _validate_multinomial_dense_fit_size(
+            n_shared=fold.x_train.shape[1],
+            n_classes=len(model.classes_),
+            n_alt_generic=fold.alternative_generic_train.shape[2],
+            n_alt_specific=fold.alternative_specific_train.shape[2],
+            hessian_memory_limit_bytes=hessian_memory_limit_bytes,
+            max_dense_parameters=max_dense_parameters,
+            context=f"CV fold {fold_idx}",
+        )
+        previous_fold_result = None
+        for alpha in candidate_alphas:
+            alpha_value = float(alpha)
+            fit_l1_ratio = 0.0 if alpha_value == 0.0 else effective_l1_ratio
+            try:
+                fold_result = _fit_multinomial_arrays(
+                    y_codes=fold.y_train,
+                    x=fold.x_train,
+                    n_classes=len(model.classes_),
+                    reference_index=model.reference_index_,
+                    availability=fold.availability_train,
+                    offset=fold.offset_train,
+                    weights=fold.weights_train,
+                    alpha=alpha_value,
+                    l1_ratio=fit_l1_ratio,
+                    max_iter=max_iter,
+                    tol=tol,
+                    fit_intercept=model.intercept,
+                    standardize=standardize,
+                    compute_covariance=False,
+                    store_design_matrix=False,
+                    verbose=False,
+                    hessian_memory_limit_bytes=hessian_memory_limit_bytes,
+                    max_dense_parameters=max_dense_parameters,
+                    alternative_generic=fold.alternative_generic_train,
+                    alternative_specific=fold.alternative_specific_train,
+                    initial_result=previous_fold_result,
+                )
+                previous_fold_result = fold_result
+                probabilities = _multinomial_probabilities_from_result(
+                    fold_result,
+                    fold.x_val,
+                    fold.alternative_generic_val,
+                    fold.alternative_specific_val,
+                    fold.availability_val,
+                    fold.offset_val,
+                    len(model.classes_),
+                    model.reference_index_,
+                )
+                score = _multinomial_validation_deviance(
+                    probabilities,
+                    fold.y_val,
+                    fold.weights_val,
+                )
+            except (ValueError, ValidationError, RuntimeError) as exc:
+                if verbose:
+                    print(f"  fold {fold_idx}, alpha={alpha_value:.6g} failed: {exc!r}")
+                score = float("inf")
+                fold_result = None
+            fold_scores[alpha_value].append(score)
+            if fold_result is not None and np.isfinite(score):
+                flat = np.concatenate(
+                    [
+                        np.asarray(fold_result.params, dtype=np.float64).ravel(),
+                        np.asarray(
+                            fold_result.alternative_generic_coefficients, dtype=np.float64
+                        ).ravel(),
+                        np.asarray(
+                            fold_result.alternative_specific_coefficients, dtype=np.float64
+                        ).ravel(),
+                    ]
+                )
+                nonzero_counts[alpha_value].append(int(np.sum(np.abs(flat) > 1e-10)))
+                max_coefs[alpha_value].append(float(np.max(np.abs(flat))) if flat.size else 0.0)
+
+    path_results = []
+    for alpha in candidate_alphas:
+        alpha_value = float(alpha)
+        scores = fold_scores[alpha_value]
+        finite_scores = [score for score in scores if np.isfinite(score)]
+        if len(finite_scores) != len(folds):
+            continue
+        path_results.append(
+            RegularizationPathResult(
+                alpha=alpha_value,
+                l1_ratio=0.0 if alpha_value == 0.0 else effective_l1_ratio,
+                cv_deviance_mean=float(np.mean(finite_scores)),
+                cv_deviance_se=float(
+                    np.std(finite_scores, ddof=1) / math.sqrt(len(finite_scores))
+                    if len(finite_scores) > 1
+                    else 0.0
+                ),
+                n_nonzero=round(np.mean(nonzero_counts[alpha_value]))
+                if nonzero_counts[alpha_value]
+                else 0,
+                max_coef=float(np.max(max_coefs[alpha_value])) if max_coefs[alpha_value] else 0.0,
+            )
+        )
+    if not path_results:
+        raise ValidationError(
+            "multinomial CV produced no finite validation deviances; check the data, "
+            "fold count, regularization grid, and convergence settings."
+        )
+    best = select_optimal_alpha(path_results, selection)
+    if best.alpha == 0.0:
+        regularization_type = "none"
+    elif effective_l1_ratio >= 1.0:
+        regularization_type = "lasso"
+    elif effective_l1_ratio <= 0.0:
+        regularization_type = "ridge"
+    else:
+        regularization_type = "elastic_net"
+    return RegularizationPathInfo(
+        selected_alpha=best.alpha,
+        selected_l1_ratio=best.l1_ratio,
+        cv_deviance=best.cv_deviance_mean,
+        cv_deviance_se=best.cv_deviance_se,
+        selection_method=selection,
+        regularization_type=regularization_type,
+        path=path_results,
+        n_folds=len(folds),
+        cv_max_iter=max_iter,
+        cv_tol=tol,
+        fold_safe_target_encoding=model._target_encoding_state is not None,
+        cv_fold_scores={alpha: list(map(float, scores)) for alpha, scores in fold_scores.items()},
+        cv_scoring_objective="weighted_mean_multinomial_deviance",
+        cv_profile={
+            "n_alphas": len(candidate_alphas),
+            "n_folds": len(folds),
+            "cv_seed": cv_seed,
+            "candidate_fit_count": len(candidate_alphas) * len(folds),
+            "within_fold_warm_start": True,
+        },
+    )
+
+
+def _full_data_multinomial_warm_start_result(
+    model: MultinomialDict,
+    path_info: Any | None,
+    *,
+    max_iter: int,
+    tol: float,
+    standardize: bool,
+    verbose: bool,
+    hessian_memory_limit_bytes: int,
+    max_dense_parameters: int,
+) -> Any | None:
+    if path_info is None or not path_info.path:
+        return None
+
+    selected_alpha = float(path_info.selected_alpha)
+    candidate_alphas = sorted(
+        {float(row.alpha) for row in path_info.path if float(row.alpha) >= selected_alpha},
+        reverse=True,
+    )
+    if selected_alpha not in candidate_alphas:
+        candidate_alphas.append(selected_alpha)
+        candidate_alphas.sort(reverse=True)
+
+    previous_result = None
+    for alpha_value in candidate_alphas:
+        fit_l1_ratio = 0.0 if alpha_value == 0.0 else float(path_info.selected_l1_ratio)
+        try:
+            previous_result = _fit_multinomial_arrays(
+                y_codes=model.y_codes,
+                x=model.X,
+                n_classes=len(model.classes_),
+                reference_index=model.reference_index_,
+                availability=model.availability,
+                offset=model.offset,
+                weights=model.weights,
+                alpha=alpha_value,
+                l1_ratio=fit_l1_ratio,
+                max_iter=max_iter,
+                tol=tol,
+                fit_intercept=model.intercept,
+                standardize=standardize,
+                compute_covariance=False,
+                store_design_matrix=False,
+                verbose=False,
+                hessian_memory_limit_bytes=hessian_memory_limit_bytes,
+                max_dense_parameters=max_dense_parameters,
+                alternative_generic=model.alternative_generic,
+                alternative_specific=model.alternative_specific,
+                initial_result=previous_result,
+            )
+        except (ValueError, ValidationError, RuntimeError) as exc:
+            if verbose:
+                print(f"  full-data warm start alpha={alpha_value:.6g} failed: {exc!r}")
+            break
+        if alpha_value == selected_alpha:
+            break
+    return previous_result
+
+
+def _target_encoding_options(
+    spec: dict[str, Any],
+    *,
+    context: str,
+    allowed_keys: set[str] | None = None,
+) -> tuple[float, int]:
+    if "mode" in spec:
+        raise ValidationError(
+            "multinomial target_encoding mode is not configurable yet; only the default "
+            "alternative_specific_diagonal encoding is implemented, so omit 'mode'."
+        )
+    if allowed_keys is not None:
+        unknown = sorted(set(spec) - allowed_keys)
+        if unknown:
+            raise ValidationError(
+                f"Unknown key(s) in target_encoding spec ({context}): {unknown}. "
+                f"Valid keys are: {sorted(allowed_keys)}."
+            )
+    try:
+        prior_weight = float(spec.get("prior_weight", DEFAULT_PRIOR_WEIGHT))
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(f"target_encoding prior_weight must be numeric ({context}).") from exc
+    try:
+        n_permutations = int(spec.get("n_permutations", DEFAULT_N_PERMUTATIONS))
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(
+            f"target_encoding n_permutations must be an integer ({context})."
+        ) from exc
+    if not np.isfinite(prior_weight) or prior_weight < 0.0:
+        raise ValidationError(
+            f"target_encoding prior_weight must be finite and non-negative ({context})."
+        )
+    if n_permutations <= 0:
+        raise ValidationError(f"target_encoding n_permutations must be positive ({context}).")
+    return prior_weight, n_permutations
+
+
 def _validate_supported_term_spec(var_name: str, spec: dict[str, Any], *, context: str) -> None:
     term_type = spec.get("type", "linear")
-    if term_type == "target_encoding":
-        raise ValidationError(
-            "target_encoding is not yet supported for multinomial_dict. Use categorical or "
-            "frequency_encoding terms, or precompute multiclass encodings outside the model."
-        )
     if term_type in {"ms", "s"}:
         raise ValidationError(
             f"{term_type} smooth/monotonic spline terms are not yet supported for "
@@ -362,6 +1579,13 @@ def _validate_supported_term_spec(var_name: str, spec: dict[str, Any], *, contex
                 f"multinomial_dict requires fixed-degree {term_type} terms. "
                 f"Pass df= or knots= for {context} term {var_name!r}."
             )
+    if term_type == "target_encoding":
+        _target_encoding_options(
+            spec,
+            context=f"{context} term {var_name!r}",
+            allowed_keys={"type", "prior_weight", "n_permutations", "variable"},
+        )
+        return
     if term_type not in {"linear", "categorical", "bs", "ns", "frequency_encoding", "expression"}:
         raise ValidationError(f"term type {term_type!r} is not supported for multinomial_dict.")
 
@@ -379,17 +1603,22 @@ def _validate_supported_terms(
         "frequency_encoding",
         "prior_weight",
         "n_permutations",
+        "mode",
     }
     for interaction in interactions or []:
-        if interaction.get("target_encoding"):
-            raise ValidationError(
-                "target_encoding interactions are not yet supported for multinomial_dict."
-            )
+        is_target_encoded_interaction = bool(interaction.get("target_encoding"))
+        if is_target_encoded_interaction:
+            _target_encoding_options(interaction, context="interaction")
         for var_name, spec in interaction.items():
             if var_name in reserved:
                 continue
             if not isinstance(spec, dict):
                 raise ValidationError(f"interaction spec for {var_name!r} must be a dict.")
+            if not is_target_encoded_interaction and spec.get("type") == "target_encoding":
+                raise ValidationError(
+                    "target_encoding factors inside ordinary interactions are not yet supported "
+                    "for multinomial_dict. Use an interaction with target_encoding=True instead."
+                )
             _validate_supported_term_spec(var_name, spec, context="interaction")
 
 
@@ -1077,6 +2306,7 @@ class MultinomialModel:
         interactions: list[dict[str, Any]] | None,
         input_transforms: list[dict[str, Any]] | None,
         compiled_input_transforms: list[CompiledInputTransform] | None,
+        target_encoding_state: _MultinomialTargetEncodingState | None,
         availability_spec: Any,
         offset_spec: Any,
         weights_spec: str | None,
@@ -1085,6 +2315,7 @@ class MultinomialModel:
         inference_status: str,
         fit_row_weights: np.ndarray | None = None,
         array_weighted: bool = False,
+        regularization_path_info: Any | None = None,
     ):
         self._result = result
         self.response = response
@@ -1098,6 +2329,11 @@ class MultinomialModel:
         self.alternative_generic_feature_names, self.alternative_specific_feature_names = (
             _alternative_names_by_kind(self._alternative_terms_spec)
         )
+        self._target_encoding_state = copy.deepcopy(target_encoding_state)
+        if self._target_encoding_state is not None:
+            self.alternative_specific_feature_names.extend(
+                self._target_encoding_state.feature_names
+            )
         self._interactions_spec = copy.deepcopy(interactions)
         self._input_transforms = validate_input_transforms(input_transforms)
         self._compiled_input_transforms = (
@@ -1119,6 +2355,7 @@ class MultinomialModel:
         )
         self._array_weighted = bool(array_weighted)
         self.inference_status = inference_status
+        self._regularization_path_info = regularization_path_info
 
     @property
     def params(self) -> np.ndarray:
@@ -1201,6 +2438,96 @@ class MultinomialModel:
     @property
     def l1_ratio(self) -> float:
         return float(getattr(self._result, "l1_ratio", 0.0))
+
+    @property
+    def cv_deviance(self) -> float | None:
+        if self._regularization_path_info is None:
+            return None
+        return float(self._regularization_path_info.cv_deviance)
+
+    @property
+    def cv_deviance_se(self) -> float | None:
+        if self._regularization_path_info is None:
+            return None
+        return float(self._regularization_path_info.cv_deviance_se)
+
+    @property
+    def regularization_type(self) -> str | None:
+        if self._regularization_path_info is not None:
+            return self._regularization_path_info.regularization_type
+        if self.alpha <= 0.0:
+            return "none"
+        if self.l1_ratio >= 1.0:
+            return "lasso"
+        if self.l1_ratio > 0.0:
+            return "elastic_net"
+        return "ridge"
+
+    @property
+    def regularization_path(self) -> list[dict[str, Any]] | None:
+        if self._regularization_path_info is None:
+            return None
+        return [
+            {
+                "alpha": float(row.alpha),
+                "l1_ratio": float(row.l1_ratio),
+                "cv_deviance_mean": float(row.cv_deviance_mean),
+                "cv_deviance_se": float(row.cv_deviance_se),
+                "n_nonzero": int(row.n_nonzero),
+                "max_coef": float(row.max_coef),
+            }
+            for row in self._regularization_path_info.path
+        ]
+
+    @property
+    def cv_selection_method(self) -> str | None:
+        if self._regularization_path_info is None:
+            return None
+        return self._regularization_path_info.selection_method
+
+    @property
+    def n_cv_folds(self) -> int | None:
+        if self._regularization_path_info is None:
+            return None
+        return int(self._regularization_path_info.n_folds)
+
+    @property
+    def cv_convergence(self) -> dict[str, float | int] | None:
+        if self._regularization_path_info is None:
+            return None
+        return {
+            "max_iter": int(self._regularization_path_info.cv_max_iter),
+            "tol": float(self._regularization_path_info.cv_tol),
+        }
+
+    @property
+    def cv_fold_scores(self) -> dict[float, list[float]] | None:
+        if self._regularization_path_info is None:
+            return None
+        scores = self._regularization_path_info.cv_fold_scores
+        if scores is None:
+            return None
+        return {
+            float(alpha): list(map(float, fold_scores)) for alpha, fold_scores in scores.items()
+        }
+
+    @property
+    def cv_scoring_objective(self) -> str | None:
+        if self._regularization_path_info is None:
+            return None
+        return self._regularization_path_info.cv_scoring_objective
+
+    @property
+    def cv_profile(self) -> dict[str, Any] | None:
+        if self._regularization_path_info is None:
+            return None
+        return self._regularization_path_info.cv_profile
+
+    @property
+    def fold_safe_target_encoding(self) -> bool | None:
+        if self._regularization_path_info is None:
+            return None
+        return bool(self._regularization_path_info.fold_safe_target_encoding)
 
     @property
     def nobs(self) -> int:
@@ -2025,6 +3352,11 @@ class MultinomialModel:
             interactions=self._interactions_spec,
             input_transforms=self._input_transforms,
         )
+        needed |= _target_encoding_source_columns(
+            self._terms_dict,
+            self._interactions_spec,
+            self._input_transforms,
+        )
         needed |= _extra_needed_columns(
             [availability_to_use, offset_to_use], self._input_transforms
         )
@@ -2044,6 +3376,9 @@ class MultinomialModel:
         generic, specific, _generic_names, _specific_names = _resolve_alternative_arrays(
             data, self.classes_, self._alternative_terms_spec
         )
+        if self._target_encoding_state is not None:
+            te_specific = self._target_encoding_state.transform(data)
+            specific = _append_alternative_specific_terms(specific, te_specific)
         return generic, specific
 
     def _resolve_prediction_availability(self, data: Any, availability: Any) -> np.ndarray:
@@ -2618,6 +3953,15 @@ class MultinomialModel:
                 return f"{'<0.0001':>8}"
             return f"{value:>8.4f}"
 
+        if self.alpha <= 0.0:
+            method = "Newton"
+        elif self.l1_ratio >= 1.0:
+            method = "Newton + Lasso"
+        elif self.l1_ratio > 0.0:
+            method = "Newton + Elastic Net"
+        else:
+            method = "Newton + Ridge"
+
         lines = [
             "=" * 78,
             "Multinomial Logit Results".center(78),
@@ -2626,7 +3970,7 @@ class MultinomialModel:
             f"{'Reference:':<20} {self.reference_}",
             f"{'No. Observations:':<20} {self.nobs:>10}",
             f"{'Parameters:':<20} {self.n_params:>10}",
-            f"{'Method:':<20} {'Newton' if self.alpha == 0.0 else 'Newton + Ridge'}",
+            f"{'Method:':<20} {method}",
             f"{'Iterations:':<20} {self.iterations:>10}",
             f"{'Converged:':<20} {self.converged!s:>10}",
             f"{'Solver status:':<20} {self.solver_status}",
@@ -2686,8 +4030,8 @@ class MultinomialModel:
 
         if self.alpha > 0.0:
             lines.append(
-                "Note: baseline ridge is reference-dependent; unpenalized fits are the "
-                "reference-invariant path."
+                "Note: baseline-category penalties are reference-dependent; unpenalized "
+                "fits are the reference-invariant path."
             )
         solver_warnings = self.warnings
         if solver_warnings:
@@ -2751,6 +4095,7 @@ class MultinomialModel:
             "builder_state": builder_state,
             "terms": self._terms_dict,
             "alternative_terms": self._alternative_terms_spec,
+            "target_encoding_state": self._target_encoding_state,
             "interactions": self._interactions_spec,
             "input_transforms": self._input_transforms,
             "availability_spec": None
@@ -2767,6 +4112,7 @@ class MultinomialModel:
             "array_availability_requires_prediction_override": self._array_availability_requires_prediction_override,
             "array_offset_requires_prediction_override": self._array_offset_requires_prediction_override,
             "inference_status": self.inference_status,
+            "regularization_path_info": self._regularization_path_info,
         }
         return pickle.dumps(state, protocol=pickle.HIGHEST_PROTOCOL)
 
@@ -2800,6 +4146,7 @@ class MultinomialModel:
             interactions=state["interactions"],
             input_transforms=state.get("input_transforms", []),
             compiled_input_transforms=None,
+            target_encoding_state=state.get("target_encoding_state"),
             availability_spec=state.get("availability_spec"),
             offset_spec=state.get("offset_spec"),
             weights_spec=state.get("weights_spec"),
@@ -2812,6 +4159,7 @@ class MultinomialModel:
             inference_status=state.get("inference_status", "valid_standard"),
             fit_row_weights=state.get("fit_row_weights"),
             array_weighted=state.get("array_weighted", False),
+            regularization_path_info=state.get("regularization_path_info"),
         )
 
     def __repr__(self) -> str:
@@ -2866,6 +4214,11 @@ class MultinomialDict:
             input_transforms=self._input_transforms,
             weights=weights,
         )
+        needed |= _target_encoding_source_columns(
+            self.terms,
+            self.interactions_spec,
+            self._input_transforms,
+        )
         needed |= _extra_needed_columns([availability, offset], self._input_transforms)
         needed |= _alternative_needed_columns(alternative_terms, self._input_transforms)
         needed |= set(input_transform_source_columns(self._input_transforms))
@@ -2897,15 +4250,16 @@ class MultinomialDict:
         import polars as pl
 
         build_data = data.with_columns(pl.Series(dummy_response, np.zeros(len(data))))
-        parsed = dict_to_parsed_formula(
+        parsed_with_target_encoding = dict_to_parsed_formula(
             response=dummy_response,
             terms=self.terms,
             interactions=self.interactions_spec,
             intercept=intercept,
         )
+        shared_parsed = _parsed_without_target_encoding(parsed_with_target_encoding)
         self._builder = InteractionBuilder(build_data)
         _dummy_y, self.X, self.feature_names = self._builder.build_design_matrix_from_parsed(
-            parsed, seed=seed
+            shared_parsed, seed=seed
         )
         (
             self.alternative_generic,
@@ -2913,13 +4267,6 @@ class MultinomialDict:
             self.alternative_generic_feature_names,
             self.alternative_specific_feature_names,
         ) = _resolve_alternative_arrays(data, self.classes_, self.alternative_terms)
-        self.n_obs = len(data)
-        self.n_params = (
-            self.X.shape[1] * (len(self.classes_) - 1)
-            + self.alternative_generic.shape[2]
-            + self.alternative_specific.shape[2] * (len(self.classes_) - 1)
-        )
-
         self.availability = _resolve_class_matrix(
             data,
             availability,
@@ -2929,6 +4276,8 @@ class MultinomialDict:
             name="availability",
             allow_arrays=True,
         )
+        if not np.all(self.availability[np.arange(len(self.y_codes)), self.y_codes]):
+            raise ValidationError("observed response class must be available for every row.")
         self.offset = _resolve_class_matrix(
             data,
             offset,
@@ -2940,6 +4289,30 @@ class MultinomialDict:
         )
         self.weights, self._class_weighted, self._row_weights = _resolve_weights(
             data, weights, class_weights, response_values
+        )
+        te_specific, self._target_encoding_state = _build_multinomial_target_encoding(
+            data,
+            parsed_with_target_encoding.target_encoding_terms,
+            classes=self.classes_,
+            reference=self.reference_,
+            y_codes=self.y_codes,
+            availability=self.availability,
+            row_weights=self._row_weights,
+            seed=seed,
+        )
+        self.alternative_specific = _append_alternative_specific_terms(
+            self.alternative_specific,
+            te_specific,
+        )
+        if self._target_encoding_state is not None:
+            self.alternative_specific_feature_names.extend(
+                self._target_encoding_state.feature_names
+            )
+        self.n_obs = len(data)
+        self.n_params = (
+            self.X.shape[1] * (len(self.classes_) - 1)
+            + self.alternative_generic.shape[2]
+            + self.alternative_specific.shape[2] * (len(self.classes_) - 1)
         )
         self._array_weighted = weights is not None and not isinstance(weights, str)
         self._array_availability_requires_prediction_override = _spec_has_array(availability)
@@ -2962,6 +4335,11 @@ class MultinomialDict:
         regularization: str | None = None,
         cv: int | None = None,
         selection: str = "min",
+        n_alphas: int = DEFAULT_N_ALPHAS,
+        alphas: np.ndarray | list[float] | None = None,
+        alpha_min_ratio: float = DEFAULT_ALPHA_MIN_RATIO,
+        cv_seed: int | None = None,
+        include_unregularized: bool = True,
         max_iter: int = 100,
         tol: float = 1e-8,
         standardize: bool = True,
@@ -2971,85 +4349,84 @@ class MultinomialDict:
         hessian_memory_limit_bytes: int = _DEFAULT_HESSIAN_MEMORY_LIMIT_BYTES,
         max_dense_parameters: int = _DEFAULT_MAX_DENSE_PARAMETERS,
     ) -> MultinomialModel:
-        del selection
-        if cv is not None:
-            raise ValidationError("cross-validation is not yet supported for multinomial_dict.")
-        if regularization not in {None, "ridge"}:
-            raise ValidationError("multinomial_dict supports only regularization='ridge'.")
-        if l1_ratio != 0.0:
-            raise ValidationError("multinomial_dict supports ridge only; use l1_ratio=0.0.")
-        if alpha < 0.0 or not np.isfinite(alpha):
-            raise ValidationError("alpha must be finite and non-negative.")
         if tol <= 0.0 or not np.isfinite(tol):
             raise ValidationError("tol must be finite and positive.")
-
-        center = scale = None
-        (
-            alternative_generic_center,
-            alternative_generic_scale,
-            alternative_specific_center,
-            alternative_specific_scale,
-        ) = (None, None, None, None)
-        if alpha > 0.0 and standardize:
-            from rustystats.regularization_path import (
-                compute_standardization,
-                solver_standardization,
+        path_info = None
+        if cv is not None:
+            path_info = _fit_multinomial_cv_path(
+                self,
+                regularization=regularization,
+                l1_ratio=l1_ratio,
+                cv=cv,
+                selection=selection,
+                n_alphas=n_alphas,
+                alphas=alphas,
+                alpha_min_ratio=alpha_min_ratio,
+                cv_seed=cv_seed if cv_seed is not None else self._seed,
+                include_unregularized=include_unregularized,
+                max_iter=max_iter,
+                tol=tol,
+                standardize=standardize,
+                verbose=verbose,
+                hessian_memory_limit_bytes=int(hessian_memory_limit_bytes),
+                max_dense_parameters=int(max_dense_parameters),
             )
+            alpha = path_info.selected_alpha
+            l1_ratio = path_info.selected_l1_ratio
+        else:
+            alpha, l1_ratio = _resolve_regularization(alpha, l1_ratio, regularization)
 
-            center, scale = compute_standardization(
-                self.X, self.weights, fit_intercept=self.intercept
-            )
-            center, scale = solver_standardization(center, scale, fit_intercept=self.intercept)
-            (
-                alternative_generic_center,
-                alternative_generic_scale,
-                alternative_specific_center,
-                alternative_specific_scale,
-            ) = _alternative_standardization(
-                self.alternative_generic,
-                self.alternative_specific,
-                self.availability,
-                self.weights,
-                self.reference_index_,
-            )
+        l1_active = alpha > 0.0 and l1_ratio > 0.0
+        final_initial_result = _full_data_multinomial_warm_start_result(
+            self,
+            path_info,
+            max_iter=max_iter,
+            tol=tol,
+            standardize=standardize,
+            verbose=verbose,
+            hessian_memory_limit_bytes=int(hessian_memory_limit_bytes),
+            max_dense_parameters=int(max_dense_parameters),
+        )
+        if path_info is not None and path_info.cv_profile is not None:
+            path_info.cv_profile["final_refit_warm_start"] = final_initial_result is not None
 
-        result = _fit_multinomial_rust(
-            self.y_codes,
-            np.ascontiguousarray(self.X, dtype=np.float64),
-            len(self.classes_),
-            self.reference_index_,
-            self.availability,
-            self.offset,
-            self.weights,
-            alpha,
-            l1_ratio,
-            max_iter,
-            tol,
-            self.intercept,
-            center,
-            scale,
-            not compute_covariance,
-            int(hessian_memory_limit_bytes),
-            int(max_dense_parameters),
-            store_design_matrix,
-            verbose,
-            self.alternative_generic,
-            self.alternative_specific,
-            alternative_generic_center,
-            alternative_generic_scale,
-            alternative_specific_center,
-            alternative_specific_scale,
+        result = _fit_multinomial_arrays(
+            y_codes=self.y_codes,
+            x=self.X,
+            n_classes=len(self.classes_),
+            reference_index=self.reference_index_,
+            availability=self.availability,
+            offset=self.offset,
+            weights=self.weights,
+            alpha=alpha,
+            l1_ratio=l1_ratio,
+            max_iter=max_iter,
+            tol=tol,
+            fit_intercept=self.intercept,
+            standardize=standardize,
+            compute_covariance=compute_covariance,
+            store_design_matrix=store_design_matrix,
+            verbose=verbose,
+            hessian_memory_limit_bytes=int(hessian_memory_limit_bytes),
+            max_dense_parameters=int(max_dense_parameters),
+            alternative_generic=self.alternative_generic,
+            alternative_specific=self.alternative_specific,
+            initial_result=final_initial_result,
         )
         self._builder.clear_caches()
 
         inference_notes: list[str] = []
-        if alpha > 0.0:
-            inference_notes.append("naive_after_regularization")
+        if path_info is not None:
+            inference_notes.append("naive_after_cv_selection")
+        elif alpha > 0.0:
+            inference_notes.append(
+                "naive_after_selection" if l1_ratio > 0.0 else "naive_after_regularization"
+            )
         if self._class_weighted:
             inference_notes.append("naive_class_weighted")
         if not compute_covariance:
             inference_notes.append("covariance_skipped")
-        elif result.cov_params_unscaled is None:
+        elif l1_active or result.cov_params_unscaled is None:
             inference_notes.append("covariance_unavailable")
         inference_status = "+".join(inference_notes) if inference_notes else "valid_standard"
 
@@ -3065,6 +4442,7 @@ class MultinomialDict:
             interactions=self.interactions_spec,
             input_transforms=self._input_transforms,
             compiled_input_transforms=self._compiled_input_transforms,
+            target_encoding_state=self._target_encoding_state,
             availability_spec=None
             if self._array_availability_requires_prediction_override
             else self.availability_spec,
@@ -3077,7 +4455,129 @@ class MultinomialDict:
             inference_status=inference_status,
             fit_row_weights=self._row_weights,
             array_weighted=self._array_weighted,
+            regularization_path_info=path_info,
         )
+
+
+def build_multinomial_fold_design(
+    model: MultinomialDict,
+    train_idx: np.ndarray,
+    val_idx: np.ndarray,
+    *,
+    seed: int | None = None,
+) -> MultinomialFoldDesign:
+    """Build one fold's multinomial inputs with fold-local target encoding.
+
+    Target-encoding state is fit on ``train_idx`` rows only. Training rows use
+    ordered/permutation TE inside the fold, while validation rows are transformed
+    through the fold-training state so validation labels never enter validation
+    encodings. This is preprocessing only; multinomial CV remains disabled until
+    the later regularization-path phase.
+    """
+    if not isinstance(model, MultinomialDict):
+        raise ValidationError("build_multinomial_fold_design expects a MultinomialDict instance.")
+    train_idx = np.asarray(train_idx, dtype=np.int64)
+    val_idx = np.asarray(val_idx, dtype=np.int64)
+    if train_idx.ndim != 1 or val_idx.ndim != 1:
+        raise ValidationError("train_idx and val_idx must be one-dimensional.")
+    n = model.n_obs
+    if np.any(train_idx < 0) or np.any(train_idx >= n):
+        raise ValidationError("train_idx contains row indices outside the training data.")
+    if np.any(val_idx < 0) or np.any(val_idx >= n):
+        raise ValidationError("val_idx contains row indices outside the training data.")
+
+    data = model.data
+    data_train = data[train_idx]
+    data_val = data[val_idx]
+    y_train = model.y_codes[train_idx]
+    y_val = model.y_codes[val_idx]
+    availability_train = model.availability[train_idx, :]
+    availability_val = model.availability[val_idx, :]
+    offset_train = model.offset[train_idx, :]
+    offset_val = model.offset[val_idx, :]
+    weights_train = None if model.weights is None else model.weights[train_idx]
+    weights_val = None if model.weights is None else model.weights[val_idx]
+    row_weights_train = None if model._row_weights is None else model._row_weights[train_idx]
+
+    dummy_response = _unique_temp_column(data.columns, "__rustystats_multinomial_fold_y__")
+    import polars as pl
+
+    parsed_with_target_encoding = dict_to_parsed_formula(
+        response=dummy_response,
+        terms=model.terms,
+        interactions=model.interactions_spec,
+        intercept=model.intercept,
+    )
+    shared_parsed = _parsed_without_target_encoding(parsed_with_target_encoding)
+    shared_parsed = _fold_local_parsed_formula(shared_parsed)
+
+    train_build_data = data_train.with_columns(pl.Series(dummy_response, np.zeros(len(data_train))))
+    val_build_data = data_val.with_columns(pl.Series(dummy_response, np.zeros(len(data_val))))
+    builder = InteractionBuilder(train_build_data)
+    _dummy_y, x_train, feature_names = builder.build_design_matrix_from_parsed(
+        shared_parsed,
+        seed=seed if seed is not None else model._seed,
+    )
+    x_val = builder.transform_new_data(val_build_data)
+
+    (
+        alternative_generic_train,
+        alternative_specific_train,
+        alternative_generic_feature_names,
+        alternative_specific_feature_names,
+    ) = _resolve_alternative_arrays(data_train, model.classes_, model.alternative_terms)
+    alternative_generic_val, alternative_specific_val, _generic_val_names, _specific_val_names = (
+        _resolve_alternative_arrays(data_val, model.classes_, model.alternative_terms)
+    )
+
+    te_train, target_encoding_state = _build_multinomial_target_encoding(
+        data_train,
+        parsed_with_target_encoding.target_encoding_terms,
+        classes=model.classes_,
+        reference=model.reference_,
+        y_codes=y_train,
+        availability=availability_train,
+        row_weights=row_weights_train,
+        seed=seed if seed is not None else model._seed,
+    )
+    alternative_specific_train = _append_alternative_specific_terms(
+        alternative_specific_train,
+        te_train,
+    )
+    if target_encoding_state is not None:
+        alternative_specific_val = _append_alternative_specific_terms(
+            alternative_specific_val,
+            target_encoding_state.transform(data_val),
+        )
+        alternative_specific_feature_names = [
+            *alternative_specific_feature_names,
+            *target_encoding_state.feature_names,
+        ]
+
+    return MultinomialFoldDesign(
+        x_train=x_train,
+        x_val=x_val,
+        alternative_generic_train=alternative_generic_train,
+        alternative_generic_val=alternative_generic_val,
+        alternative_specific_train=alternative_specific_train,
+        alternative_specific_val=alternative_specific_val,
+        availability_train=availability_train,
+        availability_val=availability_val,
+        offset_train=offset_train,
+        offset_val=offset_val,
+        weights_train=weights_train,
+        weights_val=weights_val,
+        y_train=y_train,
+        y_val=y_val,
+        feature_names=list(feature_names),
+        preprocessing_state=MultinomialFoldPreprocessingState(
+            builder=builder,
+            parsed_formula=shared_parsed,
+            target_encoding_state=target_encoding_state,
+            alternative_generic_feature_names=alternative_generic_feature_names,
+            alternative_specific_feature_names=alternative_specific_feature_names,
+        ),
+    )
 
 
 def multinomial_dict(
@@ -3125,10 +4625,14 @@ def multinomial_dict(
 
 
 __all__ = [
+    "MultinomialFoldDesign",
+    "MultinomialFoldPreprocessingState",
     "MultinomialDatasetDiagnostics",
     "MultinomialDiagnostics",
     "MultinomialDict",
     "MultinomialModel",
     "MultinomialScenario",
+    "build_multinomial_fold_design",
+    "multinomial_alpha_max",
     "multinomial_dict",
 ]

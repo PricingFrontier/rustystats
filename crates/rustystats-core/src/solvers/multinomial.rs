@@ -4,7 +4,7 @@ use nalgebra::{DMatrix, DVector};
 use ndarray::{Array1, Array2, Array3, ArrayView2, ArrayView3};
 
 use crate::error::{Result, RustyStatsError};
-use crate::regularization::Standardization;
+use crate::regularization::{soft_threshold, Standardization};
 use crate::solvers::{
     build_sparse_row_cache_if_beneficial, compute_xtwx_with_sparse_cache, SparseRowCache,
 };
@@ -16,6 +16,10 @@ const DEFAULT_TOLERANCE: f64 = 1e-8;
 const MAX_HALF_STEPS: usize = 30;
 const MIN_LOG_PROBABILITY: f64 = 1e-300;
 const MAX_COEFFICIENT_NORM: f64 = 1e6;
+const PROXIMAL_NEWTON_MAX_CD_ITERATIONS: usize = 1000;
+const PROXIMAL_NEWTON_CD_TOLERANCE: f64 = 1e-8;
+const PROXIMAL_NEWTON_ZERO_TOLERANCE: f64 = 1e-10;
+const PROXIMAL_NEWTON_MIN_DIAGONAL: f64 = 1e-12;
 
 #[derive(Debug, Clone)]
 pub struct MultinomialConfig {
@@ -29,6 +33,7 @@ pub struct MultinomialConfig {
     pub hessian_memory_limit_bytes: usize,
     pub max_dense_parameters: usize,
     pub verbose: bool,
+    pub initial_theta: Option<Array1<f64>>,
 }
 
 impl Default for MultinomialConfig {
@@ -44,6 +49,7 @@ impl Default for MultinomialConfig {
             hessian_memory_limit_bytes: DEFAULT_HESSIAN_MEMORY_LIMIT_BYTES,
             max_dense_parameters: DEFAULT_MAX_DENSE_PARAMETERS,
             verbose: false,
+            initial_theta: None,
         }
     }
 }
@@ -459,11 +465,42 @@ impl OptimizationExtensions {
     }
 }
 
+fn optimization_extensions_from_config(
+    layout: &MultinomialParameterLayout,
+    l1_alpha: f64,
+) -> Result<OptimizationExtensions> {
+    let q = layout.len()?;
+    let mut extensions = OptimizationExtensions::inert(q);
+    if l1_alpha > 0.0 {
+        extensions.l1_penalty = L1Penalty {
+            alpha: l1_alpha,
+            mask: default_l1_penalty_mask(layout)?,
+        };
+    }
+    Ok(extensions)
+}
+
+fn default_l1_penalty_mask(layout: &MultinomialParameterLayout) -> Result<Vec<bool>> {
+    let q = layout.len()?;
+    let mut mask = vec![true; q];
+    for idx in 0..layout.shared_len()? {
+        if layout.is_shared_intercept(idx) {
+            mask[idx] = false;
+        }
+    }
+    Ok(mask)
+}
+
 #[derive(Debug)]
 struct Evaluation {
     objective: f64,
     gradient: Array1<f64>,
     hessian: Array2<f64>,
+}
+
+#[derive(Debug)]
+struct NewtonProposal {
+    target: Array1<f64>,
 }
 
 /// Fit a baseline-category multinomial logit model.
@@ -567,7 +604,9 @@ fn fit_multinomial_internal(
         prepared.alternative_specific.dim().2,
         config.fit_intercept,
     )?;
-    let optimization_extensions = OptimizationExtensions::inert(layout.len()?);
+    let l1_alpha = config.alpha * config.l1_ratio;
+    let l2_alpha = config.alpha * (1.0 - config.l1_ratio);
+    let optimization_extensions = optimization_extensions_from_config(&layout, l1_alpha)?;
     optimization_extensions.validate(layout.len()?)?;
 
     let use_standardization = config.alpha > 0.0 && config.standardize && standardization.is_some();
@@ -589,7 +628,7 @@ fn fit_multinomial_internal(
         alternative_specific_standardization,
     )?;
 
-    let mut theta = initialize_coefficients(&layout, n_classes, &prepared, config);
+    let mut theta = initialize_coefficients(&layout, n_classes, &prepared, config)?;
     let mut warnings = Vec::new();
     let mut solver_status = "max_iterations".to_string();
     let mut converged = false;
@@ -601,25 +640,39 @@ fn fit_multinomial_internal(
             x_fit,
             n_classes,
             &prepared,
-            config.alpha,
+            l2_alpha,
             config.fit_intercept,
             sparse_cache.as_ref(),
         )?;
-        let current_objective = evaluation.objective;
+        let current_objective = penalized_objective_from_smooth(
+            evaluation.objective,
+            &theta,
+            &optimization_extensions.l1_penalty,
+        );
 
-        let max_gradient = evaluation
-            .gradient
-            .iter()
-            .fold(0.0_f64, |acc, value| acc.max(value.abs()));
-        if max_gradient <= config.tolerance {
+        let optimality = check_l1_kkt(
+            &theta,
+            &evaluation.gradient,
+            &optimization_extensions.l1_penalty,
+        )?;
+        if optimality <= config.tolerance {
             converged = true;
             solver_status = "converged".to_string();
             iterations = iter;
             break;
         }
 
-        let step = solve_newton_step(&evaluation.hessian, &evaluation.gradient)?;
-        let step_norm = step.iter().map(|v| v * v).sum::<f64>().sqrt();
+        let proposal = solve_newton_proposal(&theta, &evaluation, &optimization_extensions)?;
+        let step_norm = proposal
+            .target
+            .iter()
+            .zip(theta.iter())
+            .map(|(candidate, current)| {
+                let delta = candidate - current;
+                delta * delta
+            })
+            .sum::<f64>()
+            .sqrt();
         if !step_norm.is_finite() {
             return Err(RustyStatsError::NumericalError(
                 "multinomial Newton step produced a non-finite norm".to_string(),
@@ -634,16 +687,18 @@ fn fit_multinomial_internal(
         for _half_step in 0..=MAX_HALF_STEPS {
             let candidate = theta
                 .iter()
-                .zip(step.iter())
-                .map(|(coef, delta)| coef - step_fraction * delta)
+                .zip(proposal.target.iter())
+                .map(|(current, target)| current + step_fraction * (target - current))
                 .collect::<Array1<f64>>();
-            let candidate_objective = objective_only(
+            let candidate = apply_bound_projection(candidate, &optimization_extensions);
+            let candidate_objective = penalized_objective(
                 &candidate,
                 x_fit,
                 n_classes,
                 &prepared,
-                config.alpha,
+                l2_alpha,
                 config.fit_intercept,
+                &optimization_extensions.l1_penalty,
             )?;
 
             if candidate_objective.is_finite()
@@ -711,11 +766,20 @@ fn fit_multinomial_internal(
         x_fit,
         n_classes,
         &prepared,
-        config.alpha,
+        l2_alpha,
         config.fit_intercept,
         sparse_cache.as_ref(),
     )?;
-    let covariance_work = if config.skip_covariance {
+    let covariance_work = if optimization_extensions.l1_penalty.alpha > 0.0 {
+        if !config.skip_covariance {
+            warnings.push(
+                "standard errors are unavailable for multinomial lasso/elastic-net fits; \
+                 the fit is post-selection and covariance is not computed."
+                    .to_string(),
+            );
+        }
+        None
+    } else if config.skip_covariance {
         None
     } else {
         // A failed inversion (singular/ill-conditioned Hessian, typically from
@@ -875,11 +939,6 @@ fn validate_and_prepare(
     if !config.l1_ratio.is_finite() || config.l1_ratio < 0.0 || config.l1_ratio > 1.0 {
         return Err(RustyStatsError::InvalidValue(
             "l1_ratio must be finite and in [0, 1]".to_string(),
-        ));
-    }
-    if config.alpha > 0.0 && config.l1_ratio != 0.0 {
-        return Err(RustyStatsError::InvalidValue(
-            "multinomial Phase 1 supports ridge only; use l1_ratio=0.0".to_string(),
         ));
     }
     let alternative_generic_matrix =
@@ -1221,15 +1280,32 @@ fn initialize_coefficients(
     n_classes: usize,
     prepared: &PreparedInputs,
     config: &MultinomialConfig,
-) -> Array1<f64> {
+) -> Result<Array1<f64>> {
+    if let Some(initial_theta) = &config.initial_theta {
+        let expected = layout.len()?;
+        if initial_theta.len() != expected {
+            return Err(RustyStatsError::dim_mismatch(
+                expected,
+                initial_theta.len(),
+                "multinomial initial_theta length",
+            ));
+        }
+        if initial_theta.iter().any(|value| !value.is_finite()) {
+            return Err(RustyStatsError::InvalidValue(
+                "multinomial initial_theta values must be finite".to_string(),
+            ));
+        }
+        return Ok(initial_theta.clone());
+    }
+
     let p = layout.n_shared;
     let q = layout.len().expect("validated parameter count");
     let mut theta = Array1::zeros(q);
     if !config.fit_intercept || p == 0 || !all_classes_available(&prepared.availability) {
-        return theta;
+        return Ok(theta);
     }
     if prepared.offset.iter().any(|value| *value != 0.0) {
-        return theta;
+        return Ok(theta);
     }
 
     let mut totals = vec![0.0f64; n_classes];
@@ -1246,7 +1322,7 @@ fn initialize_coefficients(
         })
         .unwrap_or(0.0);
     if reference_total <= 0.0 {
-        return theta;
+        return Ok(theta);
     }
 
     for (block_idx, &class_idx) in prepared.non_reference_classes.iter().enumerate() {
@@ -1258,7 +1334,7 @@ fn initialize_coefficients(
             theta[intercept_idx] = (class_total / reference_total).ln();
         }
     }
-    theta
+    Ok(theta)
 }
 
 fn all_classes_available(availability: &Array2<bool>) -> bool {
@@ -1327,6 +1403,39 @@ fn objective_only(
     let log_likelihood =
         log_likelihood_from_probabilities(&probabilities, &prepared.y_codes, &prepared.weights)?;
     Ok(-log_likelihood + ridge_penalty(theta, x.ncols(), n_classes, alpha, fit_intercept))
+}
+
+fn penalized_objective(
+    theta: &Array1<f64>,
+    x: ArrayView2<'_, f64>,
+    n_classes: usize,
+    prepared: &PreparedInputs,
+    l2_alpha: f64,
+    fit_intercept: bool,
+    l1_penalty: &L1Penalty,
+) -> Result<f64> {
+    let smooth = objective_only(theta, x, n_classes, prepared, l2_alpha, fit_intercept)?;
+    Ok(penalized_objective_from_smooth(smooth, theta, l1_penalty))
+}
+
+fn penalized_objective_from_smooth(
+    smooth_objective: f64,
+    theta: &Array1<f64>,
+    l1_penalty: &L1Penalty,
+) -> f64 {
+    smooth_objective + l1_norm(theta, l1_penalty)
+}
+
+fn l1_norm(theta: &Array1<f64>, l1_penalty: &L1Penalty) -> f64 {
+    if l1_penalty.alpha <= 0.0 {
+        return 0.0;
+    }
+    theta
+        .iter()
+        .zip(l1_penalty.mask.iter())
+        .filter_map(|(value, penalized)| penalized.then_some(value.abs()))
+        .sum::<f64>()
+        * l1_penalty.alpha
 }
 
 fn ridge_penalty(
@@ -1826,6 +1935,206 @@ fn copy_hessian_block(
     }
 }
 
+fn solve_newton_proposal(
+    theta: &Array1<f64>,
+    evaluation: &Evaluation,
+    extensions: &OptimizationExtensions,
+) -> Result<NewtonProposal> {
+    if extensions.l1_penalty.alpha > 0.0 {
+        solve_proximal_newton_subproblem(
+            theta,
+            &evaluation.gradient,
+            &evaluation.hessian,
+            &extensions.l1_penalty,
+            &extensions.bound_constraints,
+        )
+    } else {
+        let step = solve_newton_step(&evaluation.hessian, &evaluation.gradient)?;
+        let mut target = theta
+            .iter()
+            .zip(step.iter())
+            .map(|(coef, delta)| coef - delta)
+            .collect::<Array1<f64>>();
+        target = apply_bound_projection(target, extensions);
+        Ok(NewtonProposal { target })
+    }
+}
+
+fn solve_proximal_newton_subproblem(
+    theta: &Array1<f64>,
+    gradient: &Array1<f64>,
+    hessian: &Array2<f64>,
+    l1_penalty: &L1Penalty,
+    bounds: &BoundConstraints,
+) -> Result<NewtonProposal> {
+    let q = theta.len();
+    if gradient.len() != q || hessian.nrows() != q || hessian.ncols() != q {
+        return Err(RustyStatsError::InvalidValue(
+            "proximal Newton inputs have inconsistent dimensions".to_string(),
+        ));
+    }
+    l1_penalty.validate(q)?;
+    bounds.validate(q)?;
+
+    let h_theta = hessian.dot(theta);
+    let linear = gradient - &h_theta;
+    let mut beta = theta.clone();
+    let all_indices: Vec<usize> = (0..q).collect();
+    let mut active_indices = active_l1_indices(theta, gradient, l1_penalty);
+    let mut cd_converged = false;
+
+    for cd_iter in 0..PROXIMAL_NEWTON_MAX_CD_ITERATIONS {
+        let indices: &[usize] = if cd_iter > 0 && cd_iter % 5 != 0 && active_indices.len() < q {
+            &active_indices
+        } else {
+            &all_indices
+        };
+        let mut max_change = 0.0_f64;
+
+        for &idx in indices {
+            let diag = hessian[[idx, idx]];
+            if diag <= PROXIMAL_NEWTON_MIN_DIAGONAL {
+                if l1_penalty.mask[idx] {
+                    let old = beta[idx];
+                    beta[idx] = 0.0;
+                    max_change = max_change.max((old - beta[idx]).abs());
+                    continue;
+                }
+                return Err(RustyStatsError::LinearAlgebraError(
+                    "multinomial proximal Newton Hessian has a near-zero unpenalized diagonal; \
+                     try ridge regularization or remove collinear terms"
+                        .to_string(),
+                ));
+            }
+
+            let old = beta[idx];
+            let mut partial = linear[idx];
+            for col in 0..q {
+                if col != idx {
+                    partial += hessian[[idx, col]] * beta[col];
+                }
+            }
+            let mut updated = if l1_penalty.mask[idx] {
+                soft_threshold(-partial, l1_penalty.alpha) / diag
+            } else {
+                -partial / diag
+            };
+            updated = project_single_bound(idx, updated, bounds);
+            if updated.abs() < PROXIMAL_NEWTON_ZERO_TOLERANCE && l1_penalty.mask[idx] {
+                updated = 0.0;
+            }
+            beta[idx] = updated;
+            max_change = max_change.max((updated - old).abs());
+        }
+
+        if cd_iter == 0 || cd_iter % 5 == 0 {
+            active_indices = active_l1_indices(&beta, gradient, l1_penalty);
+        }
+        let beta_scale = beta.iter().fold(0.0_f64, |acc, value| acc.max(value.abs()));
+        if max_change <= PROXIMAL_NEWTON_CD_TOLERANCE * (1.0 + beta_scale) {
+            cd_converged = true;
+            break;
+        }
+    }
+
+    if !cd_converged {
+        return Err(RustyStatsError::NumericalError(
+            "multinomial proximal Newton coordinate descent did not converge".to_string(),
+        ));
+    }
+
+    Ok(NewtonProposal { target: beta })
+}
+
+fn active_l1_indices(
+    theta: &Array1<f64>,
+    smooth_gradient: &Array1<f64>,
+    l1_penalty: &L1Penalty,
+) -> Vec<usize> {
+    if l1_penalty.alpha <= 0.0 {
+        return (0..theta.len()).collect();
+    }
+    let mut indices = Vec::new();
+    for idx in 0..theta.len() {
+        if !l1_penalty.mask[idx]
+            || theta[idx].abs() > PROXIMAL_NEWTON_ZERO_TOLERANCE
+            || l1_coordinate_violation(theta[idx], smooth_gradient[idx], l1_penalty.alpha)
+                > PROXIMAL_NEWTON_ZERO_TOLERANCE
+        {
+            indices.push(idx);
+        }
+    }
+    if indices.is_empty() {
+        indices.extend((0..theta.len()).filter(|idx| !l1_penalty.mask[*idx]));
+    }
+    indices
+}
+
+fn check_l1_kkt(
+    theta: &Array1<f64>,
+    smooth_gradient: &Array1<f64>,
+    l1_penalty: &L1Penalty,
+) -> Result<f64> {
+    if smooth_gradient.len() != theta.len() {
+        return Err(RustyStatsError::dim_mismatch(
+            theta.len(),
+            smooth_gradient.len(),
+            "theta length vs multinomial gradient length",
+        ));
+    }
+    l1_penalty.validate(theta.len())?;
+    if l1_penalty.alpha <= 0.0 {
+        return Ok(smooth_gradient
+            .iter()
+            .fold(0.0_f64, |acc, value| acc.max(value.abs())));
+    }
+    let mut max_violation = 0.0_f64;
+    for idx in 0..theta.len() {
+        let violation = if l1_penalty.mask[idx] {
+            l1_coordinate_violation(theta[idx], smooth_gradient[idx], l1_penalty.alpha)
+        } else {
+            smooth_gradient[idx].abs()
+        };
+        max_violation = max_violation.max(violation);
+    }
+    Ok(max_violation)
+}
+
+fn l1_coordinate_violation(theta_j: f64, gradient_j: f64, alpha: f64) -> f64 {
+    if theta_j > PROXIMAL_NEWTON_ZERO_TOLERANCE {
+        (gradient_j + alpha).abs()
+    } else if theta_j < -PROXIMAL_NEWTON_ZERO_TOLERANCE {
+        (gradient_j - alpha).abs()
+    } else {
+        (gradient_j.abs() - alpha).max(0.0)
+    }
+}
+
+fn apply_bound_projection(theta: Array1<f64>, extensions: &OptimizationExtensions) -> Array1<f64> {
+    let mut projected = theta;
+    for &idx in &extensions.bound_constraints.nonneg_indices {
+        if idx < projected.len() && projected[idx] < 0.0 {
+            projected[idx] = 0.0;
+        }
+    }
+    for &idx in &extensions.bound_constraints.nonpos_indices {
+        if idx < projected.len() && projected[idx] > 0.0 {
+            projected[idx] = 0.0;
+        }
+    }
+    projected
+}
+
+fn project_single_bound(idx: usize, value: f64, bounds: &BoundConstraints) -> f64 {
+    if bounds.nonneg_indices.contains(&idx) {
+        value.max(0.0)
+    } else if bounds.nonpos_indices.contains(&idx) {
+        value.min(0.0)
+    } else {
+        value
+    }
+}
+
 fn solve_newton_step(hessian: &Array2<f64>, gradient: &Array1<f64>) -> Result<Array1<f64>> {
     let q = gradient.len();
     let h = array2_to_dmatrix(hessian);
@@ -2092,6 +2401,7 @@ fn compute_null_deviance_value(
     null_config.skip_covariance = true;
     null_config.fit_intercept = true;
     null_config.standardize = false;
+    null_config.initial_theta = None;
     null_config.max_dense_parameters = null_config.max_dense_parameters.max(n_classes - 1);
 
     let result = fit_multinomial_internal(
@@ -2290,6 +2600,41 @@ mod tests {
         let err = fit_multinomial(&y, x.view(), 3, 0, &config, None, None, None, None)
             .expect_err("dense guard should fail");
         assert!(err.to_string().contains("max_dense_parameters"));
+    }
+
+    #[test]
+    fn initial_theta_warm_start_reuses_solution() {
+        let x = array![
+            [1.0, -1.2],
+            [1.0, -0.4],
+            [1.0, 0.1],
+            [1.0, 0.3],
+            [1.0, 0.9],
+            [1.0, 1.4],
+            [1.0, -0.8],
+            [1.0, 0.6],
+            [1.0, 1.1],
+        ];
+        let y = array![0usize, 0, 1, 1, 2, 2, 0, 1, 2];
+        let cold_config = MultinomialConfig {
+            alpha: 0.25,
+            ..default_config()
+        };
+        let cold = fit_multinomial(&y, x.view(), 3, 0, &cold_config, None, None, None, None)
+            .expect("cold fit succeeds");
+        assert!(cold.converged);
+
+        let warm_config = MultinomialConfig {
+            alpha: 0.25,
+            initial_theta: Some(Array1::from_iter(cold.coefficients.iter().copied())),
+            ..default_config()
+        };
+        let warm = fit_multinomial(&y, x.view(), 3, 0, &warm_config, None, None, None, None)
+            .expect("warm fit succeeds");
+
+        assert!(warm.converged);
+        assert_eq!(warm.iterations, 0);
+        assert_abs_diff_eq!(warm.coefficients, cold.coefficients, epsilon = 1e-8);
     }
 
     #[test]
@@ -2552,5 +2897,142 @@ mod tests {
             .sum::<f64>()
             .sqrt();
         assert!(ridge_slope_norm < unpenalized_slope_norm);
+    }
+
+    #[test]
+    fn lasso_large_alpha_zeroes_penalized_coefficients_not_intercepts() {
+        let x = array![
+            [1.0, -2.0],
+            [1.0, -1.4],
+            [1.0, -0.8],
+            [1.0, -0.2],
+            [1.0, 0.3],
+            [1.0, 0.7],
+            [1.0, 1.1],
+            [1.0, 1.6],
+            [1.0, 2.2],
+        ];
+        let y = array![0usize, 0, 0, 0, 1, 1, 1, 2, 2];
+        let config = MultinomialConfig {
+            alpha: 1_000.0,
+            l1_ratio: 1.0,
+            ..default_config()
+        };
+
+        let result =
+            fit_multinomial(&y, x.view(), 3, 0, &config, None, None, None, None).expect("lasso");
+
+        assert!(result.converged);
+        assert_abs_diff_eq!(result.coefficients[[0, 1]], 0.0, epsilon = 1e-10);
+        assert_abs_diff_eq!(result.coefficients[[1, 1]], 0.0, epsilon = 1e-10);
+        assert_abs_diff_eq!(
+            result.coefficients[[0, 0]],
+            (3.0_f64 / 4.0).ln(),
+            epsilon = 1e-6
+        );
+        assert_abs_diff_eq!(
+            result.coefficients[[1, 0]],
+            (2.0_f64 / 4.0).ln(),
+            epsilon = 1e-6
+        );
+    }
+
+    #[test]
+    fn lasso_solution_satisfies_kkt_conditions() {
+        let x = array![
+            [1.0, -1.8, 0.2],
+            [1.0, -1.2, -0.3],
+            [1.0, -0.6, 0.5],
+            [1.0, -0.1, -0.1],
+            [1.0, 0.4, 0.4],
+            [1.0, 0.8, -0.5],
+            [1.0, 1.3, 0.1],
+            [1.0, 1.9, -0.2],
+            [1.0, 2.4, 0.3],
+        ];
+        let y = array![0usize, 0, 1, 0, 1, 1, 2, 2, 2];
+        let config = MultinomialConfig {
+            alpha: 0.25,
+            l1_ratio: 1.0,
+            standardize: false,
+            max_iterations: 200,
+            ..default_config()
+        };
+        let result =
+            fit_multinomial(&y, x.view(), 3, 0, &config, None, None, None, None).expect("lasso");
+        assert!(result.converged);
+
+        let prepared =
+            validate_and_prepare(&y, x.view(), 3, 0, &config, None, None, None, None, None)
+                .expect("prepare");
+        let theta = Array1::from_iter(result.coefficients.iter().copied());
+        let evaluation = evaluate(&theta, x.view(), 3, &prepared, 0.0, true, None).expect("eval");
+        let layout = MultinomialParameterLayout::new(3, 3, 0, 0, true).expect("layout");
+        let l1_penalty = L1Penalty {
+            alpha: config.alpha,
+            mask: default_l1_penalty_mask(&layout).expect("mask"),
+        };
+        let violation =
+            check_l1_kkt(&theta, &evaluation.gradient, &l1_penalty).expect("kkt violation");
+
+        assert!(violation <= 1e-5, "KKT violation was {violation}");
+    }
+
+    #[test]
+    fn elastic_net_shrinks_and_keeps_valid_probabilities() {
+        let x = array![
+            [1.0, -2.0],
+            [1.0, -1.0],
+            [1.0, -0.5],
+            [1.0, 0.5],
+            [1.0, 1.0],
+            [1.0, 2.0],
+            [1.0, 2.5],
+            [1.0, -2.5],
+        ];
+        let y = array![0usize, 0, 1, 1, 2, 2, 2, 0];
+        let en_config = MultinomialConfig {
+            alpha: 1.0,
+            l1_ratio: 0.5,
+            ..default_config()
+        };
+        let unpenalized = fit_multinomial(
+            &y,
+            x.view(),
+            3,
+            0,
+            &default_config(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("unpenalized");
+        let elastic_net = fit_multinomial(&y, x.view(), 3, 0, &en_config, None, None, None, None)
+            .expect("elastic net");
+        let unpenalized_slope_norm = unpenalized
+            .coefficients
+            .column(1)
+            .iter()
+            .map(|v| v * v)
+            .sum::<f64>()
+            .sqrt();
+        let en_slope_norm = elastic_net
+            .coefficients
+            .column(1)
+            .iter()
+            .map(|v| v * v)
+            .sum::<f64>()
+            .sqrt();
+
+        assert!(elastic_net.converged);
+        assert!(en_slope_norm < unpenalized_slope_norm);
+        for row in 0..elastic_net.fitted_probabilities.nrows() {
+            assert_abs_diff_eq!(
+                elastic_net.fitted_probabilities.row(row).sum(),
+                1.0,
+                epsilon = 1e-12
+            );
+        }
     }
 }
