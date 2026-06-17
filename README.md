@@ -9,8 +9,6 @@
 
 **Codebase Documentation**: [pricingfrontier.github.io/rustystats/](https://pricingfrontier.github.io/rustystats/)
 
-See [CHANGELOG.md](CHANGELOG.md) for release notes.
-
 ## Features
 
 - **Dict-First API** - Programmatic model building ideal for automated workflows and agents
@@ -23,7 +21,6 @@ See [CHANGELOG.md](CHANGELOG.md) for release notes.
 - **Lasso Credibility** - Shrink toward a prior model instead of zero (CAS Monograph 13)
 - **Validation** - Design matrix checks with fix suggestions before fitting
 - **Complete** - 8 families, robust SEs, full diagnostics, VIF, partial dependence
-- **Multinomial Choice** - Native baseline-category multinomial logit for product-tier conversion, calibration, and pricing scenarios
 - **Minimal** - Only `numpy` and `polars` required
 
 ## Installation
