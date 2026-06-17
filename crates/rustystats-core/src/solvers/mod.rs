@@ -46,7 +46,7 @@ pub use irls::{
 pub use irls::{fit_glm_unified, FitConfig, IRLSConfig, IRLSResult};
 pub use multinomial::{
     fit_multinomial, fit_multinomial_with_alternatives, AlternativeSpecificStandardization,
-    MultinomialConfig, MultinomialResult,
+    MultinomialConfig, MultinomialResult, MultinomialSmoothPenalty,
 };
 pub use nnls::{
     nnls, nnls_penalized, nnls_weighted, nnls_weighted_penalized, NNLSConfig, NNLSResult,

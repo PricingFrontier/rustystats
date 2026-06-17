@@ -114,8 +114,8 @@ product-tier conversion.
 ```python
 result = rs.multinomial_dict(
     response="PurchasedTier",
-    shared_terms={
-        "DriverAge": {"type": "bs", "df": 6},
+    terms={
+        "DriverAge": {"type": "bs"},
         "VehicleValue": {"type": "linear"},
         "Channel": {"type": "categorical"},
     },
@@ -141,13 +141,13 @@ scenario = result.scenario(new_quotes, changes={"price_premium": 1.03})
 ```
 
 The multinomial path supports shared covariates, row/class weights,
-availability masks, class-specific utility offsets, ridge for shared and
-alternative-specific terms, summaries, pricing-grade diagnostics, wide-format
-alternative-specific covariates, price-change scenarios, vector-intercept
-calibration, and pickle serialization. Lasso/elastic net, CV, multinomial target
-encoding, automatic smooth penalties, monotonic constraints, exposure,
-symmetric reference-invariant ridge, and PMML/ONNX export are reserved for later
-native support and fail explicitly where applicable.
+availability masks, class-specific utility offsets, ridge/lasso/elastic-net
+regularization with CV, multinomial target encoding, automatic smooth penalties
+for shared `bs`/`ns` main effects, summaries, pricing-grade diagnostics,
+wide-format alternative-specific covariates, price-change scenarios,
+vector-intercept calibration, and pickle serialization. Monotonic constraints,
+exposure, symmetric reference-invariant ridge, and PMML/ONNX export are reserved
+for later native support and fail explicitly where applicable.
 
 See [`examples/tier_conversion_multinomial.py`](examples/tier_conversion_multinomial.py)
 for a complete train/holdout workflow with availability, held-out log loss,

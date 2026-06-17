@@ -8,7 +8,7 @@ use pyo3::prelude::*;
 use rustystats_core::regularization::Standardization;
 use rustystats_core::solvers::{
     fit_multinomial_with_alternatives, AlternativeSpecificStandardization, MultinomialConfig,
-    MultinomialResult,
+    MultinomialResult, MultinomialSmoothPenalty,
 };
 
 use crate::fitting_py::build_standardization;
@@ -36,6 +36,8 @@ pub struct PyMultinomialResults {
     pub(crate) l1_ratio: f64,
     pub(crate) fit_intercept: bool,
     pub(crate) design_matrix: Option<Array2<f64>>,
+    pub(crate) smooth_edfs: Vec<f64>,
+    pub(crate) total_edf: Option<f64>,
 }
 
 impl From<(MultinomialResult, f64, f64, bool, Option<Array2<f64>>)> for PyMultinomialResults {
@@ -69,6 +71,8 @@ impl From<(MultinomialResult, f64, f64, bool, Option<Array2<f64>>)> for PyMultin
             l1_ratio,
             fit_intercept,
             design_matrix,
+            smooth_edfs: result.smooth_edfs,
+            total_edf: result.total_edf,
         }
     }
 }
@@ -214,12 +218,14 @@ impl PyMultinomialResults {
 
     #[getter]
     fn is_regularized(&self) -> bool {
-        self.alpha > 0.0
+        self.alpha > 0.0 || !self.smooth_edfs.is_empty()
     }
 
     #[getter]
     fn penalty_type(&self) -> &str {
-        if self.alpha <= 0.0 {
+        if !self.smooth_edfs.is_empty() {
+            "smooth"
+        } else if self.alpha <= 0.0 {
             "none"
         } else if self.l1_ratio >= 1.0 {
             "lasso"
@@ -240,6 +246,16 @@ impl PyMultinomialResults {
         self.design_matrix
             .as_ref()
             .map(|x| x.clone().into_pyarray(py))
+    }
+
+    #[getter]
+    fn smooth_edfs<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        Array1::from_vec(self.smooth_edfs.clone()).into_pyarray(py)
+    }
+
+    #[getter]
+    fn total_edf(&self) -> Option<f64> {
+        self.total_edf
     }
 }
 
@@ -270,7 +286,10 @@ impl PyMultinomialResults {
     alternative_generic_scale=None,
     alternative_specific_center=None,
     alternative_specific_scale=None,
-    initial_theta=None
+    initial_theta=None,
+    smooth_col_ranges=None,
+    smooth_penalties=None,
+    smooth_lambdas=None
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn fit_multinomial_py(
@@ -300,6 +319,9 @@ pub fn fit_multinomial_py(
     alternative_specific_center: Option<PyReadonlyArray2<f64>>,
     alternative_specific_scale: Option<PyReadonlyArray2<f64>>,
     initial_theta: Option<PyReadonlyArray1<f64>>,
+    smooth_col_ranges: Option<Vec<(usize, usize)>>,
+    smooth_penalties: Option<Vec<PyReadonlyArray2<f64>>>,
+    smooth_lambdas: Option<Vec<f64>>,
 ) -> PyResult<PyMultinomialResults> {
     let y_codes_array = y_codes
         .as_array()
@@ -324,6 +346,8 @@ pub fn fit_multinomial_py(
     let alternative_generic_array = alternative_generic.map(|a| a.as_array().to_owned());
     let alternative_specific_array = alternative_specific.map(|a| a.as_array().to_owned());
     let initial_theta_array = initial_theta.map(|theta| theta.as_array().to_owned());
+    let smooth_penalty_specs =
+        build_multinomial_smooth_penalties(smooth_col_ranges, smooth_penalties, smooth_lambdas)?;
     let standardization = build_standardization(center, scale, n_params)?;
     let alternative_generic_standardization = build_vector_standardization(
         alternative_generic_center,
@@ -359,6 +383,7 @@ pub fn fit_multinomial_py(
         max_dense_parameters,
         verbose,
         initial_theta: initial_theta_array,
+        smooth_penalties: smooth_penalty_specs,
     };
 
     let result = fit_multinomial_with_alternatives(
@@ -385,6 +410,52 @@ pub fn fit_multinomial_py(
         fit_intercept,
         store_design_matrix.then(|| x_view.to_owned()),
     )))
+}
+
+fn build_multinomial_smooth_penalties(
+    smooth_col_ranges: Option<Vec<(usize, usize)>>,
+    smooth_penalties: Option<Vec<PyReadonlyArray2<f64>>>,
+    smooth_lambdas: Option<Vec<f64>>,
+) -> PyResult<Vec<MultinomialSmoothPenalty>> {
+    let ranges = smooth_col_ranges.unwrap_or_default();
+    let penalties = smooth_penalties.unwrap_or_default();
+    let lambdas = smooth_lambdas.unwrap_or_default();
+    if ranges.len() != penalties.len() || ranges.len() != lambdas.len() {
+        return Err(PyValueError::new_err(format!(
+            "smooth_col_ranges, smooth_penalties, and smooth_lambdas must have the same length; \
+             got {}, {}, and {}",
+            ranges.len(),
+            penalties.len(),
+            lambdas.len()
+        )));
+    }
+
+    ranges
+        .into_iter()
+        .zip(penalties)
+        .zip(lambdas)
+        .enumerate()
+        .map(|(idx, (((start, end), penalty), lambda))| {
+            if start >= end {
+                return Err(PyValueError::new_err(format!(
+                    "smooth_col_ranges[{}] must satisfy start < end; got ({}, {})",
+                    idx, start, end
+                )));
+            }
+            if !lambda.is_finite() || lambda < 0.0 {
+                return Err(PyValueError::new_err(format!(
+                    "smooth_lambdas[{}] must be finite and non-negative; got {}",
+                    idx, lambda
+                )));
+            }
+            Ok(MultinomialSmoothPenalty {
+                col_start: start,
+                col_end: end,
+                penalty: penalty.as_array().to_owned(),
+                lambda,
+            })
+        })
+        .collect()
 }
 
 fn build_vector_standardization(

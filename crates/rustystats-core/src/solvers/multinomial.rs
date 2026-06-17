@@ -34,6 +34,15 @@ pub struct MultinomialConfig {
     pub max_dense_parameters: usize,
     pub verbose: bool,
     pub initial_theta: Option<Array1<f64>>,
+    pub smooth_penalties: Vec<MultinomialSmoothPenalty>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MultinomialSmoothPenalty {
+    pub col_start: usize,
+    pub col_end: usize,
+    pub penalty: Array2<f64>,
+    pub lambda: f64,
 }
 
 impl Default for MultinomialConfig {
@@ -50,6 +59,7 @@ impl Default for MultinomialConfig {
             max_dense_parameters: DEFAULT_MAX_DENSE_PARAMETERS,
             verbose: false,
             initial_theta: None,
+            smooth_penalties: Vec::new(),
         }
     }
 }
@@ -72,6 +82,8 @@ pub struct MultinomialResult {
     pub reference_index: usize,
     pub warnings: Vec<String>,
     pub solver_status: String,
+    pub smooth_edfs: Vec<f64>,
+    pub total_edf: Option<f64>,
 }
 
 #[derive(Debug)]
@@ -468,9 +480,15 @@ impl OptimizationExtensions {
 fn optimization_extensions_from_config(
     layout: &MultinomialParameterLayout,
     l1_alpha: f64,
+    smooth_penalties: &[MultinomialSmoothPenalty],
 ) -> Result<OptimizationExtensions> {
     let q = layout.len()?;
     let mut extensions = OptimizationExtensions::inert(q);
+    for smooth in smooth_penalties {
+        extensions
+            .quadratic_penalties
+            .extend(expand_smooth_penalty(layout, smooth)?);
+    }
     if l1_alpha > 0.0 {
         extensions.l1_penalty = L1Penalty {
             alpha: l1_alpha,
@@ -478,6 +496,53 @@ fn optimization_extensions_from_config(
         };
     }
     Ok(extensions)
+}
+
+fn expand_smooth_penalty(
+    layout: &MultinomialParameterLayout,
+    smooth: &MultinomialSmoothPenalty,
+) -> Result<Vec<QuadraticPenaltyBlock>> {
+    if smooth.col_start >= smooth.col_end || smooth.col_end > layout.n_shared {
+        return Err(RustyStatsError::InvalidValue(format!(
+            "smooth penalty column range {}..{} is invalid for {} shared columns",
+            smooth.col_start, smooth.col_end, layout.n_shared
+        )));
+    }
+    let width = smooth.col_end - smooth.col_start;
+    if smooth.penalty.nrows() != width || smooth.penalty.ncols() != width {
+        return Err(RustyStatsError::InvalidValue(format!(
+            "smooth penalty matrix has shape {:?}, expected ({}, {}) for columns {}..{}",
+            smooth.penalty.dim(),
+            width,
+            width,
+            smooth.col_start,
+            smooth.col_end
+        )));
+    }
+    if !smooth.lambda.is_finite() || smooth.lambda < 0.0 {
+        return Err(RustyStatsError::InvalidValue(
+            "smooth penalty lambda must be finite and non-negative".to_string(),
+        ));
+    }
+    if smooth.penalty.iter().any(|value| !value.is_finite()) {
+        return Err(RustyStatsError::InvalidValue(
+            "smooth penalty matrix values must be finite".to_string(),
+        ));
+    }
+
+    let mut blocks = Vec::with_capacity(layout.n_non_reference);
+    for block_idx in 0..layout.n_non_reference {
+        let mut indices = Vec::with_capacity(width);
+        for feature_idx in smooth.col_start..smooth.col_end {
+            indices.push(layout.shared(block_idx, feature_idx)?);
+        }
+        blocks.push(QuadraticPenaltyBlock {
+            indices,
+            matrix: smooth.penalty.clone(),
+            weight: smooth.lambda,
+        });
+    }
+    Ok(blocks)
 }
 
 fn default_l1_penalty_mask(layout: &MultinomialParameterLayout) -> Result<Vec<bool>> {
@@ -606,7 +671,8 @@ fn fit_multinomial_internal(
     )?;
     let l1_alpha = config.alpha * config.l1_ratio;
     let l2_alpha = config.alpha * (1.0 - config.l1_ratio);
-    let optimization_extensions = optimization_extensions_from_config(&layout, l1_alpha)?;
+    let optimization_extensions =
+        optimization_extensions_from_config(&layout, l1_alpha, &config.smooth_penalties)?;
     optimization_extensions.validate(layout.len()?)?;
 
     let use_standardization = config.alpha > 0.0 && config.standardize && standardization.is_some();
@@ -643,6 +709,7 @@ fn fit_multinomial_internal(
             l2_alpha,
             config.fit_intercept,
             sparse_cache.as_ref(),
+            &optimization_extensions.quadratic_penalties,
         )?;
         let current_objective = penalized_objective_from_smooth(
             evaluation.objective,
@@ -699,6 +766,7 @@ fn fit_multinomial_internal(
                 l2_alpha,
                 config.fit_intercept,
                 &optimization_extensions.l1_penalty,
+                &optimization_extensions.quadratic_penalties,
             )?;
 
             if candidate_objective.is_finite()
@@ -769,6 +837,7 @@ fn fit_multinomial_internal(
         l2_alpha,
         config.fit_intercept,
         sparse_cache.as_ref(),
+        &optimization_extensions.quadratic_penalties,
     )?;
     let covariance_work = if optimization_extensions.l1_penalty.alpha > 0.0 {
         if !config.skip_covariance {
@@ -831,6 +900,26 @@ fn fit_multinomial_internal(
         Some(covariance) => Some(transform_covariance(&covariance, &original_transform)?),
         None => None,
     };
+    let (smooth_edfs, total_edf) = if config.smooth_penalties.is_empty() {
+        (Vec::new(), None)
+    } else {
+        let hessian_unpenalized = hessian(
+            &theta,
+            x_fit,
+            &prepared,
+            &final_evaluation_probabilities(&theta, x_fit, n_classes, &prepared)?,
+            0.0,
+            config.fit_intercept,
+            sparse_cache.as_ref(),
+        )?;
+        let (edfs, total) = smooth_edf_diagnostics(
+            &hessian_unpenalized,
+            &final_evaluation.hessian,
+            &layout,
+            &config.smooth_penalties,
+        )?;
+        (edfs, Some(total))
+    };
 
     let (linear_predictor, fitted_probabilities) = linear_predictor_and_probabilities(
         &coefficients,
@@ -879,6 +968,8 @@ fn fit_multinomial_internal(
         reference_index,
         warnings,
         solver_status,
+        smooth_edfs,
+        total_edf,
     })
 }
 
@@ -1349,6 +1440,7 @@ fn evaluate(
     alpha: f64,
     fit_intercept: bool,
     sparse_cache: Option<&SparseRowCache>,
+    quadratic_penalties: &[QuadraticPenaltyBlock],
 ) -> Result<Evaluation> {
     let (_, probabilities) = linear_predictor_and_probabilities_from_theta(
         theta,
@@ -1363,9 +1455,10 @@ fn evaluate(
     let log_likelihood =
         log_likelihood_from_probabilities(&probabilities, &prepared.y_codes, &prepared.weights)?;
     let ridge = ridge_penalty(theta, x.ncols(), n_classes, alpha, fit_intercept);
-    let objective = -log_likelihood + ridge;
-    let gradient = gradient(theta, x, prepared, &probabilities, alpha, fit_intercept)?;
-    let hessian = hessian(
+    let objective = -log_likelihood + ridge + quadratic_penalty(theta, quadratic_penalties);
+    let mut gradient = gradient(theta, x, prepared, &probabilities, alpha, fit_intercept)?;
+    add_quadratic_gradient(&mut gradient, theta, quadratic_penalties);
+    let mut hessian = hessian(
         theta,
         x,
         prepared,
@@ -1374,12 +1467,32 @@ fn evaluate(
         fit_intercept,
         sparse_cache,
     )?;
+    add_quadratic_hessian(&mut hessian, quadratic_penalties);
 
     Ok(Evaluation {
         objective,
         gradient,
         hessian,
     })
+}
+
+fn final_evaluation_probabilities(
+    theta: &Array1<f64>,
+    x: ArrayView2<'_, f64>,
+    n_classes: usize,
+    prepared: &PreparedInputs,
+) -> Result<Array2<f64>> {
+    let (_, probabilities) = linear_predictor_and_probabilities_from_theta(
+        theta,
+        x,
+        n_classes,
+        &prepared.class_to_block,
+        &prepared.availability,
+        &prepared.offset,
+        &prepared.alternative_generic,
+        &prepared.alternative_specific,
+    )?;
+    Ok(probabilities)
 }
 
 fn objective_only(
@@ -1413,9 +1526,14 @@ fn penalized_objective(
     l2_alpha: f64,
     fit_intercept: bool,
     l1_penalty: &L1Penalty,
+    quadratic_penalties: &[QuadraticPenaltyBlock],
 ) -> Result<f64> {
     let smooth = objective_only(theta, x, n_classes, prepared, l2_alpha, fit_intercept)?;
-    Ok(penalized_objective_from_smooth(smooth, theta, l1_penalty))
+    Ok(penalized_objective_from_smooth(
+        smooth + quadratic_penalty(theta, quadratic_penalties),
+        theta,
+        l1_penalty,
+    ))
 }
 
 fn penalized_objective_from_smooth(
@@ -1436,6 +1554,47 @@ fn l1_norm(theta: &Array1<f64>, l1_penalty: &L1Penalty) -> f64 {
         .filter_map(|(value, penalized)| penalized.then_some(value.abs()))
         .sum::<f64>()
         * l1_penalty.alpha
+}
+
+fn quadratic_penalty(theta: &Array1<f64>, penalties: &[QuadraticPenaltyBlock]) -> f64 {
+    penalties
+        .iter()
+        .map(|penalty| {
+            let mut value = 0.0;
+            for (row_pos, &row_idx) in penalty.indices.iter().enumerate() {
+                for (col_pos, &col_idx) in penalty.indices.iter().enumerate() {
+                    value += theta[row_idx] * penalty.matrix[[row_pos, col_pos]] * theta[col_idx];
+                }
+            }
+            0.5 * penalty.weight * value
+        })
+        .sum()
+}
+
+fn add_quadratic_gradient(
+    gradient: &mut Array1<f64>,
+    theta: &Array1<f64>,
+    penalties: &[QuadraticPenaltyBlock],
+) {
+    for penalty in penalties {
+        for (row_pos, &row_idx) in penalty.indices.iter().enumerate() {
+            let mut value = 0.0;
+            for (col_pos, &col_idx) in penalty.indices.iter().enumerate() {
+                value += penalty.matrix[[row_pos, col_pos]] * theta[col_idx];
+            }
+            gradient[row_idx] += penalty.weight * value;
+        }
+    }
+}
+
+fn add_quadratic_hessian(hessian: &mut Array2<f64>, penalties: &[QuadraticPenaltyBlock]) {
+    for penalty in penalties {
+        for (row_pos, &row_idx) in penalty.indices.iter().enumerate() {
+            for (col_pos, &col_idx) in penalty.indices.iter().enumerate() {
+                hessian[[row_idx, col_idx]] += penalty.weight * penalty.matrix[[row_pos, col_pos]];
+            }
+        }
+    }
 }
 
 fn ridge_penalty(
@@ -2176,6 +2335,51 @@ fn invert_hessian(hessian: &Array2<f64>) -> Result<Array2<f64>> {
     Ok(out)
 }
 
+fn smooth_edf_diagnostics(
+    hessian_unpenalized: &Array2<f64>,
+    hessian_penalized: &Array2<f64>,
+    layout: &MultinomialParameterLayout,
+    smooth_penalties: &[MultinomialSmoothPenalty],
+) -> Result<(Vec<f64>, f64)> {
+    let q = hessian_penalized.nrows();
+    if hessian_penalized.ncols() != q
+        || hessian_unpenalized.nrows() != q
+        || hessian_unpenalized.ncols() != q
+    {
+        return Err(RustyStatsError::InvalidValue(format!(
+            "EDF Hessian dimensions are inconsistent: unpenalized {:?}, penalized {:?}",
+            hessian_unpenalized.dim(),
+            hessian_penalized.dim()
+        )));
+    }
+
+    let hp = array2_to_dmatrix(hessian_penalized);
+    let hu = array2_to_dmatrix(hessian_unpenalized);
+    let influence = if let Some(chol) = hp.clone().cholesky() {
+        chol.solve(&hu)
+    } else {
+        hp.lu().solve(&hu).ok_or_else(|| {
+            RustyStatsError::LinearAlgebraError(
+                "failed to solve multinomial penalized Hessian for smooth EDF".to_string(),
+            )
+        })?
+    };
+
+    let total_edf = (0..q).map(|idx| influence[(idx, idx)]).sum::<f64>();
+    let mut smooth_edfs = Vec::with_capacity(smooth_penalties.len());
+    for smooth in smooth_penalties {
+        let mut edf = 0.0;
+        for block_idx in 0..layout.n_non_reference {
+            for feature_idx in smooth.col_start..smooth.col_end {
+                let idx = layout.shared(block_idx, feature_idx)?;
+                edf += influence[(idx, idx)];
+            }
+        }
+        smooth_edfs.push(edf);
+    }
+    Ok((smooth_edfs, total_edf))
+}
+
 fn array2_to_dmatrix(values: &Array2<f64>) -> DMatrix<f64> {
     let (rows, cols) = values.dim();
     DMatrix::from_fn(rows, cols, |row, col| values[[row, col]])
@@ -2402,6 +2606,7 @@ fn compute_null_deviance_value(
     null_config.fit_intercept = true;
     null_config.standardize = false;
     null_config.initial_theta = None;
+    null_config.smooth_penalties.clear();
     null_config.max_dense_parameters = null_config.max_dense_parameters.max(n_classes - 1);
 
     let result = fit_multinomial_internal(
@@ -2529,6 +2734,164 @@ mod tests {
             ..OptimizationExtensions::inert(4)
         };
         assert!(bad_bound.validate(4).is_err());
+    }
+
+    #[test]
+    fn smooth_penalty_expands_to_each_non_reference_shared_block() {
+        let layout = MultinomialParameterLayout::new(4, 3, 0, 0, true).expect("valid layout");
+        let smooth = MultinomialSmoothPenalty {
+            col_start: 1,
+            col_end: 3,
+            penalty: array![[1.0, 0.25], [0.25, 2.0]],
+            lambda: 4.0,
+        };
+
+        let extensions =
+            optimization_extensions_from_config(&layout, 0.0, &[smooth]).expect("extensions");
+
+        assert_eq!(extensions.quadratic_penalties.len(), 2);
+        assert_eq!(extensions.quadratic_penalties[0].indices, vec![1, 2]);
+        assert_eq!(extensions.quadratic_penalties[1].indices, vec![5, 6]);
+        for penalty in &extensions.quadratic_penalties {
+            assert_abs_diff_eq!(penalty.weight, 4.0, epsilon = 1e-12);
+            assert_abs_diff_eq!(penalty.matrix[[0, 0]], 1.0, epsilon = 1e-12);
+            assert_abs_diff_eq!(penalty.matrix[[0, 1]], 0.25, epsilon = 1e-12);
+            assert_abs_diff_eq!(penalty.matrix[[1, 1]], 2.0, epsilon = 1e-12);
+        }
+    }
+
+    #[test]
+    fn smooth_quadratic_gradient_and_hessian_match_finite_differences() {
+        let penalty = QuadraticPenaltyBlock {
+            indices: vec![1, 3],
+            matrix: array![[2.0, -0.5], [-0.5, 1.5]],
+            weight: 0.7,
+        };
+        let penalties = vec![penalty];
+        let theta = array![0.3, -0.8, 0.1, 1.2];
+        let mut gradient = Array1::zeros(theta.len());
+        let mut hessian = Array2::zeros((theta.len(), theta.len()));
+
+        add_quadratic_gradient(&mut gradient, &theta, &penalties);
+        add_quadratic_hessian(&mut hessian, &penalties);
+
+        let eps = 1e-6;
+        for idx in 0..theta.len() {
+            let mut plus = theta.clone();
+            let mut minus = theta.clone();
+            plus[idx] += eps;
+            minus[idx] -= eps;
+            let fd_grad = (quadratic_penalty(&plus, &penalties)
+                - quadratic_penalty(&minus, &penalties))
+                / (2.0 * eps);
+            assert_abs_diff_eq!(gradient[idx], fd_grad, epsilon = 1e-6);
+        }
+
+        assert_abs_diff_eq!(hessian[[1, 1]], 1.4, epsilon = 1e-12);
+        assert_abs_diff_eq!(hessian[[1, 3]], -0.35, epsilon = 1e-12);
+        assert_abs_diff_eq!(hessian[[3, 1]], -0.35, epsilon = 1e-12);
+        assert_abs_diff_eq!(hessian[[3, 3]], 1.05, epsilon = 1e-12);
+        assert_abs_diff_eq!(hessian[[0, 0]], 0.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn smooth_edf_decreases_as_lambda_increases() {
+        let layout = MultinomialParameterLayout::new(3, 2, 0, 0, true).expect("valid layout");
+        let penalty_matrix = array![[1.0, 0.0], [0.0, 1.0]];
+        let low_lambda = MultinomialSmoothPenalty {
+            col_start: 1,
+            col_end: 3,
+            penalty: penalty_matrix.clone(),
+            lambda: 0.1,
+        };
+        let high_lambda = MultinomialSmoothPenalty {
+            col_start: 1,
+            col_end: 3,
+            penalty: penalty_matrix,
+            lambda: 100.0,
+        };
+        let mut hessian_unpenalized = Array2::zeros((3, 3));
+        for idx in 0..3 {
+            hessian_unpenalized[[idx, idx]] = 10.0;
+        }
+        let mut hessian_low = hessian_unpenalized.clone();
+        add_quadratic_hessian(
+            &mut hessian_low,
+            &expand_smooth_penalty(&layout, &low_lambda).expect("low penalty"),
+        );
+        let mut hessian_high = hessian_unpenalized.clone();
+        add_quadratic_hessian(
+            &mut hessian_high,
+            &expand_smooth_penalty(&layout, &high_lambda).expect("high penalty"),
+        );
+
+        let (edf_low, total_low) =
+            smooth_edf_diagnostics(&hessian_unpenalized, &hessian_low, &layout, &[low_lambda])
+                .expect("low edf");
+        let (edf_high, total_high) =
+            smooth_edf_diagnostics(&hessian_unpenalized, &hessian_high, &layout, &[high_lambda])
+                .expect("high edf");
+
+        assert!(edf_high[0] < edf_low[0]);
+        assert!(total_high < total_low);
+    }
+
+    #[test]
+    fn smooth_fit_with_availability_reports_finite_edf() {
+        let x = array![
+            [1.0, -1.3, 0.5],
+            [1.0, -0.9, -0.2],
+            [1.0, -0.4, 0.8],
+            [1.0, 0.0, -0.5],
+            [1.0, 0.3, 0.2],
+            [1.0, 0.7, -0.7],
+            [1.0, 1.0, 0.4],
+            [1.0, 1.4, -0.1],
+            [1.0, 1.8, 0.9],
+        ];
+        let y = array![0usize, 0, 1, 1, 2, 2, 0, 1, 2];
+        let availability = array![
+            [true, true, false],
+            [true, true, true],
+            [true, true, true],
+            [true, true, false],
+            [true, false, true],
+            [true, true, true],
+            [true, false, true],
+            [true, true, true],
+            [true, true, true],
+        ];
+        let config = MultinomialConfig {
+            smooth_penalties: vec![MultinomialSmoothPenalty {
+                col_start: 1,
+                col_end: 3,
+                penalty: array![[1.0, -0.25], [-0.25, 1.0]],
+                lambda: 0.8,
+            }],
+            ..default_config()
+        };
+
+        let result = fit_multinomial(
+            &y,
+            x.view(),
+            3,
+            0,
+            &config,
+            Some(&availability),
+            None,
+            None,
+            None,
+        )
+        .expect("smooth fit with availability succeeds");
+
+        assert!(result.converged);
+        assert_eq!(result.smooth_edfs.len(), 1);
+        assert!(result.smooth_edfs[0].is_finite());
+        assert!(result.smooth_edfs[0] > 0.0);
+        assert!(result.total_edf.is_some_and(f64::is_finite));
+        assert_abs_diff_eq!(result.fitted_probabilities[[0, 2]], 0.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(result.fitted_probabilities[[3, 2]], 0.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(result.fitted_probabilities[[4, 1]], 0.0, epsilon = 1e-12);
     }
 
     #[test]
@@ -2728,7 +3091,7 @@ mod tests {
             validate_and_prepare(&y, x.view(), 3, 0, &config, None, None, None, None, None)
                 .expect("prepare");
         let theta = array![0.2, -0.3, -0.1, 0.4];
-        let eval = evaluate(&theta, x.view(), 3, &prepared, 0.0, true, None).expect("eval");
+        let eval = evaluate(&theta, x.view(), 3, &prepared, 0.0, true, None, &[]).expect("eval");
         let eps = 1e-5;
 
         for idx in 0..theta.len() {
@@ -2751,9 +3114,9 @@ mod tests {
                 plus[col] += eps;
                 minus[col] -= eps;
                 let grad_plus =
-                    evaluate(&plus, x.view(), 3, &prepared, 0.0, true, None).expect("plus");
+                    evaluate(&plus, x.view(), 3, &prepared, 0.0, true, None, &[]).expect("plus");
                 let grad_minus =
-                    evaluate(&minus, x.view(), 3, &prepared, 0.0, true, None).expect("minus");
+                    evaluate(&minus, x.view(), 3, &prepared, 0.0, true, None, &[]).expect("minus");
                 let fd_hessian = (grad_plus.gradient[row] - grad_minus.gradient[row]) / (2.0 * eps);
                 assert_abs_diff_eq!(eval.hessian[[row, col]], fd_hessian, epsilon = 1e-5);
             }
@@ -2791,7 +3154,7 @@ mod tests {
         )
         .expect("prepare");
         let theta = array![0.2, -0.3, -0.1, 0.4, -0.5, 0.25, -0.15];
-        let eval = evaluate(&theta, x.view(), 3, &prepared, 0.0, true, None).expect("eval");
+        let eval = evaluate(&theta, x.view(), 3, &prepared, 0.0, true, None, &[]).expect("eval");
         let eps = 1e-5;
 
         for idx in 0..theta.len() {
@@ -2814,9 +3177,9 @@ mod tests {
                 plus[col] += eps;
                 minus[col] -= eps;
                 let grad_plus =
-                    evaluate(&plus, x.view(), 3, &prepared, 0.0, true, None).expect("plus");
+                    evaluate(&plus, x.view(), 3, &prepared, 0.0, true, None, &[]).expect("plus");
                 let grad_minus =
-                    evaluate(&minus, x.view(), 3, &prepared, 0.0, true, None).expect("minus");
+                    evaluate(&minus, x.view(), 3, &prepared, 0.0, true, None, &[]).expect("minus");
                 let fd_hessian = (grad_plus.gradient[row] - grad_minus.gradient[row]) / (2.0 * eps);
                 assert_abs_diff_eq!(eval.hessian[[row, col]], fd_hessian, epsilon = 1e-5);
             }
@@ -2966,7 +3329,8 @@ mod tests {
             validate_and_prepare(&y, x.view(), 3, 0, &config, None, None, None, None, None)
                 .expect("prepare");
         let theta = Array1::from_iter(result.coefficients.iter().copied());
-        let evaluation = evaluate(&theta, x.view(), 3, &prepared, 0.0, true, None).expect("eval");
+        let evaluation =
+            evaluate(&theta, x.view(), 3, &prepared, 0.0, true, None, &[]).expect("eval");
         let layout = MultinomialParameterLayout::new(3, 3, 0, 0, true).expect("layout");
         let l1_penalty = L1Penalty {
             alpha: config.alpha,

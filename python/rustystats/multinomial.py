@@ -27,7 +27,10 @@ from rustystats.constants import (
     DEFAULT_ALPHA_MIN_RATIO,
     DEFAULT_CV_SEED,
     DEFAULT_ELASTIC_NET_L1_RATIO,
+    DEFAULT_LAMBDA_MAX,
+    DEFAULT_LAMBDA_MIN,
     DEFAULT_N_ALPHAS,
+    DEFAULT_N_LAMBDA,
     DEFAULT_N_PERMUTATIONS,
     DEFAULT_PRIOR_WEIGHT,
 )
@@ -471,6 +474,32 @@ class MultinomialFoldDesign:
     y_val: np.ndarray
     feature_names: list[str]
     preprocessing_state: MultinomialFoldPreprocessingState
+
+
+@dataclass
+class MultinomialSmoothTermResult:
+    """Diagnostics for one automatically-smoothed shared multinomial term."""
+
+    variable: str
+    spline_type: str
+    k: int
+    lambda_: float
+    edf: float
+    gcv: float
+    col_start: int
+    col_end: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "variable": self.variable,
+            "type": self.spline_type,
+            "k": self.k,
+            "lambda": self.lambda_,
+            "edf": self.edf,
+            "gcv": self.gcv,
+            "col_start": self.col_start,
+            "col_end": self.col_end,
+        }
 
 
 def _fold_local_parsed_formula(parsed: ParsedFormula) -> ParsedFormula:
@@ -1145,6 +1174,9 @@ def _fit_multinomial_arrays(
     alternative_generic: np.ndarray,
     alternative_specific: np.ndarray,
     initial_result: Any | None = None,
+    smooth_col_ranges: list[tuple[int, int]] | None = None,
+    smooth_penalties: list[np.ndarray] | None = None,
+    smooth_lambdas: list[float] | np.ndarray | None = None,
 ) -> Any:
     (
         center,
@@ -1201,7 +1233,256 @@ def _fit_multinomial_arrays(
         alternative_specific_center,
         alternative_specific_scale,
         initial_theta,
+        smooth_col_ranges,
+        smooth_penalties,
+        None if smooth_lambdas is None else list(map(float, smooth_lambdas)),
     )
+
+
+def _weighted_multinomial_gcv(deviance: float, weight_sum: float, total_edf: float | None) -> float:
+    if total_edf is None or not np.isfinite(total_edf):
+        return float("inf")
+    if weight_sum <= 0.0 or not np.isfinite(weight_sum) or not np.isfinite(deviance):
+        return float("inf")
+    denominator = weight_sum - float(total_edf)
+    if denominator <= 1e-8 * max(1.0, weight_sum):
+        return float("inf")
+    return float(deviance * weight_sum / (denominator * denominator))
+
+
+def _multinomial_smooth_penalty_inputs(
+    model: MultinomialDict,
+) -> tuple[list[Any], list[tuple[int, int]], list[np.ndarray]]:
+    smooth_terms, smooth_col_ranges = model._builder.get_smooth_terms()
+    smooth_terms = list(smooth_terms)
+    smooth_col_ranges = [(int(start), int(end)) for start, end in smooth_col_ranges]
+    if len(smooth_terms) != len(smooth_col_ranges):
+        raise ValidationError(
+            "multinomial smooth metadata is inconsistent: the number of smooth terms "
+            "does not match the number of smooth column ranges."
+        )
+    penalties: list[np.ndarray] = []
+    for idx, term in enumerate(smooth_terms):
+        if (
+            getattr(term, "monotonicity", None) is not None
+            or getattr(term, "spline_type", None) == "ms"
+        ):
+            raise ValidationError(
+                "monotonic smooth terms are not yet supported for multinomial_dict."
+            )
+        start, end = smooth_col_ranges[idx]
+        k = end - start
+        if k <= 0:
+            raise ValidationError(
+                f"multinomial smooth term {getattr(term, 'var_name', idx)!r} has an empty "
+                "basis column range."
+            )
+        penalties.append(np.ascontiguousarray(term.compute_penalty_matrix(k)[:k, :k]))
+    return smooth_terms, smooth_col_ranges, penalties
+
+
+def _fit_multinomial_smooth_path(
+    model: MultinomialDict,
+    *,
+    max_iter: int,
+    tol: float,
+    compute_covariance: bool,
+    store_design_matrix: bool,
+    verbose: bool,
+    hessian_memory_limit_bytes: int,
+    max_dense_parameters: int,
+    n_lambda: int,
+    lambda_min: float,
+    lambda_max: float,
+    max_lambda_iter: int,
+) -> tuple[Any, list[MultinomialSmoothTermResult], float, float, dict[str, Any]]:
+    smooth_terms, smooth_col_ranges, smooth_penalties = _multinomial_smooth_penalty_inputs(model)
+    if not smooth_terms:
+        raise ValidationError("_fit_multinomial_smooth_path requires at least one smooth term.")
+    if n_lambda <= 0:
+        raise ValidationError("n_lambda must be positive for multinomial smooth tuning.")
+    if (
+        lambda_min <= 0.0
+        or lambda_max <= lambda_min
+        or not np.isfinite(lambda_min)
+        or not np.isfinite(lambda_max)
+    ):
+        raise ValidationError(
+            "lambda_min/lambda_max must be finite with 0 < lambda_min < lambda_max."
+        )
+    if max_lambda_iter <= 0:
+        raise ValidationError("max_lambda_iter must be positive.")
+
+    candidate_lambdas = np.exp(
+        np.linspace(math.log(lambda_min), math.log(lambda_max), int(n_lambda))
+    )
+    lambdas = np.ones(len(smooth_terms), dtype=np.float64)
+    weight_sum = (
+        float(model.n_obs)
+        if model.weights is None
+        else float(np.sum(np.asarray(model.weights, dtype=np.float64)))
+    )
+    best_result = None
+    best_gcv = float("inf")
+    candidate_fit_count = 0
+    converged = False
+
+    def fit_candidate(
+        trial_lambdas: np.ndarray,
+        initial_result: Any | None,
+    ) -> tuple[Any, float]:
+        result = _fit_multinomial_arrays(
+            y_codes=model.y_codes,
+            x=model.X,
+            n_classes=len(model.classes_),
+            reference_index=model.reference_index_,
+            availability=model.availability,
+            offset=model.offset,
+            weights=model.weights,
+            alpha=0.0,
+            l1_ratio=0.0,
+            max_iter=max_iter,
+            tol=tol,
+            fit_intercept=model.intercept,
+            standardize=False,
+            compute_covariance=False,
+            store_design_matrix=False,
+            verbose=False,
+            hessian_memory_limit_bytes=hessian_memory_limit_bytes,
+            max_dense_parameters=max_dense_parameters,
+            alternative_generic=model.alternative_generic,
+            alternative_specific=model.alternative_specific,
+            initial_result=initial_result,
+            smooth_col_ranges=smooth_col_ranges,
+            smooth_penalties=smooth_penalties,
+            smooth_lambdas=trial_lambdas,
+        )
+        result_total_edf = result.total_edf
+        return result, _weighted_multinomial_gcv(
+            float(result.deviance),
+            weight_sum,
+            None if result_total_edf is None else float(result_total_edf),
+        )
+
+    previous_selected = None
+    for outer_iter in range(int(max_lambda_iter)):
+        start_lambdas = lambdas.copy()
+        for term_idx in range(len(smooth_terms)):
+            term_best_result = None
+            term_best_gcv = float("inf")
+            term_best_lambda = lambdas[term_idx]
+            previous_candidate = previous_selected
+            for candidate in candidate_lambdas:
+                trial = lambdas.copy()
+                trial[term_idx] = float(candidate)
+                try:
+                    candidate_result, candidate_gcv = fit_candidate(trial, previous_candidate)
+                    candidate_fit_count += 1
+                except (ValueError, ValidationError, RuntimeError) as exc:
+                    if verbose:
+                        print(
+                            f"  smooth lambda candidate term={term_idx} "
+                            f"lambda={candidate:.6g} failed: {exc!r}"
+                        )
+                    previous_candidate = None
+                    continue
+                previous_candidate = candidate_result
+                if candidate_gcv < term_best_gcv:
+                    term_best_gcv = candidate_gcv
+                    term_best_lambda = float(candidate)
+                    term_best_result = candidate_result
+            if term_best_result is None:
+                raise ValidationError(
+                    "multinomial smooth tuning produced no finite GCV candidates; "
+                    "check the smooth terms, lambda range, and convergence settings."
+                )
+            lambdas[term_idx] = term_best_lambda
+            previous_selected = term_best_result
+            if term_best_gcv < best_gcv:
+                best_gcv = term_best_gcv
+                best_result = term_best_result
+
+        max_rel_change = float(
+            np.max(np.abs(lambdas - start_lambdas) / np.maximum(1.0, np.abs(start_lambdas)))
+        )
+        if verbose:
+            print(
+                f"Multinomial smooth outer={outer_iter + 1} "
+                f"lambdas={lambdas.tolist()} gcv={best_gcv:.6g}"
+            )
+        if max_rel_change < 1e-4:
+            converged = True
+            break
+
+    final_result = _fit_multinomial_arrays(
+        y_codes=model.y_codes,
+        x=model.X,
+        n_classes=len(model.classes_),
+        reference_index=model.reference_index_,
+        availability=model.availability,
+        offset=model.offset,
+        weights=model.weights,
+        alpha=0.0,
+        l1_ratio=0.0,
+        max_iter=max_iter,
+        tol=tol,
+        fit_intercept=model.intercept,
+        standardize=False,
+        compute_covariance=compute_covariance,
+        store_design_matrix=store_design_matrix,
+        verbose=verbose,
+        hessian_memory_limit_bytes=hessian_memory_limit_bytes,
+        max_dense_parameters=max_dense_parameters,
+        alternative_generic=model.alternative_generic,
+        alternative_specific=model.alternative_specific,
+        initial_result=best_result,
+        smooth_col_ranges=smooth_col_ranges,
+        smooth_penalties=smooth_penalties,
+        smooth_lambdas=lambdas,
+    )
+    raw_total_edf = getattr(final_result, "total_edf", None)
+    if raw_total_edf is None or not np.isfinite(raw_total_edf):
+        raise ValidationError("multinomial smooth fit did not return a finite total EDF.")
+    total_edf = float(raw_total_edf)
+    gcv = _weighted_multinomial_gcv(float(final_result.deviance), weight_sum, total_edf)
+    smooth_edfs = np.asarray(final_result.smooth_edfs, dtype=np.float64)
+    if smooth_edfs.shape != (len(smooth_terms),):
+        raise ValidationError(
+            "multinomial smooth fit returned inconsistent EDF metadata: "
+            f"expected {len(smooth_terms)} values, got {smooth_edfs.shape}."
+        )
+    smooth_results = []
+    for idx, term in enumerate(smooth_terms):
+        start, end = smooth_col_ranges[idx]
+        term._lambda = float(lambdas[idx])
+        term._edf = float(smooth_edfs[idx])
+        smooth_results.append(
+            MultinomialSmoothTermResult(
+                variable=term.var_name,
+                spline_type=term.spline_type,
+                k=int(term.df if term.df is not None else end - start),
+                lambda_=float(lambdas[idx]),
+                edf=float(smooth_edfs[idx]),
+                gcv=gcv,
+                col_start=start,
+                col_end=end,
+            )
+        )
+
+    profile = {
+        "method": "gcv_coordinate_search",
+        "n_lambda": int(n_lambda),
+        "lambda_min": float(lambda_min),
+        "lambda_max": float(lambda_max),
+        "candidate_fit_count": int(candidate_fit_count),
+        "max_lambda_iter": int(max_lambda_iter),
+        "converged": bool(converged),
+        "warm_start": True,
+        "selected_lambdas": [float(value) for value in lambdas],
+        "gcv": float(gcv),
+        "total_edf": float(total_edf),
+    }
+    return final_result, smooth_results, total_edf, gcv, profile
 
 
 def _normalize_multinomial_cv_alphas(
@@ -1561,7 +1842,7 @@ def _validate_supported_term_spec(var_name: str, spec: dict[str, Any], *, contex
     if term_type in {"ms", "s"}:
         raise ValidationError(
             f"{term_type} smooth/monotonic spline terms are not yet supported for "
-            "multinomial_dict. Use fixed-degree bs/ns terms without monotonicity."
+            "multinomial_dict. Use bs/ns smooth terms without monotonicity."
         )
     if spec.get("monotonicity") is not None:
         raise ValidationError(
@@ -1569,15 +1850,14 @@ def _validate_supported_term_spec(var_name: str, spec: dict[str, Any], *, contex
             f"({context} term {var_name!r})."
         )
     if term_type in {"bs", "ns"}:
-        if spec.get("k") is not None:
+        smooth_requested = spec.get("k") is not None or (
+            spec.get("df") is None and spec.get("knots") is None
+        )
+        if smooth_requested and context != "main":
             raise ValidationError(
-                f"automatic smooth penalties are not yet supported for multinomial_dict "
-                f"({context} term {var_name!r}); use df= or knots= for a fixed basis."
-            )
-        if spec.get("df") is None and spec.get("knots") is None:
-            raise ValidationError(
-                f"multinomial_dict requires fixed-degree {term_type} terms. "
-                f"Pass df= or knots= for {context} term {var_name!r}."
+                f"automatic smooth penalties for {term_type} terms are only supported "
+                f"as main effects in multinomial_dict ({context} term {var_name!r}). "
+                "Use df= or knots= for a fixed interaction basis."
             )
     if term_type == "target_encoding":
         _target_encoding_options(
@@ -1910,6 +2190,8 @@ class _DeserializedMultinomialResult:
     alpha: float
     l1_ratio: float
     fit_intercept: bool
+    smooth_edfs: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.float64))
+    total_edf: float | None = None
 
     @property
     def coefficients(self) -> np.ndarray:
@@ -2316,6 +2598,10 @@ class MultinomialModel:
         fit_row_weights: np.ndarray | None = None,
         array_weighted: bool = False,
         regularization_path_info: Any | None = None,
+        smooth_results: list[MultinomialSmoothTermResult] | None = None,
+        total_edf: float | None = None,
+        gcv: float | None = None,
+        smooth_profile: dict[str, Any] | None = None,
     ):
         self._result = result
         self.response = response
@@ -2356,6 +2642,10 @@ class MultinomialModel:
         self._array_weighted = bool(array_weighted)
         self.inference_status = inference_status
         self._regularization_path_info = regularization_path_info
+        self._smooth_results = list(smooth_results or [])
+        self._total_edf = None if total_edf is None else float(total_edf)
+        self._gcv = None if gcv is None else float(gcv)
+        self._smooth_profile = copy.deepcopy(smooth_profile)
 
     @property
     def params(self) -> np.ndarray:
@@ -2453,6 +2743,8 @@ class MultinomialModel:
 
     @property
     def regularization_type(self) -> str | None:
+        if self._smooth_results:
+            return "smooth"
         if self._regularization_path_info is not None:
             return self._regularization_path_info.regularization_type
         if self.alpha <= 0.0:
@@ -2530,6 +2822,30 @@ class MultinomialModel:
         return bool(self._regularization_path_info.fold_safe_target_encoding)
 
     @property
+    def smooth_terms(self) -> list[dict[str, Any]]:
+        return [smooth.to_dict() for smooth in self._smooth_results]
+
+    @property
+    def smooth_lambdas(self) -> list[float]:
+        return [float(smooth.lambda_) for smooth in self._smooth_results]
+
+    @property
+    def smooth_edfs(self) -> list[float]:
+        return [float(smooth.edf) for smooth in self._smooth_results]
+
+    @property
+    def total_edf(self) -> float | None:
+        return self._total_edf
+
+    @property
+    def gcv(self) -> float | None:
+        return self._gcv
+
+    @property
+    def smooth_profile(self) -> dict[str, Any] | None:
+        return None if self._smooth_profile is None else copy.deepcopy(self._smooth_profile)
+
+    @property
     def nobs(self) -> int:
         return int(self.fitted_probabilities.shape[0])
 
@@ -2547,11 +2863,15 @@ class MultinomialModel:
     def aic(self) -> float | None:
         if self.alpha > 0.0 or "class_weighted" in self.inference_status:
             return None
+        if self.total_edf is not None:
+            return -2.0 * self.log_likelihood + 2.0 * self.total_edf
         return -2.0 * self.log_likelihood + 2.0 * self.n_params
 
     def bic(self) -> float | None:
         if self.alpha > 0.0 or "class_weighted" in self.inference_status:
             return None
+        if self.total_edf is not None:
+            return -2.0 * self.log_likelihood + self.total_edf * math.log(self.nobs)
         return -2.0 * self.log_likelihood + self.n_params * math.log(self.nobs)
 
     def _class_codes_from_values(self, values: Any, *, name: str) -> np.ndarray:
@@ -3953,7 +4273,9 @@ class MultinomialModel:
                 return f"{'<0.0001':>8}"
             return f"{value:>8.4f}"
 
-        if self.alpha <= 0.0:
+        if self._smooth_results:
+            method = "Newton + Smooth"
+        elif self.alpha <= 0.0:
             method = "Newton"
         elif self.l1_ratio >= 1.0:
             method = "Newton + Lasso"
@@ -3980,6 +4302,8 @@ class MultinomialModel:
             f"{'Null Deviance:':<20} {self.null_deviance:>15.4f}",
             f"{'AIC:':<20} {'NA' if aic is None else f'{aic:.4f}':>15}",
             f"{'BIC:':<20} {'NA' if bic is None else f'{bic:.4f}':>15}",
+            f"{'GCV:':<20} {'NA' if self.gcv is None else f'{self.gcv:.4f}':>15}",
+            f"{'Total EDF:':<20} {'NA' if self.total_edf is None else f'{self.total_edf:.4f}':>15}",
             f"{'Log Loss:':<20} {diagnostics.log_loss:>15.4f}",
             f"{'Accuracy:':<20} {diagnostics.accuracy:>15.4f}",
             f"{'Top-2 Accuracy:':<20} {diagnostics.top_2_accuracy:>15.4f}",
@@ -3998,6 +4322,17 @@ class MultinomialModel:
                 f"{diagnostics.class_mix_error[class_label]:>12.4f}"
             )
         lines.append("-" * 78)
+
+        if self._smooth_results:
+            lines.extend(["", "Smooth Terms:", "-" * 78])
+            lines.append(f"{'Variable':<20} {'Type':>8} {'k':>6} {'Lambda':>12} {'EDF':>10}")
+            lines.append("-" * 78)
+            for smooth in self._smooth_results:
+                lines.append(
+                    f"{smooth.variable:<20} {smooth.spline_type:>8} {smooth.k:>6} "
+                    f"{smooth.lambda_:>12.4g} {smooth.edf:>10.4f}"
+                )
+            lines.append("-" * 78)
 
         coef_rows = self.coef_table(return_format="records")
         coefficient_type_labels = {
@@ -4028,7 +4363,12 @@ class MultinomialModel:
             )
         lines.append("-" * 78)
 
-        if self.alpha > 0.0:
+        if self._smooth_results:
+            lines.append(
+                "Note: smooth standard errors use the penalized-fit Hessian and are "
+                "naive for smoothing-parameter selection."
+            )
+        elif self.alpha > 0.0:
             lines.append(
                 "Note: baseline-category penalties are reference-dependent; unpenalized "
                 "fits are the reference-invariant path."
@@ -4087,6 +4427,11 @@ class MultinomialModel:
                 "alpha": self.alpha,
                 "l1_ratio": self.l1_ratio,
                 "fit_intercept": bool(getattr(self._result, "fit_intercept", True)),
+                "smooth_edfs": np.asarray(
+                    getattr(self._result, "smooth_edfs", np.zeros(0, dtype=np.float64)),
+                    dtype=np.float64,
+                ),
+                "total_edf": getattr(self._result, "total_edf", None),
             },
             "response": self.response,
             "classes": self.classes_,
@@ -4113,6 +4458,10 @@ class MultinomialModel:
             "array_offset_requires_prediction_override": self._array_offset_requires_prediction_override,
             "inference_status": self.inference_status,
             "regularization_path_info": self._regularization_path_info,
+            "smooth_results": self._smooth_results,
+            "total_edf": self._total_edf,
+            "gcv": self._gcv,
+            "smooth_profile": self._smooth_profile,
         }
         return pickle.dumps(state, protocol=pickle.HIGHEST_PROTOCOL)
 
@@ -4130,6 +4479,8 @@ class MultinomialModel:
             "alternative_specific_coefficients",
             np.zeros((len(state["classes"]) - 1, 0), dtype=np.float64),
         )
+        result_state.setdefault("smooth_edfs", np.zeros(0, dtype=np.float64))
+        result_state.setdefault("total_edf", None)
         result = _DeserializedMultinomialResult(**result_state)
         builder = None
         if state["builder_state"] is not None:
@@ -4160,6 +4511,10 @@ class MultinomialModel:
             fit_row_weights=state.get("fit_row_weights"),
             array_weighted=state.get("array_weighted", False),
             regularization_path_info=state.get("regularization_path_info"),
+            smooth_results=state.get("smooth_results", []),
+            total_edf=state.get("total_edf"),
+            gcv=state.get("gcv"),
+            smooth_profile=state.get("smooth_profile"),
         )
 
     def __repr__(self) -> str:
@@ -4340,6 +4695,10 @@ class MultinomialDict:
         alpha_min_ratio: float = DEFAULT_ALPHA_MIN_RATIO,
         cv_seed: int | None = None,
         include_unregularized: bool = True,
+        n_lambda: int = DEFAULT_N_LAMBDA,
+        lambda_min: float = DEFAULT_LAMBDA_MIN,
+        lambda_max: float = DEFAULT_LAMBDA_MAX,
+        max_lambda_iter: int = 6,
         max_iter: int = 100,
         tol: float = 1e-8,
         standardize: bool = True,
@@ -4352,6 +4711,10 @@ class MultinomialDict:
         if tol <= 0.0 or not np.isfinite(tol):
             raise ValidationError("tol must be finite and positive.")
         path_info = None
+        smooth_terms, _smooth_col_ranges = self._builder.get_smooth_terms()
+        has_smooth = bool(smooth_terms)
+        if has_smooth and cv is not None:
+            raise ValidationError("multinomial smooth terms do not yet support cv=.")
         if cv is not None:
             path_info = _fit_multinomial_cv_path(
                 self,
@@ -4375,6 +4738,75 @@ class MultinomialDict:
             l1_ratio = path_info.selected_l1_ratio
         else:
             alpha, l1_ratio = _resolve_regularization(alpha, l1_ratio, regularization)
+
+        if has_smooth:
+            if alpha > 0.0 or l1_ratio > 0.0:
+                raise ValidationError(
+                    "multinomial smooth terms cannot yet be combined with ridge, lasso, "
+                    "elastic_net, or alpha regularization."
+                )
+            (
+                result,
+                smooth_results,
+                total_edf,
+                gcv,
+                smooth_profile,
+            ) = _fit_multinomial_smooth_path(
+                self,
+                max_iter=max_iter,
+                tol=tol,
+                compute_covariance=compute_covariance,
+                store_design_matrix=store_design_matrix,
+                verbose=verbose,
+                hessian_memory_limit_bytes=int(hessian_memory_limit_bytes),
+                max_dense_parameters=int(max_dense_parameters),
+                n_lambda=n_lambda,
+                lambda_min=lambda_min,
+                lambda_max=lambda_max,
+                max_lambda_iter=max_lambda_iter,
+            )
+            self._builder.clear_caches()
+
+            inference_notes: list[str] = ["naive_after_regularization"]
+            if self._class_weighted:
+                inference_notes.append("naive_class_weighted")
+            if not compute_covariance:
+                inference_notes.append("covariance_skipped")
+            elif result.cov_params_unscaled is None:
+                inference_notes.append("covariance_unavailable")
+            inference_status = "+".join(inference_notes)
+
+            return MultinomialModel(
+                result=result,
+                response=self.response,
+                classes=self.classes_,
+                reference=self.reference_,
+                feature_names=self.feature_names,
+                builder=self._builder,
+                terms=self.terms,
+                alternative_terms=self.alternative_terms,
+                interactions=self.interactions_spec,
+                input_transforms=self._input_transforms,
+                compiled_input_transforms=self._compiled_input_transforms,
+                target_encoding_state=self._target_encoding_state,
+                availability_spec=None
+                if self._array_availability_requires_prediction_override
+                else self.availability_spec,
+                offset_spec=None
+                if self._array_offset_requires_prediction_override
+                else self.offset_spec,
+                weights_spec=self.weights_spec if isinstance(self.weights_spec, str) else None,
+                array_availability_requires_prediction_override=self._array_availability_requires_prediction_override,
+                array_offset_requires_prediction_override=self._array_offset_requires_prediction_override,
+                inference_status=inference_status,
+                fit_row_weights=self._row_weights,
+                array_weighted=self._array_weighted,
+                regularization_path_info=None,
+                smooth_results=smooth_results,
+                total_edf=total_edf,
+                gcv=gcv,
+                smooth_profile=smooth_profile,
+            )
 
         l1_active = alpha > 0.0 and l1_ratio > 0.0
         final_initial_result = _full_data_multinomial_warm_start_result(

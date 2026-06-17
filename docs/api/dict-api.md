@@ -139,6 +139,8 @@ result = model.fit(
     alpha=0.0,
     l1_ratio=0.0,
     regularization=None,
+    cv=None,
+    n_lambda=6,
     max_iter=100,
     tol=1e-8,
     standardize=True,
@@ -146,13 +148,15 @@ result = model.fit(
 )
 ```
 
-The multinomial path supports unpenalized and ridge dense Newton fits for shared
-covariates and `alternative_terms`. Alternative-term ridge uses the same
-standardization/back-transform policy as shared covariates, with inference
-labelled as naive after regularization. Lasso, elastic net, CV, automatic smooth
-penalties, target encoding, monotonic constraints, exposure, symmetric
-reference-invariant ridge, and PMML/ONNX export are rejected with explicit
-validation errors or reserved for later native support.
+The multinomial path supports dense Newton fits for shared covariates and
+`alternative_terms`, ridge/lasso/elastic-net regularization, CV-selected
+regularization paths, multinomial target encoding, and automatic smooth
+penalties for shared `bs`/`ns` main effects. Alternative-term regularization
+uses the same standardization/back-transform policy as shared covariates, with
+inference labelled as naive after regularization or selection where applicable.
+Monotonic constraints, exposure, symmetric reference-invariant ridge, PMML/ONNX
+export, smooth interactions, and smooth + CV/elastic-net combinations are
+rejected with explicit validation errors or reserved for later native support.
 
 Alternative terms use wide-format columns:
 

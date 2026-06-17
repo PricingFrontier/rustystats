@@ -1923,7 +1923,7 @@ def test_multinomial_fold_design_availability_changes_te_values():
     )
 
 
-def test_multinomial_rejects_unsupported_smooth_defaults_and_te_interaction_factor():
+def test_multinomial_rejects_unsupported_te_options_and_smooth_interactions():
     data = _tier_frame(n=80)
 
     with pytest.raises(ValidationError, match="mode"):
@@ -1955,10 +1955,16 @@ def test_multinomial_rejects_unsupported_smooth_defaults_and_te_interaction_fact
             data=data,
         )
 
-    with pytest.raises(ValidationError, match="fixed-degree"):
+    with pytest.raises(ValidationError, match="main effects"):
         rs.multinomial_dict(
             response="tier",
-            terms={"x": {"type": "bs"}},
+            terms={"channel": {"type": "categorical"}},
+            interactions=[
+                {
+                    "x": {"type": "bs", "k": 5},
+                    "channel": {"type": "categorical"},
+                }
+            ],
             data=data,
         )
 
@@ -2349,6 +2355,105 @@ def test_multinomial_fixed_spline_and_interaction_fit():
     ).fit(compute_covariance=False)
     assert ns_result.converged
     np.testing.assert_allclose(ns_result.predict_proba(data).sum(axis=1), 1.0, atol=1e-10)
+    assert bs_result.regularization_type == "none"
+    assert bs_result.smooth_terms == []
+    assert bs_result.total_edf is None
+    assert bs_result.gcv is None
+
+
+def test_multinomial_default_bs_smooth_fit_metadata_and_serialization():
+    data = _tier_frame(n=260, seed=606)
+    classes = ["none", "basic", "standard", "premium"]
+
+    result = rs.multinomial_dict(
+        response="tier",
+        terms={"x": {"type": "bs"}, "channel": {"type": "categorical"}},
+        data=data,
+        classes=classes,
+        reference="none",
+    ).fit(
+        n_lambda=3,
+        lambda_min=0.1,
+        lambda_max=10.0,
+        max_lambda_iter=2,
+        compute_covariance=False,
+    )
+
+    assert result.converged
+    assert result.regularization_type == "smooth"
+    assert result.smooth_profile["candidate_fit_count"] >= 3
+    assert result.smooth_profile["warm_start"] is True
+    assert len(result.smooth_terms) == 1
+    smooth = result.smooth_terms[0]
+    assert smooth["variable"] == "x"
+    assert smooth["type"] == "bs"
+    assert smooth["k"] == 10
+    assert any(smooth["lambda"] == pytest.approx(value) for value in [0.1, 1.0, 10.0])
+    assert 0.0 < smooth["edf"] <= (len(classes) - 1) * smooth["k"]
+    assert result.smooth_lambdas == [smooth["lambda"]]
+    assert result.smooth_edfs == [smooth["edf"]]
+    assert result.total_edf is not None
+    assert result.total_edf >= smooth["edf"]
+    assert np.isfinite(result.gcv)
+    assert "naive_after_regularization" in result.inference_status
+    assert result.aic() == pytest.approx(-2.0 * result.log_likelihood + 2.0 * result.total_edf)
+    np.testing.assert_allclose(result.predict_proba(data).sum(axis=1), 1.0, atol=1e-10)
+    summary = result.summary()
+    assert "Newton + Smooth" in summary
+    assert "Smooth Terms:" in summary
+    assert "Total EDF" in summary
+
+    loaded = rs.MultinomialModel.from_bytes(result.to_bytes())
+    assert loaded.regularization_type == "smooth"
+    assert loaded.smooth_terms == result.smooth_terms
+    assert loaded.total_edf == pytest.approx(result.total_edf)
+    assert loaded.gcv == pytest.approx(result.gcv)
+    np.testing.assert_allclose(loaded.predict_proba(data), result.predict_proba(data))
+
+
+def test_multinomial_ns_k_smooth_sets_basis_width_and_rejects_deferred_combinations():
+    data = _tier_frame(n=220, seed=607)
+    classes = ["none", "basic", "standard", "premium"]
+
+    result = rs.multinomial_dict(
+        response="tier",
+        terms={"x": {"type": "ns", "k": 5}},
+        data=data,
+        classes=classes,
+        reference="none",
+    ).fit(
+        n_lambda=2,
+        lambda_min=0.1,
+        lambda_max=1.0,
+        max_lambda_iter=1,
+        compute_covariance=False,
+    )
+
+    assert result.converged
+    assert result.regularization_type == "smooth"
+    assert result.smooth_terms[0]["type"] == "ns"
+    assert result.smooth_terms[0]["k"] == 5
+    assert result.smooth_terms[0]["col_end"] - result.smooth_terms[0]["col_start"] == 4
+    assert result.params.shape[1] == result.smooth_terms[0]["col_end"]
+    np.testing.assert_allclose(result.predict_proba(data).sum(axis=1), 1.0, atol=1e-10)
+
+    with pytest.raises(ValidationError, match="do not yet support cv"):
+        rs.multinomial_dict(
+            response="tier",
+            terms={"x": {"type": "bs", "k": 5}},
+            data=data,
+            classes=classes,
+            reference="none",
+        ).fit(cv=2, regularization="ridge")
+
+    with pytest.raises(ValidationError, match="cannot yet be combined"):
+        rs.multinomial_dict(
+            response="tier",
+            terms={"x": {"type": "bs", "k": 5}},
+            data=data,
+            classes=classes,
+            reference="none",
+        ).fit(alpha=0.1, regularization="ridge")
 
 
 def test_ridge_alt_class_specific_se_scale_invariant():
