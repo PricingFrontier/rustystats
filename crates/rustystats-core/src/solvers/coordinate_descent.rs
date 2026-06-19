@@ -411,6 +411,7 @@ pub(crate) fn fit_glm_coordinate_descent(
         } else {
             "max_iterations".to_string()
         },
+        profile: None,
     })
 }
 

@@ -50,12 +50,15 @@ use super::{compute_irls_weights, initialize_mu_safe, validate_glm_inputs};
 // =============================================================================
 
 const CONSTRAINED_BEST_EARLY_STOP_PATIENCE: usize = 2;
-const SPARSE_XTWX_THREAD_CAP: usize = 16;
-const SPARSE_XTWX_LOCAL_MATRIX_CAP_THRESHOLD_BYTES: usize = 4 * 1024 * 1024;
+const SPARSE_XTWX_THREAD_CAP: usize = 2;
+const SPARSE_XTWX_LOCAL_MATRIX_CAP_THRESHOLD_BYTES: usize = 1024 * 1024;
+const SPARSE_XTWX_DENSITY_THRESHOLD: f64 = 0.35;
+const SPARSE_ROW_CACHE_DENSITY_THRESHOLD: f64 = 0.35;
 
 use nalgebra::{DMatrix, DVector};
 use ndarray::{Array1, Array2, ArrayView2};
 use rayon::prelude::*;
+use std::time::Instant;
 
 use crate::constants::{
     CONVERGENCE_TOL, DEFAULT_MAX_ITER, IRLS_ACCEPT_REL_SLACK, IRLS_MAX_HALF_STEPS, MAX_IRLS_WEIGHT,
@@ -358,6 +361,67 @@ pub struct IRLSResult {
     /// "step_halving_no_improvement" (no step reduced the deviance, so the
     /// previous iterate was retained). Consumed by the Python inference layer.
     pub solver_status: String,
+
+    /// Optional fine-grained timing profile for performance diagnostics.
+    pub profile: Option<IRLSProfile>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct IRLSProfile {
+    pub setup_seconds: f64,
+    pub init_mu_seconds: f64,
+    pub init_projection_seconds: f64,
+    pub initial_deviance_seconds: f64,
+    pub weight_seconds: f64,
+    pub wls_seconds: f64,
+    pub wls_gram_seconds: f64,
+    pub wls_gram_local_init_seconds: f64,
+    pub wls_gram_row_scan_seconds: f64,
+    pub wls_gram_pairwise_accum_seconds: f64,
+    pub wls_gram_reduce_seconds: f64,
+    pub wls_gram_materialize_seconds: f64,
+    pub wls_penalty_seconds: f64,
+    pub wls_solve_seconds: f64,
+    pub update_seconds: f64,
+    pub bookkeeping_seconds: f64,
+    pub final_extraction_seconds: f64,
+    pub final_recompute_seconds: f64,
+    pub total_seconds: f64,
+}
+
+#[derive(Debug, Clone, Default)]
+struct WLSSolveProfile {
+    gram_seconds: f64,
+    gram_local_init_seconds: f64,
+    gram_row_scan_seconds: f64,
+    gram_pairwise_accum_seconds: f64,
+    gram_reduce_seconds: f64,
+    gram_materialize_seconds: f64,
+    penalty_seconds: f64,
+    solve_seconds: f64,
+}
+
+#[derive(Debug, Clone, Default)]
+struct GramBuildProfile {
+    local_init_seconds: f64,
+    row_scan_seconds: f64,
+    pairwise_accum_seconds: f64,
+    reduce_seconds: f64,
+    materialize_seconds: f64,
+}
+
+impl GramBuildProfile {
+    fn add(&mut self, other: &Self) {
+        self.local_init_seconds += other.local_init_seconds;
+        self.row_scan_seconds += other.row_scan_seconds;
+        self.pairwise_accum_seconds += other.pairwise_accum_seconds;
+        self.reduce_seconds += other.reduce_seconds;
+        self.materialize_seconds += other.materialize_seconds;
+    }
+}
+
+fn profile_gram_subtimers_enabled() -> bool {
+    std::env::var_os("RUSTYSTATS_PROFILE_GRAM_SUBTIMERS").is_some()
 }
 
 // =============================================================================
@@ -575,9 +639,12 @@ fn fit_glm_core(
     penalty: Penalty,
     provided_sparse_cache: Option<&SparseRowCache>,
 ) -> Result<IRLSResult> {
+    let profile_total_start = Instant::now();
+    let mut profile = IRLSProfile::default();
     // -------------------------------------------------------------------------
     // Step 0: Validate inputs and set up offset/weights
     // -------------------------------------------------------------------------
+    let profile_setup_start = Instant::now();
     let n = y.len();
     let p = x.ncols();
     let validated = validate_glm_inputs(y, x, offset, weights)?;
@@ -593,10 +660,12 @@ fn fit_glm_core(
     let sparse_cache = provided_sparse_cache.or(owned_sparse_cache.as_ref());
 
     let mut iter_coefficients = Array1::zeros(p);
+    profile.setup_seconds = profile_setup_start.elapsed().as_secs_f64();
 
     // -------------------------------------------------------------------------
     // Step 1: Initialize μ (from coefficients if warm-starting, else from family)
     // -------------------------------------------------------------------------
+    let profile_init_mu_start = Instant::now();
     let mut mu = if let Some(init) = init_coefficients {
         if init.len() != p {
             return Err(RustyStatsError::dim_mismatch(
@@ -623,6 +692,7 @@ fn fit_glm_core(
             mu_init
         }
     };
+    profile.init_mu_seconds = profile_init_mu_start.elapsed().as_secs_f64();
 
     // -------------------------------------------------------------------------
     // Step 2: Initialize linear predictor η = Xβ + offset
@@ -633,6 +703,7 @@ fn fit_glm_core(
     // all describe the same fitted state (RS-ACT-007).
     let mut eta = link.link(&mu);
     if init_coefficients.is_none() {
+        let profile_init_projection_start = Instant::now();
         let eta_no_offset = &eta - &offset_vec;
         match solve_weighted_least_squares_penalized(
             x,
@@ -643,8 +714,9 @@ fn fit_glm_core(
             penalize_intercept,
             true, // init projection covariance is discarded
             sparse_cache,
+            None,
         ) {
-            Ok((mut coef, _)) if !coef.iter().any(|&c| c.is_nan() || c.is_infinite()) => {
+            Ok((mut coef, _, _)) if !coef.iter().any(|&c| c.is_nan() || c.is_infinite()) => {
                 for &idx in &config.nonneg_indices {
                     if idx < coef.len() && coef[idx] < 0.0 {
                         coef[idx] = 0.0;
@@ -666,11 +738,13 @@ fn fit_glm_core(
         }
         eta = &matrix_vector_dot_cached(x, &iter_coefficients, sparse_cache) + &offset_vec;
         mu = family.clamp_mu(&link.inverse(&eta));
+        profile.init_projection_seconds = profile_init_projection_start.elapsed().as_secs_f64();
     }
 
     // -------------------------------------------------------------------------
     // Step 3: Calculate initial deviance
     // -------------------------------------------------------------------------
+    let profile_initial_deviance_start = Instant::now();
     let mut deviance = family.deviance(y, &mu, Some(&prior_weights_vec));
     let mut objective = penalized_irls_objective(
         deviance,
@@ -680,6 +754,7 @@ fn fit_glm_core(
         penalize_intercept,
     );
     let mut objective_old: f64;
+    profile.initial_deviance_seconds = profile_initial_deviance_start.elapsed().as_secs_f64();
 
     // -------------------------------------------------------------------------
     // Step 4: IRLS iteration loop
@@ -719,6 +794,7 @@ fn fit_glm_core(
         // ---------------------------------------------------------------------
         // Step 4a: Compute working weights W
         // ---------------------------------------------------------------------
+        let profile_weight_start = Instant::now();
         let weight_result_storage = if use_poisson_log_weight_buffers {
             compute_poisson_log_irls_weights_in_place(
                 y,
@@ -759,6 +835,7 @@ fn fit_glm_core(
                     &working_response_buf,
                 )
             };
+        profile.weight_seconds += profile_weight_start.elapsed().as_secs_f64();
 
         // ---------------------------------------------------------------------
         // Step 4c: Solve weighted least squares: (X'WX)β = X'Wz
@@ -766,7 +843,8 @@ fn fit_glm_core(
         // This is the core linear algebra step.
         // We're finding β that minimizes: Σ w_i (z_i - x_i'β)²
         // ---------------------------------------------------------------------
-        let (mut new_coefficients, _) = solve_weighted_least_squares_penalized(
+        let profile_wls_start = Instant::now();
+        let (mut new_coefficients, _, wls_profile) = solve_weighted_least_squares_penalized(
             x,
             working_response,
             combined_weights,
@@ -775,7 +853,18 @@ fn fit_glm_core(
             penalize_intercept,
             true, // per-iteration inverse is unused; compute final covariance once
             sparse_cache,
+            Some(&iter_coefficients),
         )?;
+        profile.wls_seconds += profile_wls_start.elapsed().as_secs_f64();
+        profile.wls_gram_seconds += wls_profile.gram_seconds;
+        profile.wls_gram_local_init_seconds += wls_profile.gram_local_init_seconds;
+        profile.wls_gram_row_scan_seconds += wls_profile.gram_row_scan_seconds;
+        profile.wls_gram_pairwise_accum_seconds += wls_profile.gram_pairwise_accum_seconds;
+        profile.wls_gram_reduce_seconds += wls_profile.gram_reduce_seconds;
+        profile.wls_gram_materialize_seconds += wls_profile.gram_materialize_seconds;
+        profile.wls_penalty_seconds += wls_profile.penalty_seconds;
+        profile.wls_solve_seconds += wls_profile.solve_seconds;
+        let profile_update_start = Instant::now();
 
         // Check for NaN in coefficients - indicates numerical instability
         if new_coefficients
@@ -910,6 +999,7 @@ fn fit_glm_core(
             step_halving_failed = true;
             iteration = iteration.saturating_sub(1);
             final_weights.assign(irls_weights);
+            profile.update_seconds += profile_update_start.elapsed().as_secs_f64();
             break;
         }
 
@@ -954,6 +1044,7 @@ fn fit_glm_core(
                 if constrained_best_stale_iterations >= CONSTRAINED_BEST_EARLY_STOP_PATIENCE {
                     constrained_best_plateau = true;
                     final_weights.assign(irls_weights);
+                    profile.update_seconds += profile_update_start.elapsed().as_secs_f64();
                     break;
                 }
             }
@@ -968,11 +1059,13 @@ fn fit_glm_core(
         if irls_step_converged(objective_old, objective, rel_change, config.tolerance) {
             converged = true;
             final_weights.assign(irls_weights);
+            profile.update_seconds += profile_update_start.elapsed().as_secs_f64();
             break;
         }
 
         // Store for final iteration
         final_weights.assign(irls_weights);
+        profile.update_seconds += profile_update_start.elapsed().as_secs_f64();
     }
 
     // -------------------------------------------------------------------------
@@ -980,7 +1073,7 @@ fn fit_glm_core(
     // -------------------------------------------------------------------------
     // For constrained problems, use the best solution found during iteration
     // (objective can increase due to projection, so last iteration may not be best)
-    let (final_mu, final_eta, final_deviance, use_coefficients) = if has_constraints
+    let (mut final_mu, mut final_eta, mut final_deviance, use_coefficients) = if has_constraints
         && (best_objective < objective || (constrained_best_plateau && best_objective.is_finite()))
     {
         // Best solution was found earlier — use it and treat as converged
@@ -1000,6 +1093,7 @@ fn fit_glm_core(
     // Try final coefficient extraction, but fall back to iteration coefficients
     // if it produces NaN. Non-CV fits compute covariance here once, after the
     // final accepted weights are known, instead of in every IRLS iteration.
+    let profile_final_extraction_start = Instant::now();
     let (final_coefficients, cov_unscaled) = if config.skip_covariance {
         (use_coefficients, Array2::zeros((p, p)))
     } else {
@@ -1028,8 +1122,9 @@ fn fit_glm_core(
             penalize_intercept,
             false,
             sparse_cache,
+            Some(&use_coefficients),
         ) {
-            Ok((coef, cov)) if !coef.iter().any(|&c| c.is_nan() || c.is_infinite()) => {
+            Ok((coef, cov, _)) if !coef.iter().any(|&c| c.is_nan() || c.is_infinite()) => {
                 let cov = if cov.iter().all(|v| v.is_finite()) {
                     cov
                 } else {
@@ -1053,7 +1148,7 @@ fn fit_glm_core(
                         }
                     }
                     // Check if this extraction is better
-                    let eta_check = matrix_vector_dot(x, &proj_coef);
+                    let eta_check = matrix_vector_dot_cached(x, &proj_coef, sparse_cache);
                     let eta_full: Array1<f64> = eta_check
                         .iter()
                         .zip(offset_vec.iter())
@@ -1069,7 +1164,7 @@ fn fit_glm_core(
                 } else {
                     // Unconstrained: guard against a final extraction that is worse
                     // than the loop's retained iterate (RS-ACT-007).
-                    let eta_full = &matrix_vector_dot(x, &coef) + &offset_vec;
+                    let eta_full = &matrix_vector_dot_cached(x, &coef, sparse_cache) + &offset_vec;
                     let mu_check = family.clamp_mu(&link.inverse(&eta_full));
                     let dev_check = family.deviance(y, &mu_check, Some(&prior_weights_vec));
                     if dev_check.is_finite() && dev_check <= final_deviance {
@@ -1079,7 +1174,7 @@ fn fit_glm_core(
                     }
                 }
             }
-            Ok((_coef, cov)) => {
+            Ok((_coef, cov, _)) => {
                 // Final extraction failed or produced NaN - use stored coefficients
                 warnings.push(
                     "Final coefficient extraction produced NaN/Inf. \
@@ -1119,6 +1214,7 @@ fn fit_glm_core(
             }
         }
     };
+    profile.final_extraction_seconds = profile_final_extraction_start.elapsed().as_secs_f64();
 
     // Apply coefficient sign constraints to final coefficients (for unconstrained path)
     let mut final_coefficients = final_coefficients;
@@ -1135,15 +1231,22 @@ fn fit_glm_core(
         }
     }
 
-    // Recompute final fitted values and deviance with the chosen coefficients
-    let final_eta_base = matrix_vector_dot(x, &final_coefficients);
-    let final_eta: Array1<f64> = final_eta_base
-        .iter()
-        .zip(offset_vec.iter())
-        .map(|(&e, &o)| e + o)
-        .collect();
-    let final_mu = family.clamp_mu(&link.inverse(&final_eta));
-    let final_deviance = family.deviance(y, &final_mu, Some(&prior_weights_vec));
+    // CV folds skip covariance and keep the accepted iterate coefficients, so
+    // the retained final state above is already consistent. Avoid another
+    // full training-set matrix-vector pass for every alpha/fold.
+    if !config.skip_covariance {
+        let profile_final_recompute_start = Instant::now();
+        let final_eta_base = matrix_vector_dot_cached(x, &final_coefficients, sparse_cache);
+        final_eta = final_eta_base
+            .iter()
+            .zip(offset_vec.iter())
+            .map(|(&e, &o)| e + o)
+            .collect();
+        final_mu = family.clamp_mu(&link.inverse(&final_eta));
+        final_deviance = family.deviance(y, &final_mu, Some(&prior_weights_vec));
+        profile.final_recompute_seconds = profile_final_recompute_start.elapsed().as_secs_f64();
+    }
+    profile.total_seconds = profile_total_start.elapsed().as_secs_f64();
 
     let solver_status = if step_halving_failed {
         "step_halving_no_improvement"
@@ -1178,6 +1281,7 @@ fn fit_glm_core(
         warnings,
         step_halving_used,
         solver_status: solver_status.to_string(),
+        profile: Some(profile),
     })
 }
 
@@ -1250,6 +1354,15 @@ pub fn compute_xtwx_xtwz(
     z: &Array1<f64>,
     w: &Array1<f64>,
 ) -> Result<(DMatrix<f64>, DVector<f64>)> {
+    let (xtx, xtz, _) = compute_xtwx_xtwz_profiled(x, z, w)?;
+    Ok((xtx, xtz))
+}
+
+fn compute_xtwx_xtwz_profiled(
+    x: ArrayView2<'_, f64>,
+    z: &Array1<f64>,
+    w: &Array1<f64>,
+) -> Result<(DMatrix<f64>, DVector<f64>, GramBuildProfile)> {
     let n = x.nrows();
     let p = x.ncols();
 
@@ -1285,8 +1398,9 @@ pub fn compute_xtwx_xtwz(
     assert_eq!(w_slice.len(), n, "w_slice length must be n");
     assert_eq!(z_slice.len(), n, "z_slice length must be n");
 
+    let collect_profile = profile_gram_subtimers_enabled();
     if should_use_sparse_xtwx_kernel(x_slice, n, p) {
-        return compute_xtwx_xtwz_sparse(x_slice, z_slice, w_slice, n, p);
+        return compute_xtwx_xtwz_sparse(x_slice, z_slice, w_slice, n, p, collect_profile);
     }
 
     // Core-adaptive chunking: split rows across all available threads so this
@@ -1296,15 +1410,22 @@ pub fn compute_xtwx_xtwz(
     let num_chunks = n.div_ceil(chunk_size);
 
     let upper_len = packed_upper_len(p);
-    let (xtx_data, xtz_data): (Vec<f64>, Vec<f64>) = (0..num_chunks)
+    let (xtx_data, xtz_data, mut gram_profile): (Vec<f64>, Vec<f64>, GramBuildProfile) = (0
+        ..num_chunks)
         .into_par_iter()
         .map(|chunk_idx| {
             let chunk_start = chunk_idx * chunk_size;
             let chunk_end = (chunk_start + chunk_size).min(n);
+            let mut profile = GramBuildProfile::default();
+            let local_init_start = collect_profile.then(Instant::now);
             let mut xtx_local = vec![0.0; upper_len];
             let mut xtz_local = vec![0.0; p];
+            if let Some(start) = local_init_start {
+                profile.local_init_seconds = start.elapsed().as_secs_f64();
+            }
 
             for k in chunk_start..chunk_end {
+                let pairwise_start = collect_profile.then(Instant::now);
                 // SAFETY: k < n, so k < w_slice.len() and k < z_slice.len()
                 let wk = unsafe { *w_slice.get_unchecked(k) };
                 // SAFETY: k < n, so k < z_slice.len().
@@ -1330,20 +1451,37 @@ pub fn compute_xtwx_xtwz(
                         packed_idx += 1;
                     }
                 }
+                if let Some(start) = pairwise_start {
+                    profile.pairwise_accum_seconds += start.elapsed().as_secs_f64();
+                }
             }
-            (xtx_local, xtz_local)
+            (xtx_local, xtz_local, profile)
         })
-        .reduce_with(|(mut a_xtx, mut a_xtz), (b_xtx, b_xtz)| {
-            for i in 0..a_xtx.len() {
-                a_xtx[i] += b_xtx[i];
-            }
-            for i in 0..a_xtz.len() {
-                a_xtz[i] += b_xtz[i];
-            }
-            (a_xtx, a_xtz)
-        })
-        .unwrap_or_else(|| (vec![0.0; upper_len], vec![0.0; p]));
+        .reduce_with(
+            |(mut a_xtx, mut a_xtz, mut a_profile), (b_xtx, b_xtz, b_profile)| {
+                let reduce_start = collect_profile.then(Instant::now);
+                a_profile.add(&b_profile);
+                for i in 0..a_xtx.len() {
+                    a_xtx[i] += b_xtx[i];
+                }
+                for i in 0..a_xtz.len() {
+                    a_xtz[i] += b_xtz[i];
+                }
+                if let Some(start) = reduce_start {
+                    a_profile.reduce_seconds += start.elapsed().as_secs_f64();
+                }
+                (a_xtx, a_xtz, a_profile)
+            },
+        )
+        .unwrap_or_else(|| {
+            (
+                vec![0.0; upper_len],
+                vec![0.0; p],
+                GramBuildProfile::default(),
+            )
+        });
 
+    let materialize_start = collect_profile.then(Instant::now);
     // Convert packed upper triangle to nalgebra symmetric DMatrix.
     let mut xtx = DMatrix::zeros(p, p);
     let mut packed_idx = 0;
@@ -1355,9 +1493,12 @@ pub fn compute_xtwx_xtwz(
             packed_idx += 1;
         }
     }
+    if let Some(start) = materialize_start {
+        gram_profile.materialize_seconds = start.elapsed().as_secs_f64();
+    }
     let xtz = DVector::from_vec(xtz_data);
 
-    Ok((xtx, xtz))
+    Ok((xtx, xtz, gram_profile))
 }
 
 #[inline]
@@ -1522,7 +1663,10 @@ pub fn build_sparse_row_cache_if_beneficial(x: ArrayView2<'_, f64>) -> Option<Sp
     let x_slice = x.as_slice()?;
     let density = sampled_density(x_slice, n, p);
     let estimated_nnz = density * (n as f64) * (p as f64);
-    if density > 0.15 || estimated_nnz > 60_000_000.0 || n.saturating_mul(p) < 10_000_000 {
+    if density > SPARSE_ROW_CACHE_DENSITY_THRESHOLD
+        || estimated_nnz > 60_000_000.0
+        || n.saturating_mul(p) < 10_000_000
+    {
         return None;
     }
 
@@ -1566,11 +1710,110 @@ fn packed_upper_offsets(p: usize) -> Vec<usize> {
     offsets
 }
 
+#[inline(always)]
+fn accumulate_sparse_row_pairwise(
+    xtx_local: &mut [f64],
+    xtz_local: &mut [f64],
+    packed_offsets: &[usize],
+    nz_idx: &[usize],
+    nz_val: &[f64],
+    wk: f64,
+    wz: f64,
+) {
+    debug_assert_eq!(nz_idx.len(), nz_val.len());
+    let len = nz_idx.len();
+    let xtx_ptr = xtx_local.as_mut_ptr();
+    let xtz_ptr = xtz_local.as_mut_ptr();
+    let idx_ptr = nz_idx.as_ptr();
+    let val_ptr = nz_val.as_ptr();
+
+    for a in 0..len {
+        // SAFETY: callers populate nz_idx/nz_val in lockstep with column
+        // indices < p. packed_offsets has length p, and base + j is the packed
+        // upper-triangle offset for (i, j) where j >= i.
+        unsafe {
+            let i = *idx_ptr.add(a);
+            let xki = *val_ptr.add(a);
+            let xki_w = xki * wk;
+            *xtz_ptr.add(i) += xki * wz;
+            let base = *packed_offsets.get_unchecked(i) - i;
+
+            let mut b = a;
+            while b + 4 <= len {
+                let j0 = *idx_ptr.add(b);
+                let j1 = *idx_ptr.add(b + 1);
+                let j2 = *idx_ptr.add(b + 2);
+                let j3 = *idx_ptr.add(b + 3);
+                *xtx_ptr.add(base + j0) += xki_w * *val_ptr.add(b);
+                *xtx_ptr.add(base + j1) += xki_w * *val_ptr.add(b + 1);
+                *xtx_ptr.add(base + j2) += xki_w * *val_ptr.add(b + 2);
+                *xtx_ptr.add(base + j3) += xki_w * *val_ptr.add(b + 3);
+                b += 4;
+            }
+            while b < len {
+                let j = *idx_ptr.add(b);
+                *xtx_ptr.add(base + j) += xki_w * *val_ptr.add(b);
+                b += 1;
+            }
+        }
+    }
+}
+
+#[inline(always)]
+fn accumulate_cached_sparse_row_pairwise(
+    cache: &SparseRowCache,
+    start: usize,
+    end: usize,
+    xtx_local: &mut [f64],
+    xtz_local: &mut [f64],
+    wk: f64,
+    wz: f64,
+) {
+    let xtx_ptr = xtx_local.as_mut_ptr();
+    let xtz_ptr = xtz_local.as_mut_ptr();
+    let idx_ptr = cache.indices.as_ptr();
+    let val_ptr = cache.values.as_ptr();
+    let packed_offsets_ptr = cache.packed_offsets.as_ptr();
+
+    for a in start..end {
+        // SAFETY: start/end are adjacent offsets from the cache, so every
+        // position is within indices/values. Cached indices are sorted by row
+        // scan order and are < p; base + j is therefore a valid packed offset.
+        unsafe {
+            let i = *idx_ptr.add(a) as usize;
+            let xki = *val_ptr.add(a);
+            let xki_w = xki * wk;
+            *xtz_ptr.add(i) += xki * wz;
+            let base = *packed_offsets_ptr.add(i) - i;
+
+            let mut b = a;
+            while b + 4 <= end {
+                let j0 = *idx_ptr.add(b) as usize;
+                let j1 = *idx_ptr.add(b + 1) as usize;
+                let j2 = *idx_ptr.add(b + 2) as usize;
+                let j3 = *idx_ptr.add(b + 3) as usize;
+                *xtx_ptr.add(base + j0) += xki_w * *val_ptr.add(b);
+                *xtx_ptr.add(base + j1) += xki_w * *val_ptr.add(b + 1);
+                *xtx_ptr.add(base + j2) += xki_w * *val_ptr.add(b + 2);
+                *xtx_ptr.add(base + j3) += xki_w * *val_ptr.add(b + 3);
+                b += 4;
+            }
+            while b < end {
+                let j = *idx_ptr.add(b) as usize;
+                *xtx_ptr.add(base + j) += xki_w * *val_ptr.add(b);
+                b += 1;
+            }
+        }
+    }
+}
+
+#[inline(always)]
 fn compute_xtwx_xtwz_sparse_cached(
     cache: &SparseRowCache,
     z: &Array1<f64>,
     w: &Array1<f64>,
-) -> Result<(DMatrix<f64>, DVector<f64>)> {
+    collect_profile: bool,
+) -> Result<(DMatrix<f64>, DVector<f64>, GramBuildProfile)> {
     let n = cache.n;
     let p = cache.p;
     if z.len() != n || w.len() != n {
@@ -1592,13 +1835,19 @@ fn compute_xtwx_xtwz_sparse_cached(
     let num_chunks = n.div_ceil(chunk_size);
     let upper_len = packed_upper_len(p);
 
-    let (xtx_data, xtz_data): (Vec<f64>, Vec<f64>) = (0..num_chunks)
+    let (xtx_data, xtz_data, mut gram_profile): (Vec<f64>, Vec<f64>, GramBuildProfile) = (0
+        ..num_chunks)
         .into_par_iter()
         .map(|chunk_idx| {
             let chunk_start = chunk_idx * chunk_size;
             let chunk_end = (chunk_start + chunk_size).min(n);
+            let mut profile = GramBuildProfile::default();
+            let local_init_start = collect_profile.then(Instant::now);
             let mut xtx_local = vec![0.0; upper_len];
             let mut xtz_local = vec![0.0; p];
+            if let Some(start) = local_init_start {
+                profile.local_init_seconds = start.elapsed().as_secs_f64();
+            }
 
             for row in chunk_start..chunk_end {
                 let start = cache.offsets[row];
@@ -1611,34 +1860,47 @@ fn compute_xtwx_xtwz_sparse_cached(
                 let zk = unsafe { *z_slice.get_unchecked(row) };
                 let wz = wk * zk;
 
-                for a in start..end {
-                    let i = unsafe { *cache.indices.get_unchecked(a) as usize };
-                    let xki = unsafe { *cache.values.get_unchecked(a) };
-                    let xki_w = xki * wk;
-                    unsafe { *xtz_local.get_unchecked_mut(i) += xki * wz };
-                    let packed_row = unsafe { *cache.packed_offsets.get_unchecked(i) };
-
-                    for b in a..end {
-                        let j = unsafe { *cache.indices.get_unchecked(b) as usize };
-                        let xkj = unsafe { *cache.values.get_unchecked(b) };
-                        let packed_idx = packed_row + (j - i);
-                        unsafe { *xtx_local.get_unchecked_mut(packed_idx) += xki_w * xkj };
-                    }
+                let pairwise_start = collect_profile.then(Instant::now);
+                accumulate_cached_sparse_row_pairwise(
+                    cache,
+                    start,
+                    end,
+                    &mut xtx_local,
+                    &mut xtz_local,
+                    wk,
+                    wz,
+                );
+                if let Some(start) = pairwise_start {
+                    profile.pairwise_accum_seconds += start.elapsed().as_secs_f64();
                 }
             }
-            (xtx_local, xtz_local)
+            (xtx_local, xtz_local, profile)
         })
-        .reduce_with(|(mut a_xtx, mut a_xtz), (b_xtx, b_xtz)| {
-            for i in 0..a_xtx.len() {
-                a_xtx[i] += b_xtx[i];
-            }
-            for i in 0..a_xtz.len() {
-                a_xtz[i] += b_xtz[i];
-            }
-            (a_xtx, a_xtz)
-        })
-        .unwrap_or_else(|| (vec![0.0; upper_len], vec![0.0; p]));
+        .reduce_with(
+            |(mut a_xtx, mut a_xtz, mut a_profile), (b_xtx, b_xtz, b_profile)| {
+                let reduce_start = collect_profile.then(Instant::now);
+                a_profile.add(&b_profile);
+                for i in 0..a_xtx.len() {
+                    a_xtx[i] += b_xtx[i];
+                }
+                for i in 0..a_xtz.len() {
+                    a_xtz[i] += b_xtz[i];
+                }
+                if let Some(start) = reduce_start {
+                    a_profile.reduce_seconds += start.elapsed().as_secs_f64();
+                }
+                (a_xtx, a_xtz, a_profile)
+            },
+        )
+        .unwrap_or_else(|| {
+            (
+                vec![0.0; upper_len],
+                vec![0.0; p],
+                GramBuildProfile::default(),
+            )
+        });
 
+    let materialize_start = collect_profile.then(Instant::now);
     let mut xtx = DMatrix::zeros(p, p);
     let mut packed_idx = 0usize;
     for i in 0..p {
@@ -1649,7 +1911,10 @@ fn compute_xtwx_xtwz_sparse_cached(
             packed_idx += 1;
         }
     }
-    Ok((xtx, DVector::from_vec(xtz_data)))
+    if let Some(start) = materialize_start {
+        gram_profile.materialize_seconds = start.elapsed().as_secs_f64();
+    }
+    Ok((xtx, DVector::from_vec(xtz_data), gram_profile))
 }
 
 #[inline]
@@ -1700,7 +1965,7 @@ fn matrix_vector_dot(x: ArrayView2<'_, f64>, coefficients: &Array1<f64>) -> Arra
 }
 
 #[inline]
-fn matrix_vector_dot_cached(
+pub fn matrix_vector_dot_cached(
     x: ArrayView2<'_, f64>,
     coefficients: &Array1<f64>,
     sparse_cache: Option<&SparseRowCache>,
@@ -1743,7 +2008,7 @@ fn should_use_sparse_xtwx_kernel(x_slice: &[f64], n: usize, p: usize) -> bool {
     if n == 0 || p < 16 {
         return false;
     }
-    sampled_density(x_slice, n, p) <= 0.35
+    sampled_density(x_slice, n, p) <= SPARSE_XTWX_DENSITY_THRESHOLD
 }
 
 #[inline]
@@ -1753,22 +2018,32 @@ fn compute_xtwx_xtwz_sparse(
     w_slice: &[f64],
     n: usize,
     p: usize,
-) -> Result<(DMatrix<f64>, DVector<f64>)> {
+    collect_profile: bool,
+) -> Result<(DMatrix<f64>, DVector<f64>, GramBuildProfile)> {
     let chunk_count = sparse_xtwx_chunk_count(n, p);
     let chunk_size = n.div_ceil(chunk_count).max(1);
     let num_chunks = n.div_ceil(chunk_size);
+    let upper_len = packed_upper_len(p);
+    let packed_offsets = packed_upper_offsets(p);
 
-    let (xtx_data, xtz_data): (Vec<f64>, Vec<f64>) = (0..num_chunks)
+    let (xtx_data, xtz_data, mut gram_profile): (Vec<f64>, Vec<f64>, GramBuildProfile) = (0
+        ..num_chunks)
         .into_par_iter()
         .map(|chunk_idx| {
             let chunk_start = chunk_idx * chunk_size;
             let chunk_end = (chunk_start + chunk_size).min(n);
-            let mut xtx_local = vec![0.0; p * p];
+            let mut profile = GramBuildProfile::default();
+            let local_init_start = collect_profile.then(Instant::now);
+            let mut xtx_local = vec![0.0; upper_len];
             let mut xtz_local = vec![0.0; p];
             let mut nz_idx: Vec<usize> = Vec::with_capacity(p);
             let mut nz_val: Vec<f64> = Vec::with_capacity(p);
+            if let Some(start) = local_init_start {
+                profile.local_init_seconds = start.elapsed().as_secs_f64();
+            }
 
             for k in chunk_start..chunk_end {
+                let row_scan_start = collect_profile.then(Instant::now);
                 nz_idx.clear();
                 nz_val.clear();
                 let row_start = k * p;
@@ -1780,59 +2055,73 @@ fn compute_xtwx_xtwz_sparse(
                         nz_val.push(xkj);
                     }
                 }
+                if let Some(start) = row_scan_start {
+                    profile.row_scan_seconds += start.elapsed().as_secs_f64();
+                }
 
                 if nz_idx.is_empty() {
                     continue;
                 }
 
+                let pairwise_start = collect_profile.then(Instant::now);
                 // SAFETY: k < n, so k is within both weight/response slices.
                 let wk = unsafe { *w_slice.get_unchecked(k) };
                 let zk = unsafe { *z_slice.get_unchecked(k) };
                 let wz = wk * zk;
-
-                for a in 0..nz_idx.len() {
-                    // SAFETY: a is within both nz vectors populated in lockstep above.
-                    let i = unsafe { *nz_idx.get_unchecked(a) };
-                    let xki = unsafe { *nz_val.get_unchecked(a) };
-                    let xki_w = xki * wk;
-                    // SAFETY: i is a column index < p, so i < xtz_local.len().
-                    unsafe { *xtz_local.get_unchecked_mut(i) += xki * wz };
-
-                    for b in a..nz_idx.len() {
-                        // SAFETY: b is within both nz vectors; i and j are
-                        // column indices < p, so i*p + j < xtx_local.len().
-                        let j = unsafe { *nz_idx.get_unchecked(b) };
-                        let xkj = unsafe { *nz_val.get_unchecked(b) };
-                        // SAFETY: i and j are column indices < p, so the
-                        // flattened upper-triangle target is in bounds.
-                        unsafe { *xtx_local.get_unchecked_mut(i * p + j) += xki_w * xkj };
-                    }
+                accumulate_sparse_row_pairwise(
+                    &mut xtx_local,
+                    &mut xtz_local,
+                    &packed_offsets,
+                    &nz_idx,
+                    &nz_val,
+                    wk,
+                    wz,
+                );
+                if let Some(start) = pairwise_start {
+                    profile.pairwise_accum_seconds += start.elapsed().as_secs_f64();
                 }
             }
-            (xtx_local, xtz_local)
+            (xtx_local, xtz_local, profile)
         })
-        .reduce_with(|(mut a_xtx, mut a_xtz), (b_xtx, b_xtz)| {
-            for i in 0..a_xtx.len() {
-                a_xtx[i] += b_xtx[i];
-            }
-            for i in 0..a_xtz.len() {
-                a_xtz[i] += b_xtz[i];
-            }
-            (a_xtx, a_xtz)
-        })
-        .unwrap_or_else(|| (vec![0.0; p * p], vec![0.0; p]));
+        .reduce_with(
+            |(mut a_xtx, mut a_xtz, mut a_profile), (b_xtx, b_xtz, b_profile)| {
+                let reduce_start = collect_profile.then(Instant::now);
+                a_profile.add(&b_profile);
+                for i in 0..a_xtx.len() {
+                    a_xtx[i] += b_xtx[i];
+                }
+                for i in 0..a_xtz.len() {
+                    a_xtz[i] += b_xtz[i];
+                }
+                if let Some(start) = reduce_start {
+                    a_profile.reduce_seconds += start.elapsed().as_secs_f64();
+                }
+                (a_xtx, a_xtz, a_profile)
+            },
+        )
+        .unwrap_or_else(|| {
+            (
+                vec![0.0; upper_len],
+                vec![0.0; p],
+                GramBuildProfile::default(),
+            )
+        });
 
+    let materialize_start = collect_profile.then(Instant::now);
     let mut xtx = DMatrix::zeros(p, p);
     for i in 0..p {
         for j in i..p {
-            let val = xtx_data[i * p + j];
+            let val = xtx_data[packed_offsets[i] + (j - i)];
             xtx[(i, j)] = val;
             xtx[(j, i)] = val;
         }
     }
+    if let Some(start) = materialize_start {
+        gram_profile.materialize_seconds = start.elapsed().as_secs_f64();
+    }
     let xtz = DVector::from_vec(xtz_data);
 
-    Ok((xtx, xtz))
+    Ok((xtx, xtz, gram_profile))
 }
 
 /// Solve a symmetric positive-definite system Aβ = b using Cholesky decomposition.
@@ -1924,6 +2213,319 @@ fn cholesky_solve_coefficients(a: DMatrix<f64>, b: &DVector<f64>) -> Result<Arra
     }
 }
 
+#[inline]
+fn cholesky_solve_spd_coefficients(a: DMatrix<f64>, b: &DVector<f64>) -> Result<Array1<f64>> {
+    match a.cholesky() {
+        Some(chol) => Ok(chol.solve(b).iter().copied().collect()),
+        None => Err(RustyStatsError::LinearAlgebraError(
+            "Failed to solve ridge linear system - matrix was not positive definite. \
+             This usually indicates invalid weights or numerical instability."
+                .to_string(),
+        )),
+    }
+}
+
+#[inline]
+fn ridge_system_is_positive_definite_fast_path(
+    w: &Array1<f64>,
+    l2_penalty: f64,
+    l2_penalty_factors: Option<&[f64]>,
+    penalize_intercept: bool,
+    p: usize,
+) -> bool {
+    if l2_penalty <= 0.0 || !w.iter().any(|&wi| wi > 0.0) {
+        return false;
+    }
+    let start_idx = if penalize_intercept { 0 } else { 1 };
+    (start_idx..p).all(|j| l2_penalty_factors.map_or(1.0, |factors| factors[j]) > 0.0)
+}
+
+fn pcg_max_iterations() -> usize {
+    std::env::var("RUSTYSTATS_RIDGE_CV_PCG_MAX_ITER")
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .unwrap_or(100)
+}
+
+fn pcg_tolerance() -> f64 {
+    std::env::var("RUSTYSTATS_RIDGE_CV_PCG_TOL")
+        .ok()
+        .and_then(|raw| raw.parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(1e-6)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn solve_weighted_least_squares_pcg(
+    x: ArrayView2<'_, f64>,
+    z: &Array1<f64>,
+    w: &Array1<f64>,
+    l2_penalty: f64,
+    l2_penalty_factors: Option<&[f64]>,
+    penalize_intercept: bool,
+    initial_guess: Option<&Array1<f64>>,
+    profile: &mut WLSSolveProfile,
+) -> Result<Option<Array1<f64>>> {
+    let n = x.nrows();
+    let p = x.ncols();
+    let x_slice = match x.as_slice() {
+        Some(slice) => slice,
+        None => return Ok(None),
+    };
+    let z_slice = match z.as_slice() {
+        Some(slice) => slice,
+        None => return Ok(None),
+    };
+    let w_slice = match w.as_slice() {
+        Some(slice) => slice,
+        None => return Ok(None),
+    };
+    if x_slice.len() != n * p || z_slice.len() != n || w_slice.len() != n {
+        return Ok(None);
+    }
+    if let Some(init) = initial_guess {
+        if init.len() != p {
+            return Ok(None);
+        }
+    }
+
+    let gram_start = Instant::now();
+    let (rhs, mut diagonal) =
+        compute_xtwz_and_weighted_diag_sparse_scan(x_slice, z_slice, w_slice, n, p);
+    add_ridge_penalty_to_vector(
+        &mut diagonal,
+        l2_penalty,
+        l2_penalty_factors,
+        penalize_intercept,
+    );
+    profile.gram_seconds = gram_start.elapsed().as_secs_f64();
+
+    if diagonal.iter().any(|value| !value.is_finite()) || rhs.iter().any(|value| !value.is_finite())
+    {
+        return Ok(None);
+    }
+
+    let solve_start = Instant::now();
+    let mut beta = initial_guess
+        .and_then(|init| init.as_slice().map(|slice| slice.to_vec()))
+        .unwrap_or_else(|| vec![0.0; p]);
+    let mut residual = {
+        let applied = weighted_normal_matvec_sparse_scan(
+            x_slice,
+            w_slice,
+            &beta,
+            n,
+            p,
+            l2_penalty,
+            l2_penalty_factors,
+            penalize_intercept,
+        );
+        rhs.iter()
+            .zip(applied.iter())
+            .map(|(&b, &av)| b - av)
+            .collect::<Vec<_>>()
+    };
+    let mut z_precond = residual
+        .iter()
+        .zip(diagonal.iter())
+        .map(|(&r, &d)| if d > 0.0 && d.is_finite() { r / d } else { r })
+        .collect::<Vec<_>>();
+    let mut direction = z_precond.clone();
+    let mut rho = dot_slices(&residual, &z_precond);
+    let rhs_norm = dot_slices(&rhs, &rhs).sqrt().max(1.0);
+    let tolerance = pcg_tolerance() * rhs_norm;
+    if dot_slices(&residual, &residual).sqrt() <= tolerance {
+        profile.solve_seconds = solve_start.elapsed().as_secs_f64();
+        return Ok(Some(Array1::from_vec(beta)));
+    }
+
+    for _ in 0..pcg_max_iterations() {
+        if !rho.is_finite() || rho <= 0.0 {
+            return Ok(None);
+        }
+        let mat_direction = weighted_normal_matvec_sparse_scan(
+            x_slice,
+            w_slice,
+            &direction,
+            n,
+            p,
+            l2_penalty,
+            l2_penalty_factors,
+            penalize_intercept,
+        );
+        let denom = dot_slices(&direction, &mat_direction);
+        if !denom.is_finite() || denom <= 0.0 {
+            return Ok(None);
+        }
+        let step = rho / denom;
+        for j in 0..p {
+            beta[j] += step * direction[j];
+            residual[j] -= step * mat_direction[j];
+        }
+        let residual_norm = dot_slices(&residual, &residual).sqrt();
+        if residual_norm <= tolerance {
+            profile.solve_seconds = solve_start.elapsed().as_secs_f64();
+            return Ok(Some(Array1::from_vec(beta)));
+        }
+        for j in 0..p {
+            let d = diagonal[j];
+            z_precond[j] = if d > 0.0 && d.is_finite() {
+                residual[j] / d
+            } else {
+                residual[j]
+            };
+        }
+        let rho_next = dot_slices(&residual, &z_precond);
+        if !rho_next.is_finite() {
+            return Ok(None);
+        }
+        let beta_cg = rho_next / rho;
+        for j in 0..p {
+            direction[j] = z_precond[j] + beta_cg * direction[j];
+        }
+        rho = rho_next;
+    }
+
+    Ok(None)
+}
+
+fn compute_xtwz_and_weighted_diag_sparse_scan(
+    x_slice: &[f64],
+    z_slice: &[f64],
+    w_slice: &[f64],
+    n: usize,
+    p: usize,
+) -> (Vec<f64>, Vec<f64>) {
+    let chunk_count = sparse_xtwx_chunk_count(n, p);
+    let chunk_size = n.div_ceil(chunk_count).max(1);
+    let num_chunks = n.div_ceil(chunk_size);
+
+    (0..num_chunks)
+        .into_par_iter()
+        .map(|chunk_idx| {
+            let chunk_start = chunk_idx * chunk_size;
+            let chunk_end = (chunk_start + chunk_size).min(n);
+            let mut rhs_local = vec![0.0; p];
+            let mut diag_local = vec![0.0; p];
+            for row in chunk_start..chunk_end {
+                let wk = unsafe { *w_slice.get_unchecked(row) };
+                let zk = unsafe { *z_slice.get_unchecked(row) };
+                let wz = wk * zk;
+                let row_start = row * p;
+                for j in 0..p {
+                    let xij = unsafe { *x_slice.get_unchecked(row_start + j) };
+                    if xij != 0.0 {
+                        unsafe {
+                            *rhs_local.get_unchecked_mut(j) += xij * wz;
+                            *diag_local.get_unchecked_mut(j) += wk * xij * xij;
+                        }
+                    }
+                }
+            }
+            (rhs_local, diag_local)
+        })
+        .reduce_with(|(mut a_rhs, mut a_diag), (b_rhs, b_diag)| {
+            for j in 0..a_rhs.len() {
+                a_rhs[j] += b_rhs[j];
+                a_diag[j] += b_diag[j];
+            }
+            (a_rhs, a_diag)
+        })
+        .unwrap_or_else(|| (vec![0.0; p], vec![0.0; p]))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn weighted_normal_matvec_sparse_scan(
+    x_slice: &[f64],
+    w_slice: &[f64],
+    vector: &[f64],
+    n: usize,
+    p: usize,
+    l2_penalty: f64,
+    l2_penalty_factors: Option<&[f64]>,
+    penalize_intercept: bool,
+) -> Vec<f64> {
+    let chunk_count = sparse_xtwx_chunk_count(n, p);
+    let chunk_size = n.div_ceil(chunk_count).max(1);
+    let num_chunks = n.div_ceil(chunk_size);
+
+    let mut out = (0..num_chunks)
+        .into_par_iter()
+        .map(|chunk_idx| {
+            let chunk_start = chunk_idx * chunk_size;
+            let chunk_end = (chunk_start + chunk_size).min(n);
+            let mut local = vec![0.0; p];
+            for row in chunk_start..chunk_end {
+                let row_start = row * p;
+                let mut dot = 0.0;
+                for j in 0..p {
+                    let xij = unsafe { *x_slice.get_unchecked(row_start + j) };
+                    if xij != 0.0 {
+                        dot += xij * unsafe { *vector.get_unchecked(j) };
+                    }
+                }
+                let scaled = unsafe { *w_slice.get_unchecked(row) } * dot;
+                if scaled == 0.0 {
+                    continue;
+                }
+                for j in 0..p {
+                    let xij = unsafe { *x_slice.get_unchecked(row_start + j) };
+                    if xij != 0.0 {
+                        unsafe { *local.get_unchecked_mut(j) += xij * scaled };
+                    }
+                }
+            }
+            local
+        })
+        .reduce_with(|mut a, b| {
+            for j in 0..a.len() {
+                a[j] += b[j];
+            }
+            a
+        })
+        .unwrap_or_else(|| vec![0.0; p]);
+
+    add_ridge_penalty_to_matvec(
+        &mut out,
+        vector,
+        l2_penalty,
+        l2_penalty_factors,
+        penalize_intercept,
+    );
+    out
+}
+
+fn add_ridge_penalty_to_vector(
+    vector: &mut [f64],
+    l2_penalty: f64,
+    l2_penalty_factors: Option<&[f64]>,
+    penalize_intercept: bool,
+) {
+    let start_idx = if penalize_intercept { 0 } else { 1 };
+    for (j, value) in vector.iter_mut().enumerate().skip(start_idx) {
+        let factor = l2_penalty_factors.map_or(1.0, |factors| factors[j]);
+        *value += l2_penalty * factor;
+    }
+}
+
+fn add_ridge_penalty_to_matvec(
+    out: &mut [f64],
+    vector: &[f64],
+    l2_penalty: f64,
+    l2_penalty_factors: Option<&[f64]>,
+    penalize_intercept: bool,
+) {
+    let start_idx = if penalize_intercept { 0 } else { 1 };
+    for j in start_idx..out.len() {
+        let factor = l2_penalty_factors.map_or(1.0, |factors| factors[j]);
+        out[j] += l2_penalty * factor * vector[j];
+    }
+}
+
+fn dot_slices(a: &[f64], b: &[f64]) -> f64 {
+    a.iter().zip(b.iter()).map(|(&x, &y)| x * y).sum()
+}
+
 /// Solve penalized weighted least squares: minimize Σ w_i (z_i - x_i'β)² + λ Σ β_j²
 ///
 /// Returns (coefficients, (X'WX + λI)⁻¹)
@@ -1946,7 +2548,8 @@ fn solve_weighted_least_squares_penalized(
     penalize_intercept: bool,
     skip_covariance: bool,
     sparse_cache: Option<&SparseRowCache>,
-) -> Result<(Array1<f64>, Array2<f64>)> {
+    initial_guess: Option<&Array1<f64>>,
+) -> Result<(Array1<f64>, Array2<f64>, WLSSolveProfile)> {
     let p = x.ncols();
     if let Some(factors) = l2_penalty_factors {
         if factors.len() != p {
@@ -1957,13 +2560,40 @@ fn solve_weighted_least_squares_penalized(
             ));
         }
     }
-    let (mut xtx, xtz) = match sparse_cache {
-        Some(cache) => compute_xtwx_xtwz_sparse_cached(cache, z, w)?,
-        None => compute_xtwx_xtwz(x, z, w)?,
+    let mut profile = WLSSolveProfile::default();
+
+    if skip_covariance && l2_penalty > 0.0 && std::env::var_os("RUSTYSTATS_RIDGE_CV_PCG").is_some()
+    {
+        if let Some(coefficients) = solve_weighted_least_squares_pcg(
+            x,
+            z,
+            w,
+            l2_penalty,
+            l2_penalty_factors,
+            penalize_intercept,
+            initial_guess,
+            &mut profile,
+        )? {
+            return Ok((coefficients, Array2::zeros((0, 0)), profile));
+        }
+    }
+
+    let gram_start = Instant::now();
+    let collect_gram_subtimers = profile_gram_subtimers_enabled();
+    let (mut xtx, xtz, gram_profile) = match sparse_cache {
+        Some(cache) => compute_xtwx_xtwz_sparse_cached(cache, z, w, collect_gram_subtimers)?,
+        None => compute_xtwx_xtwz_profiled(x, z, w)?,
     };
+    profile.gram_seconds = gram_start.elapsed().as_secs_f64();
+    profile.gram_local_init_seconds = gram_profile.local_init_seconds;
+    profile.gram_row_scan_seconds = gram_profile.row_scan_seconds;
+    profile.gram_pairwise_accum_seconds = gram_profile.pairwise_accum_seconds;
+    profile.gram_reduce_seconds = gram_profile.reduce_seconds;
+    profile.gram_materialize_seconds = gram_profile.materialize_seconds;
 
     // Add L2 (Ridge) penalty to diagonal: (X'WX + λI)
     // The intercept (first column) is typically NOT penalized.
+    let penalty_start = Instant::now();
     if l2_penalty > 0.0 {
         let start_idx = if penalize_intercept { 0 } else { 1 };
         for j in start_idx..p {
@@ -1971,12 +2601,27 @@ fn solve_weighted_least_squares_penalized(
             xtx[(j, j)] += l2_penalty * factor;
         }
     }
+    profile.penalty_seconds = penalty_start.elapsed().as_secs_f64();
 
+    let solve_start = Instant::now();
     if skip_covariance {
-        let coefficients = cholesky_solve_coefficients(xtx, &xtz)?;
-        Ok((coefficients, Array2::zeros((0, 0))))
+        let coefficients = if ridge_system_is_positive_definite_fast_path(
+            w,
+            l2_penalty,
+            l2_penalty_factors,
+            penalize_intercept,
+            p,
+        ) {
+            cholesky_solve_spd_coefficients(xtx, &xtz)?
+        } else {
+            cholesky_solve_coefficients(xtx, &xtz)?
+        };
+        profile.solve_seconds = solve_start.elapsed().as_secs_f64();
+        Ok((coefficients, Array2::zeros((0, 0)), profile))
     } else {
-        cholesky_solve(xtx, &xtz, false)
+        let (coefficients, covariance) = cholesky_solve(xtx, &xtz, false)?;
+        profile.solve_seconds = solve_start.elapsed().as_secs_f64();
+        Ok((coefficients, covariance, profile))
     }
 }
 
@@ -2504,8 +3149,8 @@ mod tests {
             packed_offsets: packed_upper_offsets(p),
         };
 
-        let (actual_xtx, actual_xtz) =
-            compute_xtwx_xtwz_sparse_cached(&cache, &z, &w).expect("cached kernel should succeed");
+        let (actual_xtx, actual_xtz, _) = compute_xtwx_xtwz_sparse_cached(&cache, &z, &w, false)
+            .expect("cached kernel should succeed");
         let (expected_xtx, expected_xtz) =
             compute_xtwx_xtwz(x.view(), &z, &w).expect("sparse kernel should succeed");
         for i in 0..p {
@@ -2520,6 +3165,55 @@ mod tests {
         for row in 0..n {
             assert!((actual_dot[row] - expected_dot[row]).abs() < 1e-12);
         }
+    }
+
+    #[test]
+    fn test_pcg_ridge_wls_matches_direct_solve() {
+        let n = 80;
+        let p = 24;
+        let mut x = Array2::<f64>::zeros((n, p));
+        for row in 0..n {
+            x[[row, 0]] = 1.0;
+            let j1 = 1 + row % (p - 1);
+            let j2 = 1 + (row * 5 + 3) % (p - 1);
+            x[[row, j1]] = 0.5 + (row % 7) as f64 * 0.1;
+            x[[row, j2]] += (row as f64 * 0.09).sin();
+        }
+        let z: Array1<f64> = (0..n).map(|i| 0.25 + (i as f64 * 0.07).cos()).collect();
+        let w: Array1<f64> = (0..n).map(|i| 1.0 + (i % 5) as f64 * 0.05).collect();
+        let l2_penalty = 10.0;
+
+        let (direct, _, _) = solve_weighted_least_squares_penalized(
+            x.view(),
+            &z,
+            &w,
+            l2_penalty,
+            None,
+            false,
+            true,
+            None,
+            None,
+        )
+        .expect("direct ridge WLS should solve");
+        let mut profile = WLSSolveProfile::default();
+        let pcg = solve_weighted_least_squares_pcg(
+            x.view(),
+            &z,
+            &w,
+            l2_penalty,
+            None,
+            false,
+            None,
+            &mut profile,
+        )
+        .expect("PCG should not error")
+        .expect("PCG should converge on a small ridge system");
+
+        for (actual, expected) in pcg.iter().zip(direct.iter()) {
+            assert!((actual - expected).abs() < 1e-5);
+        }
+        assert!(profile.gram_seconds >= 0.0);
+        assert!(profile.solve_seconds >= 0.0);
     }
 
     #[test]
@@ -2691,7 +3385,7 @@ mod tests {
         let initial_mu = PoissonFamily.initialize_mu(&y);
         let initial_eta = LogLink.link(&initial_mu);
         let weights = Array1::ones(y.len());
-        let (initial_coef, _) = solve_weighted_least_squares_penalized(
+        let (initial_coef, _, _) = solve_weighted_least_squares_penalized(
             x.view(),
             &initial_eta,
             &weights,
@@ -2699,6 +3393,7 @@ mod tests {
             None,
             true,
             false,
+            None,
             None,
         )
         .expect("initial projection should be valid");

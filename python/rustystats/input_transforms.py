@@ -49,7 +49,26 @@ class CompiledLookupTransform:
         return str(self.spec["output"])
 
 
-CompiledInputTransform = CompiledLookupTransform
+@dataclass(frozen=True)
+class CompiledNumericTransform:
+    """Compiled deterministic one-column numeric transform."""
+
+    spec: dict[str, Any]
+
+    @property
+    def name(self) -> str:
+        return str(self.spec["name"])
+
+    @property
+    def sources(self) -> list[str]:
+        return list(self.spec["sources"])
+
+    @property
+    def output(self) -> str:
+        return str(self.spec["output"])
+
+
+CompiledInputTransform = CompiledLookupTransform | CompiledNumericTransform
 
 
 def validate_input_transforms(
@@ -80,10 +99,10 @@ def validate_input_transforms(
         if not isinstance(raw, dict):
             raise ValidationError(f"input_transforms[{i}] must be a dictionary.")
         transform_type = raw.get("type")
-        if transform_type != "lookup":
+        if transform_type not in {"lookup", "center", "clip"}:
             raise ValidationError(
                 f"input_transforms[{i}] has unsupported type {transform_type!r}; "
-                "only 'lookup' is supported."
+                "only 'lookup', 'center', and 'clip' are supported."
             )
 
         name = raw.get("name")
@@ -127,10 +146,66 @@ def validate_input_transforms(
                 )
 
         output_dtype = raw.get("output_dtype")
+        if transform_type in {"center", "clip"} and output_dtype is None:
+            output_dtype = "float64"
         if output_dtype not in ("float64", "string"):
             raise ValidationError(
                 f"input transform {name!r} output_dtype must be 'float64' or 'string'."
             )
+
+        metadata = raw.get("metadata", {})
+        if metadata is None:
+            metadata = {}
+        if not isinstance(metadata, dict):
+            raise ValidationError(f"input transform {name!r} metadata must be a dictionary.")
+
+        if transform_type in {"center", "clip"}:
+            if len(sources) != 1:
+                raise ValidationError(
+                    f"input transform {name!r} type {transform_type!r} requires exactly one source."
+                )
+            if output_dtype != "float64":
+                raise ValidationError(
+                    f"input transform {name!r} type {transform_type!r} requires "
+                    "output_dtype='float64'."
+                )
+            if transform_type == "center":
+                center = _validate_numeric_param(name, raw.get("center"), "center")
+                canonical.append(
+                    {
+                        "type": "center",
+                        "name": name,
+                        "sources": list(sources),
+                        "output": output,
+                        "output_dtype": "float64",
+                        "center": center,
+                        "replace_existing": replace_existing,
+                        "metadata": dict(metadata),
+                    }
+                )
+            else:
+                lower = _validate_numeric_param(name, raw.get("lower"), "lower")
+                upper = _validate_numeric_param(name, raw.get("upper"), "upper")
+                if lower > upper:
+                    raise ValidationError(
+                        f"input transform {name!r} lower must be <= upper; "
+                        f"got {lower!r} > {upper!r}."
+                    )
+                canonical.append(
+                    {
+                        "type": "clip",
+                        "name": name,
+                        "sources": list(sources),
+                        "output": output,
+                        "output_dtype": "float64",
+                        "lower": lower,
+                        "upper": upper,
+                        "replace_existing": replace_existing,
+                        "metadata": dict(metadata),
+                    }
+                )
+            produced.add(output)
+            continue
 
         keys = raw.get("keys")
         values = raw.get("values")
@@ -190,12 +265,6 @@ def validate_input_transforms(
                 "only 'string' is supported."
             )
 
-        metadata = raw.get("metadata", {})
-        if metadata is None:
-            metadata = {}
-        if not isinstance(metadata, dict):
-            raise ValidationError(f"input transform {name!r} metadata must be a dictionary.")
-
         canonical.append(
             {
                 "type": "lookup",
@@ -229,7 +298,10 @@ def compile_input_transforms(
         canonical = validate_input_transforms(specs)
     compiled: list[CompiledInputTransform] = []
     for spec in canonical:
-        compiled.append(_compile_lookup(spec))
+        if spec["type"] == "lookup":
+            compiled.append(_compile_lookup(spec))
+        else:
+            compiled.append(CompiledNumericTransform(spec=dict(spec)))
     return compiled
 
 
@@ -268,6 +340,10 @@ def apply_input_transforms(
     for transform in compiled:
         if any(source in pending_outputs for source in transform.sources):
             flush_pending()
+        if isinstance(transform, CompiledNumericTransform):
+            pending_exprs.append(_numeric_transform_expr(out, transform))
+            pending_outputs.add(transform.output)
+            continue
         fast_expr = _single_source_default_lookup_expr(out, transform)
         if fast_expr is not None:
             pending_exprs.append(fast_expr)
@@ -300,7 +376,7 @@ def _ensure_compiled(
     if not compiled_or_specs:
         return []
     first = compiled_or_specs[0]
-    if isinstance(first, CompiledLookupTransform):
+    if isinstance(first, (CompiledLookupTransform, CompiledNumericTransform)):
         return list(compiled_or_specs)  # type: ignore[arg-type]
     return compile_input_transforms(compiled_or_specs)  # type: ignore[arg-type]
 
@@ -311,6 +387,31 @@ def _compile_lookup(spec: dict[str, Any]) -> CompiledLookupTransform:
         _normalized_col_name(spec["name"], s, i) for i, s in enumerate(sources)
     )
     return CompiledLookupTransform(spec=dict(spec), normalized_sources=normalized_sources)
+
+
+def _numeric_transform_expr(data: pl.DataFrame, transform: CompiledNumericTransform) -> pl.Expr:
+    spec = transform.spec
+    _validate_sources_present(data, transform)
+    output = transform.output
+    if output in data.columns and not bool(spec["replace_existing"]):
+        raise PredictionError(
+            f"input transform {transform.name!r} output {output!r} already exists in data."
+        )
+    source = transform.sources[0]
+    x = pl.col(source).cast(pl.Float64)
+    if spec["type"] == "center":
+        return (x - float(spec["center"])).alias(output)
+    lower = float(spec["lower"])
+    upper = float(spec["upper"])
+    return (
+        pl.when(x < lower)
+        .then(lower)
+        .when(x > upper)
+        .then(upper)
+        .otherwise(x)
+        .cast(pl.Float64)
+        .alias(output)
+    )
 
 
 def _is_string_like(dtype: Any) -> bool:
@@ -669,6 +770,22 @@ def _validate_value(name: str, output_dtype: str, value: Any, field: str) -> flo
             f"input transform {name!r} {field} value cannot be null for output_dtype='string'."
         )
     return str(value)
+
+
+def _validate_numeric_param(name: str, value: Any, field: str) -> float:
+    if isinstance(value, bool):
+        raise ValidationError(
+            f"input transform {name!r} {field} contains boolean {value!r}; expected float."
+        )
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(
+            f"input transform {name!r} {field} value {value!r} is not float64-compatible."
+        ) from exc
+    if not math.isfinite(result):
+        raise ValidationError(f"input transform {name!r} {field} value {value!r} is not finite.")
+    return result
 
 
 def _normalized_col_name(transform_name: str, source: str, index: int) -> str:

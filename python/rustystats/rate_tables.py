@@ -145,6 +145,11 @@ def _build_slot_table(
                 f"rate-table export for linear term {slot.term_name!r} requires a finite "
                 "lookup transform or explicit grid."
             )
+        if transform.get("type") != "lookup":
+            raise ValidationError(
+                f"rate-table export for linear term {slot.term_name!r} does not yet support "
+                f"{transform.get('type')!r} input transforms."
+            )
         if transform["output_dtype"] != "float64":
             raise ValidationError(
                 f"linear term {slot.term_name!r} depends on non-numeric transform "
@@ -156,6 +161,11 @@ def _build_slot_table(
         factor = slot.factors[0] if slot.factors else slot.term_name
         transform = transform_by_output.get(factor)
         if transform is not None:
+            if transform.get("type") != "lookup":
+                raise ValidationError(
+                    f"rate-table export for categorical term {slot.term_name!r} does not yet "
+                    f"support {transform.get('type')!r} input transforms."
+                )
             if transform["output_dtype"] != "string":
                 raise ValidationError(
                     f"categorical term {slot.term_name!r} depends on non-string transform "
