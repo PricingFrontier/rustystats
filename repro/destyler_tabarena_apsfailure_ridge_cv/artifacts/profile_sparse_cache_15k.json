@@ -1,0 +1,1198 @@
+{
+  "artifact_dir": "/home/ralph/suite/rustystats/repro/destyler_tabarena_apsfailure_ridge_cv/artifacts",
+  "call_summary": [
+    {
+      "count": 1,
+      "max_seconds": 20.33486568200169,
+      "min_seconds": 20.33486568200169,
+      "name": "fit_total",
+      "total_seconds": 20.33486568200169
+    },
+    {
+      "count": 1,
+      "max_seconds": 18.423956263002765,
+      "min_seconds": 18.423956263002765,
+      "name": "fit_cv_regularization_path",
+      "total_seconds": 18.423956263002765
+    },
+    {
+      "count": 1,
+      "max_seconds": 18.41695982999954,
+      "min_seconds": 18.41695982999954,
+      "name": "rust_fit_cv_path_py",
+      "total_seconds": 18.41695982999954
+    },
+    {
+      "count": 1,
+      "max_seconds": 1.894024086999707,
+      "min_seconds": 1.894024086999707,
+      "name": "_fit_glm_core",
+      "total_seconds": 1.894024086999707
+    },
+    {
+      "count": 1,
+      "max_seconds": 1.8936011490004603,
+      "min_seconds": 1.8936011490004603,
+      "name": "rust_fit_glm_py",
+      "total_seconds": 1.8936011490004603
+    },
+    {
+      "count": 1,
+      "max_seconds": 0.5741044370006421,
+      "min_seconds": 0.5741044370006421,
+      "name": "builder_init",
+      "total_seconds": 0.5741044370006421
+    },
+    {
+      "count": 1,
+      "max_seconds": 0.0781725010019727,
+      "min_seconds": 0.0781725010019727,
+      "name": "read_train_parquet",
+      "total_seconds": 0.0781725010019727
+    },
+    {
+      "count": 1,
+      "max_seconds": 0.016424346998974215,
+      "min_seconds": 0.016424346998974215,
+      "name": "validate_glm_inputs",
+      "total_seconds": 0.016424346998974215
+    },
+    {
+      "count": 1,
+      "max_seconds": 0.006130641006166115,
+      "min_seconds": 0.006130641006166115,
+      "name": "compute_standardization_with_ridge_diag",
+      "total_seconds": 0.006130641006166115
+    },
+    {
+      "count": 1,
+      "max_seconds": 0.0004883549991063774,
+      "min_seconds": 0.0004883549991063774,
+      "name": "slice_train_head",
+      "total_seconds": 0.0004883549991063774
+    },
+    {
+      "count": 1,
+      "max_seconds": 0.00041162900015478954,
+      "min_seconds": 0.00041162900015478954,
+      "name": "load_metadata_json",
+      "total_seconds": 0.00041162900015478954
+    },
+    {
+      "count": 1,
+      "max_seconds": 0.00031435500568477437,
+      "min_seconds": 0.00031435500568477437,
+      "name": "compute_alpha_max",
+      "total_seconds": 0.00031435500568477437
+    },
+    {
+      "count": 1,
+      "max_seconds": 0.00011014499614248052,
+      "min_seconds": 0.00011014499614248052,
+      "name": "_build_results",
+      "total_seconds": 0.00011014499614248052
+    }
+  ],
+  "calls": [
+    {
+      "call_index": 0,
+      "name": "load_metadata_json",
+      "seconds": 0.00041162900015478954
+    },
+    {
+      "call_index": 0,
+      "name": "read_train_parquet",
+      "seconds": 0.0781725010019727
+    },
+    {
+      "call_index": 0,
+      "max_rows": 15000,
+      "name": "slice_train_head",
+      "seconds": 0.0004883549991063774
+    },
+    {
+      "call_index": 0,
+      "name": "builder_init",
+      "seconds": 0.5741044370006421
+    },
+    {
+      "call_index": 0,
+      "family": "binomial",
+      "name": "validate_glm_inputs",
+      "seconds": 0.016424346998974215,
+      "x_shape": [
+        15000,
+        958
+      ],
+      "y_shape": [
+        15000
+      ]
+    },
+    {
+      "call_index": 0,
+      "name": "compute_standardization_with_ridge_diag",
+      "seconds": 0.006130641006166115,
+      "x_shape": [
+        15000,
+        958
+      ]
+    },
+    {
+      "call_index": 0,
+      "family": "binomial",
+      "intercept_col": 0,
+      "l1_ratio": 0.0,
+      "name": "compute_alpha_max",
+      "seconds": 0.00031435500568477437,
+      "x_shape": [
+        15000,
+        958
+      ]
+    },
+    {
+      "call_index": 0,
+      "family": "binomial",
+      "l1_ratio": 0.0,
+      "max_iter": 25,
+      "n_alphas": 5,
+      "n_folds": 5,
+      "name": "rust_fit_cv_path_py",
+      "seconds": 18.41695982999954,
+      "tol": 1e-08,
+      "x_shape": [
+        15000,
+        958
+      ]
+    },
+    {
+      "call_index": 0,
+      "cv": 5,
+      "n_alphas": 4,
+      "name": "fit_cv_regularization_path",
+      "regularization": "ridge",
+      "seconds": 18.423956263002765,
+      "selection": "1se",
+      "standardize": true
+    },
+    {
+      "alpha": 323.16520350478277,
+      "call_index": 0,
+      "family": "binomial",
+      "l1_ratio": 0.0,
+      "max_iter": 25,
+      "name": "rust_fit_glm_py",
+      "seconds": 1.8936011490004603,
+      "skip_covariance": true,
+      "tol": 1e-08,
+      "x_shape": [
+        15000,
+        958
+      ]
+    },
+    {
+      "alpha": 323.16520350478277,
+      "call_index": 0,
+      "compute_covariance": false,
+      "family": "binomial",
+      "l1_ratio": 0.0,
+      "name": "_fit_glm_core",
+      "seconds": 1.894024086999707,
+      "x_shape": [
+        15000,
+        958
+      ]
+    },
+    {
+      "call_index": 0,
+      "n_feature_names": 958,
+      "name": "_build_results",
+      "seconds": 0.00011014499614248052
+    },
+    {
+      "call_index": 0,
+      "name": "fit_total",
+      "seconds": 20.33486568200169
+    }
+  ],
+  "cv_profile": {
+    "aggregate_seconds": 1.871e-06,
+    "alphas": [
+      150000.00000000003,
+      6962.383250419175,
+      323.16520350478277,
+      15.000000000000004,
+      0.0
+    ],
+    "cv_parallel_wall_seconds": 18.416297931,
+    "folds": [
+      {
+        "fit_final_extraction_seconds": [
+          0.000501524,
+          0.000852552,
+          0.001196157,
+          0.001168822,
+          0.0
+        ],
+        "fit_final_recompute_seconds": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "fit_init_mu_seconds": [
+          8.9664e-05,
+          0.004486964,
+          0.006954534,
+          0.005591922,
+          0.0
+        ],
+        "fit_init_projection_seconds": [
+          0.673426964,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "fit_initial_deviance_seconds": [
+          0.000171855,
+          0.000412818,
+          0.000354007,
+          0.000420641,
+          0.0
+        ],
+        "fit_profile_total_seconds": [
+          5.208503917,
+          4.49084896,
+          4.176851844,
+          2.634853206,
+          0.0
+        ],
+        "fit_seconds": [
+          5.208531428,
+          4.490928229,
+          4.176881646,
+          2.63489667,
+          1.013604457
+        ],
+        "fit_setup_seconds": [
+          0.02650679,
+          0.000222918,
+          4.7531e-05,
+          5.33e-05,
+          0.0
+        ],
+        "fit_update_seconds": [
+          0.051279641,
+          0.064569274,
+          0.050744542999999996,
+          0.268872026,
+          0.0
+        ],
+        "fit_weight_seconds": [
+          0.016966357999999997,
+          0.003410549,
+          0.009748475999999999,
+          0.21336649300000002,
+          0.0
+        ],
+        "fit_wls_gram_seconds": [
+          3.5713767439999993,
+          3.852817592,
+          3.426617512,
+          1.534305646,
+          0.0
+        ],
+        "fit_wls_penalty_seconds": [
+          3.309e-05,
+          4.2303e-05,
+          4.4609e-05,
+          7.0442e-05,
+          0.0
+        ],
+        "fit_wls_seconds": [
+          4.431459094,
+          4.416687566,
+          4.1076764699999995,
+          2.1452315,
+          0.0
+        ],
+        "fit_wls_solve_seconds": [
+          0.8600244349999999,
+          0.5638052969999999,
+          0.6809944950000001,
+          0.6108355249999999,
+          0.0
+        ],
+        "fold": 0,
+        "iterations": [
+          8,
+          8,
+          7,
+          6,
+          0
+        ],
+        "n_train": 11994,
+        "n_val": 3006,
+        "setup_seconds": 1.0484e-05,
+        "sparse_cache_seconds": 0.066353867,
+        "split_copy_seconds": 0.065465857,
+        "standardize_seconds": 3.221e-06,
+        "statuses": [
+          "converged",
+          "converged",
+          "converged",
+          "converged",
+          "error"
+        ],
+        "validation_dot_seconds": [
+          0.00353222,
+          0.003961876,
+          0.005113058,
+          0.008595922,
+          0.0
+        ],
+        "validation_score_seconds": [
+          6.6088e-05,
+          0.000127437,
+          0.000176512,
+          0.000222008,
+          0.0
+        ],
+        "validation_sparse_cache_seconds": 0.001079333
+      },
+      {
+        "fit_final_extraction_seconds": [
+          0.000526665,
+          0.000678115,
+          0.000585481,
+          0.000544593,
+          0.0
+        ],
+        "fit_final_recompute_seconds": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "fit_init_mu_seconds": [
+          5.9783e-05,
+          0.204831221,
+          0.003657893,
+          0.002950644,
+          0.0
+        ],
+        "fit_init_projection_seconds": [
+          0.742915316,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "fit_initial_deviance_seconds": [
+          0.000191278,
+          0.000159235,
+          0.000232719,
+          0.000387212,
+          0.0
+        ],
+        "fit_profile_total_seconds": [
+          5.228384805,
+          5.974386914,
+          4.021920221,
+          2.7531356860000002,
+          0.0
+        ],
+        "fit_seconds": [
+          5.22840561,
+          5.974439626,
+          4.021943793,
+          2.753157544,
+          0.199284946
+        ],
+        "fit_setup_seconds": [
+          8.9832e-05,
+          0.00023072,
+          2.5959e-05,
+          3.0273e-05,
+          0.0
+        ],
+        "fit_update_seconds": [
+          0.31588073699999997,
+          0.287188958,
+          0.345167444,
+          0.030848225,
+          0.0
+        ],
+        "fit_weight_seconds": [
+          0.40150139,
+          0.008109497,
+          0.24571825,
+          0.18415689799999999,
+          0.0
+        ],
+        "fit_wls_gram_seconds": [
+          3.145237512,
+          4.755857502,
+          2.8367453129999998,
+          2.226623085,
+          0.0
+        ],
+        "fit_wls_penalty_seconds": [
+          3.3362000000000003e-05,
+          6.5072e-05,
+          6.7809e-05,
+          3.4343e-05,
+          0.0
+        ],
+        "fit_wls_seconds": [
+          3.767096164,
+          5.47312025,
+          3.426435589,
+          2.534081886,
+          0.0
+        ],
+        "fit_wls_solve_seconds": [
+          0.621807907,
+          0.717173961,
+          0.589608084,
+          0.307413431,
+          0.0
+        ],
+        "fold": 1,
+        "iterations": [
+          8,
+          9,
+          7,
+          5,
+          0
+        ],
+        "n_train": 11978,
+        "n_val": 3022,
+        "setup_seconds": 7.803e-06,
+        "sparse_cache_seconds": 0.05295359,
+        "split_copy_seconds": 0.063553072,
+        "standardize_seconds": 3.085e-06,
+        "statuses": [
+          "converged",
+          "converged",
+          "converged",
+          "converged",
+          "error"
+        ],
+        "validation_dot_seconds": [
+          0.00377008,
+          0.00214562,
+          0.108290782,
+          0.00263106,
+          0.0
+        ],
+        "validation_score_seconds": [
+          7.0109e-05,
+          7.8367e-05,
+          7.5705e-05,
+          7.5466e-05,
+          0.0
+        ],
+        "validation_sparse_cache_seconds": 0.000794893
+      },
+      {
+        "fit_final_extraction_seconds": [
+          0.000570875,
+          0.001861076,
+          0.000511271,
+          0.003185193,
+          0.0
+        ],
+        "fit_final_recompute_seconds": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "fit_init_mu_seconds": [
+          7.3188e-05,
+          0.396969784,
+          0.01394523,
+          0.246646179,
+          0.0
+        ],
+        "fit_init_projection_seconds": [
+          0.714033911,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "fit_initial_deviance_seconds": [
+          0.00021848,
+          0.000398611,
+          0.000473983,
+          0.000418015,
+          0.0
+        ],
+        "fit_profile_total_seconds": [
+          5.409112973,
+          4.282127376,
+          4.164818983,
+          3.8274310849999997,
+          0.0
+        ],
+        "fit_seconds": [
+          5.409137716,
+          4.282216413,
+          4.164846982,
+          3.8274604009999997,
+          0.495510589
+        ],
+        "fit_setup_seconds": [
+          0.000108432,
+          0.000188416,
+          8.4665e-05,
+          2.6051e-05,
+          0.0
+        ],
+        "fit_update_seconds": [
+          0.645209731,
+          0.066049804,
+          0.426781655,
+          0.5741279460000001,
+          0.0
+        ],
+        "fit_weight_seconds": [
+          0.300663075,
+          0.0032233940000000005,
+          0.0052189770000000005,
+          0.37011746799999995,
+          0.0
+        ],
+        "fit_wls_gram_seconds": [
+          3.2249191689999996,
+          3.26250103,
+          3.182201337,
+          2.174640559,
+          0.0
+        ],
+        "fit_wls_penalty_seconds": [
+          4.763800000000001e-05,
+          3.3371e-05,
+          4.7892e-05,
+          3.5715999999999995e-05,
+          0.0
+        ],
+        "fit_wls_seconds": [
+          3.7480605369999997,
+          3.813289277,
+          3.7176695859999995,
+          2.632742115,
+          0.0
+        ],
+        "fit_wls_solve_seconds": [
+          0.523076324,
+          0.550735677,
+          0.5354036329999999,
+          0.45805287100000003,
+          0.0
+        ],
+        "fold": 2,
+        "iterations": [
+          8,
+          6,
+          6,
+          6,
+          0
+        ],
+        "n_train": 12022,
+        "n_val": 2978,
+        "setup_seconds": 9.086e-06,
+        "sparse_cache_seconds": 0.071658711,
+        "split_copy_seconds": 0.072434224,
+        "standardize_seconds": 2.749e-06,
+        "statuses": [
+          "converged",
+          "converged",
+          "converged",
+          "converged",
+          "error"
+        ],
+        "validation_dot_seconds": [
+          0.002042828,
+          0.007335879,
+          0.00308729,
+          0.007245214,
+          0.0
+        ],
+        "validation_score_seconds": [
+          5.7476e-05,
+          0.000166308,
+          7.8253e-05,
+          8.2458e-05,
+          0.0
+        ],
+        "validation_sparse_cache_seconds": 0.002113182
+      },
+      {
+        "fit_final_extraction_seconds": [
+          0.000537815,
+          0.00065283,
+          0.000850253,
+          0.000902606,
+          0.0
+        ],
+        "fit_final_recompute_seconds": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "fit_init_mu_seconds": [
+          8.9478e-05,
+          0.08306216,
+          0.477350857,
+          0.005004414,
+          0.0
+        ],
+        "fit_init_projection_seconds": [
+          0.663790961,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "fit_initial_deviance_seconds": [
+          0.000213032,
+          0.000204671,
+          0.000173341,
+          0.000384118,
+          0.0
+        ],
+        "fit_profile_total_seconds": [
+          5.17279213,
+          4.88697145,
+          4.340694438,
+          3.006228089,
+          0.0
+        ],
+        "fit_seconds": [
+          5.172823108,
+          4.886998983,
+          4.340724816,
+          3.006261743,
+          0.550174817
+        ],
+        "fit_setup_seconds": [
+          0.000126156,
+          0.000154882,
+          5.7681e-05,
+          4.2269e-05,
+          0.0
+        ],
+        "fit_update_seconds": [
+          0.442412242,
+          0.055783871000000006,
+          0.049965565,
+          0.271633459,
+          0.0
+        ],
+        "fit_weight_seconds": [
+          0.240685124,
+          0.002895256,
+          0.242178915,
+          0.371889143,
+          0.0
+        ],
+        "fit_wls_gram_seconds": [
+          3.219412678,
+          4.209167654,
+          2.669543912,
+          1.8868392130000002,
+          0.0
+        ],
+        "fit_wls_penalty_seconds": [
+          4.3788e-05,
+          3.8239000000000004e-05,
+          4.9879e-05,
+          3.6348e-05,
+          0.0
+        ],
+        "fit_wls_seconds": [
+          3.824794397,
+          4.744133366,
+          3.5700525180000002,
+          2.356239581,
+          0.0
+        ],
+        "fit_wls_solve_seconds": [
+          0.605320474,
+          0.534904233,
+          0.900432935,
+          0.469346118,
+          0.0
+        ],
+        "fold": 3,
+        "iterations": [
+          8,
+          8,
+          6,
+          6,
+          0
+        ],
+        "n_train": 12006,
+        "n_val": 2994,
+        "setup_seconds": 1.0537e-05,
+        "sparse_cache_seconds": 0.108876596,
+        "split_copy_seconds": 0.067194091,
+        "standardize_seconds": 2.777e-06,
+        "statuses": [
+          "converged",
+          "converged",
+          "converged",
+          "converged",
+          "error"
+        ],
+        "validation_dot_seconds": [
+          0.207764272,
+          0.00172772,
+          0.004335248,
+          0.014609473,
+          0.0
+        ],
+        "validation_score_seconds": [
+          6.7605e-05,
+          6.2949e-05,
+          0.00013485,
+          0.000142736,
+          0.0
+        ],
+        "validation_sparse_cache_seconds": 0.000839511
+      },
+      {
+        "fit_final_extraction_seconds": [
+          0.000743503,
+          0.000482295,
+          0.003733738,
+          0.000599819,
+          0.0
+        ],
+        "fit_final_recompute_seconds": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "fit_init_mu_seconds": [
+          0.000155523,
+          0.015127267,
+          0.002987871,
+          0.009136791,
+          0.0
+        ],
+        "fit_init_projection_seconds": [
+          0.726440342,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "fit_initial_deviance_seconds": [
+          0.000473737,
+          0.000476813,
+          0.000416683,
+          0.000663511,
+          0.0
+        ],
+        "fit_profile_total_seconds": [
+          5.233596053,
+          4.400582837,
+          4.2325129,
+          3.74463421,
+          0.0
+        ],
+        "fit_seconds": [
+          5.23365108,
+          4.400604474,
+          4.232571605,
+          3.744662199,
+          0.566102609
+        ],
+        "fit_setup_seconds": [
+          0.000266412,
+          0.001411543,
+          2.6025e-05,
+          7.9743e-05,
+          0.0
+        ],
+        "fit_update_seconds": [
+          0.652484367,
+          0.08096825499999999,
+          0.813861837,
+          0.22514927899999998,
+          0.0
+        ],
+        "fit_weight_seconds": [
+          0.187237589,
+          0.006010647,
+          0.007423036,
+          0.525745938,
+          0.0
+        ],
+        "fit_wls_gram_seconds": [
+          2.813079794,
+          3.3772448600000002,
+          2.746363771,
+          2.6519623230000002,
+          0.0
+        ],
+        "fit_wls_penalty_seconds": [
+          5.8416e-05,
+          4.5962999999999993e-05,
+          4.6796000000000004e-05,
+          2.0717e-05,
+          0.0
+        ],
+        "fit_wls_seconds": [
+          3.665435789,
+          4.295938489,
+          3.403923958999999,
+          2.983001391,
+          0.0
+        ],
+        "fit_wls_solve_seconds": [
+          0.852277423,
+          0.918547325,
+          0.657495915,
+          0.331007828,
+          0.0
+        ],
+        "fold": 4,
+        "iterations": [
+          8,
+          8,
+          6,
+          5,
+          0
+        ],
+        "n_train": 12000,
+        "n_val": 3000,
+        "setup_seconds": 1.0132e-05,
+        "sparse_cache_seconds": 0.080687986,
+        "split_copy_seconds": 0.065972458,
+        "standardize_seconds": 3.229e-06,
+        "statuses": [
+          "converged",
+          "converged",
+          "converged",
+          "converged",
+          "error"
+        ],
+        "validation_dot_seconds": [
+          0.015683872,
+          0.00221246,
+          0.010883034,
+          0.009475925,
+          0.0
+        ],
+        "validation_score_seconds": [
+          0.000147232,
+          7.6655e-05,
+          0.000819458,
+          7.6572e-05,
+          0.0
+        ],
+        "validation_sparse_cache_seconds": 0.001233797
+      }
+    ],
+    "input_seconds": 2.0831e-05,
+    "n": 15000,
+    "n_alphas": 5,
+    "n_folds": 5,
+    "p": 958,
+    "rayon_threads": 22,
+    "setup_seconds": 0.000228457,
+    "summed_work_seconds": {
+      "alpha_fit_final_extraction_seconds": 0.020685183000000003,
+      "alpha_fit_final_recompute_seconds": 0.0,
+      "alpha_fit_init_mu_seconds": 1.4791713670000002,
+      "alpha_fit_init_projection_seconds": 3.520607494,
+      "alpha_fit_initial_deviance_seconds": 0.006844759999999999,
+      "alpha_fit_profile_total_seconds": 87.19038807700001,
+      "alpha_fit_seconds": 90.015821484,
+      "alpha_fit_setup_seconds": 0.029779597999999997,
+      "alpha_fit_update_seconds": 5.718978859000001,
+      "alpha_fit_weight_seconds": 3.346266473,
+      "alpha_fit_wls_gram_seconds": 60.767457205999996,
+      "alpha_fit_wls_penalty_seconds": 0.000895793,
+      "alpha_fit_wls_seconds": 73.05706952399998,
+      "alpha_fit_wls_solve_seconds": 12.288263891,
+      "alpha_validation_dot_seconds": 0.424443833,
+      "alpha_validation_score_seconds": 0.0028042440000000004,
+      "fold_setup_seconds": 4.8042e-05,
+      "fold_sparse_cache_seconds": 0.38053075,
+      "fold_split_copy_seconds": 0.334619702,
+      "fold_standardize_seconds": 1.5061e-05,
+      "fold_validation_sparse_cache_seconds": 0.006060716
+    },
+    "total_wall_seconds": 18.416748725,
+    "validation_seconds": 6.1e-08
+  },
+  "cv_summary": {
+    "alpha_totals": [
+      {
+        "alpha": 150000.00000000003,
+        "alpha_index": 0,
+        "fit_seconds": 26.252548941999997,
+        "iterations": 40,
+        "total_seconds": 26.485750723999995,
+        "validation_dot_seconds": 0.232793272,
+        "validation_score_seconds": 0.00040850999999999995,
+        "wls_gram_seconds": 15.974025896999999,
+        "wls_penalty_seconds": 0.000216294,
+        "wls_solve_seconds": 3.462506563
+      },
+      {
+        "alpha": 6962.383250419175,
+        "alpha_index": 1,
+        "fit_seconds": 24.035187725,
+        "iterations": 39,
+        "total_seconds": 24.053082995999997,
+        "validation_dot_seconds": 0.017383555000000002,
+        "validation_score_seconds": 0.000511716,
+        "wls_gram_seconds": 19.457588638,
+        "wls_penalty_seconds": 0.000224948,
+        "wls_solve_seconds": 3.2851664929999997
+      },
+      {
+        "alpha": 323.16520350478277,
+        "alpha_index": 2,
+        "fit_seconds": 20.936968842000002,
+        "iterations": 32,
+        "total_seconds": 21.069963032,
+        "validation_dot_seconds": 0.13170941200000003,
+        "validation_score_seconds": 0.001284778,
+        "wls_gram_seconds": 14.861471845,
+        "wls_penalty_seconds": 0.000256985,
+        "wls_solve_seconds": 3.3639350620000004
+      },
+      {
+        "alpha": 15.000000000000004,
+        "alpha_index": 3,
+        "fit_seconds": 15.966438557,
+        "iterations": 28,
+        "total_seconds": 16.009595391,
+        "validation_dot_seconds": 0.042557594000000004,
+        "validation_score_seconds": 0.00059924,
+        "wls_gram_seconds": 10.474370826000001,
+        "wls_penalty_seconds": 0.00019756600000000004,
+        "wls_solve_seconds": 2.1766557730000002
+      },
+      {
+        "alpha": 0.0,
+        "alpha_index": 4,
+        "fit_seconds": 2.824677418,
+        "iterations": 0,
+        "total_seconds": 2.824677418,
+        "validation_dot_seconds": 0.0,
+        "validation_score_seconds": 0.0,
+        "wls_gram_seconds": 0.0,
+        "wls_penalty_seconds": 0.0,
+        "wls_solve_seconds": 0.0
+      }
+    ],
+    "fold_totals": [
+      {
+        "fit_seconds": 17.52484243,
+        "fold": 0,
+        "iterations": [
+          8,
+          8,
+          7,
+          6,
+          0
+        ],
+        "n_train": 11994,
+        "n_val": 3006,
+        "statuses": [
+          "converged",
+          "converged",
+          "converged",
+          "converged",
+          "error"
+        ],
+        "total_work_seconds": 17.679550313,
+        "validation_dot_seconds": 0.021203076,
+        "validation_score_seconds": 0.000592045
+      },
+      {
+        "fit_seconds": 18.177231519,
+        "fold": 1,
+        "iterations": [
+          8,
+          9,
+          7,
+          5,
+          0
+        ],
+        "n_train": 11978,
+        "n_val": 3022,
+        "statuses": [
+          "converged",
+          "converged",
+          "converged",
+          "converged",
+          "error"
+        ],
+        "total_work_seconds": 18.411681150999996,
+        "validation_dot_seconds": 0.116837542,
+        "validation_score_seconds": 0.000299647
+      },
+      {
+        "fit_seconds": 18.179172101,
+        "fold": 2,
+        "iterations": [
+          8,
+          6,
+          6,
+          6,
+          0
+        ],
+        "n_train": 12022,
+        "n_val": 2978,
+        "statuses": [
+          "converged",
+          "converged",
+          "converged",
+          "converged",
+          "error"
+        ],
+        "total_work_seconds": 18.345485759,
+        "validation_dot_seconds": 0.019711211,
+        "validation_score_seconds": 0.000384495
+      },
+      {
+        "fit_seconds": 17.956983467,
+        "fold": 3,
+        "iterations": [
+          8,
+          8,
+          6,
+          6,
+          0
+        ],
+        "n_train": 12006,
+        "n_val": 2994,
+        "statuses": [
+          "converged",
+          "converged",
+          "converged",
+          "converged",
+          "error"
+        ],
+        "total_work_seconds": 18.362751832,
+        "validation_dot_seconds": 0.22843671299999999,
+        "validation_score_seconds": 0.00040814
+      },
+      {
+        "fit_seconds": 18.177591966999998,
+        "fold": 4,
+        "iterations": [
+          8,
+          8,
+          6,
+          5,
+          0
+        ],
+        "n_train": 12000,
+        "n_val": 3000,
+        "statuses": [
+          "converged",
+          "converged",
+          "converged",
+          "converged",
+          "error"
+        ],
+        "total_work_seconds": 18.364874776999997,
+        "validation_dot_seconds": 0.038255291000000004,
+        "validation_score_seconds": 0.001119917
+      }
+    ],
+    "max_fold_work_seconds": 18.411681150999996,
+    "sum_alpha_fit_seconds": 90.015821484,
+    "sum_alpha_iterations": 139,
+    "sum_alpha_validation_dot_seconds": 0.42444383300000005,
+    "sum_alpha_validation_score_seconds": 0.002804244,
+    "sum_fold_work_seconds": 91.16434383199999,
+    "top_level": {
+      "aggregate_seconds": 1.871e-06,
+      "alphas": [
+        150000.00000000003,
+        6962.383250419175,
+        323.16520350478277,
+        15.000000000000004,
+        0.0
+      ],
+      "cv_parallel_wall_seconds": 18.416297931,
+      "input_seconds": 2.0831e-05,
+      "n": 15000,
+      "n_alphas": 5,
+      "n_folds": 5,
+      "p": 958,
+      "rayon_threads": 22,
+      "setup_seconds": 0.000228457,
+      "summed_work_seconds": {
+        "alpha_fit_final_extraction_seconds": 0.020685183000000003,
+        "alpha_fit_final_recompute_seconds": 0.0,
+        "alpha_fit_init_mu_seconds": 1.4791713670000002,
+        "alpha_fit_init_projection_seconds": 3.520607494,
+        "alpha_fit_initial_deviance_seconds": 0.006844759999999999,
+        "alpha_fit_profile_total_seconds": 87.19038807700001,
+        "alpha_fit_seconds": 90.015821484,
+        "alpha_fit_setup_seconds": 0.029779597999999997,
+        "alpha_fit_update_seconds": 5.718978859000001,
+        "alpha_fit_weight_seconds": 3.346266473,
+        "alpha_fit_wls_gram_seconds": 60.767457205999996,
+        "alpha_fit_wls_penalty_seconds": 0.000895793,
+        "alpha_fit_wls_seconds": 73.05706952399998,
+        "alpha_fit_wls_solve_seconds": 12.288263891,
+        "alpha_validation_dot_seconds": 0.424443833,
+        "alpha_validation_score_seconds": 0.0028042440000000004,
+        "fold_setup_seconds": 4.8042e-05,
+        "fold_sparse_cache_seconds": 0.38053075,
+        "fold_split_copy_seconds": 0.334619702,
+        "fold_standardize_seconds": 1.5061e-05,
+        "fold_validation_sparse_cache_seconds": 0.006060716
+      },
+      "total_wall_seconds": 18.416748725,
+      "validation_seconds": 6.1e-08
+    }
+  },
+  "dataset": "APSFailure",
+  "final_no_covariance": null,
+  "fit_kwargs": {
+    "compute_covariance": false,
+    "cv": 5,
+    "cv_seed": 314159,
+    "n_alphas": 4,
+    "regularization": "ridge",
+    "selection": "1se"
+  },
+  "model": {
+    "alpha": 323.16520350478277,
+    "cv_deviance": 0.0017350207226587006,
+    "cv_deviance_se": 0.0002842301979935525,
+    "family": "binomial",
+    "iterations": 10,
+    "n_params": 958,
+    "regularization_type": "ridge",
+    "solver_status": "converged"
+  },
+  "n_columns": 349,
+  "n_rows": 15000,
+  "prediction": null,
+  "split": "r0f0",
+  "target": "teacher predictions",
+  "task_id": 363616
+}

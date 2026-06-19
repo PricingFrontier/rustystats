@@ -24,8 +24,8 @@ use rustystats_core::links::Link;
 use rustystats_core::regularization::{RegularizationConfig, Standardization};
 use rustystats_core::solvers::{
     build_sparse_row_cache_if_beneficial, fit_glm_unified, fit_glm_unified_with_sparse_cache,
-    fit_smooth_glm_full_matrix, FitConfig, IRLSConfig, IRLSResult, Monotonicity, SmoothGLMConfig,
-    SmoothTermSpec,
+    fit_smooth_glm_full_matrix, matrix_vector_dot_cached, FitConfig, IRLSConfig, IRLSResult,
+    Monotonicity, SmoothGLMConfig, SmoothTermSpec,
 };
 
 use crate::families_py::{
@@ -711,13 +711,90 @@ struct CVFoldProfile {
     n_val: usize,
     split_copy_seconds: f64,
     sparse_cache_seconds: f64,
+    validation_sparse_cache_seconds: f64,
     standardize_seconds: f64,
     setup_seconds: f64,
     fit_seconds: Vec<f64>,
+    fit_setup_seconds: Vec<f64>,
+    fit_init_mu_seconds: Vec<f64>,
+    fit_init_projection_seconds: Vec<f64>,
+    fit_initial_deviance_seconds: Vec<f64>,
+    fit_weight_seconds: Vec<f64>,
+    fit_wls_seconds: Vec<f64>,
+    fit_wls_gram_seconds: Vec<f64>,
+    fit_wls_gram_local_init_seconds: Vec<f64>,
+    fit_wls_gram_row_scan_seconds: Vec<f64>,
+    fit_wls_gram_pairwise_accum_seconds: Vec<f64>,
+    fit_wls_gram_reduce_seconds: Vec<f64>,
+    fit_wls_gram_materialize_seconds: Vec<f64>,
+    fit_wls_penalty_seconds: Vec<f64>,
+    fit_wls_solve_seconds: Vec<f64>,
+    fit_update_seconds: Vec<f64>,
+    fit_final_extraction_seconds: Vec<f64>,
+    fit_final_recompute_seconds: Vec<f64>,
+    fit_profile_total_seconds: Vec<f64>,
     validation_dot_seconds: Vec<f64>,
     validation_score_seconds: Vec<f64>,
     iterations: Vec<usize>,
     statuses: Vec<String>,
+}
+
+impl CVFoldProfile {
+    fn push_fit_profile(&mut self, result: &IRLSResult) {
+        if let Some(profile) = result.profile.as_ref() {
+            self.fit_setup_seconds.push(profile.setup_seconds);
+            self.fit_init_mu_seconds.push(profile.init_mu_seconds);
+            self.fit_init_projection_seconds
+                .push(profile.init_projection_seconds);
+            self.fit_initial_deviance_seconds
+                .push(profile.initial_deviance_seconds);
+            self.fit_weight_seconds.push(profile.weight_seconds);
+            self.fit_wls_seconds.push(profile.wls_seconds);
+            self.fit_wls_gram_seconds.push(profile.wls_gram_seconds);
+            self.fit_wls_gram_local_init_seconds
+                .push(profile.wls_gram_local_init_seconds);
+            self.fit_wls_gram_row_scan_seconds
+                .push(profile.wls_gram_row_scan_seconds);
+            self.fit_wls_gram_pairwise_accum_seconds
+                .push(profile.wls_gram_pairwise_accum_seconds);
+            self.fit_wls_gram_reduce_seconds
+                .push(profile.wls_gram_reduce_seconds);
+            self.fit_wls_gram_materialize_seconds
+                .push(profile.wls_gram_materialize_seconds);
+            self.fit_wls_penalty_seconds
+                .push(profile.wls_penalty_seconds);
+            self.fit_wls_solve_seconds.push(profile.wls_solve_seconds);
+            self.fit_update_seconds.push(profile.update_seconds);
+            self.fit_final_extraction_seconds
+                .push(profile.final_extraction_seconds);
+            self.fit_final_recompute_seconds
+                .push(profile.final_recompute_seconds);
+            self.fit_profile_total_seconds.push(profile.total_seconds);
+        } else {
+            self.push_empty_fit_profile();
+        }
+    }
+
+    fn push_empty_fit_profile(&mut self) {
+        self.fit_setup_seconds.push(0.0);
+        self.fit_init_mu_seconds.push(0.0);
+        self.fit_init_projection_seconds.push(0.0);
+        self.fit_initial_deviance_seconds.push(0.0);
+        self.fit_weight_seconds.push(0.0);
+        self.fit_wls_seconds.push(0.0);
+        self.fit_wls_gram_seconds.push(0.0);
+        self.fit_wls_gram_local_init_seconds.push(0.0);
+        self.fit_wls_gram_row_scan_seconds.push(0.0);
+        self.fit_wls_gram_pairwise_accum_seconds.push(0.0);
+        self.fit_wls_gram_reduce_seconds.push(0.0);
+        self.fit_wls_gram_materialize_seconds.push(0.0);
+        self.fit_wls_penalty_seconds.push(0.0);
+        self.fit_wls_solve_seconds.push(0.0);
+        self.fit_update_seconds.push(0.0);
+        self.fit_final_extraction_seconds.push(0.0);
+        self.fit_final_recompute_seconds.push(0.0);
+        self.fit_profile_total_seconds.push(0.0);
+    }
 }
 
 fn validation_deviance_score(unit_deviance: &Array1<f64>, weights: Option<&Array1<f64>>) -> f64 {
@@ -734,6 +811,83 @@ fn validation_deviance_score(unit_deviance: &Array1<f64>, weights: Option<&Array
             / denom
     } else {
         unit_deviance.mean().unwrap_or(f64::INFINITY)
+    }
+}
+
+fn binomial_logit_validation_deviance_score(
+    x: ArrayView2<'_, f64>,
+    coefficients: &Array1<f64>,
+    y: &Array1<f64>,
+    offset: Option<&Array1<f64>>,
+    weights: Option<&Array1<f64>>,
+    family: &dyn Family,
+    link: &dyn Link,
+) -> Option<f64> {
+    if !family.name().eq_ignore_ascii_case("binomial") || link.name() != "logit" {
+        return None;
+    }
+    let n = x.nrows();
+    let p = x.ncols();
+    if y.len() != n || coefficients.len() != p {
+        return None;
+    }
+    let x_slice = x.as_slice()?;
+    let coef_slice = coefficients.as_slice()?;
+    let y_slice = y.as_slice()?;
+    let offset_slice = match offset {
+        Some(o) => Some(o.as_slice()?),
+        None => None,
+    };
+    let weights_slice = match weights {
+        Some(w) => Some(w.as_slice()?),
+        None => None,
+    };
+
+    let target_chunks = rayon::current_num_threads().saturating_mul(4).max(1);
+    let chunk_size = n.div_ceil(target_chunks).max(1);
+    let num_chunks = n.div_ceil(chunk_size);
+
+    let (dev_sum, denom) = (0..num_chunks)
+        .into_par_iter()
+        .map(|chunk_idx| {
+            let start = chunk_idx * chunk_size;
+            let end = (start + chunk_size).min(n);
+            let mut local_dev = 0.0;
+            let mut local_denom = 0.0;
+            for row in start..end {
+                let row_start = row * p;
+                let mut eta = 0.0;
+                for j in 0..p {
+                    eta += unsafe { *x_slice.get_unchecked(row_start + j) }
+                        * unsafe { *coef_slice.get_unchecked(j) };
+                }
+                if let Some(o) = offset_slice {
+                    eta += unsafe { *o.get_unchecked(row) };
+                }
+                let mu = if eta >= 0.0 {
+                    1.0 / (1.0 + (-eta).exp())
+                } else {
+                    let exp_eta = eta.exp();
+                    exp_eta / (1.0 + exp_eta)
+                };
+                let unit_dev = family.unit_deviance_at(unsafe { *y_slice.get_unchecked(row) }, mu);
+                if let Some(w) = weights_slice {
+                    let wi = unsafe { *w.get_unchecked(row) };
+                    local_dev += unit_dev * wi;
+                    local_denom += wi;
+                } else {
+                    local_dev += unit_dev;
+                    local_denom += 1.0;
+                }
+            }
+            (local_dev, local_denom)
+        })
+        .reduce(|| (0.0, 0.0), |a, b| (a.0 + b.0, a.1 + b.1));
+
+    if denom <= 0.0 || !denom.is_finite() {
+        Some(f64::INFINITY)
+    } else {
+        Some(dev_sum / denom)
     }
 }
 
@@ -1238,7 +1392,7 @@ pub fn fit_fold_path_py<'py>(
             result.coefficients.clone()
         };
 
-        if let Some(dev) = poisson_log_validation_deviance_score(
+        if let Some(dev) = binomial_logit_validation_deviance_score(
             x_val_view,
             &validation_coefficients,
             &y_val_array,
@@ -1246,7 +1400,18 @@ pub fn fit_fold_path_py<'py>(
             weights_val_array.as_ref(),
             fam.as_ref(),
             link_fn.as_ref(),
-        ) {
+        )
+        .or_else(|| {
+            poisson_log_validation_deviance_score(
+                x_val_view,
+                &validation_coefficients,
+                &y_val_array,
+                offset_val_array.as_ref(),
+                weights_val_array.as_ref(),
+                fam.as_ref(),
+                link_fn.as_ref(),
+            )
+        }) {
             validation_dot_seconds.push(dot_start.elapsed().as_secs_f64());
             validation_score_seconds.push(0.0);
             fold_deviances.push(dev);
@@ -1534,6 +1699,12 @@ pub fn fit_cv_path_py<'py>(
             let sparse_cache_start = Instant::now();
             let fold_sparse_cache = build_sparse_row_cache_if_beneficial(x_train.view());
             profile.sparse_cache_seconds = sparse_cache_start.elapsed().as_secs_f64();
+            let validation_sparse_cache_start = Instant::now();
+            let validation_sparse_cache = x_val
+                .as_ref()
+                .and_then(|xv| build_sparse_row_cache_if_beneficial(xv.view()));
+            profile.validation_sparse_cache_seconds =
+                validation_sparse_cache_start.elapsed().as_secs_f64();
 
             let fold_setup_start = Instant::now();
             let thread_fam = match family_from_name_with_tweedie_support(
@@ -1607,12 +1778,14 @@ pub fn fit_cv_path_py<'py>(
                         profile.fit_seconds.push(fit_start.elapsed().as_secs_f64());
                         profile.iterations.push(r.iterations);
                         profile.statuses.push(r.solver_status.clone());
+                        profile.push_fit_profile(&r);
                         r
                     }
                     Err(_) => {
                         profile.fit_seconds.push(fit_start.elapsed().as_secs_f64());
                         profile.iterations.push(0);
                         profile.statuses.push("error".to_string());
+                        profile.push_empty_fit_profile();
                         profile.validation_dot_seconds.push(0.0);
                         profile.validation_score_seconds.push(0.0);
                         fold_deviances.push(f64::INFINITY);
@@ -1657,7 +1830,7 @@ pub fn fit_cv_path_py<'py>(
                     profile.validation_score_seconds.push(0.0);
                     fold_deviances.push(dev);
                 } else if let (Some(ref xv), Some(ref yv)) = (&x_val, &y_val) {
-                    if let Some(dev) = poisson_log_validation_deviance_score(
+                    if let Some(dev) = binomial_logit_validation_deviance_score(
                         xv.view(),
                         &validation_coefficients,
                         yv,
@@ -1665,14 +1838,29 @@ pub fn fit_cv_path_py<'py>(
                         weights_val.as_ref(),
                         thread_fam.as_ref(),
                         thread_link.as_ref(),
-                    ) {
+                    )
+                    .or_else(|| {
+                        poisson_log_validation_deviance_score(
+                            xv.view(),
+                            &validation_coefficients,
+                            yv,
+                            offset_val.as_ref(),
+                            weights_val.as_ref(),
+                            thread_fam.as_ref(),
+                            thread_link.as_ref(),
+                        )
+                    }) {
                         profile
                             .validation_dot_seconds
                             .push(dot_start.elapsed().as_secs_f64());
                         profile.validation_score_seconds.push(0.0);
                         fold_deviances.push(dev);
                     } else {
-                        let lp = matrix_vector_dot(xv.view(), &validation_coefficients);
+                        let lp = matrix_vector_dot_cached(
+                            xv.view(),
+                            &validation_coefficients,
+                            validation_sparse_cache.as_ref(),
+                        );
                         profile
                             .validation_dot_seconds
                             .push(dot_start.elapsed().as_secs_f64());
@@ -1789,6 +1977,10 @@ pub fn fit_cv_path_py<'py>(
 
     let total_split_copy: f64 = fold_profiles.iter().map(|f| f.split_copy_seconds).sum();
     let total_sparse_cache: f64 = fold_profiles.iter().map(|f| f.sparse_cache_seconds).sum();
+    let total_validation_sparse_cache: f64 = fold_profiles
+        .iter()
+        .map(|f| f.validation_sparse_cache_seconds)
+        .sum();
     let total_standardize: f64 = fold_profiles.iter().map(|f| f.standardize_seconds).sum();
     let total_fold_setup: f64 = fold_profiles.iter().map(|f| f.setup_seconds).sum();
     let total_fit: f64 = fold_profiles
@@ -1803,15 +1995,136 @@ pub fn fit_cv_path_py<'py>(
         .iter()
         .flat_map(|f| f.validation_score_seconds.iter())
         .sum();
+    let total_fit_setup: f64 = fold_profiles
+        .iter()
+        .flat_map(|f| f.fit_setup_seconds.iter())
+        .sum();
+    let total_fit_init_mu: f64 = fold_profiles
+        .iter()
+        .flat_map(|f| f.fit_init_mu_seconds.iter())
+        .sum();
+    let total_fit_init_projection: f64 = fold_profiles
+        .iter()
+        .flat_map(|f| f.fit_init_projection_seconds.iter())
+        .sum();
+    let total_fit_initial_deviance: f64 = fold_profiles
+        .iter()
+        .flat_map(|f| f.fit_initial_deviance_seconds.iter())
+        .sum();
+    let total_fit_weight: f64 = fold_profiles
+        .iter()
+        .flat_map(|f| f.fit_weight_seconds.iter())
+        .sum();
+    let total_fit_wls: f64 = fold_profiles
+        .iter()
+        .flat_map(|f| f.fit_wls_seconds.iter())
+        .sum();
+    let total_fit_wls_gram: f64 = fold_profiles
+        .iter()
+        .flat_map(|f| f.fit_wls_gram_seconds.iter())
+        .sum();
+    let total_fit_wls_gram_local_init: f64 = fold_profiles
+        .iter()
+        .flat_map(|f| f.fit_wls_gram_local_init_seconds.iter())
+        .sum();
+    let total_fit_wls_gram_row_scan: f64 = fold_profiles
+        .iter()
+        .flat_map(|f| f.fit_wls_gram_row_scan_seconds.iter())
+        .sum();
+    let total_fit_wls_gram_pairwise_accum: f64 = fold_profiles
+        .iter()
+        .flat_map(|f| f.fit_wls_gram_pairwise_accum_seconds.iter())
+        .sum();
+    let total_fit_wls_gram_reduce: f64 = fold_profiles
+        .iter()
+        .flat_map(|f| f.fit_wls_gram_reduce_seconds.iter())
+        .sum();
+    let total_fit_wls_gram_materialize: f64 = fold_profiles
+        .iter()
+        .flat_map(|f| f.fit_wls_gram_materialize_seconds.iter())
+        .sum();
+    let total_fit_wls_penalty: f64 = fold_profiles
+        .iter()
+        .flat_map(|f| f.fit_wls_penalty_seconds.iter())
+        .sum();
+    let total_fit_wls_solve: f64 = fold_profiles
+        .iter()
+        .flat_map(|f| f.fit_wls_solve_seconds.iter())
+        .sum();
+    let total_fit_update: f64 = fold_profiles
+        .iter()
+        .flat_map(|f| f.fit_update_seconds.iter())
+        .sum();
+    let total_fit_final_extraction: f64 = fold_profiles
+        .iter()
+        .flat_map(|f| f.fit_final_extraction_seconds.iter())
+        .sum();
+    let total_fit_final_recompute: f64 = fold_profiles
+        .iter()
+        .flat_map(|f| f.fit_final_recompute_seconds.iter())
+        .sum();
+    let total_fit_profile_total: f64 = fold_profiles
+        .iter()
+        .flat_map(|f| f.fit_profile_total_seconds.iter())
+        .sum();
 
     let totals = pyo3::types::PyDict::new(py);
     totals.set_item("fold_split_copy_seconds", total_split_copy)?;
     totals.set_item("fold_sparse_cache_seconds", total_sparse_cache)?;
+    totals.set_item(
+        "fold_validation_sparse_cache_seconds",
+        total_validation_sparse_cache,
+    )?;
     totals.set_item("fold_standardize_seconds", total_standardize)?;
     totals.set_item("fold_setup_seconds", total_fold_setup)?;
     totals.set_item("alpha_fit_seconds", total_fit)?;
     totals.set_item("alpha_validation_dot_seconds", total_validation_dot)?;
     totals.set_item("alpha_validation_score_seconds", total_validation_score)?;
+    totals.set_item("alpha_fit_setup_seconds", total_fit_setup)?;
+    totals.set_item("alpha_fit_init_mu_seconds", total_fit_init_mu)?;
+    totals.set_item(
+        "alpha_fit_init_projection_seconds",
+        total_fit_init_projection,
+    )?;
+    totals.set_item(
+        "alpha_fit_initial_deviance_seconds",
+        total_fit_initial_deviance,
+    )?;
+    totals.set_item("alpha_fit_weight_seconds", total_fit_weight)?;
+    totals.set_item("alpha_fit_wls_seconds", total_fit_wls)?;
+    totals.set_item("alpha_fit_wls_gram_seconds", total_fit_wls_gram)?;
+    totals.set_item(
+        "alpha_fit_wls_gram_local_init_seconds",
+        total_fit_wls_gram_local_init,
+    )?;
+    totals.set_item(
+        "alpha_fit_wls_gram_row_scan_seconds",
+        total_fit_wls_gram_row_scan,
+    )?;
+    totals.set_item(
+        "alpha_fit_wls_gram_pairwise_accum_seconds",
+        total_fit_wls_gram_pairwise_accum,
+    )?;
+    totals.set_item(
+        "alpha_fit_wls_gram_reduce_seconds",
+        total_fit_wls_gram_reduce,
+    )?;
+    totals.set_item(
+        "alpha_fit_wls_gram_materialize_seconds",
+        total_fit_wls_gram_materialize,
+    )?;
+    totals.set_item("alpha_fit_wls_penalty_seconds", total_fit_wls_penalty)?;
+    totals.set_item("alpha_fit_wls_solve_seconds", total_fit_wls_solve)?;
+    totals.set_item("alpha_fit_update_seconds", total_fit_update)?;
+    totals.set_item(
+        "alpha_fit_final_extraction_seconds",
+        total_fit_final_extraction,
+    )?;
+    totals.set_item(
+        "alpha_fit_final_recompute_seconds",
+        total_fit_final_recompute,
+    )?;
+    totals.set_item("alpha_fit_profile_total_seconds", total_fit_profile_total)?;
     profile.set_item("summed_work_seconds", totals)?;
 
     let fold_profile_list = pyo3::types::PyList::empty(py);
@@ -1822,9 +2135,79 @@ pub fn fit_cv_path_py<'py>(
         fold_dict.set_item("n_val", fold_profile.n_val)?;
         fold_dict.set_item("split_copy_seconds", fold_profile.split_copy_seconds)?;
         fold_dict.set_item("sparse_cache_seconds", fold_profile.sparse_cache_seconds)?;
+        fold_dict.set_item(
+            "validation_sparse_cache_seconds",
+            fold_profile.validation_sparse_cache_seconds,
+        )?;
         fold_dict.set_item("standardize_seconds", fold_profile.standardize_seconds)?;
         fold_dict.set_item("setup_seconds", fold_profile.setup_seconds)?;
         fold_dict.set_item("fit_seconds", fold_profile.fit_seconds.clone())?;
+        fold_dict.set_item("fit_setup_seconds", fold_profile.fit_setup_seconds.clone())?;
+        fold_dict.set_item(
+            "fit_init_mu_seconds",
+            fold_profile.fit_init_mu_seconds.clone(),
+        )?;
+        fold_dict.set_item(
+            "fit_init_projection_seconds",
+            fold_profile.fit_init_projection_seconds.clone(),
+        )?;
+        fold_dict.set_item(
+            "fit_initial_deviance_seconds",
+            fold_profile.fit_initial_deviance_seconds.clone(),
+        )?;
+        fold_dict.set_item(
+            "fit_weight_seconds",
+            fold_profile.fit_weight_seconds.clone(),
+        )?;
+        fold_dict.set_item("fit_wls_seconds", fold_profile.fit_wls_seconds.clone())?;
+        fold_dict.set_item(
+            "fit_wls_gram_seconds",
+            fold_profile.fit_wls_gram_seconds.clone(),
+        )?;
+        fold_dict.set_item(
+            "fit_wls_gram_local_init_seconds",
+            fold_profile.fit_wls_gram_local_init_seconds.clone(),
+        )?;
+        fold_dict.set_item(
+            "fit_wls_gram_row_scan_seconds",
+            fold_profile.fit_wls_gram_row_scan_seconds.clone(),
+        )?;
+        fold_dict.set_item(
+            "fit_wls_gram_pairwise_accum_seconds",
+            fold_profile.fit_wls_gram_pairwise_accum_seconds.clone(),
+        )?;
+        fold_dict.set_item(
+            "fit_wls_gram_reduce_seconds",
+            fold_profile.fit_wls_gram_reduce_seconds.clone(),
+        )?;
+        fold_dict.set_item(
+            "fit_wls_gram_materialize_seconds",
+            fold_profile.fit_wls_gram_materialize_seconds.clone(),
+        )?;
+        fold_dict.set_item(
+            "fit_wls_penalty_seconds",
+            fold_profile.fit_wls_penalty_seconds.clone(),
+        )?;
+        fold_dict.set_item(
+            "fit_wls_solve_seconds",
+            fold_profile.fit_wls_solve_seconds.clone(),
+        )?;
+        fold_dict.set_item(
+            "fit_update_seconds",
+            fold_profile.fit_update_seconds.clone(),
+        )?;
+        fold_dict.set_item(
+            "fit_final_extraction_seconds",
+            fold_profile.fit_final_extraction_seconds.clone(),
+        )?;
+        fold_dict.set_item(
+            "fit_final_recompute_seconds",
+            fold_profile.fit_final_recompute_seconds.clone(),
+        )?;
+        fold_dict.set_item(
+            "fit_profile_total_seconds",
+            fold_profile.fit_profile_total_seconds.clone(),
+        )?;
         fold_dict.set_item(
             "validation_dot_seconds",
             fold_profile.validation_dot_seconds.clone(),
@@ -1854,12 +2237,12 @@ pub fn fit_cv_path_py<'py>(
 #[cfg(test)]
 mod tests {
     use super::{
-        poisson_log_validation_deviance_score, poisson_log_validation_deviance_score_rows,
-        validation_deviance_score,
+        binomial_logit_validation_deviance_score, poisson_log_validation_deviance_score,
+        poisson_log_validation_deviance_score_rows, validation_deviance_score,
     };
     use ndarray::{array, Array2};
-    use rustystats_core::families::PoissonFamily;
-    use rustystats_core::links::LogLink;
+    use rustystats_core::families::{BinomialFamily, Family, PoissonFamily};
+    use rustystats_core::links::{Link, LogLink, LogitLink};
 
     #[test]
     fn validation_deviance_score_uses_validation_weights() {
@@ -1920,6 +2303,38 @@ mod tests {
         .expect("row scorer should handle original rows");
 
         assert!((dense - by_rows).abs() < 1e-12);
+    }
+
+    #[test]
+    fn binomial_logit_validation_matches_generic_score() {
+        let x = Array2::from_shape_vec(
+            (4, 3),
+            vec![1.0, -0.5, 0.2, 1.0, 0.4, 0.0, 1.0, 0.1, -0.3, 1.0, 0.7, 0.5],
+        )
+        .expect("test design should be valid");
+        let y = array![0.0, 1.0, 0.0, 1.0];
+        let offset = array![0.05, -0.1, 0.2, 0.0];
+        let weights = array![1.0, 2.0, 0.5, 1.5];
+        let coefficients = array![-0.2, 0.35, -0.15];
+        let family = BinomialFamily;
+        let link = LogitLink;
+
+        let fused = binomial_logit_validation_deviance_score(
+            x.view(),
+            &coefficients,
+            &y,
+            Some(&offset),
+            Some(&weights),
+            &family,
+            &link,
+        )
+        .expect("fused scorer should handle binomial/logit");
+        let lp = x.dot(&coefficients) + &offset;
+        let mu = link.inverse(&lp);
+        let unit_dev = family.unit_deviance(&y, &mu);
+        let generic = validation_deviance_score(&unit_dev, Some(&weights));
+
+        assert!((fused - generic).abs() < 1e-12);
     }
 }
 

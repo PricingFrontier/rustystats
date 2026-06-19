@@ -1,0 +1,6 @@
+catboost>=1.2
+openml>=0.14
+pandas>=2.0
+polars>=1.0
+pyarrow>=14.0
+scikit-learn>=1.4
