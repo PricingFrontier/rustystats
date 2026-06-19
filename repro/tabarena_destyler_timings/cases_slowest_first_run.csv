@@ -1,0 +1,13 @@
+dataset,problem_type,task_id,repeat,fold,split_index,mean_student_extra_s,max_student_extra_s,n_train,n_features,recipe_terms,recipe_interactions,capped_categorical_features,categorical_grouped_train,reason
+kddcup09_appetency,binary,363683,1,1,r1f1,824.728,892.418,33333,212,49,39,13,217550,slowest split and strongest high-cardinality categorical signal
+Diabetes130US,binary,363630,1,0,r1f0,139.747,147.177,47678,47,45,33,4,32245,second slowest dataset by mean student-side time
+polish_companies_bankruptcy,binary,363694,0,2,r0f2,49.825,75.529,3940,64,42,30,0,0,slow despite small row count; useful for interaction-heavy profiling
+Amazon_employee_access,binary,363613,0,2,r0f2,30.967,32.904,21846,9,37,0,9,63670,categorical-heavy main-effect case
+customer_satisfaction_in_airline,binary,363628,1,2,r1f2,30.293,33.616,86587,21,48,9,0,0,large-row binary case
+superconductivity,regression,363705,2,0,r2f0,29.773,47.190,14175,81,42,28,0,0,wide regression case with many selected interactions
+credit_card_clients_default,binary,363627,0,1,r0f1,29.583,49.305,20000,23,31,40,0,0,many selected interactions
+hazelnut-spread-contaminant-detection,binary,363674,1,2,r1f2,23.767,36.836,1600,30,30,28,0,0,small-row repeated-task case with expensive interactions
+jm1,binary,363712,2,2,r2f2,21.000,29.927,7257,21,29,40,0,0,many selected interactions
+Food_Delivery_Time,regression,363672,1,2,r1f2,20.625,26.906,30301,9,7,24,1,27470,mixed categorical/regression case
+taiwanese_bankruptcy_prediction,binary,363706,1,1,r1f1,19.197,29.615,4546,94,54,40,0,0,wide binary case
+physiochemical_protein,regression,363693,0,1,r0f1,17.192,21.748,30487,9,9,28,0,0,larger-row regression interaction case

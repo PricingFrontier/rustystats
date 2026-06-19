@@ -1,0 +1,32 @@
+{
+  "artifact_dir": "/home/ralph/suite/rustystats/repro/destyler_tabarena_apsfailure_ridge_cv/artifacts",
+  "dataset": "APSFailure",
+  "fit_kwargs": {
+    "compute_covariance": true,
+    "cv": 5,
+    "cv_seed": 314159,
+    "n_alphas": 20,
+    "regularization": "ridge",
+    "selection": "1se"
+  },
+  "load_train_s": 0.09576230599486735,
+  "n_columns": 349,
+  "n_rows": 68416,
+  "recipe_interactions": 139,
+  "recipe_terms": 116,
+  "runs": [
+    {
+      "alpha": 354.6943165373582,
+      "build_s": 1.3896097379983985,
+      "family": "binomial",
+      "fit_s": 364.7312357810006,
+      "n_params": 958,
+      "predict_s": 0.6792690649963333,
+      "regularization_type": "ridge",
+      "run_index": 0
+    }
+  ],
+  "split": "r0f0",
+  "target": "teacher predictions",
+  "task_id": 363616
+}

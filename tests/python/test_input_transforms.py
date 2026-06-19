@@ -96,6 +96,48 @@ def test_lookup_transform_maps_multi_column_keys_and_preserves_order():
     assert "brand_region_fts" not in df.columns
 
 
+def test_numeric_center_and_clip_transforms_match_manual_columns():
+    df = pl.DataFrame({"x": [-2.0, 0.0, 1.5, 4.0, None]})
+    specs = [
+        {
+            "type": "center",
+            "name": "x_center",
+            "sources": ["x"],
+            "output": "x_ctr",
+            "center": 1.5,
+        },
+        {
+            "type": "clip",
+            "name": "x_clip",
+            "sources": ["x"],
+            "output": "x_clip",
+            "lower": -1.0,
+            "upper": 2.0,
+        },
+    ]
+
+    out = apply_input_transforms(df, specs)
+
+    assert out["x_ctr"].to_list() == [-3.5, -1.5, 0.0, 2.5, None]
+    assert out["x_clip"].to_list() == [-1.0, 0.0, 1.5, 2.0, None]
+
+
+def test_numeric_transform_rejects_bad_bounds():
+    with pytest.raises(ValidationError, match="lower must be <= upper"):
+        validate_input_transforms(
+            [
+                {
+                    "type": "clip",
+                    "name": "bad_clip",
+                    "sources": ["x"],
+                    "output": "x_clip",
+                    "lower": 2.0,
+                    "upper": 1.0,
+                }
+            ]
+        )
+
+
 @pytest.mark.parametrize("source_dtype", [pl.Float64, pl.Int64, pl.Int32])
 def test_lookup_numeric_keys_match_numeric_source_columns(source_dtype):
     # Regression: spec keys written as numbers must match numeric source columns,
@@ -511,6 +553,46 @@ def test_glm_dict_input_transforms_match_prepared_data_predictions():
     np.testing.assert_allclose(raw_result.predict(df), prepared_result.predict(prepared))
     np.testing.assert_allclose(raw_result.predict(df), raw_result.predict(prepared))
     assert raw_result.required_columns == ["brand", "exposure", "region"]
+
+
+def test_glm_numeric_input_transform_scores_raw_interaction_data():
+    df = pl.DataFrame(
+        {
+            "y": [0.2, 0.4, 0.8, 1.1, 1.5, 1.9, 2.4, 2.8],
+            "x": [0.0, 0.2, 0.4, 0.9, 1.1, 1.4, 1.8, 2.0],
+            "brand": ["A", "B", "A", "B", "A", "B", "A", "B"],
+        }
+    )
+    specs = [
+        {
+            "type": "center",
+            "name": "x_center",
+            "sources": ["x"],
+            "output": "x_ctr",
+            "center": 1.0,
+            "replace_existing": True,
+        }
+    ]
+    interactions = [
+        {
+            "x_ctr": {"type": "linear"},
+            "brand": {"type": "categorical"},
+            "include_main": False,
+        }
+    ]
+    result = rs.glm_dict(
+        response="y",
+        terms={"x_ctr": {"type": "linear"}, "brand": {"type": "categorical"}},
+        interactions=interactions,
+        data=df,
+        family="gaussian",
+        input_transforms=specs,
+    ).fit(compute_covariance=False)
+
+    raw_pred = result.predict(df)
+    prepared_pred = result.predict(apply_input_transforms(df, specs))
+
+    np.testing.assert_allclose(raw_pred, prepared_pred, rtol=1e-12, atol=1e-12)
 
 
 def test_glm_dict_input_transforms_lazyframe_and_serialization(tmp_path):

@@ -1,0 +1,17 @@
+{
+  "cv": 5,
+  "cv_seed": 314159,
+  "fit_kwargs": {
+    "cv": 5,
+    "cv_seed": 314159,
+    "n_alphas": 20,
+    "regularization": "ridge",
+    "selection": "1se"
+  },
+  "n_alphas": 20,
+  "regularization": "ridge",
+  "requested_regularization": "ridge",
+  "seed": 314159,
+  "selection": "1se",
+  "target": "teacher"
+}
