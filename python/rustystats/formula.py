@@ -4514,7 +4514,8 @@ class FormulaGLMDict(_GLMBase):
         standardize : bool, default=True
             For regularized fits, internally center/scale penalized design
             columns before applying the penalty, then report coefficients on
-            the original scale. Set False for legacy raw-scale penalization.
+            the original scale. Set False to penalize on the raw coefficient
+            scale.
 
         verbose : bool, default=False
             Print progress.
