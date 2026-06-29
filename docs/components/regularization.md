@@ -37,7 +37,7 @@ print(f"CV deviance: {result.cv_deviance}")
 
 With `standardize=True`, coefficients, standard errors, predictions, and
 exports are still reported on the original data scale. Set
-`standardize=False` only to reproduce the legacy raw-scale penalty.
+`standardize=False` to penalize on the raw coefficient scale instead.
 
 ## Selection Methods
 
