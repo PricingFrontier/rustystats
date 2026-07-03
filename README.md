@@ -11,13 +11,13 @@
 
 ## Features
 
-- **Dict-First API** - Programmatic model building ideal for automated workflows and agents
+- **Dict-First API** - Programmatic model building for automated workflows and agents
 - **Fast** - Parallel Rust backend for high-throughput fitting
 - **Memory Efficient** - Low memory footprint at scale
-- **Stable** - Step-halving IRLS, warm starts for robust convergence
+- **Stable** - Step-halving IRLS and warm starts to aid convergence
 - **Splines** - B-splines and natural splines with auto-tuned smoothing and monotonicity
 - **Target Encoding** - Ordered target encoding for high-cardinality categoricals
-- **Regularisation** - Ridge, Lasso, and Elastic Net via coordinate descent
+- **Regularization** - Ridge, Lasso, and Elastic Net via coordinate descent
 - **Lasso Credibility** - Shrink toward a prior model instead of zero (CAS Monograph 13)
 - **Validation** - Design matrix checks with fix suggestions before fitting
 - **Complete** - 8 families, robust SEs, full diagnostics, VIF, partial dependence
@@ -73,9 +73,7 @@ print(result.summary())
 
 ---
 
-## Dict-Based API
-
-API built for programmatic model building.
+## Dict-First API
 
 ```python
 result = rs.glm_dict(
@@ -137,23 +135,8 @@ mix = result.tier_mix(new_quotes)
 scenario = result.scenario(new_quotes, changes={"price_premium": 1.03})
 ```
 
-The multinomial path supports shared covariates, row/class weights,
-availability masks, class-specific utility offsets, ridge/lasso/elastic-net
-regularization with CV, multinomial target encoding, automatic smooth penalties
-for shared `bs`/`ns` main effects, summaries, pricing-grade diagnostics,
-wide-format alternative-specific covariates, price-change scenarios,
-vector-intercept calibration, utility-level monotonicity for shared
-linear/expression/fixed-df `bs` terms, Level-1 PMML/ONNX export for shared
-design-matrix scoring, and pickle serialization. Smooth monotone splines,
-target-encoded or alternative-specific monotonicity, exposure, symmetric
-reference-invariant ridge, and richer PMML/ONNX export for target-encoded,
-alternative-specific, availability, or offset models are reserved for later
-native support and fail explicitly where applicable.
-
 See [`examples/tier_conversion_multinomial.py`](examples/tier_conversion_multinomial.py)
-for a complete train/holdout workflow with availability, held-out log loss,
-alternative-specific price and richness terms, vector-intercept calibration, and
-premium price scenarios.
+for a full train/holdout workflow.
 
 ### Term Types
 
@@ -248,7 +231,7 @@ result = rs.glm_dict(
 
 ### Monotonic Splines
 
-Constrain the fitted curve to be monotonically increasing or decreasing. Essential when business logic dictates a monotonic relationship.
+Constrain the fitted curve to be monotonically increasing or decreasing. Useful when business rules require a monotonic relationship.
 
 ```python
 # Monotonically increasing effect (e.g., age → risk)
@@ -321,7 +304,7 @@ test_encoded = encoder.transform(test_categories)
 - **No target leakage**: Ordered target statistics
 - **Regularization**: Prior weight controls shrinkage toward global mean
 - **High-cardinality**: Single column instead of thousands of dummies
-- **Exposure-aware**: For frequency models with `exposure="Exposure"`, automatically uses claim rate (ClaimCount/Exposure) instead of raw counts. Pre-RS-ACT-002 users with `offset="Exposure"` get the same behaviour via the legacy alias, but array `offset=` no longer feeds the encoder — pass `exposure=` explicitly for exposure-weighted target encoding.
+- **Exposure-aware**: For frequency models, pass `exposure="Exposure"` so the encoder weights by claim rate (ClaimCount/Exposure) instead of raw counts. Exposure weighting comes only from `exposure=`; an `offset=` is a link-scale adjustment and never feeds the encoder.
 - **Interactions**: Use `target_encoding: True` in interactions to encode variable combinations
 
 ---
@@ -367,7 +350,7 @@ print(f"CV deviance: {result.cv_deviance}")
 - `regularization`: `"ridge"` (L2), `"lasso"` (L1), or `"elastic_net"` (mix)
 - `selection`: `"min"` (best fit) or `"1se"` (more conservative, default: `"min"`)
 - `cv`: Number of folds (default: 5)
-- `standardize`: Internally standardize penalized columns before the penalty acts, reporting original-scale coefficients (default: `True`; set `False` for the legacy raw-scale penalty)
+- `standardize`: Internally standardize penalized columns before the penalty acts, reporting original-scale coefficients (default: `True`; set `False` to penalize on the raw coefficient scale)
 
 ### Explicit Alpha
 
@@ -382,7 +365,7 @@ result = rs.glm_dict(response="y", terms={"x1": {"type": "linear"}, "x2": {"type
 
 Shrink model coefficients toward a prior model (complement of credibility) instead of toward zero. Based on the methodology in CAS Monograph 13 (Holmes & Casotto, 2025).
 
-When lasso zeroes a coefficient, the prediction for that term falls back to the complement rather than vanishing — making regularized models directly usable as rating plans.
+When lasso zeroes a coefficient, the prediction for that term falls back to the complement rather than vanishing, so regularized models can be used directly as rating plans.
 
 ```python
 # 1. Fit a countrywide (prior) model
@@ -414,9 +397,9 @@ print(state_result.credibility_summary())  # Deviation from complement per term
 ```
 
 **Complement sources:**
-- `str` — column name in the DataFrame (rates for log-link, probabilities for logit)
-- `np.ndarray` — array of prior values on the response scale
-- `GLMModel` — fitted model; predictions are computed automatically
+- `str`: column name in the DataFrame (rates for log-link, probabilities for logit)
+- `np.ndarray`: array of prior values on the response scale
+- `GLMModel`: fitted model; predictions are computed automatically
 
 Works with all families/links, splines, categoricals, interactions, and target encoding.
 
@@ -436,7 +419,7 @@ results = model.validate()  # Prints diagnostics
 if not results['valid']:
     print("Issues:", results['suggestions'])
 
-# Validation runs automatically on fit failure with helpful suggestions
+# Validation runs automatically on fit failure with suggested fixes
 ```
 
 **Checks performed:**
@@ -598,7 +581,7 @@ cal = result.fit_calibration(holdout, method="global")     # GlobalCalibration
 iso = result.fit_calibration(holdout, method="isotonic")   # IsotonicCalibration
 calibrated_pred = cal.predict(result.predict(new_data))
 
-# Log-link intercept relevel — same factor c = Σ(w·y)/Σ(w·μ), updates only the
+# Log-link intercept relevel. Same factor c = Σ(w·y)/Σ(w·μ); updates only the
 # intercept. Every other coefficient is bit-identical, relativities preserved.
 releveled = result.relevel(holdout)
 assert all(releveled.params[1:] == result.params[1:])
@@ -607,7 +590,7 @@ assert all(releveled.params[1:] == result.params[1:])
 Calibration is **never applied silently** to `result.predict()`. Calibration
 objects are separate, serializable (`to_dict`/`from_dict`), and not folded into
 GLM coefficients. Fitting calibration on the same rows used to fit the model
-overstates calibration quality — prefer a held-out fold.
+overstates calibration quality, so prefer a held-out fold.
 
 ---
 
@@ -687,7 +670,7 @@ predictions = loaded.predict(new_data)
 
 ## Model Export (PMML & ONNX)
 
-Export fitted models to standard formats for deployment — **no extra dependencies required**. PMML uses stdlib XML; ONNX protobuf serialization is implemented from scratch in Rust.
+Export fitted models to standard formats for deployment, with no extra dependencies. PMML uses stdlib XML; ONNX protobuf serialization is implemented from scratch in Rust.
 
 ### PMML
 
@@ -708,7 +691,7 @@ preds = pmml_model.predict(new_data.to_dict(as_series=False))
 ### ONNX
 
 ```python
-# Export — "scoring" requires pre-built design matrix, "full" embeds preprocessing
+# Export: "scoring" requires a pre-built design matrix, "full" embeds preprocessing
 result.to_onnx(path="model.onnx", mode="scoring")
 result.to_onnx(path="model_full.onnx", mode="full")
 
@@ -724,7 +707,6 @@ the consumer supplies the pre-built shared design matrix without the intercept
 column. Multinomial `mode="full"`, target encoding, alternative terms,
 availability masks, and class-specific offsets fail closed with validation
 errors.
-| Size | Smaller | Larger |
 
 ---
 
