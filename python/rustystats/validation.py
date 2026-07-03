@@ -12,6 +12,7 @@ import warnings
 
 import numpy as np
 
+from rustystats.constants import DEFAULT_LINKS, NEGBINOMIAL_ALIASES
 from rustystats.exceptions import ValidationError
 
 __all__ = [
@@ -192,7 +193,12 @@ def validate_response(
     elif family_lower == "inverse_gaussian":
         _validate_inverse_gaussian_response(y, name)
 
-    # gaussian and others: no special constraints
+    elif family_lower not in DEFAULT_LINKS and family_lower not in NEGBINOMIAL_ALIASES:
+        raise ValidationError(
+            f"Unknown family '{family}'. Supported families: {sorted(DEFAULT_LINKS.keys())}"
+        )
+
+    # gaussian: no special response constraints
 
     return y
 

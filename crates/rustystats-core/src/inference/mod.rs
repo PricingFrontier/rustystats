@@ -1093,7 +1093,7 @@ fn chi2_cdf_internal(x: f64, df: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::families::GaussianFamily;
+    use crate::families::{GammaFamily, GaussianFamily};
     use approx::assert_abs_diff_eq;
 
     #[test]
@@ -1126,6 +1126,29 @@ mod tests {
         // z = 1.96 should give p ≈ 0.05 (two-tailed)
         let p = pvalue_z(1.96);
         assert_abs_diff_eq!(p, 0.05, epsilon = 0.001);
+    }
+
+    #[test]
+    fn test_pvalue_and_confidence_interval_invalid_and_large_df_contracts() {
+        assert!(pvalue_z(f64::NAN).is_nan());
+        assert!(pvalue_t(f64::INFINITY, 10.0).is_nan());
+        assert!(pvalue_t(1.0, 0.0).is_nan());
+
+        let p_t = pvalue_t(2.5, 1001.0);
+        let p_z = pvalue_z(2.5);
+        assert_abs_diff_eq!(p_t, p_z, epsilon = 1e-12);
+
+        let (lo, hi) = confidence_interval_z(f64::NAN, 1.0, 0.95);
+        assert!(lo.is_nan() && hi.is_nan());
+        let (lo, hi) = confidence_interval_z(1.0, 0.0, 0.95);
+        assert!(lo.is_nan() && hi.is_nan());
+        let (lo, hi) = confidence_interval_t(1.0, 0.5, 0.0, 0.95);
+        assert!(lo.is_nan() && hi.is_nan());
+
+        let z_ci = confidence_interval_z(1.25, 0.4, 0.90);
+        let t_ci = confidence_interval_t(1.25, 0.4, 1001.0, 0.90);
+        assert_abs_diff_eq!(t_ci.0, z_ci.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(t_ci.1, z_ci.1, epsilon = 1e-12);
     }
 
     #[test]
@@ -1333,7 +1356,7 @@ mod tests {
             bread[[j, j]] = 0.01 + j as f64 * 0.0001;
         }
 
-        for hc_type in [HCType::HC1, HCType::HC3] {
+        for hc_type in [HCType::HC0, HCType::HC1, HCType::HC2, HCType::HC3] {
             let actual = robust_covariance(
                 &x,
                 &pearson_resid,
@@ -1352,6 +1375,48 @@ mod tests {
             );
             for j in 0..p {
                 for k in 0..p {
+                    assert_abs_diff_eq!(actual[[j, k]], expected[[j, k]], epsilon = 1e-12);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_dense_robust_covariance_all_hc_types_match_naive_reference() {
+        use ndarray::{arr1, arr2};
+
+        let x = arr2(&[
+            [1.0, -2.0, 0.5],
+            [1.0, -1.0, 1.5],
+            [1.0, 0.0, -0.5],
+            [1.0, 1.0, 2.5],
+            [1.0, 2.0, -1.5],
+            [1.0, 3.0, 0.0],
+        ]);
+        let pearson_resid = arr1(&[0.0, -0.3, 0.2, 0.4, -0.1, 0.15]);
+        let irls_weights = arr1(&[1.0, 0.8, 1.2, 0.9, 1.1, 1.4]);
+        let prior_weights = arr1(&[0.7, 1.3, 1.0, 0.6, 1.5, 0.9]);
+        let bread = arr2(&[[0.20, -0.01, 0.02], [-0.01, 0.08, 0.01], [0.02, 0.01, 0.05]]);
+
+        for hc_type in [HCType::HC0, HCType::HC1, HCType::HC2, HCType::HC3] {
+            let actual = robust_covariance(
+                &x,
+                &pearson_resid,
+                &irls_weights,
+                &prior_weights,
+                &bread,
+                hc_type,
+            );
+            let expected = naive_robust_covariance(
+                &x,
+                &pearson_resid,
+                &irls_weights,
+                &prior_weights,
+                &bread,
+                hc_type,
+            );
+            for j in 0..x.ncols() {
+                for k in 0..x.ncols() {
                     assert_abs_diff_eq!(actual[[j, k]], expected[[j, k]], epsilon = 1e-12);
                 }
             }
@@ -1402,6 +1467,68 @@ mod tests {
         assert_abs_diff_eq!(result.statistic, 0.0, epsilon = 1e-6);
         assert_abs_diff_eq!(result.pvalue, 1.0, epsilon = 0.01);
         assert!(!result.significant);
+    }
+
+    #[test]
+    fn test_score_test_continuous_batch_matches_single_path_and_strided_x() {
+        let n = 40;
+        let x = Array2::from_shape_fn((n, 2), |(i, j)| {
+            if j == 0 {
+                1.0
+            } else {
+                (i as f64 - 20.0) / 10.0
+            }
+        });
+        let x_nonstandard =
+            Array2::from_shape_fn((2, n), |(j, i)| if j == 0 { 1.0 } else { i as f64 / 10.0 })
+                .reversed_axes();
+        assert!(x_nonstandard.as_slice().is_none());
+
+        let y = Array1::from_iter((0..n).map(|i| 2.0 + 0.1 * i as f64 + (i as f64).sin() * 0.2));
+        let mu = Array1::from_iter((0..n).map(|i| 2.0 + 0.1 * i as f64));
+        let weights = Array1::from_iter((0..n).map(|i| 0.8 + (i % 5) as f64 * 0.1));
+        let bread = ndarray::arr2(&[[0.05, -0.002], [-0.002, 0.015]]);
+        let zs = Array2::from_shape_fn((n, 3), |(i, j)| match j {
+            0 => (i as f64 / 3.0).sin(),
+            1 => (i as f64 / 5.0).cos(),
+            _ => {
+                if i % 2 == 0 {
+                    1.0
+                } else {
+                    -1.0
+                }
+            }
+        });
+
+        let batch =
+            score_test_continuous_batch(&zs, &x, &y, &mu, &weights, &bread, &GaussianFamily);
+        assert_eq!(batch.len(), zs.ncols());
+        for j in 0..zs.ncols() {
+            let single = score_test_continuous(
+                &zs.column(j).to_owned(),
+                &x,
+                &y,
+                &mu,
+                &weights,
+                &bread,
+                &GaussianFamily,
+            );
+            assert_abs_diff_eq!(batch[j].statistic, single.statistic, epsilon = 1e-12);
+            assert_abs_diff_eq!(batch[j].pvalue, single.pvalue, epsilon = 1e-12);
+            assert_eq!(batch[j].significant, single.significant);
+        }
+
+        let strided_batch = score_test_continuous_batch(
+            &zs,
+            &x_nonstandard,
+            &y,
+            &mu,
+            &weights,
+            &bread,
+            &GaussianFamily,
+        );
+        assert_eq!(strided_batch.len(), zs.ncols());
+        assert!(strided_batch.iter().all(|r| r.statistic >= 0.0));
     }
 
     #[test]
@@ -1463,5 +1590,66 @@ mod tests {
 
         assert_eq!(result.df, 0);
         assert_abs_diff_eq!(result.pvalue, 1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_score_test_categorical_one_column_singular_and_zero_variance_paths() {
+        let n = 12;
+        let x = Array2::from_elem((n, 1), 1.0);
+        let y = Array1::from_iter((0..n).map(|i| if i < 6 { 1.0 } else { 2.0 }));
+        let mu = Array1::from_elem(n, 1.5);
+        let weights = Array1::ones(n);
+        let bread = ndarray::arr2(&[[1.0 / n as f64]]);
+
+        let mut one_col = Array2::zeros((n, 1));
+        for i in 6..n {
+            one_col[[i, 0]] = 1.0;
+        }
+        let result =
+            score_test_categorical(&one_col, &x, &y, &mu, &weights, &bread, &GaussianFamily);
+        assert_eq!(result.df, 1);
+        assert!(result.statistic >= 0.0);
+
+        let singular = Array2::<f64>::zeros((n, 1));
+        let result =
+            score_test_categorical(&singular, &x, &y, &mu, &weights, &bread, &GaussianFamily);
+        assert_eq!(result.df, 1);
+        assert_abs_diff_eq!(result.statistic, 0.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(result.pvalue, 1.0, epsilon = 1e-12);
+
+        let zero_mu = Array1::zeros(n);
+        let result =
+            score_test_categorical(&one_col, &x, &y, &zero_mu, &weights, &bread, &GammaFamily);
+        assert_eq!(result.df, 1);
+        assert_abs_diff_eq!(result.statistic, 0.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn test_invert_quadratic_and_chi_square_edge_contracts() {
+        let one = ndarray::arr2(&[[4.0]]);
+        let u = ndarray::arr1(&[2.0]);
+        assert_abs_diff_eq!(
+            invert_and_quadratic(&one, &u).expect("invertible 1x1"),
+            1.0,
+            epsilon = 1e-12
+        );
+
+        let singular_one = ndarray::arr2(&[[0.0]]);
+        assert!(invert_and_quadratic(&singular_one, &u).is_none());
+
+        let pivot = ndarray::arr2(&[[0.0, 1.0], [1.0, 2.0]]);
+        let u = ndarray::arr1(&[1.0, 2.0]);
+        assert_abs_diff_eq!(
+            invert_and_quadratic(&pivot, &u).expect("pivoted matrix is invertible"),
+            2.0,
+            epsilon = 1e-12
+        );
+
+        let singular = ndarray::arr2(&[[1.0, 2.0], [2.0, 4.0]]);
+        let u = ndarray::arr1(&[1.0, 1.0]);
+        assert!(invert_and_quadratic(&singular, &u).is_none());
+
+        assert_abs_diff_eq!(chi2_cdf_internal(-1.0, 1.0), 0.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(chi2_cdf_internal(1.0, 0.0), 0.0, epsilon = 1e-12);
     }
 }

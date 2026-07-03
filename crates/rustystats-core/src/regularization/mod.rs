@@ -676,6 +676,95 @@ mod tests {
     }
 
     #[test]
+    fn test_smooth_penalty_matrix_and_accessors() {
+        let default_smooth = SmoothPenalty::default();
+        assert!(default_smooth.is_empty());
+        assert_eq!(default_smooth.n_terms(), 0);
+
+        let mut smooth = SmoothPenalty::new();
+        assert!(smooth.is_empty());
+        assert_eq!(smooth.n_terms(), 0);
+
+        let penalty =
+            Array2::from_shape_vec((2, 2), vec![1.0, -1.0, -1.0, 1.0]).expect("penalty shape");
+        smooth.add_term(penalty, 2.0, 2..4);
+        let smooth = smooth.with_parametric_l2(0.25);
+
+        assert!(!smooth.is_empty());
+        assert_eq!(smooth.n_terms(), 1);
+
+        let combined = smooth.build_penalty_matrix(5, 2);
+        assert_eq!(combined[[0, 0]], 0.0);
+        assert_eq!(combined[[1, 1]], 0.25);
+        assert_eq!(combined[[2, 2]], 2.0);
+        assert_eq!(combined[[2, 3]], -2.0);
+        assert_eq!(combined[[3, 2]], -2.0);
+        assert_eq!(combined[[3, 3]], 2.0);
+        assert_eq!(combined[[4, 4]], 0.0);
+
+        let mut penalty = Penalty::smooth(smooth.clone());
+        assert!(penalty.is_smooth());
+        assert!(penalty.can_use_irls());
+        assert!(!penalty.requires_coordinate_descent());
+        assert_eq!(penalty.l1_penalty(), 0.0);
+        assert_eq!(penalty.l2_penalty(), 0.25);
+        assert_eq!(penalty.lambda(), 0.0);
+        assert_eq!(penalty.as_smooth().expect("smooth").n_terms(), 1);
+        assert_eq!(Penalty::None.l1_penalty(), 0.0);
+        assert_eq!(Penalty::ridge(0.2).lambda(), 0.2);
+        assert_eq!(Penalty::lasso(0.3).lambda(), 0.3);
+        assert_eq!(Penalty::elastic_net(0.4, 0.25).lambda(), 0.4);
+
+        penalty
+            .as_smooth_mut()
+            .expect("smooth mutable")
+            .add_term(Array2::eye(1), 0.5, 4..5);
+        assert_eq!(penalty.as_smooth().expect("smooth").n_terms(), 2);
+        assert!(Penalty::ridge(0.1).as_smooth().is_none());
+        assert!(Penalty::lasso(0.1).as_smooth_mut().is_none());
+    }
+
+    #[test]
+    fn test_penalty_equality_variants() {
+        assert_eq!(Penalty::None, Penalty::None);
+        assert_eq!(Penalty::ridge(0.1), Penalty::ridge(0.1));
+        assert_ne!(Penalty::ridge(0.1), Penalty::ridge(0.2));
+        assert_eq!(Penalty::lasso(0.3), Penalty::lasso(0.3));
+        assert_ne!(Penalty::lasso(0.3), Penalty::ridge(0.3));
+        assert_eq!(
+            Penalty::elastic_net(1.0, 0.25),
+            Penalty::elastic_net(1.0, 0.25)
+        );
+        assert_ne!(
+            Penalty::elastic_net(1.0, 0.25),
+            Penalty::elastic_net(1.0, 0.5)
+        );
+
+        let mut left = SmoothPenalty::new();
+        left.add_term(Array2::eye(1), 0.7, 1..2);
+        let mut right = SmoothPenalty::new();
+        right.add_term(Array2::from_elem((1, 1), 99.0), 0.7, 1..2);
+        assert_eq!(Penalty::smooth(left), Penalty::smooth(right));
+    }
+
+    #[test]
+    fn test_config_builders_cover_l1_and_weights() {
+        let none = RegularizationConfig::none();
+        assert!(none.penalty.is_none());
+
+        let lasso = RegularizationConfig::lasso(0.4)
+            .with_intercept(false)
+            .with_penalty_weights(vec![0.0, 1.5, 2.0]);
+        assert!(!lasso.fit_intercept);
+        assert_eq!(lasso.penalty.l1_penalty(), 0.4);
+        assert_eq!(lasso.penalty_weights.as_deref(), Some(&[0.0, 1.5, 2.0][..]));
+
+        let elastic = RegularizationConfig::elastic_net(2.0, 0.25);
+        assert_eq!(elastic.penalty.l1_penalty(), 0.5);
+        assert_eq!(elastic.penalty.l2_penalty(), 1.5);
+    }
+
+    #[test]
     fn test_standardization_coefficient_round_trip() {
         let std = Standardization::new(vec![0.0, 10.0, -2.0], vec![1.0, 5.0, 0.5])
             .expect("standardization should validate");
@@ -689,6 +778,62 @@ mod tests {
         for i in 0..beta.len() {
             assert!((beta[i] - beta_back[i]).abs() < 1e-12);
         }
+    }
+
+    #[test]
+    fn test_standardization_validation_and_matrix_transform() {
+        assert!(Standardization::new(vec![0.0, 1.0], vec![1.0]).is_err());
+        assert!(Standardization::new(vec![f64::NAN], vec![1.0]).is_err());
+        assert!(Standardization::new(vec![0.0], vec![0.0]).is_err());
+        assert!(Standardization::new(vec![0.0], vec![f64::INFINITY]).is_err());
+
+        let std = Standardization::new(vec![10.0, -2.0], vec![5.0, 0.5]).expect("standardization");
+        assert!(std.validate(3).is_err());
+
+        let x = Array2::from_shape_vec((2, 2), vec![10.0, -1.5, 15.0, -2.5]).expect("x shape");
+        let transformed = std.standardize_matrix(x.view()).expect("standardize");
+        assert!((transformed[[0, 0]] - 0.0).abs() < 1e-12);
+        assert!((transformed[[0, 1]] - 1.0).abs() < 1e-12);
+        assert!((transformed[[1, 0]] - 1.0).abs() < 1e-12);
+        assert!((transformed[[1, 1]] + 1.0).abs() < 1e-12);
+
+        let identity = Standardization::new(vec![0.0, 0.0], vec![1.0, 1.0]).expect("identity");
+        let unchanged = identity.standardize_matrix(x.view()).expect("standardize");
+        assert_eq!(unchanged, x);
+    }
+
+    #[test]
+    fn test_standardization_without_intercept_and_empty_coefficients() {
+        let std = Standardization::new(vec![2.0, -3.0], vec![4.0, 0.5]).expect("standardization");
+        let beta = Array1::from_vec(vec![0.5, -2.0]);
+        let beta_tilde = std
+            .to_standardized_coefficients(&beta, false)
+            .expect("to standardized");
+        assert_eq!(beta_tilde.to_vec(), vec![2.0, -1.0]);
+
+        let beta_back = std
+            .to_original_coefficients(&beta_tilde, false)
+            .expect("to original");
+        for i in 0..beta.len() {
+            assert!((beta[i] - beta_back[i]).abs() < 1e-12);
+        }
+
+        let empty = Standardization::new(vec![], vec![]).expect("empty standardization");
+        let beta = Array1::from_vec(vec![]);
+        assert_eq!(
+            empty
+                .to_standardized_coefficients(&beta, true)
+                .expect("empty to standardized")
+                .len(),
+            0
+        );
+        assert_eq!(
+            empty
+                .to_original_coefficients(&beta, true)
+                .expect("empty to original")
+                .len(),
+            0
+        );
     }
 
     #[test]
@@ -742,6 +887,17 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_standardization_covariance_rejects_bad_shapes() {
+        let std = Standardization::new(vec![0.0, 0.0], vec![1.0, 1.0])
+            .expect("standardization should validate");
+        let non_square = Array2::zeros((2, 3));
+        assert!(std.to_original_covariance(&non_square, true).is_err());
+
+        let wrong_size = Array2::eye(3);
+        assert!(std.to_original_covariance(&wrong_size, true).is_err());
     }
 
     #[test]

@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "scenario": "poisson_categorical_exposure_smoke",
+  "n": 20000,
+  "max_fit_seconds": 20.0,
+  "max_predict_seconds": 3.0,
+  "max_rss_delta_mb": 512.0,
+  "notes": "Conservative CI smoke budgets. Tighten only after collecting runner history."
+}

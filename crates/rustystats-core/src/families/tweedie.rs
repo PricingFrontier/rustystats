@@ -242,8 +242,23 @@ impl Family for TweedieFamily {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::ZERO_TOL;
     use approx::assert_abs_diff_eq;
     use ndarray::array;
+
+    fn tweedie_general_deviance(yi: f64, mui: f64, p: f64) -> f64 {
+        let yi_safe = yi.max(0.0);
+        let mui_safe = mui.max(crate::constants::MU_MIN_POSITIVE);
+        let y_at_zero = yi <= 0.0;
+        let term1 = if y_at_zero {
+            0.0
+        } else {
+            yi_safe.powf(2.0 - p) / ((1.0 - p) * (2.0 - p))
+        };
+        let term2 = yi_safe * mui_safe.powf(1.0 - p) / (1.0 - p);
+        let term3 = mui_safe.powf(2.0 - p) / (2.0 - p);
+        2.0 * (term1 - term2 + term3)
+    }
 
     #[test]
     fn test_tweedie_variance_power_1_5() {
@@ -301,6 +316,85 @@ mod tests {
     }
 
     #[test]
+    fn test_tweedie_special_case_deviance_formulas_and_tolerance_edges() {
+        let gaussian = TweedieFamily::new(0.0).expect("p=0 valid");
+        assert_abs_diff_eq!(gaussian.unit_deviance_at(3.0, 1.5), 2.25, epsilon = 0.0);
+
+        let near_gaussian = TweedieFamily::new(-ZERO_TOL / 2.0).expect("near p=0 valid");
+        assert_abs_diff_eq!(
+            near_gaussian.unit_deviance_at(2.5, 1.0),
+            2.25,
+            epsilon = 0.0
+        );
+
+        let gaussian_edge = TweedieFamily::new(-ZERO_TOL).expect("edge p=0 valid");
+        let gaussian_edge_actual = gaussian_edge.unit_deviance_at(2.5, 1.0);
+        let gaussian_edge_expected = tweedie_general_deviance(2.5, 1.0, -ZERO_TOL);
+        assert_abs_diff_eq!(
+            gaussian_edge_actual,
+            gaussian_edge_expected,
+            epsilon = 1e-12
+        );
+        assert!((gaussian_edge_actual - 2.25).abs() > 1e-12);
+
+        let poisson = TweedieFamily::new(1.0).expect("p=1 valid");
+        assert_abs_diff_eq!(poisson.unit_deviance_at(0.0, 2.25), 4.5, epsilon = 0.0);
+        let poisson_expected = 2.0 * (5.0_f64 * (5.0_f64 / 3.0).ln() - (5.0 - 3.0));
+        assert_abs_diff_eq!(
+            poisson.unit_deviance_at(5.0, 3.0),
+            poisson_expected,
+            epsilon = 1e-12
+        );
+
+        let near_poisson = TweedieFamily::new(1.0 + ZERO_TOL / 2.0).expect("near p=1 valid");
+        assert_abs_diff_eq!(near_poisson.unit_deviance_at(0.0, 2.25), 4.5, epsilon = 0.0);
+
+        let poisson_edge_power = 1.0 + ZERO_TOL;
+        let poisson_edge = TweedieFamily::new(poisson_edge_power).expect("edge p=1 valid");
+        let poisson_edge_actual = poisson_edge.unit_deviance_at(0.0, 2.25);
+        let poisson_edge_expected = tweedie_general_deviance(0.0, 2.25, poisson_edge_power);
+        assert_abs_diff_eq!(poisson_edge_actual, poisson_edge_expected, epsilon = 1e-12);
+        assert!((poisson_edge_actual - 4.5).abs() > 1e-12);
+
+        let gamma = TweedieFamily::new(2.0).expect("p=2 valid");
+        assert!(gamma.unit_deviance_at(0.0, 2.25).is_infinite());
+        let gamma_expected = 2.0 * ((3.0_f64 - 1.2) / 1.2 - (3.0_f64 / 1.2).ln());
+        assert_abs_diff_eq!(
+            gamma.unit_deviance_at(3.0, 1.2),
+            gamma_expected,
+            epsilon = 1e-12
+        );
+
+        let near_gamma = TweedieFamily::new(2.0 - ZERO_TOL / 2.0).expect("near p=2 valid");
+        assert!(near_gamma.unit_deviance_at(0.0, 2.25).is_infinite());
+
+        let gamma_edge_power = 2.0 - ZERO_TOL;
+        let gamma_edge = TweedieFamily::new(gamma_edge_power).expect("edge p=2 valid");
+        let gamma_edge_actual = gamma_edge.unit_deviance_at(0.0, 2.25);
+        assert!(gamma_edge_actual.is_finite());
+        assert_abs_diff_eq!(
+            gamma_edge_actual,
+            tweedie_general_deviance(0.0, 2.25, gamma_edge_power),
+            epsilon = 1e-8
+        );
+
+        let interior = TweedieFamily::new(1.5).expect("p=1.5 valid");
+        assert_abs_diff_eq!(
+            interior.unit_deviance_at(4.0, 1.3),
+            tweedie_general_deviance(4.0, 1.3, 1.5),
+            epsilon = 1e-12
+        );
+
+        let high_power = TweedieFamily::new(2.5).expect("p=2.5 valid");
+        assert!(high_power.unit_deviance_at(0.0, 2.25).is_infinite());
+        assert_abs_diff_eq!(
+            high_power.unit_deviance_at(4.0, 1.3),
+            tweedie_general_deviance(4.0, 1.3, 2.5),
+            epsilon = 1e-12
+        );
+    }
+
+    #[test]
     fn test_tweedie_deviance_perfect_fit() {
         let family = TweedieFamily::new(1.5).expect("test setup should be valid");
         let y = array![1.0, 2.0, 3.0];
@@ -328,14 +422,25 @@ mod tests {
     }
 
     #[test]
+    fn test_tweedie_reports_log_link_as_default() {
+        let family = TweedieFamily::new(1.5).expect("test setup should be valid");
+
+        assert!(family.is_log_link_default());
+    }
+
+    #[test]
     fn test_tweedie_initialize_handles_zeros() {
         let family = TweedieFamily::new(1.5).expect("test setup should be valid");
-        let y = array![0.0, 0.0, 5.0, 10.0];
+        let y = array![0.0, 0.5, 8.0];
 
         let mu = family.initialize_mu(&y);
 
-        // All μ should be positive
-        assert!(mu.iter().all(|&m| m > 0.0));
+        assert_eq!(mu.len(), y.len());
+        assert_abs_diff_eq!(
+            mu,
+            array![17.0 / 12.0, 5.0 / 3.0, 65.0 / 12.0],
+            epsilon = 1e-12
+        );
     }
 
     #[test]
@@ -416,5 +521,35 @@ mod tests {
     fn test_tweedie_insurance_default() {
         let family = TweedieFamily::default_insurance();
         assert_abs_diff_eq!(family.var_power, 1.5, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_tweedie_true_hessian_contracts() {
+        let cases = [
+            (0.0, false),
+            (1.0, false),
+            (1.0 + 1e-8, true),
+            (1.5, true),
+            (2.0 - 1e-8, true),
+            (2.0, false),
+            (2.5, false),
+            (-1.0, false),
+        ];
+
+        for (power, expected) in cases {
+            let family = TweedieFamily::new(power).expect("test setup should be valid");
+            assert_eq!(
+                family.use_true_hessian_weights(),
+                expected,
+                "p={power} should have observed-Hessian flag {expected}"
+            );
+        }
+
+        let family = TweedieFamily::new(1.5).expect("test setup should be valid");
+        assert_abs_diff_eq!(
+            family.true_hessian_weights(&array![1.0, 4.0, 9.0], &array![0.0, 0.0, 0.0]),
+            array![1.0, 2.0, 3.0],
+            epsilon = 1e-12
+        );
     }
 }

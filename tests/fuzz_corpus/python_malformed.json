@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "glm_missing_response_column",
+      "action": "glm_missing_response_column",
+      "expected_exception": ["ColumnNotFoundError", "ValidationError"]
+    },
+    {
+      "id": "glm_unknown_term_type",
+      "action": "glm_unknown_term_type",
+      "expected_exception": ["ValidationError", "DesignMatrixError", "ValueError"]
+    },
+    {
+      "id": "glm_weight_length_mismatch",
+      "action": "glm_weight_length_mismatch",
+      "expected_exception": ["ValidationError"]
+    },
+    {
+      "id": "glm_corrupt_serialized_model",
+      "action": "glm_corrupt_serialized_model",
+      "expected_exception": ["ValidationError", "UnpicklingError", "ValueError", "EOFError"]
+    },
+    {
+      "id": "onnx_unknown_mode",
+      "action": "onnx_unknown_mode",
+      "expected_exception": ["ValidationError"]
+    },
+    {
+      "id": "rate_table_unknown_format",
+      "action": "rate_table_unknown_format",
+      "expected_exception": ["ValidationError"]
+    },
+    {
+      "id": "pmml_rejects_input_transforms",
+      "action": "pmml_rejects_input_transforms",
+      "expected_exception": ["ValidationError"]
+    },
+    {
+      "id": "glm_negative_exposure",
+      "action": "glm_negative_exposure",
+      "expected_exception": ["ValidationError"]
+    },
+    {
+      "id": "glm_unknown_family",
+      "action": "glm_unknown_family",
+      "expected_exception": ["ValidationError"]
+    },
+    {
+      "id": "predict_missing_required_column",
+      "action": "predict_missing_required_column",
+      "expected_exception": ["ValidationError", "PredictionError", "ColumnNotFoundError"]
+    },
+    {
+      "id": "glm_invalid_expression_term",
+      "action": "glm_invalid_expression_term",
+      "expected_exception": ["ValidationError", "DesignMatrixError", "SyntaxError", "ValueError"]
+    }
+  ]
+}

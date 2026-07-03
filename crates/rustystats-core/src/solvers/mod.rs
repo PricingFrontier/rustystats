@@ -419,6 +419,134 @@ mod tests {
     use crate::links::{IdentityLink, LogLink, LogitLink};
     use approx::assert_abs_diff_eq;
     use ndarray::array;
+    use std::borrow::Cow;
+
+    struct ShortDerivativeLink;
+
+    impl Link for ShortDerivativeLink {
+        fn name(&self) -> &str {
+            "short-derivative"
+        }
+
+        fn link(&self, mu: &Array1<f64>) -> Array1<f64> {
+            mu.clone()
+        }
+
+        fn inverse(&self, eta: &Array1<f64>) -> Array1<f64> {
+            eta.clone()
+        }
+
+        fn derivative(&self, mu: &Array1<f64>) -> Array1<f64> {
+            Array1::ones(mu.len().saturating_sub(1))
+        }
+    }
+
+    struct ShortDerivativeLogLink;
+
+    impl Link for ShortDerivativeLogLink {
+        fn name(&self) -> &str {
+            "log"
+        }
+
+        fn link(&self, mu: &Array1<f64>) -> Array1<f64> {
+            mu.mapv(f64::ln)
+        }
+
+        fn inverse(&self, eta: &Array1<f64>) -> Array1<f64> {
+            eta.mapv(f64::exp)
+        }
+
+        fn derivative(&self, mu: &Array1<f64>) -> Array1<f64> {
+            Array1::ones(mu.len().saturating_sub(1))
+        }
+    }
+
+    struct BadLengthFamily {
+        true_hessian: bool,
+    }
+
+    impl Family for BadLengthFamily {
+        fn name(&self) -> &str {
+            "BadLength"
+        }
+
+        fn variance<'a>(&self, mu: &'a Array1<f64>) -> Cow<'a, Array1<f64>> {
+            Cow::Owned(Array1::ones(mu.len().saturating_sub(1)))
+        }
+
+        fn unit_deviance(&self, y: &Array1<f64>, mu: &Array1<f64>) -> Array1<f64> {
+            (y - mu).mapv(|v| v * v)
+        }
+
+        fn unit_deviance_at(&self, yi: f64, mui: f64) -> f64 {
+            let residual = yi - mui;
+            residual * residual
+        }
+
+        fn default_link(&self) -> Box<dyn Link> {
+            Box::new(IdentityLink)
+        }
+
+        fn initialize_mu(&self, y: &Array1<f64>) -> Array1<f64> {
+            y.clone()
+        }
+
+        fn is_valid_mu(&self, mu: &Array1<f64>) -> bool {
+            mu.iter().all(|v| v.is_finite())
+        }
+
+        fn use_true_hessian_weights(&self) -> bool {
+            self.true_hessian
+        }
+
+        fn true_hessian_weights(&self, mu: &Array1<f64>, _y: &Array1<f64>) -> Array1<f64> {
+            Array1::ones(mu.len().saturating_sub(1))
+        }
+    }
+
+    fn expect_irls_error(result: Result<IRLSWeightResult>, message: &str) -> RustyStatsError {
+        match result {
+            Ok(_) => panic!("{message}"),
+            Err(err) => err,
+        }
+    }
+
+    #[test]
+    fn custom_error_fixture_traits_are_self_consistent() {
+        let link = ShortDerivativeLink;
+        let mu = array![1.0, 2.0, 3.0];
+        assert_eq!(link.name(), "short-derivative");
+        assert_abs_diff_eq!(link.link(&mu), mu, epsilon = 1e-12);
+        assert_abs_diff_eq!(link.inverse(&mu), mu, epsilon = 1e-12);
+        assert_eq!(link.derivative(&mu).len(), 2);
+
+        let family = BadLengthFamily { true_hessian: true };
+        let y = array![1.0, 2.0, 4.0];
+        assert_eq!(family.name(), "BadLength");
+        assert_abs_diff_eq!(
+            family.unit_deviance(&y, &mu),
+            array![0.0, 0.0, 1.0],
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(family.unit_deviance_at(4.0, 3.0), 1.0, epsilon = 1e-12);
+        assert_eq!(family.variance(&mu).len(), 2);
+        assert_eq!(family.true_hessian_weights(&mu, &y).len(), 2);
+        assert!(family.use_true_hessian_weights());
+        assert!(family.is_valid_mu(&mu));
+        assert_abs_diff_eq!(family.initialize_mu(&y), y, epsilon = 1e-12);
+        assert_eq!(family.default_link().name(), "identity");
+    }
+
+    #[test]
+    #[should_panic(expected = "successful result should panic in error helper")]
+    fn expect_irls_error_panics_when_result_is_ok() {
+        let result = IRLSWeightResult {
+            irls_weights: array![1.0],
+            combined_weights: array![1.0],
+            working_response: array![0.0],
+        };
+        let _ = expect_irls_error(Ok(result), "successful result should panic in error helper");
+    }
 
     // ---------------------------------------------------------------------
     // Per-family analytic checks at the canonical link
@@ -670,6 +798,122 @@ mod tests {
     }
 
     #[test]
+    fn generic_branch_combined_weights_are_prior_times_irls() {
+        let y = array![1.0, 3.0, 4.0];
+        let eta = array![1.5, 2.5, 5.0];
+        let offset = Array1::zeros(3);
+        let prior = array![2.0, 0.25, 4.0];
+        let fam = GaussianFamily;
+        let link = IdentityLink;
+        let mu = link.inverse(&eta);
+
+        let r = compute_irls_weights(&y, &mu, &eta, &offset, &prior, &fam, &link, MIN_IRLS_WEIGHT)
+            .expect("valid Gaussian identity IRLS inputs");
+
+        assert_abs_diff_eq!(r.irls_weights, array![1.0, 1.0, 1.0], epsilon = 1e-12);
+        assert_abs_diff_eq!(r.combined_weights, prior, epsilon = 1e-12);
+        assert_abs_diff_eq!(r.working_response, y, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn generic_branch_combined_weights_use_irls_weight_not_its_inverse() {
+        let n = rayon::current_num_threads().saturating_mul(12).max(24);
+        let y: Array1<f64> = (0..n).map(|i| 1.0 + (i % 5) as f64).collect();
+        let mu: Array1<f64> = (0..n).map(|i| 1.25 + i as f64 / n as f64).collect();
+        let eta = mu.clone();
+        let offset = Array1::zeros(n);
+        let prior: Array1<f64> = (0..n).map(|i| 0.5 + (i % 7) as f64 / 3.0).collect();
+
+        let r = compute_irls_weights(
+            &y,
+            &mu,
+            &eta,
+            &offset,
+            &prior,
+            &PoissonFamily,
+            &IdentityLink,
+            MIN_IRLS_WEIGHT,
+        )
+        .expect("valid Poisson identity IRLS inputs");
+
+        for i in [0, 1, n / 3, n / 2, n - 2, n - 1] {
+            let expected_iw = 1.0 / mu[i];
+            assert_abs_diff_eq!(r.irls_weights[i], expected_iw, epsilon = 1e-12);
+            assert_abs_diff_eq!(
+                r.combined_weights[i],
+                prior[i] * expected_iw,
+                epsilon = 1e-12
+            );
+        }
+    }
+
+    #[test]
+    fn poisson_log_fast_path_does_not_consult_link_derivative() {
+        let y = array![0.0, 2.0, 5.0];
+        let eta = array![0.5_f64.ln(), 2.0_f64.ln(), 4.0_f64.ln()];
+        let offset = array![0.1, -0.2, 0.3];
+        let prior = array![1.0, 0.5, 3.0];
+        let link = ShortDerivativeLogLink;
+        let mu = link.inverse(&eta);
+
+        let r = compute_irls_weights(
+            &y,
+            &mu,
+            &eta,
+            &offset,
+            &prior,
+            &PoissonFamily,
+            &link,
+            MIN_IRLS_WEIGHT,
+        )
+        .expect("Poisson log fast path should use the analytic derivative");
+
+        assert_abs_diff_eq!(r.irls_weights, mu, epsilon = 1e-12);
+        assert_abs_diff_eq!(r.combined_weights, &prior * &mu, epsilon = 1e-12);
+        assert_abs_diff_eq!(
+            r.working_response,
+            array![
+                (eta[0] - offset[0]) + (y[0] - mu[0]) / mu[0],
+                (eta[1] - offset[1]) + (y[1] - mu[1]) / mu[1],
+                (eta[2] - offset[2]) + (y[2] - mu[2]) / mu[2],
+            ],
+            epsilon = 1e-12
+        );
+    }
+
+    #[test]
+    fn poisson_log_fast_path_indexes_each_parallel_chunk_correctly() {
+        let n = rayon::current_num_threads().saturating_mul(12).max(24);
+        let y: Array1<f64> = (0..n).map(|i| (i % 11) as f64).collect();
+        let mu: Array1<f64> = (0..n).map(|i| 0.75 + i as f64 / 10.0).collect();
+        let eta = mu.mapv(f64::ln);
+        let offset: Array1<f64> = (0..n).map(|i| (i % 3) as f64 * 0.05).collect();
+        let prior: Array1<f64> = (0..n).map(|i| 1.0 + (i % 5) as f64 * 0.25).collect();
+
+        let r = compute_irls_weights(
+            &y,
+            &mu,
+            &eta,
+            &offset,
+            &prior,
+            &PoissonFamily,
+            &LogLink,
+            MIN_IRLS_WEIGHT,
+        )
+        .expect("valid Poisson log IRLS inputs");
+
+        for i in [0, 1, n / 4, n / 2, n - 3, n - 1] {
+            assert_abs_diff_eq!(r.irls_weights[i], mu[i], epsilon = 1e-12);
+            assert_abs_diff_eq!(r.combined_weights[i], prior[i] * mu[i], epsilon = 1e-12);
+            assert_abs_diff_eq!(
+                r.working_response[i],
+                (eta[i] - offset[i]) + (y[i] - mu[i]) / mu[i],
+                epsilon = 1e-12
+            );
+        }
+    }
+
+    #[test]
     fn compute_irls_weights_rejects_mismatched_lengths() {
         let y = array![1.0, 2.0, 3.0];
         let mu = array![1.0, 2.0];
@@ -707,6 +951,175 @@ mod tests {
         }
     }
 
+    #[test]
+    fn validation_helpers_default_and_reject_bad_inputs() {
+        let y = array![1.0, 2.0, 3.0];
+        let x = ndarray::Array2::from_shape_vec((3, 2), vec![1.0, 0.0, 1.0, 1.0, 1.0, 2.0])
+            .expect("test setup should be valid");
+        let offset = array![0.1, 0.2, 0.3];
+        let weights = array![1.0, 0.5, 2.0];
+
+        let valid = validate_glm_inputs(&y, x.view(), Some(&offset), Some(&weights))
+            .expect("valid GLM inputs should pass");
+        assert_abs_diff_eq!(valid.offset, offset, epsilon = 1e-12);
+        assert_abs_diff_eq!(valid.prior_weights, weights, epsilon = 1e-12);
+
+        let defaulted = validate_glm_inputs(&y, x.view(), None, None)
+            .expect("missing offset/weights should default");
+        assert_abs_diff_eq!(defaulted.offset, Array1::zeros(3), epsilon = 1e-12);
+        assert_abs_diff_eq!(defaulted.prior_weights, Array1::ones(3), epsilon = 1e-12);
+
+        let bad_rows = ndarray::Array2::ones((2, 2));
+        assert!(matches!(
+            validate_glm_inputs(&y, bad_rows.view(), None, None),
+            Err(RustyStatsError::DimensionMismatch { .. })
+        ));
+        let empty_y = Array1::<f64>::zeros(0);
+        let empty_x = ndarray::Array2::<f64>::zeros((0, 1));
+        assert!(matches!(
+            validate_glm_inputs(&empty_y, empty_x.view(), None, None),
+            Err(RustyStatsError::EmptyInput(_))
+        ));
+        let no_cols = ndarray::Array2::<f64>::zeros((3, 0));
+        assert!(matches!(
+            validate_glm_inputs(&y, no_cols.view(), None, None),
+            Err(RustyStatsError::EmptyInput(_))
+        ));
+
+        let short = array![1.0, 2.0];
+        assert!(matches!(
+            validate_glm_inputs(&y, x.view(), Some(&short), None),
+            Err(RustyStatsError::DimensionMismatch { .. })
+        ));
+        assert!(matches!(
+            validate_glm_inputs(&y, x.view(), None, Some(&short)),
+            Err(RustyStatsError::DimensionMismatch { .. })
+        ));
+        let negative_weights = array![1.0, -0.1, 1.0];
+        assert!(matches!(
+            validate_glm_inputs(&y, x.view(), None, Some(&negative_weights)),
+            Err(RustyStatsError::InvalidValue(_))
+        ));
+        let zero_weights = array![1.0, 0.0, 2.0];
+        let with_zero = validate_glm_inputs(&y, x.view(), None, Some(&zero_weights))
+            .expect("zero prior weights are valid and mean zero contribution");
+        assert_abs_diff_eq!(with_zero.prior_weights, zero_weights, epsilon = 1e-12);
+
+        let eta = array![0.0, 0.1, 0.2];
+        let residual_valid = validate_residual_inputs(&y, &eta, Some(&offset), Some(&weights))
+            .expect("valid residual inputs should pass");
+        assert_abs_diff_eq!(residual_valid.offset, offset, epsilon = 1e-12);
+        assert_abs_diff_eq!(residual_valid.prior_weights, weights, epsilon = 1e-12);
+        assert!(matches!(
+            validate_residual_inputs(&y, &short, None, None),
+            Err(RustyStatsError::DimensionMismatch { .. })
+        ));
+        assert!(matches!(
+            validate_residual_inputs(&empty_y, &empty_y, None, None),
+            Err(RustyStatsError::EmptyInput(_))
+        ));
+    }
+
+    #[test]
+    fn compute_irls_weights_rejects_all_row_shape_mismatches_and_bad_trait_lengths() {
+        let y = array![1.0, 2.0, 3.0];
+        let mu = array![1.0, 2.0, 3.0];
+        let eta = array![0.0, 2.0_f64.ln(), 3.0_f64.ln()];
+        let offset = Array1::zeros(3);
+        let prior = Array1::ones(3);
+        let short = array![1.0, 2.0];
+        let fam = GaussianFamily;
+        let link = IdentityLink;
+
+        for (bad_eta, bad_offset, bad_prior, expected_context) in [
+            (Some(&short), None, None, "eta length vs y length"),
+            (None, Some(&short), None, "offset length vs y length"),
+            (None, None, Some(&short), "prior_weights length vs y length"),
+        ] {
+            let err = expect_irls_error(
+                compute_irls_weights(
+                    &y,
+                    &mu,
+                    bad_eta.unwrap_or(&eta),
+                    bad_offset.unwrap_or(&offset),
+                    bad_prior.unwrap_or(&prior),
+                    &fam,
+                    &link,
+                    MIN_IRLS_WEIGHT,
+                ),
+                "bad row length should error",
+            );
+            match err {
+                RustyStatsError::DimensionMismatch { context, .. } => {
+                    assert_eq!(context, expected_context);
+                }
+                other => panic!("expected DimensionMismatch, got {other:?}"),
+            }
+        }
+
+        let err = expect_irls_error(
+            compute_irls_weights(
+                &y,
+                &mu,
+                &eta,
+                &offset,
+                &prior,
+                &fam,
+                &ShortDerivativeLink,
+                MIN_IRLS_WEIGHT,
+            ),
+            "short derivative should error",
+        );
+        match err {
+            RustyStatsError::DimensionMismatch { context, .. } => {
+                assert_eq!(context, "link derivative length vs y length");
+            }
+            other => panic!("expected DimensionMismatch, got {other:?}"),
+        }
+
+        let err = expect_irls_error(
+            compute_irls_weights(
+                &y,
+                &mu,
+                &eta,
+                &offset,
+                &prior,
+                &BadLengthFamily {
+                    true_hessian: false,
+                },
+                &link,
+                MIN_IRLS_WEIGHT,
+            ),
+            "short variance should error",
+        );
+        match err {
+            RustyStatsError::DimensionMismatch { context, .. } => {
+                assert_eq!(context, "variance length vs y length");
+            }
+            other => panic!("expected DimensionMismatch, got {other:?}"),
+        }
+
+        let err = expect_irls_error(
+            compute_irls_weights(
+                &y,
+                &mu,
+                &eta,
+                &offset,
+                &prior,
+                &BadLengthFamily { true_hessian: true },
+                &LogLink,
+                MIN_IRLS_WEIGHT,
+            ),
+            "short true-Hessian weights should error",
+        );
+        match err {
+            RustyStatsError::DimensionMismatch { context, .. } => {
+                assert_eq!(context, "true Hessian weights length vs y length");
+            }
+            other => panic!("expected DimensionMismatch, got {other:?}"),
+        }
+    }
+
     // ---------------------------------------------------------------------
     // Default link helper
     // ---------------------------------------------------------------------
@@ -722,5 +1135,26 @@ mod tests {
             "initialize_mu_safe must return strictly positive μ for Poisson, got {:?}",
             mu
         );
+    }
+
+    #[test]
+    fn initialize_mu_safe_uses_halfway_average_before_family_clamp() {
+        let y = array![0.0, 2.0, 4.0];
+        let mu = initialize_mu_safe(&y, &GaussianFamily);
+        assert_abs_diff_eq!(mu, array![1.0, 2.0, 3.0], epsilon = 1e-12);
+
+        let all_zero = array![0.0, 0.0];
+        let poisson_mu = initialize_mu_safe(&all_zero, &PoissonFamily);
+        assert!(poisson_mu.iter().all(|&v| v > 0.0));
+        assert_abs_diff_eq!(poisson_mu[0], poisson_mu[1], epsilon = 1e-12);
+    }
+
+    #[test]
+    fn irls_chunk_size_scales_above_one_for_large_inputs() {
+        let threads = rayon::current_num_threads().saturating_mul(4).max(1);
+        assert_eq!(irls_chunk_size(0), 1);
+        assert_eq!(irls_chunk_size(threads), 1);
+        assert_eq!(irls_chunk_size(threads + 1), 2);
+        assert_eq!(irls_chunk_size(2 * threads + 1), 3);
     }
 }

@@ -201,6 +201,31 @@ class TestGammaFamily:
         assert link.name() == "log"
 
 
+class TestQuasiAndNegativeBinomialFamilies:
+    """Tests for overdispersion-oriented family constructors."""
+
+    def test_quasipoisson_matches_poisson_variance_and_log_link(self):
+        family = rs.families.QuasiPoisson()
+        mu = np.array([0.5, 2.0, 10.0])
+
+        np.testing.assert_array_almost_equal(family.variance(mu), mu)
+        assert family.default_link().name() == "log"
+
+    def test_quasibinomial_matches_binomial_variance_and_logit_link(self):
+        family = rs.families.QuasiBinomial()
+        mu = np.array([0.2, 0.5, 0.8])
+
+        np.testing.assert_array_almost_equal(family.variance(mu), mu * (1.0 - mu))
+        assert family.default_link().name() == "logit"
+
+    def test_negative_binomial_uses_nb2_variance_and_log_link(self):
+        family = rs.families.NegativeBinomial(theta=2.0)
+        mu = np.array([1.0, 2.0, 4.0])
+
+        np.testing.assert_array_almost_equal(family.variance(mu), mu + (mu**2) / 2.0)
+        assert family.default_link().name() == "log"
+
+
 class TestFamilyComparisons:
     """
     Cross-family comparison tests.

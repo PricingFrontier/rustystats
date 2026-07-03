@@ -173,6 +173,12 @@ mod tests {
     use ndarray::array;
 
     #[test]
+    fn test_binomial_name() {
+        let family = BinomialFamily;
+        assert_eq!(family.name(), "Binomial");
+    }
+
+    #[test]
     fn test_binomial_variance() {
         let family = BinomialFamily;
         let mu = array![0.2, 0.5, 0.8];
@@ -244,6 +250,47 @@ mod tests {
     }
 
     #[test]
+    fn test_binomial_unit_deviance_fractional_formula_and_boundaries() {
+        let family = BinomialFamily;
+
+        let y = 0.25_f64;
+        let mu = 0.6_f64;
+        let expected = 2.0 * (y * (y / mu).ln() + (1.0 - y) * (((1.0 - y) / (1.0 - mu)).ln()));
+        assert_abs_diff_eq!(family.unit_deviance_at(y, mu), expected, epsilon = 1e-14);
+
+        let upper_y = 1.0_f64 - 5e-16;
+        let upper_expected = -2.0 * 0.2_f64.ln();
+        assert_abs_diff_eq!(
+            family.unit_deviance_at(upper_y, 0.2),
+            upper_expected,
+            epsilon = 0.0
+        );
+
+        let upper_boundary_y = 1.0_f64 - 1e-15;
+        assert_abs_diff_eq!(
+            family.unit_deviance_at(upper_boundary_y, 0.2),
+            upper_expected,
+            epsilon = 0.0
+        );
+
+        let lower_y = 5e-16_f64;
+        let lower_mu = 0.7_f64;
+        let lower_expected = -2.0 * (-lower_mu).ln_1p().max(-1e10);
+        assert_abs_diff_eq!(
+            family.unit_deviance_at(lower_y, lower_mu),
+            lower_expected,
+            epsilon = 1e-12
+        );
+
+        let clamped_upper_mu = 1.0_f64 - 1e-15;
+        let clamped_expected = -2.0 * (-clamped_upper_mu).ln_1p().max(-1e10);
+        let clamped_actual = family.unit_deviance_at(0.0, 1.0);
+        assert_abs_diff_eq!(clamped_actual, clamped_expected, epsilon = 1e-12);
+        assert!(clamped_actual.is_finite());
+        assert!(clamped_actual < 100.0);
+    }
+
+    #[test]
     fn test_binomial_default_link() {
         let family = BinomialFamily;
         let link = family.default_link();
@@ -280,5 +327,22 @@ mod tests {
         // Outside [0,1] is NOT valid
         assert!(!family.is_valid_mu(&array![-0.1, 0.5]));
         assert!(!family.is_valid_mu(&array![0.5, 1.1]));
+    }
+
+    #[test]
+    fn test_binomial_clamp_fixed_dispersion_and_likelihood_contracts() {
+        let family = BinomialFamily;
+        let clamped = family.clamp_mu(&array![-1.0, 0.4, 2.0]);
+        assert!(clamped[0] > 0.0);
+        assert_eq!(clamped[1], 0.4);
+        assert!(clamped[2] < 1.0);
+        assert!(family.fixed_dispersion());
+
+        let y = array![0.0, 1.0, 1.0, 0.0];
+        let mu = array![0.1, 0.8, 0.6, 0.2];
+        let weights = array![1.0, 2.0, 0.5, 1.5];
+        let ll = family.log_likelihood(&y, &mu, 99.0, Some(&weights));
+        let expected = crate::diagnostics::log_likelihood_binomial(&y, &mu, Some(&weights));
+        assert_abs_diff_eq!(ll, expected, epsilon = 1e-12);
     }
 }

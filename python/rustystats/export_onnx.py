@@ -733,6 +733,9 @@ def to_onnx(
         Raw ONNX protobuf bytes.  Can be loaded with
         ``onnxruntime.InferenceSession(onnx_bytes)`` or written to disk.
     """
+    if mode not in ("scoring", "full"):
+        raise ValidationError("mode must be 'scoring' or 'full'.")
+
     if model.__class__.__name__ == "MultinomialModel":
         onnx_bytes = _build_multinomial_scoring_model(model) if mode == "scoring" else None
         if onnx_bytes is None:

@@ -913,6 +913,65 @@ mod tests {
         assert_abs_diff_eq!(result, expected, epsilon = 1e-10);
     }
 
+    #[test]
+    fn test_compute_family_loss_dispatch_aliases_and_unknown_family() {
+        let y = array![0.0, 1.0, 2.0];
+        let mu = array![0.5, 1.2, 2.4];
+        let weights = array![0.5, 1.0, 2.0];
+
+        assert_abs_diff_eq!(
+            compute_family_loss("normal", &y, &mu, Some(&weights), None, None)
+                .expect("normal should alias Gaussian/MSE"),
+            mse(&y, &mu, Some(&weights)),
+            epsilon = 1e-12
+        );
+
+        for alias in [
+            "negbinomial",
+            "negbin",
+            "negative_binomial",
+            "negative-binomial",
+            "neg_binomial",
+            "neg-binomial",
+        ] {
+            assert_abs_diff_eq!(
+                compute_family_loss(alias, &y, &mu, Some(&weights), None, Some(2.5))
+                    .expect("negative-binomial alias should dispatch"),
+                negbinomial_deviance_loss(&y, &mu, 2.5, Some(&weights)),
+                epsilon = 1e-12
+            );
+        }
+
+        let err = compute_family_loss("mystery_family", &y, &mu, None, None, None)
+            .expect_err("unknown family should be rejected");
+        assert!(err.contains("Unknown family"));
+    }
+
+    #[test]
+    fn test_basic_loss_zero_weight_edges_and_tweedie_reference_branches() {
+        let y = array![0.0, 1.0, 3.0];
+        let mu = array![0.5, 1.5, 2.0];
+        let zero_weights = array![0.0, 0.0, 0.0];
+
+        assert_eq!(mae(&y, &mu, Some(&zero_weights)), 0.0);
+        assert_abs_diff_eq!(
+            tweedie_unit_deviance(2.0, 1.5, 0.0),
+            (2.0_f64 - 1.5).powi(2),
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(tweedie_unit_deviance(0.0, 1.5, 1.0), 3.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(
+            tweedie_unit_deviance(2.0, 1.5, 1.0),
+            2.0 * (2.0_f64 * (2.0_f64 / 1.5_f64).ln() - 0.5_f64),
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(
+            tweedie_unit_deviance(2.0, 1.5, 2.0),
+            2.0 * ((2.0_f64 - 1.5_f64) / 1.5_f64 - (2.0_f64 / 1.5_f64).ln()),
+            epsilon = 1e-12
+        );
+    }
+
     // -----------------------------------------------------------------
     // Bit-exact equivalence vs naive Vec-then-sum reference
     // -----------------------------------------------------------------

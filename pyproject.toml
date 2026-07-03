@@ -41,19 +41,25 @@ keywords = ["statistics", "glm", "actuarial", "regression", "modeling"]
 
 # Python package dependencies (minimal for users)
 dependencies = [
-    "numpy>=1.20",
+    "numpy>=1.20,<2.4",
     "polars>=1.0",
 ]
 
 [project.optional-dependencies]
 # Extra dependencies for development/testing
 dev = [
+    "coverage>=7.6",
+    "glum>=3.1.2",
+    "hypothesis>=6.100",
     "pytest>=7.0",
+    "pytest-cov>=5.0",
     "statsmodels>=0.14",  # For comparison testing
     "maturin>=1.4",
     "jupyter>=1.0",
     "ipykernel>=6.31.0",  # For Jupyter notebook support
+    "onnxruntime>=1.24.3; python_version >= '3.11'",
     "pyarrow>=14.0",
+    "pypmml>=1.5.8",
     "psutil>=5.9",  # For memory benchmarking
 ]
 
@@ -86,9 +92,38 @@ python_files = ["test_*.py"]
 python_functions = ["test_*"]
 # Show extra test summary info
 addopts = "-v --tb=short"
+filterwarnings = [
+    "error",
+]
 markers = [
     "slow: marks tests as slow integration coverage",
+    "assurance: high-assurance checks that exercise export/runtime/parity contracts",
+    "property: property-based tests with generated input families",
 ]
+
+[tool.coverage.run]
+branch = true
+source = ["rustystats"]
+
+[tool.coverage.report]
+precision = 2
+show_missing = true
+skip_covered = true
+
+[tool.mutmut]
+source_paths = ["python/rustystats"]
+only_mutate = [
+    "python/rustystats/validation.py",
+    "python/rustystats/formula.py",
+    "python/rustystats/export_onnx.py",
+    "python/rustystats/export_pmml.py",
+    "python/rustystats/diagnostics/*",
+]
+pytest_add_cli_args = ["--quiet"]
+pytest_add_cli_args_test_selection = ["tests/python"]
+timeout_multiplier = 20.0
+timeout_constant = 5.0
+use_setproctitle = false
 
 # =============================================================================
 # Ruff Configuration (Python linter + formatter)
@@ -143,16 +178,19 @@ ignore_missing_imports = true
 
 [dependency-groups]
 dev = [
+    "coverage>=7.6",
     "glum>=3.1.2",
+    "hypothesis>=6.100",
     "ipykernel>=6.31.0",
     "matplotlib>=3.10.8",
     "maturin>=1.10.2",
     "mkdocs>=1.6.1",
     "mkdocs-material>=9.7.1",
-    "numpy>=2.0.2",
-    "onnxruntime>=1.24.3",
+    "numpy>=2.0.2,<2.4",
+    "onnxruntime>=1.24.3; python_version >= '3.11'",
     "pre-commit>=3.5",
     "pymdown-extensions>=10.19.1",
     "pypmml>=1.5.8",
-    "pytest>=8.4.2"
+    "pytest>=8.4.2",
+    "pytest-cov>=5.0"
 ]

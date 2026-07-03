@@ -966,15 +966,6 @@ class _FactorDiagnosticsComputer:
             link = result.link if hasattr(result, "link") else None
             is_log_link = link in ("log", "Log")
 
-            term_type = feat.term_type
-
-            # B3 fix: relativity = exp(β) is only meaningful for SINGLE-coefficient
-            # terms whose log-link transformation maps directly to a multiplicative
-            # factor. For multi-coefficient or composite terms (spline / expression /
-            # interaction) the per-coefficient exp(β) has no standalone meaning,
-            # so we suppress it.
-            relativity_meaningful = term_type in ("linear", "te", "categorical", "other")
-
             coefficients: list[FactorCoefficient] = []
             for i in feat.indices:
                 fn = feature_names[i] if i < len(feature_names) else self.feature_names[i]
@@ -998,6 +989,13 @@ class _FactorDiagnosticsComputer:
                     )
 
                 rel: float | None
+                # B3 fix: relativity = exp(β) is only meaningful for coefficient
+                # terms whose log-link transformation maps directly to a
+                # multiplicative factor. Decide per coefficient rather than per
+                # factor so a mixed linear+spline factor does not attach
+                # meaningless relativities to spline basis columns.
+                _matched, coef_kind = _match_factor(fn, name)
+                relativity_meaningful = coef_kind in ("linear", "te", "categorical", "other")
                 if is_log_link and relativity_meaningful:
                     rel = float(np.exp(coef))
                 else:

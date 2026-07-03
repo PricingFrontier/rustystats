@@ -662,7 +662,7 @@ class TestTEInteractionWithExposure:
             }
         )
 
-        # Fit with exposure as offset - auto-logs for Poisson
+        # Fit with exposure as raw exposure - auto-logs for Poisson
         # Internally extracts raw exposure for TE encoding
         result = rs.glm_dict(
             response="y",
@@ -676,7 +676,7 @@ class TestTEInteractionWithExposure:
             ],
             data=train_data,
             family="poisson",
-            offset="exposure",
+            exposure="exposure",
         ).fit()
 
         assert result.converged
@@ -795,7 +795,7 @@ class TestTEInteractionWithExposure:
             ],
             data=train_data,
             family="poisson",
-            offset="exposure",
+            exposure="exposure",
         ).fit()
 
         # Predict on new data

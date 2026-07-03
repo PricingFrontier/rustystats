@@ -212,6 +212,9 @@ mod tests {
     fn test_negative_binomial_name() {
         let family = NegativeBinomialFamily::new(1.0).expect("test setup should be valid");
         assert_eq!(family.name(), "NegativeBinomial");
+
+        let default = NegativeBinomialFamily::default();
+        assert_eq!(default.theta, 1.0);
     }
 
     #[test]
@@ -294,10 +297,35 @@ mod tests {
     }
 
     #[test]
+    fn test_negative_binomial_zero_deviance_uses_theta_scale() {
+        let family = NegativeBinomialFamily::new(2.5).expect("test setup should be valid");
+        let y = 0.0_f64;
+        let mu = 1.7_f64;
+        let theta = family.theta;
+
+        let expected = 2.0 * theta * ((mu + theta) / theta).ln();
+        assert_abs_diff_eq!(family.unit_deviance_at(y, mu), expected, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn test_negative_binomial_positive_deviance_formula() {
+        let family = NegativeBinomialFamily::new(2.5).expect("test setup should be valid");
+        let y = 4.0_f64;
+        let mu = 1.7_f64;
+        let theta = family.theta;
+
+        let expected =
+            2.0 * (y * (y / mu).ln() - (y + theta) * (((y + theta) / (mu + theta)).ln()));
+        assert_abs_diff_eq!(family.unit_deviance_at(y, mu), expected, epsilon = 1e-12);
+    }
+
+    #[test]
     fn test_negative_binomial_default_link() {
         let family = NegativeBinomialFamily::new(1.0).expect("test setup should be valid");
         let link = family.default_link();
         assert_eq!(link.name(), "log");
+        assert!(family.is_log_link_default());
+        assert!(!family.fixed_dispersion());
     }
 
     #[test]
@@ -307,8 +335,8 @@ mod tests {
 
         let mu_init = family.initialize_mu(&y);
 
-        // All μ should be positive
-        assert!(mu_init.iter().all(|&x| x > 0.0));
+        assert_eq!(mu_init.len(), y.len());
+        assert_abs_diff_eq!(mu_init, array![0.1, 0.1, 1.1, 5.1], epsilon = 1e-12);
     }
 
     #[test]
@@ -318,6 +346,22 @@ mod tests {
         assert!(family.is_valid_mu(&array![0.1, 1.0, 10.0]));
         assert!(!family.is_valid_mu(&array![0.0, 1.0])); // Zero invalid
         assert!(!family.is_valid_mu(&array![-1.0, 1.0])); // Negative invalid
+    }
+
+    #[test]
+    fn test_negative_binomial_clamp_and_log_likelihood_contracts() {
+        let family = NegativeBinomialFamily::new(2.0).expect("test setup should be valid");
+        let clamped = family.clamp_mu(&array![0.0, -1.0, 3.0]);
+        assert!(clamped[0] > 0.0);
+        assert!(clamped[1] > 0.0);
+        assert_eq!(clamped[2], 3.0);
+
+        let y = array![0.0, 2.0, 5.0];
+        let mu = array![0.4, 1.7, 4.8];
+        let weights = array![1.0, 0.5, 2.0];
+        let ll = family.log_likelihood(&y, &mu, 99.0, Some(&weights));
+        let expected = crate::diagnostics::nb_loglikelihood(&y, &mu, family.theta, Some(&weights));
+        assert_abs_diff_eq!(ll, expected, epsilon = 1e-12);
     }
 
     #[test]

@@ -46,8 +46,6 @@
 
 use ndarray::Array2;
 
-use ndarray::Axis;
-
 // =============================================================================
 // DIFFERENCE MATRIX
 // =============================================================================
@@ -103,13 +101,8 @@ pub fn difference_matrix(k: usize, order: usize) -> Array2<f64> {
     let d1 = difference_matrix(k, 1);
     let d_prev = difference_matrix(k - 1, order - 1);
 
-    // Matrix multiplication: d_prev @ d1
-    d_prev.dot(
-        &d1.slice(ndarray::s![.., ..k - 1])
-            .to_owned()
-            .insert_axis(Axis(1))
-            .remove_axis(Axis(1)),
-    )
+    // Matrix multiplication: D_m(k) = D_{m-1}(k-1) @ D_1(k)
+    d_prev.dot(&d1)
 }
 
 /// Optimized: Build order-2 difference matrix directly (most common case)
@@ -533,6 +526,15 @@ mod tests {
 
     #[test]
     fn test_difference_matrix_order2() {
+        let too_few = difference_matrix_order2(2);
+        assert_eq!(too_few.shape(), &[0, 2]);
+
+        let minimal = difference_matrix_order2(3);
+        assert_eq!(minimal.shape(), &[1, 3]);
+        assert_abs_diff_eq!(minimal[[0, 0]], 1.0, epsilon = 1e-10);
+        assert_abs_diff_eq!(minimal[[0, 1]], -2.0, epsilon = 1e-10);
+        assert_abs_diff_eq!(minimal[[0, 2]], 1.0, epsilon = 1e-10);
+
         let d = difference_matrix_order2(5);
         assert_eq!(d.shape(), &[3, 5]);
 
@@ -546,6 +548,27 @@ mod tests {
     }
 
     #[test]
+    fn test_difference_matrix_edge_and_higher_orders() {
+        let identity = difference_matrix(3, 0);
+        assert_eq!(identity, Array2::eye(3));
+
+        let too_few = difference_matrix(2, 2);
+        assert_eq!(too_few.shape(), &[0, 2]);
+
+        let generic_order2 = difference_matrix(5, 2);
+        assert_eq!(generic_order2, difference_matrix_order2(5));
+
+        let order3 = difference_matrix(5, 3);
+        assert_eq!(order3.shape(), &[2, 5]);
+        let expected = Array2::from_shape_vec(
+            (2, 5),
+            vec![-1.0, 3.0, -3.0, 1.0, 0.0, 0.0, -1.0, 3.0, -3.0, 1.0],
+        )
+        .expect("expected shape");
+        assert_eq!(order3, expected);
+    }
+
+    #[test]
     fn test_penalty_matrix_symmetric() {
         let s = penalty_matrix(6, 2);
 
@@ -555,6 +578,22 @@ mod tests {
                 assert_abs_diff_eq!(s[[i, j]], s[[j, i]], epsilon = 1e-10);
             }
         }
+    }
+
+    #[test]
+    fn test_penalty_matrix_order_zero_and_one_exact_contracts() {
+        assert_eq!(penalty_matrix(4, 0), Array2::eye(4));
+
+        let order1 = penalty_matrix(4, 1);
+        let expected = Array2::from_shape_vec(
+            (4, 4),
+            vec![
+                1.0, -1.0, 0.0, 0.0, -1.0, 2.0, -1.0, 0.0, 0.0, -1.0, 2.0, -1.0, 0.0, 0.0, -1.0,
+                1.0,
+            ],
+        )
+        .expect("expected shape");
+        assert_eq!(order1, expected);
     }
 
     #[test]
@@ -609,11 +648,68 @@ mod tests {
     }
 
     #[test]
+    fn test_block_penalty_matrix_exact_layout() {
+        let empty = block_penalty_matrix(&[], 2);
+        assert_eq!(empty.shape(), &[0, 0]);
+
+        let block = block_penalty_matrix(&[3, 2], 1);
+        assert_eq!(block.shape(), &[5, 5]);
+
+        let first = penalty_matrix(3, 1);
+        let second = penalty_matrix(2, 1);
+        for i in 0..3 {
+            for j in 0..3 {
+                assert_abs_diff_eq!(block[[i, j]], first[[i, j]], epsilon = 1e-12);
+            }
+        }
+        for i in 0..2 {
+            for j in 0..2 {
+                assert_abs_diff_eq!(block[[3 + i, 3 + j]], second[[i, j]], epsilon = 1e-12);
+            }
+        }
+        assert_abs_diff_eq!(block[[0, 4]], 0.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(block[[4, 0]], 0.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn test_compute_edf_identity_cases() {
+        let xtwx = Array2::eye(3);
+        let penalty = Array2::eye(3);
+
+        assert_abs_diff_eq!(compute_edf(&xtwx, &penalty, 0.0), 3.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(compute_edf(&xtwx, &penalty, -1.0), 3.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(compute_edf(&xtwx, &penalty, 1.0), 1.5, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn test_compute_edf_per_term_identity_blocks() {
+        let xtwx = Array2::eye(4);
+        let penalties = vec![Array2::eye(2), Array2::eye(2)];
+        let ranges = vec![0..2, 2..4];
+        let lambdas = vec![1.0, 3.0];
+
+        let edfs = compute_edf_per_term(&xtwx, &penalties, &ranges, &lambdas);
+
+        assert_eq!(edfs.len(), 2);
+        assert_abs_diff_eq!(edfs[0], 1.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(edfs[1], 0.5, epsilon = 1e-12);
+    }
+
+    #[test]
     fn test_gcv_score() {
         // GCV = n * deviance / (n - edf)^2
         let gcv = gcv_score(100.0, 100, 10.0);
         let expected = 100.0 * 100.0 / (90.0 * 90.0);
         assert_abs_diff_eq!(gcv, expected, epsilon = 1e-10);
+
+        let saturated = gcv_score(10.0, 5, 10.0);
+        assert_abs_diff_eq!(saturated, 50.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(aic_score(10.0, 3.0), 16.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(
+            bic_score(10.0, 100, 3.0),
+            10.0 + 100.0_f64.ln() * 3.0,
+            epsilon = 1e-12
+        );
     }
 
     #[test]
@@ -628,6 +724,10 @@ mod tests {
         let log_ratio1 = (grid[1] / grid[0]).ln();
         let log_ratio2 = (grid[2] / grid[1]).ln();
         assert_abs_diff_eq!(log_ratio1, log_ratio2, epsilon = 1e-10);
+
+        let single = lambda_grid(1, 0.01, 100.0);
+        assert_eq!(single.len(), 1);
+        assert_abs_diff_eq!(single[0], 1.0, epsilon = 1e-12);
     }
 
     #[test]
@@ -644,23 +744,65 @@ mod tests {
     }
 
     #[test]
+    fn test_lambda_search_result_fields_are_public_contract() {
+        let result = LambdaSearchResult {
+            lambda: 0.1,
+            gcv: 1.5,
+            edf: 3.0,
+            lambdas: vec![0.01, 0.1, 1.0],
+            gcv_scores: vec![2.0, 1.5, 1.8],
+            edf_values: vec![4.0, 3.0, 2.0],
+        };
+
+        assert_abs_diff_eq!(result.lambda, 0.1, epsilon = 1e-12);
+        assert_abs_diff_eq!(result.gcv, 1.5, epsilon = 1e-12);
+        assert_abs_diff_eq!(result.edf, 3.0, epsilon = 1e-12);
+        assert_eq!(result.lambdas.len(), 3);
+        assert_eq!(result.gcv_scores[1], result.gcv);
+        assert_eq!(result.edf_values[1], result.edf);
+    }
+
+    #[test]
     fn test_smooth_terms_collection() {
         let mut terms = SmoothTerms::new();
+        assert!(terms.is_empty());
+        assert!(SmoothTerms::default().is_empty());
 
         let basis1 =
             Array2::from_shape_vec((100, 8), vec![0.0; 800]).expect("test setup should be valid");
         let basis2 =
             Array2::from_shape_vec((100, 10), vec![0.0; 1000]).expect("test setup should be valid");
 
-        terms.add(SmoothTerm::new("age".to_string(), basis1, 2));
-        terms.add(SmoothTerm::new("income".to_string(), basis2, 2));
+        let mut age = SmoothTerm::new("age".to_string(), basis1, 2);
+        age.lambda = 0.5;
+        age.edf = 5.5;
+        let mut income = SmoothTerm::new("income".to_string(), basis2, 2);
+        income.lambda = 2.0;
+        income.edf = 4.25;
+
+        terms.add(age);
+        terms.add(income);
 
         assert_eq!(terms.terms.len(), 2);
+        assert!(!terms.is_empty());
         assert_eq!(terms.total_basis_columns(), 18);
 
         // Check column indices (assuming 5 parametric columns)
         let indices = terms.column_indices(5);
         assert_eq!(indices[0], 5..13); // age: cols 5-12
         assert_eq!(indices[1], 13..23); // income: cols 13-22
+        assert_eq!(terms.lambdas(), vec![0.5, 2.0]);
+        assert_eq!(terms.edfs(), vec![5.5, 4.25]);
+
+        let combined = terms.combined_penalty(23, 5);
+        assert_eq!(combined.shape(), &[23, 23]);
+        assert_abs_diff_eq!(combined[[5, 5]], 0.5, epsilon = 1e-12);
+        assert_abs_diff_eq!(combined[[5, 6]], -1.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(combined[[6, 6]], 2.5, epsilon = 1e-12);
+        assert_abs_diff_eq!(combined[[13, 13]], 2.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(combined[[13, 14]], -4.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(combined[[14, 14]], 10.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(combined[[0, 0]], 0.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(combined[[12, 13]], 0.0, epsilon = 1e-12);
     }
 }

@@ -1,0 +1,420 @@
+name: Deep assurance
+
+on:
+  workflow_dispatch:
+    inputs:
+      full_mutation:
+        description: "Run full external-tool mutation campaigns in addition to dry-run validation."
+        required: false
+        default: false
+        type: boolean
+      fuzz_runs:
+        description: "Number of libFuzzer runs per Rust fuzz target. Use 0 for target validation only."
+        required: false
+        default: "0"
+        type: string
+  schedule:
+    - cron: "17 3 * * 1"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust-deep-property:
+    name: Rust deep property tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run high-case proptests
+        run: PROPTEST_CASES=1024 cargo test -p rustystats-core --test property_tests --release
+
+  python-adversarial:
+    name: Python validation property tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run validation contracts and property tests
+        run: uv run --extra dev pytest tests/python/test_validation_contracts.py tests/python/test_property_validation.py -q
+
+  mutation-smoke:
+    name: Mutation smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run deterministic mutation smoke
+        run: uv run --extra dev python scripts/mutation_smoke.py
+
+  scored-mutation:
+    name: Scored deterministic mutation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Validate mutation waivers
+        run: python3 scripts/check_mutation_waivers.py
+
+      - name: Run Python scored mutation
+        run: uv run --extra dev python scripts/run_python_mutation.py --minimum-score 100 --json-output python-mutation.json
+
+      - name: Run Rust scored mutation
+        run: uv run --extra dev python scripts/run_rust_mutation.py --minimum-score 100 --json-output rust-mutation.json
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: scored-mutation
+          path: |
+            python-mutation.json
+            rust-mutation.json
+
+  mutation-campaigns:
+    name: Mutation campaign dry-run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Validate full mutation campaign config
+        run: python3 scripts/check_mutation_campaigns.py --json-output mutation-campaign-config.json
+
+      - name: Dry-run full mutation campaign commands
+        run: python3 scripts/run_mutation_campaign.py --all --dry-run --json-output mutation-campaign-dry-run.json
+
+      - name: Install cargo-mutants for manual full campaign
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.full_mutation }}
+        run: cargo install cargo-mutants --locked
+
+      - name: Run full mutation campaigns
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.full_mutation }}
+        run: python3 scripts/run_mutation_campaign.py --all --json-output mutation-campaign-full.json
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: mutation-campaigns
+          path: |
+            mutation-campaign-config.json
+            mutation-campaign-dry-run.json
+            mutation-campaign-full.json
+          if-no-files-found: ignore
+
+  oracle-fixtures:
+    name: External oracle fixtures
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Validate oracle fixtures
+        run: uv run --extra dev python scripts/check_oracle_fixtures.py
+
+      - name: Validate oracle archive manifest
+        run: python3 scripts/check_oracle_archive_manifest.py
+
+      - name: Check oracle fixture regeneration drift
+        run: uv run --extra dev python scripts/generate_oracle_fixtures.py --check
+
+      - name: Check extended oracle fixture regeneration drift
+        run: |
+          uv run --extra dev python scripts/generate_glum_oracle_fixtures.py --check
+          uv run --extra dev python scripts/generate_multinomial_oracle_fixtures.py --check
+          uv run --extra dev python scripts/generate_smooth_oracle_fixtures.py --check
+
+      - name: Run archived oracle tests
+        run: uv run --extra dev pytest tests/python/test_oracle_fixtures.py tests/python/test_glum_oracle_fixtures.py tests/python/test_multinomial_oracle_fixtures.py tests/python/test_smooth_oracle_fixtures.py -q
+
+  metamorphic-and-torture:
+    name: Metamorphic and numerical torture
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run metamorphic contracts
+        run: uv run --extra dev pytest tests/python/test_metamorphic_contracts.py -q
+
+      - name: Run numerical torture suite
+        run: uv run --extra dev python scripts/run_numerical_torture.py --json-output numerical-torture.json
+
+      - name: Run torture catalog pytest contract
+        run: uv run --extra dev pytest tests/python/test_numerical_torture_contracts.py -q
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: numerical-torture
+          path: numerical-torture.json
+
+  fuzz-replay:
+    name: Fuzz corpus replay
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Replay malformed-input corpus
+        run: uv run --extra dev python scripts/replay_fuzz_corpus.py
+
+  rust-fuzz-targets:
+    name: Rust fuzz target validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Validate cargo-fuzz targets
+        run: python3 scripts/check_fuzz_targets.py
+
+      - name: Check fuzz crate builds
+        run: cargo check --manifest-path fuzz/Cargo.toml
+
+      - name: Install cargo-fuzz for manual fuzz run
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.fuzz_runs != '0' }}
+        run: cargo install cargo-fuzz --locked
+
+      - name: Run family-deviance fuzz smoke
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.fuzz_runs != '0' }}
+        run: cargo fuzz run family_deviance -- -runs=${{ inputs.fuzz_runs }}
+
+      - name: Run link-roundtrip fuzz smoke
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.fuzz_runs != '0' }}
+        run: cargo fuzz run link_roundtrip -- -runs=${{ inputs.fuzz_runs }}
+
+  module-coverage-gates:
+    name: Module coverage gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Validate module coverage policy
+        run: python3 scripts/check_module_coverage.py --check-config
+
+      - name: Python coverage by module
+        run: uv run --extra dev pytest tests/python --cov=rustystats --cov-report=json:python-coverage.json --cov-report=term-missing:skip-covered --cov-fail-under=97 -q
+
+      - name: Enforce Python module coverage gates
+        run: python3 scripts/check_module_coverage.py --python-json python-coverage.json --report-json-output python-module-coverage.json
+
+      - name: Rust LCOV by module
+        run: cargo llvm-cov -p rustystats-core --lcov --output-path rust-core.lcov
+
+      - name: Enforce Rust module coverage gates
+        run: python3 scripts/check_module_coverage.py --rust-lcov rust-core.lcov --report-json-output rust-module-coverage.json
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: module-coverage
+          path: |
+            python-coverage.json
+            python-module-coverage.json
+            rust-core.lcov
+            rust-module-coverage.json
+
+  deployment-parity:
+    name: Deployment parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: astral-sh/setup-uv@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run export and rate-table parity
+        env:
+          RUSTYSTATS_REQUIRE_EXPORT_RUNTIMES: "1"
+          RUSTYSTATS_RUN_PMML_RUNTIME: "1"
+        run: uv run --extra dev pytest tests/python/test_export.py tests/python/test_rate_tables_parity.py -q
+
+  diagnostics-release:
+    name: Diagnostics release harness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build extension (release)
+        run: uv run --extra dev maturin develop --release
+
+      - name: Run diagnostics verification harness
+        run: uv run --extra dev python benchmarks/verify_diagnostics_correctness.py
+
+  performance-smoke:
+    name: Performance smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build extension (release)
+        run: uv run --extra dev maturin develop --release
+
+      - name: Run performance smoke
+        run: uv run --extra dev python benchmarks/performance_smoke.py --baseline benchmarks/baselines/performance_smoke.json --json-output performance-smoke.json
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: performance-smoke
+          path: performance-smoke.json
+
+  deep-performance-smoke:
+    name: Deep performance smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build extension (release)
+        run: uv run --extra dev maturin develop --release
+
+      - name: Run deep performance smoke
+        run: uv run --extra dev python benchmarks/deep_performance_smoke.py --baseline benchmarks/baselines/deep_performance_smoke.json --json-output deep-performance-smoke.json
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: deep-performance-smoke
+          path: deep-performance-smoke.json
+
+  waiver-audit:
+    name: Waiver audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check coverage waivers
+        run: python3 scripts/check_coverage_waivers.py --report-json-output coverage-waivers.json
+
+      - name: Check mutation waivers
+        run: python3 scripts/check_mutation_waivers.py
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: waiver-audit
+          path: coverage-waivers.json

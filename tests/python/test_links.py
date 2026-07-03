@@ -299,6 +299,70 @@ class TestLinkComparisons:
         assert abs(log_eta - logit_eta) < 1.0  # Within 1 unit
 
 
+class TestPurePythonLinkHelpers:
+    """Direct coverage for diagnostics-oriented pure-Python link helpers."""
+
+    def test_link_inverse_identity_returns_original_object(self):
+        eta = np.array([-2.0, 0.0, 3.5])
+        assert rs.links.link_inverse("identity", eta) is eta
+
+    def test_link_forward_identity_returns_original_object(self):
+        mu = np.array([-2.0, 0.0, 3.5])
+        assert rs.links.link_forward("identity", mu) is mu
+
+    def test_link_inverse_log_clips_extreme_eta(self):
+        eta = np.array([-1000.0, -50.0, 0.0, 50.0, 1000.0])
+        expected = np.exp(np.array([-50.0, -50.0, 0.0, 50.0, 50.0]))
+        np.testing.assert_allclose(rs.links.link_inverse("log", eta), expected)
+
+    def test_link_forward_log_clips_nonpositive_mu_to_epsilon(self):
+        mu = np.array([-1.0, 0.0, 1e-20, 1.0, np.e])
+        eta = rs.links.link_forward("log", mu)
+        assert np.all(np.isfinite(eta))
+        np.testing.assert_allclose(eta[:3], np.log(np.array([1e-12, 1e-12, 1e-12])))
+        np.testing.assert_allclose(eta[3:], np.array([0.0, 1.0]))
+
+    def test_link_inverse_logit_clips_extreme_eta(self):
+        eta = np.array([-1000.0, -50.0, 0.0, 50.0, 1000.0])
+        expected = 1.0 / (1.0 + np.exp(-np.array([-50.0, -50.0, 0.0, 50.0, 50.0])))
+        np.testing.assert_allclose(rs.links.link_inverse("logit", eta), expected)
+
+    def test_link_forward_logit_clips_boundary_probabilities(self):
+        mu = np.array([-1.0, 0.0, 0.25, 0.75, 1.0, 2.0])
+        eta = rs.links.link_forward("logit", mu)
+        assert np.all(np.isfinite(eta))
+        np.testing.assert_allclose(eta[2:4], np.log(np.array([0.25 / 0.75, 0.75 / 0.25])))
+        assert eta[0] == eta[1]
+        assert eta[-1] == eta[-2]
+
+    def test_cloglog_forward_inverse_roundtrip_on_safe_grid(self):
+        mu = np.array([0.05, 0.25, 0.75, 0.95])
+        eta = rs.links.link_forward("cloglog", mu)
+        recovered = rs.links.link_inverse("cloglog", eta)
+        np.testing.assert_allclose(recovered, mu, rtol=1e-12, atol=1e-12)
+
+    def test_cloglog_helpers_clip_boundaries_without_nan(self):
+        eta = np.array([-1000.0, 0.0, 1000.0])
+        mu = rs.links.link_inverse("cloglog", eta)
+        assert np.all(np.isfinite(mu))
+        assert np.all((mu >= 0.0) & (mu <= 1.0))
+
+        forward = rs.links.link_forward("cloglog", np.array([0.0, 1e-12, 1.0, 2.0]))
+        assert np.all(np.isfinite(forward))
+
+    def test_probit_helpers_fail_closed(self):
+        with pytest.raises(NotImplementedError, match="Probit"):
+            rs.links.link_inverse("probit", np.array([0.0]))
+        with pytest.raises(NotImplementedError, match="Probit"):
+            rs.links.link_forward("probit", np.array([0.5]))
+
+    def test_unknown_link_helpers_raise_value_error(self):
+        with pytest.raises(ValueError, match="Unsupported link"):
+            rs.links.link_inverse("not-a-link", np.array([0.0]))
+        with pytest.raises(ValueError, match="Unsupported link"):
+            rs.links.link_forward("not-a-link", np.array([0.5]))
+
+
 # =============================================================================
 # Numerical-hardening parity tests
 # =============================================================================

@@ -1,0 +1,24 @@
+{
+  "alpha": 354.6943165373582,
+  "artifact_dir": "/home/ralph/suite/rustystats/repro/destyler_tabarena_apsfailure_ridge_cv/artifacts",
+  "build_s": 1.2304148340044776,
+  "dataset": "APSFailure",
+  "fit_kwargs": {
+    "cv": 5,
+    "cv_seed": 314159,
+    "n_alphas": 20,
+    "regularization": "ridge",
+    "selection": "1se"
+  },
+  "fit_s": 250.1371319680038,
+  "n_columns": 349,
+  "n_params": 958,
+  "n_rows": 68416,
+  "predict_s": 0.616119042999344,
+  "previous_baseline_fit_s": 364.7312357810006,
+  "recipe_interactions": 139,
+  "recipe_terms": 116,
+  "rustystats_version": "0.8.12",
+  "split": "r0f0",
+  "task_id": 363616
+}

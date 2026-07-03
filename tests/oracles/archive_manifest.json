@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "id": "ORACLE-STATS-GAUSSIAN-IDENTITY",
+      "area": "unpenalized-glm",
+      "oracle": "statsmodels",
+      "status": "implemented",
+      "evidence_paths": [
+        "tests/oracles/statsmodels/gaussian_identity.json",
+        "tests/python/test_oracle_fixtures.py"
+      ],
+      "owner": "core-maintainers",
+      "rationale": "Gaussian identity is the exact ordinary least-squares baseline for continuous actuarial targets.",
+      "regeneration_command": "uv run --extra dev python scripts/generate_oracle_fixtures.py --accept",
+      "next_action": "Regenerate only when statsmodels version or fixture schema intentionally changes.",
+      "expires": "2026-12-31"
+    },
+    {
+      "id": "ORACLE-STATS-POISSON-EXPOSURE",
+      "area": "unpenalized-glm",
+      "oracle": "statsmodels",
+      "status": "implemented",
+      "evidence_paths": [
+        "tests/oracles/statsmodels/poisson_exposure.json",
+        "tests/python/test_oracle_fixtures.py"
+      ],
+      "owner": "core-maintainers",
+      "rationale": "Poisson exposure modelling is a primary actuarial frequency workflow and must match an independent GLM implementation.",
+      "regeneration_command": "uv run --extra dev python scripts/generate_oracle_fixtures.py --accept",
+      "next_action": "Regenerate only when statsmodels version or fixture schema intentionally changes.",
+      "expires": "2026-12-31"
+    },
+    {
+      "id": "ORACLE-STATS-BINOMIAL-GAMMA-TWEEDIE-NB",
+      "area": "unpenalized-glm",
+      "oracle": "statsmodels",
+      "status": "implemented",
+      "evidence_paths": [
+        "tests/oracles/statsmodels/binomial_logit.json",
+        "tests/oracles/statsmodels/gamma_log.json",
+        "tests/oracles/statsmodels/tweedie_log.json",
+        "tests/oracles/statsmodels/negative_binomial_log.json",
+        "tests/python/test_oracle_fixtures.py"
+      ],
+      "owner": "core-maintainers",
+      "rationale": "Core severity, pure-premium, overdispersion, and binary outcome families need deterministic independent-library parity fixtures.",
+      "regeneration_command": "uv run --extra dev python scripts/generate_oracle_fixtures.py --accept",
+      "next_action": "Split into per-family archive entries if family-specific tolerances diverge.",
+      "expires": "2026-12-31"
+    },
+    {
+      "id": "ORACLE-GLUM-REGULARIZED-GLM",
+      "area": "regularized-glm",
+      "oracle": "glum",
+      "status": "implemented",
+      "evidence_paths": [
+        "tests/oracles/glum/gaussian_ridge.json",
+        "tests/oracles/glum/gaussian_lasso.json",
+        "tests/oracles/glum/gaussian_elastic_net.json",
+        "tests/python/test_glum_oracle_fixtures.py"
+      ],
+      "owner": "core-maintainers",
+      "rationale": "Regularized path correctness needs an independent penalized-GLM oracle plus KKT checks beyond deterministic Rust unit tests.",
+      "regeneration_command": "uv run --extra dev python scripts/generate_glum_oracle_fixtures.py --accept",
+      "next_action": "Regenerate only when glum version, RustyStats regularized objective semantics, or fixture schema intentionally changes.",
+      "expires": "2026-12-31"
+    },
+    {
+      "id": "ORACLE-STATSMODELS-MULTINOMIAL-NONDEFAULT-REFERENCE",
+      "area": "multinomial",
+      "oracle": "statsmodels.MNLogit",
+      "status": "implemented",
+      "evidence_paths": [
+        "tests/oracles/statsmodels_multinomial/nondefault_reference.json",
+        "tests/python/test_multinomial_oracle_fixtures.py"
+      ],
+      "owner": "multinomial-maintainers",
+      "rationale": "Multinomial models need archived non-default-reference fixtures because class coding mistakes can preserve row sums while swapping relativities.",
+      "regeneration_command": "uv run --extra dev python scripts/generate_multinomial_oracle_fixtures.py --accept",
+      "next_action": "Regenerate only when statsmodels version, multinomial reference semantics, or fixture schema intentionally changes.",
+      "expires": "2026-12-31"
+    },
+    {
+      "id": "ORACLE-EXACT-SMOOTH-FIXED-PENALTY",
+      "area": "smooth-glm",
+      "oracle": "exact penalized least squares",
+      "status": "implemented",
+      "evidence_paths": [
+        "tests/oracles/exact/fixed_penalty_gaussian.json",
+        "tests/python/test_smooth_oracle_fixtures.py"
+      ],
+      "owner": "smooth-maintainers",
+      "rationale": "Fixed-penalty smooth Gaussian fits should match the closed-form penalized least-squares optimum and KKT residual.",
+      "regeneration_command": "uv run --extra dev python scripts/generate_smooth_oracle_fixtures.py --accept",
+      "next_action": "Regenerate only when smooth penalty semantics or fixture schema intentionally changes.",
+      "expires": "2026-12-31"
+    },
+    {
+      "id": "ORACLE-R-MGCV-MONOTONIC-SMOOTH",
+      "area": "smooth-glm",
+      "oracle": "R mgcv or reviewed exact smooth oracle",
+      "status": "external-blocked",
+      "evidence_paths": [
+        "docs/maintenance/deep-assurance-expansion-plan.md"
+      ],
+      "owner": "smooth-maintainers",
+      "rationale": "Smooth and monotonic smooth paths need an external GAM oracle; Python statsmodels GLM fixtures do not exercise penalized smooth basis and constraint semantics.",
+      "regeneration_command": "Rscript scripts/generate_mgcv_oracle_fixtures.R --accept",
+      "next_action": "Provision an R/mgcv oracle environment or replace this with a reviewed exact finite-difference/KKT smooth oracle fixture.",
+      "expires": "2026-12-31"
+    }
+  ]
+}

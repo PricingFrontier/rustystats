@@ -6,10 +6,13 @@ offset and complement-of-credibility plumbing, regularised-model handling,
 serialization round-trips, and additivity validation.
 """
 
+from types import SimpleNamespace
+
 import numpy as np
 import polars as pl
 import pytest
 import rustystats as rs
+from rustystats.interactions import TermSlot
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -27,6 +30,182 @@ def assert_additivity(rows: list[dict], predict_values: np.ndarray, tol: float =
         assert abs(row["prediction_value"] - predict_values[i]) < 1e-9, (
             f"row {i}: predict_value={row['prediction_value']}, predict()={predict_values[i]}"
         )
+
+
+class TestContributionHelpers:
+    def test_compute_contributions_rejects_models_without_formula_metadata(self):
+        from rustystats.contributions import compute_contributions
+
+        model = SimpleNamespace(_builder=None)
+
+        with pytest.raises(rs.PredictionError, match="formula API"):
+            compute_contributions(model, pl.DataFrame({"x": [1.0]}))
+
+    def test_validate_term_slots_accepts_exact_contiguous_coverage(self):
+        from rustystats.contributions import _validate_term_slots
+
+        _validate_term_slots(
+            [
+                TermSlot("Intercept", "intercept", [], 0, 1, ["Intercept"]),
+                TermSlot("offset", "offset", [], -1, -1, []),
+                TermSlot("x", "linear", ["x"], 1, 2, ["x"]),
+                TermSlot("cat", "categorical", ["cat"], 2, 4, ["cat[T.B]", "cat[T.C]"]),
+            ],
+            n_params=4,
+        )
+        _validate_term_slots([], n_params=0)
+
+    def test_validate_term_slots_rejects_missing_or_inconsistent_coverage(self):
+        from rustystats.contributions import _validate_term_slots
+
+        with pytest.raises(rs.PredictionError, match="lacks term-slot metadata"):
+            _validate_term_slots([], n_params=1)
+
+        with pytest.raises(rs.PredictionError, match="inconsistent"):
+            _validate_term_slots(
+                [TermSlot("bad", "linear", ["x"], 2, 1, ["x"])],
+                n_params=2,
+            )
+
+        with pytest.raises(rs.PredictionError, match="does not cover"):
+            _validate_term_slots(
+                [TermSlot("Intercept", "intercept", [], 0, 1, ["Intercept"])],
+                n_params=2,
+            )
+
+    def test_extract_feature_values_covers_interaction_and_synthetic_terms(self):
+        from rustystats.contributions import _extract_feature_values
+
+        data = pl.DataFrame(
+            {
+                "x": [1.5, 2.5],
+                "cat": ["A", "B"],
+                "brand": ["a", "b"],
+                "region": ["r1", "r2"],
+            }
+        )
+        x_new = np.array([[1.0, 1.5, 0.2], [1.0, 2.5, 0.8]])
+
+        interaction = TermSlot(
+            "TE(brand:region):x",
+            "interaction",
+            ["TE(brand:region)", "x"],
+            1,
+            2,
+            ["TE(brand:region):x"],
+            extra={"categorical_flags": [False, False]},
+        )
+        values = _extract_feature_values(interaction, data, x_new)
+        assert values == [
+            {"brand:region": "a:r1", "x": 1.5},
+            {"brand:region": "b:r2", "x": 2.5},
+        ]
+
+        exposure = TermSlot(
+            "exposure",
+            "exposure",
+            ["expo"],
+            -1,
+            -1,
+            [],
+            extra={"raw": np.array([1.0, 2.0])},
+        )
+        np.testing.assert_array_equal(_extract_feature_values(exposure, data, x_new), [1.0, 2.0])
+
+        fallback = TermSlot("column", "custom_column", [], 2, 3, ["column"])
+        np.testing.assert_allclose(_extract_feature_values(fallback, data, x_new), [0.2, 0.8])
+
+        linear_fallback = TermSlot("I(x ** 2)", "linear", ["missing"], 1, 2, ["I(x ** 2)"])
+        np.testing.assert_allclose(
+            _extract_feature_values(linear_fallback, data, x_new),
+            [1.5, 2.5],
+        )
+
+        target_encoded_interaction = TermSlot(
+            "TE(brand:region)",
+            "target_encoding",
+            ["brand", "region"],
+            2,
+            3,
+            ["TE(brand:region)"],
+            extra={"interaction_vars": ["brand", "region"]},
+        )
+        assert _extract_feature_values(target_encoded_interaction, data, x_new) == [
+            {"raw": "a:r1", "encoded": 0.2},
+            {"raw": "b:r2", "encoded": 0.8},
+        ]
+
+        indicator = TermSlot("cat[B]", "categorical_indicator", ["cat"], 2, 3, ["cat[B]"])
+        np.testing.assert_array_equal(_extract_feature_values(indicator, data, x_new), ["A", "B"])
+
+        exposure_without_raw = TermSlot("exposure", "exposure", [], -1, -1, [], extra={})
+        np.testing.assert_allclose(
+            _extract_feature_values(exposure_without_raw, data, x_new), [1.0, 1.0]
+        )
+
+        negative_fallback = TermSlot("synthetic", "synthetic", [], -1, -1, [])
+        np.testing.assert_allclose(
+            _extract_feature_values(negative_fallback, data, x_new), [0.0, 0.0]
+        )
+
+    def test_row_value_and_builders_cover_empty_and_scalar_feature_values(self):
+        from rustystats.contributions import _build_dataframe, _build_records, _row_value
+
+        model = SimpleNamespace(family="gaussian", link="identity")
+        base = np.array([1.0, 2.0])
+        zeros = np.zeros((2, 0))
+        empty_records = _build_records(
+            model=model,
+            slots=[],
+            contribs_matrix=zeros,
+            feature_values_per_slot=[],
+            base_value=base,
+            sum_contribs=np.zeros(2),
+            eta_from_contribs=base,
+            mu_from_contribs=base,
+            output_space="response",
+            prediction_space="response",
+            X_new=zeros,
+            params=np.array([]),
+            include_design_columns=False,
+        )
+        assert empty_records[0]["contributions"] == []
+
+        empty_df = _build_dataframe(
+            model=model,
+            slots=[],
+            contribs_matrix=zeros,
+            feature_values_per_slot=[],
+            base_value=base,
+            sum_contribs=np.zeros(2),
+            eta_from_contribs=base,
+            mu_from_contribs=base,
+            output_space="response",
+            prediction_space="response",
+        )
+        assert empty_df.height == 2
+        assert "term" not in empty_df.columns
+
+        assert _row_value(np.array([np.bool_(True)]), 0) is True
+        assert _row_value("constant", 0) == "constant"
+
+        slots = [
+            TermSlot("list_term", "custom", [], 0, 1, ["list_term"]),
+            TermSlot("scalar_term", "custom", [], 1, 2, ["scalar_term"]),
+        ]
+        df = _build_dataframe(
+            model=model,
+            slots=slots,
+            contribs_matrix=np.array([[0.5, -0.25], [1.5, -0.75]]),
+            feature_values_per_slot=[["a", "b"], "same"],
+            base_value=base,
+            sum_contribs=np.array([0.25, 0.75]),
+            eta_from_contribs=np.array([1.25, 2.75]),
+            mu_from_contribs=np.array([1.25, 2.75]),
+            output_space="response",
+            prediction_space="response",
+        )
+        assert df["feature_value"].to_list() == ["a", "same", "b", "same"]
 
 
 @pytest.fixture
@@ -48,6 +227,44 @@ def sample_data():
             "diff_to_market": np.random.uniform(-30, 30, n),
         }
     )
+
+
+class TestContributionPublicErrorContracts:
+    def test_invalid_return_format_fails_loud(self, sample_data):
+        result = rs.glm_dict(
+            response="y_cont",
+            terms={"x1": {"type": "linear"}},
+            data=sample_data,
+            family="gaussian",
+        ).fit()
+
+        with pytest.raises(ValueError, match="return_format"):
+            result.predict_contributions(sample_data.head(2), return_format="wide")
+
+    def test_exposure_requires_log_link(self, sample_data):
+        result = rs.glm_dict(
+            response="y_cont",
+            terms={"x1": {"type": "linear"}},
+            data=sample_data,
+            family="gaussian",
+        ).fit()
+
+        with pytest.raises(rs.ValidationError, match="log-link rate models"):
+            result.predict_contributions(sample_data.head(2), exposure="exposure")
+
+    def test_ungrouped_spline_expands_design_column_rows(self, sample_data):
+        result = rs.glm_dict(
+            response="y_bin",
+            terms={"diff_to_market": {"type": "ns", "df": 5}},
+            data=sample_data,
+            family="binomial",
+        ).fit()
+
+        rows = result.predict_contributions(sample_data.head(1), group_terms=False)
+        terms = [c["term"] for c in rows[0]["contributions"]]
+
+        assert "diff_to_market" not in terms
+        assert sum(term.startswith("ns(diff_to_market") for term in terms) >= 2
 
 
 # ---------------------------------------------------------------------------

@@ -897,6 +897,240 @@ pub fn stack_columns_horizontal(blocks: &[ArrayView2<f64>]) -> Array2<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ndarray::s;
+
+    fn assert_row_eq(matrix: &Array2<f64>, row: usize, expected: &[f64]) {
+        assert_eq!(matrix.ncols(), expected.len());
+        for (col, &value) in expected.iter().enumerate() {
+            assert_eq!(
+                matrix[[row, col]],
+                value,
+                "row {row} col {col}: expected {value}, got {}",
+                matrix[[row, col]]
+            );
+        }
+    }
+
+    #[test]
+    fn test_factorize_and_large_categorical_encoding_parallel_paths() {
+        let values: Vec<String> = vec!["b", "a", "c", "b", "a"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let (levels, codes) = factorize_strings(&values);
+        assert_eq!(levels, vec!["a", "b", "c"]);
+        assert_eq!(codes, vec![1, 0, 2, 1, 0]);
+
+        let n = 60_001usize;
+        let large_values: Vec<String> = (0..n)
+            .map(|idx| match idx % 3 {
+                0 => "b".to_string(),
+                1 => "a".to_string(),
+                _ => "c".to_string(),
+            })
+            .collect();
+        let (large_levels, large_codes) = factorize_strings(&large_values);
+        assert_eq!(large_levels, vec!["a", "b", "c"]);
+        assert_eq!(large_codes[0], 1);
+        assert_eq!(large_codes[1], 0);
+        assert_eq!(large_codes[2], 2);
+        assert_eq!(
+            large_codes[n - 1],
+            ((n - 1) % 3 != 1) as u32 + ((n - 1) % 3 == 2) as u32
+        );
+
+        let enc = encode_categorical(&large_values, "rating", true);
+        assert_eq!(enc.matrix.dim(), (n, 2));
+        assert_eq!(enc.names, vec!["rating[T.b]", "rating[T.c]"]);
+        assert_row_eq(&enc.matrix, 0, &[1.0, 0.0]);
+        assert_row_eq(&enc.matrix, 1, &[0.0, 0.0]);
+        assert_row_eq(&enc.matrix, 2, &[0.0, 1.0]);
+
+        let indices: Vec<i32> = large_codes.iter().map(|&code| code as i32).collect();
+        let from_indices =
+            encode_categorical_from_indices(&indices, 3, &large_levels, "rating", true);
+        assert_eq!(from_indices.matrix, enc.matrix);
+        assert_eq!(from_indices.names, enc.names);
+    }
+
+    #[test]
+    fn test_encode_categorical_from_indices_name_fallback_and_invalid_codes() {
+        let indices = vec![-1, 0, 1, 2, 3, 99];
+        let level_names = vec!["A".to_string(), "B".to_string()];
+        let enc = encode_categorical_from_indices(&indices, 4, &level_names, "zone", false);
+
+        assert_eq!(
+            enc.names,
+            vec!["zone[T.A]", "zone[T.B]", "zone[T.2]", "zone[T.3]"]
+        );
+        assert_row_eq(&enc.matrix, 0, &[0.0, 0.0, 0.0, 0.0]);
+        assert_row_eq(&enc.matrix, 1, &[1.0, 0.0, 0.0, 0.0]);
+        assert_row_eq(&enc.matrix, 2, &[0.0, 1.0, 0.0, 0.0]);
+        assert_row_eq(&enc.matrix, 3, &[0.0, 0.0, 1.0, 0.0]);
+        assert_row_eq(&enc.matrix, 4, &[0.0, 0.0, 0.0, 1.0]);
+        assert_row_eq(&enc.matrix, 5, &[0.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn test_large_categorical_categorical_interaction_parallel_path() {
+        let n = 60_001usize;
+        let idx1: Vec<i32> = (0..n).map(|idx| (idx % 4) as i32).collect();
+        let idx2: Vec<i32> = (0..n).map(|idx| ((idx * 2 + 1) % 4) as i32).collect();
+        let names1 = vec![
+            "driver[T.B]".to_string(),
+            "driver[T.C]".to_string(),
+            "driver[T.D]".to_string(),
+        ];
+        let names2 = vec![
+            "territory[T.Y]".to_string(),
+            "territory[T.Z]".to_string(),
+            "territory[T.W]".to_string(),
+        ];
+
+        let (matrix, names) =
+            build_categorical_categorical_interaction(&idx1, 3, &idx2, 3, &names1, &names2);
+
+        assert_eq!(matrix.dim(), (n, 9));
+        assert_eq!(names.len(), 9);
+        assert_eq!(names[0], "driver[T.B]:territory[T.Y]");
+        assert_eq!(names[8], "driver[T.D]:territory[T.W]");
+        assert_eq!(matrix.row(0).sum(), 0.0);
+        assert_eq!(matrix[[1, 2]], 1.0);
+        assert_eq!(matrix[[2, 3]], 1.0);
+        assert_eq!(matrix[[3, 8]], 1.0);
+        assert_eq!(matrix.row(4).sum(), 0.0);
+        assert_eq!(matrix.row(n - 1).sum(), 0.0);
+    }
+
+    #[test]
+    fn test_categorical_basis_interaction_edge_and_prediction_contracts() {
+        let basis =
+            Array2::from_shape_vec((4, 2), vec![1.0, 10.0, 2.0, 20.0, 3.0, 30.0, 4.0, 40.0])
+                .expect("valid basis");
+        let cat_idx = vec![0i32, 1, 3, 2];
+        let cat_names = vec!["cat[T.B]".to_string(), "cat[T.C]".to_string()];
+        let basis_names = vec!["b0".to_string(), "b1".to_string()];
+
+        let (zero, zero_names) =
+            build_categorical_basis_interaction(&cat_idx, 0, &basis, &[], &basis_names);
+        assert_eq!(zero.dim(), (4, 0));
+        assert!(zero_names.is_empty());
+
+        let (matrix, names) =
+            build_categorical_basis_interaction(&cat_idx, 2, &basis, &cat_names, &basis_names);
+        assert_eq!(
+            names,
+            vec!["cat[T.B]:b0", "cat[T.C]:b0", "cat[T.B]:b1", "cat[T.C]:b1"]
+        );
+        assert_row_eq(&matrix, 0, &[0.0, 0.0, 0.0, 0.0]);
+        assert_row_eq(&matrix, 1, &[2.0, 0.0, 20.0, 0.0]);
+        assert_row_eq(&matrix, 2, &[0.0, 0.0, 0.0, 0.0]);
+        assert_row_eq(&matrix, 3, &[0.0, 4.0, 0.0, 40.0]);
+
+        let zero_pred =
+            predict_categorical_basis_interaction(&cat_idx, 0, &basis, &[1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(zero_pred.to_vec(), vec![0.0; 4]);
+        let zero_basis = Array2::<f64>::zeros((4, 0));
+        let zero_basis_pred = predict_categorical_basis_interaction(&cat_idx, 2, &zero_basis, &[]);
+        assert_eq!(zero_basis_pred.to_vec(), vec![0.0; 4]);
+
+        let short_params = Array1::from_vec(vec![0.5, 1.5, 2.0]);
+        let mut wide_basis = Array2::<f64>::zeros((4, 4));
+        wide_basis
+            .slice_mut(s![.., 0])
+            .assign(&basis.slice(s![.., 0]));
+        wide_basis
+            .slice_mut(s![.., 2])
+            .assign(&basis.slice(s![.., 1]));
+        let noncontiguous_basis = wide_basis.slice(s![.., ..;2]);
+        let fallback_values = predict_categorical_basis_interaction_view(
+            ArrayView1::from(&cat_idx),
+            2,
+            noncontiguous_basis,
+            short_params.view(),
+        );
+        assert_eq!(fallback_values.to_vec(), vec![0.0, 41.0, 0.0, 6.0]);
+    }
+
+    #[test]
+    fn test_predict_categorical_basis_large_parallel_paths() {
+        let n = 60_001usize;
+        let cat_idx: Vec<i32> = (0..n).map(|idx| (idx % 4) as i32).collect();
+        let mut basis = Array2::<f64>::zeros((n, 2));
+        for row in 0..n {
+            basis[[row, 0]] = row as f64 * 0.01;
+            basis[[row, 1]] = 1.0 + (row % 7) as f64;
+        }
+        let params = vec![0.5, 1.5, 2.0, 3.0];
+
+        let values = predict_categorical_basis_interaction(&cat_idx, 2, &basis, &params);
+        assert_eq!(values[0], 0.0);
+        assert!((values[1] - (0.01 * 0.5 + 2.0 * 2.0)).abs() < 1e-12);
+        assert!((values[2] - (0.02 * 1.5 + 3.0 * 3.0)).abs() < 1e-12);
+        assert_eq!(values[3], 0.0);
+
+        let mut wide_basis = Array2::<f64>::zeros((n, 4));
+        for row in 0..n {
+            wide_basis[[row, 0]] = basis[[row, 0]];
+            wide_basis[[row, 2]] = basis[[row, 1]];
+        }
+        let noncontiguous_values = predict_categorical_basis_interaction_view(
+            ArrayView1::from(&cat_idx),
+            2,
+            wide_basis.slice(s![.., ..;2]),
+            ArrayView1::from(&params),
+        );
+        assert_eq!(noncontiguous_values[0], values[0]);
+        assert_eq!(noncontiguous_values[1], values[1]);
+        assert_eq!(noncontiguous_values[2], values[2]);
+        assert_eq!(noncontiguous_values[n - 1], values[n - 1]);
+    }
+
+    #[test]
+    fn test_two_categorical_continuous_zero_levels_and_out_of_range_codes() {
+        let idx1 = vec![0i32, 1, 3, 2];
+        let idx2 = vec![0i32, 1, 2, 9];
+        let continuous = Array1::from_vec(vec![10.0, 20.0, 30.0, 40.0]);
+        let names1 = vec!["a[T.B]".to_string(), "a[T.C]".to_string()];
+        let names2 = vec!["b[T.Y]".to_string(), "b[T.Z]".to_string()];
+
+        let (zero, zero_names) = build_two_categorical_continuous_interaction(
+            &idx1,
+            0,
+            &idx2,
+            2,
+            &continuous,
+            &[],
+            &names2,
+            "x",
+        );
+        assert_eq!(zero.dim(), (4, 0));
+        assert!(zero_names.is_empty());
+
+        let (matrix, names) = build_two_categorical_continuous_interaction(
+            &idx1,
+            2,
+            &idx2,
+            2,
+            &continuous,
+            &names1,
+            &names2,
+            "x",
+        );
+        assert_eq!(
+            names,
+            vec![
+                "a[T.B]:b[T.Y]:x",
+                "a[T.B]:b[T.Z]:x",
+                "a[T.C]:b[T.Y]:x",
+                "a[T.C]:b[T.Z]:x"
+            ]
+        );
+        assert_row_eq(&matrix, 0, &[0.0, 0.0, 0.0, 0.0]);
+        assert_row_eq(&matrix, 1, &[20.0, 0.0, 0.0, 0.0]);
+        assert_row_eq(&matrix, 2, &[0.0, 0.0, 0.0, 0.0]);
+        assert_row_eq(&matrix, 3, &[0.0, 0.0, 0.0, 0.0]);
+    }
 
     #[test]
     fn test_encode_categorical() {
@@ -1382,6 +1616,15 @@ mod tests {
         let blocks = vec![a.view()];
         let out = stack_columns_horizontal(&blocks);
         assert_eq!(out.shape(), &[4, 0]);
+    }
+
+    #[test]
+    #[should_panic(expected = "stack_columns_horizontal: block 1 has 3 rows, expected 2")]
+    fn test_stack_columns_horizontal_rejects_mismatched_row_counts() {
+        let a = Array2::<f64>::zeros((2, 1));
+        let b = Array2::<f64>::zeros((3, 1));
+        let blocks = vec![a.view(), b.view()];
+        let _ = stack_columns_horizontal(&blocks);
     }
 
     #[test]

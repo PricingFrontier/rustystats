@@ -345,6 +345,10 @@ mod tests {
         let ll = nb_loglik_single(1.0, 1.0, 1.0);
         assert!(ll < 0.0);
         assert!(ll.is_finite());
+
+        assert!(lgamma(0.0).is_infinite());
+        assert!(lgamma(-1.0).is_infinite());
+        assert!(lgamma(0.25).is_finite());
     }
 
     #[test]
@@ -356,6 +360,34 @@ mod tests {
 
         assert!(ll.is_finite());
         assert!(ll < 0.0); // Log-likelihood should be negative
+
+        let weights = array![1.0, 0.5, 2.0, 1.5];
+        let weighted = nb_loglikelihood(&y, &mu, 1.0, Some(&weights));
+        let expected: f64 = y
+            .iter()
+            .zip(mu.iter())
+            .zip(weights.iter())
+            .map(|((&yi, &mui), &wi)| wi * nb_loglik_single(yi, mui, 1.0))
+            .sum();
+        assert_abs_diff_eq!(weighted, expected, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn test_nb_loglikelihood_large_theta_uses_poisson_limit() {
+        let y = array![0.0, 1.0, 4.0];
+        let mu = array![0.5, 1.2, 3.5];
+        let weights = array![1.0, 0.5, 2.0];
+
+        assert_abs_diff_eq!(
+            nb_loglikelihood(&y, &mu, POISSON_THETA_THRESHOLD + 1.0, None),
+            poisson_loglikelihood(&y, &mu, None),
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(
+            nb_loglikelihood(&y, &mu, POISSON_THETA_THRESHOLD + 1.0, Some(&weights)),
+            poisson_loglikelihood(&y, &mu, Some(&weights)),
+            epsilon = 1e-12
+        );
     }
 
     #[test]
@@ -399,6 +431,21 @@ mod tests {
         // With high variance relative to mean, theta should be small
         assert!(theta > 0.0);
         assert!(theta < 10.0);
+
+        let near_poisson_y = array![1.0, 1.0, 1.0, 1.0];
+        let near_poisson_mu = array![1.0, 1.0, 1.0, 1.0];
+        assert_eq!(
+            estimate_theta_moments(&near_poisson_y, &near_poisson_mu),
+            100.0
+        );
+
+        let extremely_overdispersed = array![0.0, 0.0, 0.0, 1000.0];
+        let low_mu = array![1.0, 1.0, 1.0, 1.0];
+        assert_abs_diff_eq!(
+            estimate_theta_moments(&extremely_overdispersed, &low_mu),
+            0.01,
+            epsilon = 1e-12
+        );
     }
 
     #[test]

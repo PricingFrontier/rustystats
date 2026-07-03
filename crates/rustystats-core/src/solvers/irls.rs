@@ -412,16 +412,164 @@ struct GramBuildProfile {
 
 impl GramBuildProfile {
     fn add(&mut self, other: &Self) {
-        self.local_init_seconds += other.local_init_seconds;
-        self.row_scan_seconds += other.row_scan_seconds;
-        self.pairwise_accum_seconds += other.pairwise_accum_seconds;
-        self.reduce_seconds += other.reduce_seconds;
-        self.materialize_seconds += other.materialize_seconds;
+        add_profile_seconds(&mut self.local_init_seconds, other.local_init_seconds);
+        add_profile_seconds(&mut self.row_scan_seconds, other.row_scan_seconds);
+        add_profile_seconds(
+            &mut self.pairwise_accum_seconds,
+            other.pairwise_accum_seconds,
+        );
+        add_profile_seconds(&mut self.reduce_seconds, other.reduce_seconds);
+        add_profile_seconds(&mut self.materialize_seconds, other.materialize_seconds);
     }
 }
 
 fn profile_gram_subtimers_enabled() -> bool {
     std::env::var_os("RUSTYSTATS_PROFILE_GRAM_SUBTIMERS").is_some()
+}
+
+fn add_profile_seconds(total: &mut f64, seconds: f64) {
+    *total += seconds;
+}
+
+fn should_standardize_regularized_design(config: &FitConfig) -> bool {
+    !config.regularization.penalty.is_none() && !config.regularization.penalty.is_smooth()
+}
+
+fn centers_are_all_zero(center: &[f64]) -> bool {
+    center.iter().all(|&value| value == 0.0)
+}
+
+fn should_use_scale_only_standardized_ridge_path(
+    l2_penalty: f64,
+    requires_coordinate_descent: bool,
+    center: &[f64],
+) -> bool {
+    l2_penalty > 0.0 && !requires_coordinate_descent && centers_are_all_zero(center)
+}
+
+fn linear_predictor_with_offset_cached(
+    x: ArrayView2<'_, f64>,
+    coefficients: &Array1<f64>,
+    sparse_cache: Option<&SparseRowCache>,
+    offset: &Array1<f64>,
+) -> Array1<f64> {
+    let eta_base = matrix_vector_dot_cached(x, coefficients, sparse_cache);
+    add_offset_to_linear_predictor(&eta_base, offset)
+}
+
+fn add_offset_to_linear_predictor(eta_base: &Array1<f64>, offset: &Array1<f64>) -> Array1<f64> {
+    eta_base + offset
+}
+
+fn eta_without_offset(eta: &Array1<f64>, offset: &Array1<f64>) -> Array1<f64> {
+    eta - offset
+}
+
+fn coefficients_are_finite(coefficients: &Array1<f64>) -> bool {
+    !coefficients_contain_nonfinite(coefficients)
+}
+
+fn coefficients_contain_nonfinite(coefficients: &Array1<f64>) -> bool {
+    coefficients.iter().any(|&c| c.is_nan() || c.is_infinite())
+}
+
+fn finite_coefficients_or_none(coefficients: Array1<f64>) -> Option<Array1<f64>> {
+    if coefficients_are_finite(&coefficients) {
+        Some(coefficients)
+    } else {
+        None
+    }
+}
+
+fn project_coefficients_to_sign_constraints(
+    coefficients: &mut Array1<f64>,
+    nonneg_indices: &[usize],
+    nonpos_indices: &[usize],
+) {
+    for &idx in nonneg_indices {
+        if idx < coefficients.len() && coefficients[idx] < 0.0 {
+            coefficients[idx] = 0.0;
+        }
+    }
+    for &idx in nonpos_indices {
+        if idx < coefficients.len() && coefficients[idx] > 0.0 {
+            coefficients[idx] = 0.0;
+        }
+    }
+}
+
+fn has_sign_constraints(nonneg_indices: &[usize], nonpos_indices: &[usize]) -> bool {
+    !nonneg_indices.is_empty() || !nonpos_indices.is_empty()
+}
+
+fn should_use_poisson_log_weight_buffers(family_name: &str, link_name: &str) -> bool {
+    family_name.eq_ignore_ascii_case("poisson") && link_name == "log"
+}
+
+fn trial_state_is_acceptable(
+    eta: &Array1<f64>,
+    mu: &Array1<f64>,
+    objective: f64,
+    accept_threshold: f64,
+) -> bool {
+    eta.iter().all(|v| v.is_finite())
+        && mu.iter().all(|v| v.is_finite())
+        && objective.is_finite()
+        && objective <= accept_threshold
+}
+
+fn blend_coefficient(old: f64, new: f64, step_size: f64) -> f64 {
+    (1.0 - step_size) * old + step_size * new
+}
+
+fn objective_relative_change(objective_old: f64, objective: f64) -> f64 {
+    let abs_change = (objective_old - objective).abs();
+    if objective_old.abs() > ZERO_TOL {
+        abs_change / objective_old.abs()
+    } else {
+        abs_change
+    }
+}
+
+fn best_objective_improved(objective: f64, best_objective: f64) -> bool {
+    objective < best_objective
+}
+
+fn should_stop_after_stale_best(stale_iterations: usize) -> bool {
+    stale_iterations >= CONSTRAINED_BEST_EARLY_STOP_PATIENCE
+}
+
+fn should_use_constrained_best(
+    has_constraints: bool,
+    best_objective: f64,
+    objective: f64,
+    constrained_best_plateau: bool,
+) -> bool {
+    has_constraints
+        && (best_objective < objective || (constrained_best_plateau && best_objective.is_finite()))
+}
+
+fn combine_prior_and_irls_weights(
+    prior_weights: &Array1<f64>,
+    irls_weights: &Array1<f64>,
+) -> Array1<f64> {
+    prior_weights
+        .iter()
+        .zip(irls_weights.iter())
+        .map(|(&pw, &iw)| pw * iw)
+        .collect()
+}
+
+fn final_extraction_deviance_acceptable(dev_check: f64, final_deviance: f64) -> bool {
+    dev_check.is_finite() && dev_check <= final_deviance
+}
+
+fn should_recompute_final_state(skip_covariance: bool) -> bool {
+    !skip_covariance
+}
+
+fn should_warn_nonconverged(converged: bool) -> bool {
+    !converged
 }
 
 // =============================================================================
@@ -516,13 +664,14 @@ fn fit_glm_unified_with_optional_sparse_cache(
     sparse_cache: Option<&SparseRowCache>,
 ) -> Result<IRLSResult> {
     if let Some(standardization) = &config.standardization {
-        if !config.regularization.penalty.is_none() && !config.regularization.penalty.is_smooth() {
+        if should_standardize_regularized_design(config) {
             standardization.validate(x.ncols())?;
             let l2_penalty = config.regularization.penalty.l2_penalty();
-            if l2_penalty > 0.0
-                && !config.regularization.penalty.requires_coordinate_descent()
-                && standardization.center.iter().all(|&center| center == 0.0)
-            {
+            if should_use_scale_only_standardized_ridge_path(
+                l2_penalty,
+                config.regularization.penalty.requires_coordinate_descent(),
+                &standardization.center,
+            ) {
                 let l2_penalty_factors: Vec<f64> = standardization
                     .scale
                     .iter()
@@ -675,7 +824,7 @@ fn fit_glm_core(
             ));
         }
         iter_coefficients = init.clone();
-        let eta_init = matrix_vector_dot_cached(x, init, sparse_cache) + &offset_vec;
+        let eta_init = linear_predictor_with_offset_cached(x, init, sparse_cache, &offset_vec);
         let mu_init = link.inverse(&eta_init);
         family.clamp_mu(&mu_init)
     } else {
@@ -704,7 +853,7 @@ fn fit_glm_core(
     let mut eta = link.link(&mu);
     if init_coefficients.is_none() {
         let profile_init_projection_start = Instant::now();
-        let eta_no_offset = &eta - &offset_vec;
+        let eta_no_offset = eta_without_offset(&eta, &offset_vec);
         match solve_weighted_least_squares_penalized(
             x,
             &eta_no_offset,
@@ -716,18 +865,20 @@ fn fit_glm_core(
             sparse_cache,
             None,
         ) {
-            Ok((mut coef, _, _)) if !coef.iter().any(|&c| c.is_nan() || c.is_infinite()) => {
-                for &idx in &config.nonneg_indices {
-                    if idx < coef.len() && coef[idx] < 0.0 {
-                        coef[idx] = 0.0;
-                    }
+            Ok((coef, _, _)) => {
+                if let Some(mut coef) = finite_coefficients_or_none(coef) {
+                    project_coefficients_to_sign_constraints(
+                        &mut coef,
+                        &config.nonneg_indices,
+                        &config.nonpos_indices,
+                    );
+                    iter_coefficients = coef;
+                } else {
+                    warnings.push(
+                        "Initial coefficient projection failed. Starting IRLS from zero coefficients."
+                            .to_string(),
+                    );
                 }
-                for &idx in &config.nonpos_indices {
-                    if idx < coef.len() && coef[idx] > 0.0 {
-                        coef[idx] = 0.0;
-                    }
-                }
-                iter_coefficients = coef;
             }
             _ => {
                 warnings.push(
@@ -736,7 +887,7 @@ fn fit_glm_core(
                 );
             }
         }
-        eta = &matrix_vector_dot_cached(x, &iter_coefficients, sparse_cache) + &offset_vec;
+        eta = linear_predictor_with_offset_cached(x, &iter_coefficients, sparse_cache, &offset_vec);
         mu = family.clamp_mu(&link.inverse(&eta));
         profile.init_projection_seconds = profile_init_projection_start.elapsed().as_secs_f64();
     }
@@ -772,7 +923,7 @@ fn fit_glm_core(
 
     // For constrained problems, track best solution seen (projection can make
     // either deviance or the penalized objective increase).
-    let has_constraints = !config.nonneg_indices.is_empty() || !config.nonpos_indices.is_empty();
+    let has_constraints = has_sign_constraints(&config.nonneg_indices, &config.nonpos_indices);
     let mut best_objective = f64::INFINITY;
     let mut best_deviance = f64::INFINITY;
     let mut best_coefficients = iter_coefficients.clone();
@@ -782,7 +933,7 @@ fn fit_glm_core(
     let mut constrained_best_stale_iterations = 0usize;
     let mut constrained_best_plateau = false;
     let use_poisson_log_weight_buffers =
-        family.name().eq_ignore_ascii_case("poisson") && link.name() == "log";
+        should_use_poisson_log_weight_buffers(family.name(), link.name());
     let weight_buffer_len = if use_poisson_log_weight_buffers { n } else { 0 };
     let mut irls_weights_buf = Array1::zeros(weight_buffer_len);
     let mut combined_weights_buf = Array1::zeros(weight_buffer_len);
@@ -835,7 +986,10 @@ fn fit_glm_core(
                     &working_response_buf,
                 )
             };
-        profile.weight_seconds += profile_weight_start.elapsed().as_secs_f64();
+        add_profile_seconds(
+            &mut profile.weight_seconds,
+            profile_weight_start.elapsed().as_secs_f64(),
+        );
 
         // ---------------------------------------------------------------------
         // Step 4c: Solve weighted least squares: (X'WX)β = X'Wz
@@ -855,22 +1009,40 @@ fn fit_glm_core(
             sparse_cache,
             Some(&iter_coefficients),
         )?;
-        profile.wls_seconds += profile_wls_start.elapsed().as_secs_f64();
-        profile.wls_gram_seconds += wls_profile.gram_seconds;
-        profile.wls_gram_local_init_seconds += wls_profile.gram_local_init_seconds;
-        profile.wls_gram_row_scan_seconds += wls_profile.gram_row_scan_seconds;
-        profile.wls_gram_pairwise_accum_seconds += wls_profile.gram_pairwise_accum_seconds;
-        profile.wls_gram_reduce_seconds += wls_profile.gram_reduce_seconds;
-        profile.wls_gram_materialize_seconds += wls_profile.gram_materialize_seconds;
-        profile.wls_penalty_seconds += wls_profile.penalty_seconds;
-        profile.wls_solve_seconds += wls_profile.solve_seconds;
+        add_profile_seconds(
+            &mut profile.wls_seconds,
+            profile_wls_start.elapsed().as_secs_f64(),
+        );
+        add_profile_seconds(&mut profile.wls_gram_seconds, wls_profile.gram_seconds);
+        add_profile_seconds(
+            &mut profile.wls_gram_local_init_seconds,
+            wls_profile.gram_local_init_seconds,
+        );
+        add_profile_seconds(
+            &mut profile.wls_gram_row_scan_seconds,
+            wls_profile.gram_row_scan_seconds,
+        );
+        add_profile_seconds(
+            &mut profile.wls_gram_pairwise_accum_seconds,
+            wls_profile.gram_pairwise_accum_seconds,
+        );
+        add_profile_seconds(
+            &mut profile.wls_gram_reduce_seconds,
+            wls_profile.gram_reduce_seconds,
+        );
+        add_profile_seconds(
+            &mut profile.wls_gram_materialize_seconds,
+            wls_profile.gram_materialize_seconds,
+        );
+        add_profile_seconds(
+            &mut profile.wls_penalty_seconds,
+            wls_profile.penalty_seconds,
+        );
+        add_profile_seconds(&mut profile.wls_solve_seconds, wls_profile.solve_seconds);
         let profile_update_start = Instant::now();
 
         // Check for NaN in coefficients - indicates numerical instability
-        if new_coefficients
-            .iter()
-            .any(|&c| c.is_nan() || c.is_infinite())
-        {
+        if coefficients_contain_nonfinite(&new_coefficients) {
             return Err(RustyStatsError::NumericalError(
                 "IRLS produced NaN or infinite coefficients. This usually indicates: \
                  (1) severe multicollinearity in predictors, \
@@ -884,18 +1056,11 @@ fn fit_glm_core(
         // ---------------------------------------------------------------------
         // Step 4c.1: Apply coefficient sign constraints
         // ---------------------------------------------------------------------
-        // Project non-negative constrained coefficients to be >= 0 (for ms(), pos())
-        for &idx in &config.nonneg_indices {
-            if idx < new_coefficients.len() && new_coefficients[idx] < 0.0 {
-                new_coefficients[idx] = 0.0;
-            }
-        }
-        // Project non-positive constrained coefficients to be <= 0 (for neg())
-        for &idx in &config.nonpos_indices {
-            if idx < new_coefficients.len() && new_coefficients[idx] > 0.0 {
-                new_coefficients[idx] = 0.0;
-            }
-        }
+        project_coefficients_to_sign_constraints(
+            &mut new_coefficients,
+            &config.nonneg_indices,
+            &config.nonpos_indices,
+        );
 
         // ---------------------------------------------------------------------
         // Step 4d: Update η and μ with step-halving for stability
@@ -914,24 +1079,15 @@ fn fit_glm_core(
         // blending eta, but keeps coefficients and (eta, mu) consistent.
         let accept_threshold = objective_old * IRLS_ACCEPT_REL_SLACK;
 
-        let project = |coef: &mut Array1<f64>| {
-            for &idx in &config.nonneg_indices {
-                if idx < coef.len() && coef[idx] < 0.0 {
-                    coef[idx] = 0.0;
-                }
-            }
-            for &idx in &config.nonpos_indices {
-                if idx < coef.len() && coef[idx] > 0.0 {
-                    coef[idx] = 0.0;
-                }
-            }
-        };
-
         // Try the full Newton step (with constraints projected).
         let mut trial_coefficients = new_coefficients.clone();
-        project(&mut trial_coefficients);
+        project_coefficients_to_sign_constraints(
+            &mut trial_coefficients,
+            &config.nonneg_indices,
+            &config.nonpos_indices,
+        );
         let mut eta_new =
-            &matrix_vector_dot_cached(x, &trial_coefficients, sparse_cache) + &offset_vec;
+            linear_predictor_with_offset_cached(x, &trial_coefficients, sparse_cache, &offset_vec);
         let mut mu_new = family.clamp_mu(&link.inverse(&eta_new));
         let mut deviance_new = family.deviance(y, &mu_new, Some(&prior_weights_vec));
         let mut objective_new = penalized_irls_objective(
@@ -942,10 +1098,8 @@ fn fit_glm_core(
             penalize_intercept,
         );
 
-        let mut step_accepted = eta_new.iter().all(|v| v.is_finite())
-            && mu_new.iter().all(|v| v.is_finite())
-            && objective_new.is_finite()
-            && objective_new <= accept_threshold;
+        let mut step_accepted =
+            trial_state_is_acceptable(&eta_new, &mu_new, objective_new, accept_threshold);
 
         // Step-halving: if the full step worsened the objective, try smaller
         // steps and accept the first one that meets the threshold. The
@@ -957,10 +1111,14 @@ fn fit_glm_core(
                 let mut blended: Array1<f64> = iter_coefficients
                     .iter()
                     .zip(new_coefficients.iter())
-                    .map(|(&old, &new)| (1.0 - step_size) * old + step_size * new)
+                    .map(|(&old, &new)| blend_coefficient(old, new, step_size))
                     .collect();
-                project(&mut blended);
-                let e = &matrix_vector_dot_cached(x, &blended, sparse_cache) + &offset_vec;
+                project_coefficients_to_sign_constraints(
+                    &mut blended,
+                    &config.nonneg_indices,
+                    &config.nonpos_indices,
+                );
+                let e = linear_predictor_with_offset_cached(x, &blended, sparse_cache, &offset_vec);
                 let m = family.clamp_mu(&link.inverse(&e));
                 let d = family.deviance(y, &m, Some(&prior_weights_vec));
                 let o = penalized_irls_objective(
@@ -970,11 +1128,7 @@ fn fit_glm_core(
                     l2_penalty_factors,
                     penalize_intercept,
                 );
-                if e.iter().all(|v| v.is_finite())
-                    && m.iter().all(|v| v.is_finite())
-                    && o.is_finite()
-                    && o <= accept_threshold
-                {
+                if trial_state_is_acceptable(&e, &m, o, accept_threshold) {
                     trial_coefficients = blended;
                     eta_new = e;
                     mu_new = m;
@@ -999,7 +1153,10 @@ fn fit_glm_core(
             step_halving_failed = true;
             iteration = iteration.saturating_sub(1);
             final_weights.assign(irls_weights);
-            profile.update_seconds += profile_update_start.elapsed().as_secs_f64();
+            add_profile_seconds(
+                &mut profile.update_seconds,
+                profile_update_start.elapsed().as_secs_f64(),
+            );
             break;
         }
 
@@ -1010,11 +1167,7 @@ fn fit_glm_core(
         objective = objective_new;
 
         // Relative change in the same objective used for acceptance.
-        let rel_change = if objective_old.abs() > ZERO_TOL {
-            (objective_old - objective).abs() / objective_old.abs()
-        } else {
-            (objective_old - objective).abs()
-        };
+        let rel_change = objective_relative_change(objective_old, objective);
 
         if config.verbose {
             eprintln!(
@@ -1031,7 +1184,7 @@ fn fit_glm_core(
         // iterate; after a short stale window, adopt the best now rather than
         // spending the remaining iteration budget only to recover it at the end.
         if has_constraints {
-            if objective < best_objective {
+            if best_objective_improved(objective, best_objective) {
                 best_objective = objective;
                 best_deviance = deviance;
                 best_coefficients = iter_coefficients.clone();
@@ -1041,10 +1194,13 @@ fn fit_glm_core(
                 constrained_best_stale_iterations = 0;
             } else if best_objective.is_finite() {
                 constrained_best_stale_iterations += 1;
-                if constrained_best_stale_iterations >= CONSTRAINED_BEST_EARLY_STOP_PATIENCE {
+                if should_stop_after_stale_best(constrained_best_stale_iterations) {
                     constrained_best_plateau = true;
                     final_weights.assign(irls_weights);
-                    profile.update_seconds += profile_update_start.elapsed().as_secs_f64();
+                    add_profile_seconds(
+                        &mut profile.update_seconds,
+                        profile_update_start.elapsed().as_secs_f64(),
+                    );
                     break;
                 }
             }
@@ -1059,13 +1215,19 @@ fn fit_glm_core(
         if irls_step_converged(objective_old, objective, rel_change, config.tolerance) {
             converged = true;
             final_weights.assign(irls_weights);
-            profile.update_seconds += profile_update_start.elapsed().as_secs_f64();
+            add_profile_seconds(
+                &mut profile.update_seconds,
+                profile_update_start.elapsed().as_secs_f64(),
+            );
             break;
         }
 
         // Store for final iteration
         final_weights.assign(irls_weights);
-        profile.update_seconds += profile_update_start.elapsed().as_secs_f64();
+        add_profile_seconds(
+            &mut profile.update_seconds,
+            profile_update_start.elapsed().as_secs_f64(),
+        );
     }
 
     // -------------------------------------------------------------------------
@@ -1073,22 +1235,26 @@ fn fit_glm_core(
     // -------------------------------------------------------------------------
     // For constrained problems, use the best solution found during iteration
     // (objective can increase due to projection, so last iteration may not be best)
-    let (mut final_mu, mut final_eta, mut final_deviance, use_coefficients) = if has_constraints
-        && (best_objective < objective || (constrained_best_plateau && best_objective.is_finite()))
-    {
-        // Best solution was found earlier — use it and treat as converged
-        // (sign clamping can cause coefficient oscillation even when deviance
-        // has stabilized, so the best-tracked solution is the correct answer).
-        // Clear the step-halving-failure flag so the reported solver_status
-        // is consistent with converged = true (the best iterate is adopted,
-        // not the worse step that triggered the halving break).
-        converged = true;
-        step_halving_failed = false;
-        final_weights = best_weights;
-        (best_mu, best_eta, best_deviance, best_coefficients)
-    } else {
-        (mu, eta, deviance, iter_coefficients)
-    };
+    let (mut final_mu, mut final_eta, mut final_deviance, use_coefficients) =
+        if should_use_constrained_best(
+            has_constraints,
+            best_objective,
+            objective,
+            constrained_best_plateau,
+        ) {
+            // Best solution was found earlier — use it and treat as converged
+            // (sign clamping can cause coefficient oscillation even when deviance
+            // has stabilized, so the best-tracked solution is the correct answer).
+            // Clear the step-halving-failure flag so the reported solver_status
+            // is consistent with converged = true (the best iterate is adopted,
+            // not the worse step that triggered the halving break).
+            converged = true;
+            step_halving_failed = false;
+            final_weights = best_weights;
+            (best_mu, best_eta, best_deviance, best_coefficients)
+        } else {
+            (mu, eta, deviance, iter_coefficients)
+        };
 
     // Try final coefficient extraction, but fall back to iteration coefficients
     // if it produces NaN. Non-CV fits compute covariance here once, after the
@@ -1098,18 +1264,11 @@ fn fit_glm_core(
         (use_coefficients, Array2::zeros((p, p)))
     } else {
         // Compute working response accounting for offset
-        let eta_no_offset: Array1<f64> = final_eta
-            .iter()
-            .zip(offset_vec.iter())
-            .map(|(&e, &o)| e - o)
-            .collect();
+        let eta_no_offset = eta_without_offset(&final_eta, &offset_vec);
 
         // Combine prior weights with final IRLS weights
-        let combined_final_weights: Array1<f64> = prior_weights_vec
-            .iter()
-            .zip(final_weights.iter())
-            .map(|(&pw, &iw)| pw * iw)
-            .collect();
+        let combined_final_weights =
+            combine_prior_and_irls_weights(&prior_weights_vec, &final_weights);
 
         let final_working_response = compute_working_response(y, &final_mu, &eta_no_offset, link);
 
@@ -1124,7 +1283,7 @@ fn fit_glm_core(
             sparse_cache,
             Some(&use_coefficients),
         ) {
-            Ok((coef, cov, _)) if !coef.iter().any(|&c| c.is_nan() || c.is_infinite()) => {
+            Ok((coef, cov, _)) => {
                 let cov = if cov.iter().all(|v| v.is_finite()) {
                     cov
                 } else {
@@ -1134,114 +1293,82 @@ fn fit_glm_core(
                             .to_string(),
                     ));
                 };
-                // For constrained problems, apply projection and check if it's better than stored best
-                if has_constraints {
-                    let mut proj_coef = coef;
-                    for &idx in &config.nonneg_indices {
-                        if idx < proj_coef.len() && proj_coef[idx] < 0.0 {
-                            proj_coef[idx] = 0.0;
+                if let Some(coef) = finite_coefficients_or_none(coef) {
+                    // For constrained problems, apply projection and check if it's better than stored best
+                    if has_constraints {
+                        let mut proj_coef = coef;
+                        project_coefficients_to_sign_constraints(
+                            &mut proj_coef,
+                            &config.nonneg_indices,
+                            &config.nonpos_indices,
+                        );
+                        // Check if this extraction is better
+                        let eta_check = matrix_vector_dot_cached(x, &proj_coef, sparse_cache);
+                        let eta_full = add_offset_to_linear_predictor(&eta_check, &offset_vec);
+                        let mu_check = family.clamp_mu(&link.inverse(&eta_full));
+                        let dev_check = family.deviance(y, &mu_check, Some(&prior_weights_vec));
+                        if final_extraction_deviance_acceptable(dev_check, final_deviance) {
+                            (proj_coef, cov)
+                        } else {
+                            (use_coefficients, cov)
                         }
-                    }
-                    for &idx in &config.nonpos_indices {
-                        if idx < proj_coef.len() && proj_coef[idx] > 0.0 {
-                            proj_coef[idx] = 0.0;
-                        }
-                    }
-                    // Check if this extraction is better
-                    let eta_check = matrix_vector_dot_cached(x, &proj_coef, sparse_cache);
-                    let eta_full: Array1<f64> = eta_check
-                        .iter()
-                        .zip(offset_vec.iter())
-                        .map(|(&e, &o)| e + o)
-                        .collect();
-                    let mu_check = family.clamp_mu(&link.inverse(&eta_full));
-                    let dev_check = family.deviance(y, &mu_check, Some(&prior_weights_vec));
-                    if dev_check <= final_deviance {
-                        (proj_coef, cov)
                     } else {
-                        (use_coefficients, cov)
+                        // Unconstrained: guard against a final extraction that is worse
+                        // than the loop's retained iterate (RS-ACT-007).
+                        let eta_full = linear_predictor_with_offset_cached(
+                            x,
+                            &coef,
+                            sparse_cache,
+                            &offset_vec,
+                        );
+                        let mu_check = family.clamp_mu(&link.inverse(&eta_full));
+                        let dev_check = family.deviance(y, &mu_check, Some(&prior_weights_vec));
+                        if final_extraction_deviance_acceptable(dev_check, final_deviance) {
+                            (coef, cov)
+                        } else {
+                            (use_coefficients, cov)
+                        }
                     }
                 } else {
-                    // Unconstrained: guard against a final extraction that is worse
-                    // than the loop's retained iterate (RS-ACT-007).
-                    let eta_full = &matrix_vector_dot_cached(x, &coef, sparse_cache) + &offset_vec;
-                    let mu_check = family.clamp_mu(&link.inverse(&eta_full));
-                    let dev_check = family.deviance(y, &mu_check, Some(&prior_weights_vec));
-                    if dev_check.is_finite() && dev_check <= final_deviance {
-                        (coef, cov)
-                    } else {
-                        (use_coefficients, cov)
+                    warnings.push(
+                        "Final coefficient extraction produced NaN/Inf. \
+                        Using coefficients from best iteration instead. This may indicate numerical instability."
+                            .to_string(),
+                    );
+                    if coefficients_contain_nonfinite(&use_coefficients) {
+                        return Err(RustyStatsError::NumericalError(
+                            "IRLS produced NaN or infinite coefficients. This usually indicates: \
+                             (1) severe multicollinearity in predictors, \
+                             (2) extreme scale differences between variables, or \
+                             (3) separation in binary response data. \
+                             Try standardizing continuous predictors or removing correlated terms."
+                                .to_string(),
+                        ));
                     }
+                    (use_coefficients, cov)
                 }
             }
-            Ok((_coef, cov, _)) => {
-                // Final extraction failed or produced NaN - use stored coefficients
+            Err(_) => {
                 warnings.push(
-                    "Final coefficient extraction produced NaN/Inf. \
+                    "Final coefficient extraction failed. \
                     Using coefficients from best iteration instead. This may indicate numerical instability."
                         .to_string(),
                 );
-                if use_coefficients
-                    .iter()
-                    .any(|&c| c.is_nan() || c.is_infinite())
-                {
-                    return Err(RustyStatsError::NumericalError(
-                        "IRLS produced NaN or infinite coefficients. This usually indicates: \
-                         (1) severe multicollinearity in predictors, \
-                         (2) extreme scale differences between variables, or \
-                         (3) separation in binary response data. \
-                         Try standardizing continuous predictors or removing correlated terms."
-                            .to_string(),
-                    ));
-                }
-                let cov_unscaled = if cov.iter().all(|v| v.is_finite()) {
-                    cov
-                } else {
-                    return Err(RustyStatsError::NumericalError(
-                        "Final covariance extraction produced NaN/Inf. \
-                        This usually indicates numerical instability or a nearly singular design matrix."
-                            .to_string(),
-                    ));
-                };
-                (use_coefficients, cov_unscaled)
-            }
-            Err(_) => {
-                return Err(RustyStatsError::LinearAlgebraError(
-                    "Final coefficient/covariance extraction failed. \
-                    This often indicates multicollinearity in predictors."
-                        .to_string(),
-                ));
+                (use_coefficients, Array2::zeros((p, p)))
             }
         }
     };
     profile.final_extraction_seconds = profile_final_extraction_start.elapsed().as_secs_f64();
 
-    // Apply coefficient sign constraints to final coefficients (for unconstrained path)
-    let mut final_coefficients = final_coefficients;
-    if !has_constraints {
-        for &idx in &config.nonneg_indices {
-            if idx < final_coefficients.len() && final_coefficients[idx] < 0.0 {
-                final_coefficients[idx] = 0.0;
-            }
-        }
-        for &idx in &config.nonpos_indices {
-            if idx < final_coefficients.len() && final_coefficients[idx] > 0.0 {
-                final_coefficients[idx] = 0.0;
-            }
-        }
-    }
+    let final_coefficients = final_coefficients;
 
     // CV folds skip covariance and keep the accepted iterate coefficients, so
     // the retained final state above is already consistent. Avoid another
     // full training-set matrix-vector pass for every alpha/fold.
-    if !config.skip_covariance {
+    if should_recompute_final_state(config.skip_covariance) {
         let profile_final_recompute_start = Instant::now();
-        let final_eta_base = matrix_vector_dot_cached(x, &final_coefficients, sparse_cache);
-        final_eta = final_eta_base
-            .iter()
-            .zip(offset_vec.iter())
-            .map(|(&e, &o)| e + o)
-            .collect();
+        final_eta =
+            linear_predictor_with_offset_cached(x, &final_coefficients, sparse_cache, &offset_vec);
         final_mu = family.clamp_mu(&link.inverse(&final_eta));
         final_deviance = family.deviance(y, &final_mu, Some(&prior_weights_vec));
         profile.final_recompute_seconds = profile_final_recompute_start.elapsed().as_secs_f64();
@@ -1255,7 +1382,7 @@ fn fit_glm_core(
     } else {
         "max_iterations"
     };
-    if !converged {
+    if should_warn_nonconverged(converged) {
         warnings.push(format!(
             "IRLS did not converge (status: {solver_status}). Results may be \
              unreliable; consider increasing max_iter, loosening tol, or rescaling \
@@ -1452,7 +1579,10 @@ fn compute_xtwx_xtwz_profiled(
                     }
                 }
                 if let Some(start) = pairwise_start {
-                    profile.pairwise_accum_seconds += start.elapsed().as_secs_f64();
+                    add_profile_seconds(
+                        &mut profile.pairwise_accum_seconds,
+                        start.elapsed().as_secs_f64(),
+                    );
                 }
             }
             (xtx_local, xtz_local, profile)
@@ -1468,7 +1598,10 @@ fn compute_xtwx_xtwz_profiled(
                     a_xtz[i] += b_xtz[i];
                 }
                 if let Some(start) = reduce_start {
-                    a_profile.reduce_seconds += start.elapsed().as_secs_f64();
+                    add_profile_seconds(
+                        &mut a_profile.reduce_seconds,
+                        start.elapsed().as_secs_f64(),
+                    );
                 }
                 (a_xtx, a_xtz, a_profile)
             },
@@ -1654,22 +1787,30 @@ fn sampled_density(x_slice: &[f64], n: usize, p: usize) -> f64 {
     nonzero as f64 / (sample_rows * p) as f64
 }
 
+fn sparse_row_cache_estimated_nnz(density: f64, n: usize, p: usize) -> f64 {
+    density * (n as f64) * (p as f64)
+}
+
+fn should_build_sparse_row_cache(n: usize, p: usize, density: f64) -> bool {
+    if n == 0 || p < 16 {
+        return false;
+    }
+    let estimated_nnz = sparse_row_cache_estimated_nnz(density, n, p);
+    density <= SPARSE_ROW_CACHE_DENSITY_THRESHOLD
+        && estimated_nnz <= 60_000_000.0
+        && n.saturating_mul(p) >= 10_000_000
+}
+
 pub fn build_sparse_row_cache_if_beneficial(x: ArrayView2<'_, f64>) -> Option<SparseRowCache> {
     let n = x.nrows();
     let p = x.ncols();
-    if n == 0 || p < 16 {
-        return None;
-    }
     let x_slice = x.as_slice()?;
     let density = sampled_density(x_slice, n, p);
-    let estimated_nnz = density * (n as f64) * (p as f64);
-    if density > SPARSE_ROW_CACHE_DENSITY_THRESHOLD
-        || estimated_nnz > 60_000_000.0
-        || n.saturating_mul(p) < 10_000_000
-    {
+    if !should_build_sparse_row_cache(n, p, density) {
         return None;
     }
 
+    let estimated_nnz = sparse_row_cache_estimated_nnz(density, n, p);
     let reserve_nnz = estimated_nnz.ceil() as usize;
     let mut offsets = Vec::with_capacity(n + 1);
     let mut indices = Vec::with_capacity(reserve_nnz);
@@ -1738,8 +1879,8 @@ fn accumulate_sparse_row_pairwise(
             *xtz_ptr.add(i) += xki * wz;
             let base = *packed_offsets.get_unchecked(i) - i;
 
-            let mut b = a;
-            while b + 4 <= len {
+            let unrolled_end = sparse_pairwise_unrolled_end(a, len);
+            for b in (a..unrolled_end).step_by(4) {
                 let j0 = *idx_ptr.add(b);
                 let j1 = *idx_ptr.add(b + 1);
                 let j2 = *idx_ptr.add(b + 2);
@@ -1748,12 +1889,10 @@ fn accumulate_sparse_row_pairwise(
                 *xtx_ptr.add(base + j1) += xki_w * *val_ptr.add(b + 1);
                 *xtx_ptr.add(base + j2) += xki_w * *val_ptr.add(b + 2);
                 *xtx_ptr.add(base + j3) += xki_w * *val_ptr.add(b + 3);
-                b += 4;
             }
-            while b < len {
+            for b in unrolled_end..len {
                 let j = *idx_ptr.add(b);
                 *xtx_ptr.add(base + j) += xki_w * *val_ptr.add(b);
-                b += 1;
             }
         }
     }
@@ -1786,8 +1925,8 @@ fn accumulate_cached_sparse_row_pairwise(
             *xtz_ptr.add(i) += xki * wz;
             let base = *packed_offsets_ptr.add(i) - i;
 
-            let mut b = a;
-            while b + 4 <= end {
+            let unrolled_end = sparse_pairwise_unrolled_end(a, end);
+            for b in (a..unrolled_end).step_by(4) {
                 let j0 = *idx_ptr.add(b) as usize;
                 let j1 = *idx_ptr.add(b + 1) as usize;
                 let j2 = *idx_ptr.add(b + 2) as usize;
@@ -1796,12 +1935,10 @@ fn accumulate_cached_sparse_row_pairwise(
                 *xtx_ptr.add(base + j1) += xki_w * *val_ptr.add(b + 1);
                 *xtx_ptr.add(base + j2) += xki_w * *val_ptr.add(b + 2);
                 *xtx_ptr.add(base + j3) += xki_w * *val_ptr.add(b + 3);
-                b += 4;
             }
-            while b < end {
+            for b in unrolled_end..end {
                 let j = *idx_ptr.add(b) as usize;
                 *xtx_ptr.add(base + j) += xki_w * *val_ptr.add(b);
-                b += 1;
             }
         }
     }
@@ -1871,7 +2008,10 @@ fn compute_xtwx_xtwz_sparse_cached(
                     wz,
                 );
                 if let Some(start) = pairwise_start {
-                    profile.pairwise_accum_seconds += start.elapsed().as_secs_f64();
+                    add_profile_seconds(
+                        &mut profile.pairwise_accum_seconds,
+                        start.elapsed().as_secs_f64(),
+                    );
                 }
             }
             (xtx_local, xtz_local, profile)
@@ -1887,7 +2027,10 @@ fn compute_xtwx_xtwz_sparse_cached(
                     a_xtz[i] += b_xtz[i];
                 }
                 if let Some(start) = reduce_start {
-                    a_profile.reduce_seconds += start.elapsed().as_secs_f64();
+                    add_profile_seconds(
+                        &mut a_profile.reduce_seconds,
+                        start.elapsed().as_secs_f64(),
+                    );
                 }
                 (a_xtx, a_xtz, a_profile)
             },
@@ -1935,7 +2078,7 @@ fn matrix_vector_dot(x: ArrayView2<'_, f64>, coefficients: &Array1<f64>) -> Arra
         Some(slice) => slice,
         None => return x.dot(coefficients),
     };
-    if n.saturating_mul(p) < 1_000_000 || rayon::current_num_threads() <= 1 {
+    if should_fallback_to_serial_matrix_vector_dot(n, p) {
         return x.dot(coefficients);
     }
 
@@ -2005,10 +2148,23 @@ pub fn matrix_vector_dot_cached(
 
 #[inline]
 fn should_use_sparse_xtwx_kernel(x_slice: &[f64], n: usize, p: usize) -> bool {
-    if n == 0 || p < 16 {
-        return false;
-    }
-    sampled_density(x_slice, n, p) <= SPARSE_XTWX_DENSITY_THRESHOLD
+    should_use_sparse_xtwx_kernel_at_density(n, p, sampled_density(x_slice, n, p))
+}
+
+fn should_use_sparse_xtwx_kernel_at_density(n: usize, p: usize, density: f64) -> bool {
+    n != 0 && p >= 16 && density <= SPARSE_XTWX_DENSITY_THRESHOLD
+}
+
+fn should_use_parallel_matrix_vector_dot(n: usize, p: usize) -> bool {
+    n.saturating_mul(p) >= 1_000_000 && rayon::current_num_threads() > 1
+}
+
+fn should_fallback_to_serial_matrix_vector_dot(n: usize, p: usize) -> bool {
+    !should_use_parallel_matrix_vector_dot(n, p)
+}
+
+fn sparse_pairwise_unrolled_end(start: usize, end: usize) -> usize {
+    start + ((end - start) / 4) * 4
 }
 
 #[inline]
@@ -2056,7 +2212,10 @@ fn compute_xtwx_xtwz_sparse(
                     }
                 }
                 if let Some(start) = row_scan_start {
-                    profile.row_scan_seconds += start.elapsed().as_secs_f64();
+                    add_profile_seconds(
+                        &mut profile.row_scan_seconds,
+                        start.elapsed().as_secs_f64(),
+                    );
                 }
 
                 if nz_idx.is_empty() {
@@ -2078,7 +2237,10 @@ fn compute_xtwx_xtwz_sparse(
                     wz,
                 );
                 if let Some(start) = pairwise_start {
-                    profile.pairwise_accum_seconds += start.elapsed().as_secs_f64();
+                    add_profile_seconds(
+                        &mut profile.pairwise_accum_seconds,
+                        start.elapsed().as_secs_f64(),
+                    );
                 }
             }
             (xtx_local, xtz_local, profile)
@@ -2094,7 +2256,10 @@ fn compute_xtwx_xtwz_sparse(
                     a_xtz[i] += b_xtz[i];
                 }
                 if let Some(start) = reduce_start {
-                    a_profile.reduce_seconds += start.elapsed().as_secs_f64();
+                    add_profile_seconds(
+                        &mut a_profile.reduce_seconds,
+                        start.elapsed().as_secs_f64(),
+                    );
                 }
                 (a_xtx, a_xtz, a_profile)
             },
@@ -2255,6 +2420,60 @@ fn pcg_tolerance() -> f64 {
         .unwrap_or(1e-6)
 }
 
+fn pcg_input_slices_have_expected_lengths(
+    x_len: usize,
+    z_len: usize,
+    w_len: usize,
+    n: usize,
+    p: usize,
+) -> bool {
+    x_len == n * p && z_len == n && w_len == n
+}
+
+fn pcg_positive_finite(value: f64) -> bool {
+    value.is_finite() && value > 0.0
+}
+
+fn pcg_residual_component(rhs: f64, applied: f64) -> f64 {
+    rhs - applied
+}
+
+fn pcg_precondition_residual(residual: f64, diagonal: f64) -> f64 {
+    if pcg_positive_finite(diagonal) {
+        residual / diagonal
+    } else {
+        residual
+    }
+}
+
+fn pcg_scaled_tolerance(tolerance: f64, rhs_norm: f64) -> f64 {
+    tolerance * rhs_norm
+}
+
+fn pcg_step_size(rho: f64, denom: f64) -> f64 {
+    rho / denom
+}
+
+fn pcg_beta(rho_next: f64, rho: f64) -> f64 {
+    rho_next / rho
+}
+
+fn pcg_direction_component(z_precond: f64, beta_cg: f64, old_direction: f64) -> f64 {
+    z_precond + beta_cg * old_direction
+}
+
+fn should_try_ridge_cv_pcg(skip_covariance: bool, l2_penalty: f64) -> bool {
+    skip_covariance && l2_penalty > 0.0 && std::env::var_os("RUSTYSTATS_RIDGE_CV_PCG").is_some()
+}
+
+fn should_apply_l2_penalty(l2_penalty: f64) -> bool {
+    l2_penalty > 0.0
+}
+
+fn penalty_matrix_shape_matches(p: usize, rows: usize, cols: usize) -> bool {
+    rows == p && cols == p
+}
+
 #[allow(clippy::too_many_arguments)]
 fn solve_weighted_least_squares_pcg(
     x: ArrayView2<'_, f64>,
@@ -2280,7 +2499,7 @@ fn solve_weighted_least_squares_pcg(
         Some(slice) => slice,
         None => return Ok(None),
     };
-    if x_slice.len() != n * p || z_slice.len() != n || w_slice.len() != n {
+    if !pcg_input_slices_have_expected_lengths(x_slice.len(), z_slice.len(), w_slice.len(), n, p) {
         return Ok(None);
     }
     if let Some(init) = initial_guess {
@@ -2322,25 +2541,25 @@ fn solve_weighted_least_squares_pcg(
         );
         rhs.iter()
             .zip(applied.iter())
-            .map(|(&b, &av)| b - av)
+            .map(|(&b, &av)| pcg_residual_component(b, av))
             .collect::<Vec<_>>()
     };
     let mut z_precond = residual
         .iter()
         .zip(diagonal.iter())
-        .map(|(&r, &d)| if d > 0.0 && d.is_finite() { r / d } else { r })
+        .map(|(&r, &d)| pcg_precondition_residual(r, d))
         .collect::<Vec<_>>();
     let mut direction = z_precond.clone();
     let mut rho = dot_slices(&residual, &z_precond);
     let rhs_norm = dot_slices(&rhs, &rhs).sqrt().max(1.0);
-    let tolerance = pcg_tolerance() * rhs_norm;
+    let tolerance = pcg_scaled_tolerance(pcg_tolerance(), rhs_norm);
     if dot_slices(&residual, &residual).sqrt() <= tolerance {
         profile.solve_seconds = solve_start.elapsed().as_secs_f64();
         return Ok(Some(Array1::from_vec(beta)));
     }
 
     for _ in 0..pcg_max_iterations() {
-        if !rho.is_finite() || rho <= 0.0 {
+        if !pcg_positive_finite(rho) {
             return Ok(None);
         }
         let mat_direction = weighted_normal_matvec_sparse_scan(
@@ -2354,10 +2573,10 @@ fn solve_weighted_least_squares_pcg(
             penalize_intercept,
         );
         let denom = dot_slices(&direction, &mat_direction);
-        if !denom.is_finite() || denom <= 0.0 {
+        if !pcg_positive_finite(denom) {
             return Ok(None);
         }
-        let step = rho / denom;
+        let step = pcg_step_size(rho, denom);
         for j in 0..p {
             beta[j] += step * direction[j];
             residual[j] -= step * mat_direction[j];
@@ -2369,19 +2588,15 @@ fn solve_weighted_least_squares_pcg(
         }
         for j in 0..p {
             let d = diagonal[j];
-            z_precond[j] = if d > 0.0 && d.is_finite() {
-                residual[j] / d
-            } else {
-                residual[j]
-            };
+            z_precond[j] = pcg_precondition_residual(residual[j], d);
         }
         let rho_next = dot_slices(&residual, &z_precond);
         if !rho_next.is_finite() {
             return Ok(None);
         }
-        let beta_cg = rho_next / rho;
+        let beta_cg = pcg_beta(rho_next, rho);
         for j in 0..p {
-            direction[j] = z_precond[j] + beta_cg * direction[j];
+            direction[j] = pcg_direction_component(z_precond[j], beta_cg, direction[j]);
         }
         rho = rho_next;
     }
@@ -2562,8 +2777,7 @@ fn solve_weighted_least_squares_penalized(
     }
     let mut profile = WLSSolveProfile::default();
 
-    if skip_covariance && l2_penalty > 0.0 && std::env::var_os("RUSTYSTATS_RIDGE_CV_PCG").is_some()
-    {
+    if should_try_ridge_cv_pcg(skip_covariance, l2_penalty) {
         if let Some(coefficients) = solve_weighted_least_squares_pcg(
             x,
             z,
@@ -2594,7 +2808,7 @@ fn solve_weighted_least_squares_penalized(
     // Add L2 (Ridge) penalty to diagonal: (X'WX + λI)
     // The intercept (first column) is typically NOT penalized.
     let penalty_start = Instant::now();
-    if l2_penalty > 0.0 {
+    if should_apply_l2_penalty(l2_penalty) {
         let start_idx = if penalize_intercept { 0 } else { 1 };
         for j in start_idx..p {
             let factor = l2_penalty_factors.map_or(1.0, |factors| factors[j]);
@@ -2654,7 +2868,7 @@ pub fn solve_weighted_least_squares_with_penalty_matrix(
     let p = x.ncols();
 
     // Validate penalty matrix dimensions
-    if penalty_matrix.nrows() != p || penalty_matrix.ncols() != p {
+    if !penalty_matrix_shape_matches(p, penalty_matrix.nrows(), penalty_matrix.ncols()) {
         return Err(RustyStatsError::dim_mismatch(
             p,
             penalty_matrix.nrows(),
@@ -2717,11 +2931,14 @@ pub fn solve_wls_from_precomputed(
 ///
 /// This is needed for computing effective degrees of freedom in penalized regression.
 pub fn compute_xtwx(x: ArrayView2<'_, f64>, w: &Array1<f64>) -> Array2<f64> {
-    let n = x.nrows();
     let p = x.ncols();
 
-    let xtx_data = match (x.as_slice(), w.as_slice()) {
-        (Some(x_slice), Some(w_slice)) => {
+    let xtx_data = match xtwx_storage_path(x, w) {
+        XtwxStoragePath::Contiguous { n, p } => {
+            let x_slice = x.as_slice().expect("contiguous route requires X slice");
+            let w_slice = w
+                .as_slice()
+                .expect("contiguous route requires weight slice");
             assert_eq!(x_slice.len(), n * p, "x_slice length must be n*p");
             assert_eq!(w_slice.len(), n, "w_slice length must be n");
             if should_use_sparse_xtwx_kernel(x_slice, n, p) {
@@ -2730,10 +2947,26 @@ pub fn compute_xtwx(x: ArrayView2<'_, f64>, w: &Array1<f64>) -> Array2<f64> {
                 compute_xtwx_dense_data(x_slice, w_slice, n, p)
             }
         }
-        _ => compute_xtwx_strided_data(x, w, n, p),
+        XtwxStoragePath::Strided => compute_xtwx_strided_data(x, w, x.nrows(), p),
     };
 
     xtx_data_to_array2(xtx_data, p)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum XtwxStoragePath {
+    Contiguous { n: usize, p: usize },
+    Strided,
+}
+
+fn xtwx_storage_path(x: ArrayView2<'_, f64>, w: &Array1<f64>) -> XtwxStoragePath {
+    match (x.as_slice(), w.as_slice()) {
+        (Some(_), Some(_)) => XtwxStoragePath::Contiguous {
+            n: x.nrows(),
+            p: x.ncols(),
+        },
+        _ => XtwxStoragePath::Strided,
+    }
 }
 
 /// Compute `X.T @ diag(w) @ X`, reusing a pre-built sparse row cache when it
@@ -2989,7 +3222,1775 @@ mod tests {
     use super::*;
     use crate::families::{BinomialFamily, GaussianFamily, PoissonFamily};
     use crate::links::{IdentityLink, LogLink, LogitLink};
-    use ndarray::{array, Array2};
+    use ndarray::{array, s, Array2, ShapeBuilder};
+    use std::{borrow::Cow, ffi::OsString, sync::Mutex};
+
+    fn assert_array1_close(actual: &Array1<f64>, expected: &Array1<f64>, tol: f64) {
+        assert_eq!(actual.len(), expected.len());
+        for (idx, (&a, &e)) in actual.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (a - e).abs() < tol,
+                "mismatch at {idx}: actual={a}, expected={e}, tol={tol}"
+            );
+        }
+    }
+
+    fn assert_array2_close(actual: &Array2<f64>, expected: &Array2<f64>, tol: f64) {
+        assert_eq!(actual.dim(), expected.dim());
+        for i in 0..actual.nrows() {
+            for j in 0..actual.ncols() {
+                let a = actual[[i, j]];
+                let e = expected[[i, j]];
+                assert!(
+                    (a - e).abs() < tol,
+                    "mismatch at ({i}, {j}): actual={a}, expected={e}, tol={tol}"
+                );
+            }
+        }
+    }
+
+    fn assert_linear_algebra_contains(err: RustyStatsError, expected: &str) {
+        match err {
+            RustyStatsError::LinearAlgebraError(message) => assert!(
+                message.contains(expected),
+                "expected linear algebra message to contain '{expected}', got '{message}'"
+            ),
+            other => panic!("expected LinearAlgebraError, got {other:?}"),
+        }
+    }
+
+    fn strided3(values: [f64; 3]) -> Array1<f64> {
+        Array1::from_shape_vec(
+            (3usize).strides(2),
+            vec![values[0], 99.0, values[1], 99.0, values[2]],
+        )
+        .expect("valid strided vector")
+    }
+
+    fn strided3_buffer() -> Array1<f64> {
+        strided3([0.0, 0.0, 0.0])
+    }
+
+    fn manual_sparse_cache(x: &Array2<f64>) -> SparseRowCache {
+        let n = x.nrows();
+        let p = x.ncols();
+        let x_slice = x.as_slice().expect("test matrix should be contiguous");
+        let mut offsets = Vec::with_capacity(n + 1);
+        let mut indices = Vec::new();
+        let mut values = Vec::new();
+        offsets.push(0);
+        for row in 0..n {
+            let row_start = row * p;
+            for col in 0..p {
+                let value = x_slice[row_start + col];
+                if value != 0.0 {
+                    indices.push(col as u32);
+                    values.push(value);
+                }
+            }
+            offsets.push(indices.len());
+        }
+        SparseRowCache {
+            n,
+            p,
+            data_ptr: x_slice.as_ptr() as usize,
+            offsets,
+            indices,
+            values,
+            packed_offsets: packed_upper_offsets(p),
+        }
+    }
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+
+        fn unset(key: &'static str) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::remove_var(key);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    struct InvalidInitGaussian;
+
+    impl Family for InvalidInitGaussian {
+        fn name(&self) -> &str {
+            "InvalidInitGaussian"
+        }
+
+        fn variance<'a>(&self, mu: &'a Array1<f64>) -> Cow<'a, Array1<f64>> {
+            Cow::Owned(Array1::ones(mu.len()))
+        }
+
+        fn unit_deviance(&self, y: &Array1<f64>, mu: &Array1<f64>) -> Array1<f64> {
+            (y - mu).mapv(|value| value * value)
+        }
+
+        fn unit_deviance_at(&self, yi: f64, mui: f64) -> f64 {
+            let diff = yi - mui;
+            diff * diff
+        }
+
+        fn default_link(&self) -> Box<dyn Link> {
+            Box::new(IdentityLink)
+        }
+
+        fn initialize_mu(&self, y: &Array1<f64>) -> Array1<f64> {
+            Array1::from_elem(y.len(), f64::NAN)
+        }
+
+        fn is_valid_mu(&self, mu: &Array1<f64>) -> bool {
+            mu.iter().all(|value| value.is_finite())
+        }
+
+        fn clamp_mu(&self, mu: &Array1<f64>) -> Array1<f64> {
+            mu.mapv(|value| if value.is_finite() { value } else { 0.0 })
+        }
+    }
+
+    #[test]
+    fn test_fit_config_builders_and_irls_conversion_contracts() {
+        let reg = RegularizationConfig::ridge(0.25).with_intercept(false);
+        let config = FitConfig::default()
+            .with_regularization(reg.clone())
+            .with_max_iterations(17)
+            .with_tolerance(1e-5)
+            .with_verbose(true)
+            .with_nonneg_indices(vec![1, 3])
+            .with_nonpos_indices(vec![2])
+            .with_skip_covariance(true);
+
+        assert_eq!(config.max_iterations, 17);
+        assert_eq!(config.tolerance, 1e-5);
+        assert!(config.verbose);
+        assert_eq!(config.nonneg_indices, vec![1, 3]);
+        assert_eq!(config.nonpos_indices, vec![2]);
+        assert!(config.skip_covariance);
+        assert_eq!(config.regularization.penalty, reg.penalty);
+        assert!(!config.regularization.fit_intercept);
+
+        let irls = config.to_irls_config();
+        assert_eq!(irls.max_iterations, 17);
+        assert_eq!(irls.tolerance, 1e-5);
+        assert!(irls.verbose);
+        assert_eq!(irls.nonneg_indices, vec![1, 3]);
+        assert_eq!(irls.nonpos_indices, vec![2]);
+        assert!(irls.skip_covariance);
+
+        let legacy = IRLSConfig {
+            max_iterations: 9,
+            tolerance: 1e-4,
+            min_weight: 1e-7,
+            verbose: true,
+            nonneg_indices: vec![4],
+            nonpos_indices: vec![5],
+            skip_covariance: true,
+        };
+        let from_legacy = FitConfig::from(&legacy);
+        assert_eq!(from_legacy.max_iterations, legacy.max_iterations);
+        assert_eq!(from_legacy.tolerance, legacy.tolerance);
+        assert_eq!(from_legacy.min_weight, legacy.min_weight);
+        assert!(from_legacy.verbose);
+        assert_eq!(from_legacy.nonneg_indices, vec![4]);
+        assert_eq!(from_legacy.nonpos_indices, vec![5]);
+        assert!(from_legacy.regularization.penalty.is_none());
+        assert!(
+            !from_legacy.skip_covariance,
+            "legacy conversion intentionally preserves the historical default"
+        );
+    }
+
+    #[test]
+    fn test_irls_scalar_helper_edge_contracts() {
+        assert_eq!(packed_upper_len(0), 0);
+        assert_eq!(packed_upper_len(1), 1);
+        assert_eq!(packed_upper_len(4), 10);
+        assert_eq!(
+            SPARSE_XTWX_LOCAL_MATRIX_CAP_THRESHOLD_BYTES,
+            1024 * 1024,
+            "sparse XTWX local Gram cap is intentionally 1 MiB, not 1 KiB-scale"
+        );
+
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .expect("test thread pool should build");
+        pool.install(|| {
+            assert_eq!(sparse_xtwx_chunk_count(1, 2), 1);
+            assert_eq!(sparse_xtwx_chunk_count(3, 2), 3);
+            assert_eq!(
+                sparse_xtwx_chunk_count(10, 23),
+                4,
+                "small local Gram matrices should use the full pool"
+            );
+            assert_eq!(sparse_xtwx_chunk_count(10, 600), SPARSE_XTWX_THREAD_CAP);
+            assert_eq!(poisson_log_weight_chunk_size(33), 3);
+        });
+
+        assert!(!irls_step_converged(100.0, 99.0, 1e-4, 1e-4));
+        assert!(irls_step_converged(100.0, 99.999, 1e-5, 1e-4));
+    }
+
+    #[test]
+    fn test_profile_helpers_and_env_flag_have_exact_contracts() {
+        let mut profile = GramBuildProfile {
+            local_init_seconds: 1.0,
+            row_scan_seconds: 2.0,
+            pairwise_accum_seconds: 3.0,
+            reduce_seconds: 4.0,
+            materialize_seconds: 5.0,
+        };
+        let other = GramBuildProfile {
+            local_init_seconds: 0.5,
+            row_scan_seconds: 1.5,
+            pairwise_accum_seconds: 2.5,
+            reduce_seconds: 3.5,
+            materialize_seconds: 4.5,
+        };
+        profile.add(&other);
+        assert_eq!(profile.local_init_seconds, 1.5);
+        assert_eq!(profile.row_scan_seconds, 3.5);
+        assert_eq!(profile.pairwise_accum_seconds, 5.5);
+        assert_eq!(profile.reduce_seconds, 7.5);
+        assert_eq!(profile.materialize_seconds, 9.5);
+
+        let mut total = 1.25;
+        add_profile_seconds(&mut total, 2.75);
+        assert_eq!(total, 4.0);
+
+        let _env_lock = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        {
+            let _unset = EnvVarGuard::unset("RUSTYSTATS_PROFILE_GRAM_SUBTIMERS");
+            assert!(!profile_gram_subtimers_enabled());
+        }
+        {
+            let _set = EnvVarGuard::set("RUSTYSTATS_PROFILE_GRAM_SUBTIMERS", "1");
+            assert!(profile_gram_subtimers_enabled());
+        }
+    }
+
+    #[test]
+    fn test_sparse_routing_and_cache_threshold_helpers_have_exact_contracts() {
+        let density_fixture = vec![1.0, 0.0, 2.0, 0.0, 3.0, 0.0, 4.0, 0.0, 0.0, 5.0, 0.0, 0.0];
+        assert_eq!(sampled_density(&density_fixture, 4, 3), 5.0 / 12.0);
+
+        assert_eq!(
+            sparse_row_cache_estimated_nnz(0.3, 2_000_000, 100),
+            60_000_000.0
+        );
+        assert!(!should_build_sparse_row_cache(0, 16, 0.0));
+        assert!(!should_build_sparse_row_cache(625_000, 15, 0.0));
+        assert!(!should_build_sparse_row_cache(1_000_000, 15, 0.0));
+        assert!(!should_build_sparse_row_cache(624_999, 16, 0.0));
+        assert!(should_build_sparse_row_cache(
+            625_000,
+            16,
+            SPARSE_ROW_CACHE_DENSITY_THRESHOLD
+        ));
+        assert!(!should_build_sparse_row_cache(
+            625_000,
+            16,
+            SPARSE_ROW_CACHE_DENSITY_THRESHOLD + 1e-12
+        ));
+        assert!(should_build_sparse_row_cache(2_000_000, 100, 0.3));
+        assert!(!should_build_sparse_row_cache(2_000_000, 100, 0.30000001));
+
+        assert!(!should_use_sparse_xtwx_kernel_at_density(0, 16, 0.0));
+        assert!(!should_use_sparse_xtwx_kernel_at_density(10, 15, 0.0));
+        assert!(should_use_sparse_xtwx_kernel_at_density(
+            10,
+            16,
+            SPARSE_XTWX_DENSITY_THRESHOLD
+        ));
+        assert!(!should_use_sparse_xtwx_kernel_at_density(
+            10,
+            16,
+            SPARSE_XTWX_DENSITY_THRESHOLD + 1e-12
+        ));
+
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .expect("test thread pool should build");
+        pool.install(|| {
+            assert!(!should_use_parallel_matrix_vector_dot(999, 1001));
+            assert!(should_fallback_to_serial_matrix_vector_dot(999, 1001));
+            assert!(should_use_parallel_matrix_vector_dot(1000, 1000));
+            assert!(!should_fallback_to_serial_matrix_vector_dot(1000, 1000));
+        });
+        let single_thread_pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .expect("test thread pool should build");
+        single_thread_pool.install(|| {
+            assert!(!should_use_parallel_matrix_vector_dot(1000, 1000));
+            assert!(should_fallback_to_serial_matrix_vector_dot(1000, 1000));
+        });
+
+        let x = Array2::from_shape_vec(
+            (2, 16),
+            vec![
+                1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0,
+                0.0, 3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0,
+            ],
+        )
+        .expect("test matrix should be valid");
+        let cache = manual_sparse_cache(&x);
+        assert!(cache.is_compatible_with(x.view()));
+        let same_shape_different_storage = x.clone();
+        assert!(!cache.is_compatible_with(same_shape_different_storage.view()));
+        let different_rows = x.slice(s![..1, ..]);
+        assert!(!cache.is_compatible_with(different_rows));
+        let different_cols = Array2::<f64>::zeros((2, 17));
+        assert!(!cache.is_compatible_with(different_cols.view()));
+    }
+
+    #[test]
+    fn test_sparse_pairwise_accumulators_match_manual_packed_formula() {
+        let p = 6usize;
+        let packed_offsets = packed_upper_offsets(p);
+        let nz_idx = vec![0usize, 1, 2, 4, 5];
+        let nz_val = vec![1.0, -2.0, 0.5, 3.0, -1.5];
+        let wk = 2.0;
+        let wz = -1.25;
+
+        assert_eq!(sparse_pairwise_unrolled_end(0, 5), 4);
+        assert_eq!(sparse_pairwise_unrolled_end(1, 5), 5);
+        assert_eq!(sparse_pairwise_unrolled_end(2, 5), 2);
+
+        let mut expected_xtx = vec![0.0; packed_upper_len(p)];
+        let mut expected_xtz = vec![0.0; p];
+        for a in 0..nz_idx.len() {
+            let i = nz_idx[a];
+            let xki = nz_val[a];
+            let xki_w = xki * wk;
+            expected_xtz[i] += xki * wz;
+            let base = packed_offsets[i] - i;
+            for b in a..nz_idx.len() {
+                expected_xtx[base + nz_idx[b]] += xki_w * nz_val[b];
+            }
+        }
+
+        let mut actual_xtx = vec![0.0; packed_upper_len(p)];
+        let mut actual_xtz = vec![0.0; p];
+        accumulate_sparse_row_pairwise(
+            &mut actual_xtx,
+            &mut actual_xtz,
+            &packed_offsets,
+            &nz_idx,
+            &nz_val,
+            wk,
+            wz,
+        );
+        for (idx, (actual, expected)) in actual_xtx.iter().zip(expected_xtx.iter()).enumerate() {
+            assert!(
+                (actual - expected).abs() < 1e-12,
+                "uncached packed xtx mismatch at {idx}: actual={actual}, expected={expected}"
+            );
+        }
+        assert_array1_close(
+            &Array1::from_vec(actual_xtz.clone()),
+            &Array1::from_vec(expected_xtz.clone()),
+            1e-12,
+        );
+
+        let cache = SparseRowCache {
+            n: 1,
+            p,
+            data_ptr: 0,
+            offsets: vec![0, nz_idx.len()],
+            indices: nz_idx.iter().map(|&idx| idx as u32).collect(),
+            values: nz_val.clone(),
+            packed_offsets,
+        };
+        let mut cached_xtx = vec![0.0; packed_upper_len(p)];
+        let mut cached_xtz = vec![0.0; p];
+        accumulate_cached_sparse_row_pairwise(
+            &cache,
+            0,
+            nz_idx.len(),
+            &mut cached_xtx,
+            &mut cached_xtz,
+            wk,
+            wz,
+        );
+        for (idx, (actual, expected)) in cached_xtx.iter().zip(expected_xtx.iter()).enumerate() {
+            assert!(
+                (actual - expected).abs() < 1e-12,
+                "cached packed xtx mismatch at {idx}: actual={actual}, expected={expected}"
+            );
+        }
+        assert_array1_close(
+            &Array1::from_vec(cached_xtz),
+            &Array1::from_vec(expected_xtz),
+            1e-12,
+        );
+    }
+
+    #[test]
+    fn test_pcg_and_ridge_scalar_helpers_have_exact_contracts() {
+        assert!(pcg_input_slices_have_expected_lengths(12, 3, 3, 3, 4));
+        assert!(!pcg_input_slices_have_expected_lengths(11, 3, 3, 3, 4));
+        assert!(!pcg_input_slices_have_expected_lengths(12, 2, 3, 3, 4));
+        assert!(!pcg_input_slices_have_expected_lengths(12, 3, 2, 3, 4));
+
+        assert!(pcg_positive_finite(1.0));
+        assert!(!pcg_positive_finite(0.0));
+        assert!(!pcg_positive_finite(-1.0));
+        assert!(!pcg_positive_finite(f64::INFINITY));
+        assert!(!pcg_positive_finite(f64::NAN));
+        assert_eq!(pcg_residual_component(7.0, 2.5), 4.5);
+        assert_eq!(pcg_precondition_residual(8.0, 4.0), 2.0);
+        assert_eq!(pcg_precondition_residual(8.0, 0.0), 8.0);
+        assert_eq!(pcg_precondition_residual(8.0, -1.0), 8.0);
+        assert_eq!(pcg_precondition_residual(8.0, f64::INFINITY), 8.0);
+        assert_eq!(pcg_scaled_tolerance(0.01, 5.0), 0.05);
+        assert_eq!(pcg_step_size(6.0, 3.0), 2.0);
+        assert_eq!(pcg_beta(2.0, 8.0), 0.25);
+        assert_eq!(pcg_direction_component(3.0, 0.25, 8.0), 5.0);
+
+        let weights = array![0.0, 2.0, 0.0];
+        assert!(!ridge_system_is_positive_definite_fast_path(
+            &weights, 0.0, None, false, 3
+        ));
+        assert!(!ridge_system_is_positive_definite_fast_path(
+            &array![0.0, 0.0],
+            0.5,
+            None,
+            false,
+            3
+        ));
+        assert!(ridge_system_is_positive_definite_fast_path(
+            &weights, 0.5, None, false, 3
+        ));
+        assert!(!ridge_system_is_positive_definite_fast_path(
+            &weights,
+            0.5,
+            Some(&[1.0, 0.0, 2.0]),
+            false,
+            3
+        ));
+        assert!(ridge_system_is_positive_definite_fast_path(
+            &weights,
+            0.5,
+            Some(&[0.0, 1.0, 2.0]),
+            false,
+            3
+        ));
+
+        let mut vector = vec![10.0, 20.0, 30.0];
+        add_ridge_penalty_to_vector(&mut vector, 2.0, Some(&[100.0, 0.5, 3.0]), false);
+        assert_eq!(vector, vec![10.0, 21.0, 36.0]);
+        let mut vector = vec![10.0, 20.0];
+        add_ridge_penalty_to_vector(&mut vector, 2.0, None, true);
+        assert_eq!(vector, vec![12.0, 22.0]);
+
+        assert!(!should_apply_l2_penalty(0.0));
+        assert!(!should_apply_l2_penalty(-1.0));
+        assert!(should_apply_l2_penalty(1e-12));
+        assert!(penalty_matrix_shape_matches(2, 2, 2));
+        assert!(!penalty_matrix_shape_matches(2, 1, 2));
+        assert!(!penalty_matrix_shape_matches(2, 2, 1));
+    }
+
+    #[test]
+    fn test_pcg_environment_and_xtwx_route_helpers_have_exact_contracts() {
+        let _env_lock = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        {
+            let _unset = EnvVarGuard::unset("RUSTYSTATS_RIDGE_CV_PCG_TOL");
+            assert_eq!(pcg_tolerance(), 1e-6);
+        }
+        {
+            let _set = EnvVarGuard::set("RUSTYSTATS_RIDGE_CV_PCG_TOL", "0.00025");
+            assert_eq!(pcg_tolerance(), 0.00025);
+        }
+        {
+            let _set = EnvVarGuard::set("RUSTYSTATS_RIDGE_CV_PCG_TOL", "0");
+            assert_eq!(pcg_tolerance(), 1e-6);
+        }
+        {
+            let _set = EnvVarGuard::set("RUSTYSTATS_RIDGE_CV_PCG_TOL", "inf");
+            assert_eq!(pcg_tolerance(), 1e-6);
+        }
+
+        {
+            let _unset = EnvVarGuard::unset("RUSTYSTATS_RIDGE_CV_PCG");
+            assert!(!should_try_ridge_cv_pcg(true, 1.0));
+        }
+        {
+            let _set = EnvVarGuard::set("RUSTYSTATS_RIDGE_CV_PCG", "1");
+            assert!(should_try_ridge_cv_pcg(true, 1.0));
+            assert!(!should_try_ridge_cv_pcg(false, 1.0));
+            assert!(!should_try_ridge_cv_pcg(true, 0.0));
+        }
+
+        let x = Array2::from_shape_vec((2, 2), vec![1.0, 2.0, 3.0, 4.0])
+            .expect("test matrix should be valid");
+        let w = array![0.5, 1.5];
+        assert!(matches!(
+            xtwx_storage_path(x.view(), &w),
+            XtwxStoragePath::Contiguous { n: 2, p: 2, .. }
+        ));
+
+        let strided_w = strided3([0.5, 1.5, 2.5]);
+        assert!(matches!(
+            xtwx_storage_path(x.view(), &strided_w),
+            XtwxStoragePath::Strided
+        ));
+
+        let wide = Array2::from_shape_vec((2, 4), vec![1.0, 9.0, 2.0, 9.0, 3.0, 9.0, 4.0, 9.0])
+            .expect("test matrix should be valid");
+        let strided_x = wide.slice(s![.., ..;2]);
+        assert!(matches!(
+            xtwx_storage_path(strided_x, &w),
+            XtwxStoragePath::Strided
+        ));
+    }
+
+    #[test]
+    fn test_fit_core_decision_and_arithmetic_helpers_have_exact_contracts() {
+        let none_config = FitConfig::default();
+        assert!(!should_standardize_regularized_design(&none_config));
+        let ridge_config = FitConfig {
+            regularization: RegularizationConfig::ridge(0.5),
+            ..FitConfig::default()
+        };
+        assert!(should_standardize_regularized_design(&ridge_config));
+        assert!(centers_are_all_zero(&[0.0, 0.0]));
+        assert!(!centers_are_all_zero(&[0.0, 1e-12]));
+        assert!(should_use_scale_only_standardized_ridge_path(
+            0.5,
+            false,
+            &[0.0, 0.0]
+        ));
+        assert!(!should_use_scale_only_standardized_ridge_path(
+            0.0,
+            false,
+            &[0.0]
+        ));
+        assert!(!should_use_scale_only_standardized_ridge_path(
+            0.5,
+            true,
+            &[0.0]
+        ));
+        assert!(!should_use_scale_only_standardized_ridge_path(
+            0.5,
+            false,
+            &[0.1]
+        ));
+
+        let eta_base = array![1.0, -2.0, 0.5];
+        let offset = array![0.25, 3.0, -0.75];
+        assert_array1_close(
+            &add_offset_to_linear_predictor(&eta_base, &offset),
+            &array![1.25, 1.0, -0.25],
+            1e-12,
+        );
+        assert_array1_close(
+            &eta_without_offset(&array![1.25, 1.0, -0.25], &offset),
+            &eta_base,
+            1e-12,
+        );
+
+        assert!(coefficients_are_finite(&array![0.0, 1.0]));
+        assert!(!coefficients_are_finite(&array![0.0, f64::NAN]));
+        assert!(!coefficients_are_finite(&array![0.0, f64::INFINITY]));
+        assert!(!coefficients_contain_nonfinite(&array![0.0, 1.0]));
+        assert!(coefficients_contain_nonfinite(&array![0.0, f64::NAN]));
+        assert!(coefficients_contain_nonfinite(&array![
+            0.0,
+            f64::NEG_INFINITY
+        ]));
+        assert_array1_close(
+            &finite_coefficients_or_none(array![2.0, -3.0]).unwrap(),
+            &array![2.0, -3.0],
+            1e-12,
+        );
+        assert!(finite_coefficients_or_none(array![f64::INFINITY]).is_none());
+
+        let neg_zero = (-0.0_f64).to_bits();
+        let mut coefficients = array![-2.0, -0.0, 3.0, -4.0, 5.0, -0.0];
+        project_coefficients_to_sign_constraints(&mut coefficients, &[0, 1, 6], &[2, 5, 6]);
+        assert_eq!(coefficients[0], 0.0);
+        assert_eq!(coefficients[1].to_bits(), neg_zero);
+        assert_eq!(coefficients[2], 0.0);
+        assert_eq!(coefficients[3], -4.0);
+        assert_eq!(coefficients[4], 5.0);
+        assert_eq!(coefficients[5].to_bits(), neg_zero);
+
+        assert!(!has_sign_constraints(&[], &[]));
+        assert!(has_sign_constraints(&[1], &[]));
+        assert!(has_sign_constraints(&[], &[2]));
+        assert!(should_use_poisson_log_weight_buffers("PoIsSoN", "log"));
+        assert!(!should_use_poisson_log_weight_buffers(
+            "poisson", "identity"
+        ));
+        assert!(!should_use_poisson_log_weight_buffers("gaussian", "log"));
+
+        assert!(trial_state_is_acceptable(
+            &array![1.0, 2.0],
+            &array![3.0, 4.0],
+            10.0,
+            10.0
+        ));
+        assert!(!trial_state_is_acceptable(
+            &array![f64::NAN],
+            &array![3.0],
+            1.0,
+            2.0
+        ));
+        assert!(!trial_state_is_acceptable(
+            &array![1.0],
+            &array![f64::INFINITY],
+            1.0,
+            2.0
+        ));
+        assert!(!trial_state_is_acceptable(
+            &array![1.0],
+            &array![3.0],
+            2.1,
+            2.0
+        ));
+
+        assert_eq!(blend_coefficient(10.0, 2.0, 0.25), 8.0);
+        assert_eq!(objective_relative_change(8.0, 6.0), 0.25);
+        assert_eq!(objective_relative_change(0.0, 2.0), 2.0);
+        assert_eq!(objective_relative_change(ZERO_TOL, 0.0), ZERO_TOL);
+        assert!(best_objective_improved(0.9, 1.0));
+        assert!(!best_objective_improved(1.0, 1.0));
+        assert!(!should_stop_after_stale_best(
+            CONSTRAINED_BEST_EARLY_STOP_PATIENCE - 1
+        ));
+        assert!(should_stop_after_stale_best(
+            CONSTRAINED_BEST_EARLY_STOP_PATIENCE
+        ));
+
+        assert!(should_use_constrained_best(true, 0.9, 1.0, false));
+        assert!(!should_use_constrained_best(true, 1.0, 1.0, false));
+        assert!(should_use_constrained_best(true, 1.0, 1.0, true));
+        assert!(!should_use_constrained_best(false, 0.9, 1.0, true));
+
+        assert_array1_close(
+            &combine_prior_and_irls_weights(&array![2.0, 0.5], &array![3.0, 4.0]),
+            &array![6.0, 2.0],
+            1e-12,
+        );
+        assert!(final_extraction_deviance_acceptable(4.0, 4.0));
+        assert!(!final_extraction_deviance_acceptable(4.1, 4.0));
+        assert!(!final_extraction_deviance_acceptable(f64::NAN, 4.0));
+        assert!(should_recompute_final_state(false));
+        assert!(!should_recompute_final_state(true));
+        assert!(should_warn_nonconverged(false));
+        assert!(!should_warn_nonconverged(true));
+    }
+
+    #[test]
+    fn test_dense_xtwx_data_and_materialization_are_exact_on_multiple_chunks() {
+        let x = Array2::from_shape_vec(
+            (5, 3),
+            vec![
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, -2.0, 1.0, 0.5, 0.0, -3.0, 2.0, 7.0, -1.0, 4.0,
+            ],
+        )
+        .expect("test matrix should be valid");
+        let weights = array![0.5, 1.5, 2.0, 0.75, 1.25];
+        let n = x.nrows();
+        let p = x.ncols();
+        let x_slice = x.as_slice().expect("test matrix should be contiguous");
+        let w_slice = weights
+            .as_slice()
+            .expect("test weights should be contiguous");
+
+        let mut expected_data = vec![0.0; p * p];
+        for row in 0..n {
+            let row_start = row * p;
+            for i in 0..p {
+                let xki_w = x_slice[row_start + i] * w_slice[row];
+                for j in i..p {
+                    expected_data[i * p + j] += xki_w * x_slice[row_start + j];
+                }
+            }
+        }
+
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .expect("test thread pool should build");
+        let actual_data = pool.install(|| compute_xtwx_dense_data(x_slice, w_slice, n, p));
+        assert_eq!(actual_data.len(), p * p);
+        for (idx, (actual, expected)) in actual_data.iter().zip(expected_data.iter()).enumerate() {
+            assert!(
+                (actual - expected).abs() < 1e-12,
+                "dense xtwx data mismatch at {idx}: actual={actual}, expected={expected}"
+            );
+        }
+
+        let actual = xtx_data_to_array2(actual_data, p);
+        let mut expected = Array2::<f64>::zeros((p, p));
+        for i in 0..p {
+            for j in i..p {
+                expected[[i, j]] = expected_data[i * p + j];
+                expected[[j, i]] = expected_data[i * p + j];
+            }
+        }
+        assert_array2_close(&actual, &expected, 1e-12);
+    }
+
+    #[test]
+    fn test_compute_working_response_uses_eta_plus_residual_times_link_derivative() {
+        let y = array![8.0, 1.0, 10.0];
+        let mu = array![2.0, 4.0, 5.0];
+        let eta = array![3.0, 5.0, 7.0];
+
+        assert_array1_close(
+            &compute_working_response(&y, &mu, &eta, &LogLink),
+            &array![6.0, 4.25, 8.0],
+            1e-12,
+        );
+    }
+
+    #[test]
+    fn test_poisson_log_in_place_weights_match_public_weight_contract_and_validate_lengths() {
+        let y = array![0.0, 1.0, 5.0];
+        let mu = array![0.1, 1.5, 4.0];
+        let eta = LogLink.link(&mu) + array![0.2, -0.1, 0.0];
+        let offset = array![0.2, -0.1, 0.0];
+        let prior = array![2.0, 0.5, 1.25];
+        let mut irls = Array1::zeros(y.len());
+        let mut combined = Array1::zeros(y.len());
+        let mut response = Array1::zeros(y.len());
+
+        compute_poisson_log_irls_weights_in_place(
+            &y,
+            &mu,
+            &eta,
+            &offset,
+            &prior,
+            0.25,
+            &mut irls,
+            &mut combined,
+            &mut response,
+        )
+        .expect("valid buffers should be filled");
+
+        assert_array1_close(&irls, &array![0.25, 1.5, 4.0], 1e-12);
+        assert_array1_close(&combined, &array![0.5, 0.75, 5.0], 1e-12);
+        let expected_response = (&eta - &offset) + (&y - &mu) / &mu;
+        assert_array1_close(&response, &expected_response, 1e-12);
+
+        let mut too_short = Array1::zeros(2);
+        let err = compute_poisson_log_irls_weights_in_place(
+            &y,
+            &mu,
+            &eta,
+            &offset,
+            &prior,
+            0.25,
+            &mut too_short,
+            &mut combined,
+            &mut response,
+        )
+        .expect_err("buffer length mismatch should be reported");
+        assert!(matches!(err, RustyStatsError::DimensionMismatch { .. }));
+    }
+
+    #[test]
+    fn test_poisson_log_in_place_parallel_chunks_index_global_rows_correctly() {
+        let n = 33usize;
+        let y: Array1<f64> = (0..n)
+            .map(|i| 0.25 + (i as f64 * 0.37).sin().abs() * 8.0)
+            .collect();
+        let mu: Array1<f64> = (0..n)
+            .map(|i| 0.5 + (i % 7) as f64 * 0.3 + i as f64 * 0.01)
+            .collect();
+        let offset: Array1<f64> = (0..n).map(|i| (i as f64 * 0.11).cos() * 0.2).collect();
+        let eta = LogLink.link(&mu) + &offset;
+        let prior: Array1<f64> = (0..n).map(|i| 0.75 + (i % 5) as f64 * 0.2).collect();
+        let mut irls = Array1::zeros(n);
+        let mut combined = Array1::zeros(n);
+        let mut response = Array1::zeros(n);
+
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .expect("test thread pool should build");
+        pool.install(|| {
+            compute_poisson_log_irls_weights_in_place(
+                &y,
+                &mu,
+                &eta,
+                &offset,
+                &prior,
+                1e-12,
+                &mut irls,
+                &mut combined,
+                &mut response,
+            )
+            .expect("valid buffers should be filled");
+        });
+
+        for i in [0usize, 1, 2, 3, 4, 15, 16, 17, 31, 32] {
+            assert!(
+                (irls[i] - mu[i]).abs() < 1e-12,
+                "IRLS weight mismatch at row {i}"
+            );
+            assert!(
+                (combined[i] - prior[i] * mu[i]).abs() < 1e-12,
+                "combined weight mismatch at row {i}"
+            );
+            let expected_response = (eta[i] - offset[i]) + (y[i] - mu[i]) / mu[i];
+            assert!(
+                (response[i] - expected_response).abs() < 1e-12,
+                "working response mismatch at row {i}: actual={}, expected={expected_response}",
+                response[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_poisson_log_in_place_weights_reject_noncontiguous_inputs_and_buffers() {
+        let y = array![0.0, 1.0, 5.0];
+        let mu = array![0.1, 1.5, 4.0];
+        let eta = LogLink.link(&mu);
+        let offset = array![0.0, 0.0, 0.0];
+        let prior = array![2.0, 0.5, 1.25];
+
+        let mut irls = Array1::zeros(3);
+        let mut combined = Array1::zeros(3);
+        let mut response = Array1::zeros(3);
+        let err = compute_poisson_log_irls_weights_in_place(
+            &strided3([0.0, 1.0, 5.0]),
+            &mu,
+            &eta,
+            &offset,
+            &prior,
+            0.25,
+            &mut irls,
+            &mut combined,
+            &mut response,
+        )
+        .expect_err("non-contiguous y should be rejected");
+        assert_linear_algebra_contains(err, "Response vector y");
+
+        let mut irls = Array1::zeros(3);
+        let mut combined = Array1::zeros(3);
+        let mut response = Array1::zeros(3);
+        let err = compute_poisson_log_irls_weights_in_place(
+            &y,
+            &strided3([0.1, 1.5, 4.0]),
+            &eta,
+            &offset,
+            &prior,
+            0.25,
+            &mut irls,
+            &mut combined,
+            &mut response,
+        )
+        .expect_err("non-contiguous mu should be rejected");
+        assert_linear_algebra_contains(err, "Mean vector mu");
+
+        let mut irls = Array1::zeros(3);
+        let mut combined = Array1::zeros(3);
+        let mut response = Array1::zeros(3);
+        let err = compute_poisson_log_irls_weights_in_place(
+            &y,
+            &mu,
+            &strided3([eta[0], eta[1], eta[2]]),
+            &offset,
+            &prior,
+            0.25,
+            &mut irls,
+            &mut combined,
+            &mut response,
+        )
+        .expect_err("non-contiguous eta should be rejected");
+        assert_linear_algebra_contains(err, "Linear predictor eta");
+
+        let mut irls = Array1::zeros(3);
+        let mut combined = Array1::zeros(3);
+        let mut response = Array1::zeros(3);
+        let err = compute_poisson_log_irls_weights_in_place(
+            &y,
+            &mu,
+            &eta,
+            &strided3([0.0, 0.0, 0.0]),
+            &prior,
+            0.25,
+            &mut irls,
+            &mut combined,
+            &mut response,
+        )
+        .expect_err("non-contiguous offset should be rejected");
+        assert_linear_algebra_contains(err, "Offset vector");
+
+        let mut irls = Array1::zeros(3);
+        let mut combined = Array1::zeros(3);
+        let mut response = Array1::zeros(3);
+        let err = compute_poisson_log_irls_weights_in_place(
+            &y,
+            &mu,
+            &eta,
+            &offset,
+            &strided3([2.0, 0.5, 1.25]),
+            0.25,
+            &mut irls,
+            &mut combined,
+            &mut response,
+        )
+        .expect_err("non-contiguous prior weights should be rejected");
+        assert_linear_algebra_contains(err, "Prior weights vector");
+
+        let mut irls_bad = strided3_buffer();
+        let mut combined = Array1::zeros(3);
+        let mut response = Array1::zeros(3);
+        let err = compute_poisson_log_irls_weights_in_place(
+            &y,
+            &mu,
+            &eta,
+            &offset,
+            &prior,
+            0.25,
+            &mut irls_bad,
+            &mut combined,
+            &mut response,
+        )
+        .expect_err("non-contiguous IRLS buffer should be rejected");
+        assert_linear_algebra_contains(err, "IRLS weights buffer");
+
+        let mut irls = Array1::zeros(3);
+        let mut combined_bad = strided3_buffer();
+        let mut response = Array1::zeros(3);
+        let err = compute_poisson_log_irls_weights_in_place(
+            &y,
+            &mu,
+            &eta,
+            &offset,
+            &prior,
+            0.25,
+            &mut irls,
+            &mut combined_bad,
+            &mut response,
+        )
+        .expect_err("non-contiguous combined buffer should be rejected");
+        assert_linear_algebra_contains(err, "Combined weights buffer");
+
+        let mut irls = Array1::zeros(3);
+        let mut combined = Array1::zeros(3);
+        let mut response_bad = strided3_buffer();
+        let err = compute_poisson_log_irls_weights_in_place(
+            &y,
+            &mu,
+            &eta,
+            &offset,
+            &prior,
+            0.25,
+            &mut irls,
+            &mut combined,
+            &mut response_bad,
+        )
+        .expect_err("non-contiguous working-response buffer should be rejected");
+        assert_linear_algebra_contains(err, "Working response buffer");
+    }
+
+    #[test]
+    fn test_invalid_family_initial_mu_uses_safe_fallback_and_records_warning() {
+        let x = Array2::from_shape_vec(
+            (5, 2),
+            vec![1.0, -2.0, 1.0, -1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 2.0],
+        )
+        .expect("test setup should be valid");
+        let y = array![1.0, 2.0, 2.5, 4.0, 5.0];
+
+        let result = fit_glm_unified(
+            &y,
+            x.view(),
+            &InvalidInitGaussian,
+            &IdentityLink,
+            &FitConfig::default().with_max_iterations(25),
+            None,
+            None,
+            None,
+        )
+        .expect("safe initialization should allow fitting to proceed");
+
+        assert!(result.fitted_values.iter().all(|value| value.is_finite()));
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("initial μ values were invalid")),
+            "invalid family initializer must leave an audit warning: {:?}",
+            result.warnings
+        );
+    }
+
+    #[test]
+    fn test_initial_projection_failure_warns_and_zero_iteration_fit_returns_safe_state() {
+        let x = Array2::<f64>::zeros((4, 2));
+        let y = array![1.0, 2.0, 3.0, 4.0];
+        let config = FitConfig {
+            max_iterations: 0,
+            skip_covariance: true,
+            ..FitConfig::default()
+        };
+
+        let result = fit_glm_unified(
+            &y,
+            x.view(),
+            &GaussianFamily,
+            &IdentityLink,
+            &config,
+            None,
+            None,
+            None,
+        )
+        .expect("singular initial projection should warn and retain zero coefficients");
+
+        assert_eq!(result.coefficients, Array1::zeros(2));
+        assert!(!result.converged);
+        assert_eq!(result.solver_status, "max_iterations");
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("Initial coefficient projection failed")),
+            "expected initial projection warning, got {:?}",
+            result.warnings
+        );
+    }
+
+    #[test]
+    fn test_initial_projection_applies_nonnegative_constraints_before_iteration() {
+        let x = Array2::from_shape_vec(
+            (5, 2),
+            vec![1.0, -2.0, 1.0, -1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 2.0],
+        )
+        .expect("test setup should be valid");
+        let y = array![5.0, 4.0, 3.0, 2.0, 1.0];
+        let config = FitConfig {
+            max_iterations: 0,
+            skip_covariance: true,
+            nonneg_indices: vec![1],
+            ..FitConfig::default()
+        };
+
+        let result = fit_glm_unified(
+            &y,
+            x.view(),
+            &GaussianFamily,
+            &IdentityLink,
+            &config,
+            None,
+            None,
+            None,
+        )
+        .expect("zero-iteration constrained fit should return projected initialization");
+
+        assert_eq!(result.coefficients[1], 0.0);
+        assert!(result.coefficients[0].is_finite());
+    }
+
+    #[test]
+    fn test_initial_projection_applies_nonpositive_constraints_before_iteration() {
+        let x = Array2::from_shape_vec(
+            (5, 2),
+            vec![1.0, -2.0, 1.0, -1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 2.0],
+        )
+        .expect("test setup should be valid");
+        let y = array![1.0, 2.0, 3.0, 4.0, 5.0];
+        let config = FitConfig {
+            max_iterations: 0,
+            skip_covariance: true,
+            nonpos_indices: vec![1],
+            ..FitConfig::default()
+        };
+
+        let result = fit_glm_unified(
+            &y,
+            x.view(),
+            &GaussianFamily,
+            &IdentityLink,
+            &config,
+            None,
+            None,
+            None,
+        )
+        .expect("zero-iteration constrained fit should return projected initialization");
+
+        assert_eq!(result.coefficients[1], 0.0);
+        assert!(result.coefficients[0].is_finite());
+    }
+
+    #[test]
+    fn test_fit_rejects_bad_warm_start_length_before_iteration() {
+        let x = Array2::from_shape_vec(
+            (5, 2),
+            vec![1.0, -2.0, 1.0, -1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 2.0],
+        )
+        .expect("test setup should be valid");
+        let y = array![1.0, 2.0, 2.5, 4.0, 5.0];
+        let bad_init = array![0.0];
+
+        let err = fit_glm_unified(
+            &y,
+            x.view(),
+            &GaussianFamily,
+            &IdentityLink,
+            &FitConfig::default(),
+            None,
+            None,
+            Some(&bad_init),
+        )
+        .expect_err("warm-start coefficients must match design width");
+
+        assert!(matches!(
+            err,
+            RustyStatsError::DimensionMismatch {
+                expected: 2,
+                got: 1,
+                ref context
+            } if context == "init_coefficients length vs X columns"
+        ));
+    }
+
+    #[test]
+    fn test_standardized_ridge_centered_path_matches_manual_standardized_reference() {
+        let x = Array2::from_shape_vec(
+            (8, 3),
+            vec![
+                1.0, 8.0, -3.0, 1.0, 9.5, -2.0, 1.0, 10.0, -1.0, 1.0, 11.0, -0.5, 1.0, 12.5, 0.0,
+                1.0, 14.0, 1.0, 1.0, 15.0, 1.5, 1.0, 16.0, 2.0,
+            ],
+        )
+        .expect("test setup should be valid");
+        let y = array![1.2, 1.6, 1.9, 2.1, 2.9, 3.3, 3.8, 4.1];
+        let init_original = array![0.25, 0.03, -0.02];
+        let standardization = Standardization::new(vec![0.0, 12.0, -0.5], vec![1.0, 2.5, 0.75])
+            .expect("standardization should validate");
+        let regularization = RegularizationConfig::ridge(0.35);
+        let config = FitConfig {
+            max_iterations: 50,
+            regularization: regularization.clone(),
+            standardization: Some(standardization.clone()),
+            ..FitConfig::default()
+        };
+
+        let actual = fit_glm_unified(
+            &y,
+            x.view(),
+            &GaussianFamily,
+            &IdentityLink,
+            &config,
+            None,
+            None,
+            Some(&init_original),
+        )
+        .expect("standardized fit should succeed");
+
+        let x_work = standardization
+            .standardize_matrix(x.view())
+            .expect("manual standardization");
+        let init_work = standardization
+            .to_standardized_coefficients(&init_original, true)
+            .expect("manual init conversion");
+        let manual_config = FitConfig {
+            max_iterations: 50,
+            regularization,
+            ..FitConfig::default()
+        };
+        let manual = fit_glm_unified(
+            &y,
+            x_work.view(),
+            &GaussianFamily,
+            &IdentityLink,
+            &manual_config,
+            None,
+            None,
+            Some(&init_work),
+        )
+        .expect("manual standardized fit should succeed");
+        let expected_coefficients = standardization
+            .to_original_coefficients(&manual.coefficients, true)
+            .expect("manual coefficient conversion");
+        let expected_covariance = standardization
+            .to_original_covariance(&manual.covariance_unscaled, true)
+            .expect("manual covariance conversion");
+
+        assert_array1_close(&actual.coefficients, &expected_coefficients, 1e-8);
+        assert_array2_close(&actual.covariance_unscaled, &expected_covariance, 1e-8);
+        assert_array1_close(&actual.fitted_values, &manual.fitted_values, 1e-8);
+        assert!((actual.deviance - manual.deviance).abs() < 1e-8);
+    }
+
+    #[test]
+    fn test_standardized_ridge_centered_path_without_init_converts_covariance() {
+        let x = Array2::from_shape_vec(
+            (8, 3),
+            vec![
+                1.0, 8.0, -3.0, 1.0, 9.5, -2.0, 1.0, 10.0, -1.0, 1.0, 11.0, -0.5, 1.0, 12.5, 0.0,
+                1.0, 14.0, 1.0, 1.0, 15.0, 1.5, 1.0, 16.0, 2.0,
+            ],
+        )
+        .expect("test setup should be valid");
+        let y = array![1.2, 1.6, 1.9, 2.1, 2.9, 3.3, 3.8, 4.1];
+        let standardization = Standardization::new(vec![0.0, 12.0, -0.5], vec![1.0, 2.5, 0.75])
+            .expect("standardization should validate");
+        let regularization = RegularizationConfig::ridge(0.35);
+        let config = FitConfig {
+            max_iterations: 50,
+            regularization: regularization.clone(),
+            standardization: Some(standardization.clone()),
+            ..FitConfig::default()
+        };
+
+        let actual = fit_glm_unified(
+            &y,
+            x.view(),
+            &GaussianFamily,
+            &IdentityLink,
+            &config,
+            None,
+            None,
+            None,
+        )
+        .expect("standardized fit should succeed without a warm start");
+
+        let x_work = standardization
+            .standardize_matrix(x.view())
+            .expect("manual standardization");
+        let manual = fit_glm_unified(
+            &y,
+            x_work.view(),
+            &GaussianFamily,
+            &IdentityLink,
+            &FitConfig {
+                max_iterations: 50,
+                regularization,
+                ..FitConfig::default()
+            },
+            None,
+            None,
+            None,
+        )
+        .expect("manual standardized fit should succeed without a warm start");
+        let expected_coefficients = standardization
+            .to_original_coefficients(&manual.coefficients, true)
+            .expect("manual coefficient conversion");
+        let expected_covariance = standardization
+            .to_original_covariance(&manual.covariance_unscaled, true)
+            .expect("manual covariance conversion");
+
+        assert_array1_close(&actual.coefficients, &expected_coefficients, 1e-8);
+        assert_array2_close(&actual.covariance_unscaled, &expected_covariance, 1e-8);
+        assert_array1_close(&actual.fitted_values, &manual.fitted_values, 1e-8);
+        assert!((actual.deviance - manual.deviance).abs() < 1e-8);
+    }
+
+    #[test]
+    fn test_standardized_ridge_scale_only_fast_path_matches_manual_reference() {
+        let x = Array2::from_shape_vec(
+            (7, 3),
+            vec![
+                1.0, -3.0, 0.5, 1.0, -2.0, 1.5, 1.0, -1.0, 1.0, 1.0, 0.0, 2.0, 1.0, 1.0, 2.5, 1.0,
+                2.0, 3.5, 1.0, 3.0, 4.0,
+            ],
+        )
+        .expect("test setup should be valid");
+        let y = array![-0.4, 0.2, 0.7, 1.0, 1.5, 1.9, 2.4];
+        let standardization = Standardization::new(vec![0.0, 0.0, 0.0], vec![1.0, 2.0, 0.5])
+            .expect("standardization should validate");
+        let regularization = RegularizationConfig::ridge(0.7);
+        let config = FitConfig {
+            max_iterations: 50,
+            regularization: regularization.clone(),
+            standardization: Some(standardization.clone()),
+            skip_covariance: true,
+            ..FitConfig::default()
+        };
+
+        let actual = fit_glm_unified(
+            &y,
+            x.view(),
+            &GaussianFamily,
+            &IdentityLink,
+            &config,
+            None,
+            None,
+            None,
+        )
+        .expect("scale-only fast path should succeed");
+
+        let x_work = standardization
+            .standardize_matrix(x.view())
+            .expect("manual standardization");
+        let manual_config = FitConfig {
+            max_iterations: 50,
+            regularization,
+            skip_covariance: true,
+            ..FitConfig::default()
+        };
+        let manual = fit_glm_unified(
+            &y,
+            x_work.view(),
+            &GaussianFamily,
+            &IdentityLink,
+            &manual_config,
+            None,
+            None,
+            None,
+        )
+        .expect("manual standardized fit should succeed");
+        let expected_coefficients = standardization
+            .to_original_coefficients(&manual.coefficients, true)
+            .expect("manual coefficient conversion");
+
+        assert_array1_close(&actual.coefficients, &expected_coefficients, 1e-8);
+        assert_eq!(actual.covariance_unscaled.dim(), (x.ncols(), x.ncols()));
+        assert!(actual.covariance_unscaled.iter().all(|value| *value == 0.0));
+    }
+
+    #[test]
+    fn test_standardization_validation_and_lasso_dispatch_from_unified_api() {
+        let x = Array2::from_shape_vec(
+            (6, 2),
+            vec![1.0, -2.0, 1.0, -1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 2.0, 1.0, 3.0],
+        )
+        .expect("test setup should be valid");
+        let y = array![-2.0, -0.8, 0.1, 1.2, 2.1, 3.3];
+        let bad_standardization =
+            Standardization::new(vec![0.0], vec![1.0]).expect("one-column metadata is valid alone");
+        let bad_config = FitConfig {
+            regularization: RegularizationConfig::ridge(0.1),
+            standardization: Some(bad_standardization),
+            ..FitConfig::default()
+        };
+        let err = fit_glm_unified(
+            &y,
+            x.view(),
+            &GaussianFamily,
+            &IdentityLink,
+            &bad_config,
+            None,
+            None,
+            None,
+        )
+        .expect_err("standardization metadata must match design width");
+        assert!(matches!(err, RustyStatsError::DimensionMismatch { .. }));
+
+        let lasso_config = FitConfig {
+            max_iterations: 50,
+            regularization: RegularizationConfig::lasso(0.05),
+            skip_covariance: true,
+            ..FitConfig::default()
+        };
+        let lasso = fit_glm_unified(
+            &y,
+            x.view(),
+            &GaussianFamily,
+            &IdentityLink,
+            &lasso_config,
+            None,
+            None,
+            None,
+        )
+        .expect("unified API should dispatch L1 penalties to coordinate descent");
+        assert_eq!(lasso.penalty.l1_penalty(), 0.05);
+        assert!(lasso.coefficients.iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn test_sparse_cache_public_fit_wrapper_matches_uncached_and_ignores_incompatible_cache() {
+        let n = 48usize;
+        let p = 20usize;
+        let mut x = Array2::<f64>::zeros((n, p));
+        for row in 0..n {
+            x[[row, 0]] = 1.0;
+            x[[row, 1 + row % (p - 1)]] = 0.4 + (row % 5) as f64 * 0.2;
+            x[[row, 1 + (row * 7 + 3) % (p - 1)]] += (row as f64 * 0.11).sin();
+        }
+        let beta: Array1<f64> = (0..p).map(|j| (j as f64 * 0.13).cos() * 0.1).collect();
+        let y = x.dot(&beta);
+        let cache = manual_sparse_cache(&x);
+        let config = FitConfig {
+            max_iterations: 5,
+            regularization: RegularizationConfig::ridge(0.5),
+            skip_covariance: true,
+            ..FitConfig::default()
+        };
+
+        let uncached = fit_glm_unified(
+            &y,
+            x.view(),
+            &GaussianFamily,
+            &IdentityLink,
+            &config,
+            None,
+            None,
+            None,
+        )
+        .expect("uncached fit should succeed");
+        let cached = fit_glm_unified_with_sparse_cache(
+            &y,
+            x.view(),
+            &GaussianFamily,
+            &IdentityLink,
+            &config,
+            None,
+            None,
+            None,
+            Some(&cache),
+        )
+        .expect("compatible cache should be used successfully");
+
+        assert_array1_close(&cached.coefficients, &uncached.coefficients, 1e-10);
+        assert_array1_close(&cached.fitted_values, &uncached.fitted_values, 1e-10);
+
+        let x_other = x.clone();
+        let incompatible = fit_glm_unified_with_sparse_cache(
+            &y,
+            x_other.view(),
+            &GaussianFamily,
+            &IdentityLink,
+            &config,
+            None,
+            None,
+            None,
+            Some(&cache),
+        )
+        .expect("incompatible cache should be ignored, not trusted");
+        assert_array1_close(&incompatible.coefficients, &uncached.coefficients, 1e-10);
+    }
+
+    #[test]
+    fn test_noncontiguous_matrix_paths_and_sparse_cache_xtwx_contracts() {
+        let base = Array2::from_shape_vec(
+            (4, 4),
+            vec![
+                1.0, 99.0, 2.0, 88.0, 1.0, 77.0, 3.0, 66.0, 1.0, 55.0, 4.0, 44.0, 1.0, 33.0, 5.0,
+                22.0,
+            ],
+        )
+        .expect("test setup should be valid");
+        let x = base.slice(s![.., ..;2]);
+        let coefficients = array![0.5, -0.25];
+        let dot = matrix_vector_dot(x, &coefficients);
+        assert_array1_close(&dot, &x.dot(&coefficients), 1e-12);
+
+        let w = array![1.0, 0.5, 2.0, 1.5];
+        let actual_xtwx = compute_xtwx(x, &w);
+        let mut expected_xtwx = Array2::<f64>::zeros((x.ncols(), x.ncols()));
+        for row in 0..x.nrows() {
+            for i in 0..x.ncols() {
+                for j in 0..x.ncols() {
+                    expected_xtwx[[i, j]] += w[row] * x[[row, i]] * x[[row, j]];
+                }
+            }
+        }
+        assert_array2_close(&actual_xtwx, &expected_xtwx, 1e-12);
+
+        let z = array![1.0, 2.0, 3.0, 4.0];
+        let err = compute_xtwx_xtwz(x, &z, &w)
+            .expect_err("profiled WLS kernel requires contiguous design matrices");
+        assert_linear_algebra_contains(err, "Design matrix X");
+
+        let contiguous_x = x.as_standard_layout().to_owned();
+        let strided_w = Array1::from_shape_vec(
+            (4usize).strides(2),
+            vec![1.0, 99.0, 0.5, 99.0, 2.0, 99.0, 1.5],
+        )
+        .expect("valid strided weight vector");
+        assert!(strided_w.as_slice().is_none());
+        let err = compute_xtwx_xtwz(contiguous_x.view(), &z, &strided_w)
+            .expect_err("profiled WLS kernel requires contiguous weights");
+        assert_linear_algebra_contains(err, "Weight vector W");
+
+        let strided_z = Array1::from_shape_vec(
+            (4usize).strides(2),
+            vec![1.0, 99.0, 2.0, 99.0, 3.0, 99.0, 4.0],
+        )
+        .expect("valid strided working-response vector");
+        assert!(strided_z.as_slice().is_none());
+        let err = compute_xtwx_xtwz(contiguous_x.view(), &strided_z, &w)
+            .expect_err("profiled WLS kernel requires contiguous working responses");
+        assert_linear_algebra_contains(err, "Working response Z");
+
+        let n = 32usize;
+        let p = 18usize;
+        let mut sparse = Array2::<f64>::zeros((n, p));
+        for row in 0..n {
+            sparse[[row, row % p]] = 1.0;
+            sparse[[row, (row * 5 + 1) % p]] += 0.25;
+        }
+        let sparse_cache = manual_sparse_cache(&sparse);
+        let sparse_w: Array1<f64> = (0..n).map(|idx| 0.5 + (idx % 4) as f64).collect();
+        let cached_xtwx =
+            compute_xtwx_with_sparse_cache(sparse.view(), &sparse_w, Some(&sparse_cache))
+                .expect("compatible cache should compute X'WX");
+        let expected_cached = compute_xtwx(sparse.view(), &sparse_w);
+        assert_array2_close(&cached_xtwx, &expected_cached, 1e-12);
+
+        let err = compute_xtwx_with_sparse_cache(
+            sparse.view(),
+            &Array1::ones(n - 1),
+            Some(&sparse_cache),
+        )
+        .expect_err("weight length mismatch should be reported");
+        assert!(matches!(err, RustyStatsError::DimensionMismatch { .. }));
+
+        let mut sparse_w_storage = Vec::with_capacity(2 * n - 1);
+        for (idx, value) in sparse_w.iter().copied().enumerate() {
+            sparse_w_storage.push(value);
+            if idx + 1 < n {
+                sparse_w_storage.push(99.0);
+            }
+        }
+        let sparse_w_strided = Array1::from_shape_vec((n).strides(2), sparse_w_storage)
+            .expect("valid full-length strided sparse weights");
+        let err =
+            compute_xtwx_with_sparse_cache(sparse.view(), &sparse_w_strided, Some(&sparse_cache))
+                .expect_err("compatible sparse cache requires contiguous weights");
+        assert_linear_algebra_contains(err, "Weight vector W");
+
+        let sparse_clone = sparse.clone();
+        let fallback =
+            compute_xtwx_with_sparse_cache(sparse_clone.view(), &sparse_w, Some(&sparse_cache))
+                .expect("incompatible cache should fall back to uncached computation");
+        assert_array2_close(
+            &fallback,
+            &compute_xtwx(sparse_clone.view(), &sparse_w),
+            1e-12,
+        );
+    }
+
+    #[test]
+    fn test_weighted_least_squares_penalty_matrix_and_precomputed_contracts() {
+        let x = Array2::from_shape_vec(
+            (5, 2),
+            vec![1.0, -2.0, 1.0, -1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 2.0],
+        )
+        .expect("test setup should be valid");
+        let z = array![-1.0, 0.0, 0.5, 1.5, 2.0];
+        let w = array![1.0, 0.7, 1.3, 0.8, 1.1];
+        let penalty =
+            Array2::from_shape_vec((2, 2), vec![0.25, 0.05, 0.05, 0.75]).expect("penalty");
+
+        let (direct_coef, direct_cov) =
+            solve_weighted_least_squares_with_penalty_matrix(x.view(), &z, &w, &penalty, false)
+                .expect("penalized WLS should solve");
+        let (xtx, xtz) = compute_xtwx_xtwz(x.view(), &z, &w).expect("normal equations");
+        let (pre_coef, pre_cov) =
+            solve_wls_from_precomputed(&xtx, &xtz, &penalty, false).expect("precomputed solve");
+        assert_array1_close(&direct_coef, &pre_coef, 1e-12);
+        assert_array2_close(&direct_cov, &pre_cov, 1e-12);
+
+        let (_, skipped_cov) =
+            solve_weighted_least_squares_with_penalty_matrix(x.view(), &z, &w, &penalty, true)
+                .expect("skip covariance solve should still compute coefficients");
+        assert_eq!(skipped_cov.dim(), (2, 2));
+        assert!(skipped_cov.iter().all(|value| *value == 0.0));
+
+        let bad_penalty = Array2::eye(3);
+        let err =
+            solve_weighted_least_squares_with_penalty_matrix(x.view(), &z, &w, &bad_penalty, true)
+                .expect_err("penalty matrix dimensions must match X columns");
+        assert!(matches!(err, RustyStatsError::DimensionMismatch { .. }));
+
+        let factors_err = solve_weighted_least_squares_penalized(
+            x.view(),
+            &z,
+            &w,
+            1.0,
+            Some(&[1.0]),
+            false,
+            true,
+            None,
+            None,
+        )
+        .expect_err("L2 penalty factors must match X columns");
+        assert!(matches!(
+            factors_err,
+            RustyStatsError::DimensionMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn test_cholesky_lu_fallback_and_pcg_edge_contracts() {
+        let indefinite = DMatrix::from_row_slice(2, 2, &[0.0, 1.0, 1.0, 0.0]);
+        let rhs = DVector::from_vec(vec![2.0, 3.0]);
+        let (coef, cov) =
+            cholesky_solve(indefinite.clone(), &rhs, false).expect("LU fallback should solve");
+        assert_array1_close(&coef, &array![3.0, 2.0], 1e-12);
+        assert!((cov[[0, 1]] - 1.0).abs() < 1e-12);
+        assert!((cov[[1, 0]] - 1.0).abs() < 1e-12);
+
+        let (_, skipped_cov) =
+            cholesky_solve(indefinite.clone(), &rhs, true).expect("LU fallback should solve");
+        assert_eq!(skipped_cov.dim(), (2, 2));
+        assert!(skipped_cov.iter().all(|value| *value == 0.0));
+        let coef_only =
+            cholesky_solve_coefficients(indefinite.clone(), &rhs).expect("LU coefficient solve");
+        assert_array1_close(&coef_only, &array![3.0, 2.0], 1e-12);
+        assert!(cholesky_solve_spd_coefficients(indefinite, &rhs).is_err());
+        assert!(cholesky_solve(DMatrix::zeros(2, 2), &rhs, false).is_err());
+
+        assert!(!ridge_system_is_positive_definite_fast_path(
+            &array![0.0, 0.0],
+            1.0,
+            None,
+            true,
+            2
+        ));
+        assert!(!ridge_system_is_positive_definite_fast_path(
+            &array![1.0, 1.0],
+            0.0,
+            None,
+            true,
+            2
+        ));
+        assert!(!ridge_system_is_positive_definite_fast_path(
+            &array![1.0, 1.0],
+            1.0,
+            Some(&[1.0, 0.0]),
+            true,
+            2
+        ));
+
+        let x = Array2::from_shape_vec((3, 2), vec![1.0, 0.0, 1.0, 1.0, 1.0, 2.0])
+            .expect("test setup should be valid");
+        let z_zero = Array1::zeros(3);
+        let w = Array1::ones(3);
+        let mut profile = WLSSolveProfile::default();
+        let pcg_zero_rhs = solve_weighted_least_squares_pcg(
+            x.view(),
+            &z_zero,
+            &w,
+            1.0,
+            None,
+            true,
+            None,
+            &mut profile,
+        )
+        .expect("PCG should not error on zero RHS")
+        .expect("zero RHS should converge immediately");
+        assert_array1_close(&pcg_zero_rhs, &array![0.0, 0.0], 1e-12);
+
+        let mut profile = WLSSolveProfile::default();
+        let bad_init = array![0.0];
+        let no_pcg = solve_weighted_least_squares_pcg(
+            x.view(),
+            &array![1.0, 2.0, 3.0],
+            &w,
+            1.0,
+            None,
+            true,
+            Some(&bad_init),
+            &mut profile,
+        )
+        .expect("bad warm start length should degrade to direct solve");
+        assert!(no_pcg.is_none());
+
+        let mut profile = WLSSolveProfile::default();
+        let noncontiguous = Array2::from_shape_vec(
+            (3, 4),
+            vec![
+                1.0, 99.0, 0.0, 88.0, 1.0, 77.0, 1.0, 66.0, 1.0, 55.0, 2.0, 44.0,
+            ],
+        )
+        .expect("test setup should be valid");
+        let no_pcg = solve_weighted_least_squares_pcg(
+            noncontiguous.slice(s![.., ..;2]),
+            &array![1.0, 2.0, 3.0],
+            &w,
+            1.0,
+            None,
+            true,
+            None,
+            &mut profile,
+        )
+        .expect("non-contiguous design should degrade to direct solve");
+        assert!(no_pcg.is_none());
+
+        let mut profile = WLSSolveProfile::default();
+        let no_pcg = solve_weighted_least_squares_pcg(
+            x.view(),
+            &strided3([1.0, 2.0, 3.0]),
+            &w,
+            1.0,
+            None,
+            true,
+            None,
+            &mut profile,
+        )
+        .expect("non-contiguous response should degrade to direct solve");
+        assert!(no_pcg.is_none());
+
+        let mut profile = WLSSolveProfile::default();
+        let no_pcg = solve_weighted_least_squares_pcg(
+            x.view(),
+            &array![1.0, 2.0, 3.0],
+            &strided3([1.0, 1.0, 1.0]),
+            1.0,
+            None,
+            true,
+            None,
+            &mut profile,
+        )
+        .expect("non-contiguous weights should degrade to direct solve");
+        assert!(no_pcg.is_none());
+
+        let mut profile = WLSSolveProfile::default();
+        let no_pcg = solve_weighted_least_squares_pcg(
+            x.view(),
+            &array![f64::INFINITY, 2.0, 3.0],
+            &w,
+            1.0,
+            None,
+            true,
+            None,
+            &mut profile,
+        )
+        .expect("non-finite PCG inputs should degrade to direct solve");
+        assert!(no_pcg.is_none());
+
+        let mut profile = WLSSolveProfile::default();
+        let negative_weights = array![-1.0, -1.0];
+        let identity_x = Array2::eye(2);
+        let no_pcg = solve_weighted_least_squares_pcg(
+            identity_x.view(),
+            &array![1.0, 1.0],
+            &negative_weights,
+            0.0,
+            None,
+            true,
+            None,
+            &mut profile,
+        )
+        .expect("invalid curvature should degrade to direct solve");
+        assert!(no_pcg.is_none());
+
+        assert!(cholesky_solve_coefficients(DMatrix::zeros(2, 2), &rhs).is_err());
+    }
 
     #[test]
     fn test_compute_xtwx_sparse_kernel_matches_dense_formula() {
@@ -2997,10 +4998,12 @@ mod tests {
         let p = 24;
         let mut x = Array2::<f64>::zeros((n, p));
         for row in 0..n {
-            let j1 = row % p;
-            let j2 = (row * 5 + 3) % p;
-            x[[row, j1]] = 1.0 + (row % 4) as f64;
-            x[[row, j2]] += (row as f64 / 4.0).sin();
+            if row % 11 == 0 {
+                continue;
+            }
+            for (slot, col) in [0usize, 3, 8, 13, 21].iter().copied().enumerate() {
+                x[[row, col]] = (1.0 + (row % 4) as f64) * (slot as f64 + 0.5);
+            }
         }
         let w: Array1<f64> = (0..n).map(|i| 0.75 + (i % 7) as f64 * 0.05).collect();
 
@@ -3022,7 +5025,7 @@ mod tests {
 
         for i in 0..p {
             for j in 0..p {
-                assert!((actual[[i, j]] - expected[[i, j]]).abs() < 1e-12);
+                assert!((actual[[i, j]] - expected[[i, j]]).abs() < 1e-9);
             }
         }
     }
@@ -3068,15 +5071,44 @@ mod tests {
     }
 
     #[test]
+    fn test_profiled_dense_gram_subtimers_are_recorded_when_enabled() {
+        let _env_lock = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = EnvVarGuard::set("RUSTYSTATS_PROFILE_GRAM_SUBTIMERS", "1");
+
+        let n = 40;
+        let p = 18;
+        let mut x = Array2::<f64>::zeros((n, p));
+        for row in 0..n {
+            for col in 0..p {
+                x[[row, col]] = 0.2 + ((row + 3) as f64 * (col + 5) as f64 * 0.017).sin();
+            }
+        }
+        let z: Array1<f64> = (0..n).map(|i| 0.75 + (i as f64 * 0.03).cos()).collect();
+        let w: Array1<f64> = (0..n).map(|i| 0.8 + (i % 9) as f64 * 0.04).collect();
+
+        let (xtx, xtz, profile) =
+            compute_xtwx_xtwz_profiled(x.view(), &z, &w).expect("profiled dense kernel");
+
+        assert_eq!(xtx.shape(), (p, p));
+        assert_eq!(xtz.len(), p);
+        assert!(profile.local_init_seconds >= 0.0);
+        assert!(profile.pairwise_accum_seconds >= 0.0);
+        assert!(profile.reduce_seconds >= 0.0);
+        assert!(profile.materialize_seconds >= 0.0);
+    }
+
+    #[test]
     fn test_compute_xtwx_xtwz_sparse_kernel_matches_formula() {
         let n = 72;
         let p = 32;
         let mut x = Array2::<f64>::zeros((n, p));
         for row in 0..n {
-            let j1 = row % p;
-            let j2 = (row * 7 + 5) % p;
-            x[[row, j1]] = 1.0 + (row % 3) as f64;
-            x[[row, j2]] += (row as f64 * 0.13).cos();
+            if row % 13 == 0 {
+                continue;
+            }
+            for (slot, col) in [0usize, 4, 9, 17, 25].iter().copied().enumerate() {
+                x[[row, col]] = (row as f64 * 0.13 + slot as f64).cos();
+            }
         }
         let z: Array1<f64> = (0..n).map(|i| 0.25 + (i as f64 * 0.17).sin()).collect();
         let w: Array1<f64> = (0..n).map(|i| 0.5 + (i % 11) as f64 * 0.03).collect();
@@ -3114,10 +5146,12 @@ mod tests {
         let p = 32;
         let mut x = Array2::<f64>::zeros((n, p));
         for row in 0..n {
-            let j1 = row % p;
-            let j2 = (row * 7 + 5) % p;
-            x[[row, j1]] = 1.0 + (row % 3) as f64;
-            x[[row, j2]] += (row as f64 * 0.13).cos();
+            if row % 13 == 0 {
+                continue;
+            }
+            for (slot, col) in [0usize, 4, 9, 17, 25].iter().copied().enumerate() {
+                x[[row, col]] = (row as f64 * 0.13 + slot as f64).cos();
+            }
         }
         let z: Array1<f64> = (0..n).map(|i| 0.25 + (i as f64 * 0.17).sin()).collect();
         let w: Array1<f64> = (0..n).map(|i| 0.5 + (i % 11) as f64 * 0.03).collect();
@@ -3151,6 +5185,11 @@ mod tests {
 
         let (actual_xtx, actual_xtz, _) = compute_xtwx_xtwz_sparse_cached(&cache, &z, &w, false)
             .expect("cached kernel should succeed");
+        let (_, _, profiled) = compute_xtwx_xtwz_sparse_cached(&cache, &z, &w, true)
+            .expect("profiled cached kernel should succeed");
+        assert!(profiled.local_init_seconds >= 0.0);
+        assert!(profiled.pairwise_accum_seconds >= 0.0);
+        assert!(profiled.materialize_seconds >= 0.0);
         let (expected_xtx, expected_xtz) =
             compute_xtwx_xtwz(x.view(), &z, &w).expect("sparse kernel should succeed");
         for i in 0..p {
@@ -3164,6 +5203,82 @@ mod tests {
         let expected_dot = x.dot(&coef);
         for row in 0..n {
             assert!((actual_dot[row] - expected_dot[row]).abs() < 1e-12);
+        }
+
+        let cached_xtwx = compute_xtwx_with_sparse_cache(x.view(), &w, Some(&cache))
+            .expect("compatible cache with empty rows should compute X'WX");
+        let expected_xtwx = compute_xtwx(x.view(), &w);
+        assert_array2_close(&cached_xtwx, &expected_xtwx, 1e-10);
+
+        let err = compute_xtwx_xtwz_sparse_cached(&cache, &Array1::zeros(n - 1), &w, false)
+            .expect_err("cached normal equations require matching rows");
+        assert!(matches!(err, RustyStatsError::DimensionMismatch { .. }));
+
+        let mut z_storage = Vec::with_capacity(2 * n - 1);
+        for (idx, value) in z.iter().copied().enumerate() {
+            z_storage.push(value);
+            if idx + 1 < n {
+                z_storage.push(99.0);
+            }
+        }
+        let z_strided = Array1::from_shape_vec((n).strides(2), z_storage)
+            .expect("valid full-length strided working-response vector");
+        let err = compute_xtwx_xtwz_sparse_cached(&cache, &z_strided, &w, false)
+            .expect_err("cached normal equations require contiguous working responses");
+        assert_linear_algebra_contains(err, "Working response Z");
+
+        let mut w_storage = Vec::with_capacity(2 * n - 1);
+        for (idx, value) in w.iter().copied().enumerate() {
+            w_storage.push(value);
+            if idx + 1 < n {
+                w_storage.push(99.0);
+            }
+        }
+        let w_strided = Array1::from_shape_vec((n).strides(2), w_storage)
+            .expect("valid full-length strided weight vector");
+        let err = compute_xtwx_xtwz_sparse_cached(&cache, &z, &w_strided, false)
+            .expect_err("cached normal equations require contiguous weights");
+        assert_linear_algebra_contains(err, "Weight vector W");
+    }
+
+    #[test]
+    fn test_sparse_cache_builder_thresholds_and_core_kernel_edge_paths() {
+        assert_eq!(sampled_density(&[], 0, 16), 0.0);
+        assert_eq!(sparse_xtwx_chunk_count(1, 512), 1);
+        assert!(sparse_xtwx_chunk_count(64, 512) <= SPARSE_XTWX_THREAD_CAP);
+
+        let x_empty = Array2::<f64>::zeros((0, 20));
+        let z_empty = Array1::<f64>::zeros(0);
+        let w_empty = Array1::<f64>::zeros(0);
+        let (xtx, xtz) =
+            compute_xtwx_xtwz(x_empty.view(), &z_empty, &w_empty).expect("empty dense kernel");
+        assert_eq!(xtx.shape(), (20, 20));
+        assert_eq!(xtz.len(), 20);
+
+        let (sparse_xtx, sparse_xtz, sparse_profile) =
+            compute_xtwx_xtwz_sparse(&[], &[], &[], 0, 20, true).expect("empty sparse kernel");
+        assert_eq!(sparse_xtx.shape(), (20, 20));
+        assert_eq!(sparse_xtz.len(), 20);
+        assert!(sparse_profile.local_init_seconds >= 0.0);
+        assert!(sparse_profile.materialize_seconds >= 0.0);
+
+        let n = 625_000usize;
+        let p = 16usize;
+        let mut x = Array2::<f64>::zeros((n, p));
+        for row in 0..n {
+            x[[row, row % p]] = 1.0 + (row % 3) as f64;
+        }
+        let cache = build_sparse_row_cache_if_beneficial(x.view())
+            .expect("large sparse design should build a row cache");
+        assert!(cache.is_compatible_with(x.view()));
+        assert_eq!(cache.offsets.len(), n + 1);
+        assert_eq!(cache.indices.len(), n);
+        assert_eq!(cache.values.len(), n);
+
+        let coefficients: Array1<f64> = (0..p).map(|j| j as f64 * 0.25).collect();
+        let cached_dot = matrix_vector_dot_cached(x.view(), &coefficients, Some(&cache));
+        for row in [0usize, 1, 15, 16, n - 1] {
+            assert!((cached_dot[row] - x.row(row).dot(&coefficients)).abs() < 1e-12);
         }
     }
 
@@ -3214,6 +5329,102 @@ mod tests {
         }
         assert!(profile.gram_seconds >= 0.0);
         assert!(profile.solve_seconds >= 0.0);
+    }
+
+    #[test]
+    fn test_sparse_scan_pcg_helpers_match_dense_references() {
+        let n = 4usize;
+        let p = 3usize;
+        let x = Array2::from_shape_vec(
+            (n, p),
+            vec![
+                1.0, 0.0, 2.0, //
+                0.0, 3.0, 0.0, //
+                1.0, -1.0, 0.5, //
+                0.0, 0.0, 0.0,
+            ],
+        )
+        .expect("test setup should be valid");
+        let z = array![2.0, -1.0, 0.5, 99.0];
+        let w = array![1.0, 0.5, 2.0, 3.0];
+        let beta = vec![0.25, -0.5, 0.75];
+
+        let x_slice = x.as_slice().expect("test matrix should be contiguous");
+        let z_slice = z.as_slice().expect("test vector should be contiguous");
+        let w_slice = w.as_slice().expect("test vector should be contiguous");
+        let (rhs, diag) =
+            compute_xtwz_and_weighted_diag_sparse_scan(x_slice, z_slice, w_slice, n, p);
+
+        let mut expected_rhs = vec![0.0; p];
+        let mut expected_diag = vec![0.0; p];
+        let mut expected_matvec = vec![0.0; p];
+        for row in 0..n {
+            let dot = (0..p).map(|col| x[[row, col]] * beta[col]).sum::<f64>();
+            for col in 0..p {
+                expected_rhs[col] += x[[row, col]] * w[row] * z[row];
+                expected_diag[col] += w[row] * x[[row, col]] * x[[row, col]];
+                expected_matvec[col] += x[[row, col]] * w[row] * dot;
+            }
+        }
+        expected_matvec[1] += 0.4 * 2.0 * beta[1];
+        expected_matvec[2] += 0.4 * 3.0 * beta[2];
+
+        for col in 0..p {
+            assert!((rhs[col] - expected_rhs[col]).abs() < 1e-12);
+            assert!((diag[col] - expected_diag[col]).abs() < 1e-12);
+        }
+
+        let actual_matvec = weighted_normal_matvec_sparse_scan(
+            x_slice,
+            w_slice,
+            &beta,
+            n,
+            p,
+            0.4,
+            Some(&[1.0, 2.0, 3.0]),
+            false,
+        );
+        for col in 0..p {
+            assert!((actual_matvec[col] - expected_matvec[col]).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn test_matrix_vector_dot_small_strided_and_large_parallel_paths() {
+        let x = Array2::from_shape_vec((3, 3), vec![1.0, 0.0, 2.0, 0.5, 1.0, 0.0, 2.0, 1.0, 1.0])
+            .expect("test setup should be valid");
+        let coefficients = array![0.5, -1.0, 2.0];
+        assert_array1_close(
+            &matrix_vector_dot(x.view(), &coefficients),
+            &x.dot(&coefficients),
+            1e-12,
+        );
+
+        let strided_coefficients = strided3([0.5, -1.0, 2.0]);
+        assert_array1_close(
+            &matrix_vector_dot(x.view(), &strided_coefficients),
+            &x.dot(&strided_coefficients),
+            1e-12,
+        );
+
+        let cache = manual_sparse_cache(&x);
+        assert_array1_close(
+            &matrix_vector_dot_cached(x.view(), &strided_coefficients, Some(&cache)),
+            &x.dot(&strided_coefficients),
+            1e-12,
+        );
+
+        let n = 1024usize;
+        let p = 1024usize;
+        let large_x = Array2::from_shape_fn((n, p), |(row, col)| {
+            (((row * 31 + col * 17) % 23) as f64 - 11.0) * 0.001
+        });
+        let large_coef: Array1<f64> = (0..p).map(|j| ((j % 19) as f64 - 9.0) * 0.01).collect();
+        let actual = matrix_vector_dot(large_x.view(), &large_coef);
+        let expected = large_x.dot(&large_coef);
+        for row in [0usize, 1, 127, 511, 1023] {
+            assert!((actual[row] - expected[row]).abs() < 1e-10);
+        }
     }
 
     #[test]

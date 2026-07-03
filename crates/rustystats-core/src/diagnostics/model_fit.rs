@@ -489,6 +489,7 @@ pub fn null_deviance_for_family(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::families::{GammaFamily, GaussianFamily, NegativeBinomialFamily, PoissonFamily};
     use approx::assert_abs_diff_eq;
     use ndarray::array;
 
@@ -807,6 +808,31 @@ mod tests {
     }
 
     #[test]
+    fn test_null_deviance_family_name_error_and_negbinomial_theta_parsing_contracts() {
+        let y = array![0.0, 1.0, 3.0, 5.0];
+
+        let err = null_deviance(&y, "tweedie", None).expect_err("unknown family should error");
+        assert!(err.contains("Unknown family 'tweedie'"));
+        assert!(err.contains("negativebinomial"));
+
+        let no_theta =
+            null_deviance(&y, "negativebinomial", None).expect("default theta should be accepted");
+        let invalid_theta_text = null_deviance(&y, "negativebinomial(theta=not-a-number)", None)
+            .expect("invalid theta text falls back to the default theta");
+        assert_abs_diff_eq!(invalid_theta_text, no_theta, epsilon = 1e-12);
+
+        let closed = null_deviance(&y, "negativebinomial(theta=2.0)", None)
+            .expect("closed theta syntax should be accepted");
+        let open = null_deviance(&y, "negbinomial(theta=2.0", None)
+            .expect("missing close paren should parse to the end of the string");
+        assert_abs_diff_eq!(open, closed, epsilon = 1e-12);
+
+        let err = null_deviance(&y, "negativebinomial(theta=-0.5)", None)
+            .expect_err("non-positive theta should error");
+        assert!(err.contains("theta must be > 0"));
+    }
+
+    #[test]
     fn test_null_deviance_with_offset_poisson() {
         let y = array![1.0, 2.0, 4.0];
         let offset = array![0.0, 0.693, 1.386]; // log(1), log(2), log(4)
@@ -864,6 +890,56 @@ mod tests {
             .expect("test setup should be valid");
 
         assert!(null_dev >= 0.0);
+    }
+
+    #[test]
+    fn test_null_deviance_for_family_matches_string_dispatch_all_offset_weight_paths() {
+        let y_count = array![0.0, 1.0, 2.0, 4.0, 7.0];
+        let y_positive = array![0.75, 1.25, 2.5, 4.0, 6.5];
+        let offset = array![0.0_f64, 0.2, -0.1, 0.7, -0.4];
+        let weights = array![1.0, 0.5, 2.0, 1.5, 0.75];
+
+        let gaussian = GaussianFamily;
+        for (w, off) in [
+            (None, None),
+            (Some(&weights), None),
+            (None, Some(&offset)),
+            (Some(&weights), Some(&offset)),
+        ] {
+            let by_trait = null_deviance_for_family(&y_positive, &gaussian, w, off);
+            let by_name =
+                null_deviance_with_offset(&y_positive, "gaussian", w, off).expect("valid family");
+            assert_abs_diff_eq!(by_trait, by_name, epsilon = 1e-12);
+        }
+
+        let poisson = PoissonFamily;
+        let gamma = GammaFamily;
+        let negbin = NegativeBinomialFamily::new(2.25).expect("test setup should be valid");
+        for (name, family, y) in [
+            (
+                "poisson",
+                &poisson as &dyn crate::families::Family,
+                &y_count,
+            ),
+            ("gamma", &gamma as &dyn crate::families::Family, &y_positive),
+            (
+                "negativebinomial(theta=2.25)",
+                &negbin as &dyn crate::families::Family,
+                &y_count,
+            ),
+        ] {
+            for (w, off) in [
+                (None, None),
+                (Some(&weights), None),
+                (None, Some(&offset)),
+                (Some(&weights), Some(&offset)),
+            ] {
+                let by_trait = null_deviance_for_family(y, family, w, off);
+                let by_name =
+                    null_deviance_with_offset(y, name, w, off).expect("valid family name");
+                assert_abs_diff_eq!(by_trait, by_name, epsilon = 1e-12);
+            }
+        }
     }
 
     // -----------------------------------------------------------------

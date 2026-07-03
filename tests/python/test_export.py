@@ -10,6 +10,7 @@ Covers:
 
 import os
 import tempfile
+from types import SimpleNamespace
 
 import numpy as np
 import polars as pl
@@ -46,7 +47,7 @@ def simple_model(simple_poisson_data):
         data=simple_poisson_data,
         family="poisson",
         offset="exposure",
-    ).fit()
+    ).fit(store_design_matrix=True)
 
 
 @pytest.fixture
@@ -69,7 +70,7 @@ def gaussian_model(gaussian_data):
         terms={"x": {"type": "linear"}},
         data=gaussian_data,
         family="gaussian",
-    ).fit()
+    ).fit(store_design_matrix=True)
 
 
 @pytest.fixture
@@ -85,10 +86,334 @@ def full_export_model(simple_poisson_data):
         },
         data=simple_poisson_data,
         family="poisson",
-    ).fit()
+    ).fit(store_design_matrix=True)
+
+
+def _onnx_runtime_predictions(onnx_bytes: bytes, inputs: np.ndarray) -> np.ndarray:
+    if os.environ.get("RUSTYSTATS_REQUIRE_EXPORT_RUNTIMES") == "1":
+        try:
+            import onnxruntime as ort
+        except ImportError as exc:
+            pytest.fail(f"onnxruntime is required for deployment parity: {exc}")
+    else:
+        ort = pytest.importorskip("onnxruntime")
+    session = ort.InferenceSession(onnx_bytes, providers=["CPUExecutionProvider"])
+    input_name = session.get_inputs()[0].name
+    outputs = session.run(None, {input_name: np.ascontiguousarray(inputs, dtype=np.float64)})
+    assert len(outputs) == 1
+    return np.asarray(outputs[0], dtype=np.float64).reshape(-1)
+
+
+def _pmml_runtime_predictions(pmml_xml: str, data: pl.DataFrame, tmp_path) -> np.ndarray:
+    if os.environ.get("RUSTYSTATS_RUN_PMML_RUNTIME") != "1":
+        pytest.skip("set RUSTYSTATS_RUN_PMML_RUNTIME=1 to execute PMML runtime parity")
+    try:
+        from pypmml import Model
+    except ImportError as exc:
+        pytest.fail(f"pypmml is required for deployment parity: {exc}")
+
+    path = tmp_path / "model.pmml"
+    path.write_text(pmml_xml, encoding="utf-8")
+    model = Model.fromFile(str(path))
+    scored = model.predict(data.to_pandas())
+    prediction_column = next(col for col in scored.columns if col.startswith("predicted_"))
+    return np.asarray(scored[prediction_column], dtype=np.float64)
+
+
+def _design_matrix_without_intercept(model) -> np.ndarray:
+    design = model.get_design_matrix()
+    assert design is not None
+    columns = [idx for idx, name in enumerate(model.feature_names) if name != "Intercept"]
+    return np.asarray(design[:, columns], dtype=np.float64)
+
+
+def _fit_onnx_runtime_model(family: str):
+    rng = np.random.default_rng(7309)
+    n = 220
+    x1 = rng.normal(size=n)
+    x2 = rng.uniform(-1.0, 1.0, size=n)
+    eta = 0.2 + 0.35 * x1 - 0.25 * x2
+
+    if family == "gaussian":
+        y = eta + rng.normal(0.0, 0.15, size=n)
+        kwargs = {}
+    elif family == "poisson":
+        y = rng.poisson(np.exp(eta)).astype(float)
+        kwargs = {}
+    elif family == "binomial":
+        p = 1.0 / (1.0 + np.exp(-eta))
+        y = rng.binomial(1, p).astype(float)
+        kwargs = {}
+    elif family == "gamma":
+        mu = np.exp(eta)
+        y = rng.gamma(shape=8.0, scale=mu / 8.0)
+        kwargs = {"link": "log"}
+    elif family == "negbinomial":
+        theta = 2.0
+        mu = np.exp(eta)
+        p = theta / (theta + mu)
+        y = rng.negative_binomial(theta, p).astype(float)
+        kwargs = {"theta": theta}
+    elif family == "tweedie":
+        y = rng.poisson(np.exp(eta)).astype(float)
+        kwargs = {"var_power": 1.5}
+    else:
+        raise AssertionError(f"unexpected family: {family}")
+
+    data = pl.DataFrame({"y": y, "x1": x1, "x2": x2})
+    return rs.glm_dict(
+        response="y",
+        terms={"x1": {"type": "linear"}, "x2": {"type": "linear"}},
+        data=data,
+        family=family,
+        **kwargs,
+    ).fit(store_design_matrix=True)
+
+
+def _full_mode_input_matrix(model, data: pl.DataFrame) -> np.ndarray:
+    cache = model._builder._cat_encoding_cache["cat_True"]
+    cat_lookup = {level: idx for idx, level in enumerate(cache.levels)}
+    cat_codes = np.asarray([cat_lookup[value] for value in data["cat"]], dtype=np.float64)
+    return np.column_stack(
+        [
+            data["x1"].to_numpy(),
+            data["x2"].to_numpy(),
+            cat_codes,
+        ]
+    ).astype(np.float64)
+
+
+def _fake_export_model(
+    *,
+    family: str = "gaussian",
+    link: str = "identity",
+    feature_names: list[str] | None = None,
+    params: list[float] | None = None,
+    builder=None,
+    offset_spec=None,
+    exposure_spec=None,
+    input_transforms: list[dict] | None = None,
+):
+    if feature_names is None:
+        feature_names = ["Intercept", "x"]
+    if params is None:
+        params = [1.0, 0.25]
+    return SimpleNamespace(
+        feature_names=feature_names,
+        params=np.asarray(params, dtype=np.float64),
+        family=family,
+        link=link,
+        formula="y ~ x",
+        _builder=builder,
+        _offset_spec=offset_spec,
+        _exposure_spec=exposure_spec,
+        _input_transforms=[] if input_transforms is None else input_transforms,
+    )
+
+
+class _FakeSpline:
+    def get_knot_info(self):
+        return {"boundary_knots": [0.0, 10.0], "knots": [5.0]}
+
+    def transform(self, values):
+        values = np.asarray(values, dtype=np.float64)
+        basis = np.column_stack([np.ones_like(values), values / 10.0])
+        return basis, ["bs(age, 1/2)", "bs(age, 2/2)"]
 
 
 # ── PMML Tests ───────────────────────────────────────────────────────────────
+
+
+class TestPMMLInternalHelpers:
+    def test_split_interaction_respects_nested_syntax(self):
+        from rustystats.export_pmml import _split_interaction
+
+        assert _split_interaction("cat[T.A]:bs(age, 2/5, intercept=False):I(income ** 2)") == [
+            "cat[T.A]",
+            "bs(age, 2/5, intercept=False)",
+            "I(income ** 2)",
+        ]
+
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            ("Intercept", {"type": "intercept"}),
+            ("cat[T.B]", {"type": "categorical", "variable": "cat", "level": "B"}),
+            (
+                "bs(age, 3/7, intercept=False)",
+                {
+                    "type": "spline",
+                    "spline_type": "bs",
+                    "variable": "age",
+                    "basis_idx": 3,
+                    "basis_total": 7,
+                    "flags": "intercept=False",
+                },
+            ),
+            ("TE(region)", {"type": "te", "variable": "region"}),
+            ("FE(region)", {"type": "fe", "variable": "region"}),
+            ("I(age ** 2)", {"type": "expression", "expr": "age ** 2"}),
+            ("pos(loss)", {"type": "constraint", "variable": "loss", "sign": "pos"}),
+            ("neg(loss)", {"type": "constraint", "variable": "loss", "sign": "neg"}),
+            ("severity", {"type": "linear", "variable": "severity"}),
+        ],
+    )
+    def test_classify_feature_components(self, name, expected):
+        from rustystats.export_pmml import _classify
+
+        assert _classify(name) == expected
+
+    def test_classify_feature_returns_interaction_components(self):
+        from rustystats.export_pmml import _classify_feature
+
+        info = _classify_feature("cat[T.B]:I(age ** 2):FE(region)")
+        assert info["type"] == "interaction"
+        assert [component["type"] for component in info["components"]] == [
+            "categorical",
+            "expression",
+            "fe",
+        ]
+        assert [component["name"] for component in info["components"]] == [
+            "cat[T.B]",
+            "I(age ** 2)",
+            "FE(region)",
+        ]
+
+    @pytest.mark.parametrize(
+        ("link", "expected_parameter"),
+        [("inverse", "-1"), ("sqrt", "0.5")],
+    )
+    def test_pmml_power_links_include_link_parameter(self, link, expected_parameter):
+        from rustystats.export_pmml import PMMLExporter
+
+        xml = PMMLExporter(_fake_export_model(family="gamma", link=link)).export()
+
+        assert 'linkFunction="power"' in xml
+        assert f'linkParameter="{expected_parameter}"' in xml
+
+    def test_pmml_unknown_family_and_link_fail_closed_to_portable_defaults(self):
+        from rustystats.export_pmml import PMMLExporter
+
+        xml = PMMLExporter(_fake_export_model(family="unexpected", link="unknown")).export()
+
+        assert 'distributionName="normal"' in xml
+        assert 'linkFunction="log"' in xml
+        assert "linkParameter=" not in xml
+
+    def test_pmml_emits_encoded_expression_interaction_and_spline_fallback_terms(self):
+        from rustystats.export_pmml import PMMLExporter
+
+        builder = SimpleNamespace(
+            _cat_encoding_cache={"cat_True": SimpleNamespace(levels=["A", "B"])},
+            _te_stats={
+                "brand": {
+                    "prior": 0.25,
+                    "prior_weight": 2.0,
+                    "stats": {"A": (2.0, 4), "B": (1.0, 2)},
+                    "used_exposure_weighted": False,
+                }
+            },
+            _fe_stats={"region": {"level_counts": {"North": 2, "South": 4}, "max_count": 4}},
+            _fitted_splines={},
+        )
+        model = _fake_export_model(
+            family="poisson",
+            link="log",
+            builder=builder,
+            feature_names=[
+                "Intercept",
+                "TE(brand)",
+                "FE(region)",
+                "I(age ** 2)",
+                "I(age + income)",
+                "cat[T.B]:x",
+                "TE(brand):FE(region):I(age ** 2)",
+                "bs(age, 1/2)",
+            ],
+            params=[0.1, 0.5, 0.25, 0.01, -0.02, 0.3, 0.4, 0.05],
+        )
+
+        xml = PMMLExporter(model).export()
+
+        assert 'name="TE_brand"' in xml
+        assert 'name="FE_region"' in xml
+        assert "<MapValues" in xml
+        assert '<Apply function="pow">' in xml
+        assert 'name="rustystats_expression" value="age + income"' in xml
+        assert 'label="cat[T.B]:x"' in xml
+        assert 'label="TE(brand):FE(region):I(age ** 2)"' in xml
+        # No fitted spline metadata means spline columns fall back to ordinary
+        # continuous covariates rather than silently approximating with bogus knots.
+        assert 'label="bs(age, 1/2)"' in xml
+
+    def test_pmml_exposure_weighted_target_encoding_and_zero_frequency_encoding(self):
+        from rustystats.export_pmml import PMMLExporter
+
+        builder = SimpleNamespace(
+            _cat_encoding_cache={},
+            _te_stats={
+                "brand": {
+                    "prior": 0.5,
+                    "prior_weight": 2.0,
+                    "stats": {"A": (3.0, 4.0)},
+                    "used_exposure_weighted": True,
+                }
+            },
+            _fe_stats={"region": {"level_counts": {"North": 3}, "max_count": 0}},
+            _fitted_splines={},
+        )
+        model = _fake_export_model(
+            family="poisson",
+            link="log",
+            builder=builder,
+            feature_names=["TE(brand)", "FE(region)"],
+            params=[1.0, 2.0],
+        )
+
+        xml = PMMLExporter(model).export()
+
+        assert "<original>A</original>" in xml
+        assert "<encoded>0.6666666667</encoded>" in xml
+        assert "<original>North</original>" in xml
+        assert "<encoded>0</encoded>" in xml
+
+    def test_pmml_collapses_fitted_spline_and_spline_interaction(self):
+        from rustystats.export_pmml import PMMLExporter
+
+        builder = SimpleNamespace(
+            _cat_encoding_cache={"cat_True": SimpleNamespace(levels=["A", "B"])},
+            _te_stats={},
+            _fe_stats={},
+            _fitted_splines={"age": _FakeSpline()},
+        )
+        model = _fake_export_model(
+            family="poisson",
+            link="log",
+            builder=builder,
+            feature_names=[
+                "bs(age, 1/2)",
+                "bs(age, 2/2)",
+                "cat[T.B]:bs(age, 1/2)",
+                "cat[T.B]:bs(age, 2/2)",
+            ],
+            params=[0.5, 0.25, 0.1, 0.2],
+        )
+
+        xml = PMMLExporter(model, n_grid_points=4).export()
+
+        assert 'name="spline_effect_age"' in xml
+        assert 'name="int_spline_age_cat_T_B_"' in xml
+        assert "<NormContinuous" in xml
+        assert xml.count("<LinearNorm") == 8
+        assert 'predictorName="cat" parameterName=' in xml
+
+    def test_pmml_rejects_input_transforms_before_exporting_raw_data(self):
+        from rustystats.export_pmml import to_pmml
+
+        model = _fake_export_model(input_transforms=[{"name": "territory_lookup"}])
+
+        with pytest.raises(rs.ValidationError, match="input_transforms"):
+            to_pmml(model)
 
 
 class TestPMMLExport:
@@ -197,8 +522,180 @@ class TestPMMLExport:
         with pytest.raises(rs.ValidationError, match="exposure"):
             model.to_pmml()
 
+    def test_pmml_rejects_array_offset(self, simple_poisson_data):
+        model = rs.glm_dict(
+            response="y",
+            terms={"x1": {"type": "linear"}},
+            data=simple_poisson_data,
+            family="poisson",
+            offset=np.zeros(len(simple_poisson_data), dtype=np.float64),
+        ).fit()
+        with pytest.raises(rs.ValidationError, match="offset"):
+            model.to_pmml()
+
+    @pytest.mark.assurance
+    def test_pmml_runtime_matches_native_predict_with_exposure_and_categorical(
+        self, simple_poisson_data, tmp_path
+    ):
+        data = simple_poisson_data.with_columns(
+            pl.Series("adj", np.linspace(-0.2, 0.2, len(simple_poisson_data)))
+        )
+        model = rs.glm_dict(
+            response="y",
+            terms={
+                "x1": {"type": "linear"},
+                "x2": {"type": "linear"},
+                "cat": {"type": "categorical"},
+            },
+            data=data,
+            family="poisson",
+            exposure="exposure",
+            offset="adj",
+        ).fit()
+
+        pmml_pred = _pmml_runtime_predictions(model.to_pmml(), data.head(25), tmp_path)
+        native_pred = np.asarray(model.predict(data.head(25)), dtype=np.float64)
+        np.testing.assert_allclose(pmml_pred, native_pred, rtol=1e-8, atol=1e-8)
+
+    @pytest.mark.assurance
+    def test_pmml_runtime_matches_native_predict_for_gaussian_identity(
+        self, gaussian_model, gaussian_data, tmp_path
+    ):
+        pmml_pred = _pmml_runtime_predictions(gaussian_model.to_pmml(), gaussian_data, tmp_path)
+        native_pred = np.asarray(gaussian_model.predict(gaussian_data), dtype=np.float64)
+        np.testing.assert_allclose(pmml_pred, native_pred, rtol=1e-8, atol=1e-8)
+
 
 # ── ONNX Tests ───────────────────────────────────────────────────────────────
+
+
+class TestONNXInternalHelpers:
+    @pytest.mark.parametrize(
+        ("link", "expected"),
+        [
+            ("identity", "identity"),
+            ("log", "exp"),
+            ("logit", "sigmoid"),
+            ("inverse", "1/x"),
+            ("sqrt", "square"),
+            ("cloglog", "cloglog_inv"),
+            ("probit", "probit_inv"),
+            ("custom", "custom"),
+        ],
+    )
+    def test_inverse_link_metadata_names(self, link, expected):
+        from rustystats.export_onnx import _inverse_link_name
+
+        assert _inverse_link_name(link) == expected
+
+    def test_graph_accumulator_preserves_parallel_serializer_lists(self):
+        from rustystats.export_onnx import _GraphAccumulator
+
+        graph = _GraphAccumulator()
+        graph.add_init_f64("weights", np.array([[1.0, 2.0], [3.0, 4.0]]))
+        graph.add_init_i64("axis", np.array([1]))
+        graph.add_node(
+            "ReduceSum",
+            ["X", "axis"],
+            ["Y"],
+            [("keepdims", "int", 1), ("noop_with_empty_axes", "float", 0.0)],
+        )
+
+        assert graph.uid("tmp") == "tmp_1"
+        assert graph.init_names_f64 == ["weights"]
+        assert graph.init_shapes_f64 == [[2, 2]]
+        assert graph.init_data_f64 == [[1.0, 2.0, 3.0, 4.0]]
+        assert graph.init_names_i64 == ["axis"]
+        assert graph.init_shapes_i64 == [[1]]
+        assert graph.node_ops == ["ReduceSum"]
+        assert graph.node_attr_names == [["keepdims", "noop_with_empty_axes"]]
+        assert graph.node_attr_types == [["int", "float"]]
+        assert graph.node_attr_ints == [[1, 0]]
+        assert graph.node_attr_floats == [[0.0, 0.0]]
+
+    def test_piecewise_linear_nodes_encode_expected_interpolation_graph(self):
+        from rustystats.export_onnx import _GraphAccumulator, _pwl_nodes
+
+        graph = _GraphAccumulator()
+        _pwl_nodes(
+            graph,
+            "x",
+            np.array([0.0, 1.0, 2.0], dtype=np.float64),
+            np.array([0.0, 10.0, 30.0], dtype=np.float64),
+            "effect",
+        )
+
+        assert graph.node_ops[:5] == ["Clip", "Sub", "Div", "Floor", "Clip"]
+        assert graph.node_ops.count("Gather") == 2
+        assert graph.node_ops[-1] == "Unsqueeze"
+        assert graph.node_outputs[-1] == ["effect"]
+        assert [0.0, 10.0, 30.0] in graph.init_data_f64
+
+    def test_onnx_full_fake_model_covers_encoded_and_fallback_term_builders(self):
+        from rustystats.export_onnx import to_onnx
+
+        builder = SimpleNamespace(
+            _cat_encoding_cache={
+                "cat_True": SimpleNamespace(levels=["A", "B"]),
+                "brand_True": SimpleNamespace(levels=["A", "B"]),
+                "region_True": SimpleNamespace(levels=["North", "South"]),
+            },
+            _te_stats={
+                "brand": {
+                    "prior": 0.25,
+                    "prior_weight": 1.0,
+                    "stats": {"A": (2.0, 4), "B": (1.0, 2)},
+                    "used_exposure_weighted": False,
+                }
+            },
+            _fe_stats={"region": {"level_counts": {"North": 2, "South": 4}, "max_count": 4}},
+            _fitted_splines={},
+        )
+        model = _fake_export_model(
+            family="poisson",
+            link="log",
+            builder=builder,
+            feature_names=[
+                "Intercept",
+                "x",
+                "pos(z)",
+                "cat[T.B]",
+                "bs(age, 1/2)",
+                "TE(brand)",
+                "FE(region)",
+            ],
+            params=[0.1, 0.2, 0.3, 0.4, 0.05, 0.6, 0.7],
+        )
+
+        onnx_bytes = to_onnx(model, mode="full")
+
+        assert isinstance(onnx_bytes, bytes)
+        assert b"input_names" in onnx_bytes
+        assert b"cat_level_maps" in onnx_bytes
+
+    @pytest.mark.parametrize("link", ["identity", "inverse", "sqrt", "custom"])
+    def test_onnx_full_intercept_only_graph_covers_inverse_link_branches(self, link):
+        from rustystats.export_onnx import to_onnx
+
+        model = _fake_export_model(
+            family="gaussian",
+            link=link,
+            feature_names=["Intercept"],
+            params=[2.0],
+        )
+
+        onnx_bytes = to_onnx(model, mode="full")
+
+        assert isinstance(onnx_bytes, bytes)
+        assert b"RustyStats" in onnx_bytes
+
+    def test_onnx_full_rejects_input_transforms_before_raw_export(self):
+        from rustystats.export_onnx import to_onnx
+
+        model = _fake_export_model(input_transforms=[{"name": "territory_lookup"}])
+
+        with pytest.raises(rs.ValidationError, match="input_transforms"):
+            to_onnx(model, mode="full")
 
 
 class TestONNXExport:
@@ -280,6 +777,10 @@ class TestONNXExport:
         assert isinstance(result, bytes)
         assert len(result) > 0
 
+    def test_onnx_rejects_unknown_mode(self, simple_model):
+        with pytest.raises(rs.ValidationError, match="mode"):
+            simple_model.to_onnx(mode="unknown")
+
     def test_onnx_contains_rustystats_producer(self, simple_model):
         """Check that RustyStats is embedded as producer name."""
         onnx_bytes = simple_model.to_onnx(mode="scoring")
@@ -296,6 +797,39 @@ class TestONNXExport:
         onnx_bytes = full_export_model.to_onnx(mode="full")
         assert b"input_names" in onnx_bytes
         assert b"input_types" in onnx_bytes
+
+    @pytest.mark.assurance
+    @pytest.mark.parametrize(
+        "family",
+        ["gaussian", "poisson", "binomial", "gamma", "negbinomial", "tweedie"],
+    )
+    def test_onnx_scoring_runtime_matches_fitted_values(self, family):
+        model = _fit_onnx_runtime_model(family)
+        onnx_pred = _onnx_runtime_predictions(
+            model.to_onnx(mode="scoring"),
+            _design_matrix_without_intercept(model),
+        )
+        np.testing.assert_allclose(
+            onnx_pred,
+            np.asarray(model.fittedvalues, dtype=np.float64),
+            rtol=1e-10,
+            atol=1e-10,
+        )
+
+    @pytest.mark.assurance
+    def test_onnx_full_runtime_matches_predict_for_raw_inputs(
+        self, full_export_model, simple_poisson_data
+    ):
+        onnx_pred = _onnx_runtime_predictions(
+            full_export_model.to_onnx(mode="full"),
+            _full_mode_input_matrix(full_export_model, simple_poisson_data),
+        )
+        np.testing.assert_allclose(
+            onnx_pred,
+            np.asarray(full_export_model.predict(simple_poisson_data), dtype=np.float64),
+            rtol=1e-10,
+            atol=1e-10,
+        )
 
 
 # ── Rust protobuf serializer direct tests ────────────────────────────────────

@@ -561,6 +561,20 @@ mod tests {
     }
 
     #[test]
+    fn test_calibration_stats_zero_prediction_and_exposure_total() {
+        let y = array![1.0, 2.0];
+        let mu = array![0.0, 0.0];
+        let exposure = array![2.0, 3.5];
+
+        let stats = compute_calibration_stats(&y, &mu, Some(&exposure));
+
+        assert_abs_diff_eq!(stats.actual_total, 3.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(stats.predicted_total, 0.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(stats.exposure_total, 5.5, epsilon = 1e-12);
+        assert!(stats.actual_expected_ratio.is_nan());
+    }
+
+    #[test]
     fn test_calibration_curve_bins() {
         let y = array![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0];
         let mu = array![1.1, 2.1, 3.1, 4.1, 5.1, 6.1, 7.1, 8.1, 9.1, 10.1];
@@ -572,6 +586,58 @@ mod tests {
         for bin in &bins {
             assert!(bin.count >= 1);
         }
+    }
+
+    #[test]
+    fn test_calibration_curve_empty_inputs_and_empty_bin_contract() {
+        let empty = array![];
+        assert!(compute_calibration_curve(&empty, &empty, None, 10).is_empty());
+        assert!(compute_calibration_curve(&array![1.0], &array![1.0], None, 0).is_empty());
+
+        let bin = compute_single_bin(&empty, &empty, None, &[], 7);
+        assert_eq!(bin.bin_index, 7);
+        assert_eq!(bin.count, 0);
+        assert_abs_diff_eq!(bin.predicted_lower, 0.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(bin.predicted_upper, 0.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(bin.predicted_mean, 0.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(bin.actual_mean, 0.0, epsilon = 1e-12);
+        assert!(bin.actual_expected_ratio.is_nan());
+        assert_abs_diff_eq!(bin.exposure, 0.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(bin.actual_sum, 0.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(bin.predicted_sum, 0.0, epsilon = 1e-12);
+        assert!(bin.ae_ci_lower.is_nan());
+        assert!(bin.ae_ci_upper.is_nan());
+    }
+
+    #[test]
+    fn test_calibration_bin_zero_prediction_has_nan_ratio_and_interval() {
+        let y = array![1.0, 0.0];
+        let mu = array![0.0, 0.0];
+        let bin = compute_single_bin(&y, &mu, None, &[0, 1], 0);
+
+        assert_abs_diff_eq!(bin.actual_sum, 1.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(bin.predicted_sum, 0.0, epsilon = 1e-12);
+        assert!(bin.actual_expected_ratio.is_nan());
+        assert!(bin.ae_ci_lower.is_nan());
+        assert!(bin.ae_ci_upper.is_nan());
+    }
+
+    #[test]
+    fn test_hosmer_lemeshow_perfect_fit_and_helper_distribution_edges() {
+        let y = array![1.0, 2.0, 3.0, 4.0];
+        let mu = y.clone();
+
+        let hl = hosmer_lemeshow_test(&y, &mu, 2);
+        assert_abs_diff_eq!(hl.statistic, 0.0, epsilon = 1e-12);
+        assert_eq!(hl.degrees_of_freedom, 1);
+        assert_abs_diff_eq!(hl.pvalue, 1.0, epsilon = 1e-12);
+
+        assert_abs_diff_eq!(chi2_cdf(0.0, 1), 0.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(chi2_cdf(1.0, 0), 1.0, epsilon = 1e-12);
+        assert!(chi2_cdf(3.0, 2) > 0.0);
+        assert_abs_diff_eq!(normal_cdf(0.0), 0.5, epsilon = 1e-7);
+        assert!(erf(1.0) > 0.8);
+        assert!(erf(-1.0) < -0.8);
     }
 
     #[test]
@@ -608,6 +674,43 @@ mod tests {
     }
 
     #[test]
+    fn test_discrimination_empty_and_degenerate_totals() {
+        let empty = array![];
+        let stats = compute_discrimination_stats(&empty, &empty, None);
+        assert!(stats.gini_coefficient.is_nan());
+        assert!(stats.auc.is_nan());
+        assert!(stats.ks_statistic.is_nan());
+        assert!(stats.lift_at_10pct.is_nan());
+        assert!(stats.lift_at_20pct.is_nan());
+
+        let y_zero = array![0.0, 0.0, 0.0];
+        let mu = array![0.1, 0.2, 0.3];
+        let stats = compute_discrimination_stats(&y_zero, &mu, None);
+        assert_abs_diff_eq!(stats.gini_coefficient, 0.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(stats.auc, 0.5, epsilon = 1e-12);
+        assert_abs_diff_eq!(stats.ks_statistic, 0.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(stats.lift_at_10pct, 1.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(stats.lift_at_20pct, 1.0, epsilon = 1e-12);
+
+        let exposure_zero = array![0.0, 0.0, 0.0];
+        let stats = compute_discrimination_stats(&array![1.0, 2.0, 3.0], &mu, Some(&exposure_zero));
+        assert_abs_diff_eq!(stats.gini_coefficient, 0.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(stats.auc, 0.5, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn test_discrimination_nonpositive_overall_rate_reports_nan_lift() {
+        let y = array![1.0, 2.0, 3.0];
+        let mu = array![0.3, 0.2, 0.1];
+        let exposure = array![-1.0, -1.0, -1.0];
+
+        let stats = compute_discrimination_stats(&y, &mu, Some(&exposure));
+
+        assert!(stats.lift_at_10pct.is_nan());
+        assert!(stats.lift_at_20pct.is_nan());
+    }
+
+    #[test]
     fn test_lorenz_curve() {
         let y = array![1.0, 2.0, 3.0, 4.0];
         let mu = array![1.0, 2.0, 3.0, 4.0];
@@ -620,6 +723,44 @@ mod tests {
         // Last point should be (1, 1, 1)
         let last = points.last().expect("test setup should be valid");
         assert_abs_diff_eq!(last.cumulative_exposure_pct, 1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_lorenz_curve_empty_and_zero_total_guards() {
+        let empty = array![];
+        assert!(compute_lorenz_curve(&empty, &empty, None, 5).is_empty());
+        assert!(compute_lorenz_curve(&array![1.0], &array![1.0], None, 0).is_empty());
+
+        let y_zero = array![0.0, 0.0];
+        let mu = array![1.0, 2.0];
+        assert!(compute_lorenz_curve(&y_zero, &mu, None, 2).is_empty());
+
+        let mu_zero = array![0.0, 0.0];
+        let y = array![1.0, 2.0];
+        assert!(compute_lorenz_curve(&y, &mu_zero, None, 2).is_empty());
+
+        let exposure_zero = array![0.0, 0.0];
+        assert!(compute_lorenz_curve(&y, &mu, Some(&exposure_zero), 2).is_empty());
+    }
+
+    #[test]
+    fn test_lorenz_curve_appends_final_endpoint_after_rounding_shortfall() {
+        let y = array![1.0];
+        let mu = array![1.0];
+        let exposure = array![0.1];
+
+        let points = compute_lorenz_curve(&y, &mu, Some(&exposure), 7);
+
+        let last = points
+            .last()
+            .expect("positive totals should produce points");
+        assert_abs_diff_eq!(last.cumulative_exposure_pct, 1.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(last.cumulative_actual_pct, 1.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(last.cumulative_predicted_pct, 1.0, epsilon = 1e-12);
+        assert!(
+            points.len() > 7,
+            "rounding shortfall should be repaired by appending the final endpoint"
+        );
     }
 
     #[test]

@@ -11,6 +11,7 @@ import math
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+import polars as pl
 
 from rustystats._rustystats import (
     chi2_cdf_py as _chi2_cdf,
