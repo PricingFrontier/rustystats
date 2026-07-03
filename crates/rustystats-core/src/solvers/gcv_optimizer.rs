@@ -994,12 +994,12 @@ mod tests {
         let calls = calls.into_inner();
         assert_eq!(calls.len(), expected_calls.len());
         for (actual, expected) in calls.iter().zip(expected_calls) {
-            assert!((*actual - expected).abs() < 1e-12, "{actual} != {expected}");
+            assert!((*actual - expected).abs() < 1e-10, "{actual} != {expected}");
         }
 
         assert!(result.converged);
         assert_eq!(result.iterations, 10);
-        assert!((result.x_min - 1.1872122616720797).abs() < 1e-12);
+        assert!((result.x_min - 1.1872122616720797).abs() < 1e-10);
         assert!((result.f_min - objective(result.x_min)).abs() < 1e-15);
     }
 

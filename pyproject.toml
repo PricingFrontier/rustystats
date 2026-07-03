@@ -57,7 +57,7 @@ dev = [
     "maturin>=1.4",
     "jupyter>=1.0",
     "ipykernel>=6.31.0",  # For Jupyter notebook support
-    "onnxruntime>=1.24.3",
+    "onnxruntime>=1.24.3; python_version >= '3.11'",
     "pyarrow>=14.0",
     "pypmml>=1.5.8",
     "psutil>=5.9",  # For memory benchmarking
@@ -187,7 +187,7 @@ dev = [
     "mkdocs>=1.6.1",
     "mkdocs-material>=9.7.1",
     "numpy>=2.0.2,<2.4",
-    "onnxruntime>=1.24.3",
+    "onnxruntime>=1.24.3; python_version >= '3.11'",
     "pre-commit>=3.5",
     "pymdown-extensions>=10.19.1",
     "pypmml>=1.5.8",

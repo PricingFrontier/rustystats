@@ -2116,11 +2116,11 @@ name = "onnxruntime"
 version = "1.24.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "flatbuffers" },
-    { name = "numpy" },
-    { name = "packaging" },
-    { name = "protobuf" },
-    { name = "sympy" },
+    { name = "flatbuffers", marker = "python_full_version >= '3.11'" },
+    { name = "numpy", marker = "python_full_version >= '3.11'" },
+    { name = "packaging", marker = "python_full_version >= '3.11'" },
+    { name = "protobuf", marker = "python_full_version >= '3.11'" },
+    { name = "sympy", marker = "python_full_version >= '3.11'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/15/41/3253db975a90c3ce1d475e2a230773a21cd7998537f0657947df6fb79861/onnxruntime-1.24.3-cp311-cp311-macosx_14_0_arm64.whl", hash = "sha256:3e6456801c66b095c5cd68e690ca25db970ea5202bd0c5b84a2c3ef7731c5a3c", size = 17332766, upload-time = "2026-03-05T17:18:59.714Z" },
@@ -3085,7 +3085,7 @@ dev = [
     { name = "ipykernel" },
     { name = "jupyter" },
     { name = "maturin" },
-    { name = "onnxruntime" },
+    { name = "onnxruntime", marker = "python_full_version >= '3.11'" },
     { name = "psutil" },
     { name = "pyarrow" },
     { name = "pypmml" },
@@ -3105,7 +3105,7 @@ dev = [
     { name = "mkdocs" },
     { name = "mkdocs-material" },
     { name = "numpy" },
-    { name = "onnxruntime" },
+    { name = "onnxruntime", marker = "python_full_version >= '3.11'" },
     { name = "pre-commit" },
     { name = "pymdown-extensions" },
     { name = "pypmml" },
@@ -3122,7 +3122,7 @@ requires-dist = [
     { name = "jupyter", marker = "extra == 'dev'", specifier = ">=1.0" },
     { name = "maturin", marker = "extra == 'dev'", specifier = ">=1.4" },
     { name = "numpy", specifier = ">=1.20,<2.4" },
-    { name = "onnxruntime", marker = "extra == 'dev'", specifier = ">=1.24.3" },
+    { name = "onnxruntime", marker = "python_full_version >= '3.11' and extra == 'dev'", specifier = ">=1.24.3" },
     { name = "polars", specifier = ">=1.0" },
     { name = "psutil", marker = "extra == 'dev'", specifier = ">=5.9" },
     { name = "pyarrow", marker = "extra == 'dev'", specifier = ">=14.0" },
@@ -3144,7 +3144,7 @@ dev = [
     { name = "mkdocs", specifier = ">=1.6.1" },
     { name = "mkdocs-material", specifier = ">=9.7.1" },
     { name = "numpy", specifier = ">=2.0.2,<2.4" },
-    { name = "onnxruntime", specifier = ">=1.24.3" },
+    { name = "onnxruntime", marker = "python_full_version >= '3.11'", specifier = ">=1.24.3" },
     { name = "pre-commit", specifier = ">=3.5" },
     { name = "pymdown-extensions", specifier = ">=10.19.1" },
     { name = "pypmml", specifier = ">=1.5.8" },
@@ -3501,7 +3501,7 @@ name = "sympy"
 version = "1.14.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "mpmath" },
+    { name = "mpmath", marker = "python_full_version >= '3.11'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/83/d3/803453b36afefb7c2bb238361cd4ae6125a569b4db67cd9e79846ba2d68c/sympy-1.14.0.tar.gz", hash = "sha256:d3d3fe8df1e5a0b42f0e7bdf50541697dbe7d23746e894990c030e2b05e72517", size = 7793921, upload-time = "2025-04-27T18:05:01.611Z" }
 wheels = [

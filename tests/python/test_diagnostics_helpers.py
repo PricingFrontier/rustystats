@@ -1998,6 +1998,7 @@ class TestDiagnosticsTypes:
             "array": np.array([1.23456789, np.nan]),
             "int": np.int64(7),
             "float": np.float64(123.456),
+            "float32": np.float32(12.345678),
             "bad": math.inf,
         }
 
@@ -2008,6 +2009,7 @@ class TestDiagnosticsTypes:
         assert converted["array"] == [1.2346, None]
         assert converted["int"] == 7
         assert converted["float"] == 123.46
+        assert converted["float32"] == 12.3457
         assert converted["bad"] is None
 
     @pytest.mark.parametrize(
