@@ -240,3 +240,77 @@ pub trait Family: Send + Sync {
         self.variance(mu).into_owned()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::links::IdentityLink;
+
+    struct FallbackFamily;
+
+    impl Family for FallbackFamily {
+        fn name(&self) -> &str {
+            "fallback"
+        }
+
+        fn variance<'a>(&self, mu: &'a Array1<f64>) -> Cow<'a, Array1<f64>> {
+            Cow::Owned(mu.mapv(|v| v + 1.0))
+        }
+
+        fn unit_deviance(&self, y: &Array1<f64>, mu: &Array1<f64>) -> Array1<f64> {
+            (y - mu).mapv(|v| v * v)
+        }
+
+        fn unit_deviance_at(&self, yi: f64, mui: f64) -> f64 {
+            let residual = yi - mui;
+            residual * residual
+        }
+
+        fn default_link(&self) -> Box<dyn Link> {
+            Box::new(IdentityLink)
+        }
+
+        fn initialize_mu(&self, y: &Array1<f64>) -> Array1<f64> {
+            y.clone()
+        }
+
+        fn is_valid_mu(&self, mu: &Array1<f64>) -> bool {
+            mu.iter().all(|v| v.is_finite())
+        }
+    }
+
+    #[test]
+    fn default_family_trait_methods_are_consistent() {
+        let family = FallbackFamily;
+        let y = Array1::from_vec(vec![1.0, 3.0, 6.0]);
+        let mu = Array1::from_vec(vec![0.5, 2.0, 4.0]);
+        let weights = Array1::from_vec(vec![2.0, 0.5, 4.0]);
+
+        assert_eq!(family.name(), "fallback");
+        assert_eq!(family.default_link().name(), "identity");
+        assert!(family.is_valid_mu(&mu));
+        assert_eq!(family.initialize_mu(&y), y);
+        assert_eq!(family.clamp_mu(&mu), mu);
+        assert!(!family.fixed_dispersion());
+        assert!(!family.is_log_link_default());
+        assert!(!family.use_true_hessian_weights());
+
+        let unit = family.unit_deviance(&y, &mu);
+        let unweighted = unit.sum();
+        let weighted = (&unit * &weights).sum();
+        assert_eq!(family.deviance(&y, &mu, None), unweighted);
+        assert_eq!(family.deviance(&y, &mu, Some(&weights)), weighted);
+        assert_eq!(
+            family.log_likelihood(&y, &mu, 2.0, Some(&weights)),
+            -unweighted / 2.0
+        );
+        assert_eq!(
+            family.true_hessian_weights(&mu, &y),
+            family.variance(&mu).into_owned()
+        );
+
+        for i in 0..y.len() {
+            assert_eq!(unit[i], family.unit_deviance_at(y[i], mu[i]));
+        }
+    }
+}

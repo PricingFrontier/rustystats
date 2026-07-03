@@ -1880,6 +1880,32 @@ mod tests {
     }
 
     #[test]
+    fn test_ae_continuous_all_invalid_values_returns_empty() {
+        let factor = vec![f64::NAN, f64::INFINITY, f64::NEG_INFINITY];
+        let y = array![1.0, 2.0, 3.0];
+        let mu = array![1.0, 2.0, 3.0];
+
+        let bins = compute_ae_continuous(
+            &factor, &y, &mu, None, "gaussian", 3, None, None, None, None,
+        );
+
+        assert!(bins.is_empty());
+    }
+
+    #[test]
+    fn test_residual_pattern_two_valid_points_has_nan_trend_test() {
+        let factor = vec![1.0, 2.0];
+        let residuals = array![0.25, 0.75];
+
+        let pattern = compute_residual_pattern_continuous(&factor, &residuals, 3);
+
+        assert_abs_diff_eq!(pattern.correlation_with_residuals, 1.0, epsilon = 1e-12);
+        assert!(pattern.trend_slope.is_nan());
+        assert!(pattern.trend_pvalue.is_nan());
+        assert_eq!(pattern.mean_residual_by_bin.len(), 2);
+    }
+
+    #[test]
     fn test_ae_continuous_with_exposure() {
         let factor = vec![1.0, 2.0, 3.0, 4.0];
         let y = array![1.0, 2.0, 3.0, 4.0];
@@ -2068,6 +2094,280 @@ mod tests {
     }
 
     #[test]
+    fn test_compute_ae_bin_empty_and_weighted_base_contracts() {
+        let y = array![1.0, 2.0];
+        let mu = array![0.0, 0.0];
+        let exposure = array![1.0, 2.0];
+        let prior_weights = array![2.0, 3.0];
+        let base = array![0.5, 0.75];
+
+        let empty = compute_ae_bin(
+            &[],
+            9,
+            "empty".to_string(),
+            Some(0.0),
+            Some(1.0),
+            &y,
+            &mu,
+            Some(&exposure),
+            "gaussian",
+            None,
+            None,
+            Some(&prior_weights),
+            Some(&base),
+        );
+        assert_eq!(empty.count, 0);
+        assert_eq!(empty.bin_index, 9);
+        assert_eq!(empty.bin_label, "empty");
+        assert_eq!(empty.bin_lower, Some(0.0));
+        assert_eq!(empty.bin_upper, Some(1.0));
+        assert!(empty.actual_mean.is_nan());
+        assert!(empty.predicted_mean.is_nan());
+        assert!(empty.actual_expected_ratio.is_nan());
+        assert!(empty.loss.is_nan());
+        assert_eq!(empty.base_sum, Some(0.0));
+
+        let bin = compute_ae_bin(
+            &[0, 1],
+            0,
+            "weighted".to_string(),
+            None,
+            None,
+            &y,
+            &mu,
+            Some(&exposure),
+            "gaussian",
+            None,
+            None,
+            Some(&prior_weights),
+            Some(&base),
+        );
+        assert_eq!(bin.count, 2);
+        assert_abs_diff_eq!(bin.actual_sum, 8.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(bin.predicted_sum, 0.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(bin.exposure, 8.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(bin.actual_mean, 1.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(bin.predicted_mean, 0.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(bin.weight_sum, 5.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(bin.base_sum.expect("base sum"), 3.25, epsilon = 1e-12);
+        assert!(bin.actual_expected_ratio.is_nan());
+        assert!(bin.ae_ci_lower.is_nan());
+        assert!(bin.ae_ci_upper.is_nan());
+    }
+
+    #[test]
+    fn test_ae_continuous_batch_matches_singular_path() {
+        let factor_a = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let factor_b = vec![6.0, 5.0, 4.0, 3.0, 2.0, 1.0];
+        let y = array![1.0, 2.0, 1.5, 3.0, 2.5, 4.0];
+        let mu = array![1.1, 1.9, 1.6, 2.8, 2.7, 3.9];
+        let exposure = array![1.0, 2.0, 1.0, 2.0, 1.0, 2.0];
+        let prior_weights = array![1.0, 1.5, 0.5, 2.0, 1.0, 0.75];
+        let base = array![1.0, 2.0, 1.0, 3.0, 2.0, 4.0];
+
+        let batch = compute_ae_continuous_batch(
+            &[&factor_a, &factor_b],
+            &y,
+            &mu,
+            Some(&exposure),
+            "poisson",
+            3,
+            None,
+            None,
+            Some(&prior_weights),
+            Some(&base),
+        );
+        let singular = compute_ae_continuous(
+            &factor_a,
+            &y,
+            &mu,
+            Some(&exposure),
+            "poisson",
+            3,
+            None,
+            None,
+            Some(&prior_weights),
+            Some(&base),
+        );
+
+        assert_eq!(batch.len(), 2);
+        assert_eq!(batch[0].len(), singular.len());
+        for (from_batch, from_singular) in batch[0].iter().zip(singular.iter()) {
+            assert_eq!(from_batch.count, from_singular.count);
+            assert_abs_diff_eq!(
+                from_batch.actual_sum,
+                from_singular.actual_sum,
+                epsilon = 1e-12
+            );
+            assert_abs_diff_eq!(
+                from_batch.predicted_sum,
+                from_singular.predicted_sum,
+                epsilon = 1e-12
+            );
+            assert_abs_diff_eq!(
+                from_batch.base_sum.expect("base"),
+                from_singular.base_sum.expect("base"),
+                epsilon = 1e-12
+            );
+        }
+        assert_eq!(batch[1].len(), 3);
+    }
+
+    #[test]
+    fn test_ae_categorical_from_codes_matches_string_path_and_batches() {
+        let factor = vec![
+            "A".to_string(),
+            "B".to_string(),
+            "A".to_string(),
+            "C".to_string(),
+            "B".to_string(),
+            "C".to_string(),
+        ];
+        let codes = vec![0_u32, 1, 0, 2, 1, 2];
+        let levels = vec![
+            "A".to_string(),
+            "B".to_string(),
+            "C".to_string(),
+            "Unused".to_string(),
+        ];
+        let y = array![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let mu = array![1.1, 1.9, 3.1, 3.8, 5.2, 5.9];
+        let exposure = array![1.0, 2.0, 1.0, 3.0, 2.0, 3.0];
+        let prior_weights = array![1.0, 1.0, 0.5, 1.5, 1.0, 2.0];
+        let base = array![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+
+        let string_bins = compute_ae_categorical(
+            &factor,
+            &y,
+            &mu,
+            Some(&exposure),
+            "poisson",
+            None,
+            None,
+            0.0,
+            10,
+            Some(&prior_weights),
+            Some(&base),
+        );
+        let code_bins = compute_ae_categorical_from_codes(
+            &codes,
+            &levels,
+            &y,
+            &mu,
+            Some(&exposure),
+            "poisson",
+            None,
+            None,
+            0.0,
+            10,
+            Some(&prior_weights),
+            Some(&base),
+        );
+
+        assert_eq!(code_bins.len(), string_bins.len());
+        for (code_bin, string_bin) in code_bins.iter().zip(string_bins.iter()) {
+            assert_eq!(code_bin.bin_label, string_bin.bin_label);
+            assert_eq!(code_bin.count, string_bin.count);
+            assert_abs_diff_eq!(code_bin.actual_sum, string_bin.actual_sum, epsilon = 1e-12);
+            assert_abs_diff_eq!(
+                code_bin.predicted_sum,
+                string_bin.predicted_sum,
+                epsilon = 1e-12
+            );
+            assert_abs_diff_eq!(
+                code_bin.base_sum.expect("base"),
+                string_bin.base_sum.expect("base"),
+                epsilon = 1e-12
+            );
+        }
+
+        let codes_b = vec![2_u32, 2, 1, 1, 0, 0];
+        let batch = compute_ae_categorical_batch(
+            &[&codes, &codes_b],
+            &[&levels, &levels],
+            &y,
+            &mu,
+            Some(&exposure),
+            "poisson",
+            None,
+            None,
+            0.0,
+            10,
+            Some(&prior_weights),
+            Some(&base),
+        );
+        assert_eq!(batch.len(), 2);
+        assert_eq!(batch[0].len(), code_bins.len());
+        assert_eq!(batch[1].len(), 3);
+    }
+
+    #[test]
+    fn test_ae_categorical_from_codes_empty_levels_and_invalid_codes() {
+        let y = array![1.0, 2.0];
+        let mu = array![1.0, 2.0];
+        let no_levels: Vec<String> = Vec::new();
+        assert!(compute_ae_categorical_from_codes(
+            &[0, 1],
+            &no_levels,
+            &y,
+            &mu,
+            None,
+            "gaussian",
+            None,
+            None,
+            0.0,
+            10,
+            None,
+            None,
+        )
+        .is_empty());
+
+        let levels = vec!["A".to_string()];
+        let bins = compute_ae_categorical_from_codes(
+            &[0, 99],
+            &levels,
+            &y,
+            &mu,
+            None,
+            "gaussian",
+            None,
+            None,
+            0.0,
+            10,
+            None,
+            None,
+        );
+        assert_eq!(bins.len(), 1);
+        assert_eq!(bins[0].bin_label, "A");
+        assert_eq!(bins[0].count, 1);
+    }
+
+    #[test]
+    fn test_ae_categorical_from_codes_merges_overflow_levels_into_other() {
+        let codes = vec![0_u32, 0, 0, 1, 2, 3];
+        let levels = vec![
+            "A".to_string(),
+            "B".to_string(),
+            "C".to_string(),
+            "D".to_string(),
+        ];
+        let y = array![1.0, 1.0, 1.0, 2.0, 3.0, 4.0];
+        let mu = array![1.0, 1.0, 1.0, 2.0, 3.0, 4.0];
+
+        let bins = compute_ae_categorical_from_codes(
+            &codes, &levels, &y, &mu, None, "poisson", None, None, 0.0, 3, None, None,
+        );
+
+        assert_eq!(bins.len(), 3);
+        assert_eq!(bins[0].bin_label, "A");
+        assert!(
+            bins.iter()
+                .any(|bin| bin.bin_label == "_Other" && bin.count == 2),
+            "levels beyond max_levels - 1 should be aggregated into _Other"
+        );
+    }
+
+    #[test]
     fn test_ae_categorical() {
         let factor = vec![
             "A".to_string(),
@@ -2196,6 +2496,29 @@ mod tests {
     }
 
     #[test]
+    fn test_residual_pattern_continuous_degenerate_and_batch_paths() {
+        let residuals = array![1.0, 2.0, 3.0];
+        let one_valid = vec![f64::NAN, 2.0, f64::INFINITY];
+        let pattern = compute_residual_pattern_continuous(&one_valid, &residuals, 2);
+        assert!(pattern.correlation_with_residuals.is_nan());
+        assert!(pattern.trend_slope.is_nan());
+
+        let constant_factor = vec![1.0, 1.0, 1.0, 1.0];
+        let residuals = array![1.0, 2.0, 3.0, 4.0];
+        let pattern = compute_residual_pattern_continuous(&constant_factor, &residuals, 2);
+        assert_abs_diff_eq!(pattern.correlation_with_residuals, 0.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(pattern.trend_slope, 0.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(pattern.trend_pvalue, 1.0, epsilon = 1e-12);
+
+        let varying = vec![1.0, 2.0, 3.0, 4.0];
+        let batch =
+            compute_residual_pattern_continuous_batch(&[&constant_factor, &varying], &residuals, 2);
+        assert_eq!(batch.len(), 2);
+        assert_abs_diff_eq!(batch[0].correlation_with_residuals, 0.0, epsilon = 1e-12);
+        assert!(batch[1].correlation_with_residuals > 0.0);
+    }
+
+    #[test]
     fn test_residual_pattern_categorical() {
         let factor = vec![
             "A".to_string(),
@@ -2220,6 +2543,25 @@ mod tests {
         let pattern = compute_residual_pattern_categorical(&factor, &residuals);
 
         assert!(pattern.correlation_with_residuals.is_nan());
+    }
+
+    #[test]
+    fn test_residual_pattern_categorical_mismatch_and_zero_variance() {
+        let factor = vec!["A".to_string(), "B".to_string()];
+        let residuals = array![1.0];
+        let mismatch = compute_residual_pattern_categorical(&factor, &residuals);
+        assert!(mismatch.correlation_with_residuals.is_nan());
+
+        let residuals = array![2.0, 2.0, 2.0, 2.0];
+        let factor = vec![
+            "A".to_string(),
+            "A".to_string(),
+            "B".to_string(),
+            "B".to_string(),
+        ];
+        let pattern = compute_residual_pattern_categorical(&factor, &residuals);
+        assert_abs_diff_eq!(pattern.residual_variance_explained, 0.0, epsilon = 1e-12);
+        assert_eq!(pattern.mean_residual_by_bin, vec![2.0, 2.0]);
     }
 
     #[test]
@@ -2433,6 +2775,205 @@ mod tests {
     }
 
     #[test]
+    fn test_compute_factor_deviance_batch_matches_individual_and_fallback() {
+        let factor_a = vec![
+            "A".to_string(),
+            "A".to_string(),
+            "B".to_string(),
+            "B".to_string(),
+        ];
+        let factor_b = vec![
+            "X".to_string(),
+            "Y".to_string(),
+            "X".to_string(),
+            "Y".to_string(),
+        ];
+        let names = vec!["first".to_string(), "second".to_string()];
+        let y = array![1.0, 2.0, 3.0, 4.0];
+        let mu = array![1.1, 1.9, 3.2, 3.8];
+
+        let batch = compute_factor_deviance_batch(
+            &names,
+            &[&factor_a, &factor_b],
+            &y,
+            &mu,
+            "poisson",
+            1.5,
+            1.0,
+        );
+        let individual = compute_factor_deviance("first", &factor_a, &y, &mu, "poisson", 1.5, 1.0);
+        assert_eq!(batch.len(), 2);
+        assert_abs_diff_eq!(
+            batch[0].total_deviance,
+            individual.total_deviance,
+            epsilon = 1e-12
+        );
+        assert_eq!(batch[0].levels.len(), individual.levels.len());
+
+        let empty_y = array![];
+        let empty_mu = array![];
+        let fallback = compute_factor_deviance_batch(
+            &names,
+            &[&factor_a, &factor_b],
+            &empty_y,
+            &empty_mu,
+            "gaussian",
+            1.5,
+            1.0,
+        );
+        assert_eq!(fallback.len(), 2);
+        assert!(fallback
+            .iter()
+            .all(|r| r.levels.is_empty() && r.total_deviance == 0.0));
+    }
+
+    #[test]
+    fn test_compute_factor_deviance_batch_from_codes_contracts() {
+        let names = vec!["coded".to_string(), "coded2".to_string()];
+        let codes = vec![0_u32, 1, 0, 2, 2];
+        let codes2 = vec![1_u32, 1, 0, 0, 99];
+        let levels = vec![
+            "A".to_string(),
+            "B".to_string(),
+            "C".to_string(),
+            "Unused".to_string(),
+        ];
+        let y = array![1.0, 2.0, 3.0, 4.0, 5.0];
+        let mu = array![1.1, 1.9, 3.2, 3.8, 4.8];
+
+        let batch = compute_factor_deviance_batch_from_codes(
+            &names,
+            &[&codes, &codes2],
+            &[&levels, &levels],
+            &y,
+            &mu,
+            "gaussian",
+            1.5,
+            1.0,
+        );
+        assert_eq!(batch.len(), 2);
+        assert_eq!(batch[0].factor_name, "coded");
+        assert_eq!(batch[0].levels.len(), 3);
+        assert!(batch[0].levels.iter().all(|level| level.level != "Unused"));
+        assert_eq!(batch[1].levels.len(), 2, "invalid code should be skipped");
+
+        let empty_levels: Vec<String> = Vec::new();
+        let unit_deviances = vec![0.1, 0.2];
+        let empty_level_result = compute_factor_deviance_from_codes_with_precomputed(
+            "empty-levels",
+            &[0, 1],
+            &empty_levels,
+            &array![1.0, 2.0],
+            &array![1.0, 2.0],
+            &unit_deviances,
+            0.3,
+            0.15,
+        );
+        assert_eq!(empty_level_result.total_deviance, 0.3);
+        assert!(empty_level_result.levels.is_empty());
+
+        let empty_y = array![];
+        let empty_mu = array![];
+        let empty_codes: Vec<u32> = Vec::new();
+        let fallback = compute_factor_deviance_batch_from_codes(
+            &["empty".to_string()],
+            &[&empty_codes],
+            &[&levels],
+            &empty_y,
+            &empty_mu,
+            "gaussian",
+            1.5,
+            1.0,
+        );
+        assert_eq!(fallback.len(), 1);
+        assert_eq!(fallback[0].factor_name, "empty");
+        assert!(fallback[0].levels.is_empty());
+    }
+
+    #[test]
+    fn test_factor_deviance_precomputed_helpers_cover_empty_and_zero_prediction_paths() {
+        let y = array![1.0, 2.0, 3.0];
+        let mu_zero = array![0.0, 0.0, 0.0];
+        let unit_deviances = vec![0.0, 0.0, 0.0];
+        let factor = vec!["A".to_string(), "A".to_string(), "B".to_string()];
+
+        let empty = compute_factor_deviance_with_precomputed(
+            "empty",
+            &[],
+            &array![],
+            &array![],
+            &[],
+            0.0,
+            0.0,
+        );
+        assert_eq!(empty.factor_name, "empty");
+        assert!(empty.levels.is_empty());
+
+        let string_result = compute_factor_deviance_with_precomputed(
+            "zero-pred",
+            &factor,
+            &y,
+            &mu_zero,
+            &unit_deviances,
+            0.0,
+            0.0,
+        );
+        assert_eq!(string_result.levels.len(), 2);
+        assert!(string_result
+            .levels
+            .iter()
+            .all(|level| level.deviance_pct == 0.0 && level.ae_ratio.is_nan()));
+
+        let coded_result = compute_factor_deviance_from_codes_with_precomputed(
+            "coded-zero-pred",
+            &[0, 0, 1],
+            &["A".to_string(), "B".to_string()],
+            &y,
+            &mu_zero,
+            &unit_deviances,
+            0.0,
+            0.0,
+        );
+        assert_eq!(coded_result.levels.len(), 2);
+        assert!(coded_result
+            .levels
+            .iter()
+            .all(|level| level.deviance_pct == 0.0 && level.ae_ratio.is_nan()));
+
+        let empty_codes = compute_factor_deviance_from_codes_with_precomputed(
+            "empty-codes",
+            &[],
+            &["A".to_string()],
+            &array![],
+            &array![],
+            &[],
+            0.0,
+            0.0,
+        );
+        assert_eq!(empty_codes.factor_name, "empty-codes");
+        assert!(empty_codes.levels.is_empty());
+    }
+
+    #[test]
+    fn test_unit_deviance_unknown_and_invalid_parameter_fallbacks() {
+        assert_abs_diff_eq!(
+            unit_deviance_for_family(2.0, 1.0, "unknown", 1.5, 1.0),
+            1.0,
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(
+            unit_deviance_for_family(2.0, 1.0, "tweedie", 0.5, 1.0),
+            1.0,
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(
+            unit_deviance_for_family(2.0, 1.0, "negativebinomial", 1.5, -1.0),
+            1.0,
+            epsilon = 1e-12
+        );
+    }
+
+    #[test]
     fn test_compute_factor_deviance_problem_detection() {
         // Create data with a problematic level
         let factor = vec![
@@ -2506,6 +3047,14 @@ mod tests {
     }
 
     #[test]
+    fn test_incomplete_beta_edge_clamps() {
+        assert_abs_diff_eq!(incomplete_beta_approx(0.0, 2.0, 0.5), 0.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(incomplete_beta_approx(1.0, 2.0, 0.5), 1.0, epsilon = 1e-12);
+        let interior = incomplete_beta_approx(0.5, 2.0, 0.5);
+        assert!((0.0..=1.0).contains(&interior));
+    }
+
+    #[test]
     fn test_factor_significance_batch_single_param() {
         // Single parameter case: chi2 should be (beta/se)^2.
         // params=[0.5, 1.0], bse=[0.1, 0.2], bread=identity, indices=[[1]].
@@ -2529,6 +3078,21 @@ mod tests {
         );
         // chi2_cdf(25, 1) is essentially 1.0, so survival p-value should be tiny.
         assert!(res.pvalue >= 0.0 && res.pvalue < 1e-3);
+    }
+
+    #[test]
+    fn test_factor_significance_single_param_zero_standard_error() {
+        let params = vec![1.0];
+        let bse = vec![0.0];
+        let bread = ndarray::Array2::<f64>::eye(1);
+        let results = compute_factor_significance_batch(&[vec![0_usize]], &params, &bse, &bread);
+
+        let res = results[0]
+            .as_ref()
+            .expect("zero-se single-param still returns a raw result");
+        assert_eq!(res.df, 1);
+        assert_abs_diff_eq!(res.chi2, 0.0, epsilon = 1e-12);
+        assert!(res.pvalue >= 0.0 && res.pvalue <= 1.0);
     }
 
     #[test]

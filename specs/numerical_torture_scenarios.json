@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "scenarios": [
+    {
+      "id": "NT-WEIGHTS-ZERO-MASS",
+      "component": "validation",
+      "action": "zero_weight_rejection",
+      "expected": "validation_error",
+      "require_message": "positive weight"
+    },
+    {
+      "id": "NT-POISSON-EXPOSURE-EXTREMES",
+      "component": "glm-poisson",
+      "action": "poisson_exposure_extremes",
+      "expected": "finite_fit"
+    },
+    {
+      "id": "NT-GAMMA-POSITIVE-BOUNDARY",
+      "component": "glm-gamma",
+      "action": "gamma_boundary_rejection",
+      "expected": "validation_error",
+      "require_message": "positive"
+    },
+    {
+      "id": "NT-TWEEDIE-COMPOUND-BOUNDARY",
+      "component": "glm-tweedie",
+      "action": "tweedie_boundary_fit",
+      "expected": "finite_fit"
+    },
+    {
+      "id": "NT-NEGBINOMIAL-THETA-EXTREME",
+      "component": "glm-negbinomial",
+      "action": "negbinomial_theta_extreme_fit",
+      "expected": "finite_fit"
+    },
+    {
+      "id": "NT-RARE-UNSEEN-CATEGORY",
+      "component": "design-matrix",
+      "action": "rare_unseen_category_prediction",
+      "expected": "finite_prediction"
+    },
+    {
+      "id": "NT-SINGULAR-GAUSSIAN",
+      "component": "solver",
+      "action": "singular_gaussian_fit",
+      "expected": "finite_or_controlled_error"
+    },
+    {
+      "id": "NT-PERFECT-SEPARATION-BINOMIAL",
+      "component": "glm-binomial",
+      "action": "binomial_perfect_separation_status",
+      "expected": "finite_or_controlled_error"
+    }
+  ]
+}

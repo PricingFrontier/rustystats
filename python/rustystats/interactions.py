@@ -731,31 +731,25 @@ class InteractionBuilder:
         factors: list[str],
     ) -> tuple[np.ndarray, list[str]]:
         """
-        General n-way categorical interaction using recursive 2-way Rust calls.
+        General n-way categorical interaction from fitted dummy encodings.
 
-        For 3+ way interactions, we recursively combine pairs using the
-        optimized 2-way Rust implementation.
+        For 3+ way interactions the intermediate ``cat1:cat2`` name is not a
+        source data column, so this path works from the already-built dummy
+        matrices instead of recursively calling the two-way raw-column helper.
         """
         if len(factors) == 2:
             # Base case - use optimized 2-way
             return self._build_2way_categorical(encodings, all_names, factors)
 
-        # Recursive case: combine first two factors, then combine with rest
-        # Build first two factors' interaction
-        first_two_enc = encodings[:2]
-        first_two_names = all_names[:2]
-        first_two_factors = factors[:2]
+        combined = encodings[0]
+        combined_names = list(all_names[0])
+        for enc, names in zip(encodings[1:], all_names[1:], strict=True):
+            if combined.shape[1] == 0 or enc.shape[1] == 0:
+                return np.zeros((self._n, 0), dtype=self.dtype), []
+            combined = (combined[:, :, None] * enc[:, None, :]).reshape(self._n, -1)
+            combined_names = [f"{left}:{right}" for left in combined_names for right in names]
 
-        combined, combined_names = self._build_2way_categorical(
-            first_two_enc, first_two_names, first_two_factors
-        )
-
-        # Recursively combine with remaining factors
-        remaining_enc = [combined] + encodings[2:]
-        remaining_names = [combined_names] + all_names[2:]
-        remaining_factors = [f"{first_two_factors[0]}:{first_two_factors[1]}"] + factors[2:]
-
-        return self._build_nway_categorical(remaining_enc, remaining_names, remaining_factors)
+        return combined.astype(self.dtype, copy=False), combined_names
 
     def _build_mixed_interaction(
         self, interaction: InteractionTerm
@@ -845,14 +839,10 @@ class InteractionBuilder:
                     cont_product = cont_product * self._get_column(factor)
                 cont_name = ":".join(cont_factors)
 
-                # Multiply by continuous
-                final_columns = []
-                final_names = []
-                for col, name in zip(all_columns, all_names):
-                    final_columns.append(col * cont_product)
-                    final_names.append(f"{name}:{cont_name}")
-                all_columns = final_columns
-                all_names = final_names
+                # Multiply each categorical/spline block by the continuous product
+                # while preserving one name per resulting column.
+                all_columns = [col * cont_product.reshape(-1, 1) for col in all_columns]
+                all_names = [f"{name}:{cont_name}" for name in all_names]
 
             if all_columns:
                 return self._stack_columns(all_columns, self._n, self.dtype), all_names
@@ -2404,6 +2394,12 @@ class InteractionBuilder:
         parsed = self._parsed_formula
         n_new = len(new_data)
         params = np.asarray(params, dtype=np.float64)
+        expected_cols = len(getattr(self, "_last_names", []) or [])
+        if expected_cols and params.shape[0] != expected_cols:
+            raise PredictionError(
+                f"Prediction design expects {expected_cols} coefficients, but model has "
+                f"{params.shape[0]} coefficients."
+            )
         eta = np.zeros(n_new, dtype=np.float64)
         col = 0
         cat_index_cache = self._prepare_prediction_categorical_index_cache(new_data, parsed)

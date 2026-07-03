@@ -282,6 +282,16 @@ mod tests {
         let dev_poisson = poisson.unit_deviance(&y, &mu);
 
         assert_abs_diff_eq!(dev_quasi, dev_poisson, epsilon = 1e-10);
+        assert_abs_diff_eq!(
+            quasi.unit_deviance_at(0.0, 1.25),
+            poisson.unit_deviance_at(0.0, 1.25),
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(
+            quasi.unit_deviance_at(3.0, 2.5),
+            poisson.unit_deviance_at(3.0, 2.5),
+            epsilon = 1e-12
+        );
     }
 
     #[test]
@@ -298,8 +308,8 @@ mod tests {
 
         let mu_init = family.initialize_mu(&y);
 
-        // All μ should be positive (can't have log(0))
-        assert!(mu_init.iter().all(|&x| x > 0.0));
+        assert_eq!(mu_init.len(), y.len());
+        assert_abs_diff_eq!(mu_init, array![0.1, 0.1, 1.1, 5.1], epsilon = 1e-12);
     }
 
     #[test]
@@ -309,6 +319,27 @@ mod tests {
         assert!(family.is_valid_mu(&array![0.1, 1.0, 10.0]));
         assert!(!family.is_valid_mu(&array![0.0, 1.0])); // Zero invalid
         assert!(!family.is_valid_mu(&array![-1.0, 1.0])); // Negative invalid
+    }
+
+    #[test]
+    fn test_quasipoisson_clamp_log_link_and_likelihood_delegate_to_poisson() {
+        let quasi = QuasiPoissonFamily;
+        let poisson = PoissonFamily;
+        let mu = array![0.0, -1.0, 2.0];
+        let clamped = quasi.clamp_mu(&mu);
+        assert!(clamped.iter().all(|&value| value > 0.0));
+        assert_eq!(clamped[2], 2.0);
+        assert!(quasi.is_log_link_default());
+        assert!(!quasi.fixed_dispersion());
+
+        let y = array![0.0, 2.0, 5.0];
+        let mu = array![0.4, 1.8, 4.5];
+        let weights = array![1.0, 0.5, 2.0];
+        assert_abs_diff_eq!(
+            quasi.log_likelihood(&y, &mu, 99.0, Some(&weights)),
+            poisson.log_likelihood(&y, &mu, 99.0, Some(&weights)),
+            epsilon = 1e-12
+        );
     }
 
     // =========================================================================
@@ -357,6 +388,16 @@ mod tests {
         let dev_binomial = binomial.unit_deviance(&y, &mu);
 
         assert_abs_diff_eq!(dev_quasi, dev_binomial, epsilon = 1e-10);
+        assert_abs_diff_eq!(
+            quasi.unit_deviance_at(0.0, 0.2),
+            binomial.unit_deviance_at(0.0, 0.2),
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(
+            quasi.unit_deviance_at(1.0, 0.8),
+            binomial.unit_deviance_at(1.0, 0.8),
+            epsilon = 1e-12
+        );
     }
 
     #[test]
@@ -373,8 +414,8 @@ mod tests {
 
         let mu_init = family.initialize_mu(&y);
 
-        // All μ should be in (0, 1)
-        assert!(mu_init.iter().all(|&x| x > 0.0 && x < 1.0));
+        assert_eq!(mu_init.len(), y.len());
+        assert_abs_diff_eq!(mu_init, array![0.25, 0.75, 0.25, 0.75], epsilon = 1e-12);
     }
 
     #[test]
@@ -386,5 +427,25 @@ mod tests {
         assert!(!family.is_valid_mu(&array![0.5, 1.0])); // One boundary invalid
         assert!(!family.is_valid_mu(&array![-0.1, 0.5])); // Negative invalid
         assert!(!family.is_valid_mu(&array![0.5, 1.1])); // > 1 invalid
+    }
+
+    #[test]
+    fn test_quasibinomial_clamp_and_likelihood_delegate_to_binomial() {
+        let quasi = QuasiBinomialFamily;
+        let binomial = BinomialFamily;
+        let clamped = quasi.clamp_mu(&array![-1.0, 0.2, 2.0]);
+        assert!(clamped[0] > 0.0);
+        assert_eq!(clamped[1], 0.2);
+        assert!(clamped[2] < 1.0);
+        assert!(!quasi.fixed_dispersion());
+
+        let y = array![0.0, 1.0, 1.0, 0.0];
+        let mu = array![0.1, 0.8, 0.6, 0.2];
+        let weights = array![1.0, 2.0, 0.5, 1.5];
+        assert_abs_diff_eq!(
+            quasi.log_likelihood(&y, &mu, 99.0, Some(&weights)),
+            binomial.log_likelihood(&y, &mu, 99.0, Some(&weights)),
+            epsilon = 1e-12
+        );
     }
 }

@@ -177,6 +177,12 @@ mod tests {
     use ndarray::array;
 
     #[test]
+    fn test_gamma_name() {
+        let family = GammaFamily;
+        assert_eq!(family.name(), "Gamma");
+    }
+
+    #[test]
     fn test_gamma_variance() {
         let family = GammaFamily;
         let mu = array![10.0, 100.0, 1000.0];
@@ -240,17 +246,20 @@ mod tests {
 
         // We use log link (not canonical inverse) for practical reasons
         assert_eq!(link.name(), "log");
+        assert!(family.is_log_link_default());
+        assert!(!family.fixed_dispersion());
+        assert!(!family.use_true_hessian_weights());
     }
 
     #[test]
     fn test_gamma_initialize_positive() {
         let family = GammaFamily;
-        let y = array![100.0, 500.0, 1000.0];
+        let y = array![0.0, 100.0, 200.0];
 
         let mu_init = family.initialize_mu(&y);
 
-        // All values should be positive
-        assert!(mu_init.iter().all(|&x| x > 0.0));
+        assert_eq!(mu_init.len(), y.len());
+        assert_abs_diff_eq!(mu_init, array![1.0, 100.0, 200.0], epsilon = 1e-12);
     }
 
     #[test]
@@ -265,6 +274,24 @@ mod tests {
 
         // Negative is NOT valid
         assert!(!family.is_valid_mu(&array![-1.0, 1.0]));
+    }
+
+    #[test]
+    fn test_gamma_clamp_likelihood_and_true_hessian_contracts() {
+        let family = GammaFamily;
+        let clamped = family.clamp_mu(&array![0.0, -1.0, 2.5]);
+        assert!(clamped[0] > 0.0);
+        assert!(clamped[1] > 0.0);
+        assert_eq!(clamped[2], 2.5);
+
+        let mu = array![100.0, 250.0, 500.0];
+        assert_abs_diff_eq!(family.true_hessian_weights(&mu, &mu), mu, epsilon = 1e-12);
+
+        let y = array![120.0, 210.0, 650.0];
+        let weights = array![1.0, 0.5, 2.0];
+        let ll = family.log_likelihood(&y, &mu, 0.75, Some(&weights));
+        let expected = crate::diagnostics::log_likelihood_gamma(&y, &mu, 0.75, Some(&weights));
+        assert_abs_diff_eq!(ll, expected, epsilon = 1e-12);
     }
 
     #[test]

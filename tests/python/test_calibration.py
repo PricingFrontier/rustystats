@@ -18,6 +18,7 @@ import polars as pl
 import pytest
 import rustystats as rs
 from _fixtures import make_freq_frame, make_severity_frame
+from rustystats import calibration as calibration_mod
 from rustystats.exceptions import ValidationError
 
 # --------------------------------------------------------------------------
@@ -78,6 +79,26 @@ class TestOverallAE:
 
 
 class TestCalibrationValidation:
+    def test_y_and_pred_must_be_1d_and_same_length(self):
+        with pytest.raises(ValidationError, match="y must be 1-D"):
+            rs.calibration_summary(np.ones((2, 2)), np.ones(4))
+
+        with pytest.raises(ValidationError, match="differ"):
+            rs.calibration_summary(np.ones(2), np.ones(3))
+
+    def test_weight_and_exposure_shapes_are_validated(self):
+        y = np.array([1.0, 2.0, 3.0])
+        pred = np.array([1.0, 2.0, 3.0])
+
+        with pytest.raises(ValidationError, match="weights length"):
+            rs.calibration_summary(y, pred, weights=np.ones(2))
+
+        with pytest.raises(ValidationError, match="weights must be finite and non-negative"):
+            rs.calibration_summary(y, pred, weights=np.array([1.0, -1.0, 1.0]))
+
+        with pytest.raises(ValidationError, match="exposure length"):
+            rs.calibration_summary(y, pred, exposure=np.ones(2))
+
     @pytest.mark.parametrize(
         "exposure",
         [
@@ -106,6 +127,19 @@ class TestCalibrationValidation:
     def test_response_must_be_finite(self):
         with pytest.raises(ValidationError, match="y must contain only finite values"):
             rs.calibration_summary(np.array([1.0, np.nan]), np.array([1.0, 2.0]))
+
+    def test_zero_bins_and_zero_weight_return_empty_bins_and_nan_line(self):
+        y = np.array([1.0, 2.0, 3.0])
+        pred = np.array([1.0, 2.0, 3.0])
+
+        no_bins = rs.calibration_summary(y, pred, n_bins=0)
+        assert no_bins["bins"] == []
+
+        zero_weight = rs.calibration_summary(y, pred, weights=np.zeros_like(y))
+        assert zero_weight["bins"] == []
+        assert np.isnan(zero_weight["overall"]["ae_ratio"])
+        assert np.isnan(zero_weight["calibration_intercept"])
+        assert np.isnan(zero_weight["calibration_slope"])
 
 
 # --------------------------------------------------------------------------
@@ -219,6 +253,27 @@ class TestFactorCalibration:
         by_level = {row["level"]: row for row in s["by_factor"]["Region"]}
         assert by_level["common"]["suppressed"] is False
         assert by_level["rare"]["suppressed"] is True
+
+    def test_by_factor_validates_length_and_weighted_exposure_reconciles(self):
+        y = np.array([1.0, 2.0, 3.0, 4.0])
+        pred = np.array([1.0, 1.5, 2.0, 2.5])
+        exposure = np.array([1.0, 2.0, 3.0, 4.0])
+        weights = np.array([0.5, 1.0, 1.5, 2.0])
+
+        with pytest.raises(ValidationError, match="by\\['Region'\\] length"):
+            rs.calibration_summary(y, pred, by={"Region": ["A", "B"]})
+
+        summary = rs.calibration_summary(
+            y,
+            pred,
+            exposure=exposure,
+            weights=weights,
+            by={"Region": ["A", "A", "B", "B"]},
+        )
+
+        rows = {row["level"]: row for row in summary["by_factor"]["Region"]}
+        np.testing.assert_allclose(rows["A"]["exposure"], 0.5 * 1.0 + 1.0 * 2.0)
+        np.testing.assert_allclose(rows["B"]["exposure"], 1.5 * 3.0 + 2.0 * 4.0)
 
 
 # --------------------------------------------------------------------------
@@ -786,6 +841,19 @@ class TestGlobalCalibrationScaleMetadata:
         with pytest.raises(ValidationError, match="scale"):
             rs.GlobalCalibration.from_dict(state)
 
+    def test_from_dict_rejects_wrong_method_and_nonfinite_factor(self):
+        with pytest.raises(ValidationError, match="method='global'"):
+            rs.GlobalCalibration.from_dict(
+                {
+                    "method": "isotonic",
+                    "scale": "response",
+                    "factor": 1.0,
+                }
+            )
+
+        with pytest.raises(ValidationError, match="non-finite"):
+            rs.fit_global_calibration(np.array([1.0, 2.0]), np.array([0.0, 0.0]))
+
 
 class TestNoExposureBinKeys:
     def test_no_exposure_bins_emit_predicted_score_not_predicted_rate(self):
@@ -860,3 +928,16 @@ class TestCalibrationReviewRegressions:
             rs.fit_isotonic_calibration(
                 np.array([1.0, 2.0]), np.array([0.5, 0.7]), weights=np.zeros(2)
             )
+
+    def test_isotonic_from_dict_rejects_wrong_method_and_pav_empty_helper(self):
+        with pytest.raises(ValidationError, match="method='isotonic'"):
+            rs.IsotonicCalibration.from_dict(
+                {
+                    "method": "global",
+                    "thresholds": [0.0, 1.0],
+                    "values": [0.0, 1.0],
+                }
+            )
+
+        empty = calibration_mod._pav_increasing(np.array([]), np.array([]))
+        assert empty.shape == (0,)

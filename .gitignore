@@ -7,6 +7,10 @@
 # -----------------------------------------------------------------------------
 /target/
 Cargo.lock
+fuzz/target/
+# The standalone cargo-fuzz workspace is a binary harness; keep its lockfile
+# reproducible without committing the root library lockfile.
+!fuzz/Cargo.lock
 
 # -----------------------------------------------------------------------------
 # Python

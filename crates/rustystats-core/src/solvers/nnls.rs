@@ -71,7 +71,7 @@ pub fn nnls(a: &DMatrix<f64>, b: &DVector<f64>, config: &NNLSConfig) -> NNLSResu
 
     // Initialize
     let mut x = DVector::zeros(n);
-    let mut w = a.transpose() * (b - a * &x); // Gradient of ||Ax - b||² w.r.t. x
+    let mut w = nnls_gradient(a, b, &x);
 
     // P = indices in the positive set (active, can be non-zero)
     // Z = indices in the zero set (constrained to zero)
@@ -82,15 +82,7 @@ pub fn nnls(a: &DMatrix<f64>, b: &DVector<f64>, config: &NNLSConfig) -> NNLSResu
 
     while !z_set.is_empty() && iter < config.max_iter {
         // Find index in Z with largest positive gradient
-        let mut max_w = f64::NEG_INFINITY;
-        let mut max_idx = None;
-
-        for &j in &z_set {
-            if w[j] > max_w {
-                max_w = w[j];
-                max_idx = Some(j);
-            }
-        }
+        let (max_w, max_idx) = largest_gradient_in_zero_set(&w, &z_set);
 
         // If no positive gradient, we're done
         if max_w <= config.tol {
@@ -100,9 +92,9 @@ pub fn nnls(a: &DMatrix<f64>, b: &DVector<f64>, config: &NNLSConfig) -> NNLSResu
         let t = max_idx.expect("max_w > tol guarantees an index was found");
 
         // Move index t from Z to P
-        z_set.retain(|&j| j != t);
-        p_set.push(t);
-        p_set.sort();
+        if !move_zero_index_to_positive(t, &mut p_set, &mut z_set) {
+            break;
+        }
 
         // Inner loop: solve unconstrained problem on P, then fix negative components
         loop {
@@ -115,7 +107,7 @@ pub fn nnls(a: &DMatrix<f64>, b: &DVector<f64>, config: &NNLSConfig) -> NNLSResu
             let z_p = solve_ls_subset(a, b, &p_set);
 
             // Check if all components in z_P are positive
-            let all_positive = p_set.iter().all(|&j| z_p[j] > config.tol);
+            let all_positive = all_subset_components_positive(&z_p, &p_set, config.tol);
 
             if all_positive {
                 // Accept the solution
@@ -128,30 +120,14 @@ pub fn nnls(a: &DMatrix<f64>, b: &DVector<f64>, config: &NNLSConfig) -> NNLSResu
                 break;
             } else {
                 // Find the limiting alpha
-                let mut alpha = 1.0;
-                let mut q_idx = None;
-
-                for &j in &p_set {
-                    if z_p[j] <= config.tol {
-                        let ratio = x[j] / (x[j] - z_p[j]);
-                        if ratio < alpha {
-                            alpha = ratio;
-                            q_idx = Some(j);
-                        }
-                    }
-                }
+                let (alpha, q_idx) = limiting_alpha(&x, &z_p, &p_set, config.tol);
 
                 // Update x = x + alpha * (z - x)
-                for &j in &p_set {
-                    x[j] = x[j] + alpha * (z_p[j] - x[j]);
-                }
+                backtrack_active_solution(&mut x, &z_p, &p_set, alpha);
 
                 // Move indices with x[j] = 0 from P to Z
                 if let Some(q) = q_idx {
-                    x[q] = 0.0;
-                    p_set.retain(|&j| j != q);
-                    z_set.push(q);
-                    z_set.sort();
+                    move_positive_index_to_zero(q, &mut x, &mut p_set, &mut z_set);
                 }
 
                 // Also move any other indices that became zero
@@ -162,21 +138,16 @@ pub fn nnls(a: &DMatrix<f64>, b: &DVector<f64>, config: &NNLSConfig) -> NNLSResu
                     }
                 }
                 for j in to_move {
-                    x[j] = 0.0;
-                    p_set.retain(|&k| k != j);
-                    if !z_set.contains(&j) {
-                        z_set.push(j);
-                    }
+                    move_positive_index_to_zero(j, &mut x, &mut p_set, &mut z_set);
                 }
-                z_set.sort();
             }
         }
 
         // Update gradient
-        w = a.transpose() * (b - a * &x);
+        w = nnls_gradient(a, b, &x);
     }
 
-    let residual = b - a * &x;
+    let residual = nnls_residual(a, b, &x);
     let residual_norm = residual.norm();
 
     NNLSResult {
@@ -185,6 +156,98 @@ pub fn nnls(a: &DMatrix<f64>, b: &DVector<f64>, config: &NNLSConfig) -> NNLSResu
         iterations: iter,
         converged: iter < config.max_iter,
     }
+}
+
+fn nnls_residual(a: &DMatrix<f64>, b: &DVector<f64>, x: &DVector<f64>) -> DVector<f64> {
+    b - a * x
+}
+
+fn nnls_gradient(a: &DMatrix<f64>, b: &DVector<f64>, x: &DVector<f64>) -> DVector<f64> {
+    a.transpose() * nnls_residual(a, b, x)
+}
+
+fn largest_gradient_in_zero_set(w: &DVector<f64>, z_set: &[usize]) -> (f64, Option<usize>) {
+    let mut max_w = f64::NEG_INFINITY;
+    let mut max_idx = None;
+
+    for &j in z_set {
+        if w[j] > max_w {
+            max_w = w[j];
+            max_idx = Some(j);
+        }
+    }
+
+    (max_w, max_idx)
+}
+
+fn move_zero_index_to_positive(
+    index: usize,
+    p_set: &mut Vec<usize>,
+    z_set: &mut Vec<usize>,
+) -> bool {
+    let Some(position) = z_set.iter().position(|&j| j == index) else {
+        return false;
+    };
+    z_set.remove(position);
+    if z_set.contains(&index) {
+        return false;
+    }
+    if !p_set.contains(&index) {
+        p_set.push(index);
+    }
+    p_set.sort();
+    true
+}
+
+fn all_subset_components_positive(z_p: &DVector<f64>, p_set: &[usize], tol: f64) -> bool {
+    p_set.iter().all(|&j| z_p[j] > tol)
+}
+
+fn limiting_alpha(
+    x: &DVector<f64>,
+    z_p: &DVector<f64>,
+    p_set: &[usize],
+    tol: f64,
+) -> (f64, Option<usize>) {
+    let mut alpha = 1.0;
+    let mut q_idx = None;
+
+    for &j in p_set {
+        if z_p[j] <= tol {
+            let ratio = x[j] / (x[j] - z_p[j]);
+            if ratio < alpha {
+                alpha = ratio;
+                q_idx = Some(j);
+            }
+        }
+    }
+
+    (alpha, q_idx)
+}
+
+fn backtrack_active_solution(
+    x: &mut DVector<f64>,
+    z_p: &DVector<f64>,
+    p_set: &[usize],
+    alpha: f64,
+) {
+    for &j in p_set {
+        x[j] = x[j] + alpha * (z_p[j] - x[j]);
+    }
+}
+
+fn move_positive_index_to_zero(
+    index: usize,
+    x: &mut DVector<f64>,
+    p_set: &mut Vec<usize>,
+    z_set: &mut Vec<usize>,
+) {
+    x[index] = 0.0;
+    p_set.retain(|&j| j != index);
+    if !z_set.contains(&index) {
+        z_set.push(index);
+    }
+    z_set.sort();
 }
 
 /// Solve unconstrained least squares on a subset of columns
@@ -304,12 +367,21 @@ pub fn nnls_penalized(
         let sqrt_s = s[i].sqrt();
         for j in 0..n {
             // L[i,j] = sqrt(s[i]) * U[j,i]
-            a_aug[(m + i, j)] = sqrt_lambda * sqrt_s * u[(j, i)];
+            a_aug[(augmented_penalty_row(m, i), j)] =
+                penalty_augmented_entry(sqrt_lambda, sqrt_s, u[(j, i)]);
         }
         // b_aug[m + i] = 0 (already initialized)
     }
 
     nnls(&a_aug, &b_aug, config)
+}
+
+fn penalty_augmented_entry(sqrt_lambda: f64, sqrt_s: f64, u_ji: f64) -> f64 {
+    sqrt_lambda * sqrt_s * u_ji
+}
+
+fn augmented_penalty_row(n_data_rows: usize, penalty_row: usize) -> usize {
+    n_data_rows + penalty_row
 }
 
 /// Solve weighted penalized NNLS: min ||W^{1/2}(Ax - b)||² + λ x'Sx s.t. x >= 0
@@ -394,6 +466,180 @@ mod tests {
     }
 
     #[test]
+    fn test_nnls_iteration_cap_reports_nonconvergence() {
+        let a = DMatrix::identity(3, 3);
+        let b = DVector::from_row_slice(&[1.0, 2.0, 3.0]);
+
+        let config = NNLSConfig {
+            max_iter: 1,
+            tol: 1e-12,
+        };
+        let result = nnls(&a, &b, &config);
+
+        assert!(!result.converged);
+        assert_eq!(result.iterations, 1);
+        assert!(result.residual_norm.is_finite());
+    }
+
+    #[test]
+    fn test_nnls_backtracks_when_active_solution_turns_negative() {
+        // This fixture first admits column 1, then the unconstrained solve on
+        // columns [0, 1] makes column 1 negative. Lawson-Hanson must backtrack,
+        // remove it from the active set, and finish on the boundary x[1] = 0.
+        let a = DMatrix::from_row_slice(
+            3,
+            2,
+            &[
+                0.78987976,
+                1.24389962,
+                0.68153217,
+                0.88987654,
+                -1.98035571,
+                -2.10331921,
+            ],
+        );
+        let b = DVector::from_row_slice(&[0.08505026, 2.25199636, -1.89627935]);
+        let result = nnls(&a, &b, &NNLSConfig::default());
+
+        assert!(result.converged);
+        assert!(result.iterations >= 3);
+        assert!(result.x[0] > 1.0);
+        assert_relative_eq!(result.x[1], 0.0, epsilon = 1e-10);
+        assert!(result.residual_norm.is_finite());
+    }
+
+    #[test]
+    fn nnls_gradient_and_active_set_helpers_have_exact_contracts() {
+        let a = DMatrix::from_row_slice(2, 2, &[1.0, 2.0, 3.0, 4.0]);
+        let b = DVector::from_row_slice(&[5.0, 6.0]);
+        let x = DVector::from_row_slice(&[0.5, -1.0]);
+
+        let residual = nnls_residual(&a, &b, &x);
+        assert_relative_eq!(residual[0], 6.5, epsilon = 1e-12);
+        assert_relative_eq!(residual[1], 8.5, epsilon = 1e-12);
+
+        let gradient = nnls_gradient(&a, &b, &x);
+        assert_relative_eq!(gradient[0], 32.0, epsilon = 1e-12);
+        assert_relative_eq!(gradient[1], 47.0, epsilon = 1e-12);
+
+        let w = DVector::from_row_slice(&[2.0, 5.0, 5.0, -1.0]);
+        assert_eq!(
+            largest_gradient_in_zero_set(&w, &[0, 1, 2, 3]),
+            (5.0, Some(1))
+        );
+        assert_eq!(
+            largest_gradient_in_zero_set(&w, &[]),
+            (f64::NEG_INFINITY, None)
+        );
+
+        let mut p_set = vec![3];
+        let mut z_set = vec![0, 2, 1];
+        assert!(move_zero_index_to_positive(2, &mut p_set, &mut z_set));
+        assert_eq!(p_set, vec![2, 3]);
+        assert_eq!(z_set, vec![0, 1]);
+        assert!(!move_zero_index_to_positive(9, &mut p_set, &mut z_set));
+        assert_eq!(p_set, vec![2, 3]);
+        assert_eq!(z_set, vec![0, 1]);
+
+        let z_p = DVector::from_row_slice(&[0.0, 0.1, 0.2]);
+        assert!(!all_subset_components_positive(&z_p, &[1, 2], 0.1));
+        assert!(all_subset_components_positive(&z_p, &[2], 0.1));
+    }
+
+    #[test]
+    fn nnls_backtracking_helpers_have_exact_contracts() {
+        let x = DVector::from_row_slice(&[2.0, 3.0, 4.0]);
+        let z_p = DVector::from_row_slice(&[-1.0, 1.0, -4.0]);
+        let (alpha, q_idx) = limiting_alpha(&x, &z_p, &[0, 1, 2], 0.0);
+        assert_relative_eq!(alpha, 0.5, epsilon = 1e-12);
+        assert_eq!(q_idx, Some(2));
+
+        let tie_x = DVector::from_row_slice(&[1.0, 2.0]);
+        let tie_z_p = DVector::from_row_slice(&[-1.0, -2.0]);
+        let (alpha, q_idx) = limiting_alpha(&tie_x, &tie_z_p, &[0, 1], 0.0);
+        assert_relative_eq!(alpha, 0.5, epsilon = 1e-12);
+        assert_eq!(q_idx, Some(0));
+
+        let mut x_backtracked = x.clone();
+        backtrack_active_solution(&mut x_backtracked, &z_p, &[0, 1, 2], alpha);
+        assert_relative_eq!(x_backtracked[0], 0.5, epsilon = 1e-12);
+        assert_relative_eq!(x_backtracked[1], 2.0, epsilon = 1e-12);
+        assert_relative_eq!(x_backtracked[2], 0.0, epsilon = 1e-12);
+
+        let mut p_set = vec![0, 1, 2];
+        let mut z_set = vec![3];
+        move_positive_index_to_zero(1, &mut x_backtracked, &mut p_set, &mut z_set);
+        assert_relative_eq!(x_backtracked[1], 0.0, epsilon = 0.0);
+        assert_eq!(p_set, vec![0, 2]);
+        assert_eq!(z_set, vec![1, 3]);
+
+        let mut duplicate_guard_x = DVector::from_row_slice(&[1.0, 2.0, 3.0]);
+        let mut duplicate_guard_p = vec![0, 2];
+        let mut duplicate_guard_z = vec![2, 4];
+        move_positive_index_to_zero(
+            2,
+            &mut duplicate_guard_x,
+            &mut duplicate_guard_p,
+            &mut duplicate_guard_z,
+        );
+        assert_relative_eq!(duplicate_guard_x[2], 0.0, epsilon = 0.0);
+        assert_eq!(duplicate_guard_p, vec![0]);
+        assert_eq!(duplicate_guard_z, vec![2, 4]);
+    }
+
+    #[test]
+    fn test_solve_ls_subset_empty_returns_full_zero_vector() {
+        let a = DMatrix::from_row_slice(2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let b = DVector::from_row_slice(&[1.0, 2.0]);
+        let z = solve_ls_subset(&a, &b, &[]);
+
+        assert_eq!(z.len(), 3);
+        assert!(z.iter().all(|v| *v == 0.0));
+    }
+
+    #[test]
+    fn test_singular_subset_uses_svd_fallback() {
+        let a = DMatrix::from_row_slice(3, 2, &[1.0, 1.0, 2.0, 2.0, 3.0, 3.0]);
+        let b = DVector::from_row_slice(&[1.0, 2.0, 3.0]);
+
+        let z = solve_ls_subset(&a, &b, &[0, 1]);
+
+        assert!(z.iter().all(|v| v.is_finite()));
+        assert!((a.clone() * z.clone() - b).norm() < 1e-8);
+    }
+
+    #[test]
+    fn test_weighted_nnls_matches_explicit_row_scaling() {
+        let a = DMatrix::from_row_slice(3, 2, &[1.0, 0.0, 1.0, 1.0, 0.0, 1.0]);
+        let b = DVector::from_row_slice(&[1.0, 3.0, 2.0]);
+        let weights = DVector::from_row_slice(&[4.0, 1.0, 9.0]);
+        let config = NNLSConfig::default();
+
+        let weighted = nnls_weighted(&a, &b, &weights, &config);
+
+        let mut a_explicit = a.clone();
+        let mut b_explicit = b.clone();
+        for i in 0..a.nrows() {
+            let sw = weights[i].sqrt();
+            for j in 0..a.ncols() {
+                a_explicit[(i, j)] *= sw;
+            }
+            b_explicit[i] *= sw;
+        }
+        let explicit = nnls(&a_explicit, &b_explicit, &config);
+
+        assert!(weighted.converged);
+        for j in 0..a.ncols() {
+            assert_relative_eq!(weighted.x[j], explicit.x[j], epsilon = 1e-10);
+        }
+        assert_relative_eq!(
+            weighted.residual_norm,
+            explicit.residual_norm,
+            epsilon = 1e-10
+        );
+    }
+
+    #[test]
     fn test_nnls_penalized() {
         // Test penalized NNLS
         let a = DMatrix::from_row_slice(
@@ -413,5 +659,79 @@ mod tests {
         assert!(result.x[0] >= -1e-10);
         assert!(result.x[1] >= -1e-10);
         assert!(result.x[2] >= -1e-10);
+    }
+
+    #[test]
+    fn penalized_nnls_augmented_entry_is_exact_three_factor_product() {
+        assert_eq!(augmented_penalty_row(3, 0), 3);
+        assert_eq!(augmented_penalty_row(3, 2), 5);
+        assert_relative_eq!(
+            penalty_augmented_entry(2.0, 3.0, -0.25),
+            -1.5,
+            epsilon = 1e-12
+        );
+        assert_relative_eq!(
+            penalty_augmented_entry(0.5, 4.0, 1.25),
+            2.5,
+            epsilon = 1e-12
+        );
+    }
+
+    #[test]
+    fn test_weighted_penalized_nnls_matches_two_step_construction() {
+        let a = DMatrix::from_row_slice(3, 2, &[1.0, 0.0, 1.0, 1.0, 0.0, 1.0]);
+        let b = DVector::from_row_slice(&[1.0, 2.5, 2.0]);
+        let weights = DVector::from_row_slice(&[0.25, 4.0, 1.0]);
+        let penalty = DMatrix::from_row_slice(2, 2, &[1.0, -1.0, -1.0, 1.0]);
+        let config = NNLSConfig::default();
+
+        let combined = nnls_weighted_penalized(&a, &b, &weights, &penalty, 0.5, &config);
+
+        let mut a_weighted = a.clone();
+        let mut b_weighted = b.clone();
+        for i in 0..a.nrows() {
+            let sw = weights[i].sqrt();
+            for j in 0..a.ncols() {
+                a_weighted[(i, j)] *= sw;
+            }
+            b_weighted[i] *= sw;
+        }
+        let explicit = nnls_penalized(&a_weighted, &b_weighted, &penalty, 0.5, &config);
+
+        assert!(combined.converged);
+        for j in 0..a.ncols() {
+            assert_relative_eq!(combined.x[j], explicit.x[j], epsilon = 1e-10);
+        }
+        assert_relative_eq!(
+            combined.residual_norm,
+            explicit.residual_norm,
+            epsilon = 1e-10
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Dimension mismatch")]
+    fn test_nnls_dimension_mismatch_panics() {
+        let a = DMatrix::identity(2, 2);
+        let b = DVector::from_row_slice(&[1.0]);
+        let _ = nnls(&a, &b, &NNLSConfig::default());
+    }
+
+    #[test]
+    #[should_panic(expected = "Penalty matrix columns must match A columns")]
+    fn test_penalized_nnls_rejects_wrong_penalty_columns() {
+        let a = DMatrix::identity(2, 2);
+        let b = DVector::from_row_slice(&[1.0, 1.0]);
+        let penalty = DMatrix::identity(2, 3);
+        let _ = nnls_penalized(&a, &b, &penalty, 0.1, &NNLSConfig::default());
+    }
+
+    #[test]
+    #[should_panic(expected = "Penalty matrix must be square")]
+    fn test_penalized_nnls_rejects_non_square_penalty() {
+        let a = DMatrix::identity(3, 3);
+        let b = DVector::from_row_slice(&[1.0, 1.0, 1.0]);
+        let penalty = DMatrix::from_row_slice(2, 3, &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
+        let _ = nnls_penalized(&a, &b, &penalty, 0.1, &NNLSConfig::default());
     }
 }

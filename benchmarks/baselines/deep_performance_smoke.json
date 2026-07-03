@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "scenarios": {
+    "poisson_categorical_exposure": {
+      "n": 20000,
+      "max_fit_seconds": 20.0,
+      "max_predict_seconds": 3.0,
+      "max_rss_delta_mb": 512.0
+    },
+    "smooth_poisson_bs": {
+      "n": 1500,
+      "k": 8,
+      "max_fit_seconds": 30.0,
+      "max_predict_seconds": 3.0,
+      "max_rss_delta_mb": 512.0
+    },
+    "multinomial_native_masked": {
+      "n_rows": 1200,
+      "n_features": 12,
+      "n_classes": 4,
+      "alpha": 0.001,
+      "hessian_memory_limit_bytes": 536870912,
+      "max_dense_parameters": 200000,
+      "max_fit_seconds": 30.0,
+      "max_predict_seconds": 3.0,
+      "max_rss_delta_mb": 512.0
+    }
+  },
+  "notes": "Conservative scheduled-CI budgets for high-assurance performance smoke. Tighten after collecting hosted-runner history."
+}

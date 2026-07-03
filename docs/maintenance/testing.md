@@ -2,6 +2,12 @@
 
 This guide covers the testing approach for RustyStats, including test organization, writing effective tests, and running the test suite.
 
+For the full actuarial-grade target standard, release gates, coverage and
+mutation requirements, and component-by-component assurance matrix, see
+[High-Assurance Testing Specification](high-assurance-testing-spec.md). For the
+remaining highest-assurance expansion work, see
+[Deep Assurance Expansion Plan](deep-assurance-expansion-plan.md).
+
 ## Test Organization
 
 ```
@@ -82,26 +88,54 @@ cargo test --release
 
 ```bash
 # All Python tests
-uv run pytest tests/python/ -v
+uv run --extra dev pytest tests/python/ -v
 
 # Specific file
-uv run pytest tests/python/test_interactions.py -v
+uv run --extra dev pytest tests/python/test_interactions.py -v
 
 # Specific test
-uv run pytest tests/python/test_interactions.py::TestGLMInteractions -v
+uv run --extra dev pytest tests/python/test_interactions.py::TestGLMInteractions -v
 
 # With coverage
-uv run pytest tests/python/ --cov=rustystats
+uv run --extra dev pytest tests/python/ --cov=rustystats
 
 # Stop on first failure
-uv run pytest tests/python/ -x
+uv run --extra dev pytest tests/python/ -x
 ```
 
 ### Full Test Suite
 
 ```bash
 # Both Rust and Python
-cargo test && uv run pytest tests/python/ -v
+cargo test --workspace && uv run --extra dev pytest tests/python/ -v
+
+# Release-mode Rust tests
+cargo test --workspace --release
+
+# High-assurance smoke checks
+python3 scripts/check_traceability.py
+python3 scripts/check_coverage_waivers.py
+python3 scripts/check_dependency_hygiene.py
+uv run --extra dev python scripts/package_smoke.py
+uv run --extra dev python scripts/mutation_smoke.py
+python3 scripts/check_mutation_waivers.py
+uv run --extra dev python scripts/run_python_mutation.py --minimum-score 100
+uv run --extra dev python scripts/run_rust_mutation.py --minimum-score 100
+uv run --extra dev python scripts/replay_fuzz_corpus.py
+uv run --extra dev python scripts/check_oracle_fixtures.py
+uv run --extra dev python scripts/generate_oracle_fixtures.py --check
+uv run --extra dev pytest tests/python/test_validation_contracts.py tests/python/test_property_validation.py -q
+uv run --extra dev pytest tests/python/test_metamorphic_contracts.py tests/python/test_numerical_torture_contracts.py tests/python/test_oracle_fixtures.py -q
+uv run --extra dev python scripts/run_numerical_torture.py --json-output /tmp/rustystats-numerical-torture.json
+
+# Deployment parity, including ONNX and JVM-backed PMML runtime scoring
+RUSTYSTATS_REQUIRE_EXPORT_RUNTIMES=1 RUSTYSTATS_RUN_PMML_RUNTIME=1 \
+  uv run --extra dev pytest tests/python/test_export.py tests/python/test_rate_tables_parity.py -q
+
+# Performance smoke against the checked-in baseline
+uv run --extra dev python benchmarks/performance_smoke.py \
+  --baseline benchmarks/baselines/performance_smoke.json \
+  --json-output /tmp/rustystats-performance-smoke.json
 ```
 
 ---
@@ -436,21 +470,38 @@ def test_large_dataset_performance():
 ### Rust Coverage
 
 ```bash
-# Install cargo-tarpaulin
-cargo install cargo-tarpaulin
+# Install cargo-llvm-cov
+cargo install cargo-llvm-cov
 
 # Run with coverage
-cargo tarpaulin -p rustystats-core --out Html
+cargo llvm-cov --workspace --summary-only
 ```
 
 ### Python Coverage
 
 ```bash
 # Run with coverage
-uv run pytest tests/python/ --cov=rustystats --cov-report=html
+uv run --extra dev pytest tests/python/ --cov=rustystats --cov-report=html
+
+# CI-style terminal report with the ratcheted gate
+uv run --extra dev pytest tests/python/ --cov=rustystats --cov-report=term-missing:skip-covered --cov-fail-under=97
 
 # View report
 open htmlcov/index.html
+```
+
+### Deep Assurance
+
+```bash
+# Higher-case Rust property tests
+PROPTEST_CASES=1024 cargo test -p rustystats-core --test property_tests --release
+
+# Diagnostics release harness
+uv run --extra dev maturin develop --release
+uv run --extra dev python benchmarks/verify_diagnostics_correctness.py
+
+# Performance smoke
+uv run --extra dev python benchmarks/performance_smoke.py
 ```
 
 ---

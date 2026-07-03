@@ -508,6 +508,15 @@ mod tests {
     }
 
     #[test]
+    fn test_inverse_diagonal_lu_fallback_for_indefinite_invertible_matrix() {
+        // Symmetric but indefinite: Cholesky fails, LU inverse succeeds.
+        let m = array![[0.0, 2.0], [2.0, 0.0]];
+        let diag = inverse_diagonal_spd(&m);
+        assert_abs_diff_eq!(diag[0], 0.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(diag[1], 0.0, epsilon = 1e-12);
+    }
+
+    #[test]
     fn test_correlation_matrix_independent_columns() {
         // Independent uniform-ish columns — diag is 1, off-diag near 0.
         // Use a small deterministic dataset so we can compare to numpy by hand.
@@ -617,6 +626,95 @@ mod tests {
         for i in 0..view.ncols() {
             for j in 0..view.ncols() {
                 assert_abs_diff_eq!(actual[[i, j]], expected[[i, j]], epsilon = 1e-12);
+            }
+        }
+    }
+
+    #[test]
+    fn test_correlation_moments_empty_and_dense_strided_contracts() {
+        let zero_cols = Array2::<f64>::zeros((5, 0));
+        let (sums, gram) = correlation_moments(zero_cols.view());
+        assert_eq!(sums.len(), 0);
+        assert_eq!(gram.dim(), (0, 0));
+
+        let zero_rows = Array2::<f64>::zeros((0, 3));
+        let (sums, gram) = correlation_moments(zero_rows.view());
+        assert_eq!(
+            sums.as_slice().expect("contiguous result"),
+            &[0.0, 0.0, 0.0]
+        );
+        assert_eq!(gram.dim(), (3, 3));
+        assert!(gram.iter().all(|&v| v == 0.0));
+
+        let x = array![
+            [9.0, 1.0, 4.0, 2.0, -1.0, 0.0],
+            [8.0, 2.0, 5.0, 3.0, -2.0, 1.0],
+            [7.0, 3.0, 7.0, 5.0, -3.0, 2.0],
+            [6.0, 4.0, 8.0, 7.0, -4.0, 3.0],
+        ];
+        let view = x.slice(s![.., 1..5]);
+        assert!(!should_use_sparse_gram_kernel_strided(
+            view,
+            view.nrows(),
+            view.ncols()
+        ));
+
+        let (sums, gram) = correlation_moments(view);
+        for col in 0..view.ncols() {
+            let expected_sum = (0..view.nrows()).map(|row| view[[row, col]]).sum::<f64>();
+            assert_abs_diff_eq!(sums[col], expected_sum, epsilon = 1e-12);
+            for other in col..view.ncols() {
+                let expected_gram = (0..view.nrows())
+                    .map(|row| view[[row, col]] * view[[row, other]])
+                    .sum::<f64>();
+                assert_abs_diff_eq!(gram[[col, other]], expected_gram, epsilon = 1e-12);
+            }
+        }
+
+        let actual = correlation_matrix(view);
+        let expected = naive_correlation_matrix(view);
+        for i in 0..view.ncols() {
+            for j in 0..view.ncols() {
+                assert_abs_diff_eq!(actual[[i, j]], expected[[i, j]], epsilon = 1e-12);
+            }
+        }
+    }
+
+    #[test]
+    fn test_correlation_moments_sparse_contiguous_and_strided_match_naive_gram() {
+        let n = 96;
+        let k = 24;
+        let mut x = Array2::<f64>::zeros((n, k + 1));
+        for row in 0..n {
+            let c1 = 1 + row % k;
+            let c2 = 1 + (row * 11 + 7) % k;
+            x[[row, c1]] = 1.0 + (row % 4) as f64;
+            x[[row, c2]] += 0.5 + (row % 9) as f64 / 3.0;
+        }
+
+        let contiguous = x.slice(s![.., 1..]).to_owned();
+        let (sums, gram) = correlation_moments(contiguous.view());
+        for col in 0..contiguous.ncols() {
+            let expected_sum = (0..n).map(|row| contiguous[[row, col]]).sum::<f64>();
+            assert_abs_diff_eq!(sums[col], expected_sum, epsilon = 1e-12);
+            for other in col..contiguous.ncols() {
+                let expected_gram = (0..n)
+                    .map(|row| contiguous[[row, col]] * contiguous[[row, other]])
+                    .sum::<f64>();
+                assert_abs_diff_eq!(gram[[col, other]], expected_gram, epsilon = 1e-12);
+            }
+        }
+
+        let strided = x.slice(s![.., 1..]);
+        let (sums, gram) = correlation_moments(strided);
+        for col in 0..strided.ncols() {
+            let expected_sum = (0..n).map(|row| strided[[row, col]]).sum::<f64>();
+            assert_abs_diff_eq!(sums[col], expected_sum, epsilon = 1e-12);
+            for other in col..strided.ncols() {
+                let expected_gram = (0..n)
+                    .map(|row| strided[[row, col]] * strided[[row, other]])
+                    .sum::<f64>();
+                assert_abs_diff_eq!(gram[[col, other]], expected_gram, epsilon = 1e-12);
             }
         }
     }

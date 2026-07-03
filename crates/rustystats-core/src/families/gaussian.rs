@@ -121,6 +121,12 @@ mod tests {
     use ndarray::array;
 
     #[test]
+    fn test_gaussian_name() {
+        let family = GaussianFamily;
+        assert_eq!(family.name(), "Gaussian");
+    }
+
+    #[test]
     fn test_gaussian_variance() {
         let family = GaussianFamily;
         let mu = array![1.0, 2.0, 3.0, 100.0, -5.0];
@@ -176,6 +182,33 @@ mod tests {
         let link = family.default_link();
 
         assert_eq!(link.name(), "identity");
+    }
+
+    #[test]
+    fn test_gaussian_initialize_and_log_likelihood_contracts() {
+        let family = GaussianFamily;
+        let y = array![1.0, 2.5, -0.5];
+
+        assert_abs_diff_eq!(family.initialize_mu(&y), y, epsilon = 0.0);
+
+        let mu = array![0.8, 2.0, 0.1];
+        let weights = array![1.0, 0.5, 2.0];
+        let scale = 0.75_f64;
+        let sum_wt = weights.sum();
+        let ss_weighted = weights[0] * (y[0] - mu[0]).powi(2)
+            + weights[1] * (y[1] - mu[1]).powi(2)
+            + weights[2] * (y[2] - mu[2]).powi(2);
+        let expected =
+            -0.5 * (ss_weighted / scale + sum_wt * (2.0 * std::f64::consts::PI * scale).ln());
+
+        assert_abs_diff_eq!(
+            family.log_likelihood(&y, &mu, scale, Some(&weights)),
+            expected,
+            epsilon = 1e-12
+        );
+        assert!((expected - 0.0).abs() > 0.1);
+        assert!((expected - 1.0).abs() > 0.1);
+        assert!((expected + 1.0).abs() > 0.1);
     }
 
     #[test]

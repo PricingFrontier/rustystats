@@ -982,7 +982,11 @@ class TestDictSerializationProperties:
 
     def test_different_families(self, sample_data):
         for family in ["gaussian", "poisson", "gamma"]:
-            data = sample_data.with_columns(pl.col("y").abs() + 0.1)
+            data = (
+                sample_data.with_columns((pl.col("y").abs() + 0.1).alias("y"))
+                if family == "gamma"
+                else sample_data
+            )
             result = rs.glm_dict(
                 response="y",
                 terms={"x1": {"type": "linear"}, "x2": {"type": "linear"}},

@@ -71,3 +71,6 @@ excessive_precision = "allow"       # Lanczos/gamma coefficients need exact bit 
 too_many_arguments = "allow"        # math solvers have many parameters by nature
 needless_range_loop = "allow"       # index-based loops are clearer in numeric code
 should_implement_trait = "allow"    # from_str/default helpers that aren't the std trait
+
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }

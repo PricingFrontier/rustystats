@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "targets": [
+    {
+      "id": "MUT-PY-VALIDATION-ZERO-WEIGHT",
+      "language": "python",
+      "module": "python/rustystats/validation.py",
+      "path": "python/rustystats/validation.py",
+      "description": "All-zero observation weights must be rejected.",
+      "original": "if np.sum(weights) == 0:",
+      "mutated": "if np.sum(weights) != 0:",
+      "test_command": [
+        "{python}",
+        "-m",
+        "pytest",
+        "tests/python/test_validation_contracts.py::test_weight_zero_mass_contracts",
+        "-q"
+      ]
+    },
+    {
+      "id": "MUT-PY-VALIDATION-EXPOSURE-POSITIVE",
+      "language": "python",
+      "module": "python/rustystats/validation.py",
+      "path": "python/rustystats/validation.py",
+      "description": "Raw exposure for log-link rate models must be strictly positive.",
+      "original": "if np.any(offset <= 0):",
+      "mutated": "if np.any(offset < 0):",
+      "test_command": [
+        "{python}",
+        "-m",
+        "pytest",
+        "tests/python/test_validation_contracts.py::test_glm_input_validation_distinguishes_exposure_from_link_offset",
+        "tests/python/test_property_validation.py::test_exposure_validation_rejects_any_nonpositive_value",
+        "-q"
+      ]
+    },
+    {
+      "id": "MUT-RS-POISSON-VARIANCE",
+      "language": "rust",
+      "module": "crates/rustystats-core/src/families/poisson.rs",
+      "path": "crates/rustystats-core/src/families/poisson.rs",
+      "description": "Poisson variance must equal the mean.",
+      "original": "Cow::Borrowed(mu)",
+      "mutated": "Cow::Owned(mu.mapv(|x| x + 1.0))",
+      "test_command": [
+        "cargo",
+        "test",
+        "-p",
+        "rustystats-core",
+        "families::poisson::tests::test_poisson_variance",
+        "--",
+        "--exact"
+      ]
+    },
+    {
+      "id": "MUT-RS-LOG-DERIVATIVE",
+      "language": "rust",
+      "module": "crates/rustystats-core/src/links/log.rs",
+      "path": "crates/rustystats-core/src/links/log.rs",
+      "description": "Log-link derivative must be 1 / mu.",
+      "original": "mu.mapv(|x| 1.0 / x)",
+      "mutated": "mu.mapv(|x| x)",
+      "test_command": [
+        "cargo",
+        "test",
+        "-p",
+        "rustystats-core",
+        "links::log::tests::test_log_derivative",
+        "--",
+        "--exact"
+      ]
+    }
+  ]
+}

@@ -38,8 +38,69 @@ jobs:
       - name: Run tests
         run: cargo test --workspace
 
+  rust-release:
+    name: Rust release tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run release tests
+        run: cargo test --workspace --release
+
   python:
-    name: Python (ruff + pytest)
+    name: Python ${{ matrix.python-version }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python-version: "3.10"
+          - os: ubuntu-latest
+            python-version: "3.11"
+          - os: ubuntu-latest
+            python-version: "3.12"
+          - os: ubuntu-latest
+            python-version: "3.13"
+          - os: macos-latest
+            python-version: "3.13"
+          - os: windows-latest
+            python-version: "3.13"
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: astral-sh/setup-uv@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Pin ruff exactly to the version pre-commit uses (see
+      # .pre-commit-config.yaml). Without the pin, `uvx ruff` resolves to the
+      # latest release and silently drifts away from pre-commit's style — so a
+      # clean local commit can fail CI (or vice versa). Bump both files
+      # together when upgrading ruff.
+      - name: Ruff lint
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13'
+        run: uvx ruff@0.15.14 check python/ tests/ examples/
+
+      - name: Ruff format
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13'
+        run: uvx ruff@0.15.14 format --check python/ tests/ examples/
+
+      - name: Run tests
+        run: uv run --extra dev pytest -x -q
+
+  coverage:
+    name: Coverage
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -54,23 +115,143 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # Pin ruff exactly to the version pre-commit uses (see
-      # .pre-commit-config.yaml). Without the pin, `uvx ruff` resolves to the
-      # latest release and silently drifts away from pre-commit's style — so a
-      # clean local commit can fail CI (or vice versa). Bump both files
-      # together when upgrading ruff.
-      - name: Ruff lint
-        run: uvx ruff@0.15.14 check python/ tests/ examples/
+      - uses: taiki-e/install-action@cargo-llvm-cov
 
-      - name: Ruff format
-        run: uvx ruff@0.15.14 format --check python/ tests/ examples/
+      - name: Dependency lock check
+        run: uv lock --check
 
-      - name: Run tests
-        run: uv run --extra dev pytest -x -q
+      - name: Dependency hygiene check
+        run: python3 scripts/check_dependency_hygiene.py
+
+      - name: Traceability check
+        run: python3 scripts/check_traceability.py
+
+      - name: Coverage waiver check
+        run: python3 scripts/check_coverage_waivers.py --report-json-output coverage-waivers.json
+
+      - name: Mutation waiver check
+        run: python3 scripts/check_mutation_waivers.py
+
+      - name: Mutation campaign config check
+        run: python3 scripts/check_mutation_campaigns.py
+
+      - name: Rust fuzz target config check
+        run: python3 scripts/check_fuzz_targets.py
+
+      - name: Oracle fixture check
+        run: uv run --extra dev python scripts/check_oracle_fixtures.py
+
+      - name: Oracle archive manifest check
+        run: python3 scripts/check_oracle_archive_manifest.py
+
+      - name: Oracle fixture generation drift check
+        run: uv run --extra dev python scripts/generate_oracle_fixtures.py --check
+
+      - name: Extended oracle fixture generation drift checks
+        run: |
+          uv run --extra dev python scripts/generate_glum_oracle_fixtures.py --check
+          uv run --extra dev python scripts/generate_multinomial_oracle_fixtures.py --check
+          uv run --extra dev python scripts/generate_smooth_oracle_fixtures.py --check
+
+      - name: Module coverage policy check
+        run: python3 scripts/check_module_coverage.py --check-config
+
+      - name: Rust coverage summary
+        run: cargo llvm-cov --workspace --summary-only
+
+      - name: Python coverage gate
+        run: uv run --extra dev pytest tests/python --cov=rustystats --cov-report=term-missing:skip-covered --cov-fail-under=97
+
+  packaging-smoke:
+    name: Packaging smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build installed extension (release)
+        run: uv run --extra dev maturin develop --release
+
+      - name: Import, fit, predict, and serialize
+        run: uv run --extra dev python scripts/package_smoke.py
+
+  deployment-parity:
+    name: Deployment parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: astral-sh/setup-uv@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run export and rate-table parity
+        env:
+          RUSTYSTATS_REQUIRE_EXPORT_RUNTIMES: "1"
+          RUSTYSTATS_RUN_PMML_RUNTIME: "1"
+        run: uv run --extra dev pytest tests/python/test_export.py tests/python/test_rate_tables_parity.py -q
+
+  fuzz-replay:
+    name: Fuzz corpus replay
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Replay malformed-input corpus
+        run: uv run --extra dev python scripts/replay_fuzz_corpus.py
+
+  deep-contract-smoke:
+    name: Deep contract smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run metamorphic, torture, and oracle fixture tests
+        run: uv run --extra dev pytest tests/python/test_metamorphic_contracts.py tests/python/test_numerical_torture_contracts.py tests/python/test_oracle_fixtures.py tests/python/test_glum_oracle_fixtures.py tests/python/test_multinomial_oracle_fixtures.py tests/python/test_smooth_oracle_fixtures.py -q
 
   diagnostics-verification:
     name: Diagnostics correctness harness
-    needs: python
+    needs: [python, rust-release, packaging-smoke, deployment-parity, fuzz-replay, deep-contract-smoke]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

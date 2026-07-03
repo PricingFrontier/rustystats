@@ -1,0 +1,30 @@
+[package]
+name = "rustystats-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+ndarray = "0.17"
+rustystats-core = { path = "../crates/rustystats-core" }
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "family_deviance"
+path = "fuzz_targets/family_deviance.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "link_roundtrip"
+path = "fuzz_targets/link_roundtrip.rs"
+test = false
+doc = false
+bench = false

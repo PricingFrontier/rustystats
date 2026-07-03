@@ -799,6 +799,25 @@ pub fn target_encode_multi_interaction(
 mod tests {
     use super::*;
 
+    fn strings(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    #[test]
+    fn test_level_statistics_encode_formulas() {
+        let stats = LevelStatistics {
+            sum_target: 8.0,
+            count: 4,
+        };
+        assert!((stats.encode(0.5, 2.0) - 1.5).abs() < 1e-12);
+
+        let exposure_stats = ExposureWeightedLevelStatistics {
+            sum_claims: 6.0,
+            sum_exposure: 3.0,
+        };
+        assert!((exposure_stats.encode(0.25, 1.0) - 1.5625).abs() < 1e-12);
+    }
+
     #[test]
     fn test_target_encode_basic() {
         let categories: Vec<String> = vec!["A", "B", "A", "B", "A", "B"]
@@ -936,6 +955,57 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_target_encode_with_exposure_basic_and_apply() {
+        let categories = strings(&["A", "B", "A", "B"]);
+        let claims = vec![1.0, 0.0, 3.0, 2.0];
+        let exposure = vec![1.0, 2.0, 1.0, 2.0];
+        let config = TargetEncodingConfig {
+            prior_weight: 2.0,
+            n_permutations: 1,
+            seed: Some(7),
+        };
+
+        let enc =
+            target_encode_with_exposure(&categories, &claims, &exposure, "territory", &config);
+
+        assert_eq!(enc.name, "TE(territory)");
+        assert_eq!(enc.levels, strings(&["A", "B"]));
+        assert_eq!(enc.values.len(), categories.len());
+        assert!((enc.prior - 1.0).abs() < 1e-12);
+        assert!((enc.level_stats["A"].sum_claims - 4.0).abs() < 1e-12);
+        assert!((enc.level_stats["A"].sum_exposure - 2.0).abs() < 1e-12);
+        assert!((enc.level_stats["B"].sum_claims - 2.0).abs() < 1e-12);
+        assert!((enc.level_stats["B"].sum_exposure - 4.0).abs() < 1e-12);
+
+        let new_categories = strings(&["A", "B", "C"]);
+        let applied = apply_exposure_weighted_target_encoding(&new_categories, &enc, 2.0);
+        assert!((applied[0] - 1.5).abs() < 1e-12);
+        assert!((applied[1] - (4.0 / 6.0)).abs() < 1e-12);
+        assert!((applied[2] - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_exposure_weighted_encoding_multiple_permutations_is_deterministic() {
+        let categories = strings(&["A", "B", "A", "C", "B", "C", "A", "B"]);
+        let claims = vec![1.0, 0.0, 2.0, 1.0, 3.0, 0.0, 1.0, 2.0];
+        let exposure = vec![1.0, 1.5, 0.5, 2.0, 1.0, 1.0, 2.0, 0.5];
+        let config = TargetEncodingConfig {
+            prior_weight: 1.5,
+            n_permutations: 6,
+            seed: Some(99),
+        };
+
+        let enc1 = target_encode_with_exposure(&categories, &claims, &exposure, "region", &config);
+        let enc2 = target_encode_with_exposure(&categories, &claims, &exposure, "region", &config);
+
+        assert_eq!(enc1.levels, strings(&["A", "B", "C"]));
+        for i in 0..categories.len() {
+            assert!((enc1.values[i] - enc2.values[i]).abs() < 1e-12);
+            assert!(enc1.values[i].is_finite());
+        }
+    }
+
     // =========================================================================
     // Frequency Encoding Tests
     // =========================================================================
@@ -1008,6 +1078,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_frequency_encode_empty_and_large_parallel_path() {
+        let empty = frequency_encode(&[], "empty");
+        assert_eq!(empty.name, "FE(empty)");
+        assert_eq!(empty.n_obs, 0);
+        assert_eq!(empty.max_count, 1);
+        assert!(empty.levels.is_empty());
+        assert!(empty.values.is_empty());
+
+        let mut categories = Vec::with_capacity(10_001);
+        for i in 0..10_001 {
+            categories.push(if i % 2 == 0 {
+                "A".to_string()
+            } else {
+                "B".to_string()
+            });
+        }
+
+        let enc = frequency_encode(&categories, "large");
+        assert_eq!(enc.n_obs, 10_001);
+        assert_eq!(enc.max_count, 5_001);
+        assert!((enc.values[0] - 1.0).abs() < 1e-12);
+        assert!((enc.values[1] - (5_000.0 / 5_001.0)).abs() < 1e-12);
+    }
+
     // =========================================================================
     // Target Encoding Interaction Tests
     // =========================================================================
@@ -1075,6 +1170,29 @@ mod tests {
     }
 
     #[test]
+    fn test_target_encode_interaction_with_exposure() {
+        let cat1 = strings(&["A", "A", "B", "B", "B"]);
+        let cat2 = strings(&["X", "Y", "X", "Y", "Y"]);
+        let claims = vec![1.0, 0.0, 4.0, 2.0, 1.0];
+        let exposure = vec![1.0, 2.0, 2.0, 1.0, 1.0];
+        let config = TargetEncodingConfig {
+            prior_weight: 1.0,
+            n_permutations: 2,
+            seed: Some(13),
+        };
+
+        let enc = target_encode_interaction_with_exposure(
+            &cat1, &cat2, &claims, &exposure, "brand", "region", &config,
+        );
+
+        assert_eq!(enc.name, "TE(brand:region)");
+        assert!(enc.level_stats.contains_key("A:X"));
+        assert!(enc.level_stats.contains_key("B:Y"));
+        assert!((enc.level_stats["B:Y"].sum_claims - 3.0).abs() < 1e-12);
+        assert!((enc.level_stats["B:Y"].sum_exposure - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
     fn test_target_encode_multi_interaction() {
         let cat1: Vec<String> = vec!["A", "A", "B", "B"]
             .into_iter()
@@ -1107,5 +1225,71 @@ mod tests {
         assert_eq!(enc.levels.len(), 4);
         assert!(enc.levels.contains(&"A:X:1".to_string()));
         assert!(enc.levels.contains(&"B:Y:2".to_string()));
+    }
+
+    #[test]
+    #[should_panic(expected = "categories and target must have same length")]
+    fn test_target_encode_rejects_mismatched_target() {
+        let categories = strings(&["A", "B"]);
+        let target = vec![1.0];
+        let _ = target_encode(
+            &categories,
+            &target,
+            "cat",
+            &TargetEncodingConfig::default(),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "categories and exposure must have same length")]
+    fn test_exposure_target_encode_rejects_mismatched_exposure() {
+        let categories = strings(&["A", "B"]);
+        let claims = vec![1.0, 2.0];
+        let exposure = vec![1.0];
+        let _ = target_encode_with_exposure(
+            &categories,
+            &claims,
+            &exposure,
+            "cat",
+            &TargetEncodingConfig::default(),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "cat1 and cat2 must have same length")]
+    fn test_interaction_target_encode_rejects_mismatched_categories() {
+        let cat1 = strings(&["A", "B"]);
+        let cat2 = strings(&["X"]);
+        let target = vec![1.0, 2.0];
+        let _ = target_encode_interaction(
+            &cat1,
+            &cat2,
+            &target,
+            "cat1",
+            "cat2",
+            &TargetEncodingConfig::default(),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "categories must not be empty")]
+    fn test_multi_interaction_rejects_empty_categories() {
+        let target = vec![1.0, 2.0];
+        let _ =
+            target_encode_multi_interaction(&[], &target, &[], &TargetEncodingConfig::default());
+    }
+
+    #[test]
+    #[should_panic(expected = "All category vectors must have same length")]
+    fn test_multi_interaction_rejects_mismatched_category_lengths() {
+        let cat1 = strings(&["A", "B"]);
+        let cat2 = strings(&["X"]);
+        let target = vec![1.0, 2.0];
+        let _ = target_encode_multi_interaction(
+            &[cat1, cat2],
+            &target,
+            &["cat1", "cat2"],
+            &TargetEncodingConfig::default(),
+        );
     }
 }

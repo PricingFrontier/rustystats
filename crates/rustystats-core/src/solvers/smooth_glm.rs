@@ -227,9 +227,9 @@ fn isotonic_projection(x: &[f64], increasing: bool) -> Vec<f64> {
         blocks.push((val, 1));
         while blocks.len() >= 2 {
             let len = blocks.len();
-            let avg_last = blocks[len - 1].0 / blocks[len - 1].1 as f64;
-            let avg_prev = blocks[len - 2].0 / blocks[len - 2].1 as f64;
-            if avg_last < avg_prev {
+            let avg_last = block_average(blocks[len - 1].0, blocks[len - 1].1);
+            let avg_prev = block_average(blocks[len - 2].0, blocks[len - 2].1);
+            if pav_blocks_should_merge(avg_last, avg_prev) {
                 let last = blocks.pop().expect("PAV: blocks non-empty after push");
                 let prev = blocks.last_mut().expect("PAV: blocks non-empty after pop");
                 prev.0 += last.0;
@@ -241,7 +241,7 @@ fn isotonic_projection(x: &[f64], increasing: bool) -> Vec<f64> {
     }
     let mut idx = 0;
     for (sum, count) in &blocks {
-        let avg = sum / *count as f64;
+        let avg = block_average(*sum, *count);
         for _ in 0..*count {
             result[idx] = avg;
             idx += 1;
@@ -253,6 +253,332 @@ fn isotonic_projection(x: &[f64], increasing: bool) -> Vec<f64> {
         }
     }
     result
+}
+
+fn block_average(sum: f64, count: usize) -> f64 {
+    sum / count as f64
+}
+
+fn pav_blocks_should_merge(avg_last: f64, avg_prev: f64) -> bool {
+    avg_last < avg_prev
+}
+
+fn project_coefficients_to_bounds(
+    coefficients: &mut Array1<f64>,
+    nonneg_indices: Option<&[usize]>,
+    nonpos_indices: Option<&[usize]>,
+) {
+    if let Some(indices) = nonneg_indices {
+        for &idx in indices {
+            if idx < coefficients.len() && coefficients[idx] < 0.0 {
+                coefficients[idx] = 0.0;
+            }
+        }
+    }
+    if let Some(indices) = nonpos_indices {
+        for &idx in indices {
+            if idx < coefficients.len() && coefficients[idx] > 0.0 {
+                coefficients[idx] = 0.0;
+            }
+        }
+    }
+}
+
+fn irls_work_weight(variance: f64, link_derivative: f64, min_weight: f64) -> f64 {
+    (1.0 / (variance * link_derivative * link_derivative))
+        .max(min_weight)
+        .min(MAX_IRLS_WEIGHT)
+}
+
+fn working_response_value(eta: f64, offset: f64, y: f64, mu: f64, link_derivative: f64) -> f64 {
+    (eta - offset) + (y - mu) * link_derivative
+}
+
+fn update_irls_work_arrays(
+    eta: &Array1<f64>,
+    offset: &Array1<f64>,
+    y: &Array1<f64>,
+    mu: &Array1<f64>,
+    prior_weights: &Array1<f64>,
+    variance: &Array1<f64>,
+    link_derivative: &Array1<f64>,
+    min_weight: f64,
+    irls_weights: &mut Array1<f64>,
+    combined_weights: &mut Array1<f64>,
+    working_response: &mut Array1<f64>,
+) {
+    for i in 0..eta.len() {
+        irls_weights[i] = irls_work_weight(variance[i], link_derivative[i], min_weight);
+        combined_weights[i] = prior_weights[i] * irls_weights[i];
+        working_response[i] =
+            working_response_value(eta[i], offset[i], y[i], mu[i], link_derivative[i]);
+    }
+}
+
+fn weighted_square(value: f64, weight: f64) -> f64 {
+    weight * value * value
+}
+
+fn weighted_response_sum_squares(response: &Array1<f64>, weights: &Array1<f64>) -> f64 {
+    response
+        .iter()
+        .zip(weights.iter())
+        .map(|(&value, &weight)| weighted_square(value, weight))
+        .sum()
+}
+
+fn blend_arrays(old: &Array1<f64>, new: &Array1<f64>, fraction: f64) -> Array1<f64> {
+    old * (1.0 - fraction) + new * fraction
+}
+
+fn blend_step_arrays(old: &Array1<f64>, new: &Array1<f64>, step: f64) -> Array1<f64> {
+    if step >= 1.0 {
+        new.clone()
+    } else {
+        blend_arrays(old, new, step)
+    }
+}
+
+fn smooth_step_fraction_for_trial(trial: i32, final_trial: i32) -> f64 {
+    if trial == final_trial {
+        0.0
+    } else {
+        0.5_f64.powi(trial)
+    }
+}
+
+fn next_smooth_half_step(step: f64) -> f64 {
+    step * 0.5
+}
+
+fn smooth_accept_threshold(old_penalized_deviance: f64, tolerance: f64) -> f64 {
+    old_penalized_deviance + tolerance * (1.0 + old_penalized_deviance.abs())
+}
+
+fn finite_array(values: &Array1<f64>) -> bool {
+    values.iter().all(|value| value.is_finite())
+}
+
+fn initial_projection_if_finite(projected: Array1<f64>) -> Option<Array1<f64>> {
+    if finite_array(&projected) {
+        Some(projected)
+    } else {
+        None
+    }
+}
+
+fn smooth_trial_values_are_finite(
+    eta: &Array1<f64>,
+    mu: &Array1<f64>,
+    deviance: f64,
+    penalized_deviance: f64,
+) -> bool {
+    finite_array(eta) && finite_array(mu) && deviance.is_finite() && penalized_deviance.is_finite()
+}
+
+fn smooth_step_candidate_accepted(
+    eta: &Array1<f64>,
+    mu: &Array1<f64>,
+    deviance: f64,
+    penalized_deviance: f64,
+    accept_threshold: f64,
+) -> bool {
+    smooth_trial_values_are_finite(eta, mu, deviance, penalized_deviance)
+        && penalized_deviance <= accept_threshold
+}
+
+fn should_skip_smooth_trial(
+    eta: &Array1<f64>,
+    mu: &Array1<f64>,
+    deviance: f64,
+    penalized_deviance: f64,
+) -> bool {
+    !smooth_trial_values_are_finite(eta, mu, deviance, penalized_deviance)
+}
+
+fn smooth_trial_is_better(best_trial: Option<i32>, trial_pen_dev: f64, best_pen_dev: f64) -> bool {
+    best_trial.is_none() || trial_pen_dev < best_pen_dev
+}
+
+fn smooth_trial_is_nonworsening(penalized_deviance: f64, old_penalized_deviance: f64) -> bool {
+    penalized_deviance <= old_penalized_deviance
+}
+
+fn immediate_trial_accepts(trial: i32, trial_pen_dev: f64, old_penalized_deviance: f64) -> bool {
+    trial == 0 && smooth_trial_is_nonworsening(trial_pen_dev, old_penalized_deviance)
+}
+
+fn halved_trial_accepts(trial: i32, best_pen_dev: f64, old_penalized_deviance: f64) -> bool {
+    trial > 0 && smooth_trial_is_nonworsening(best_pen_dev, old_penalized_deviance)
+}
+
+fn smooth_step_accepted(best_trial: Option<i32>, best_pen_dev: f64, accept_threshold: f64) -> bool {
+    best_trial.is_some() && best_pen_dev <= accept_threshold
+}
+
+fn smooth_step_halving_failed(
+    best_trial: Option<i32>,
+    best_pen_dev: f64,
+    accept_threshold: f64,
+) -> bool {
+    !smooth_step_accepted(best_trial, best_pen_dev, accept_threshold)
+}
+
+fn genuine_halved_step(best_trial: Option<i32>, final_trial: i32) -> bool {
+    matches!(best_trial, Some(trial) if trial > 0 && trial < final_trial)
+}
+
+fn relative_change_with_unit_offset(old: f64, new: f64) -> f64 {
+    (old - new).abs() / (1.0 + old.abs())
+}
+
+fn relative_change_with_floor(old: f64, new: f64, floor: f64) -> f64 {
+    if old.abs() > floor {
+        (old - new).abs() / old.abs()
+    } else {
+        (old - new).abs()
+    }
+}
+
+fn change_below_tolerance(change: f64, tolerance: f64) -> bool {
+    change < tolerance
+}
+
+fn lambda_relative_change(old: f64, new: f64) -> f64 {
+    relative_change_with_floor(old, new, 1e-12)
+}
+
+fn max_lambda_relative_change(old_lambdas: &[f64], new_lambdas: &[f64]) -> f64 {
+    old_lambdas
+        .iter()
+        .zip(new_lambdas.iter())
+        .map(|(&old, &new)| lambda_relative_change(old, new))
+        .fold(0.0f64, f64::max)
+}
+
+fn lambdas_stable(max_lambda_change: f64) -> bool {
+    change_below_tolerance(max_lambda_change, 0.01)
+}
+
+fn should_stop_monotonic_outer(max_lambda_change: f64, converged: bool) -> bool {
+    lambdas_stable(max_lambda_change) && converged
+}
+
+fn should_run_smooth_gcv(lambdas_stable_count: u32, iteration: usize) -> bool {
+    lambdas_stable_count < 1 && (iteration <= 3 || iteration.is_multiple_of(2))
+}
+
+fn next_lambdas_stable_count(max_rel_change: f64, current: u32) -> u32 {
+    if lambdas_stable(max_rel_change) {
+        current + 1
+    } else {
+        0
+    }
+}
+
+fn lambdas_changed(lambdas: &[f64], previous_lambdas: &[f64]) -> bool {
+    lambdas != previous_lambdas
+}
+
+fn parametric_column_count(total_cols: usize, smooth_col_count: usize) -> usize {
+    total_cols - smooth_col_count
+}
+
+fn smooth_term_width(spec: &SmoothTermSpec) -> usize {
+    spec.col_end - spec.col_start
+}
+
+fn centered_eta(eta: &Array1<f64>, offset: &Array1<f64>) -> Array1<f64> {
+    eta - offset
+}
+
+fn linear_predictor_from_coefficients(
+    x: ArrayView2<'_, f64>,
+    coefficients: &Array1<f64>,
+    offset: &Array1<f64>,
+) -> Array1<f64> {
+    &x.dot(coefficients) + offset
+}
+
+fn smooth_coefficient_index(col_start: usize, offset: usize) -> usize {
+    col_start + offset
+}
+
+fn fraction_is_genuine_halving(fraction: f64) -> bool {
+    fraction > 0.0
+}
+
+fn clamp_monotonic_alpha_value(position: usize, alpha: f64) -> f64 {
+    if position == 0 {
+        alpha
+    } else {
+        alpha.clamp(-MAX_EXP_ALPHA, MAX_EXP_ALPHA)
+    }
+}
+
+fn smooth_solver_status(step_halving_failed: bool, converged: bool) -> &'static str {
+    if step_halving_failed {
+        "step_halving_no_improvement"
+    } else if converged {
+        "converged"
+    } else {
+        "max_iterations"
+    }
+}
+
+fn should_warn_smooth_nonconvergence(converged: bool) -> bool {
+    !converged
+}
+
+fn smooth_nonconvergence_warning(solver_status: &str) -> String {
+    format!("Smooth GLM did not converge (status: {solver_status}). Results may be approximate.")
+}
+
+fn smooth_penalty_contribution(
+    lambda: f64,
+    coeffs: ndarray::ArrayView1<'_, f64>,
+    penalty: &Array2<f64>,
+) -> f64 {
+    lambda * coeffs.dot(&penalty.dot(&coeffs))
+}
+
+fn smooth_penalized_deviance(
+    raw_deviance: f64,
+    coefficients: &Array1<f64>,
+    smooth_specs: &[SmoothTermSpec],
+    lambdas: &[f64],
+) -> f64 {
+    let mut penalized = raw_deviance;
+    let cs = coefficients.as_slice().expect("contiguous");
+    for (idx, spec) in smooth_specs.iter().enumerate() {
+        let coeffs = ndarray::ArrayView1::from(&cs[spec.col_start..spec.col_end]);
+        penalized += smooth_penalty_contribution(lambdas[idx], coeffs, &spec.penalty);
+    }
+    penalized
+}
+
+fn add_penalty_to_xtwx(xtwx: &Array2<f64>, penalty_matrix: &Array2<f64>) -> Array2<f64> {
+    xtwx + penalty_matrix
+}
+
+fn monotonic_offset(beta: &Array1<f64>, j_alpha: &Array1<f64>) -> Array1<f64> {
+    beta - j_alpha
+}
+
+fn subtract_smooth_offset(
+    adjusted_response: &mut Array1<f64>,
+    x_smooth: ArrayView2<'_, f64>,
+    offset_mono: &Array1<f64>,
+) {
+    let offset_slice = offset_mono.as_slice().expect("contiguous array");
+    let adj_slice = adjusted_response.as_slice_mut().expect("contiguous array");
+    for row in 0..x_smooth.nrows() {
+        let mut dot = 0.0;
+        for col in 0..x_smooth.ncols() {
+            dot += x_smooth[[row, col]] * offset_slice[col];
+        }
+        adj_slice[row] -= dot;
+    }
 }
 
 /// Convert monotonic beta coefficients back to unconstrained alpha parameters.
@@ -486,7 +812,7 @@ fn assemble_smooth_result_from_specs(
         for (i, &(penalty, start, _end)) in penalty_specs.iter().enumerate() {
             embed_penalty(&mut penalty_matrix, penalty, start, lambdas[i]);
         }
-        let xtwx_pen = &xtwx + &penalty_matrix;
+        let xtwx_pen = add_penalty_to_xtwx(&xtwx, &penalty_matrix);
         invert_matrix(&xtwx_pen).unwrap_or_else(|| Array2::eye(total_cols))
     });
 
@@ -662,7 +988,7 @@ pub fn fit_smooth_glm_full_matrix(
             smooth_cols.insert(c);
         }
     }
-    let p_param = p - smooth_cols.len();
+    let p_param = parametric_column_count(p, smooth_cols.len());
 
     // Build column ranges in x_full order (smooth specs are already indexed into x_full)
     let term_indices: Vec<(usize, usize)> = smooth_specs
@@ -693,7 +1019,7 @@ pub fn fit_smooth_glm_full_matrix(
     // initializer into coefficient space so the step-halving baseline is a real
     // fitted iterate instead of the saturated response.
     {
-        let eta_no_offset = &eta - &offset_vec;
+        let eta_no_offset = centered_eta(&eta, &offset_vec);
         let zero_penalty = Array2::zeros((total_cols, total_cols));
         match solve_weighted_least_squares_with_penalty_matrix(
             x_combined,
@@ -702,25 +1028,20 @@ pub fn fit_smooth_glm_full_matrix(
             &zero_penalty,
             true,
         ) {
-            Ok((mut projected, _)) if projected.iter().all(|v| v.is_finite()) => {
-                if let Some(nn) = nonneg_indices {
-                    for &idx in nn {
-                        if idx < projected.len() && projected[idx] < 0.0 {
-                            projected[idx] = 0.0;
-                        }
-                    }
+            Ok((projected, _)) => {
+                if let Some(mut projected) = initial_projection_if_finite(projected) {
+                    project_coefficients_to_bounds(&mut projected, nonneg_indices, nonpos_indices);
+                    coefficients = projected;
+                    eta =
+                        linear_predictor_from_coefficients(x_combined, &coefficients, &offset_vec);
+                    mu = family.clamp_mu(&link.inverse(&eta));
+                    deviance = family.deviance(y, &mu, Some(&prior_weights));
+                } else {
+                    warnings.push(
+                        "Initial smooth coefficient projection failed. Starting from zero coefficients."
+                            .to_string(),
+                    );
                 }
-                if let Some(np) = nonpos_indices {
-                    for &idx in np {
-                        if idx < projected.len() && projected[idx] > 0.0 {
-                            projected[idx] = 0.0;
-                        }
-                    }
-                }
-                coefficients = projected;
-                eta = &x_combined.dot(&coefficients) + &offset_vec;
-                mu = family.clamp_mu(&link.inverse(&eta));
-                deviance = family.deviance(y, &mu, Some(&prior_weights));
             }
             _ => warnings.push(
                 "Initial smooth coefficient projection failed. Starting from zero coefficients."
@@ -782,7 +1103,7 @@ pub fn fit_smooth_glm_full_matrix(
         .iter()
         .map(|spec| {
             if spec.is_monotonic() {
-                let k = spec.col_end - spec.col_start;
+                let k = smooth_term_width(spec);
                 // Initialize alpha to small values (beta starts near zero)
                 Some(Array1::zeros(k))
             } else {
@@ -809,20 +1130,22 @@ pub fn fit_smooth_glm_full_matrix(
         {
             let link_deriv = link.derivative(&mu);
             let variance = family.variance(&mu);
-            for i in 0..n {
-                irls_weights[i] = (1.0 / (variance[i] * link_deriv[i] * link_deriv[i]))
-                    .max(config.irls_config.min_weight)
-                    .min(MAX_IRLS_WEIGHT);
-                combined_weights[i] = prior_weights[i] * irls_weights[i];
-                working_response[i] = (eta[i] - offset_vec[i]) + (y[i] - mu[i]) * link_deriv[i];
-            }
+            update_irls_work_arrays(
+                &eta,
+                &offset_vec,
+                y,
+                &mu,
+                &prior_weights,
+                &variance,
+                &link_deriv,
+                config.irls_config.min_weight,
+                &mut irls_weights,
+                &mut combined_weights,
+                &mut working_response,
+            );
             let (init_xtwx, init_xtwz) =
                 compute_xtwx_xtwz(x_combined, &working_response, &combined_weights)?;
-            let init_ztwz: f64 = working_response
-                .iter()
-                .zip(combined_weights.iter())
-                .map(|(&zi, &wi)| wi * zi * zi)
-                .sum();
+            let init_ztwz = weighted_response_sum_squares(&working_response, &combined_weights);
             let init_penalties: Vec<Array2<f64>> =
                 smooth_specs.iter().map(|s| s.penalty.clone()).collect();
             let optimizer = MultiTermGCVOptimizer::new_from_cached(
@@ -856,17 +1179,22 @@ pub fn fit_smooth_glm_full_matrix(
             for _init_iter in 0..config.irls_config.max_iterations {
                 let init_link_deriv = link.derivative(&init_mu);
                 let init_var = family.variance(&init_mu);
-                let init_iw: Array1<f64> = (0..n)
-                    .map(|i| {
-                        let d = init_link_deriv[i];
-                        let v = init_var[i];
-                        (1.0 / (v * d * d))
-                            .max(config.irls_config.min_weight)
-                            .min(MAX_IRLS_WEIGHT)
-                    })
-                    .collect();
-                let init_cw = &prior_weights * &init_iw;
-                let init_z = (&init_eta - &offset_vec) + &((y - &init_mu) * &init_link_deriv);
+                let mut init_iw = Array1::zeros(n);
+                let mut init_cw = Array1::zeros(n);
+                let mut init_z = Array1::zeros(n);
+                update_irls_work_arrays(
+                    &init_eta,
+                    &offset_vec,
+                    y,
+                    &init_mu,
+                    &prior_weights,
+                    &init_var,
+                    &init_link_deriv,
+                    config.irls_config.min_weight,
+                    &mut init_iw,
+                    &mut init_cw,
+                    &mut init_z,
+                );
                 let mut init_penalty = Array2::zeros((total_cols, total_cols));
                 for (i, spec) in smooth_specs.iter().enumerate() {
                     embed_penalty(&mut init_penalty, &spec.penalty, spec.col_start, lambdas[i]);
@@ -879,12 +1207,12 @@ pub fn fit_smooth_glm_full_matrix(
                     true,
                 )?;
                 init_coef = new_init_coef;
-                init_eta = &x_combined.dot(&init_coef) + &offset_vec;
+                init_eta = linear_predictor_from_coefficients(x_combined, &init_coef, &offset_vec);
                 init_mu = family.clamp_mu(&link.inverse(&init_eta));
                 let new_dev = family.deviance(y, &init_mu, Some(&prior_weights));
-                let init_rel = (init_dev - new_dev).abs() / (1.0 + init_dev.abs());
+                let init_rel = relative_change_with_unit_offset(init_dev, new_dev);
                 init_dev = new_dev;
-                if init_rel < config.irls_config.tolerance {
+                if change_below_tolerance(init_rel, config.irls_config.tolerance) {
                     break;
                 }
             }
@@ -908,12 +1236,14 @@ pub fn fit_smooth_glm_full_matrix(
                     );
                     let cs = coefficients.as_slice_mut().expect("contiguous array");
                     for (j, &b) in beta.iter().enumerate() {
-                        cs[spec.col_start + j] = b;
+                        cs[smooth_coefficient_index(spec.col_start, j)] = b;
                     }
                 }
             }
 
-            eta = &x_combined.dot(&coefficients) + &offset_vec;
+            project_coefficients_to_bounds(&mut coefficients, nonneg_indices, nonpos_indices);
+
+            eta = linear_predictor_from_coefficients(x_combined, &coefficients, &offset_vec);
             mu = family.clamp_mu(&link.inverse(&eta));
             deviance = family.deviance(y, &mu, Some(&prior_weights));
         }
@@ -933,13 +1263,19 @@ pub fn fit_smooth_glm_full_matrix(
                 // Compute IRLS weights and working response
                 let link_deriv = link.derivative(&mu);
                 let variance = family.variance(&mu);
-                for i in 0..n {
-                    irls_weights[i] = (1.0 / (variance[i] * link_deriv[i] * link_deriv[i]))
-                        .max(config.irls_config.min_weight)
-                        .min(MAX_IRLS_WEIGHT);
-                    combined_weights[i] = prior_weights[i] * irls_weights[i];
-                    working_response[i] = (eta[i] - offset_vec[i]) + (y[i] - mu[i]) * link_deriv[i];
-                }
+                update_irls_work_arrays(
+                    &eta,
+                    &offset_vec,
+                    y,
+                    &mu,
+                    &prior_weights,
+                    &variance,
+                    &link_deriv,
+                    config.irls_config.min_weight,
+                    &mut irls_weights,
+                    &mut combined_weights,
+                    &mut working_response,
+                );
                 // Reflect the current iterate's weights immediately so that a
                 // step-halving failure on the FIRST iteration still yields the
                 // retained-iterate weights for covariance/EDF/GCV — not all-ones.
@@ -986,18 +1322,9 @@ pub fn fit_smooth_glm_full_matrix(
                             .as_ref()
                             .expect("cached Jacobian exists for monotonic term");
                         let j_alpha = j_mat.dot(alpha);
-                        let offset_mono = &beta_mono - &j_alpha;
+                        let offset_mono = monotonic_offset(&beta_mono, &j_alpha);
                         let x_smooth = x_combined.slice(s![.., spec.col_start..spec.col_end]);
-                        let k_sm = spec.col_end - spec.col_start;
-                        let offset_slice = offset_mono.as_slice().expect("contiguous array");
-                        let adj_slice = adjusted_response.as_slice_mut().expect("contiguous array");
-                        for row in 0..n {
-                            let mut dot = 0.0;
-                            for col in 0..k_sm {
-                                dot += x_smooth[[row, col]] * offset_slice[col];
-                            }
-                            adj_slice[row] -= dot;
-                        }
+                        subtract_smooth_offset(&mut adjusted_response, x_smooth, &offset_mono);
                     }
                 }
 
@@ -1045,13 +1372,7 @@ pub fn fit_smooth_glm_full_matrix(
                             let clamped: Vec<f64> = alpha_wls
                                 .iter()
                                 .enumerate()
-                                .map(|(j, &a)| {
-                                    if j == 0 {
-                                        a
-                                    } else {
-                                        a.clamp(-MAX_EXP_ALPHA, MAX_EXP_ALPHA)
-                                    }
-                                })
+                                .map(|(j, &a)| clamp_monotonic_alpha_value(j, a))
                                 .collect();
                             Some(Array1::from_vec(clamped))
                         } else {
@@ -1062,16 +1383,8 @@ pub fn fit_smooth_glm_full_matrix(
 
                 // Penalized deviance at current point. With REML-selected lambdas,
                 // penalized deviance is well-calibrated for step acceptance.
-                let pen_dev_old = {
-                    let mut pd = deviance_old;
-                    let cs = coefficients.as_slice().expect("contiguous");
-                    for (j, spec) in smooth_specs.iter().enumerate() {
-                        let b = &cs[spec.col_start..spec.col_end];
-                        let bv = ndarray::ArrayView1::from(b);
-                        pd += lambdas[j] * bv.dot(&spec.penalty.dot(&bv));
-                    }
-                    pd
-                };
+                let pen_dev_old =
+                    smooth_penalized_deviance(deviance_old, &coefficients, smooth_specs, &lambdas);
 
                 // Step halving on penalized deviance with unified blending
                 // of all coefficients. Accept only finite non-worsening steps
@@ -1088,18 +1401,10 @@ pub fn fit_smooth_glm_full_matrix(
                 // non-worsening. This guarantees a finite non-worsening step
                 // always exists when the previous iterate was valid.
                 for trial in 0..=20 {
-                    let step = if trial == 20 {
-                        0.0
-                    } else {
-                        0.5_f64.powi(trial)
-                    };
+                    let step = smooth_step_fraction_for_trial(trial, 20);
 
                     // Blend all coefficients: parametric + non-monotonic smooth
-                    let mut trial_coef = if step >= 1.0 {
-                        new_coef.clone()
-                    } else {
-                        &coefficients * (1.0 - step) + &new_coef * step
-                    };
+                    let mut trial_coef = blend_step_arrays(&coefficients, &new_coef, step);
 
                     // Monotonic terms: blend in alpha-space, recover beta
                     let mut trial_alphas: Vec<Option<Array1<f64>>> =
@@ -1108,18 +1413,14 @@ pub fn fit_smooth_glm_full_matrix(
                         if let (Some(ref old_alpha), Some(ref new_alpha)) =
                             (&pre_wls_alphas[i], &wls_alphas[i])
                         {
-                            let blended = if step >= 1.0 {
-                                new_alpha.clone()
-                            } else {
-                                old_alpha * (1.0 - step) + new_alpha * step
-                            };
+                            let blended = blend_step_arrays(old_alpha, new_alpha, step);
                             let beta = alpha_to_beta(
                                 blended.as_slice().expect("contiguous array"),
                                 &spec.monotonicity,
                             );
                             let cs = trial_coef.as_slice_mut().expect("contiguous array");
                             for (j, &b) in beta.iter().enumerate() {
-                                cs[spec.col_start + j] = b;
+                                cs[smooth_coefficient_index(spec.col_start, j)] = b;
                             }
                             trial_alphas.push(Some(blended));
                         } else {
@@ -1128,62 +1429,35 @@ pub fn fit_smooth_glm_full_matrix(
                     }
 
                     // Re-apply sign constraints after blending
-                    if let Some(nn) = nonneg_indices {
-                        for &idx in nn {
-                            if idx < trial_coef.len() && trial_coef[idx] < 0.0 {
-                                trial_coef[idx] = 0.0;
-                            }
-                        }
-                    }
-                    if let Some(np) = nonpos_indices {
-                        for &idx in np {
-                            if idx < trial_coef.len() && trial_coef[idx] > 0.0 {
-                                trial_coef[idx] = 0.0;
-                            }
-                        }
-                    }
+                    project_coefficients_to_bounds(&mut trial_coef, nonneg_indices, nonpos_indices);
 
-                    let trial_eta = &x_combined.dot(&trial_coef) + &offset_vec;
+                    let trial_eta =
+                        linear_predictor_from_coefficients(x_combined, &trial_coef, &offset_vec);
                     let trial_mu = family.clamp_mu(&link.inverse(&trial_eta));
                     let trial_dev = family.deviance(y, &trial_mu, Some(&prior_weights));
-                    if !trial_eta.iter().all(|v| v.is_finite())
-                        || !trial_mu.iter().all(|v| v.is_finite())
-                        || !trial_dev.is_finite()
-                    {
-                        continue;
-                    }
-
                     // Penalized deviance for step acceptance
-                    let trial_pen_dev = {
-                        let mut pd = trial_dev;
-                        let cs = trial_coef.as_slice().expect("contiguous");
-                        for (j, spec) in smooth_specs.iter().enumerate() {
-                            let b = &cs[spec.col_start..spec.col_end];
-                            let bv = ndarray::ArrayView1::from(b);
-                            pd += lambdas[j] * bv.dot(&spec.penalty.dot(&bv));
-                        }
-                        pd
-                    };
-                    if !trial_pen_dev.is_finite() {
+                    let trial_pen_dev =
+                        smooth_penalized_deviance(trial_dev, &trial_coef, smooth_specs, &lambdas);
+                    if should_skip_smooth_trial(&trial_eta, &trial_mu, trial_dev, trial_pen_dev) {
                         continue;
                     }
 
-                    if best_trial.is_none() || trial_pen_dev < best_pen_dev {
+                    if smooth_trial_is_better(best_trial, trial_pen_dev, best_pen_dev) {
                         best_pen_dev = trial_pen_dev;
                         best_coef = trial_coef;
                         best_alphas = trial_alphas;
                         best_trial = Some(trial);
-                        if trial == 0 && trial_pen_dev <= pen_dev_old {
+                        if immediate_trial_accepts(trial, trial_pen_dev, pen_dev_old) {
                             break;
                         }
                     }
-                    if trial > 0 && best_pen_dev <= pen_dev_old {
+                    if halved_trial_accepts(trial, best_pen_dev, pen_dev_old) {
                         break;
                     }
                 }
 
-                let accept_threshold = pen_dev_old + smooth_tolerance * (1.0 + pen_dev_old.abs());
-                if best_trial.is_none() || best_pen_dev > accept_threshold {
+                let accept_threshold = smooth_accept_threshold(pen_dev_old, smooth_tolerance);
+                if smooth_step_halving_failed(best_trial, best_pen_dev, accept_threshold) {
                     step_halving_failed = true;
                     warnings.push(
                         "Smooth PIRLS step halving found no finite non-worsening step; \
@@ -1194,7 +1468,7 @@ pub fn fit_smooth_glm_full_matrix(
                 }
                 // trial 20 is the fraction-0 fallback (retained previous iterate),
                 // not a genuine halved step.
-                if matches!(best_trial, Some(t) if t > 0 && t < 20) {
+                if genuine_halved_step(best_trial, 20) {
                     step_halving_used = true;
                 }
 
@@ -1208,14 +1482,14 @@ pub fn fit_smooth_glm_full_matrix(
                 coefficients = best_coef;
 
                 // Update state
-                eta = &x_combined.dot(&coefficients) + &offset_vec;
+                eta = linear_predictor_from_coefficients(x_combined, &coefficients, &offset_vec);
                 mu = family.clamp_mu(&link.inverse(&eta));
                 deviance = family.deviance(y, &mu, Some(&prior_weights));
                 final_weights = combined_weights.clone();
 
                 // Inner convergence: penalized deviance change
-                let rel_change = (pen_dev_old - best_pen_dev).abs() / (1.0 + pen_dev_old.abs());
-                if rel_change < smooth_tolerance {
+                let rel_change = relative_change_with_unit_offset(pen_dev_old, best_pen_dev);
+                if change_below_tolerance(rel_change, smooth_tolerance) {
                     converged = true;
                     break;
                 }
@@ -1229,13 +1503,19 @@ pub fn fit_smooth_glm_full_matrix(
                 // Recompute IRLS quantities at convergence point
                 let link_deriv = link.derivative(&mu);
                 let variance = family.variance(&mu);
-                for i in 0..n {
-                    irls_weights[i] = (1.0 / (variance[i] * link_deriv[i] * link_deriv[i]))
-                        .max(config.irls_config.min_weight)
-                        .min(MAX_IRLS_WEIGHT);
-                    combined_weights[i] = prior_weights[i] * irls_weights[i];
-                    working_response[i] = (eta[i] - offset_vec[i]) + (y[i] - mu[i]) * link_deriv[i];
-                }
+                update_irls_work_arrays(
+                    &eta,
+                    &offset_vec,
+                    y,
+                    &mu,
+                    &prior_weights,
+                    &variance,
+                    &link_deriv,
+                    config.irls_config.min_weight,
+                    &mut irls_weights,
+                    &mut combined_weights,
+                    &mut working_response,
+                );
 
                 // Rebuild X_tilde at converged alpha
                 for (i, spec) in smooth_specs.iter().enumerate() {
@@ -1275,29 +1555,16 @@ pub fn fit_smooth_glm_full_matrix(
                             .as_ref()
                             .expect("cached Jacobian exists for monotonic term");
                         let j_alpha = j_mat.dot(alpha);
-                        let offset_mono = &beta_mono - &j_alpha;
+                        let offset_mono = monotonic_offset(&beta_mono, &j_alpha);
                         let x_smooth = x_combined.slice(s![.., spec.col_start..spec.col_end]);
-                        let k_sm = spec.col_end - spec.col_start;
-                        let offset_slice = offset_mono.as_slice().expect("contiguous array");
-                        let adj_slice = adjusted_response.as_slice_mut().expect("contiguous array");
-                        for row in 0..n {
-                            let mut dot = 0.0;
-                            for col in 0..k_sm {
-                                dot += x_smooth[[row, col]] * offset_slice[col];
-                            }
-                            adj_slice[row] -= dot;
-                        }
+                        subtract_smooth_offset(&mut adjusted_response, x_smooth, &offset_mono);
                     }
                 }
 
                 let x_tilde_view = x_tilde.view();
                 let (cached_xtwx_t, cached_xtwz_t) =
                     compute_xtwx_xtwz(x_tilde_view, &adjusted_response, &combined_weights)?;
-                let ztwz: f64 = adjusted_response
-                    .iter()
-                    .zip(combined_weights.iter())
-                    .map(|(&zi, &wi)| wi * zi * zi)
-                    .sum();
+                let ztwz = weighted_response_sum_squares(&adjusted_response, &combined_weights);
 
                 let transformed_penalties: Vec<Array2<f64>> = smooth_specs
                     .iter()
@@ -1338,19 +1605,9 @@ pub fn fit_smooth_glm_full_matrix(
             }
 
             // Check outer convergence: lambdas stabilized?
-            let max_lambda_change = lambdas_at_start
-                .iter()
-                .zip(lambdas.iter())
-                .map(|(&old, &new)| {
-                    if old.abs() < 1e-12 {
-                        (new - old).abs()
-                    } else {
-                        (new - old).abs() / old.abs()
-                    }
-                })
-                .fold(0.0f64, f64::max);
+            let max_lambda_change = max_lambda_relative_change(&lambdas_at_start, &lambdas);
 
-            if max_lambda_change < 0.01 && converged {
+            if should_stop_monotonic_outer(max_lambda_change, converged) {
                 break;
             }
             // Reset inner convergence flag for next outer iteration
@@ -1371,13 +1628,19 @@ pub fn fit_smooth_glm_full_matrix(
         let link_deriv = link.derivative(&mu);
         let variance = family.variance(&mu);
 
-        for i in 0..n {
-            irls_weights[i] = (1.0 / (variance[i] * link_deriv[i] * link_deriv[i]))
-                .max(config.irls_config.min_weight)
-                .min(MAX_IRLS_WEIGHT);
-            combined_weights[i] = prior_weights[i] * irls_weights[i];
-            working_response[i] = (eta[i] - offset_vec[i]) + (y[i] - mu[i]) * link_deriv[i];
-        }
+        update_irls_work_arrays(
+            &eta,
+            &offset_vec,
+            y,
+            &mu,
+            &prior_weights,
+            &variance,
+            &link_deriv,
+            config.irls_config.min_weight,
+            &mut irls_weights,
+            &mut combined_weights,
+            &mut working_response,
+        );
         // Reflect the current iterate's weights immediately so that a
         // step-halving failure on the FIRST iteration still yields the
         // retained-iterate weights for covariance/EDF/GCV — not all-ones.
@@ -1389,13 +1652,9 @@ pub fn fit_smooth_glm_full_matrix(
         let (cached_xtwx, cached_xtwz) =
             compute_xtwx_xtwz(x_combined, &working_response, &combined_weights)?;
 
-        let ztwz: f64 = working_response
-            .iter()
-            .zip(combined_weights.iter())
-            .map(|(&zi, &wi)| wi * zi * zi)
-            .sum();
+        let ztwz = weighted_response_sum_squares(&working_response, &combined_weights);
 
-        let run_gcv = lambdas_stable_count < 1 && (iteration <= 3 || iteration % 2 == 0);
+        let run_gcv = should_run_smooth_gcv(lambdas_stable_count, iteration);
         if run_gcv {
             let old_lambdas = lambdas.clone();
             let penalties: Vec<Array2<f64>> =
@@ -1416,23 +1675,9 @@ pub fn fit_smooth_glm_full_matrix(
                 config.lambda_tol,
                 3,
             );
-            let max_rel_change = old_lambdas
-                .iter()
-                .zip(lambdas.iter())
-                .map(|(&old, &new)| {
-                    if old.abs() < 1e-12 {
-                        (new - old).abs()
-                    } else {
-                        (new - old).abs() / old.abs()
-                    }
-                })
-                .fold(0.0f64, f64::max);
-            if max_rel_change < 0.01 {
-                lambdas_stable_count += 1;
-            } else {
-                lambdas_stable_count = 0;
-            }
-            penalty_dirty = lambdas != prev_lambdas;
+            let max_rel_change = max_lambda_relative_change(&old_lambdas, &lambdas);
+            lambdas_stable_count = next_lambdas_stable_count(max_rel_change, lambdas_stable_count);
+            penalty_dirty = lambdas_changed(&lambdas, &prev_lambdas);
         }
 
         if penalty_dirty {
@@ -1454,47 +1699,27 @@ pub fn fit_smooth_glm_full_matrix(
         new_coef = coef;
 
         // Enforce sign constraints before evaluating deviance
-        if let Some(nn) = nonneg_indices {
-            for &idx in nn {
-                if idx < new_coef.len() && new_coef[idx] < 0.0 {
-                    new_coef[idx] = 0.0;
-                }
-            }
-        }
-        if let Some(np) = nonpos_indices {
-            for &idx in np {
-                if idx < new_coef.len() && new_coef[idx] > 0.0 {
-                    new_coef[idx] = 0.0;
-                }
-            }
-        }
-
-        let penalized_deviance = |coef: &Array1<f64>, raw_dev: f64| -> f64 {
-            let mut pd = raw_dev;
-            let cs = coef.as_slice().expect("contiguous");
-            for (j, spec) in smooth_specs.iter().enumerate() {
-                let b = &cs[spec.col_start..spec.col_end];
-                let bv = ndarray::ArrayView1::from(b);
-                pd += lambdas[j] * bv.dot(&spec.penalty.dot(&bv));
-            }
-            pd
-        };
+        project_coefficients_to_bounds(&mut new_coef, nonneg_indices, nonpos_indices);
 
         // Step halving if the full step is non-finite or worsens the fitted
         // smooth objective. Raw deviance can rise slightly as smoothing
         // increases; the penalized deviance is the objective this solver
         // actually optimizes.
-        let pen_dev_old = penalized_deviance(&coefficients, deviance_old);
-        let accept_threshold = pen_dev_old + smooth_tolerance * (1.0 + pen_dev_old.abs());
-        let eta_new = &x_combined.dot(&new_coef) + &offset_vec;
+        let pen_dev_old =
+            smooth_penalized_deviance(deviance_old, &coefficients, smooth_specs, &lambdas);
+        let accept_threshold = smooth_accept_threshold(pen_dev_old, smooth_tolerance);
+        let eta_new = linear_predictor_from_coefficients(x_combined, &new_coef, &offset_vec);
         let mu_new = family.clamp_mu(&link.inverse(&eta_new));
         let deviance_new = family.deviance(y, &mu_new, Some(&prior_weights));
-        let pen_dev_new = penalized_deviance(&new_coef, deviance_new);
-        let mut step_accepted = eta_new.iter().all(|v| v.is_finite())
-            && mu_new.iter().all(|v| v.is_finite())
-            && deviance_new.is_finite()
-            && pen_dev_new.is_finite()
-            && pen_dev_new <= accept_threshold;
+        let pen_dev_new =
+            smooth_penalized_deviance(deviance_new, &new_coef, smooth_specs, &lambdas);
+        let mut step_accepted = smooth_step_candidate_accepted(
+            &eta_new,
+            &mu_new,
+            deviance_new,
+            pen_dev_new,
+            accept_threshold,
+        );
         let mut accepted_coef = if step_accepted {
             new_coef.clone()
         } else {
@@ -1510,44 +1735,34 @@ pub fn fit_smooth_glm_full_matrix(
             // reaching it.
             for half_step in 0..=10 {
                 let fraction = if half_step == 10 { 0.0 } else { step };
-                let mut blended = &coefficients * (1.0 - fraction) + &new_coef * fraction;
+                let mut blended = blend_arrays(&coefficients, &new_coef, fraction);
 
-                if let Some(nn) = nonneg_indices {
-                    for &idx in nn {
-                        if idx < blended.len() && blended[idx] < 0.0 {
-                            blended[idx] = 0.0;
-                        }
-                    }
-                }
-                if let Some(np) = nonpos_indices {
-                    for &idx in np {
-                        if idx < blended.len() && blended[idx] > 0.0 {
-                            blended[idx] = 0.0;
-                        }
-                    }
-                }
+                project_coefficients_to_bounds(&mut blended, nonneg_indices, nonpos_indices);
 
-                let eta_full = &x_combined.dot(&blended) + &offset_vec;
+                let eta_full =
+                    linear_predictor_from_coefficients(x_combined, &blended, &offset_vec);
                 let mu_blend = family.clamp_mu(&link.inverse(&eta_full));
                 let dev_blend = family.deviance(y, &mu_blend, Some(&prior_weights));
-                let pen_dev_blend = penalized_deviance(&blended, dev_blend);
+                let pen_dev_blend =
+                    smooth_penalized_deviance(dev_blend, &blended, smooth_specs, &lambdas);
 
-                if eta_full.iter().all(|v| v.is_finite())
-                    && mu_blend.iter().all(|v| v.is_finite())
-                    && dev_blend.is_finite()
-                    && pen_dev_blend.is_finite()
-                    && pen_dev_blend <= accept_threshold
-                {
+                if smooth_step_candidate_accepted(
+                    &eta_full,
+                    &mu_blend,
+                    dev_blend,
+                    pen_dev_blend,
+                    accept_threshold,
+                ) {
                     accepted_coef = blended;
                     step_accepted = true;
                     // A fraction-0 fallback is not a genuine halving "step",
                     // it simply retains the previous iterate.
-                    if fraction > 0.0 {
+                    if fraction_is_genuine_halving(fraction) {
                         step_halving_used = true;
                     }
                     break;
                 }
-                step *= 0.5;
+                step = next_smooth_half_step(step);
             }
         }
 
@@ -1563,19 +1778,15 @@ pub fn fit_smooth_glm_full_matrix(
         coefficients = accepted_coef;
 
         // Update state
-        eta = &x_combined.dot(&coefficients) + &offset_vec;
+        eta = linear_predictor_from_coefficients(x_combined, &coefficients, &offset_vec);
         mu = family.clamp_mu(&link.inverse(&eta));
         deviance = family.deviance(y, &mu, Some(&prior_weights));
         final_weights = combined_weights.clone();
-        let pen_dev = penalized_deviance(&coefficients, deviance);
+        let pen_dev = smooth_penalized_deviance(deviance, &coefficients, smooth_specs, &lambdas);
 
-        let rel_change = if pen_dev_old.abs() > ZERO_TOL {
-            (pen_dev_old - pen_dev).abs() / pen_dev_old.abs()
-        } else {
-            (pen_dev_old - pen_dev).abs()
-        };
+        let rel_change = relative_change_with_floor(pen_dev_old, pen_dev, ZERO_TOL);
 
-        if rel_change < smooth_tolerance {
+        if change_below_tolerance(rel_change, smooth_tolerance) {
             converged = true;
             break;
         }
@@ -1586,17 +1797,9 @@ pub fn fit_smooth_glm_full_matrix(
         .iter()
         .map(|s| (&s.penalty, s.col_start, s.col_end))
         .collect();
-    let solver_status = if step_halving_failed {
-        "step_halving_no_improvement"
-    } else if converged {
-        "converged"
-    } else {
-        "max_iterations"
-    };
-    if !converged {
-        warnings.push(format!(
-            "Smooth GLM did not converge (status: {solver_status}). Results may be approximate."
-        ));
+    let solver_status = smooth_solver_status(step_halving_failed, converged);
+    if should_warn_smooth_nonconvergence(converged) {
+        warnings.push(smooth_nonconvergence_warning(solver_status));
     }
 
     Ok(assemble_smooth_result_from_specs(
@@ -1640,7 +1843,23 @@ mod tests {
     use super::*;
     use crate::families::{GaussianFamily, PoissonFamily};
     use crate::links::{IdentityLink, LogLink};
-    use crate::splines::bs_basis;
+    use crate::splines::{bs_basis, is_basis};
+    use approx::{assert_abs_diff_eq, assert_relative_eq};
+    use ndarray::array;
+
+    fn assert_array1_close(actual: &Array1<f64>, expected: &[f64], epsilon: f64) {
+        assert_eq!(actual.len(), expected.len());
+        for (a, e) in actual.iter().zip(expected.iter()) {
+            assert_abs_diff_eq!(*a, *e, epsilon = epsilon);
+        }
+    }
+
+    fn assert_array2_close(actual: &Array2<f64>, expected: &Array2<f64>, epsilon: f64) {
+        assert_eq!(actual.shape(), expected.shape());
+        for ((i, j), a) in actual.indexed_iter() {
+            assert_abs_diff_eq!(*a, expected[[i, j]], epsilon = epsilon);
+        }
+    }
 
     // =========================================================================
     // Unit tests for structs and helpers
@@ -1680,6 +1899,272 @@ mod tests {
     }
 
     #[test]
+    fn smooth_glm_numeric_helper_contracts_are_exact() {
+        assert_abs_diff_eq!(block_average(6.0, 3), 2.0, epsilon = 1e-12);
+        assert!(pav_blocks_should_merge(1.0, 2.0));
+        assert!(!pav_blocks_should_merge(2.0, 2.0));
+        assert_array1_close(
+            &Array1::from_vec(isotonic_projection(&[3.0, 1.0, 2.0, 5.0], true)),
+            &[2.0, 2.0, 2.0, 5.0],
+            1e-12,
+        );
+        assert_array1_close(
+            &Array1::from_vec(isotonic_projection(&[1.0, 3.0, 2.0], false)),
+            &[2.0, 2.0, 2.0],
+            1e-12,
+        );
+
+        let mut bounded = array![-1.0, 2.0, -3.0, -0.0, 5.0];
+        project_coefficients_to_bounds(&mut bounded, Some(&[0, 3, 5]), Some(&[1, 3, 5]));
+        assert_eq!(bounded, array![0.0, 0.0, -3.0, -0.0, 5.0]);
+        assert_eq!(bounded[3].to_bits(), (-0.0_f64).to_bits());
+        project_coefficients_to_bounds(&mut bounded, None, Some(&[4]));
+        assert_eq!(bounded, array![0.0, 0.0, -3.0, -0.0, 0.0]);
+        assert_eq!(bounded[3].to_bits(), (-0.0_f64).to_bits());
+
+        assert_abs_diff_eq!(irls_work_weight(2.0, 0.5, 0.1), 2.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(
+            working_response_value(2.0, 0.5, 4.0, 3.0, 2.0),
+            3.5,
+            epsilon = 1e-12
+        );
+        let eta = array![2.0, 3.0];
+        let offset = array![0.5, 1.0];
+        let y = array![4.0, 1.0];
+        let mu = array![3.0, 2.0];
+        let prior = array![1.5, 2.0];
+        let variance = array![2.0, 4.0];
+        let deriv = array![2.0, -1.0];
+        let mut irls = Array1::zeros(2);
+        let mut combined = Array1::zeros(2);
+        let mut z = Array1::zeros(2);
+        update_irls_work_arrays(
+            &eta,
+            &offset,
+            &y,
+            &mu,
+            &prior,
+            &variance,
+            &deriv,
+            0.1,
+            &mut irls,
+            &mut combined,
+            &mut z,
+        );
+        assert_array1_close(&irls, &[0.125, 0.25], 1e-12);
+        assert_array1_close(&combined, &[0.1875, 0.5], 1e-12);
+        assert_array1_close(&z, &[3.5, 3.0], 1e-12);
+        assert_abs_diff_eq!(weighted_square(3.0, 2.0), 18.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(
+            weighted_response_sum_squares(&array![2.0, 3.0], &array![0.5, 2.0]),
+            20.0,
+            epsilon = 1e-12
+        );
+
+        assert_eq!(
+            blend_arrays(&array![1.0, 5.0], &array![5.0, 1.0], 0.25),
+            array![2.0, 4.0]
+        );
+        assert_eq!(
+            blend_step_arrays(&array![f64::NAN, 5.0], &array![5.0, 1.0], 1.0),
+            array![5.0, 1.0],
+            "exact full steps should take the candidate without mixing stale values"
+        );
+        assert_eq!(
+            blend_step_arrays(&array![1.0, 5.0], &array![5.0, 1.0], 0.5),
+            array![3.0, 3.0]
+        );
+        assert_abs_diff_eq!(smooth_step_fraction_for_trial(0, 20), 1.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(smooth_step_fraction_for_trial(2, 20), 0.25, epsilon = 1e-12);
+        assert_abs_diff_eq!(smooth_step_fraction_for_trial(20, 20), 0.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(next_smooth_half_step(0.5), 0.25, epsilon = 1e-12);
+        assert_abs_diff_eq!(smooth_accept_threshold(10.0, 0.01), 10.11, epsilon = 1e-12);
+        assert!(finite_array(&array![1.0, 2.0]));
+        assert!(!finite_array(&array![1.0, f64::NAN]));
+        assert_eq!(
+            initial_projection_if_finite(array![1.0, 2.0]).expect("finite projection"),
+            array![1.0, 2.0]
+        );
+        assert!(initial_projection_if_finite(array![1.0, f64::NAN]).is_none());
+        assert!(smooth_trial_values_are_finite(
+            &array![1.0],
+            &array![2.0],
+            3.0,
+            4.0
+        ));
+        assert!(!smooth_trial_values_are_finite(
+            &array![1.0],
+            &array![2.0],
+            3.0,
+            f64::INFINITY
+        ));
+        assert!(smooth_step_candidate_accepted(
+            &array![1.0],
+            &array![2.0],
+            3.0,
+            4.0,
+            4.0
+        ));
+        assert!(!smooth_step_candidate_accepted(
+            &array![1.0],
+            &array![2.0],
+            3.0,
+            4.1,
+            4.0
+        ));
+        assert!(should_skip_smooth_trial(
+            &array![1.0],
+            &array![f64::NAN],
+            3.0,
+            4.0
+        ));
+        assert!(!should_skip_smooth_trial(
+            &array![1.0],
+            &array![2.0],
+            3.0,
+            4.0
+        ));
+
+        assert!(smooth_trial_is_better(None, 9.0, 10.0));
+        assert!(smooth_trial_is_better(Some(0), 9.0, 10.0));
+        assert!(!smooth_trial_is_better(Some(0), 10.0, 10.0));
+        assert!(!smooth_trial_is_better(Some(0), 11.0, 10.0));
+        assert!(smooth_trial_is_nonworsening(10.0, 10.0));
+        assert!(!smooth_trial_is_nonworsening(11.0, 10.0));
+        assert!(immediate_trial_accepts(0, 10.0, 10.0));
+        assert!(!immediate_trial_accepts(1, 10.0, 10.0));
+        assert!(halved_trial_accepts(1, 9.0, 10.0));
+        assert!(!halved_trial_accepts(0, 9.0, 10.0));
+        assert!(smooth_step_accepted(Some(1), 5.0, 6.0));
+        assert!(!smooth_step_accepted(None, 5.0, 6.0));
+        assert!(!smooth_step_accepted(Some(1), 7.0, 6.0));
+        assert!(!smooth_step_halving_failed(Some(1), 5.0, 6.0));
+        assert!(smooth_step_halving_failed(None, 5.0, 6.0));
+        assert!(smooth_step_halving_failed(Some(1), 7.0, 6.0));
+        assert!(genuine_halved_step(Some(1), 20));
+        assert!(!genuine_halved_step(Some(0), 20));
+        assert!(!genuine_halved_step(Some(20), 20));
+
+        assert_abs_diff_eq!(
+            relative_change_with_unit_offset(10.0, 7.0),
+            3.0 / 11.0,
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(
+            relative_change_with_floor(10.0, 7.0, 0.1),
+            0.3,
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(
+            relative_change_with_floor(0.01, 0.04, 0.1),
+            0.03,
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(
+            relative_change_with_floor(0.1, 0.05, 0.1),
+            0.05,
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(lambda_relative_change(0.0, 0.02), 0.02, epsilon = 1e-12);
+        assert!(change_below_tolerance(0.009, 0.01));
+        assert!(!change_below_tolerance(0.01, 0.01));
+        assert_abs_diff_eq!(
+            max_lambda_relative_change(&[0.0, 10.0], &[0.02, 15.0]),
+            0.5,
+            epsilon = 1e-12
+        );
+        assert!(lambdas_stable(0.009));
+        assert!(!lambdas_stable(0.01));
+        assert!(should_stop_monotonic_outer(0.009, true));
+        assert!(!should_stop_monotonic_outer(0.009, false));
+        assert!(should_run_smooth_gcv(0, 1));
+        assert!(should_run_smooth_gcv(0, 4));
+        assert!(!should_run_smooth_gcv(0, 5));
+        assert!(!should_run_smooth_gcv(1, 2));
+        assert_eq!(next_lambdas_stable_count(0.009, 2), 3);
+        assert_eq!(next_lambdas_stable_count(0.01, 2), 0);
+        assert!(lambdas_changed(&[1.0, 2.0], &[1.0, 3.0]));
+        assert!(!lambdas_changed(&[1.0, 2.0], &[1.0, 2.0]));
+        assert_eq!(parametric_column_count(5, 2), 3);
+        let width_spec = SmoothTermSpec {
+            col_start: 2,
+            col_end: 5,
+            penalty: Array2::eye(3),
+            monotonicity: Monotonicity::Increasing,
+            initial_lambda: 1.0,
+        };
+        assert_eq!(smooth_term_width(&width_spec), 3);
+        assert_eq!(
+            centered_eta(&array![2.0, 5.0], &array![0.5, 1.5]),
+            array![1.5, 3.5]
+        );
+        assert_eq!(
+            linear_predictor_from_coefficients(
+                array![[1.0, 2.0], [3.0, 4.0]].view(),
+                &array![0.5, -1.0],
+                &array![10.0, 20.0],
+            ),
+            array![8.5, 17.5]
+        );
+        assert_eq!(smooth_coefficient_index(4, 3), 7);
+        assert!(fraction_is_genuine_halving(0.5));
+        assert!(!fraction_is_genuine_halving(0.0));
+        assert_eq!(clamp_monotonic_alpha_value(0, 25.0), 25.0);
+        assert_eq!(clamp_monotonic_alpha_value(1, 25.0), MAX_EXP_ALPHA);
+        assert_eq!(clamp_monotonic_alpha_value(1, -25.0), -MAX_EXP_ALPHA);
+        assert_eq!(
+            smooth_solver_status(true, true),
+            "step_halving_no_improvement",
+            "step-halving failure takes precedence over the convergence flag"
+        );
+        assert_eq!(smooth_solver_status(false, true), "converged");
+        assert_eq!(smooth_solver_status(false, false), "max_iterations");
+        assert!(should_warn_smooth_nonconvergence(false));
+        assert!(!should_warn_smooth_nonconvergence(true));
+        assert_eq!(
+            smooth_nonconvergence_warning("max_iterations"),
+            "Smooth GLM did not converge (status: max_iterations). Results may be approximate."
+        );
+
+        let penalty = array![[2.0, 0.5], [0.5, 1.0]];
+        let coeffs = array![2.0, 3.0];
+        assert_abs_diff_eq!(
+            smooth_penalty_contribution(0.5, coeffs.view(), &penalty),
+            11.5,
+            epsilon = 1e-12
+        );
+        let spec = SmoothTermSpec {
+            col_start: 1,
+            col_end: 3,
+            penalty,
+            monotonicity: Monotonicity::None,
+            initial_lambda: 0.5,
+        };
+        assert_abs_diff_eq!(
+            smooth_penalized_deviance(7.0, &array![99.0, 2.0, 3.0], &[spec], &[0.5]),
+            18.5,
+            epsilon = 1e-12
+        );
+        assert_eq!(
+            add_penalty_to_xtwx(
+                &array![[1.0, 2.0], [3.0, 4.0]],
+                &array![[0.5, 1.5], [2.5, 3.5]]
+            ),
+            array![[1.5, 3.5], [5.5, 7.5]]
+        );
+
+        let offset_mono = monotonic_offset(&array![3.0, 5.0], &array![1.0, 2.0]);
+        assert_eq!(offset_mono, array![2.0, 3.0]);
+        let mut adjusted = array![10.0, 20.0];
+        subtract_smooth_offset(
+            &mut adjusted,
+            array![[1.0, 2.0], [3.0, 4.0]].view(),
+            &offset_mono,
+        );
+        assert_eq!(adjusted, array![2.0, 2.0]);
+    }
+
+    #[test]
     fn test_smooth_term_with_monotonicity() {
         let x = Array1::from_vec((0..50).map(|i| i as f64 / 5.0).collect());
         let basis = bs_basis(&x, 8, 3, None, false);
@@ -1691,6 +2176,309 @@ mod tests {
         assert!(term.is_monotonic());
         assert_eq!(term.monotonicity, Monotonicity::Increasing);
         assert_eq!(term.initial_lambda, 2.5);
+    }
+
+    #[test]
+    fn test_alpha_to_beta_none_empty_and_clamped_monotone_paths() {
+        assert_eq!(
+            alpha_to_beta(&[], &Monotonicity::Increasing).len(),
+            0,
+            "empty alpha should return an empty beta"
+        );
+
+        let none = alpha_to_beta(&[1.0, 2.0, 3.0], &Monotonicity::None);
+        assert_array1_close(&none, &[1.0, 2.0, 3.0], 1e-12);
+
+        let increasing = alpha_to_beta(&[1.0, 0.0, 30.0], &Monotonicity::Increasing);
+        assert_array1_close(&increasing, &[1.0, 2.0, 2.0 + 20.0_f64.exp()], 1e-6);
+
+        let decreasing = alpha_to_beta(&[1.0, 0.0, -30.0], &Monotonicity::Decreasing);
+        assert_array1_close(&decreasing, &[1.0, 0.0, -(-20.0_f64).exp()], 1e-12);
+    }
+
+    #[test]
+    fn test_isotonic_projection_handles_empty_identity_and_pooling() {
+        assert!(isotonic_projection(&[], true).is_empty());
+        assert_eq!(
+            isotonic_projection(&[1.0, 2.0, 3.0], true),
+            vec![1.0, 2.0, 3.0]
+        );
+        assert_eq!(
+            isotonic_projection(&[3.0, 1.0, 2.0], true),
+            vec![2.0, 2.0, 2.0],
+            "PAV should pool adjacent increasing violations"
+        );
+        assert_eq!(
+            isotonic_projection(&[3.0, 2.0, 1.0], false),
+            vec![3.0, 2.0, 1.0]
+        );
+        assert_eq!(
+            isotonic_projection(&[1.0, 3.0, 2.0], false),
+            vec![2.0, 2.0, 2.0],
+            "decreasing projection should be symmetric to increasing projection"
+        );
+    }
+
+    #[test]
+    fn test_beta_to_alpha_projects_and_recovers_monotone_sequences() {
+        assert_eq!(
+            beta_to_alpha(&[], &Monotonicity::Decreasing).len(),
+            0,
+            "empty beta should return an empty alpha"
+        );
+
+        let none = beta_to_alpha(&[1.0, 2.0, 3.0], &Monotonicity::None);
+        assert_array1_close(&none, &[1.0, 2.0, 3.0], 1e-12);
+
+        let increasing = beta_to_alpha(&[1.0, 2.0, 4.0], &Monotonicity::Increasing);
+        assert_array1_close(&increasing, &[1.0, 0.0, 2.0_f64.ln()], 1e-12);
+        let beta_roundtrip = alpha_to_beta(
+            increasing.as_slice().expect("contiguous array"),
+            &Monotonicity::Increasing,
+        );
+        assert_array1_close(&beta_roundtrip, &[1.0, 2.0, 4.0], 1e-12);
+
+        let decreasing = beta_to_alpha(&[4.0, 2.0, 1.0], &Monotonicity::Decreasing);
+        assert_array1_close(&decreasing, &[4.0, 2.0_f64.ln(), 0.0], 1e-12);
+        let beta_roundtrip = alpha_to_beta(
+            decreasing.as_slice().expect("contiguous array"),
+            &Monotonicity::Decreasing,
+        );
+        assert_array1_close(&beta_roundtrip, &[4.0, 2.0, 1.0], 1e-12);
+
+        let projected = beta_to_alpha(&[3.0, 1.0, 2.0], &Monotonicity::Increasing);
+        assert_array1_close(&projected, &[2.0, ZERO_TOL.ln(), ZERO_TOL.ln()], 1e-12);
+    }
+
+    #[test]
+    fn test_compute_monotonic_jacobian_contracts() {
+        let identity = compute_monotonic_jacobian(&[5.0, 7.0, 9.0], &Monotonicity::None);
+        assert_array2_close(&identity, &Array2::eye(3), 1e-12);
+
+        let alpha = [5.0, 2.0_f64.ln(), 3.0_f64.ln()];
+        let increasing = compute_monotonic_jacobian(&alpha, &Monotonicity::Increasing);
+        let expected_increasing = array![[1.0, 0.0, 0.0], [1.0, 2.0, 0.0], [1.0, 2.0, 3.0]];
+        assert_array2_close(&increasing, &expected_increasing, 1e-12);
+
+        let decreasing = compute_monotonic_jacobian(&alpha, &Monotonicity::Decreasing);
+        let expected_decreasing = array![[1.0, 0.0, 0.0], [1.0, -2.0, 0.0], [1.0, -2.0, -3.0]];
+        assert_array2_close(&decreasing, &expected_decreasing, 1e-12);
+
+        let clamped = compute_monotonic_jacobian(&[0.0, 30.0], &Monotonicity::Increasing);
+        assert_relative_eq!(clamped[[1, 1]], 20.0_f64.exp(), max_relative = 1e-12);
+    }
+
+    #[test]
+    fn test_compute_x_tilde_inplace_matches_cumulative_jacobian_product() {
+        let x = array![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]];
+        let alpha = [0.0, 2.0_f64.ln(), 3.0_f64.ln()];
+
+        let mut copied = Array2::zeros((2, 3));
+        compute_x_tilde_inplace(
+            &x.view(),
+            &alpha,
+            &Monotonicity::None,
+            &mut copied.view_mut(),
+        );
+        assert_array2_close(&copied, &x, 1e-12);
+
+        let mut increasing = Array2::zeros((2, 3));
+        compute_x_tilde_inplace(
+            &x.view(),
+            &alpha,
+            &Monotonicity::Increasing,
+            &mut increasing.view_mut(),
+        );
+        let expected_increasing = array![[6.0, 10.0, 9.0], [15.0, 22.0, 18.0]];
+        assert_array2_close(&increasing, &expected_increasing, 1e-12);
+
+        let mut decreasing = Array2::zeros((2, 3));
+        compute_x_tilde_inplace(
+            &x.view(),
+            &alpha,
+            &Monotonicity::Decreasing,
+            &mut decreasing.view_mut(),
+        );
+        let expected_decreasing = array![[6.0, -10.0, -9.0], [15.0, -22.0, -18.0]];
+        assert_array2_close(&decreasing, &expected_decreasing, 1e-12);
+    }
+
+    #[test]
+    fn test_compute_s_tilde_matches_j_transpose_s_j() {
+        let penalty = array![[2.0, 1.0], [1.0, 3.0]];
+        let jacobian = array![[1.0, 0.0], [1.0, 2.0]];
+        let transformed = compute_s_tilde(&penalty, &jacobian);
+        let expected = array![[7.0, 8.0], [8.0, 12.0]];
+        assert_array2_close(&transformed, &expected, 1e-12);
+    }
+
+    #[test]
+    fn test_smooth_term_data_and_spec_monotonicity_contracts() {
+        let plain = SmoothTermData::new("plain".to_string(), Array2::ones((4, 3)));
+        assert!(!plain.is_monotonic());
+        assert_eq!(plain.k(), 3);
+        assert_eq!(plain.initial_lambda, 1.0);
+        assert_eq!(plain.penalty.shape(), &[3, 3]);
+
+        let decreasing = plain
+            .clone()
+            .with_lambda(0.25)
+            .with_monotonicity(Monotonicity::Decreasing);
+        assert!(decreasing.is_monotonic());
+        assert_eq!(decreasing.initial_lambda, 0.25);
+        assert_eq!(decreasing.monotonicity, Monotonicity::Decreasing);
+
+        let penalty = Array2::eye(2);
+        let unconstrained = SmoothTermSpec {
+            col_start: 1,
+            col_end: 3,
+            penalty: penalty.clone(),
+            monotonicity: Monotonicity::None,
+            initial_lambda: 1.0,
+        };
+        assert!(!unconstrained.is_monotonic());
+
+        let constrained = SmoothTermSpec {
+            monotonicity: Monotonicity::Increasing,
+            ..unconstrained
+        };
+        assert!(constrained.is_monotonic());
+    }
+
+    #[test]
+    fn test_invert_matrix_returns_inverse_or_none_for_singular_input() {
+        let invertible = array![[4.0, 7.0], [2.0, 6.0]];
+        let inverse = invert_matrix(&invertible).expect("matrix should be invertible");
+        let expected = array![[0.6, -0.7], [-0.2, 0.4]];
+        assert_array2_close(&inverse, &expected, 1e-12);
+
+        let singular = array![[1.0, 2.0], [2.0, 4.0]];
+        assert!(invert_matrix(&singular).is_none());
+    }
+
+    #[test]
+    fn test_assemble_smooth_result_from_specs_preserves_fields_and_penalty_metadata() {
+        let coefficients = array![0.5, 0.25, -0.1];
+        let mu = array![1.1, 1.9, 3.0];
+        let eta = array![1.0, 2.0, 3.1];
+        let y = array![1.0, 2.0, 3.0];
+        let prior_weights = array![1.0, 2.0, 1.0];
+        let final_weights = array![1.5, 2.5, 3.5];
+        let x = array![[1.0, 1.0, 0.0], [1.0, 0.0, 1.0], [1.0, 1.0, 1.0]];
+        let penalty = Array2::eye(2);
+        let lambdas = vec![0.5];
+        let offset = array![0.1, 0.2, 0.3];
+        let cov = array![[2.0, 0.1, 0.2], [0.1, 3.0, 0.3], [0.2, 0.3, 4.0],];
+
+        let result = assemble_smooth_result_from_specs(
+            coefficients.clone(),
+            mu.clone(),
+            eta.clone(),
+            4.0,
+            7,
+            true,
+            &final_weights,
+            x.view(),
+            &[(&penalty, 1, 3)],
+            &lambdas,
+            1,
+            "gaussian",
+            prior_weights.clone(),
+            &y,
+            Some(&offset),
+            Some(cov.clone()),
+            vec!["kept warning".to_string()],
+            true,
+            "converged".to_string(),
+        );
+
+        assert_array1_close(
+            &result.coefficients,
+            coefficients.as_slice().unwrap(),
+            1e-12,
+        );
+        assert_array1_close(&result.fitted_values, mu.as_slice().unwrap(), 1e-12);
+        assert_array1_close(&result.linear_predictor, eta.as_slice().unwrap(), 1e-12);
+        assert_abs_diff_eq!(result.deviance, 4.0, epsilon = 1e-12);
+        assert_eq!(result.iterations, 7);
+        assert!(result.converged);
+        assert_eq!(result.lambdas, lambdas);
+        assert_eq!(result.smooth_edfs.len(), 1);
+        assert_abs_diff_eq!(
+            result.total_edf,
+            1.0 + result.smooth_edfs[0],
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(
+            result.gcv,
+            gcv_score(result.deviance, y.len(), result.total_edf),
+            epsilon = 1e-12
+        );
+        assert_array2_close(&result.covariance_unscaled, &cov, 1e-12);
+        assert_eq!(result.family_name, "gaussian");
+        assert_array1_close(
+            &result.irls_weights,
+            final_weights.as_slice().unwrap(),
+            1e-12,
+        );
+        assert_array1_close(
+            &result.prior_weights,
+            prior_weights.as_slice().unwrap(),
+            1e-12,
+        );
+        assert_array2_close(&result.design_matrix, &x, 1e-12);
+        assert_array1_close(&result.y, y.as_slice().unwrap(), 1e-12);
+        assert_array1_close(
+            result.offset.as_ref().expect("offset should be cloned"),
+            offset.as_slice().unwrap(),
+            1e-12,
+        );
+        assert_eq!(result.warnings, vec!["kept warning"]);
+        assert!(result.step_halving_used);
+        assert_eq!(result.solver_status, "converged");
+
+        let smooth_penalty = result.penalty.as_smooth().expect("smooth penalty result");
+        assert_eq!(smooth_penalty.n_terms(), 1);
+        assert_eq!(smooth_penalty.lambdas, vec![0.5]);
+        assert_eq!(smooth_penalty.term_indices[0], 1..3);
+        assert_array2_close(&smooth_penalty.penalty_matrices[0], &penalty, 1e-12);
+    }
+
+    #[test]
+    fn test_assemble_smooth_result_falls_back_to_identity_covariance_for_singular_system() {
+        let coefficients = array![0.0, 0.0];
+        let mu = array![0.0, 0.0];
+        let eta = array![0.0, 0.0];
+        let y = array![0.0, 0.0];
+        let weights = array![1.0, 1.0];
+        let x = Array2::zeros((2, 2));
+        let penalty = Array2::zeros((2, 2));
+
+        let result = assemble_smooth_result_from_specs(
+            coefficients,
+            mu,
+            eta,
+            0.0,
+            0,
+            false,
+            &weights,
+            x.view(),
+            &[(&penalty, 0, 2)],
+            &[0.0],
+            0,
+            "gaussian",
+            weights.clone(),
+            &y,
+            None,
+            None,
+            Vec::new(),
+            false,
+            "max_iterations".to_string(),
+        );
+
+        assert_array2_close(&result.covariance_unscaled, &Array2::eye(2), 1e-12);
+        assert_eq!(result.offset, None);
+        assert_eq!(result.total_edf, 2.0);
     }
 
     // =========================================================================
@@ -1744,6 +2532,39 @@ mod tests {
         (x_full, vec![spec])
     }
 
+    fn make_full_matrix_with_monotonicity(
+        x_param: &Array2<f64>,
+        basis: &Array2<f64>,
+        monotonicity: Monotonicity,
+    ) -> (Array2<f64>, Vec<SmoothTermSpec>) {
+        let p_param = x_param.ncols();
+        let k = basis.ncols();
+        let x_full = ndarray::concatenate![ndarray::Axis(1), *x_param, *basis]
+            .as_standard_layout()
+            .to_owned();
+        let spec = SmoothTermSpec {
+            col_start: p_param,
+            col_end: p_param + k,
+            penalty: crate::splines::penalized::penalty_matrix(k, 2),
+            monotonicity,
+            initial_lambda: 1.0,
+        };
+        (x_full, vec![spec])
+    }
+
+    fn smooth_coefficients_are_monotone(result: &SmoothGLMResult, spec: &SmoothTermSpec) -> bool {
+        let coef = result
+            .coefficients
+            .as_slice()
+            .expect("contiguous coefficients");
+        let smooth = &coef[spec.col_start..spec.col_end];
+        match spec.monotonicity {
+            Monotonicity::Increasing => smooth.windows(2).all(|w| w[1] >= w[0] - 1e-10),
+            Monotonicity::Decreasing => smooth.windows(2).all(|w| w[1] <= w[0] + 1e-10),
+            Monotonicity::None => true,
+        }
+    }
+
     #[test]
     fn test_fit_smooth_glm_gaussian_converges() {
         let (y, x_param, x_vals) = gaussian_smooth_data(100);
@@ -1768,6 +2589,90 @@ mod tests {
         assert!(result.converged, "Gaussian smooth GLM should converge");
         assert!(result.deviance > 0.0);
         assert!(result.iterations > 0);
+    }
+
+    #[test]
+    fn test_fit_smooth_glm_monotonic_increasing_runs_nested_pirls_path() {
+        let n = 60;
+        let x_vals: Array1<f64> = (0..n).map(|i| i as f64 / (n - 1) as f64).collect();
+        let y: Array1<f64> = x_vals
+            .iter()
+            .map(|&x| 1.0 + 1.5 * x + 0.05 * (12.0 * x).sin())
+            .collect();
+        let x_param = Array2::from_shape_fn((n, 1), |(_, _)| 1.0);
+        let basis = is_basis(&x_vals, 6, 3, Some((0.0, 1.0)), true);
+        let (x_full, specs) =
+            make_full_matrix_with_monotonicity(&x_param, &basis, Monotonicity::Increasing);
+        let mut config = SmoothGLMConfig::default();
+        config.irls_config.max_iterations = 25;
+        config.lambda_tol = 1e-3;
+
+        let result = fit_smooth_glm_full_matrix(
+            &y,
+            x_full.view(),
+            &specs,
+            &GaussianFamily,
+            &IdentityLink,
+            &config,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("monotonic increasing fit should produce a finite result");
+
+        assert!(result.iterations > 0);
+        assert!(result.deviance.is_finite());
+        assert!(result.coefficients.iter().all(|v| v.is_finite()));
+        assert_eq!(result.lambdas.len(), 1);
+        assert_eq!(result.smooth_edfs.len(), 1);
+        assert!(result.lambdas[0].is_finite() && result.lambdas[0] > 0.0);
+        assert!(
+            smooth_coefficients_are_monotone(&result, &specs[0]),
+            "increasing monotonic reparameterization must return ordered smooth coefficients"
+        );
+    }
+
+    #[test]
+    fn test_fit_smooth_glm_monotonic_decreasing_runs_nested_pirls_path() {
+        let n = 60;
+        let x_vals: Array1<f64> = (0..n).map(|i| i as f64 / (n - 1) as f64).collect();
+        let y: Array1<f64> = x_vals
+            .iter()
+            .map(|&x| 3.0 - 1.25 * x + 0.03 * (10.0 * x).cos())
+            .collect();
+        let x_param = Array2::from_shape_fn((n, 1), |(_, _)| 1.0);
+        let basis = is_basis(&x_vals, 6, 3, Some((0.0, 1.0)), false);
+        let (x_full, specs) =
+            make_full_matrix_with_monotonicity(&x_param, &basis, Monotonicity::Decreasing);
+        let mut config = SmoothGLMConfig::default();
+        config.irls_config.max_iterations = 25;
+        config.lambda_tol = 1e-3;
+
+        let result = fit_smooth_glm_full_matrix(
+            &y,
+            x_full.view(),
+            &specs,
+            &GaussianFamily,
+            &IdentityLink,
+            &config,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("monotonic decreasing fit should produce a finite result");
+
+        assert!(result.iterations > 0);
+        assert!(result.deviance.is_finite());
+        assert!(result.coefficients.iter().all(|v| v.is_finite()));
+        assert_eq!(result.lambdas.len(), 1);
+        assert_eq!(result.smooth_edfs.len(), 1);
+        assert!(result.lambdas[0].is_finite() && result.lambdas[0] > 0.0);
+        assert!(
+            smooth_coefficients_are_monotone(&result, &specs[0]),
+            "decreasing monotonic reparameterization must return ordered smooth coefficients"
+        );
     }
 
     #[test]
@@ -1983,6 +2888,279 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[test]
+    fn test_fit_smooth_glm_rejects_invalid_smooth_specs() {
+        let y = array![1.0, 2.0, 3.0];
+        let x_full = array![[1.0, 0.0], [1.0, 1.0], [1.0, 2.0]];
+        let config = SmoothGLMConfig::default();
+
+        let invalid_range = vec![SmoothTermSpec {
+            col_start: 2,
+            col_end: 3,
+            penalty: Array2::eye(1),
+            monotonicity: Monotonicity::None,
+            initial_lambda: 1.0,
+        }];
+        let err = fit_smooth_glm_full_matrix(
+            &y,
+            x_full.view(),
+            &invalid_range,
+            &GaussianFamily,
+            &IdentityLink,
+            &config,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect_err("column ranges outside the design matrix must be rejected");
+        assert!(err.to_string().contains("invalid column range"));
+
+        let bad_penalty_shape = vec![SmoothTermSpec {
+            col_start: 1,
+            col_end: 2,
+            penalty: Array2::eye(2),
+            monotonicity: Monotonicity::None,
+            initial_lambda: 1.0,
+        }];
+        let err = fit_smooth_glm_full_matrix(
+            &y,
+            x_full.view(),
+            &bad_penalty_shape,
+            &GaussianFamily,
+            &IdentityLink,
+            &config,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect_err("penalty shape must match the smooth column range");
+        assert!(err.to_string().contains("penalty shape"));
+
+        let bad_penalty_cols_only = vec![SmoothTermSpec {
+            col_start: 1,
+            col_end: 2,
+            penalty: Array2::zeros((1, 2)),
+            monotonicity: Monotonicity::None,
+            initial_lambda: 1.0,
+        }];
+        let err = fit_smooth_glm_full_matrix(
+            &y,
+            x_full.view(),
+            &bad_penalty_cols_only,
+            &GaussianFamily,
+            &IdentityLink,
+            &config,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect_err("one-axis penalty shape mismatch must be rejected");
+        assert!(err.to_string().contains("penalty shape"));
+    }
+
+    #[test]
+    fn test_fit_smooth_glm_applies_nonnegative_and_nonpositive_constraints() {
+        let n = 30;
+        let x_vals: Array1<f64> = (0..n).map(|i| i as f64 / (n - 1) as f64).collect();
+        let y: Array1<f64> = x_vals.iter().map(|&x| 5.0 + 2.0 * x).collect();
+        let x_full = ndarray::concatenate![
+            ndarray::Axis(1),
+            Array2::from_shape_fn((n, 1), |(_, _)| 1.0),
+            x_vals.clone().insert_axis(ndarray::Axis(1))
+        ]
+        .as_standard_layout()
+        .to_owned();
+        let specs = vec![SmoothTermSpec {
+            col_start: 1,
+            col_end: 2,
+            penalty: Array2::zeros((1, 1)),
+            monotonicity: Monotonicity::None,
+            initial_lambda: 1.0,
+        }];
+        let mut config = SmoothGLMConfig::default();
+        config.irls_config.max_iterations = 20;
+        let nonneg = vec![1usize];
+        let nonpos = vec![0usize];
+
+        let result = fit_smooth_glm_full_matrix(
+            &y,
+            x_full.view(),
+            &specs,
+            &GaussianFamily,
+            &IdentityLink,
+            &config,
+            None,
+            None,
+            Some(&nonneg),
+            Some(&nonpos),
+        )
+        .expect("sign-constrained smooth fit should remain finite");
+
+        assert!(result.coefficients[1] >= -1e-10);
+        assert!(
+            result.coefficients[0] <= 1e-10,
+            "nonpositive intercept constraint leaked: coefficients={:?}",
+            result.coefficients
+        );
+        assert!(result.coefficients.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn test_fit_smooth_glm_sign_constraints_clip_negative_smooth_projection() {
+        let n = 30;
+        let x_vals: Array1<f64> = (0..n).map(|i| i as f64 / (n - 1) as f64).collect();
+        let y: Array1<f64> = x_vals.iter().map(|&x| 5.0 - 2.0 * x).collect();
+        let x_full = ndarray::concatenate![
+            ndarray::Axis(1),
+            Array2::from_shape_fn((n, 1), |(_, _)| 1.0),
+            x_vals.clone().insert_axis(ndarray::Axis(1))
+        ]
+        .as_standard_layout()
+        .to_owned();
+        let specs = vec![SmoothTermSpec {
+            col_start: 1,
+            col_end: 2,
+            penalty: Array2::zeros((1, 1)),
+            monotonicity: Monotonicity::None,
+            initial_lambda: 1.0,
+        }];
+        let mut config = SmoothGLMConfig::default();
+        config.irls_config.max_iterations = 3;
+        let nonneg = vec![1usize];
+        let nonpos = vec![0usize];
+
+        let result = fit_smooth_glm_full_matrix(
+            &y,
+            x_full.view(),
+            &specs,
+            &GaussianFamily,
+            &IdentityLink,
+            &config,
+            None,
+            None,
+            Some(&nonneg),
+            Some(&nonpos),
+        )
+        .expect("sign-constrained decreasing fit should remain finite");
+
+        assert!(result.coefficients[1] >= -1e-10);
+        assert!(
+            result.coefficients[0] <= 1e-10,
+            "nonpositive intercept constraint leaked: coefficients={:?}",
+            result.coefficients
+        );
+        assert!(result.coefficients.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn test_fit_smooth_glm_mixed_monotonic_and_unconstrained_terms() {
+        let n = 48;
+        let x1: Array1<f64> = (0..n).map(|i| i as f64 / (n - 1) as f64).collect();
+        let x2: Array1<f64> = (0..n)
+            .map(|i| 2.0 * std::f64::consts::PI * i as f64 / (n - 1) as f64)
+            .collect();
+        let y: Array1<f64> = x1
+            .iter()
+            .zip(x2.iter())
+            .map(|(&a, &b)| 1.0 + 1.2 * a + 0.25 * b.sin())
+            .collect();
+        let x_param = Array2::from_shape_fn((n, 1), |(_, _)| 1.0);
+        let monotone_basis = is_basis(&x1, 6, 3, Some((0.0, 1.0)), true);
+        let free_basis = bs_basis(&x2, 6, 3, None, false);
+        let k_mono = monotone_basis.ncols();
+        let k_free = free_basis.ncols();
+        let x_full = ndarray::concatenate![ndarray::Axis(1), x_param, monotone_basis, free_basis]
+            .as_standard_layout()
+            .to_owned();
+        let specs = vec![
+            SmoothTermSpec {
+                col_start: 1,
+                col_end: 1 + k_mono,
+                penalty: crate::splines::penalized::penalty_matrix(k_mono, 2),
+                monotonicity: Monotonicity::Increasing,
+                initial_lambda: 1.0,
+            },
+            SmoothTermSpec {
+                col_start: 1 + k_mono,
+                col_end: 1 + k_mono + k_free,
+                penalty: crate::splines::penalized::penalty_matrix(k_free, 2),
+                monotonicity: Monotonicity::None,
+                initial_lambda: 0.5,
+            },
+        ];
+        let mut config = SmoothGLMConfig::default();
+        config.irls_config.max_iterations = 12;
+        config.lambda_tol = 1e-3;
+
+        let result = fit_smooth_glm_full_matrix(
+            &y,
+            x_full.view(),
+            &specs,
+            &GaussianFamily,
+            &IdentityLink,
+            &config,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("mixed monotonic/unconstrained smooth fit should remain finite");
+
+        assert!(result.iterations > 0);
+        assert!(result.deviance.is_finite());
+        assert!(result.coefficients.iter().all(|v| v.is_finite()));
+        assert_eq!(result.lambdas.len(), 2);
+        assert_eq!(result.smooth_edfs.len(), 2);
+        assert!(
+            smooth_coefficients_are_monotone(&result, &specs[0]),
+            "only the monotonic term should be projected into ordered coefficients"
+        );
+    }
+
+    #[test]
+    fn test_fit_smooth_glm_monotonic_alpha_blending_reapplies_sign_constraints() {
+        let n = 28;
+        let x_vals: Array1<f64> = (0..n).map(|i| i as f64 / (n - 1) as f64).collect();
+        let y: Array1<f64> = x_vals.iter().map(|&x| 1.0 + x).collect();
+        let x_param = Array2::from_shape_fn((n, 1), |(_, _)| 1.0);
+        let basis = is_basis(&x_vals, 6, 3, Some((0.0, 1.0)), true);
+        let (x_full, specs) =
+            make_full_matrix_with_monotonicity(&x_param, &basis, Monotonicity::Increasing);
+        let nonneg: Vec<usize> = (specs[0].col_start..specs[0].col_end).collect();
+        let nonpos = vec![0usize];
+        let mut config = SmoothGLMConfig::default();
+        config.irls_config.max_iterations = 3;
+        config.lambda_tol = 1e-3;
+
+        let result = fit_smooth_glm_full_matrix(
+            &y,
+            x_full.view(),
+            &specs,
+            &GaussianFamily,
+            &IdentityLink,
+            &config,
+            None,
+            None,
+            Some(&nonneg),
+            Some(&nonpos),
+        )
+        .expect("monotonic sign constraints should retain a finite blended iterate");
+
+        assert!(result.deviance.is_finite());
+        assert!(
+            result.coefficients[0] <= 1e-10,
+            "nonpositive intercept constraint leaked in monotonic path: coefficients={:?}",
+            result.coefficients
+        );
+        for idx in nonneg {
+            assert!(result.coefficients[idx] >= -1e-10);
+        }
+        assert!(smooth_coefficients_are_monotone(&result, &specs[0]));
+    }
+
     // =========================================================================
     // Multi-term tests
     // =========================================================================
@@ -2107,6 +3285,209 @@ mod tests {
         assert!(result.lambdas.is_empty());
         assert!(result.smooth_edfs.is_empty());
         assert_eq!(result.coefficients.len(), 1); // intercept only
+        assert!(result.offset.is_none());
+    }
+
+    #[test]
+    fn test_fit_smooth_glm_no_smooth_terms_preserves_nonzero_offset() {
+        let n = 24;
+        let offset = Array1::from_vec((0..n).map(|i| 0.05 * i as f64).collect());
+        let y = offset.mapv(|o| 2.0 + o);
+        let x_param = Array2::from_shape_fn((n, 1), |(_, _)| 1.0);
+        let config = SmoothGLMConfig::default();
+
+        let result = fit_smooth_glm_full_matrix(
+            &y,
+            x_param.view(),
+            &[],
+            &GaussianFamily,
+            &IdentityLink,
+            &config,
+            Some(&offset),
+            None,
+            None,
+            None,
+        )
+        .expect("standard GLM fallback should preserve a supplied offset");
+
+        assert!(result.converged);
+        assert!(result.lambdas.is_empty());
+        assert!(result.smooth_edfs.is_empty());
+        assert_array1_close(
+            result
+                .offset
+                .as_ref()
+                .expect("nonzero offset should be retained"),
+            offset.as_slice().expect("contiguous offset"),
+            1e-12,
+        );
+    }
+
+    #[test]
+    fn test_fit_smooth_glm_no_smooth_terms_propagates_glm_validation_errors() {
+        let y = array![1.0, 2.0, 3.0];
+        let x_param = Array2::from_shape_fn((3, 1), |(_, _)| 1.0);
+        let short_weights = array![1.0, 1.0];
+        let config = SmoothGLMConfig::default();
+
+        let err = fit_smooth_glm_full_matrix(
+            &y,
+            x_param.view(),
+            &[],
+            &GaussianFamily,
+            &IdentityLink,
+            &config,
+            None,
+            Some(&short_weights),
+            None,
+            None,
+        )
+        .expect_err("empty smooth-spec path must propagate standard GLM validation failures");
+
+        assert!(
+            err.to_string().contains("weights"),
+            "error should name the delegated GLM validation failure: {err}"
+        );
+    }
+
+    #[test]
+    fn test_fit_smooth_glm_zero_iterations_reports_max_iterations() {
+        let (y, x_param, x_vals) = gaussian_smooth_data(30);
+        let basis = bs_basis(&x_vals, 6, 3, None, false);
+        let (x_full, specs) = make_full_matrix(&x_param, &basis);
+        let mut config = SmoothGLMConfig::default();
+        config.irls_config.max_iterations = 0;
+
+        let result = fit_smooth_glm_full_matrix(
+            &y,
+            x_full.view(),
+            &specs,
+            &GaussianFamily,
+            &IdentityLink,
+            &config,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("zero-iteration smooth fit should return the initialized state");
+
+        assert_eq!(result.iterations, 0);
+        assert!(!result.converged);
+        assert_eq!(result.solver_status, "max_iterations");
+        assert!(result
+            .warnings
+            .iter()
+            .any(|w| w.contains("did not converge")));
+    }
+
+    #[test]
+    fn test_fit_smooth_glm_zero_deviance_uses_absolute_convergence_change() {
+        let n = 12;
+        let y = Array1::zeros(n);
+        let x_vals: Array1<f64> = (0..n).map(|i| i as f64 / (n - 1) as f64).collect();
+        let x_full = ndarray::concatenate![
+            ndarray::Axis(1),
+            Array2::from_shape_fn((n, 1), |(_, _)| 1.0),
+            x_vals.insert_axis(ndarray::Axis(1))
+        ]
+        .as_standard_layout()
+        .to_owned();
+        let specs = vec![SmoothTermSpec {
+            col_start: 1,
+            col_end: 2,
+            penalty: Array2::eye(1),
+            monotonicity: Monotonicity::None,
+            initial_lambda: 1.0,
+        }];
+        let mut config = SmoothGLMConfig::default();
+        config.irls_config.max_iterations = 1;
+
+        let result = fit_smooth_glm_full_matrix(
+            &y,
+            x_full.view(),
+            &specs,
+            &GaussianFamily,
+            &IdentityLink,
+            &config,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("zero-deviance Gaussian fit should be well-defined");
+
+        assert!(result.converged);
+        assert_eq!(result.solver_status, "converged");
+        assert_abs_diff_eq!(result.deviance, 0.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn test_fit_smooth_glm_failed_initial_projection_warns_and_returns_initialized_state() {
+        let y = array![1.0, 2.0, 3.0, 4.0];
+        let x_full = Array2::zeros((4, 2));
+        let specs = vec![SmoothTermSpec {
+            col_start: 1,
+            col_end: 2,
+            penalty: Array2::eye(1),
+            monotonicity: Monotonicity::None,
+            initial_lambda: 1.0,
+        }];
+        let mut config = SmoothGLMConfig::default();
+        config.irls_config.max_iterations = 0;
+
+        let result = fit_smooth_glm_full_matrix(
+            &y,
+            x_full.view(),
+            &specs,
+            &GaussianFamily,
+            &IdentityLink,
+            &config,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("projection failure should degrade to the zero-coefficient initialization");
+
+        assert_eq!(result.iterations, 0);
+        assert_eq!(result.solver_status, "max_iterations");
+        assert!(result.coefficients.iter().all(|&c| c == 0.0));
+        assert!(result
+            .warnings
+            .iter()
+            .any(|w| w.contains("Initial smooth coefficient projection failed")));
+    }
+
+    #[test]
+    fn test_fit_smooth_glm_zero_initial_lambda_enters_absolute_lambda_change_path() {
+        let (y, x_param, x_vals) = gaussian_smooth_data(40);
+        let basis = bs_basis(&x_vals, 6, 3, None, false);
+        let (x_full, mut specs) = make_full_matrix(&x_param, &basis);
+        specs[0].initial_lambda = 0.0;
+        let mut config = SmoothGLMConfig::default();
+        config.irls_config.max_iterations = 3;
+        config.lambda_tol = 1e-3;
+
+        let result = fit_smooth_glm_full_matrix(
+            &y,
+            x_full.view(),
+            &specs,
+            &GaussianFamily,
+            &IdentityLink,
+            &config,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("zero initial lambda should be optimized onto a finite path");
+
+        assert_eq!(result.lambdas.len(), 1);
+        assert!(result.lambdas[0].is_finite());
+        assert!(result.lambdas[0] >= 0.0);
+        assert!(result.coefficients.iter().all(|c| c.is_finite()));
+        assert!(result.deviance.is_finite());
     }
 
     // =========================================================================
@@ -2177,6 +3558,34 @@ mod tests {
                 .all(|w| w.is_finite() && *w > 0.0),
             "retained irls_weights must be finite and positive"
         );
+    }
+
+    #[test]
+    fn test_smooth_step_halving_reapplies_nonnegative_constraints_to_blended_steps() {
+        let (y, x_full, specs) = poisson_overshoot_fixture();
+        let config = SmoothGLMConfig::default();
+        let all_indices: Vec<usize> = (0..x_full.ncols()).collect();
+
+        let result = fit_smooth_glm_full_matrix(
+            &y,
+            x_full.view(),
+            &specs,
+            &PoissonFamily,
+            &LogLink,
+            &config,
+            None,
+            None,
+            Some(&all_indices),
+            None,
+        )
+        .expect("sign-constrained step-halving fixture should retain a finite iterate");
+
+        assert!(result.step_halving_used);
+        assert!(result.coefficients.iter().all(|c| *c >= -1e-10));
+        assert!(result
+            .fitted_values
+            .iter()
+            .all(|mu| mu.is_finite() && *mu > 0.0));
     }
 
     #[test]

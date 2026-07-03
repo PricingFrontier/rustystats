@@ -292,10 +292,6 @@ fn compute_interaction_strength(
             (n_acc + c.count, s_acc + c.sum, ss_acc + c.sum_sq)
         });
 
-    if n_valid < min_cell_count * 4 {
-        return None;
-    }
-
     let overall_mean = overall_sum / n_valid as f64;
 
     // SS_total = Σ r² − n·μ² (algebraically equivalent to Σ(r - μ)²).
@@ -421,14 +417,10 @@ fn incomplete_beta_approx(x: f64, a: f64, b: f64) -> f64 {
     }
 
     // Simple continued fraction approximation
-    let bt = if x == 0.0 || x == 1.0 {
-        0.0
-    } else {
-        (ln_gamma_approx(a + b) - ln_gamma_approx(a) - ln_gamma_approx(b)
-            + a * x.ln()
-            + b * (1.0 - x).ln())
-        .exp()
-    };
+    let bt = (ln_gamma_approx(a + b) - ln_gamma_approx(a) - ln_gamma_approx(b)
+        + a * x.ln()
+        + b * (1.0 - x).ln())
+    .exp();
 
     if x < (a + 1.0) / (a + b + 2.0) {
         bt * betacf(x, a, b) / a
@@ -581,6 +573,170 @@ mod tests {
         // Same categories should have same bin
         assert_eq!(bins[0], bins[2]); // Both "A"
         assert_eq!(bins[1], bins[4]); // Both "B"
+    }
+
+    #[test]
+    fn test_factor_metadata_and_detection_short_circuits() {
+        assert!(FactorData::Continuous(Vec::new()).is_empty());
+        assert!(FactorData::Categorical(Vec::new()).is_empty());
+        assert_eq!(FactorData::Continuous(vec![1.0, 2.0]).len(), 2);
+        assert_eq!(
+            FactorData::Categorical(vec!["a".to_string(), "b".to_string()]).len(),
+            2
+        );
+
+        let mut config = InteractionConfig {
+            min_residual_correlation: 0.0,
+            min_cell_count: 30,
+            ..InteractionConfig::default()
+        };
+
+        assert!(
+            detect_interactions(&HashMap::new(), &Array1::from_vec(vec![1.0]), &config).is_empty()
+        );
+
+        let mut one_factor = HashMap::new();
+        one_factor.insert("x".to_string(), FactorData::Continuous(vec![1.0, 2.0, 3.0]));
+        assert!(
+            detect_interactions(&one_factor, &Array1::from_vec(Vec::new()), &config).is_empty()
+        );
+        assert!(
+            detect_interactions(&one_factor, &Array1::from_vec(vec![1.0, 2.0, 3.0]), &config)
+                .is_empty()
+        );
+
+        config.min_residual_correlation = 2.0;
+        let mut filtered = HashMap::new();
+        filtered.insert(
+            "x".to_string(),
+            FactorData::Continuous((0..120).map(|i| i as f64).collect()),
+        );
+        filtered.insert(
+            "y".to_string(),
+            FactorData::Continuous((0..120).map(|i| (i % 5) as f64).collect()),
+        );
+        assert!(
+            detect_interactions(
+                &filtered,
+                &Array1::from_vec((0..120).map(|i| i as f64).collect()),
+                &config,
+            )
+            .is_empty(),
+            "thresholds above any possible association should reject all factors"
+        );
+
+        config.min_residual_correlation = 0.0;
+        let mut too_few_cells = HashMap::new();
+        too_few_cells.insert("x".to_string(), FactorData::Continuous(vec![1.0; 120]));
+        too_few_cells.insert("y".to_string(), FactorData::Continuous(vec![2.0; 120]));
+        assert!(
+            detect_interactions(
+                &too_few_cells,
+                &Array1::from_vec((0..120).map(|i| i as f64).collect()),
+                &config,
+            )
+            .is_empty(),
+            "eligible factor pairs with too few cells should produce no candidate"
+        );
+    }
+
+    #[test]
+    fn test_association_helpers_handle_tiny_degenerate_and_invalid_inputs() {
+        let residuals = Array1::from_vec(vec![1.0, 2.0, 3.0]);
+
+        assert_eq!(compute_correlation_continuous(&[42.0], &residuals), 0.0);
+        assert_eq!(
+            compute_correlation_continuous(&[f64::NAN, f64::INFINITY, 1.0], &residuals),
+            0.0
+        );
+        assert_eq!(
+            compute_correlation_continuous(&[2.0, 2.0, 2.0], &residuals),
+            0.0
+        );
+        assert_eq!(
+            compute_correlation_continuous(
+                &[1.0, 2.0, 3.0],
+                &Array1::from_vec(vec![5.0, 5.0, 5.0])
+            ),
+            0.0
+        );
+        assert!(compute_correlation_continuous(&[1.0, 2.0, 3.0], &residuals) > 0.99);
+
+        assert_eq!(
+            compute_eta_squared(&["a".to_string()], &Array1::from_vec(vec![1.0])),
+            0.0
+        );
+        assert_eq!(
+            compute_eta_squared(
+                &["a".to_string(), "b".to_string()],
+                &Array1::from_vec(vec![5.0, 5.0])
+            ),
+            0.0
+        );
+        assert!(
+            compute_eta_squared(
+                &[
+                    "a".to_string(),
+                    "a".to_string(),
+                    "b".to_string(),
+                    "b".to_string(),
+                ],
+                &Array1::from_vec(vec![1.0, 1.2, 4.8, 5.0])
+            ) > 0.95
+        );
+    }
+
+    #[test]
+    fn test_discretize_continuous_invalid_value_contracts() {
+        let all_invalid = FactorData::Continuous(vec![f64::NAN, f64::INFINITY, f64::NEG_INFINITY]);
+        assert_eq!(discretize_factor(&all_invalid, 3), vec![0, 0, 0]);
+
+        let mixed = FactorData::Continuous(vec![1.0, f64::NAN, 2.0, f64::INFINITY, 3.0]);
+        let bins = discretize_factor(&mixed, 3);
+        assert_eq!(bins.len(), 5);
+        assert_eq!(bins[1], 3);
+        assert_eq!(bins[3], 3);
+        assert!(bins[0] <= bins[2]);
+        assert!(bins[2] <= bins[4]);
+    }
+
+    #[test]
+    fn test_interaction_with_zero_residual_degrees_of_freedom_is_safe() {
+        let f1 = FactorData::Continuous(vec![0.0, 0.0, 1.0, 1.0]);
+        let f2 = FactorData::Continuous(vec![0.0, 1.0, 0.0, 1.0]);
+        let residuals = Array1::from_vec(vec![1.0, 2.0, 3.0, 5.0]);
+
+        let candidate = compute_interaction_strength("f1", &f1, "f2", &f2, &residuals, 0)
+            .expect("four one-row cells are accepted when min_cell_count is zero");
+        assert_eq!(candidate.n_cells, 4);
+        assert_eq!(candidate.pvalue, 1.0);
+        assert!(candidate.interaction_strength.is_finite());
+    }
+
+    #[test]
+    fn test_f_distribution_helpers_cover_boundary_and_branch_contracts() {
+        assert_eq!(f_test_pvalue(0.0, 1, 1), 1.0);
+        assert_eq!(f_test_pvalue(-1.0, 1, 1), 1.0);
+        assert_eq!(f_test_pvalue(1.0, 0, 1), 1.0);
+        assert_eq!(f_test_pvalue(1.0, 1, 0), 1.0);
+        let pvalue = f_test_pvalue(2.5, 3, 20);
+        assert!((0.0..=1.0).contains(&pvalue));
+
+        assert_eq!(incomplete_beta_approx(-0.25, 2.0, 5.0), 0.0);
+        assert_eq!(incomplete_beta_approx(0.0, 2.0, 5.0), 0.0);
+        assert_eq!(incomplete_beta_approx(1.0, 2.0, 5.0), 1.0);
+        assert_eq!(incomplete_beta_approx(1.25, 2.0, 5.0), 1.0);
+        let lower_branch = incomplete_beta_approx(0.2, 2.0, 5.0);
+        let upper_branch = incomplete_beta_approx(0.8, 2.0, 5.0);
+        assert!((0.0..=1.0).contains(&lower_branch));
+        assert!((0.0..=1.0).contains(&upper_branch));
+        assert!(lower_branch < upper_branch);
+
+        let continued_fraction = betacf(0.523_809_523_809_523_8, 0.1, 2.0);
+        assert!(continued_fraction.is_finite());
+        assert!(ln_gamma_approx(0.0).is_infinite());
+        assert!(ln_gamma_approx(-1.0).is_infinite());
+        assert!(ln_gamma_approx(2.5).is_finite());
     }
 
     // =========================================================================
@@ -1132,11 +1288,19 @@ mod tests {
         let elapsed = start.elapsed();
 
         assert!(candidate.is_some(), "expected a candidate for n=100k");
+        let max_elapsed = if cfg!(coverage) {
+            // Coverage instrumentation adds enough overhead to make a hard 1s
+            // wall-clock gate flaky on otherwise healthy runs.
+            std::time::Duration::from_secs(5)
+        } else {
+            std::time::Duration::from_secs(1)
+        };
         assert!(
-            elapsed < std::time::Duration::from_secs(1),
-            "compute_interaction_strength took {:?} for n={}, expected < 1s",
+            elapsed < max_elapsed,
+            "compute_interaction_strength took {:?} for n={}, expected < {:?}",
             elapsed,
             n,
+            max_elapsed,
         );
     }
 }

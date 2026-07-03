@@ -293,7 +293,6 @@ impl MultinomialParameterLayout {
 
     fn is_shared_intercept(&self, idx: usize) -> bool {
         self.fit_intercept
-            && self.n_shared > 0
             && idx < self.shared_len().unwrap_or(0)
             && idx.is_multiple_of(self.n_shared)
     }
@@ -528,7 +527,7 @@ fn expand_smooth_penalty(
         ));
     }
     for row in 0..width {
-        for col in (row + 1)..width {
+        for col in 0..row {
             if (smooth.penalty[[row, col]] - smooth.penalty[[col, row]]).abs() > 1e-10 {
                 return Err(RustyStatsError::InvalidValue(
                     "smooth penalty matrix must be symmetric".to_string(),
@@ -640,6 +639,87 @@ pub fn fit_multinomial_with_alternatives(
     )
 }
 
+fn should_standardize_shared_inputs(
+    config: &MultinomialConfig,
+    standardization: Option<&Standardization>,
+) -> bool {
+    config.alpha > 0.0 && config.standardize && standardization.is_some()
+}
+
+fn parameter_l2_distance(candidate: &Array1<f64>, current: &Array1<f64>) -> f64 {
+    candidate
+        .iter()
+        .zip(current.iter())
+        .map(|(candidate_value, current_value)| {
+            let delta = candidate_value - current_value;
+            delta * delta
+        })
+        .sum::<f64>()
+        .sqrt()
+}
+
+fn interpolate_parameters(
+    current: &Array1<f64>,
+    target: &Array1<f64>,
+    step_fraction: f64,
+) -> Array1<f64> {
+    current
+        .iter()
+        .zip(target.iter())
+        .map(|(current_value, target_value)| {
+            current_value + step_fraction * (target_value - current_value)
+        })
+        .collect::<Array1<f64>>()
+}
+
+fn line_search_accepts(candidate_objective: f64, current_objective: f64, tolerance: f64) -> bool {
+    candidate_objective.is_finite() && candidate_objective <= current_objective + tolerance * 1e-3
+}
+
+fn next_half_step_fraction(step_fraction: f64) -> f64 {
+    step_fraction * 0.5
+}
+
+fn next_iteration_count(iter: usize) -> usize {
+    iter + 1
+}
+
+fn coefficient_l2_norm(theta: &Array1<f64>) -> f64 {
+    theta.iter().map(|value| value * value).sum::<f64>().sqrt()
+}
+
+fn coefficient_norm_is_extreme(coefficient_norm: f64) -> bool {
+    coefficient_norm > MAX_COEFFICIENT_NORM
+}
+
+fn relative_objective_improvement(previous_objective: f64, new_objective: f64) -> f64 {
+    (previous_objective - new_objective).abs() / (1.0 + previous_objective.abs())
+}
+
+fn scaled_newton_step_norm(step_fraction: f64, step_norm: f64, coefficient_norm: f64) -> f64 {
+    step_fraction * step_norm / (1.0 + coefficient_norm)
+}
+
+fn convergence_recheck_needed(
+    relative_improvement: f64,
+    scaled_step_norm: f64,
+    tolerance: f64,
+) -> bool {
+    relative_improvement <= tolerance || scaled_step_norm <= tolerance
+}
+
+fn kkt_converged(optimality: f64, tolerance: f64) -> bool {
+    optimality <= tolerance
+}
+
+fn should_emit_max_iteration_warning(converged: bool, solver_status: &str) -> bool {
+    !converged && solver_status == "max_iterations"
+}
+
+fn multinomial_deviance(log_likelihood: f64) -> f64 {
+    -2.0 * log_likelihood
+}
+
 #[allow(clippy::too_many_arguments)]
 fn fit_multinomial_internal(
     y_codes: &Array1<usize>,
@@ -687,7 +767,7 @@ fn fit_multinomial_internal(
     )?;
     optimization_extensions.validate(layout.len()?)?;
 
-    let use_standardization = config.alpha > 0.0 && config.standardize && standardization.is_some();
+    let use_standardization = should_standardize_shared_inputs(config, standardization);
     let x_work = if use_standardization {
         standardization
             .expect("checked is_some")
@@ -745,16 +825,7 @@ fn fit_multinomial_internal(
 
         let proposal =
             solve_newton_proposal(&theta, &evaluation, &optimization_extensions, &mut warnings)?;
-        let step_norm = proposal
-            .target
-            .iter()
-            .zip(theta.iter())
-            .map(|(candidate, current)| {
-                let delta = candidate - current;
-                delta * delta
-            })
-            .sum::<f64>()
-            .sqrt();
+        let step_norm = parameter_l2_distance(&proposal.target, &theta);
         if !step_norm.is_finite() {
             return Err(RustyStatsError::NumericalError(
                 "multinomial Newton step produced a non-finite norm".to_string(),
@@ -767,11 +838,7 @@ fn fit_multinomial_internal(
         let mut accepted_objective = current_objective;
 
         for _half_step in 0..=MAX_HALF_STEPS {
-            let candidate = theta
-                .iter()
-                .zip(proposal.target.iter())
-                .map(|(current, target)| current + step_fraction * (target - current))
-                .collect::<Array1<f64>>();
+            let candidate = interpolate_parameters(&theta, &proposal.target, step_fraction);
             let candidate = apply_bound_projection(candidate, &optimization_extensions);
             let candidate_objective = penalized_objective(
                 &candidate,
@@ -784,15 +851,13 @@ fn fit_multinomial_internal(
                 &optimization_extensions.quadratic_penalties,
             )?;
 
-            if candidate_objective.is_finite()
-                && candidate_objective <= current_objective + config.tolerance * 1e-3
-            {
+            if line_search_accepts(candidate_objective, current_objective, config.tolerance) {
                 accepted = true;
                 accepted_theta = candidate;
                 accepted_objective = candidate_objective;
                 break;
             }
-            step_fraction *= 0.5;
+            step_fraction = next_half_step_fraction(step_fraction);
         }
 
         if !accepted {
@@ -808,10 +873,10 @@ fn fit_multinomial_internal(
         let previous_objective = current_objective;
         let new_objective = accepted_objective;
         theta = accepted_theta;
-        iterations = iter + 1;
+        iterations = next_iteration_count(iter);
 
-        let coefficient_norm = theta.iter().map(|v| v * v).sum::<f64>().sqrt();
-        if coefficient_norm > MAX_COEFFICIENT_NORM {
+        let coefficient_norm = coefficient_l2_norm(&theta);
+        if coefficient_norm_is_extreme(coefficient_norm) {
             warnings.push(
                 "multinomial coefficient norm is extremely large; possible separation. \
                  Try ridge regularization."
@@ -820,9 +885,9 @@ fn fit_multinomial_internal(
         }
 
         let relative_improvement =
-            (previous_objective - new_objective).abs() / (1.0 + previous_objective.abs());
-        let scaled_step_norm = step_fraction * step_norm / (1.0 + coefficient_norm);
-        if relative_improvement <= config.tolerance || scaled_step_norm <= config.tolerance {
+            relative_objective_improvement(previous_objective, new_objective);
+        let scaled_step_norm = scaled_newton_step_norm(step_fraction, step_norm, coefficient_norm);
+        if convergence_recheck_needed(relative_improvement, scaled_step_norm, config.tolerance) {
             // Gradient-only recheck: check_kkt consumes only the gradient, so avoid
             // rebuilding the full Hessian that evaluate(...) would discard here.
             let recheck_gradient = evaluate_gradient(
@@ -840,7 +905,7 @@ fn fit_multinomial_internal(
                 &optimization_extensions.l1_penalty,
                 &optimization_extensions.bound_constraints,
             )?;
-            if next_optimality <= config.tolerance {
+            if kkt_converged(next_optimality, config.tolerance) {
                 converged = true;
                 solver_status = "converged".to_string();
                 break;
@@ -855,7 +920,7 @@ fn fit_multinomial_internal(
         }
     }
 
-    if !converged && solver_status == "max_iterations" {
+    if should_emit_max_iteration_warning(converged, &solver_status) {
         warnings.push(format!(
             "multinomial Newton solver did not converge after {} iterations; \
              try increasing max_iter, simplifying the model, or using ridge regularization.",
@@ -972,7 +1037,7 @@ fn fit_multinomial_internal(
         &prepared.y_codes,
         &prepared.weights,
     )?;
-    let deviance = -2.0 * log_likelihood;
+    let deviance = multinomial_deviance(log_likelihood);
     let null_deviance = if compute_null_deviance {
         compute_null_deviance_value(
             &prepared,
@@ -1311,7 +1376,7 @@ fn validate_dense_multinomial_size(
             limit_mb
         )));
     }
-    if peak_bytes > config.hessian_memory_limit_bytes && peak_factor > 1 {
+    if peak_bytes > config.hessian_memory_limit_bytes {
         let estimated_mb = peak_bytes as f64 / (1024.0 * 1024.0);
         let limit_mb = config.hessian_memory_limit_bytes as f64 / (1024.0 * 1024.0);
         return Err(RustyStatsError::InvalidValue(format!(
@@ -1837,12 +1902,6 @@ fn masked_softmax(logits: &Array2<f64>, availability: &Array2<bool>) -> Result<A
                 denom += value;
             }
         }
-        if !denom.is_finite() || denom <= 0.0 {
-            return Err(RustyStatsError::NumericalError(format!(
-                "invalid multinomial softmax denominator on row {}",
-                row
-            )));
-        }
         for class_idx in 0..k {
             if availability[[row, class_idx]] {
                 probabilities[[row, class_idx]] /= denom;
@@ -2150,13 +2209,21 @@ fn copy_hessian_block(
     }
 }
 
+fn positive_l1_penalty(l1_penalty: &L1Penalty) -> bool {
+    l1_penalty.alpha > 0.0
+}
+
+fn active_bound_constraints(bounds: &BoundConstraints) -> bool {
+    !bounds.is_empty()
+}
+
 fn solve_newton_proposal(
     theta: &Array1<f64>,
     evaluation: &Evaluation,
     extensions: &OptimizationExtensions,
     warnings: &mut Vec<String>,
 ) -> Result<NewtonProposal> {
-    if extensions.l1_penalty.alpha > 0.0 {
+    if positive_l1_penalty(&extensions.l1_penalty) {
         solve_proximal_newton_subproblem(
             theta,
             &evaluation.gradient,
@@ -2165,7 +2232,7 @@ fn solve_newton_proposal(
             &extensions.bound_constraints,
             warnings,
         )
-    } else if !extensions.bound_constraints.is_empty() {
+    } else if active_bound_constraints(&extensions.bound_constraints) {
         solve_bound_projected_newton_step(
             theta,
             &evaluation.gradient,
@@ -2184,6 +2251,19 @@ fn solve_newton_proposal(
     }
 }
 
+fn lower_bound_blocks_descent(sign: i8, theta_j: f64, gradient_j: f64) -> bool {
+    sign > 0 && theta_j <= PROXIMAL_NEWTON_ZERO_TOLERANCE && gradient_j >= 0.0
+}
+
+fn upper_bound_blocks_descent(sign: i8, theta_j: f64, gradient_j: f64) -> bool {
+    sign < 0 && theta_j >= -PROXIMAL_NEWTON_ZERO_TOLERANCE && gradient_j <= 0.0
+}
+
+fn coordinate_free_under_bounds(sign: i8, theta_j: f64, gradient_j: f64) -> bool {
+    !lower_bound_blocks_descent(sign, theta_j, gradient_j)
+        && !upper_bound_blocks_descent(sign, theta_j, gradient_j)
+}
+
 fn solve_bound_projected_newton_step(
     theta: &Array1<f64>,
     gradient: &Array1<f64>,
@@ -2199,11 +2279,7 @@ fn solve_bound_projected_newton_step(
     let signs = bounds.signs(q)?;
     let mut free_indices = Vec::with_capacity(q);
     for idx in 0..q {
-        let active_lower =
-            signs[idx] > 0 && theta[idx] <= PROXIMAL_NEWTON_ZERO_TOLERANCE && gradient[idx] >= 0.0;
-        let active_upper =
-            signs[idx] < 0 && theta[idx] >= -PROXIMAL_NEWTON_ZERO_TOLERANCE && gradient[idx] <= 0.0;
-        if !active_lower && !active_upper {
+        if coordinate_free_under_bounds(signs[idx], theta[idx], gradient[idx]) {
             free_indices.push(idx);
         }
     }
@@ -2213,18 +2289,6 @@ fn solve_bound_projected_newton_step(
             target: project_with_signs(theta.clone(), &signs),
         });
     }
-    if free_indices.len() == q {
-        let step = solve_newton_step(hessian, gradient)?;
-        let target = theta
-            .iter()
-            .zip(step.iter())
-            .map(|(coef, delta)| coef - delta)
-            .collect::<Array1<f64>>();
-        return Ok(NewtonProposal {
-            target: project_with_signs(target, &signs),
-        });
-    }
-
     let free_q = free_indices.len();
     let mut reduced_hessian = Array2::zeros((free_q, free_q));
     let mut reduced_gradient = Array1::zeros(free_q);
@@ -2242,6 +2306,30 @@ fn solve_bound_projected_newton_step(
     Ok(NewtonProposal {
         target: project_with_signs(target, &signs),
     })
+}
+
+fn use_proximal_active_subset(cd_iter: usize, active_len: usize, q: usize) -> bool {
+    !cd_iter.is_multiple_of(5) && active_len < q
+}
+
+fn refresh_proximal_active_set(cd_iter: usize) -> bool {
+    cd_iter == 0 || cd_iter.is_multiple_of(5)
+}
+
+fn coefficient_delta_magnitude(old: f64, updated: f64) -> f64 {
+    (updated - old).abs()
+}
+
+fn zero_small_penalized_coordinate(updated: f64, penalized: bool) -> bool {
+    penalized && updated.abs() < PROXIMAL_NEWTON_ZERO_TOLERANCE
+}
+
+fn proximal_coordinate_descent_tolerance(beta_scale: f64) -> f64 {
+    PROXIMAL_NEWTON_CD_TOLERANCE * (1.0 + beta_scale)
+}
+
+fn proximal_coordinate_descent_converged(max_change: f64, beta_scale: f64) -> bool {
+    max_change <= proximal_coordinate_descent_tolerance(beta_scale)
 }
 
 fn solve_proximal_newton_subproblem(
@@ -2269,7 +2357,7 @@ fn solve_proximal_newton_subproblem(
     let mut cd_converged = false;
 
     for cd_iter in 0..PROXIMAL_NEWTON_MAX_CD_ITERATIONS {
-        let indices: &[usize] = if cd_iter > 0 && cd_iter % 5 != 0 && active_indices.len() < q {
+        let indices: &[usize] = if use_proximal_active_subset(cd_iter, active_indices.len(), q) {
             &active_indices
         } else {
             &all_indices
@@ -2282,7 +2370,7 @@ fn solve_proximal_newton_subproblem(
                 if l1_penalty.mask[idx] {
                     let old = beta[idx];
                     beta[idx] = 0.0;
-                    max_change = max_change.max((old - beta[idx]).abs());
+                    max_change = max_change.max(coefficient_delta_magnitude(old, beta[idx]));
                     continue;
                 }
                 return Err(RustyStatsError::LinearAlgebraError(
@@ -2305,18 +2393,18 @@ fn solve_proximal_newton_subproblem(
                 -partial / diag
             };
             updated = project_single_bound(idx, updated, bounds);
-            if updated.abs() < PROXIMAL_NEWTON_ZERO_TOLERANCE && l1_penalty.mask[idx] {
+            if zero_small_penalized_coordinate(updated, l1_penalty.mask[idx]) {
                 updated = 0.0;
             }
             beta[idx] = updated;
-            max_change = max_change.max((updated - old).abs());
+            max_change = max_change.max(coefficient_delta_magnitude(old, updated));
         }
 
-        if cd_iter == 0 || cd_iter % 5 == 0 {
+        if refresh_proximal_active_set(cd_iter) {
             active_indices = active_l1_indices(&beta, gradient, l1_penalty);
         }
         let beta_scale = beta.iter().fold(0.0_f64, |acc, value| acc.max(value.abs()));
-        if max_change <= PROXIMAL_NEWTON_CD_TOLERANCE * (1.0 + beta_scale) {
+        if proximal_coordinate_descent_converged(max_change, beta_scale) {
             cd_converged = true;
             break;
         }
@@ -2340,6 +2428,18 @@ fn solve_proximal_newton_subproblem(
     Ok(NewtonProposal { target: beta })
 }
 
+fn l1_coordinate_is_active(
+    theta_j: f64,
+    smooth_gradient_j: f64,
+    l1_penalty: &L1Penalty,
+    idx: usize,
+) -> bool {
+    !l1_penalty.mask[idx]
+        || theta_j.abs() > PROXIMAL_NEWTON_ZERO_TOLERANCE
+        || l1_coordinate_violation(theta_j, smooth_gradient_j, l1_penalty.alpha)
+            > PROXIMAL_NEWTON_ZERO_TOLERANCE
+}
+
 fn active_l1_indices(
     theta: &Array1<f64>,
     smooth_gradient: &Array1<f64>,
@@ -2350,11 +2450,7 @@ fn active_l1_indices(
     }
     let mut indices = Vec::new();
     for idx in 0..theta.len() {
-        if !l1_penalty.mask[idx]
-            || theta[idx].abs() > PROXIMAL_NEWTON_ZERO_TOLERANCE
-            || l1_coordinate_violation(theta[idx], smooth_gradient[idx], l1_penalty.alpha)
-                > PROXIMAL_NEWTON_ZERO_TOLERANCE
-        {
+        if l1_coordinate_is_active(theta[idx], smooth_gradient[idx], l1_penalty, idx) {
             indices.push(idx);
         }
     }
@@ -2818,6 +2914,24 @@ mod tests {
         }
     }
 
+    fn assert_error_contains(error: RustyStatsError, expected: &str) {
+        let message = error.to_string();
+        assert!(
+            message.contains(expected),
+            "expected error to contain '{expected}', got '{message}'"
+        );
+    }
+
+    #[test]
+    fn default_config_constants_are_exact() {
+        let config = MultinomialConfig::default();
+        assert_eq!(DEFAULT_HESSIAN_MEMORY_LIMIT_BYTES, 256 * 1024 * 1024);
+        assert_eq!(config.hessian_memory_limit_bytes, 268_435_456);
+        assert_eq!(config.max_dense_parameters, DEFAULT_MAX_DENSE_PARAMETERS);
+        assert_eq!(config.max_iterations, DEFAULT_MAX_ITERATIONS);
+        assert_abs_diff_eq!(config.tolerance, DEFAULT_TOLERANCE, epsilon = 0.0);
+    }
+
     #[test]
     fn parameter_layout_maps_shared_and_alternative_blocks() {
         let layout = MultinomialParameterLayout::new(3, 4, 2, 5, true).expect("valid layout");
@@ -2835,6 +2949,154 @@ mod tests {
             11
         );
         assert_eq!(layout.alternative_specific(2, 4).expect("specific"), 25);
+    }
+
+    #[test]
+    fn parameter_layout_and_alt_specific_standardization_reject_bad_metadata() {
+        assert!(MultinomialParameterLayout::new(2, 1, 0, 0, true).is_err());
+        let layout = MultinomialParameterLayout::new(3, 4, 2, 2, true).expect("valid layout");
+        assert!(layout.shared(3, 0).is_err());
+        assert!(layout.shared(0, 3).is_err());
+        assert!(layout.alternative_generic(2).is_err());
+        assert!(layout.alternative_specific(3, 0).is_err());
+        assert!(layout.alternative_specific(0, 2).is_err());
+        assert!(layout.is_shared_intercept(0));
+        assert!(layout.is_shared_intercept(3));
+        assert!(!layout.is_shared_intercept(1));
+        assert!(!layout.is_shared_intercept(9));
+        let no_shared = MultinomialParameterLayout::new(0, 4, 0, 0, true).expect("valid");
+        assert!(!no_shared.is_shared_intercept(0));
+        let no_intercept = MultinomialParameterLayout::new(3, 4, 0, 0, false).expect("valid");
+        assert!(!no_intercept.is_shared_intercept(0));
+
+        let center = array![[0.0, 1.0], [2.0, 3.0]];
+        let scale = array![[1.0, 2.0], [3.0, 4.0]];
+        let std = AlternativeSpecificStandardization::new(center.clone(), scale.clone())
+            .expect("valid class-specific standardization");
+        std.validate((2, 2)).expect("expected shape");
+        assert!(AlternativeSpecificStandardization {
+            center: Array2::zeros((1, 2)),
+            scale: scale.clone(),
+        }
+        .validate((2, 2))
+        .is_err());
+        assert!(AlternativeSpecificStandardization {
+            center: center.clone(),
+            scale: Array2::ones((2, 1)),
+        }
+        .validate((2, 2))
+        .is_err());
+        assert!(AlternativeSpecificStandardization {
+            center: array![[0.0, f64::NAN], [2.0, 3.0]],
+            scale: scale.clone(),
+        }
+        .validate((2, 2))
+        .is_err());
+        assert!(AlternativeSpecificStandardization {
+            center,
+            scale: array![[1.0, 0.0], [3.0, 4.0]],
+        }
+        .validate((2, 2))
+        .is_err());
+    }
+
+    #[test]
+    fn parameter_layout_overflow_guards_are_reported() {
+        let shared_overflow = MultinomialParameterLayout {
+            n_shared: usize::MAX,
+            n_non_reference: 2,
+            n_alt_generic: 0,
+            n_alt_specific: 0,
+            fit_intercept: true,
+        };
+        assert_error_contains(
+            shared_overflow
+                .shared_len()
+                .expect_err("shared length should overflow"),
+            "shared parameter count overflowed",
+        );
+        assert_error_contains(
+            shared_overflow
+                .shared(1, 1)
+                .expect_err("shared parameter index should overflow"),
+            "shared parameter index overflowed",
+        );
+
+        let specific_count_overflow = MultinomialParameterLayout {
+            n_shared: 0,
+            n_non_reference: 2,
+            n_alt_generic: 0,
+            n_alt_specific: usize::MAX,
+            fit_intercept: true,
+        };
+        assert_error_contains(
+            specific_count_overflow
+                .len()
+                .expect_err("specific count should overflow"),
+            "class-specific alternative parameter count overflowed",
+        );
+
+        let total_overflow = MultinomialParameterLayout {
+            n_shared: 0,
+            n_non_reference: 1,
+            n_alt_generic: usize::MAX,
+            n_alt_specific: 1,
+            fit_intercept: true,
+        };
+        assert_error_contains(
+            total_overflow
+                .len()
+                .expect_err("total count should overflow"),
+            "total parameter count overflowed",
+        );
+
+        let generic_index_overflow = MultinomialParameterLayout {
+            n_shared: usize::MAX - 1,
+            n_non_reference: 1,
+            n_alt_generic: usize::MAX,
+            n_alt_specific: 0,
+            fit_intercept: true,
+        };
+        assert_error_contains(
+            generic_index_overflow
+                .alternative_generic(2)
+                .expect_err("generic parameter index should overflow"),
+            "generic alternative parameter index overflowed",
+        );
+        assert_error_contains(
+            generic_index_overflow
+                .alternative_specific_start()
+                .expect_err("specific start should overflow"),
+            "class-specific alternative start overflowed",
+        );
+
+        let specific_index_overflow = MultinomialParameterLayout {
+            n_shared: 0,
+            n_non_reference: usize::MAX,
+            n_alt_generic: 0,
+            n_alt_specific: 2,
+            fit_intercept: true,
+        };
+        assert_error_contains(
+            specific_index_overflow
+                .alternative_specific(usize::MAX - 1, 0)
+                .expect_err("specific block offset should overflow"),
+            "class-specific alternative block offset overflowed",
+        );
+
+        let specific_parameter_index_overflow = MultinomialParameterLayout {
+            n_shared: usize::MAX - 1,
+            n_non_reference: 1,
+            n_alt_generic: 1,
+            n_alt_specific: 2,
+            fit_intercept: true,
+        };
+        assert_error_contains(
+            specific_parameter_index_overflow
+                .alternative_specific(0, 1)
+                .expect_err("specific parameter index should overflow"),
+            "class-specific alternative parameter index overflowed",
+        );
     }
 
     #[test]
@@ -2863,6 +3125,105 @@ mod tests {
         )
         .expect_err("covariance workspace should exceed the limit");
         assert!(err.to_string().contains("covariance workspace"));
+
+        let hessian_err = validate_dense_multinomial_size(
+            &layout,
+            &MultinomialConfig {
+                hessian_memory_limit_bytes: 50,
+                max_dense_parameters: 100,
+                ..default_config()
+            },
+            DenseMultinomialOperation::Fit,
+            false,
+            false,
+        )
+        .expect_err("fit Hessian itself should exceed the smaller limit");
+        assert!(hessian_err.to_string().contains("dense Hessian"));
+
+        let exact_hessian_limit = MultinomialConfig {
+            hessian_memory_limit_bytes: 72,
+            max_dense_parameters: 100,
+            ..default_config()
+        };
+        validate_dense_multinomial_size(
+            &layout,
+            &exact_hessian_limit,
+            DenseMultinomialOperation::Fit,
+            false,
+            false,
+        )
+        .expect("hessian bytes equal to the limit are allowed");
+
+        let exact_peak_limit = MultinomialConfig {
+            hessian_memory_limit_bytes: 216,
+            max_dense_parameters: 100,
+            ..default_config()
+        };
+        validate_dense_multinomial_size(
+            &layout,
+            &exact_peak_limit,
+            DenseMultinomialOperation::Fit,
+            true,
+            false,
+        )
+        .expect("peak workspace bytes equal to the limit are allowed");
+
+        let large_hessian_layout =
+            MultinomialParameterLayout::new(1024, 2, 0, 0, true).expect("large layout");
+        let large_hessian_err = validate_dense_multinomial_size(
+            &large_hessian_layout,
+            &MultinomialConfig {
+                hessian_memory_limit_bytes: 4 * 1024 * 1024,
+                max_dense_parameters: 2000,
+                ..default_config()
+            },
+            DenseMultinomialOperation::Fit,
+            false,
+            false,
+        )
+        .expect_err("8 MB Hessian should exceed a 4 MB limit");
+        let message = large_hessian_err.to_string();
+        assert!(
+            message.contains("would require 8.0 MB for q=1024"),
+            "{message}"
+        );
+        assert!(message.contains("configured 4.0 MB limit"), "{message}");
+
+        let large_peak_layout =
+            MultinomialParameterLayout::new(512, 2, 0, 0, true).expect("large peak layout");
+        let large_peak_err = validate_dense_multinomial_size(
+            &large_peak_layout,
+            &MultinomialConfig {
+                hessian_memory_limit_bytes: 4 * 1024 * 1024,
+                max_dense_parameters: 2000,
+                ..default_config()
+            },
+            DenseMultinomialOperation::Fit,
+            true,
+            false,
+        )
+        .expect_err("6 MB peak workspace should exceed a 4 MB limit");
+        let message = large_peak_err.to_string();
+        assert!(
+            message.contains("workspace may require 6.0 MB for q=512"),
+            "{message}"
+        );
+        assert!(message.contains("configured 4.0 MB limit"), "{message}");
+
+        let max_parameter_boundary =
+            MultinomialParameterLayout::new(5, 2, 0, 0, true).expect("boundary layout");
+        validate_dense_multinomial_size(
+            &max_parameter_boundary,
+            &MultinomialConfig {
+                max_dense_parameters: 5,
+                hessian_memory_limit_bytes: 10_000,
+                ..default_config()
+            },
+            DenseMultinomialOperation::Fit,
+            false,
+            false,
+        )
+        .expect("q exactly equal to max_dense_parameters is allowed");
     }
 
     #[test]
@@ -2889,6 +3250,27 @@ mod tests {
         };
         assert!(bad_quadratic.validate(4).is_err());
 
+        let bad_quadratic_rows = QuadraticPenaltyBlock {
+            indices: vec![0, 1],
+            matrix: Array2::ones((1, 2)),
+            weight: 1.0,
+        };
+        assert!(bad_quadratic_rows.validate(4).is_err());
+        let bad_quadratic_cols = QuadraticPenaltyBlock {
+            indices: vec![0, 1],
+            matrix: Array2::ones((2, 1)),
+            weight: 1.0,
+        };
+        assert!(bad_quadratic_cols.validate(4).is_err());
+        let zero_weight_quadratic = QuadraticPenaltyBlock {
+            indices: vec![0],
+            matrix: Array2::eye(1),
+            weight: 0.0,
+        };
+        zero_weight_quadratic
+            .validate(4)
+            .expect("zero penalty weight is valid");
+
         let bad_bound = OptimizationExtensions {
             bound_constraints: BoundConstraints {
                 nonneg_indices: vec![4],
@@ -2906,6 +3288,2081 @@ mod tests {
             ..OptimizationExtensions::inert(4)
         };
         assert!(duplicate_bound.validate(4).is_err());
+
+        let bad_l1_alpha = OptimizationExtensions {
+            l1_penalty: L1Penalty {
+                alpha: f64::NAN,
+                mask: vec![true; 4],
+            },
+            ..OptimizationExtensions::inert(4)
+        };
+        assert!(bad_l1_alpha.validate(4).is_err());
+
+        let bad_quadratic_weight = OptimizationExtensions {
+            quadratic_penalties: vec![QuadraticPenaltyBlock {
+                indices: vec![0],
+                matrix: Array2::ones((1, 1)),
+                weight: -1.0,
+            }],
+            ..OptimizationExtensions::inert(4)
+        };
+        assert!(bad_quadratic_weight.validate(4).is_err());
+
+        let bad_quadratic_index = OptimizationExtensions {
+            quadratic_penalties: vec![QuadraticPenaltyBlock {
+                indices: vec![4],
+                matrix: Array2::ones((1, 1)),
+                weight: 1.0,
+            }],
+            ..OptimizationExtensions::inert(4)
+        };
+        assert!(bad_quadratic_index.validate(4).is_err());
+
+        let bad_quadratic_value = OptimizationExtensions {
+            quadratic_penalties: vec![QuadraticPenaltyBlock {
+                indices: vec![0],
+                matrix: array![[f64::INFINITY]],
+                weight: 1.0,
+            }],
+            ..OptimizationExtensions::inert(4)
+        };
+        assert!(bad_quadratic_value.validate(4).is_err());
+
+        let bad_nonpos_bound = OptimizationExtensions {
+            bound_constraints: BoundConstraints {
+                nonneg_indices: Vec::new(),
+                nonpos_indices: vec![4],
+            },
+            ..OptimizationExtensions::inert(4)
+        };
+        assert!(bad_nonpos_bound.validate(4).is_err());
+
+        let duplicate_nonneg_bound = OptimizationExtensions {
+            bound_constraints: BoundConstraints {
+                nonneg_indices: vec![1, 1],
+                nonpos_indices: Vec::new(),
+            },
+            ..OptimizationExtensions::inert(4)
+        };
+        assert!(duplicate_nonneg_bound.validate(4).is_err());
+
+        assert!(BoundConstraints::default().is_empty());
+        assert!(!BoundConstraints {
+            nonneg_indices: vec![0],
+            nonpos_indices: Vec::new(),
+        }
+        .is_empty());
+        assert!(!BoundConstraints {
+            nonneg_indices: Vec::new(),
+            nonpos_indices: vec![1],
+        }
+        .is_empty());
+
+        let layout = MultinomialParameterLayout::new(2, 3, 0, 0, true).expect("layout");
+        let no_l1 = optimization_extensions_from_config(&layout, 0.0, &[], &[], &[])
+            .expect("zero alpha is inert");
+        assert!(no_l1.l1_penalty.mask.iter().all(|active| !*active));
+        let with_l1 = optimization_extensions_from_config(&layout, 0.25, &[], &[], &[])
+            .expect("positive alpha activates non-intercepts");
+        assert_eq!(with_l1.l1_penalty.alpha, 0.25);
+        assert!(!with_l1.l1_penalty.mask[0]);
+        assert!(with_l1.l1_penalty.mask[1]);
+    }
+
+    #[test]
+    fn smooth_penalty_metadata_error_paths_are_explicit() {
+        let layout = MultinomialParameterLayout::new(3, 3, 0, 0, true).expect("valid layout");
+        for smooth in [
+            MultinomialSmoothPenalty {
+                col_start: 2,
+                col_end: 2,
+                penalty: Array2::eye(1),
+                lambda: 1.0,
+            },
+            MultinomialSmoothPenalty {
+                col_start: 1,
+                col_end: 3,
+                penalty: Array2::eye(1),
+                lambda: 1.0,
+            },
+            MultinomialSmoothPenalty {
+                col_start: 1,
+                col_end: 2,
+                penalty: Array2::eye(1),
+                lambda: f64::NAN,
+            },
+            MultinomialSmoothPenalty {
+                col_start: 1,
+                col_end: 2,
+                penalty: array![[f64::INFINITY]],
+                lambda: 1.0,
+            },
+        ] {
+            assert!(expand_smooth_penalty(&layout, &smooth).is_err());
+        }
+
+        let empty_width = MultinomialSmoothPenalty {
+            col_start: 2,
+            col_end: 2,
+            penalty: Array2::zeros((0, 0)),
+            lambda: 1.0,
+        };
+        assert_error_contains(
+            expand_smooth_penalty(&layout, &empty_width)
+                .expect_err("empty column range should be rejected before expansion"),
+            "column range",
+        );
+        let out_of_range = MultinomialSmoothPenalty {
+            col_start: 2,
+            col_end: 4,
+            penalty: Array2::eye(2),
+            lambda: 1.0,
+        };
+        assert_error_contains(
+            expand_smooth_penalty(&layout, &out_of_range)
+                .expect_err("range beyond shared columns should be rejected"),
+            "column range",
+        );
+        let bad_rows = MultinomialSmoothPenalty {
+            col_start: 0,
+            col_end: 2,
+            penalty: Array2::ones((1, 2)),
+            lambda: 1.0,
+        };
+        assert_error_contains(
+            expand_smooth_penalty(&layout, &bad_rows)
+                .expect_err("penalty row mismatch should be rejected"),
+            "expected (2, 2)",
+        );
+        let bad_cols = MultinomialSmoothPenalty {
+            col_start: 0,
+            col_end: 2,
+            penalty: Array2::ones((2, 1)),
+            lambda: 1.0,
+        };
+        assert_error_contains(
+            expand_smooth_penalty(&layout, &bad_cols)
+                .expect_err("penalty column mismatch should be rejected"),
+            "expected (2, 2)",
+        );
+        let zero_lambda = MultinomialSmoothPenalty {
+            col_start: 1,
+            col_end: 3,
+            penalty: Array2::eye(2),
+            lambda: 0.0,
+        };
+        let zero_lambda_blocks =
+            expand_smooth_penalty(&layout, &zero_lambda).expect("zero lambda is valid");
+        assert_eq!(zero_lambda_blocks.len(), 2);
+        assert!(zero_lambda_blocks
+            .iter()
+            .all(|block| block.weight == 0.0 && block.indices.len() == 2));
+        assert_eq!(zero_lambda_blocks[0].indices, vec![1, 2]);
+        assert_eq!(zero_lambda_blocks[1].indices, vec![4, 5]);
+        let tolerance_boundary = MultinomialSmoothPenalty {
+            col_start: 0,
+            col_end: 2,
+            penalty: array![[1.0, 1e-10], [0.0, 1.0]],
+            lambda: 1.0,
+        };
+        expand_smooth_penalty(&layout, &tolerance_boundary)
+            .expect("symmetry tolerance is strict above 1e-10, not at 1e-10");
+    }
+
+    #[test]
+    fn multinomial_validation_rejects_config_and_auxiliary_shape_errors() {
+        let x = Array2::ones((3, 2));
+        let y = array![0usize, 1, 2];
+        let cfg = default_config();
+
+        for config in [
+            MultinomialConfig {
+                max_iterations: 0,
+                ..cfg.clone()
+            },
+            MultinomialConfig {
+                tolerance: 0.0,
+                ..cfg.clone()
+            },
+            MultinomialConfig {
+                alpha: -1.0,
+                ..cfg.clone()
+            },
+            MultinomialConfig {
+                l1_ratio: 1.5,
+                ..cfg.clone()
+            },
+            MultinomialConfig {
+                l1_ratio: -0.1,
+                ..cfg.clone()
+            },
+            MultinomialConfig {
+                l1_ratio: f64::NAN,
+                ..cfg.clone()
+            },
+        ] {
+            assert!(validate_and_prepare(
+                &y,
+                x.view(),
+                3,
+                0,
+                &config,
+                None,
+                None,
+                None,
+                None,
+                None
+            )
+            .is_err());
+        }
+        for ratio in [0.0, 1.0] {
+            validate_and_prepare(
+                &y,
+                x.view(),
+                3,
+                0,
+                &MultinomialConfig {
+                    l1_ratio: ratio,
+                    ..cfg.clone()
+                },
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("l1_ratio endpoints are valid");
+        }
+
+        assert!(
+            validate_and_prepare(&y, x.view(), 1, 0, &cfg, None, None, None, None, None).is_err()
+        );
+        assert!(
+            validate_and_prepare(&y, x.view(), 3, 3, &cfg, None, None, None, None, None).is_err()
+        );
+        assert!(validate_and_prepare(
+            &array![0usize, 1],
+            x.view(),
+            3,
+            0,
+            &cfg,
+            None,
+            None,
+            None,
+            None,
+            None
+        )
+        .is_err());
+
+        let bad_weights_len = array![1.0, 2.0];
+        let bad_weights_value = array![1.0, -0.5, 1.0];
+        let bad_weights_nan = array![1.0, f64::NAN, 1.0];
+        let zero_weights = Array1::zeros(3);
+        let one_zero_weight = array![1.0, 0.0, 1.0, 1.0];
+        let y_with_repeated_class = array![0usize, 1, 2, 1];
+        let x_with_repeated_class = Array2::ones((4, 2));
+        let overflowing_total_weights = array![f64::MAX, f64::MAX, f64::MAX];
+        assert!(validate_and_prepare(
+            &y,
+            x.view(),
+            3,
+            0,
+            &cfg,
+            None,
+            None,
+            Some(&bad_weights_len),
+            None,
+            None
+        )
+        .is_err());
+        assert_error_contains(
+            validate_and_prepare(
+                &y,
+                x.view(),
+                3,
+                0,
+                &cfg,
+                None,
+                None,
+                Some(&bad_weights_nan),
+                None,
+                None,
+            )
+            .expect_err("NaN row weight should be rejected early"),
+            "weights must be finite and non-negative",
+        );
+        assert_error_contains(
+            validate_and_prepare(
+                &y,
+                x.view(),
+                3,
+                0,
+                &cfg,
+                None,
+                None,
+                Some(&bad_weights_value),
+                None,
+                None,
+            )
+            .expect_err("negative row weight should be rejected early"),
+            "weights must be finite and non-negative",
+        );
+        validate_and_prepare(
+            &y_with_repeated_class,
+            x_with_repeated_class.view(),
+            3,
+            0,
+            &cfg,
+            None,
+            None,
+            Some(&one_zero_weight),
+            None,
+            None,
+        )
+        .expect("individual zero weights are allowed when each class has positive weight");
+        assert!(validate_and_prepare(
+            &y,
+            x.view(),
+            3,
+            0,
+            &cfg,
+            None,
+            None,
+            Some(&overflowing_total_weights),
+            None,
+            None
+        )
+        .is_err());
+        assert!(validate_and_prepare(
+            &y,
+            x.view(),
+            3,
+            0,
+            &cfg,
+            None,
+            None,
+            Some(&zero_weights),
+            None,
+            None
+        )
+        .is_err());
+
+        let bad_availability_shape = Array2::from_elem((2, 3), true);
+        let no_available = array![
+            [true, true, true],
+            [false, false, false],
+            [true, true, true]
+        ];
+        assert!(validate_and_prepare(
+            &y,
+            x.view(),
+            3,
+            0,
+            &cfg,
+            Some(&bad_availability_shape),
+            None,
+            None,
+            None,
+            None
+        )
+        .is_err());
+        assert!(validate_and_prepare(
+            &y,
+            x.view(),
+            3,
+            0,
+            &cfg,
+            Some(&no_available),
+            None,
+            None,
+            None,
+            None
+        )
+        .is_err());
+
+        let bad_offset_shape = Array2::<f64>::zeros((3, 2));
+        let bad_offset_value = array![[0.0, 0.0, 0.0], [0.0, f64::NAN, 0.0], [0.0, 0.0, 0.0]];
+        assert!(validate_and_prepare(
+            &y,
+            x.view(),
+            3,
+            0,
+            &cfg,
+            None,
+            Some(&bad_offset_shape),
+            None,
+            None,
+            None
+        )
+        .is_err());
+        assert!(validate_and_prepare(
+            &y,
+            x.view(),
+            3,
+            0,
+            &cfg,
+            None,
+            Some(&bad_offset_value),
+            None,
+            None,
+            None
+        )
+        .is_err());
+
+        let bad_alt_shape = Array3::<f64>::zeros((2, 3, 1));
+        let mut bad_alt_value = Array3::<f64>::zeros((3, 3, 1));
+        bad_alt_value[[1, 2, 0]] = f64::INFINITY;
+        assert!(validate_and_prepare(
+            &y,
+            x.view(),
+            3,
+            0,
+            &cfg,
+            None,
+            None,
+            None,
+            Some(bad_alt_shape.view()),
+            None
+        )
+        .is_err());
+        assert!(validate_and_prepare(
+            &y,
+            x.view(),
+            3,
+            0,
+            &cfg,
+            None,
+            None,
+            None,
+            None,
+            Some(bad_alt_value.view())
+        )
+        .is_err());
+
+        let x_empty_rows = Array2::<f64>::zeros((0, 2));
+        assert!(validate_and_prepare(
+            &Array1::<usize>::zeros(0),
+            x_empty_rows.view(),
+            3,
+            0,
+            &cfg,
+            None,
+            None,
+            None,
+            None,
+            None
+        )
+        .is_err());
+
+        let x_empty_cols = Array2::<f64>::zeros((3, 0));
+        assert!(validate_and_prepare(
+            &y,
+            x_empty_cols.view(),
+            3,
+            0,
+            &cfg,
+            None,
+            None,
+            None,
+            None,
+            None
+        )
+        .is_err());
+
+        let zero_class_weight = array![1.0, 0.0, 1.0];
+        assert!(validate_and_prepare(
+            &y,
+            x.view(),
+            3,
+            0,
+            &cfg,
+            None,
+            None,
+            Some(&zero_class_weight),
+            None,
+            None
+        )
+        .is_err());
+
+        let dense_flag_layout_config = MultinomialConfig {
+            hessian_memory_limit_bytes: 160,
+            max_dense_parameters: 100,
+            skip_covariance: true,
+            smooth_penalties: Vec::new(),
+            ..cfg.clone()
+        };
+        validate_and_prepare(
+            &y,
+            x.view(),
+            3,
+            0,
+            &dense_flag_layout_config,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("single fit Hessian is within the dense guard");
+        assert!(validate_and_prepare(
+            &y,
+            x.view(),
+            3,
+            0,
+            &MultinomialConfig {
+                skip_covariance: false,
+                ..dense_flag_layout_config.clone()
+            },
+            None,
+            None,
+            None,
+            None,
+            None
+        )
+        .is_err());
+        assert!(validate_and_prepare(
+            &y,
+            x.view(),
+            3,
+            0,
+            &MultinomialConfig {
+                smooth_penalties: vec![MultinomialSmoothPenalty {
+                    col_start: 0,
+                    col_end: 1,
+                    penalty: Array2::eye(1),
+                    lambda: 1.0,
+                }],
+                ..dense_flag_layout_config.clone()
+            },
+            None,
+            None,
+            None,
+            None,
+            None
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn multinomial_probability_and_likelihood_helpers_validate_shapes() {
+        let x = Array2::ones((2, 2));
+        let availability = Array2::from_elem((2, 3), true);
+        let offset = Array2::zeros((2, 3));
+        let class_to_block = vec![None, Some(0), Some(1)];
+        let generic = Array3::<f64>::zeros((2, 3, 1));
+        let specific = Array3::<f64>::zeros((2, 3, 1));
+        let theta = array![0.1, 0.2, -0.1, 0.3, 0.4, -0.2, 0.5];
+
+        let (logits, probabilities) = linear_predictor_and_probabilities_from_theta(
+            &theta,
+            x.view(),
+            3,
+            &class_to_block,
+            &availability,
+            &offset,
+            &generic,
+            &specific,
+        )
+        .expect("valid linear predictor");
+        assert_eq!(logits.dim(), (2, 3));
+        for row in 0..2 {
+            assert_abs_diff_eq!(probabilities.row(row).sum(), 1.0, epsilon = 1e-12);
+        }
+
+        assert!(linear_predictor_and_probabilities_from_theta(
+            &array![0.1],
+            x.view(),
+            3,
+            &class_to_block,
+            &availability,
+            &offset,
+            &generic,
+            &specific,
+        )
+        .is_err());
+
+        assert!(linear_predictor_and_probabilities(
+            &Array2::zeros((1, 2)),
+            &Array1::zeros(1),
+            &Array2::zeros((2, 1)),
+            x.view(),
+            &generic,
+            &specific,
+            3,
+            &class_to_block,
+            &availability,
+            &offset,
+        )
+        .is_err());
+        assert!(linear_predictor_and_probabilities(
+            &Array2::zeros((2, 2)),
+            &Array1::zeros(2),
+            &Array2::zeros((2, 1)),
+            x.view(),
+            &generic,
+            &specific,
+            3,
+            &class_to_block,
+            &availability,
+            &offset,
+        )
+        .is_err());
+        assert!(linear_predictor_and_probabilities(
+            &Array2::zeros((2, 2)),
+            &Array1::zeros(1),
+            &Array2::zeros((1, 1)),
+            x.view(),
+            &generic,
+            &specific,
+            3,
+            &class_to_block,
+            &availability,
+            &offset,
+        )
+        .is_err());
+        assert_error_contains(
+            linear_predictor_and_probabilities(
+                &Array2::zeros((2, 2)),
+                &Array1::zeros(1),
+                &Array2::zeros((2, 1)),
+                x.view(),
+                &Array3::<f64>::zeros((1, 3, 1)),
+                &specific,
+                3,
+                &class_to_block,
+                &availability,
+                &offset,
+            )
+            .expect_err("generic row mismatch should be rejected"),
+            "generic alternative tensor",
+        );
+        assert_error_contains(
+            linear_predictor_and_probabilities(
+                &Array2::zeros((2, 2)),
+                &Array1::zeros(1),
+                &Array2::zeros((2, 1)),
+                x.view(),
+                &Array3::<f64>::zeros((2, 2, 1)),
+                &specific,
+                3,
+                &class_to_block,
+                &availability,
+                &offset,
+            )
+            .expect_err("generic class mismatch should be rejected"),
+            "generic alternative tensor",
+        );
+        assert_error_contains(
+            linear_predictor_and_probabilities(
+                &Array2::zeros((2, 2)),
+                &Array1::zeros(1),
+                &Array2::zeros((2, 1)),
+                x.view(),
+                &Array3::<f64>::zeros((2, 3, 2)),
+                &specific,
+                3,
+                &class_to_block,
+                &availability,
+                &offset,
+            )
+            .expect_err("generic term mismatch should be rejected"),
+            "generic alternative tensor",
+        );
+        assert_error_contains(
+            linear_predictor_and_probabilities(
+                &Array2::zeros((2, 2)),
+                &Array1::zeros(1),
+                &Array2::zeros((2, 1)),
+                x.view(),
+                &generic,
+                &Array3::<f64>::zeros((1, 3, 1)),
+                3,
+                &class_to_block,
+                &availability,
+                &offset,
+            )
+            .expect_err("specific row mismatch should be rejected"),
+            "class-specific alternative tensor",
+        );
+        assert_error_contains(
+            linear_predictor_and_probabilities(
+                &Array2::zeros((2, 2)),
+                &Array1::zeros(1),
+                &Array2::zeros((2, 1)),
+                x.view(),
+                &generic,
+                &Array3::<f64>::zeros((2, 2, 1)),
+                3,
+                &class_to_block,
+                &availability,
+                &offset,
+            )
+            .expect_err("specific class mismatch should be rejected"),
+            "class-specific alternative tensor",
+        );
+        assert_error_contains(
+            linear_predictor_and_probabilities(
+                &Array2::zeros((2, 2)),
+                &Array1::zeros(1),
+                &Array2::zeros((2, 2)),
+                x.view(),
+                &generic,
+                &specific,
+                3,
+                &class_to_block,
+                &availability,
+                &offset,
+            )
+            .expect_err("specific coefficient term mismatch should be rejected"),
+            "class-specific alternative tensor",
+        );
+        assert_error_contains(
+            linear_predictor_and_probabilities(
+                &Array2::zeros((2, 2)),
+                &Array1::zeros(1),
+                &Array2::zeros((1, 1)),
+                x.view(),
+                &generic,
+                &specific,
+                3,
+                &class_to_block,
+                &availability,
+                &offset,
+            )
+            .expect_err("specific coefficient row mismatch should be rejected"),
+            "class-specific alternative tensor",
+        );
+
+        assert!(masked_softmax(&Array2::zeros((2, 3)), &Array2::from_elem((2, 2), true)).is_err());
+        assert!(
+            masked_softmax(&array![[0.0, f64::NAN, 1.0]], &array![[true, true, true]],).is_err()
+        );
+        assert!(masked_softmax(&array![[0.0, 1.0]], &array![[false, false]]).is_err());
+        let shifted = masked_softmax(&array![[10.0, 12.0, 11.0]], &array![[true, true, true]])
+            .expect("shifted softmax");
+        let shifted_denom = (-2.0_f64).exp() + 1.0 + (-1.0_f64).exp();
+        assert_abs_diff_eq!(
+            shifted[[0, 0]],
+            (-2.0_f64).exp() / shifted_denom,
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(shifted[[0, 1]], 1.0 / shifted_denom, epsilon = 1e-12);
+        assert_abs_diff_eq!(
+            shifted[[0, 2]],
+            (-1.0_f64).exp() / shifted_denom,
+            epsilon = 1e-12
+        );
+        let stable_large_logits =
+            masked_softmax(&array![[700.0, 699.0, 698.0]], &array![[true, true, true]])
+                .expect("large-logit softmax should remain finite");
+        assert!(stable_large_logits.iter().all(|value| value.is_finite()));
+        assert_abs_diff_eq!(stable_large_logits.row(0).sum(), 1.0, epsilon = 1e-12);
+        assert!(stable_large_logits[[0, 0]] > stable_large_logits[[0, 1]]);
+        assert!(stable_large_logits[[0, 1]] > stable_large_logits[[0, 2]]);
+
+        assert!(log_likelihood_from_probabilities(
+            &probabilities,
+            &array![0usize],
+            &Array1::ones(2)
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn objective_and_penalty_helpers_have_exact_scalar_contracts() {
+        let x = array![[1.0, 0.5], [1.0, -1.0], [1.0, 2.0]];
+        let y = array![0usize, 1, 2];
+        let weights = array![1.0, 2.0, 3.0];
+        let cfg = default_config();
+        let prepared = validate_and_prepare(
+            &y,
+            x.view(),
+            3,
+            0,
+            &cfg,
+            None,
+            None,
+            Some(&weights),
+            None,
+            None,
+        )
+        .expect("valid prepared inputs");
+        let theta = array![0.1, 0.2, -0.3, 0.4];
+        let l2_alpha = 0.5;
+        let (_, probabilities) = linear_predictor_and_probabilities_from_theta(
+            &theta,
+            x.view(),
+            3,
+            &prepared.class_to_block,
+            &prepared.availability,
+            &prepared.offset,
+            &prepared.alternative_generic,
+            &prepared.alternative_specific,
+        )
+        .expect("probabilities");
+        let log_likelihood =
+            log_likelihood_from_probabilities(&probabilities, &prepared.y_codes, &prepared.weights)
+                .expect("log likelihood");
+        let ridge = ridge_penalty(&theta, x.ncols(), 3, l2_alpha, true);
+        assert_abs_diff_eq!(ridge, 0.05, epsilon = 1e-12);
+        assert_abs_diff_eq!(
+            ridge_penalty(&theta, x.ncols(), 3, l2_alpha, false),
+            0.075,
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(
+            ridge_penalty(&theta, x.ncols(), 3, 0.0, true),
+            0.0,
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(
+            ridge_penalty(&theta, x.ncols(), 3, -0.25, true),
+            0.0,
+            epsilon = 1e-12
+        );
+
+        let smooth_objective =
+            objective_only(&theta, x.view(), 3, &prepared, l2_alpha, true).expect("objective");
+        assert_abs_diff_eq!(smooth_objective, -log_likelihood + ridge, epsilon = 1e-12);
+
+        let l1 = L1Penalty {
+            alpha: 0.7,
+            mask: vec![true, false, true, false],
+        };
+        assert_abs_diff_eq!(l1_norm(&theta, &l1), 0.28, epsilon = 1e-12);
+        assert_abs_diff_eq!(
+            l1_norm(
+                &theta,
+                &L1Penalty {
+                    alpha: 0.0,
+                    mask: vec![true; 4],
+                },
+            ),
+            0.0,
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(
+            l1_norm(
+                &theta,
+                &L1Penalty {
+                    alpha: -1.0,
+                    mask: vec![true; 4],
+                },
+            ),
+            0.0,
+            epsilon = 1e-12
+        );
+
+        let quadratic = QuadraticPenaltyBlock {
+            indices: vec![1, 3],
+            matrix: array![[2.0, 0.5], [0.5, 3.0]],
+            weight: 0.2,
+        };
+        let quadratic_value = quadratic_penalty(&theta, std::slice::from_ref(&quadratic));
+        assert_abs_diff_eq!(quadratic_value, 0.064, epsilon = 1e-12);
+        assert_abs_diff_eq!(
+            penalized_objective_from_smooth(smooth_objective + quadratic_value, &theta, &l1),
+            smooth_objective + quadratic_value + l1_norm(&theta, &l1),
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(
+            penalized_objective(
+                &theta,
+                x.view(),
+                3,
+                &prepared,
+                l2_alpha,
+                true,
+                &l1,
+                &[quadratic]
+            )
+            .expect("penalized objective"),
+            smooth_objective + quadratic_value + l1_norm(&theta, &l1),
+            epsilon = 1e-12
+        );
+    }
+
+    #[test]
+    fn alternative_standardization_and_parameter_transform_contracts() {
+        let x = Array2::ones((3, 2));
+        let y = array![0usize, 1, 2];
+        let cfg = MultinomialConfig {
+            alpha: 0.1,
+            standardize: true,
+            ..default_config()
+        };
+        let generic_std_for_activation = Standardization::new(vec![1.0], vec![2.0]).expect("std");
+        let specific_std_for_activation =
+            AlternativeSpecificStandardization::new(array![[1.0], [2.0]], array![[2.0], [3.0]])
+                .expect("specific std");
+        assert!(active_alternative_generic_standardization(
+            &cfg,
+            Some(&generic_std_for_activation)
+        )
+        .is_some());
+        assert!(active_alternative_specific_standardization(
+            &cfg,
+            Some(&specific_std_for_activation)
+        )
+        .is_some());
+        assert!(active_alternative_generic_standardization(
+            &MultinomialConfig {
+                alpha: 0.0,
+                ..cfg.clone()
+            },
+            Some(&generic_std_for_activation)
+        )
+        .is_none());
+        assert!(active_alternative_specific_standardization(
+            &MultinomialConfig {
+                alpha: 0.0,
+                ..cfg.clone()
+            },
+            Some(&specific_std_for_activation)
+        )
+        .is_none());
+        assert!(active_alternative_specific_standardization(
+            &MultinomialConfig {
+                standardize: false,
+                ..cfg.clone()
+            },
+            Some(&specific_std_for_activation)
+        )
+        .is_none());
+        assert!(active_alternative_generic_standardization(&cfg, None).is_none());
+
+        let generic = Array3::from_shape_vec(
+            (3, 3, 1),
+            vec![10.0, 20.0, 30.0, 12.0, 22.0, 32.0, 14.0, 24.0, 34.0],
+        )
+        .expect("valid generic tensor");
+        let specific = Array3::from_shape_vec(
+            (3, 3, 1),
+            vec![1.0, 5.0, 9.0, 2.0, 6.0, 10.0, 3.0, 7.0, 11.0],
+        )
+        .expect("valid specific tensor");
+        let mut prepared = validate_and_prepare(
+            &y,
+            x.view(),
+            3,
+            0,
+            &cfg,
+            None,
+            None,
+            None,
+            Some(generic.view()),
+            Some(specific.view()),
+        )
+        .expect("valid prepared inputs");
+        let generic_std = Standardization::new(vec![10.0], vec![2.0]).expect("valid std");
+        let specific_std =
+            AlternativeSpecificStandardization::new(array![[5.0], [9.0]], array![[5.0], [2.0]])
+                .expect("valid specific std");
+
+        standardize_alternative_inputs(
+            &mut prepared,
+            &cfg,
+            Some(&generic_std),
+            Some(&specific_std),
+        )
+        .expect("standardization succeeds");
+        assert_abs_diff_eq!(
+            prepared.alternative_generic[[1, 2, 0]],
+            11.0,
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(
+            prepared.alternative_specific[[1, 1, 0]],
+            0.2,
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(
+            prepared.alternative_specific[[2, 2, 0]],
+            1.0,
+            epsilon = 1e-12
+        );
+
+        let mut identity_prepared = validate_and_prepare(
+            &y,
+            x.view(),
+            3,
+            0,
+            &cfg,
+            None,
+            None,
+            None,
+            Some(generic.view()),
+            Some(specific.view()),
+        )
+        .expect("valid prepared inputs");
+        let identity_generic = Standardization::new(vec![0.0], vec![1.0]).expect("identity std");
+        let identity_specific =
+            AlternativeSpecificStandardization::new(Array2::zeros((2, 1)), Array2::ones((2, 1)))
+                .expect("identity specific std");
+        standardize_alternative_inputs(
+            &mut identity_prepared,
+            &cfg,
+            Some(&identity_generic),
+            Some(&identity_specific),
+        )
+        .expect("identity standardization should be a no-op");
+        assert_abs_diff_eq!(identity_prepared.alternative_generic[[2, 2, 0]], 34.0);
+        assert_abs_diff_eq!(identity_prepared.alternative_specific[[2, 2, 0]], 11.0);
+
+        let mut scale_only_prepared = validate_and_prepare(
+            &y,
+            x.view(),
+            3,
+            0,
+            &cfg,
+            None,
+            None,
+            None,
+            Some(generic.view()),
+            Some(specific.view()),
+        )
+        .expect("valid prepared inputs");
+        let scale_only_generic = Standardization::new(vec![0.0], vec![2.0]).expect("scale std");
+        let shift_only_specific =
+            AlternativeSpecificStandardization::new(array![[5.0], [9.0]], Array2::ones((2, 1)))
+                .expect("shift std");
+        standardize_alternative_inputs(
+            &mut scale_only_prepared,
+            &cfg,
+            Some(&scale_only_generic),
+            Some(&shift_only_specific),
+        )
+        .expect("partial identity standardization still applies");
+        assert_abs_diff_eq!(
+            scale_only_prepared.alternative_generic[[0, 1, 0]],
+            10.0,
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(
+            scale_only_prepared.alternative_specific[[0, 1, 0]],
+            0.0,
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(
+            scale_only_prepared.alternative_specific[[0, 2, 0]],
+            0.0,
+            epsilon = 1e-12
+        );
+
+        let mut shift_and_scale_edges_prepared = validate_and_prepare(
+            &y,
+            x.view(),
+            3,
+            0,
+            &cfg,
+            None,
+            None,
+            None,
+            Some(generic.view()),
+            Some(specific.view()),
+        )
+        .expect("valid prepared inputs");
+        let shift_only_generic = Standardization::new(vec![10.0], vec![1.0]).expect("shift std");
+        let scale_only_specific =
+            AlternativeSpecificStandardization::new(Array2::zeros((2, 1)), array![[5.0], [2.0]])
+                .expect("scale specific std");
+        standardize_alternative_inputs(
+            &mut shift_and_scale_edges_prepared,
+            &cfg,
+            Some(&shift_only_generic),
+            Some(&scale_only_specific),
+        )
+        .expect("shift-only and scale-only standardization still apply");
+        assert_abs_diff_eq!(
+            shift_and_scale_edges_prepared.alternative_generic[[0, 1, 0]],
+            10.0,
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(
+            shift_and_scale_edges_prepared.alternative_specific[[0, 1, 0]],
+            1.0,
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(
+            shift_and_scale_edges_prepared.alternative_specific[[0, 2, 0]],
+            4.5,
+            epsilon = 1e-12
+        );
+
+        let layout = MultinomialParameterLayout::new(3, 3, 1, 1, true).expect("layout");
+        let shared_std =
+            Standardization::new(vec![0.0, 2.0, 4.0], vec![1.0, 2.0, 4.0]).expect("shared std");
+        let generic_std = Standardization::new(vec![0.0], vec![5.0]).expect("generic std");
+        let specific_std =
+            AlternativeSpecificStandardization::new(array![[3.0], [6.0]], array![[3.0], [2.0]])
+                .expect("specific std");
+        let transform = original_parameter_transform(
+            &layout,
+            Some(&shared_std),
+            Some(&generic_std),
+            Some(&specific_std),
+        )
+        .expect("transform");
+        let theta = Array1::from_iter((0..layout.len().expect("len")).map(|i| i as f64));
+        let public_theta = transform_parameter_vector(&theta, &transform).expect("transform theta");
+        assert_abs_diff_eq!(public_theta[0], -10.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(public_theta[1], 0.5, epsilon = 1e-12);
+        assert_abs_diff_eq!(public_theta[2], 0.5, epsilon = 1e-12);
+        assert_abs_diff_eq!(public_theta[6], 1.2, epsilon = 1e-12);
+        assert_abs_diff_eq!(public_theta[7], 7.0 / 3.0, epsilon = 1e-12);
+        assert_eq!(
+            unflatten_alternative_generic_coefficients(&theta, 3, 3, 1),
+            array![6.0]
+        );
+        let two_generic_layout = MultinomialParameterLayout::new(3, 3, 2, 0, true).expect("layout");
+        let two_generic_theta =
+            Array1::from_iter((0..two_generic_layout.len().expect("len")).map(|idx| idx as f64));
+        assert_eq!(
+            unflatten_alternative_generic_coefficients(&two_generic_theta, 3, 3, 2),
+            array![6.0, 7.0]
+        );
+
+        assert!(transform_parameter_vector(&Array1::zeros(theta.len() - 1), &transform).is_err());
+        assert!(transform_covariance(&Array2::eye(theta.len() - 1), &transform).is_err());
+        assert!(
+            transform_covariance(&Array2::zeros((theta.len() - 1, theta.len())), &transform)
+                .is_err()
+        );
+        assert!(
+            transform_covariance(&Array2::zeros((theta.len(), theta.len() - 1)), &transform)
+                .is_err()
+        );
+        let covariance = Array2::eye(theta.len());
+        let public_cov = transform_covariance(&covariance, &transform).expect("transform cov");
+        assert_eq!(public_cov.dim(), (theta.len(), theta.len()));
+        assert!(public_cov[[0, 0]] > 1.0);
+
+        let exact_transform = MultinomialTransform {
+            rows: vec![vec![(0, 2.0), (1, -1.0)], vec![(1, 3.0)]],
+        };
+        let exact_cov = array![[4.0, 5.0], [5.0, 9.0]];
+        let exact_public_cov =
+            transform_covariance(&exact_cov, &exact_transform).expect("exact transform");
+        assert_abs_diff_eq!(exact_public_cov[[0, 0]], 5.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(exact_public_cov[[0, 1]], 3.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(exact_public_cov[[1, 0]], 3.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(exact_public_cov[[1, 1]], 81.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn initialize_coefficients_validates_warm_starts_and_zero_initializers() {
+        let x = Array2::ones((6, 2));
+        let y = array![0usize, 1, 2, 0, 1, 2];
+        let cfg = default_config();
+        let prepared = validate_and_prepare(&y, x.view(), 3, 0, &cfg, None, None, None, None, None)
+            .expect("valid prepared inputs");
+        let layout = MultinomialParameterLayout::new(2, 3, 0, 0, true).expect("layout");
+        let q = layout.len().expect("parameter count");
+
+        let bad_len_config = MultinomialConfig {
+            initial_theta: Some(Array1::zeros(q - 1)),
+            ..cfg.clone()
+        };
+        assert!(initialize_coefficients(&layout, 3, &prepared, &bad_len_config).is_err());
+
+        let mut nonfinite_theta = Array1::zeros(q);
+        nonfinite_theta[1] = f64::NAN;
+        let bad_value_config = MultinomialConfig {
+            initial_theta: Some(nonfinite_theta),
+            ..cfg.clone()
+        };
+        assert!(initialize_coefficients(&layout, 3, &prepared, &bad_value_config).is_err());
+
+        let warm_theta = Array1::from_iter((0..q).map(|idx| idx as f64 * 0.1));
+        let warm_config = MultinomialConfig {
+            initial_theta: Some(warm_theta.clone()),
+            ..cfg.clone()
+        };
+        assert_eq!(
+            initialize_coefficients(&layout, 3, &prepared, &warm_config).expect("valid warm start"),
+            warm_theta
+        );
+
+        let nonuniform_weights = array![2.0, 3.0, 1.0, 0.0, 1.0, 11.0];
+        let weighted_prepared = validate_and_prepare(
+            &y,
+            x.view(),
+            3,
+            0,
+            &cfg,
+            None,
+            None,
+            Some(&nonuniform_weights),
+            None,
+            None,
+        )
+        .expect("valid weighted prepared inputs");
+        let weighted_initial =
+            initialize_coefficients(&layout, 3, &weighted_prepared, &cfg).expect("weighted init");
+        assert_abs_diff_eq!(weighted_initial[0], 2.0_f64.ln(), epsilon = 1e-12);
+        assert_abs_diff_eq!(weighted_initial[2], 6.0_f64.ln(), epsilon = 1e-12);
+        assert_abs_diff_eq!(weighted_initial[1], 0.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(weighted_initial[3], 0.0, epsilon = 1e-12);
+
+        let no_intercept_config = MultinomialConfig {
+            fit_intercept: false,
+            ..cfg.clone()
+        };
+        let no_intercept_layout =
+            MultinomialParameterLayout::new(2, 3, 0, 0, false).expect("layout");
+        let no_intercept_prepared = validate_and_prepare(
+            &y,
+            x.view(),
+            3,
+            0,
+            &no_intercept_config,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("valid prepared inputs");
+        assert!(initialize_coefficients(
+            &no_intercept_layout,
+            3,
+            &no_intercept_prepared,
+            &no_intercept_config,
+        )
+        .expect("no-intercept initialization")
+        .iter()
+        .all(|value| *value == 0.0));
+        let no_intercept_weighted_prepared = validate_and_prepare(
+            &y,
+            x.view(),
+            3,
+            0,
+            &no_intercept_config,
+            None,
+            None,
+            Some(&nonuniform_weights),
+            None,
+            None,
+        )
+        .expect("valid weighted no-intercept prepared inputs");
+        assert!(initialize_coefficients(
+            &no_intercept_layout,
+            3,
+            &no_intercept_weighted_prepared,
+            &no_intercept_config,
+        )
+        .expect("no-intercept weighted initialization")
+        .iter()
+        .all(|value| *value == 0.0));
+
+        let offset = array![
+            [0.0, 0.1, 0.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+        ];
+        let offset_prepared = validate_and_prepare(
+            &y,
+            x.view(),
+            3,
+            0,
+            &cfg,
+            None,
+            Some(&offset),
+            None,
+            None,
+            None,
+        )
+        .expect("valid prepared inputs with offset");
+        assert!(initialize_coefficients(&layout, 3, &offset_prepared, &cfg)
+            .expect("offset initialization")
+            .iter()
+            .all(|value| *value == 0.0));
+        let offset_weighted_prepared = validate_and_prepare(
+            &y,
+            x.view(),
+            3,
+            0,
+            &cfg,
+            None,
+            Some(&offset),
+            Some(&nonuniform_weights),
+            None,
+            None,
+        )
+        .expect("valid weighted prepared inputs with offset");
+        assert!(
+            initialize_coefficients(&layout, 3, &offset_weighted_prepared, &cfg)
+                .expect("offset weighted initialization")
+                .iter()
+                .all(|value| *value == 0.0)
+        );
+
+        let availability = array![
+            [true, true, true],
+            [true, true, false],
+            [true, true, true],
+            [true, true, true],
+            [true, true, true],
+            [true, true, true],
+        ];
+        let availability_prepared = validate_and_prepare(
+            &y,
+            x.view(),
+            3,
+            0,
+            &cfg,
+            Some(&availability),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("valid prepared inputs with partial availability");
+        assert!(
+            initialize_coefficients(&layout, 3, &availability_prepared, &cfg)
+                .expect("partial-availability initialization")
+                .iter()
+                .all(|value| *value == 0.0)
+        );
+        let availability_weighted_prepared = validate_and_prepare(
+            &y,
+            x.view(),
+            3,
+            0,
+            &cfg,
+            Some(&availability),
+            None,
+            Some(&nonuniform_weights),
+            None,
+            None,
+        )
+        .expect("valid weighted prepared inputs with partial availability");
+        assert!(
+            initialize_coefficients(&layout, 3, &availability_weighted_prepared, &cfg)
+                .expect("partial-availability weighted initialization")
+                .iter()
+                .all(|value| *value == 0.0)
+        );
+
+        assert!(all_classes_available(&Array2::from_elem((2, 3), true)));
+        assert!(!all_classes_available(&array![
+            [true, true, true],
+            [true, false, true]
+        ]));
+
+        let manual_zero_reference = PreparedInputs {
+            y_codes: array![0usize, 1, 2],
+            availability: Array2::from_elem((3, 3), true),
+            offset: Array2::zeros((3, 3)),
+            weights: array![0.0, 2.0, 3.0],
+            alternative_generic: Array3::zeros((3, 3, 0)),
+            alternative_specific: Array3::zeros((3, 3, 0)),
+            class_to_block: vec![None, Some(0), Some(1)],
+            non_reference_classes: vec![1, 2],
+        };
+        assert!(
+            initialize_coefficients(&layout, 3, &manual_zero_reference, &cfg)
+                .expect("zero reference total is guarded")
+                .iter()
+                .all(|value| *value == 0.0)
+        );
+
+        let manual_zero_nonreference = PreparedInputs {
+            y_codes: array![0usize, 1, 2],
+            availability: Array2::from_elem((3, 3), true),
+            offset: Array2::zeros((3, 3)),
+            weights: array![5.0, 0.0, 3.0],
+            alternative_generic: Array3::zeros((3, 3, 0)),
+            alternative_specific: Array3::zeros((3, 3, 0)),
+            class_to_block: vec![None, Some(0), Some(1)],
+            non_reference_classes: vec![1, 2],
+        };
+        let manual_initial = initialize_coefficients(&layout, 3, &manual_zero_nonreference, &cfg)
+            .expect("manual init");
+        assert_abs_diff_eq!(manual_initial[0], 0.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(manual_initial[2], (3.0_f64 / 5.0).ln(), epsilon = 1e-12);
+        assert!(manual_initial.iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn fit_loop_numeric_helpers_have_exact_contracts() {
+        let alpha_zero_config = MultinomialConfig {
+            alpha: 0.0,
+            standardize: true,
+            ..default_config()
+        };
+        let alpha_positive_config = MultinomialConfig {
+            alpha: 0.2,
+            standardize: true,
+            ..default_config()
+        };
+        let standardization = Standardization::new(vec![0.0, 0.0], vec![1.0, 2.0]).expect("std");
+        assert!(!should_standardize_shared_inputs(
+            &alpha_zero_config,
+            Some(&standardization)
+        ));
+        assert!(should_standardize_shared_inputs(
+            &alpha_positive_config,
+            Some(&standardization)
+        ));
+        assert!(!should_standardize_shared_inputs(
+            &MultinomialConfig {
+                standardize: false,
+                ..alpha_positive_config.clone()
+            },
+            Some(&standardization)
+        ));
+        assert!(!should_standardize_shared_inputs(
+            &alpha_positive_config,
+            None
+        ));
+
+        let current = array![1.0, -2.0];
+        let target = array![4.0, 3.0];
+        assert_abs_diff_eq!(
+            parameter_l2_distance(&target, &current),
+            34.0_f64.sqrt(),
+            epsilon = 1e-12
+        );
+        assert_eq!(
+            interpolate_parameters(&current, &target, 0.25),
+            array![1.75, -0.75]
+        );
+        assert!(line_search_accepts(10.0001, 10.0, 0.2));
+        assert!(!line_search_accepts(10.001, 10.0, 0.2));
+        assert!(!line_search_accepts(f64::NAN, 10.0, 0.2));
+        assert_abs_diff_eq!(next_half_step_fraction(1.0), 0.5, epsilon = 1e-12);
+        assert_eq!(next_iteration_count(4), 5);
+
+        assert_abs_diff_eq!(coefficient_l2_norm(&array![3.0, 4.0]), 5.0, epsilon = 1e-12);
+        assert!(!coefficient_norm_is_extreme(MAX_COEFFICIENT_NORM));
+        assert!(coefficient_norm_is_extreme(
+            MAX_COEFFICIENT_NORM * 1.000_001
+        ));
+        assert_abs_diff_eq!(
+            relative_objective_improvement(9.0, 6.0),
+            0.3,
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(scaled_newton_step_norm(0.5, 4.0, 3.0), 0.5, epsilon = 1e-12);
+        assert!(convergence_recheck_needed(0.01, 0.5, 0.02));
+        assert!(convergence_recheck_needed(0.5, 0.01, 0.02));
+        assert!(!convergence_recheck_needed(0.5, 0.5, 0.02));
+        assert!(kkt_converged(0.02, 0.02));
+        assert!(!kkt_converged(0.020_001, 0.02));
+        assert!(should_emit_max_iteration_warning(false, "max_iterations"));
+        assert!(!should_emit_max_iteration_warning(true, "max_iterations"));
+        assert!(!should_emit_max_iteration_warning(
+            false,
+            "step_halving_no_improvement"
+        ));
+        assert_abs_diff_eq!(multinomial_deviance(-3.0), 6.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn shared_standardization_is_ignored_only_when_regularization_is_inactive() {
+        let x = array![
+            [1.0, -1.0],
+            [1.0, -0.5],
+            [1.0, 0.2],
+            [1.0, 0.7],
+            [1.0, 1.1],
+            [1.0, 1.6],
+        ];
+        let y = array![0usize, 1, 2, 0, 1, 2];
+        let mismatched_standardization = Standardization::new(vec![0.0], vec![1.0]).expect("std");
+        let unregularized = MultinomialConfig {
+            alpha: 0.0,
+            standardize: true,
+            ..default_config()
+        };
+        let result = fit_multinomial(
+            &y,
+            x.view(),
+            3,
+            0,
+            &unregularized,
+            None,
+            None,
+            None,
+            Some(&mismatched_standardization),
+        )
+        .expect("alpha=0 fit should ignore supplied standardization metadata");
+        assert!(result.converged);
+
+        let regularized = MultinomialConfig {
+            alpha: 0.1,
+            standardize: true,
+            ..default_config()
+        };
+        assert!(fit_multinomial(
+            &y,
+            x.view(),
+            3,
+            0,
+            &regularized,
+            None,
+            None,
+            None,
+            Some(&mismatched_standardization),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn newton_bound_l1_and_linear_algebra_helpers_cover_edge_contracts() {
+        let hessian = Array2::eye(2);
+        let gradient = array![1.0, -2.0];
+        let theta = array![0.0, 0.0];
+
+        assert!(solve_bound_projected_newton_step(
+            &theta,
+            &array![1.0],
+            &hessian,
+            &BoundConstraints::default(),
+        )
+        .is_err());
+        assert!(solve_bound_projected_newton_step(
+            &theta,
+            &gradient,
+            &Array2::zeros((1, 2)),
+            &BoundConstraints::default(),
+        )
+        .is_err());
+        assert!(solve_bound_projected_newton_step(
+            &theta,
+            &gradient,
+            &Array2::zeros((2, 1)),
+            &BoundConstraints::default(),
+        )
+        .is_err());
+
+        let active_bounds = BoundConstraints {
+            nonneg_indices: vec![0],
+            nonpos_indices: vec![1],
+        };
+        assert!(!positive_l1_penalty(&L1Penalty::inert(2)));
+        assert!(positive_l1_penalty(&L1Penalty {
+            alpha: 0.1,
+            mask: vec![true, false],
+        }));
+        assert!(!active_bound_constraints(&BoundConstraints::default()));
+        assert!(active_bound_constraints(&active_bounds));
+
+        let tol = PROXIMAL_NEWTON_ZERO_TOLERANCE;
+        assert!(lower_bound_blocks_descent(1, tol, 0.0));
+        assert!(!lower_bound_blocks_descent(1, tol * 2.0, 0.0));
+        assert!(!lower_bound_blocks_descent(1, 0.0, -tol));
+        assert!(upper_bound_blocks_descent(-1, -tol, 0.0));
+        assert!(!upper_bound_blocks_descent(-1, -2.0 * tol, 0.0));
+        assert!(!upper_bound_blocks_descent(-1, 0.0, tol));
+        assert!(!coordinate_free_under_bounds(1, 0.0, 0.0));
+        assert!(coordinate_free_under_bounds(0, -1.0, 1.0));
+
+        assert!(!use_proximal_active_subset(0, 1, 3));
+        assert!(use_proximal_active_subset(1, 1, 3));
+        assert!(!use_proximal_active_subset(5, 1, 3));
+        assert!(!use_proximal_active_subset(1, 3, 3));
+        assert!(refresh_proximal_active_set(0));
+        assert!(!refresh_proximal_active_set(1));
+        assert!(refresh_proximal_active_set(5));
+        assert_abs_diff_eq!(coefficient_delta_magnitude(2.0, -5.0), 7.0, epsilon = 1e-12);
+        assert!(zero_small_penalized_coordinate(0.5 * tol, true));
+        assert!(!zero_small_penalized_coordinate(tol, true));
+        assert!(!zero_small_penalized_coordinate(0.5 * tol, false));
+        let convergence_boundary = proximal_coordinate_descent_tolerance(2.0);
+        assert_abs_diff_eq!(
+            convergence_boundary,
+            PROXIMAL_NEWTON_CD_TOLERANCE * 3.0,
+            epsilon = 1e-18
+        );
+        assert!(proximal_coordinate_descent_converged(
+            convergence_boundary,
+            2.0
+        ));
+        assert!(!proximal_coordinate_descent_converged(
+            convergence_boundary * (1.0 + 1e-8),
+            2.0
+        ));
+
+        let routed_evaluation = Evaluation {
+            objective: 0.0,
+            gradient: array![1.0, -1.0],
+            hessian: array![[10.0, -3.0], [-3.0, 1.0]],
+        };
+        let routed_extensions = OptimizationExtensions {
+            bound_constraints: active_bounds.clone(),
+            ..OptimizationExtensions::inert(2)
+        };
+        let routed_proposal = solve_newton_proposal(
+            &theta,
+            &routed_evaluation,
+            &routed_extensions,
+            &mut Vec::new(),
+        )
+        .expect("bounded proposal should route through active-set Newton");
+        assert_eq!(routed_proposal.target, theta);
+
+        let proposal =
+            solve_bound_projected_newton_step(&theta, &array![1.0, -1.0], &hessian, &active_bounds)
+                .expect("all constrained coordinates active at the boundary");
+        assert_eq!(proposal.target, theta);
+
+        let extensions = OptimizationExtensions {
+            bound_constraints: active_bounds.clone(),
+            ..OptimizationExtensions::inert(3)
+        };
+        assert_eq!(
+            apply_bound_projection(array![-1.0, 2.0, 3.0], &extensions),
+            array![0.0, 0.0, 3.0]
+        );
+        let projected_signed_zero = apply_bound_projection(array![-0.0, -0.0], &extensions);
+        assert_eq!(projected_signed_zero[0].to_bits(), (-0.0_f64).to_bits());
+        assert_eq!(projected_signed_zero[1].to_bits(), (-0.0_f64).to_bits());
+        let out_of_range_extensions = OptimizationExtensions {
+            bound_constraints: BoundConstraints {
+                nonneg_indices: vec![3],
+                nonpos_indices: vec![4],
+            },
+            ..OptimizationExtensions::inert(3)
+        };
+        assert_eq!(
+            apply_bound_projection(array![-1.0, 2.0, -3.0], &out_of_range_extensions),
+            array![-1.0, 2.0, -3.0]
+        );
+        let exact_len_nonpos_extensions = OptimizationExtensions {
+            bound_constraints: BoundConstraints {
+                nonneg_indices: Vec::new(),
+                nonpos_indices: vec![3],
+            },
+            ..OptimizationExtensions::inert(3)
+        };
+        assert_eq!(
+            apply_bound_projection(array![-1.0, 2.0, -3.0], &exact_len_nonpos_extensions),
+            array![-1.0, 2.0, -3.0]
+        );
+        assert_eq!(
+            project_with_signs(array![-2.0, 2.0, 3.0, 0.0, -0.0], &[1, -1, 0, 1, -1]),
+            array![0.0, 0.0, 3.0, 0.0, -0.0]
+        );
+        let projected_with_signed_zero = project_with_signs(array![-0.0, -0.0, -2.0], &[1, -1, 0]);
+        assert_eq!(
+            projected_with_signed_zero[0].to_bits(),
+            (-0.0_f64).to_bits()
+        );
+        assert_eq!(
+            projected_with_signed_zero[1].to_bits(),
+            (-0.0_f64).to_bits()
+        );
+        assert_abs_diff_eq!(projected_with_signed_zero[2], -2.0, epsilon = 1e-12);
+        assert_eq!(project_single_bound(0, -2.0, &active_bounds), 0.0);
+        assert_eq!(project_single_bound(1, 2.0, &active_bounds), 0.0);
+        assert_eq!(project_single_bound(2, 2.0, &active_bounds), 2.0);
+
+        let free_all = solve_bound_projected_newton_step(
+            &array![1.0, -1.0],
+            &gradient,
+            &hessian,
+            &active_bounds,
+        )
+        .expect("inactive bounds should use full Newton step");
+        assert!(free_all.target[0] >= 0.0);
+        assert!(free_all.target[1] <= 0.0);
+
+        let partial = solve_bound_projected_newton_step(
+            &array![0.0, 1.0],
+            &array![1.0, -2.0],
+            &hessian,
+            &BoundConstraints {
+                nonneg_indices: vec![0],
+                nonpos_indices: Vec::new(),
+            },
+        )
+        .expect("partially active bounds should solve the reduced system");
+        assert_eq!(partial.target[0], 0.0);
+        assert_abs_diff_eq!(partial.target[1], 3.0, epsilon = 1e-12);
+
+        let l1 = L1Penalty {
+            alpha: 0.5,
+            mask: vec![true, false],
+        };
+        assert!(solve_proximal_newton_subproblem(
+            &theta,
+            &array![1.0],
+            &hessian,
+            &l1,
+            &BoundConstraints::default(),
+            &mut Vec::new(),
+        )
+        .is_err());
+        assert!(solve_proximal_newton_subproblem(
+            &theta,
+            &gradient,
+            &Array2::zeros((1, 2)),
+            &l1,
+            &BoundConstraints::default(),
+            &mut Vec::new(),
+        )
+        .is_err());
+        assert!(solve_proximal_newton_subproblem(
+            &theta,
+            &gradient,
+            &Array2::zeros((2, 1)),
+            &l1,
+            &BoundConstraints::default(),
+            &mut Vec::new(),
+        )
+        .is_err());
+        let proximal = solve_proximal_newton_subproblem(
+            &array![0.0],
+            &array![-3.0],
+            &array![[2.0]],
+            &L1Penalty {
+                alpha: 0.5,
+                mask: vec![true],
+            },
+            &BoundConstraints::default(),
+            &mut Vec::new(),
+        )
+        .expect("one-dimensional proximal Newton step");
+        assert_abs_diff_eq!(proximal.target[0], 1.25, epsilon = 1e-12);
+        let proximal_projected = solve_proximal_newton_subproblem(
+            &array![0.0],
+            &array![-3.0],
+            &array![[2.0]],
+            &L1Penalty {
+                alpha: 0.5,
+                mask: vec![true],
+            },
+            &BoundConstraints {
+                nonneg_indices: Vec::new(),
+                nonpos_indices: vec![0],
+            },
+            &mut Vec::new(),
+        )
+        .expect("proximal Newton step honors upper sign bound");
+        assert_abs_diff_eq!(proximal_projected.target[0], 0.0, epsilon = 1e-12);
+        let zero_diag_penalized = solve_proximal_newton_subproblem(
+            &array![1.0],
+            &array![0.0],
+            &array![[0.0]],
+            &L1Penalty {
+                alpha: 0.5,
+                mask: vec![true],
+            },
+            &BoundConstraints::default(),
+            &mut Vec::new(),
+        )
+        .expect("penalized zero diagonal should degrade to a zero coefficient");
+        assert_eq!(zero_diag_penalized.target, array![0.0]);
+        assert!(solve_proximal_newton_subproblem(
+            &array![1.0],
+            &array![0.0],
+            &array![[0.0]],
+            &L1Penalty {
+                alpha: 0.5,
+                mask: vec![false],
+            },
+            &BoundConstraints::default(),
+            &mut Vec::new(),
+        )
+        .is_err());
+
+        assert_eq!(
+            active_l1_indices(&array![0.0, 0.0], &array![0.0, 0.0], &L1Penalty::inert(2)),
+            vec![0, 1]
+        );
+        assert_eq!(
+            active_l1_indices(
+                &array![0.0, 0.0],
+                &array![0.0, 0.0],
+                &L1Penalty {
+                    alpha: 1.0,
+                    mask: vec![true, false],
+                },
+            ),
+            vec![1]
+        );
+        assert_eq!(
+            active_l1_indices(
+                &array![2.0e-10, 0.0, 0.0],
+                &array![0.0, 1.2, 0.2],
+                &L1Penalty {
+                    alpha: 1.0,
+                    mask: vec![true, true, true],
+                },
+            ),
+            vec![0, 1]
+        );
+        let strict_l1 = L1Penalty {
+            alpha: 1.0,
+            mask: vec![true, true, false],
+        };
+        assert!(!l1_coordinate_is_active(tol, 0.0, &strict_l1, 0));
+        assert!(l1_coordinate_is_active(2.0 * tol, 0.0, &strict_l1, 0));
+        assert!(l1_coordinate_is_active(0.0, 1.0 + 2.0 * tol, &strict_l1, 1));
+        assert!(l1_coordinate_is_active(0.0, 0.0, &strict_l1, 2));
+        assert!(!l1_coordinate_is_active(
+            0.0,
+            tol,
+            &L1Penalty {
+                alpha: 0.0,
+                mask: vec![true],
+            },
+            0,
+        ));
+        assert!(active_l1_indices(
+            &array![tol],
+            &array![0.0],
+            &L1Penalty {
+                alpha: 1.0,
+                mask: vec![true],
+            },
+        )
+        .is_empty());
+        assert_abs_diff_eq!(
+            l1_coordinate_violation(0.2, -1.0, 1.0),
+            0.0,
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(
+            l1_coordinate_violation(-0.2, 1.0, 1.0),
+            0.0,
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(
+            l1_coordinate_violation(0.0, 1.25, 1.0),
+            0.25,
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(l1_coordinate_violation(0.0, 0.5, 1.0), 0.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(
+            l1_coordinate_violation(tol, 0.25, 1.0),
+            0.0,
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(
+            l1_coordinate_violation(2.0 * tol, 0.25, 1.0),
+            1.25,
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(
+            l1_coordinate_violation(-tol, -0.25, 1.0),
+            0.0,
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(
+            l1_coordinate_violation(-2.0 * tol, -0.25, 1.0),
+            1.25,
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(
+            l1_coordinate_violation(0.2, -3.0, 0.0),
+            3.0,
+            epsilon = 1e-12
+        );
+
+        assert!(check_kkt(
+            &array![0.0, 0.0],
+            &array![0.0],
+            &L1Penalty::inert(2),
+            &BoundConstraints::default(),
+        )
+        .is_err());
+        assert!(
+            check_kkt(
+                &array![-0.1, 0.1],
+                &array![-1.0, 1.0],
+                &L1Penalty {
+                    alpha: 0.25,
+                    mask: vec![true, true],
+                },
+                &active_bounds,
+            )
+            .expect("bounded KKT should compute")
+                > 0.0
+        );
+        assert_abs_diff_eq!(
+            check_kkt(
+                &array![0.0],
+                &array![-0.75],
+                &L1Penalty {
+                    alpha: 0.25,
+                    mask: vec![true],
+                },
+                &BoundConstraints {
+                    nonneg_indices: vec![0],
+                    nonpos_indices: Vec::new(),
+                },
+            )
+            .expect("lower-bound stationarity"),
+            0.5,
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(
+            check_kkt(
+                &array![0.0],
+                &array![0.75],
+                &L1Penalty {
+                    alpha: 0.25,
+                    mask: vec![true],
+                },
+                &BoundConstraints {
+                    nonneg_indices: vec![0],
+                    nonpos_indices: Vec::new(),
+                },
+            )
+            .expect("lower-bound outward gradient is KKT-feasible"),
+            0.0,
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(
+            check_kkt(
+                &array![0.0],
+                &array![0.75],
+                &L1Penalty {
+                    alpha: 0.25,
+                    mask: vec![true],
+                },
+                &BoundConstraints {
+                    nonneg_indices: Vec::new(),
+                    nonpos_indices: vec![0],
+                },
+            )
+            .expect("upper-bound stationarity"),
+            0.5,
+            epsilon = 1e-12
+        );
+
+        let indefinite = array![[0.0, 1.0], [1.0, 0.0]];
+        let step = solve_newton_step(&indefinite, &gradient).expect("LU fallback should solve");
+        assert_abs_diff_eq!(step[0], -2.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(step[1], 1.0, epsilon = 1e-12);
+        assert!(solve_newton_step(&Array2::zeros((2, 2)), &gradient).is_err());
+
+        let inverse = invert_hessian(&indefinite).expect("LU inverse fallback should solve");
+        assert_abs_diff_eq!(inverse[[0, 1]], 1.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(inverse[[1, 0]], 1.0, epsilon = 1e-12);
+        assert!(invert_hessian(&Array2::zeros((2, 2))).is_err());
+    }
+
+    #[test]
+    fn null_deviance_fallback_handles_availability_and_offset_models() {
+        let x = Array2::ones((6, 2));
+        let y = array![0usize, 1, 2, 0, 1, 2];
+        let fast_weights = array![2.0, 3.0, 1.0, 0.0, 1.0, 11.0];
+        let cfg = default_config();
+        let fast_prepared = validate_and_prepare(
+            &y,
+            x.view(),
+            3,
+            0,
+            &cfg,
+            None,
+            None,
+            Some(&fast_weights),
+            None,
+            None,
+        )
+        .expect("valid fast-path prepared inputs");
+        let fast_expected = {
+            let class_weight = [2.0, 4.0, 12.0];
+            let total = class_weight.iter().sum::<f64>();
+            let ll = y
+                .iter()
+                .zip(fast_weights.iter())
+                .map(|(&code, &weight)| weight * (class_weight[code] / total).ln())
+                .sum::<f64>();
+            -2.0 * ll
+        };
+        assert_abs_diff_eq!(
+            compute_null_deviance_value(&fast_prepared, 3, 0, &cfg, None).expect("fast null"),
+            fast_expected,
+            epsilon = 1e-12
+        );
+
+        let availability = array![
+            [true, true, false],
+            [true, true, true],
+            [true, false, true],
+            [true, true, true],
+            [true, true, false],
+            [true, true, true],
+        ];
+        let offset = array![
+            [0.0, 0.1, 0.0],
+            [0.0, 0.0, -0.2],
+            [0.0, 0.0, 0.2],
+            [0.0, -0.1, 0.0],
+            [0.0, 0.1, 0.0],
+            [0.0, 0.0, -0.2],
+        ];
+        let prepared = validate_and_prepare(
+            &y,
+            x.view(),
+            3,
+            0,
+            &cfg,
+            Some(&availability),
+            Some(&offset),
+            None,
+            None,
+            None,
+        )
+        .expect("valid prepared inputs");
+
+        let null_deviance =
+            compute_null_deviance_value(&prepared, 3, 0, &cfg, None).expect("null fallback fit");
+        assert!(null_deviance.is_finite());
+        assert!(null_deviance >= 0.0);
+
+        let all_available_with_offset = validate_and_prepare(
+            &y,
+            x.view(),
+            3,
+            0,
+            &cfg,
+            None,
+            Some(&offset),
+            None,
+            None,
+            None,
+        )
+        .expect("all classes available with offset");
+        let offset_fallback =
+            compute_null_deviance_value(&all_available_with_offset, 3, 0, &cfg, None)
+                .expect("offset fallback");
+        let offset_fast_formula = {
+            let class_weight = [2.0, 2.0, 2.0];
+            let total = class_weight.iter().sum::<f64>();
+            let ll = y
+                .iter()
+                .map(|&code| (class_weight[code] / total).ln())
+                .sum::<f64>();
+            -2.0 * ll
+        };
+        assert!((offset_fallback - offset_fast_formula).abs() > 1e-6);
+
+        let partial_available_zero_offset = validate_and_prepare(
+            &y,
+            x.view(),
+            3,
+            0,
+            &cfg,
+            Some(&availability),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("partial availability without offset");
+        let availability_fallback =
+            compute_null_deviance_value(&partial_available_zero_offset, 3, 0, &cfg, None)
+                .expect("availability fallback");
+        assert!((availability_fallback - offset_fast_formula).abs() > 1e-6);
     }
 
     #[test]
@@ -2964,6 +5421,98 @@ mod tests {
         assert_abs_diff_eq!(hessian[[3, 1]], -0.35, epsilon = 1e-12);
         assert_abs_diff_eq!(hessian[[3, 3]], 1.05, epsilon = 1e-12);
         assert_abs_diff_eq!(hessian[[0, 0]], 0.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn gradient_and_hessian_match_hand_computed_rich_alternative_fixture() {
+        let x = array![[2.0], [-1.0]];
+        let y = array![1usize, 2];
+        let weights = array![1.5, 0.5];
+        let generic = Array3::from_shape_vec((2, 3, 1), vec![0.0, 1.0, 2.0, 1.0, -1.0, 0.5])
+            .expect("generic shape");
+        let specific = Array3::from_shape_vec((2, 3, 1), vec![0.0, 3.0, 5.0, 0.0, -2.0, 4.0])
+            .expect("specific shape");
+        let prepared = PreparedInputs {
+            y_codes: y,
+            availability: Array2::from_elem((2, 3), true),
+            offset: Array2::zeros((2, 3)),
+            weights,
+            alternative_generic: generic,
+            alternative_specific: specific,
+            class_to_block: vec![None, Some(0), Some(1)],
+            non_reference_classes: vec![1, 2],
+        };
+        let theta = array![0.2, -0.3, 0.4, -0.5, 0.6];
+        let probabilities = Array2::from_elem((2, 3), 1.0 / 3.0);
+        let grad =
+            gradient(&theta, x.view(), &prepared, &probabilities, 0.4, true).expect("gradient");
+
+        assert_abs_diff_eq!(grad[0], -13.0 / 6.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(grad[1], 4.0 / 3.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(grad[2], -1.0 / 150.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(grad[3], -53.0 / 15.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(grad[4], 211.0 / 150.0, epsilon = 1e-12);
+
+        let hess =
+            hessian(&theta, x.view(), &prepared, &probabilities, 0.4, true, None).expect("hessian");
+        assert_abs_diff_eq!(hess[[0, 0]], 13.0 / 9.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(hess[[0, 1]], -13.0 / 18.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(hess[[1, 1]], 13.0 / 9.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(hess[[0, 2]], 7.0 / 36.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(hess[[1, 2]], 17.0 / 18.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(hess[[2, 2]], 49.0 / 36.0 + 0.4, epsilon = 1e-12);
+        assert_abs_diff_eq!(hess[[3, 4]], -37.0 / 18.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(hess[[4, 4]], 91.0 / 9.0 + 0.4, epsilon = 1e-12);
+        assert_abs_diff_eq!(hess[[2, 0]], hess[[0, 2]], epsilon = 1e-12);
+        assert_abs_diff_eq!(hess[[4, 3]], hess[[3, 4]], epsilon = 1e-12);
+    }
+
+    #[test]
+    fn gradient_and_hessian_use_forward_offsets_for_multiple_alternative_terms() {
+        let x = array![[1.0]];
+        let generic = Array3::from_shape_vec((1, 3, 2), vec![0.0, 10.0, 2.0, 20.0, 4.0, 40.0])
+            .expect("generic shape");
+        let specific = Array3::from_shape_vec((1, 3, 2), vec![0.0, 0.0, 3.0, 5.0, 7.0, 11.0])
+            .expect("specific shape");
+        let prepared = PreparedInputs {
+            y_codes: array![1usize],
+            availability: Array2::from_elem((1, 3), true),
+            offset: Array2::zeros((1, 3)),
+            weights: array![2.0],
+            alternative_generic: generic,
+            alternative_specific: specific,
+            class_to_block: vec![None, Some(0), Some(1)],
+            non_reference_classes: vec![1, 2],
+        };
+        let theta = array![0.4, -0.3, 0.2, -0.1, 0.7, -0.5, 0.6, -0.4];
+        let probabilities = array![[0.2, 0.3, 0.5]];
+
+        let grad =
+            gradient(&theta, x.view(), &prepared, &probabilities, 0.0, true).expect("gradient");
+        assert_abs_diff_eq!(grad[0], -1.4, epsilon = 1e-12);
+        assert_abs_diff_eq!(grad[1], 1.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(grad[2], 1.2, epsilon = 1e-12);
+        assert_abs_diff_eq!(grad[3], 16.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(grad[4], -4.2, epsilon = 1e-12);
+        assert_abs_diff_eq!(grad[5], -7.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(grad[6], 7.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(grad[7], 11.0, epsilon = 1e-12);
+
+        let hess =
+            hessian(&theta, x.view(), &prepared, &probabilities, 0.0, true, None).expect("hessian");
+        assert_abs_diff_eq!(hess[[0, 2]], -0.36, epsilon = 1e-12);
+        assert_abs_diff_eq!(hess[[0, 3]], -4.8, epsilon = 1e-12);
+        assert_abs_diff_eq!(hess[[1, 3]], 12.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(hess[[2, 2]], 4.88, epsilon = 1e-12);
+        assert_abs_diff_eq!(hess[[2, 3]], 38.4, epsilon = 1e-12);
+        assert_abs_diff_eq!(hess[[3, 3]], 312.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(hess[[3, 5]], -24.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(hess[[3, 7]], 132.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(hess[[4, 5]], 6.3, epsilon = 1e-12);
+        assert_abs_diff_eq!(hess[[5, 6]], -10.5, epsilon = 1e-12);
+        assert_abs_diff_eq!(hess[[5, 7]], -16.5, epsilon = 1e-12);
+        assert_abs_diff_eq!(hess[[3, 0]], hess[[0, 3]], epsilon = 1e-12);
+        assert_abs_diff_eq!(hess[[7, 3]], hess[[3, 7]], epsilon = 1e-12);
     }
 
     #[test]
@@ -3050,6 +5599,31 @@ mod tests {
         let (smooth_one, total_one) = edf_for(1.0);
         assert_abs_diff_eq!(total_one, 4.0, epsilon = 1e-9);
         assert_abs_diff_eq!(smooth_one, 2.0, epsilon = 1e-9);
+        assert!(
+            smooth_edf_diagnostics(&Array2::eye(q - 1), &hessian_unpenalized, &layout, &[])
+                .is_err()
+        );
+        assert!(smooth_edf_diagnostics(
+            &Array2::zeros((q, q - 1)),
+            &hessian_unpenalized,
+            &layout,
+            &[]
+        )
+        .is_err());
+        assert!(smooth_edf_diagnostics(
+            &hessian_unpenalized,
+            &Array2::zeros((q, q - 1)),
+            &layout,
+            &[]
+        )
+        .is_err());
+        assert!(smooth_edf_diagnostics(
+            &hessian_unpenalized,
+            &Array2::zeros((q - 1, q)),
+            &layout,
+            &[]
+        )
+        .is_err());
 
         // lambda -> 0: smooth EDF -> (2 basis cols) * (K-1 = 2) = 4, total -> q = 6.
         let (smooth_small, total_small) = edf_for(1e-8);
@@ -3605,6 +6179,37 @@ mod tests {
             (2.0_f64 / 4.0).ln(),
             epsilon = 1e-6
         );
+    }
+
+    #[test]
+    fn lasso_fit_with_requested_covariance_warns_standard_errors_unavailable() {
+        let x = array![
+            [1.0, -2.0],
+            [1.0, -1.4],
+            [1.0, -0.8],
+            [1.0, -0.2],
+            [1.0, 0.3],
+            [1.0, 0.7],
+            [1.0, 1.1],
+            [1.0, 1.6],
+            [1.0, 2.2],
+        ];
+        let y = array![0usize, 0, 0, 0, 1, 1, 1, 2, 2];
+        let config = MultinomialConfig {
+            alpha: 1_000.0,
+            l1_ratio: 1.0,
+            skip_covariance: false,
+            ..default_config()
+        };
+
+        let result =
+            fit_multinomial(&y, x.view(), 3, 0, &config, None, None, None, None).expect("lasso");
+
+        assert!(result.converged);
+        assert!(result.covariance_unscaled.is_none());
+        assert!(result.warnings.iter().any(|warning| {
+            warning.contains("standard errors are unavailable for multinomial lasso")
+        }));
     }
 
     #[test]

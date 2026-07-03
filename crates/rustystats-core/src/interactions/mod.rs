@@ -291,6 +291,53 @@ pub fn materialize_categorical_categorical(
 mod tests {
     use super::*;
 
+    fn assert_slice_close(actual: &[f64], expected: &[f64], tol: f64) {
+        assert_eq!(actual.len(), expected.len());
+        for (i, (&a, &e)) in actual.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (a - e).abs() <= tol,
+                "index {i}: actual={a}, expected={e}, tol={tol}"
+            );
+        }
+    }
+
+    fn naive_catcat_diag(
+        level1: &[u32],
+        n_levels1: usize,
+        level2: &[u32],
+        n_levels2: usize,
+        weights: &Array1<f64>,
+    ) -> Vec<f64> {
+        let mut out = vec![0.0; n_levels1 * n_levels2];
+        for i in 0..weights.len() {
+            let l1 = level1[i] as usize;
+            let l2 = level2[i] as usize;
+            if l1 > 0 && l2 > 0 {
+                out[(l1 - 1) * n_levels2 + (l2 - 1)] += weights[i];
+            }
+        }
+        out
+    }
+
+    fn naive_catcat_xtz(
+        level1: &[u32],
+        n_levels1: usize,
+        level2: &[u32],
+        n_levels2: usize,
+        weights: &Array1<f64>,
+        z: &Array1<f64>,
+    ) -> Vec<f64> {
+        let mut out = vec![0.0; n_levels1 * n_levels2];
+        for i in 0..weights.len() {
+            let l1 = level1[i] as usize;
+            let l2 = level2[i] as usize;
+            if l1 > 0 && l2 > 0 {
+                out[(l1 - 1) * n_levels2 + (l2 - 1)] += weights[i] * z[i];
+            }
+        }
+        out
+    }
+
     #[test]
     fn test_xtx_continuous() {
         let x = Array2::from_shape_vec((4, 2), vec![1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0, 5.0])
@@ -509,6 +556,12 @@ mod tests {
     fn test_interaction_spec_n_columns() {
         let cont_cont = InteractionSpec::ContinuousContinuous { col1: 0, col2: 1 };
         assert_eq!(cont_cont.n_columns(), 1);
+        match cont_cont {
+            InteractionSpec::ContinuousContinuous { col1, col2 } => {
+                assert_eq!((col1, col2), (0, 1));
+            }
+            _ => unreachable!(),
+        }
 
         let cat_cont = InteractionSpec::CategoricalContinuous {
             cat_col_start: 0,
@@ -517,6 +570,20 @@ mod tests {
             cont_col: 3,
         };
         assert_eq!(cat_cont.n_columns(), 5);
+        match cat_cont {
+            InteractionSpec::CategoricalContinuous {
+                cat_col_start,
+                n_levels,
+                level_indices,
+                cont_col,
+            } => {
+                assert_eq!(cat_col_start, 0);
+                assert_eq!(n_levels, 5);
+                assert_eq!(level_indices, vec![0, 1, 2]);
+                assert_eq!(cont_col, 3);
+            }
+            _ => unreachable!(),
+        }
 
         let cat_cat = InteractionSpec::CategoricalCategorical {
             level_indices1: vec![0, 1],
@@ -525,6 +592,20 @@ mod tests {
             n_levels2: 4,
         };
         assert_eq!(cat_cat.n_columns(), 12); // 3 × 4
+        match cat_cat {
+            InteractionSpec::CategoricalCategorical {
+                level_indices1,
+                n_levels1,
+                level_indices2,
+                n_levels2,
+            } => {
+                assert_eq!(level_indices1, vec![0, 1]);
+                assert_eq!(n_levels1, 3);
+                assert_eq!(level_indices2, vec![0, 1]);
+                assert_eq!(n_levels2, 4);
+            }
+            _ => unreachable!(),
+        }
     }
 
     #[test]
@@ -557,5 +638,69 @@ mod tests {
         let xtz = xtz_categorical_categorical(&level1, 1, &level2, 1, &weights, &z);
         assert_eq!(xtz.len(), 1);
         assert!((xtz[0] - 7.5).abs() < 1e-10); // 2.5 * 3.0
+    }
+
+    #[test]
+    fn test_large_categorical_categorical_parallel_reductions_match_naive_reference() {
+        let n = 25_137;
+        let n_levels1 = 3;
+        let n_levels2 = 4;
+        let level1: Vec<u32> = (0..n)
+            .map(|i| ((i * 7 + 3) % (n_levels1 + 1)) as u32)
+            .collect();
+        let level2: Vec<u32> = (0..n)
+            .map(|i| ((i * 5 + 1) % (n_levels2 + 1)) as u32)
+            .collect();
+        let weights = Array1::from_vec(
+            (0..n)
+                .map(|i| 0.25 + ((i * 11 + 2) % 17) as f64 / 10.0)
+                .collect(),
+        );
+        let z = Array1::from_vec(
+            (0..n)
+                .map(|i| -1.5 + ((i * 13 + 5) % 29) as f64 / 7.0)
+                .collect(),
+        );
+
+        let expected_diag = naive_catcat_diag(&level1, n_levels1, &level2, n_levels2, &weights);
+        let actual_diag =
+            xtx_categorical_categorical_diagonal(&level1, n_levels1, &level2, n_levels2, &weights);
+        assert_slice_close(&actual_diag, &expected_diag, 1e-8);
+
+        let expected_xtz = naive_catcat_xtz(&level1, n_levels1, &level2, n_levels2, &weights, &z);
+        let actual_xtz =
+            xtz_categorical_categorical(&level1, n_levels1, &level2, n_levels2, &weights, &z);
+        assert_slice_close(&actual_xtz, &expected_xtz, 1e-8);
+    }
+
+    #[test]
+    fn test_linear_predictor_matches_materialized_interaction_product() {
+        let level1 = vec![0, 1, 2, 3, 1, 2, 0, 3];
+        let level2 = vec![1, 0, 2, 3, 4, 1, 0, 2];
+        let n_levels1 = 3;
+        let n_levels2 = 4;
+        let coef_start = 2;
+        let coefficients: Vec<f64> = (0..(coef_start + n_levels1 * n_levels2))
+            .map(|i| -0.75 + i as f64 / 3.0)
+            .collect();
+
+        let matrix = materialize_categorical_categorical(&level1, n_levels1, &level2, n_levels2);
+        let expected: Vec<f64> = (0..matrix.nrows())
+            .map(|row| {
+                (0..matrix.ncols())
+                    .map(|col| matrix[[row, col]] * coefficients[coef_start + col])
+                    .sum()
+            })
+            .collect();
+        let actual = linear_predictor_categorical_categorical(
+            &level1,
+            n_levels1,
+            &level2,
+            n_levels2,
+            &coefficients,
+            coef_start,
+        );
+
+        assert_slice_close(&actual, &expected, 1e-12);
     }
 }

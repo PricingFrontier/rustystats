@@ -183,6 +183,11 @@ fn bspline_all_basis_at_point(x: f64, degree: usize, knots: &[f64], n_basis: usi
     // We compute all degree-0 bases first, then degree-1, etc.
 
     let n_knots = knots.len();
+    if n_basis > 0 && (x - knots[n_knots - 1]).abs() <= KNOT_TOL {
+        let mut basis = vec![0.0; n_basis];
+        basis[n_basis - 1] = 1.0;
+        return basis;
+    }
 
     // Degree 0 bases
     let mut prev = vec![0.0; n_knots - 1];
@@ -732,6 +737,14 @@ pub fn is_names(var_name: &str, df: usize, increasing: bool) -> Vec<String> {
 mod tests {
     use super::*;
     use approx::assert_abs_diff_eq;
+    use ndarray::array;
+
+    fn assert_matrix_close(actual: &Array2<f64>, expected: &Array2<f64>, epsilon: f64) {
+        assert_eq!(actual.shape(), expected.shape());
+        for ((i, j), value) in actual.indexed_iter() {
+            assert_abs_diff_eq!(*value, expected[[i, j]], epsilon = epsilon);
+        }
+    }
 
     #[test]
     fn test_knot_computation() {
@@ -751,6 +764,35 @@ mod tests {
     }
 
     #[test]
+    fn test_compute_knots_exact_quantiles_for_unsorted_data() {
+        let x = Array1::from_vec(vec![9.0, 0.0, 4.0, 1.0, 6.0, 3.0, 7.0, 2.0, 8.0, 5.0]);
+        let knots = compute_knots(&x, 7, 2, None);
+        assert_eq!(
+            knots,
+            vec![0.0, 0.0, 0.0, 1.0, 3.0, 5.0, 7.0, 9.0, 9.0, 9.0]
+        );
+
+        let explicit = compute_knots(&x, 6, 1, Some((-2.0, 12.0)));
+        assert_eq!(explicit, vec![-2.0, -2.0, 1.0, 3.0, 5.0, 7.0, 12.0, 12.0]);
+    }
+
+    #[test]
+    fn test_build_knot_vector_repeats_boundaries_exactly() {
+        let knots = build_knot_vector(&[1.5, 2.5], 2, 0.0, 4.0);
+        assert_eq!(knots, vec![0.0, 0.0, 0.0, 1.5, 2.5, 4.0, 4.0, 4.0]);
+    }
+
+    #[test]
+    fn test_compute_knots_natural_uses_sorted_quantiles_and_explicit_bounds() {
+        let x = Array1::from_vec(vec![10.0, 0.0, 4.0, 2.0, 8.0]);
+        let (interior, x_min, x_max) = compute_knots_natural(&x, 3, Some((-1.0, 12.0)));
+
+        assert_eq!(interior, vec![2.0, 4.0]);
+        assert_eq!(x_min, -1.0);
+        assert_eq!(x_max, 12.0);
+    }
+
+    #[test]
     fn test_bspline_partition_of_unity() {
         // B-splines should sum to 1 at any point (with intercept/full basis)
         // Use a range with explicit boundary knots for proper partition of unity
@@ -762,6 +804,96 @@ mod tests {
             let row_sum: f64 = basis.row(i).sum();
             assert_abs_diff_eq!(row_sum, 1.0, epsilon = 1e-6);
         }
+    }
+
+    #[test]
+    fn test_bspline_all_basis_exact_degree_zero_and_one_values() {
+        assert_eq!(
+            bspline_all_basis_at_point(0.0, 0, &[0.0, 1.0, 2.0, 3.0], 3),
+            vec![1.0, 0.0, 0.0]
+        );
+        assert_eq!(
+            bspline_all_basis_at_point(1.0, 0, &[0.0, 1.0, 2.0, 3.0], 3),
+            vec![0.0, 1.0, 0.0]
+        );
+        assert_eq!(
+            bspline_all_basis_at_point(3.0, 0, &[0.0, 1.0, 2.0, 3.0], 3),
+            vec![0.0, 0.0, 1.0]
+        );
+
+        let knots = [0.0, 0.0, 1.0, 2.0, 2.0];
+        assert_abs_diff_eq!(
+            Array1::from_vec(bspline_all_basis_at_point(0.25, 1, &knots, 3)),
+            array![0.75, 0.25, 0.0],
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(
+            Array1::from_vec(bspline_all_basis_at_point(1.25, 1, &knots, 3)),
+            array![0.0, 0.75, 0.25],
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(
+            Array1::from_vec(bspline_all_basis_at_point(2.0, 1, &knots, 3)),
+            array![0.0, 0.0, 1.0],
+            epsilon = 1e-12
+        );
+    }
+
+    #[test]
+    fn test_bspline_degree_zero_internal_right_edge_uses_single_interval() {
+        assert_eq!(
+            bspline_all_basis_at_point(3.0, 0, &[0.0, 1.0, 2.0, 3.0, 4.0], 4),
+            vec![0.0, 0.0, 0.0, 1.0]
+        );
+        assert!(bspline_all_basis_at_point(1.0, 0, &[0.0, 1.0], 0).is_empty());
+    }
+
+    #[test]
+    fn test_bspline_knot_tolerance_boundary_skips_zero_width_terms() {
+        let first_term_knots = [0.0, KNOT_TOL, 1.0, 2.0];
+        assert_abs_diff_eq!(
+            Array1::from_vec(bspline_all_basis_at_point(
+                KNOT_TOL / 2.0,
+                1,
+                &first_term_knots,
+                2
+            )),
+            array![0.0, 0.0],
+            epsilon = 1e-12
+        );
+
+        let second_term_knots = [0.0, KNOT_TOL, 2.0 * KNOT_TOL, 1.0];
+        assert_abs_diff_eq!(
+            Array1::from_vec(bspline_all_basis_at_point(
+                1.5 * KNOT_TOL,
+                1,
+                &second_term_knots,
+                2
+            )),
+            array![0.0, 0.0],
+            epsilon = 1e-12
+        );
+    }
+
+    #[test]
+    fn test_bs_with_knots_exact_linear_basis_matrix() {
+        let x = Array1::from_vec(vec![0.0, 0.25, 1.25, 2.0]);
+        let basis = bs_with_knots(&x, &[1.0], 1, Some((0.0, 2.0)));
+        let expected = array![
+            [1.0, 0.0, 0.0],
+            [0.75, 0.25, 0.0],
+            [0.0, 0.75, 0.25],
+            [0.0, 0.0, 1.0]
+        ];
+        assert_matrix_close(&basis, &expected, 1e-12);
+    }
+
+    #[test]
+    fn test_bs_basis_no_intercept_retains_single_column_basis() {
+        let x = Array1::from_vec(vec![0.0, 0.5, 1.0]);
+        let basis = bs_basis(&x, 1, 0, Some((0.0, 1.0)), false);
+        assert_eq!(basis.shape(), &[3, 1]);
+        assert_abs_diff_eq!(basis.column(0).sum(), 3.0, epsilon = 1e-12);
     }
 
     #[test]
@@ -783,6 +915,23 @@ mod tests {
     }
 
     #[test]
+    fn test_bs_with_knots_explicit_and_default_boundaries_are_finite() {
+        let x = Array1::from_vec(vec![0.0, 0.25, 0.5, 0.75, 1.0]);
+        let explicit = bs_with_knots(&x, &[0.5], 1, Some((0.0, 1.0)));
+        let inferred = bs_with_knots(&x, &[0.5], 1, None);
+
+        assert_eq!(explicit.shape(), &[5, 3]);
+        assert_eq!(inferred.shape(), &[5, 3]);
+        for basis in [&explicit, &inferred] {
+            for row in basis.rows() {
+                assert_abs_diff_eq!(row.sum(), 1.0, epsilon = 1e-12);
+                assert!(row.iter().all(|v| *v >= -1e-12 && *v <= 1.0 + 1e-12));
+            }
+        }
+        assert_matrix_close(&explicit, &inferred, 1e-12);
+    }
+
+    #[test]
     fn test_natural_spline_shape() {
         let x = Array1::from_vec(vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
         let basis = ns(&x, 5);
@@ -801,6 +950,114 @@ mod tests {
         // The basis should exist
         assert_eq!(basis.nrows(), 7);
         assert!(basis.ncols() >= 1);
+    }
+
+    #[test]
+    fn test_ns_basis_with_knots_matches_automatic_knots() {
+        let x = Array1::from_vec(vec![0.0, 1.0, 2.0, 3.0, 4.0]);
+        let (interior, x_min, x_max) = compute_knots_natural(&x, 4, Some((0.0, 4.0)));
+
+        let automatic = ns_basis(&x, 4, Some((0.0, 4.0)), true);
+        let explicit = ns_basis_with_knots(&x, &interior, (x_min, x_max), true);
+        assert_eq!(automatic.shape(), &[5, 4]);
+        assert_matrix_close(&explicit, &automatic, 1e-12);
+
+        let automatic_no_intercept = ns_basis(&x, 4, Some((0.0, 4.0)), false);
+        let explicit_no_intercept = ns_basis_with_knots(&x, &interior, (x_min, x_max), false);
+        assert_eq!(automatic_no_intercept.shape(), &[5, 3]);
+        assert_matrix_close(&explicit_no_intercept, &automatic_no_intercept, 1e-12);
+    }
+
+    #[test]
+    fn test_compute_ns_row_degenerate_and_padding_paths() {
+        assert_eq!(compute_ns_row(1.0, &[0.0], 3, true), vec![1.0, 1.0, 1.0]);
+
+        let repeated_boundary = compute_ns_row(0.5, &[0.0, 1.0, 1.0], 4, false);
+        assert_eq!(repeated_boundary.len(), 4);
+        assert_abs_diff_eq!(repeated_boundary[0], 0.5, epsilon = 1e-12);
+        assert_abs_diff_eq!(repeated_boundary[1], 0.125, epsilon = 1e-12);
+        assert_abs_diff_eq!(repeated_boundary[2], 0.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(repeated_boundary[3], 0.0, epsilon = 1e-12);
+
+        let with_intercept = compute_ns_row(0.5, &[0.0, 1.0, 2.0], 3, true);
+        assert_abs_diff_eq!(with_intercept[0], 1.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(with_intercept[1], 0.5, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn test_compute_ns_row_exact_truncated_power_contract() {
+        let row = compute_ns_row(3.0, &[0.0, 1.0, 2.0, 4.0], 4, true);
+        assert_abs_diff_eq!(
+            Array1::from_vec(row),
+            array![1.0, 3.0, 6.25, 13.0 / 6.0],
+            epsilon = 1e-12
+        );
+
+        let no_intercept = compute_ns_row(3.0, &[0.0, 1.0, 2.0, 4.0], 3, false);
+        assert_abs_diff_eq!(
+            Array1::from_vec(no_intercept),
+            array![3.0, 6.25, 13.0 / 6.0],
+            epsilon = 1e-12
+        );
+
+        let two_boundary_knots = compute_ns_row(3.0, &[0.0, 4.0], 2, true);
+        assert_abs_diff_eq!(
+            Array1::from_vec(two_boundary_knots),
+            array![1.0, 3.0],
+            epsilon = 1e-12
+        );
+    }
+
+    #[test]
+    fn test_compute_ns_row_exact_beyond_right_boundary_and_shifted_lower_bound() {
+        let beyond = compute_ns_row(5.0, &[0.0, 1.0, 2.0, 4.0], 4, true);
+        assert_abs_diff_eq!(
+            Array1::from_vec(beyond),
+            array![1.0, 5.0, 18.0, 8.0],
+            epsilon = 1e-12
+        );
+
+        let shifted = compute_ns_row(5.0, &[2.0, 3.0, 4.0, 6.0], 3, false);
+        assert_abs_diff_eq!(
+            Array1::from_vec(shifted),
+            array![3.0, 6.25, 13.0 / 6.0],
+            epsilon = 1e-12
+        );
+    }
+
+    #[test]
+    fn test_compute_ns_row_uses_penultimate_knot_for_constraint() {
+        let row = compute_ns_row(4.0, &[0.0, 1.0, 2.0, 3.0, 5.0], 5, false);
+        assert_abs_diff_eq!(
+            Array1::from_vec(row),
+            array![4.0, 12.3, 6.25, 13.0 / 6.0, 0.0],
+            epsilon = 1e-12
+        );
+
+        let padded = compute_ns_row(4.0, &[0.0, 1.0, 2.0, 3.0, 5.0], 6, false);
+        assert_abs_diff_eq!(
+            Array1::from_vec(padded),
+            array![4.0, 123.0 / 10.0, 6.25, 13.0 / 6.0, 0.0, 0.0],
+            epsilon = 1e-12
+        );
+    }
+
+    #[test]
+    fn test_compute_ns_row_tolerance_width_denominator_is_not_treated_as_zero() {
+        let row = compute_ns_row(2.0, &[-1.0, 0.0, KNOT_TOL], 3, false);
+        assert!(row.iter().all(|v| v.is_finite()));
+        assert_abs_diff_eq!(row[0], 3.0, epsilon = 1e-12);
+        assert!(row[1] > 6.0 && row[1] < 8.0, "row[1] was {}", row[1]);
+    }
+
+    #[test]
+    fn test_ns_basis_with_knots_exact_rows() {
+        let x = Array1::from_vec(vec![0.0, 3.0]);
+        let basis = ns_basis_with_knots(&x, &[1.0, 2.0], (0.0, 4.0), true);
+        assert_matrix_close(&basis, &array![[1.0, 0.0, 0.0], [1.0, 3.0, 6.25]], 1e-12);
+
+        let no_intercept = ns_basis_with_knots(&x, &[1.0, 2.0], (0.0, 4.0), false);
+        assert_matrix_close(&no_intercept, &array![[0.0, 0.0], [3.0, 6.25]], 1e-12);
     }
 
     #[test]
@@ -838,13 +1095,49 @@ mod tests {
         let names = bs_names("age", 5, false);
         assert_eq!(names.len(), 4);
         assert!(names[0].contains("bs(age"));
+
+        let with_intercept = bs_names("age", 3, true);
+        assert_eq!(
+            with_intercept,
+            vec!["bs(age, 1/3)", "bs(age, 2/3)", "bs(age, 3/3)"]
+        );
     }
 
     #[test]
     fn test_ns_names() {
         let names = ns_names("age", 5, false);
-        assert!(!names.is_empty());
-        assert!(names[0].contains("ns(age"));
+        assert_eq!(
+            names,
+            vec![
+                "ns(age, 1/5)",
+                "ns(age, 2/5)",
+                "ns(age, 3/5)",
+                "ns(age, 4/5)"
+            ]
+        );
+
+        let with_intercept = ns_names("age", 3, true);
+        assert_eq!(
+            with_intercept,
+            vec!["ns(age, 1/3)", "ns(age, 2/3)", "ns(age, 3/3)"]
+        );
+    }
+
+    #[test]
+    fn test_convenience_wrappers_match_explicit_basis_calls() {
+        let x = Array1::from_vec(vec![0.0, 0.5, 1.0, 1.5, 2.0]);
+
+        assert_matrix_close(
+            &bs(&x, 5),
+            &bs_basis(&x, 5, DEFAULT_DEGREE, None, false),
+            1e-12,
+        );
+        assert_matrix_close(&ns(&x, 4), &ns_basis(&x, 4, None, false), 1e-12);
+        assert_matrix_close(
+            &is(&x, 5),
+            &is_basis(&x, 5, DEFAULT_DEGREE, None, true),
+            1e-12,
+        );
     }
 
     // =========================================================================
@@ -928,6 +1221,25 @@ mod tests {
         // Last row (x = 5 = x_max): all values should be 1
         for j in 0..basis.ncols() {
             assert_abs_diff_eq!(basis[[2, j]], 1.0, epsilon = 1e-6);
+        }
+    }
+
+    #[test]
+    fn test_ispline_with_knots_matches_automatic_knots_and_decreasing_flip() {
+        let x = Array1::from_vec(vec![0.0, 0.25, 0.5, 0.75, 1.0]);
+        let automatic = is_basis(&x, 5, 3, Some((0.0, 1.0)), true);
+        let explicit = is_basis_with_knots(&x, &[0.5], 3, (0.0, 1.0), 5, true);
+        assert_matrix_close(&explicit, &automatic, 1e-12);
+
+        let decreasing = is_basis_with_knots(&x, &[0.5], 3, (0.0, 1.0), 5, false);
+        for i in 0..decreasing.nrows() {
+            for j in 0..decreasing.ncols() {
+                assert_abs_diff_eq!(
+                    decreasing[[i, j]],
+                    1.0 - explicit[[i, explicit.ncols() - 1 - j]],
+                    epsilon = 1e-12
+                );
+            }
         }
     }
 

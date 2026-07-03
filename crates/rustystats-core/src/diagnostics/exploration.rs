@@ -655,6 +655,90 @@ mod tests {
     }
 
     #[test]
+    fn cramers_v_validation_and_sparse_path() {
+        assert!(cramers_v_from_codes(&[0, 1], &[0], 2, 2).is_err());
+        assert_abs_diff_eq!(
+            cramers_v_from_codes(&[], &[], 2, 2).expect("empty returns zero"),
+            0.0,
+            epsilon = 0.0
+        );
+        assert_abs_diff_eq!(
+            cramers_v_from_codes(&[0, 0], &[0, 0], 1, 2).expect("single level returns zero"),
+            0.0,
+            epsilon = 0.0
+        );
+        assert!(cramers_v_from_codes(&[0, 2], &[0, 1], 2, 2)
+            .expect_err("dense out-of-range code should fail")
+            .contains("out of range"));
+        assert!(cramers_v_from_codes(&[0, 0], &[0, 1], 2, 2)
+            .expect_err("empty row should fail")
+            .contains("zero expected frequencies"));
+
+        let x: Vec<u32> = (0..2_000).map(|i| i as u32).collect();
+        let y: Vec<u32> = (0..2_000).map(|i| (i % 1_001) as u32).collect();
+        let sparse =
+            cramers_v_from_codes(&x, &y, 2_000, 1_001).expect("sparse path should compute");
+        assert!(sparse.is_finite());
+        assert!(cramers_v_from_codes(&[2_001], &[0], 2_000, 2_000)
+            .expect_err("sparse out-of-range code should fail")
+            .contains("out of range"));
+    }
+
+    #[test]
+    fn cramers_v_matrix_validation() {
+        let empty = cramers_v_matrix_from_codes(&[], &[]).expect("empty matrix");
+        assert_eq!(empty.shape(), &[0, 0]);
+
+        let a = [0_u32, 1];
+        let b = [0_u32];
+        assert!(cramers_v_matrix_from_codes(&[&a], &[2, 2])
+            .expect_err("levels mismatch")
+            .contains("n_levels"));
+        assert!(cramers_v_matrix_from_codes(&[&a, &b], &[2, 2])
+            .expect_err("row mismatch")
+            .contains("codes[1]"));
+    }
+
+    #[test]
+    fn aggregate_pair_cells_dense_and_sparse_contracts() {
+        let codes1 = [0_u32, 0, 1, 2, 99];
+        let codes2 = [0_u32, 1, 1, 0, 1];
+        let y = [1.0, 2.0, 3.0, 4.0, 5.0];
+        let exposure = [1.0, 2.0, 1.5, 0.5, 10.0];
+        let mu = [0.8, 1.9, 2.7, 4.2, 9.0];
+
+        let mut dense = aggregate_pair_cells(&codes1, 3, &codes2, 2, &y, &exposure, Some(&mu))
+            .expect("dense aggregate");
+        dense.sort_by_key(|cell| (cell.0, cell.1));
+        assert_eq!(
+            dense,
+            vec![
+                (0, 0, 1, 1.0, 1.0, 0.8),
+                (0, 1, 1, 2.0, 2.0, 1.9),
+                (1, 1, 1, 1.5, 3.0, 2.7),
+                (2, 0, 1, 0.5, 4.0, 4.2),
+            ]
+        );
+
+        let mut sparse =
+            aggregate_pair_cells(&codes1, 2_000, &codes2, 2_000, &y, &exposure, Some(&mu))
+                .expect("sparse aggregate");
+        sparse.sort_by_key(|cell| (cell.0, cell.1));
+        assert_eq!(sparse.len(), 5);
+        assert!(sparse.contains(&(99, 1, 1, 10.0, 5.0, 9.0)));
+
+        assert!(aggregate_pair_cells(&codes1, 3, &codes2[..4], 2, &y, &exposure, None).is_err());
+        assert!(
+            aggregate_pair_cells(&codes1, 3, &codes2, 2, &y, &exposure, Some(&mu[..4])).is_err()
+        );
+        assert!(
+            aggregate_pair_cells(&codes1, 0, &codes2, 2, &y, &exposure, None)
+                .expect("zero levels")
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn exploratory_interactions_identifies_signal_pair() {
         let n = 1_000;
         let mut y = Vec::with_capacity(n);
@@ -692,5 +776,159 @@ mod tests {
         assert_eq!(top.factor1, "a");
         assert_eq!(top.factor2, "b");
         assert!(top.interaction_strength > 0.2);
+    }
+
+    #[test]
+    fn exploratory_interactions_validation_and_short_circuits() {
+        let names = vec!["a".to_string(), "b".to_string()];
+        let a = [0_u32, 1, 0, 1];
+        let b = [0_u32, 0, 1, 1];
+        let y = [1.0, 2.0, 3.0, 4.0];
+        let exposure = [1.0, 1.0, 1.0, 1.0];
+
+        assert!(detect_exploratory_interactions_from_codes(
+            &names[..1],
+            &[&a, &b],
+            &[2, 2],
+            &y,
+            &exposure,
+            2,
+            0.0,
+            2,
+            1,
+        )
+        .expect_err("name/code mismatch")
+        .contains("same length"));
+
+        assert!(detect_exploratory_interactions_from_codes(
+            &names,
+            &[&a, &b],
+            &[2, 2],
+            &y,
+            &exposure[..3],
+            2,
+            0.0,
+            2,
+            1,
+        )
+        .expect_err("exposure mismatch")
+        .contains("exposure"));
+
+        assert!(detect_exploratory_interactions_from_codes(
+            &names,
+            &[&a[..3], &b],
+            &[2, 2],
+            &y,
+            &exposure,
+            2,
+            0.0,
+            2,
+            1,
+        )
+        .expect_err("code mismatch")
+        .contains("factor_codes[0]"));
+
+        assert!(
+            detect_exploratory_interactions_from_codes(&[], &[], &[], &[], &[], 2, 0.0, 2, 1,)
+                .expect("empty input")
+                .is_empty()
+        );
+
+        assert!(detect_exploratory_interactions_from_codes(
+            &names[..1],
+            &[&a],
+            &[2],
+            &y,
+            &exposure,
+            2,
+            0.0,
+            2,
+            1,
+        )
+        .expect("single factor")
+        .is_empty());
+
+        let zero_exposure = [0.0, 0.0, 0.0, 0.0];
+        assert!(detect_exploratory_interactions_from_codes(
+            &names,
+            &[&a, &b],
+            &[2, 2],
+            &y,
+            &zero_exposure,
+            2,
+            0.0,
+            2,
+            1,
+        )
+        .expect("zero exposure")
+        .is_empty());
+
+        let constant_rate = [2.0, 2.0, 2.0, 2.0];
+        assert!(detect_exploratory_interactions_from_codes(
+            &names,
+            &[&a, &b],
+            &[2, 2],
+            &constant_rate,
+            &exposure,
+            2,
+            0.0,
+            2,
+            1,
+        )
+        .expect("constant rate")
+        .is_empty());
+    }
+
+    #[test]
+    fn eta_squared_and_interaction_strength_edge_cases() {
+        let codes = [0_u32, 1, 99, 1];
+        let y = [1.0, 3.0, 100.0, 5.0];
+        let exposure = [1.0, 1.0, 1.0, 1.0];
+        assert_abs_diff_eq!(
+            eta_squared_from_codes(&codes, 0, &y, &exposure, 1.0, 1.0),
+            0.0,
+            epsilon = 0.0
+        );
+        assert_abs_diff_eq!(
+            eta_squared_from_codes(&codes, 2, &y, &exposure, 2.0, 0.0),
+            0.0,
+            epsilon = 0.0
+        );
+        let eta = eta_squared_from_codes(&codes, 2, &y, &exposure, 3.0, 10.0);
+        assert!(eta.is_finite());
+
+        assert!(interaction_strength_from_codes(
+            "a",
+            &[0, 0, 1],
+            2,
+            "b",
+            &[0, 1, 0],
+            2,
+            &[1.0, 2.0, 3.0],
+            &[1.0, 1.0, 1.0],
+            1,
+        )
+        .is_none());
+
+        let codes1 = [0_u32, 0, 1, 1, 0, 0, 1, 1];
+        let codes2 = [0_u32, 1, 0, 1, 0, 1, 0, 1];
+        let y = [1.0, 4.0, 2.0, 8.0, 1.5, 4.5, 2.5, 8.5];
+        let exposure = [1.0; 8];
+        let candidate = interaction_strength_from_codes(
+            "territory",
+            &codes1,
+            2_000,
+            "vehicle",
+            &codes2,
+            2_000,
+            &y,
+            &exposure,
+            1,
+        )
+        .expect("sparse interaction strength");
+        assert_eq!(candidate.factor1, "territory");
+        assert_eq!(candidate.factor2, "vehicle");
+        assert_eq!(candidate.n_cells, 4);
+        assert!(candidate.interaction_strength > 0.9);
     }
 }

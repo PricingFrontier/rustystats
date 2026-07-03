@@ -144,7 +144,7 @@ def _extract_base_variable(feature_name: str) -> str:
     """
     name = feature_name.strip()
 
-    match = re.match(r"pos\((.+)\)$", name)
+    match = re.match(r"(?:pos|neg)\((.+)\)$", name)
     if match:
         return _extract_base_variable(match.group(1))
 

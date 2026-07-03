@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "thresholds": [
+    {
+      "id": "COVMOD-PY-VALIDATION",
+      "coverage_type": "python-json",
+      "path": "python/rustystats/validation.py",
+      "min_percent": 97.0,
+      "owner": "python-api-maintainers",
+      "rationale": "Validation is the fail-closed boundary for actuarial data quality and must remain above the package-wide coverage floor."
+    },
+    {
+      "id": "COVMOD-PY-EXPORT-ONNX",
+      "coverage_type": "python-json",
+      "path": "python/rustystats/export_onnx.py",
+      "min_percent": 95.0,
+      "owner": "deployment-maintainers",
+      "rationale": "ONNX export is a deployment scoring path where untested branches can produce silent prediction drift."
+    },
+    {
+      "id": "COVMOD-PY-EXPORT-PMML",
+      "coverage_type": "python-json",
+      "path": "python/rustystats/export_pmml.py",
+      "min_percent": 95.0,
+      "owner": "deployment-maintainers",
+      "rationale": "PMML export is a deployment scoring path and must keep unsupported structures fail-closed."
+    },
+    {
+      "id": "COVMOD-PY-DIAGNOSTICS-COMPUTER",
+      "coverage_type": "python-json",
+      "path": "python/rustystats/diagnostics/computer.py",
+      "min_percent": 97.0,
+      "owner": "diagnostics-maintainers",
+      "rationale": "Diagnostics are actuarial evidence surfaces and need above-baseline branch exercising."
+    },
+    {
+      "id": "COVMOD-PY-MULTINOMIAL",
+      "coverage_type": "python-json",
+      "path": "python/rustystats/multinomial.py",
+      "min_percent": 95.0,
+      "owner": "multinomial-maintainers",
+      "rationale": "Multinomial helper and prediction code carries high risk because probability rows can look valid while class semantics drift."
+    },
+    {
+      "id": "COVMOD-PY-SMOOTH",
+      "coverage_type": "python-json",
+      "path": "python/rustystats/smooth.py",
+      "min_percent": 100.0,
+      "owner": "smooth-maintainers",
+      "rationale": "Smooth helper functions are compact enough to require complete statement coverage."
+    },
+    {
+      "id": "COVMOD-RS-FAMILIES",
+      "coverage_type": "rust-lcov",
+      "path_glob": "crates/rustystats-core/src/families/*.rs",
+      "min_percent": 95.0,
+      "owner": "core-maintainers",
+      "rationale": "Family modules define the mathematical distribution contracts for every GLM fit."
+    },
+    {
+      "id": "COVMOD-RS-LINKS",
+      "coverage_type": "rust-lcov",
+      "path_glob": "crates/rustystats-core/src/links/*.rs",
+      "min_percent": 95.0,
+      "owner": "core-maintainers",
+      "rationale": "Link modules define the transformations that connect fitted means to linear predictors."
+    },
+    {
+      "id": "COVMOD-RS-SOLVERS",
+      "coverage_type": "rust-lcov",
+      "path_glob": "crates/rustystats-core/src/solvers/*.rs",
+      "min_percent": 90.0,
+      "owner": "core-maintainers",
+      "rationale": "Solver modules are numerically complex and must retain high aggregate line coverage."
+    },
+    {
+      "id": "COVMOD-RS-SPLINES",
+      "coverage_type": "rust-lcov",
+      "path_glob": "crates/rustystats-core/src/splines/*.rs",
+      "min_percent": 90.0,
+      "owner": "core-maintainers",
+      "rationale": "Spline modules build smooth design and penalty structures, where coverage gaps often hide boundary bugs."
+    },
+    {
+      "id": "COVMOD-RS-DIAGNOSTICS",
+      "coverage_type": "rust-lcov",
+      "path_glob": "crates/rustystats-core/src/diagnostics/*.rs",
+      "min_percent": 90.0,
+      "owner": "diagnostics-maintainers",
+      "rationale": "Rust diagnostics feed actuarial review evidence and should not rely on package-level coverage alone."
+    }
+  ]
+}

@@ -159,7 +159,7 @@ pub fn solve_symmetric_matrix(a: &Array2<f64>, b: &Array2<f64>) -> Array2<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ndarray::array;
+    use ndarray::{array, ShapeBuilder};
 
     #[test]
     fn test_roundtrip_matrix() {
@@ -176,6 +176,22 @@ mod tests {
         let dv = to_dvector(&v);
         let back = to_array1(&dv);
         assert_eq!(v, back);
+    }
+
+    #[test]
+    fn test_noncontiguous_conversions_preserve_logical_order() {
+        let base = Array2::from_shape_fn((3, 2), |(row, col)| (10 * row + col) as f64);
+        let noncontiguous = base.reversed_axes();
+        assert!(noncontiguous.as_slice().is_none());
+        let matrix = to_dmatrix(&noncontiguous);
+        let back = to_array2(&matrix);
+        assert_eq!(back, noncontiguous.as_standard_layout().to_owned());
+
+        let vector = Array1::from_shape_vec((3).strides(2), vec![1.0, 99.0, 2.0, 99.0, 3.0])
+            .expect("valid strided vector");
+        assert!(vector.as_slice().is_none());
+        let dvector = to_dvector(&vector);
+        assert_eq!(dvector.as_slice(), &[1.0, 2.0, 3.0]);
     }
 
     #[test]
@@ -212,5 +228,39 @@ mod tests {
         assert!((ax1 - 4.0).abs() < 1e-10);
         // A * A^-1 should be identity
         assert!((inv[[0, 0]] * 4.0 + inv[[0, 1]] * 1.0 - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_lu_fallbacks_for_indefinite_invertible_systems() {
+        let a = array![[0.0, 2.0], [2.0, 0.0]];
+        let b = array![4.0, 6.0];
+        let x = solve_symmetric(&a, &b).expect("LU fallback should solve indefinite system");
+        assert!((x[0] - 3.0).abs() < 1e-12);
+        assert!((x[1] - 2.0).abs() < 1e-12);
+
+        let a_nalg = DMatrix::from_row_slice(2, 2, &[0.0, 2.0, 2.0, 0.0]);
+        let b_nalg = DVector::from_row_slice(&[4.0, 6.0]);
+        let (x, inv) = solve_and_invert(&a_nalg, &b_nalg, 2)
+            .expect("LU fallback should solve and invert indefinite system");
+        assert!((x[0] - 3.0).abs() < 1e-12);
+        assert!((x[1] - 2.0).abs() < 1e-12);
+        assert!((inv[[0, 1]] - 0.5).abs() < 1e-12);
+
+        let b_matrix = array![[4.0, 1.0], [6.0, 3.0]];
+        let solved = solve_symmetric_matrix(&a, &b_matrix);
+        assert!((solved[[0, 0]] - 3.0).abs() < 1e-12);
+        assert!((solved[[1, 0]] - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_solve_symmetric_matrix_svd_pseudoinverse_for_singular_system() {
+        let a = array![[1.0, 1.0], [1.0, 1.0]];
+        let b = Array2::eye(2);
+        let solved = solve_symmetric_matrix(&a, &b);
+        for row in 0..2 {
+            for col in 0..2 {
+                assert!((solved[[row, col]] - 0.25).abs() < 1e-10);
+            }
+        }
     }
 }

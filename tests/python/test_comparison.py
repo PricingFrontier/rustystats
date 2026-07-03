@@ -11,8 +11,6 @@ Run with:
     pytest tests/python/test_comparison.py -v --tb=short
 """
 
-import warnings
-
 import numpy as np
 import polars as pl
 import pytest
@@ -22,8 +20,6 @@ import rustystats as rs
 import statsmodels.api as sm
 import statsmodels.genmod.families as smf
 from glum import GeneralizedLinearRegressor
-
-warnings.filterwarnings("ignore")
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -138,7 +134,7 @@ class TestGaussianFamily:
         # AIC / BIC
         assert _close(rs_res.aic(), sm_res.aic, atol=5.0)
         # BIC: statsmodels uses deviance-based BIC by default; compare against bic_llf
-        sm_bic = getattr(sm_res, "bic_llf", sm_res.bic)
+        sm_bic = sm_res.bic_llf if hasattr(sm_res, "bic_llf") else sm_res.bic
         assert _close(rs_res.bic(), sm_bic, atol=5.0)
         # Scale
         assert _close(rs_res.scale(), sm_res.scale, rtol=0.02)

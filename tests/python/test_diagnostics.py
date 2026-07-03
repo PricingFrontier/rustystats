@@ -878,7 +878,7 @@ class TestEnhancedDiagnostics:
             },
             data=data,
             family="poisson",
-            offset="exposure",
+            exposure="exposure",
         ).fit()
 
         return result, data
@@ -4251,7 +4251,7 @@ class TestPairDiagnosticsNumerics:
             ],
             data=data,
             family="poisson",
-            offset="exposure",
+            exposure="exposure",
         ).fit()
         diag = result.diagnostics(
             train_data=data,
@@ -4650,7 +4650,7 @@ class TestPairDiagnosticsEncodings:
             ],
             data=data,
             family="poisson",
-            offset="exposure",
+            exposure="exposure",
         ).fit()
         diag = result.diagnostics(
             train_data=data,

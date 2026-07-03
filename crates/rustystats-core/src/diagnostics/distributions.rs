@@ -286,6 +286,7 @@ mod tests {
         // Edge cases
         assert_eq!(chi2_cdf(0.0, 1.0), 0.0);
         assert_eq!(chi2_cdf(-1.0, 1.0), 0.0);
+        assert_eq!(chi2_cdf(1.0, 0.0), 0.0);
     }
 
     #[test]
@@ -299,6 +300,8 @@ mod tests {
 
         // t.cdf(-2.228, 10) ≈ 0.025
         assert_abs_diff_eq!(t_cdf(-2.228, 10.0), 0.025, epsilon = 0.002);
+
+        assert!(t_cdf(1.0, 0.0).is_nan());
     }
 
     #[test]
@@ -312,5 +315,36 @@ mod tests {
         // Edge cases
         assert_eq!(f_cdf(0.0, 1.0, 1.0), 0.0);
         assert_eq!(f_cdf(-1.0, 1.0, 1.0), 0.0);
+        assert_eq!(f_cdf(1.0, 0.0, 1.0), 0.0);
+        assert_eq!(f_cdf(1.0, 1.0, 0.0), 0.0);
+    }
+
+    #[test]
+    fn test_gamma_and_incomplete_function_edge_contracts() {
+        assert!(ln_gamma(0.0).is_infinite());
+        assert!(ln_gamma(-1.0).is_infinite());
+        assert!(ln_gamma(1.0e-17).is_infinite());
+        assert_abs_diff_eq!(ln_gamma(0.5), PI.sqrt().ln(), epsilon = 1e-12);
+        assert!(ln_gamma(0.25).is_finite());
+
+        assert_eq!(lower_incomplete_gamma(1.0, -1.0), 0.0);
+        assert_eq!(lower_incomplete_gamma(0.0, 1.0), 0.0);
+        assert_eq!(lower_incomplete_gamma(1.0, 0.0), 0.0);
+        assert_abs_diff_eq!(
+            lower_incomplete_gamma(2.0, 1.0),
+            gamma_series(2.0, 1.0),
+            epsilon = 1e-14
+        );
+        assert_abs_diff_eq!(
+            lower_incomplete_gamma(2.0, 10.0),
+            1.0 - gamma_continued_fraction(2.0, 10.0),
+            epsilon = 1e-14
+        );
+
+        assert_eq!(incomplete_beta(0.0, 2.0, 3.0), 0.0);
+        assert_eq!(incomplete_beta(1.0, 2.0, 3.0), 1.0);
+        let direct = incomplete_beta(0.2, 2.0, 3.0);
+        let symmetric = 1.0 - incomplete_beta(0.8, 3.0, 2.0);
+        assert_abs_diff_eq!(direct, symmetric, epsilon = 1e-12);
     }
 }

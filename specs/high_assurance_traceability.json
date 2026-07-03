@@ -1,0 +1,618 @@
+{
+  "schema_version": 1,
+  "requirements": [
+    {
+      "id": "HAT-CI-MATRIX",
+      "title": "Supported Python and operating-system CI matrix is enforced.",
+      "evidence": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "must_contain": [
+            "python-version: \"3.10\"",
+            "python-version: \"3.13\"",
+            "macos-latest",
+            "windows-latest"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "HAT-DEPENDENCY-HYGIENE",
+      "title": "Dependency lock freshness and yanked dependency checks are enforced.",
+      "evidence": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "must_contain": [
+            "uv lock --check",
+            "scripts/check_dependency_hygiene.py"
+          ]
+        },
+        {
+          "path": "scripts/check_dependency_hygiene.py",
+          "must_contain": [
+            "KNOWN_YANKED",
+            "Dependency hygiene check passed"
+          ]
+        },
+        {
+          "path": "pyproject.toml",
+          "must_contain": [
+            "numpy>=1.20,<2.4",
+            "numpy>=2.0.2,<2.4"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "HAT-WARNINGS",
+      "title": "Warnings are treated as test-contract failures unless explicitly asserted.",
+      "evidence": [
+        {
+          "path": "pyproject.toml",
+          "must_contain": [
+            "filterwarnings = [",
+            "\"error\""
+          ]
+        },
+        {
+          "path": "tests/python/test_validation_contracts.py",
+          "must_contain": [
+            "pytest.warns"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "HAT-ONNX-SCORING",
+      "title": "GLM ONNX scoring exports are checked against runtime predictions.",
+      "evidence": [
+        {
+          "path": "tests/python/test_export.py",
+          "must_contain": [
+            "test_onnx_scoring_runtime_matches_fitted_values",
+            "onnxruntime"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "HAT-ONNX-FULL",
+      "title": "GLM ONNX full raw-input exports are checked against runtime predictions.",
+      "evidence": [
+        {
+          "path": "tests/python/test_export.py",
+          "must_contain": [
+            "test_onnx_full_runtime_matches_predict_for_raw_inputs",
+            "_full_mode_input_matrix"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "HAT-PMML-RUNTIME",
+      "title": "GLM PMML exports are checked against runtime predictions.",
+      "evidence": [
+        {
+          "path": "tests/python/test_export.py",
+          "must_contain": [
+            "test_pmml_runtime_matches_native_predict_with_exposure_and_categorical",
+            "pypmml"
+          ]
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "must_contain": [
+            "actions/setup-java",
+            "RUSTYSTATS_RUN_PMML_RUNTIME"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "HAT-RATE-TABLE-RUNTIME",
+      "title": "Resolved rate-table exports are scored against native predictions.",
+      "evidence": [
+        {
+          "path": "tests/python/test_rate_tables_parity.py",
+          "must_contain": [
+            "test_plain_categorical_rate_table_scores_like_native_prediction",
+            "_score_rate_table_artifact"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "HAT-VALIDATION",
+      "title": "Core input validation boundaries have direct contract tests.",
+      "evidence": [
+        {
+          "path": "tests/python/test_validation_contracts.py",
+          "must_contain": [
+            "test_glm_input_validation_distinguishes_exposure_from_link_offset",
+            "test_tweedie_extended_boundary_contracts"
+          ]
+        },
+        {
+          "path": "tests/python/test_property_validation.py",
+          "must_contain": [
+            "test_exposure_validation_rejects_any_nonpositive_value",
+            "@pytest.mark.property"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "HAT-PACKAGING-SMOKE",
+      "title": "Installed package can import, fit, predict, and deserialize.",
+      "evidence": [
+        {
+          "path": "scripts/package_smoke.py",
+          "must_contain": [
+            "GLMModel.from_bytes",
+            "package smoke passed"
+          ]
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "must_contain": [
+            "Packaging smoke",
+            "scripts/package_smoke.py"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "HAT-FUZZ-REPLAY",
+      "title": "Malformed-input corpus replay runs as an executable gate.",
+      "evidence": [
+        {
+          "path": "scripts/replay_fuzz_corpus.py",
+          "must_contain": [
+            "Fuzz corpus replay passed",
+            "malformed input unexpectedly succeeded"
+          ]
+        },
+        {
+          "path": "tests/fuzz_corpus/python_malformed.json",
+          "must_contain": [
+            "onnx_unknown_mode",
+            "glm_corrupt_serialized_model"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "HAT-RUST-PROPERTY",
+      "title": "Rust core numerical invariants have property-based tests.",
+      "evidence": [
+        {
+          "path": "crates/rustystats-core/tests/property_tests.rs",
+          "must_contain": [
+            "proptest!",
+            "deviance_nonneg"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "HAT-COVERAGE-WAIVERS",
+      "title": "Coverage gaps against final spec thresholds have reviewed, expiring waivers.",
+      "evidence": [
+        {
+          "path": "specs/high_assurance_coverage_waivers.json",
+          "must_contain": [
+            "expires",
+            "remediation"
+          ]
+        },
+        {
+          "path": "scripts/check_coverage_waivers.py",
+          "must_contain": [
+            "Coverage waiver check passed",
+            "expired"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "HAT-DIAGNOSTICS-HARNESS",
+      "title": "Actuarial diagnostics invariants are covered by an executable harness.",
+      "evidence": [
+        {
+          "path": "benchmarks/verify_diagnostics_correctness.py",
+          "must_contain": [
+            "invariants",
+            "def main() -> int"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "HAT-PERFORMANCE-BASELINE",
+      "title": "Performance smoke has an approved baseline and machine-readable result.",
+      "evidence": [
+        {
+          "path": "benchmarks/performance_smoke.py",
+          "must_contain": [
+            "--baseline",
+            "--json-output"
+          ]
+        },
+        {
+          "path": "benchmarks/baselines/performance_smoke.json",
+          "must_contain": [
+            "max_fit_seconds",
+            "max_predict_seconds",
+            "max_rss_delta_mb"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "HAT-RELEASE-EVIDENCE",
+      "title": "Release evidence template records gates, waivers, mutation, fuzz, and residual risks.",
+      "evidence": [
+        {
+          "path": "docs/maintenance/release-evidence-template.md",
+          "must_contain": [
+            "Required Gates",
+            "Residual Risks"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "HAT-MUTATION-SMOKE",
+      "title": "A deterministic mutation smoke test proves critical validation tests kill mutants.",
+      "evidence": [
+        {
+          "path": "scripts/mutation_smoke.py",
+          "must_contain": [
+            "test_weight_zero_mass_contracts",
+            "mutant survived"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "HAT-DEEP-ASSURANCE-EXPANSION",
+      "title": "Remaining highest-assurance tracks have an executable specification and implementation plan.",
+      "evidence": [
+        {
+          "path": "docs/maintenance/deep-assurance-expansion-plan.md",
+          "must_contain": [
+            "Scored Mutation Testing",
+            "External Oracle and Differential Testing",
+            "Metamorphic Testing",
+            "Numerical Torture Testing",
+            "Long-Running Deep-Assurance CI",
+            "Release Evidence Pack"
+          ]
+        },
+        {
+          "path": "docs/maintenance/testing.md",
+          "must_contain": [
+            "Deep Assurance Expansion Plan"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "HAT-MUTATION-SCORED",
+      "title": "Scored deterministic mutation testing runs for critical Rust and Python modules.",
+      "evidence": [
+        {
+          "path": "specs/high_assurance_mutation_targets.json",
+          "must_contain": [
+            "MUT-PY-VALIDATION-ZERO-WEIGHT",
+            "MUT-RS-POISSON-VARIANCE"
+          ]
+        },
+        {
+          "path": "scripts/run_python_mutation.py",
+          "must_contain": [
+            "minimum-score",
+            "Python mutation score"
+          ]
+        },
+        {
+          "path": "scripts/run_rust_mutation.py",
+          "must_contain": [
+            "minimum-score",
+            "Rust mutation score"
+          ]
+        },
+        {
+          "path": "scripts/check_mutation_waivers.py",
+          "must_contain": [
+            "Mutation waiver check passed",
+            "test-gap mutation waivers block release"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "HAT-ORACLE-FIXTURES",
+      "title": "Archived external-oracle fixtures cover supported GLM families.",
+      "evidence": [
+        {
+          "path": "scripts/check_oracle_fixtures.py",
+          "must_contain": [
+            "Oracle fixture check passed",
+            "REQUIRED_STATS_FAMILIES"
+          ]
+        },
+        {
+          "path": "scripts/generate_oracle_fixtures.py",
+          "must_contain": [
+            "statsmodels-poisson-exposure",
+            "--accept"
+          ]
+        },
+        {
+          "path": "tests/python/test_oracle_fixtures.py",
+          "must_contain": [
+            "test_archived_statsmodels_oracle_fixture",
+            "assert_allclose"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "HAT-METAMORPHIC-CONTRACTS",
+      "title": "Metamorphic contracts protect invariants under data transformations.",
+      "evidence": [
+        {
+          "path": "tests/python/test_metamorphic_contracts.py",
+          "must_contain": [
+            "test_row_permutation_preserves_unpenalized_fit_and_predictions",
+            "test_duplicated_rows_match_integer_case_weights",
+            "test_exposure_scaling_with_offset_adjustment_preserves_rate_model",
+            "test_chunked_prediction_matches_single_shot_prediction"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "HAT-NUMERICAL-TORTURE",
+      "title": "Numerical torture scenarios run from a machine-readable catalog.",
+      "evidence": [
+        {
+          "path": "specs/numerical_torture_scenarios.json",
+          "must_contain": [
+            "NT-POISSON-EXPOSURE-EXTREMES",
+            "NT-PERFECT-SEPARATION-BINOMIAL"
+          ]
+        },
+        {
+          "path": "scripts/run_numerical_torture.py",
+          "must_contain": [
+            "Numerical torture suite passed",
+            "run_scenario"
+          ]
+        },
+        {
+          "path": "tests/python/test_numerical_torture_contracts.py",
+          "must_contain": [
+            "test_numerical_torture_scenario"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "HAT-FUZZ-EXPANDED",
+      "title": "Malformed-input corpus validates schema and covers additional fail-closed public API cases.",
+      "evidence": [
+        {
+          "path": "scripts/replay_fuzz_corpus.py",
+          "must_contain": [
+            "duplicate case id",
+            "glm_negative_exposure",
+            "predict_missing_required_column"
+          ]
+        },
+        {
+          "path": "tests/fuzz_corpus/python_malformed.json",
+          "must_contain": [
+            "glm_negative_exposure",
+            "glm_unknown_family",
+            "glm_invalid_expression_term"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "HAT-MUTATION-CAMPAIGNS",
+      "title": "Full mutation campaigns are specified, validated, and dry-runnable.",
+      "evidence": [
+        {
+          "path": "specs/mutation_campaigns.json",
+          "must_contain": [
+            "MUTCAMP-RUST-FAMILIES-LINKS",
+            "minimum_score"
+          ]
+        },
+        {
+          "path": "scripts/check_mutation_campaigns.py",
+          "must_contain": [
+            "Mutation campaign config passed",
+            "minimum_score"
+          ]
+        },
+        {
+          "path": "scripts/run_mutation_campaign.py",
+          "must_contain": [
+            "--dry-run",
+            "Mutation campaign"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "HAT-RUST-FUZZ-TARGETS",
+      "title": "Rust libFuzzer targets exercise core family and link numerical contracts.",
+      "evidence": [
+        {
+          "path": "fuzz/Cargo.toml",
+          "must_contain": [
+            "cargo-fuzz = true",
+            "family_deviance",
+            "link_roundtrip"
+          ]
+        },
+        {
+          "path": "fuzz/fuzz_targets/family_deviance.rs",
+          "must_contain": [
+            "fuzz_target!",
+            "unit_deviance_at"
+          ]
+        },
+        {
+          "path": "scripts/check_fuzz_targets.py",
+          "must_contain": [
+            "Rust fuzz target check passed",
+            "fuzz_target!"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "HAT-ORACLE-ARCHIVE-MANIFEST",
+      "title": "Oracle archive manifest records implemented fixtures and planned external oracle gaps.",
+      "evidence": [
+        {
+          "path": "tests/oracles/archive_manifest.json",
+          "must_contain": [
+            "ORACLE-GLUM-REGULARIZED-GLM",
+            "ORACLE-EXACT-SMOOTH-FIXED-PENALTY",
+            "ORACLE-R-MGCV-MONOTONIC-SMOOTH",
+            "ORACLE-STATSMODELS-MULTINOMIAL-NONDEFAULT-REFERENCE"
+          ]
+        },
+        {
+          "path": "scripts/check_oracle_archive_manifest.py",
+          "must_contain": [
+            "Oracle archive manifest check passed",
+            "external-blocked"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "HAT-GLUM-REGULARIZED-ORACLES",
+      "title": "Regularized Gaussian GLM ridge, lasso, and elastic-net paths have archived glum fixtures.",
+      "evidence": [
+        {
+          "path": "scripts/generate_glum_oracle_fixtures.py",
+          "must_contain": [
+            "glum_alpha",
+            "gaussian_elastic_net"
+          ]
+        },
+        {
+          "path": "tests/python/test_glum_oracle_fixtures.py",
+          "must_contain": [
+            "test_archived_glum_regularized_oracle_fixture",
+            "_kkt_residual"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "HAT-MULTINOMIAL-ORACLE",
+      "title": "Multinomial non-default-reference probabilities have an archived statsmodels MNLogit fixture.",
+      "evidence": [
+        {
+          "path": "scripts/generate_multinomial_oracle_fixtures.py",
+          "must_contain": [
+            "statsmodels.MNLogit",
+            "nondefault_reference"
+          ]
+        },
+        {
+          "path": "tests/python/test_multinomial_oracle_fixtures.py",
+          "must_contain": [
+            "test_archived_statsmodels_multinomial_oracle_fixture",
+            "reference_ != result.classes_[0]"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "HAT-SMOOTH-EXACT-ORACLE",
+      "title": "Fixed-penalty smooth Gaussian fits have an exact penalized least-squares oracle.",
+      "evidence": [
+        {
+          "path": "scripts/generate_smooth_oracle_fixtures.py",
+          "must_contain": [
+            "exact-gaussian-fixed-smooth-penalty",
+            "kkt_max_abs"
+          ]
+        },
+        {
+          "path": "tests/python/test_smooth_oracle_fixtures.py",
+          "must_contain": [
+            "test_exact_fixed_penalty_smooth_oracle_fixture",
+            "fit_smooth_glm_unified_py"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "HAT-MODULE-COVERAGE-GATES",
+      "title": "Critical modules have machine-readable coverage thresholds beyond total package coverage.",
+      "evidence": [
+        {
+          "path": "specs/module_coverage_thresholds.json",
+          "must_contain": [
+            "COVMOD-PY-VALIDATION",
+            "COVMOD-RS-SOLVERS"
+          ]
+        },
+        {
+          "path": "scripts/check_module_coverage.py",
+          "must_contain": [
+            "Module coverage check passed",
+            "python-json",
+            "rust-lcov"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "HAT-DEEP-PERFORMANCE-MEMORY",
+      "title": "Deep performance smoke covers GLM, smooth GLM, multinomial, and RSS budgets.",
+      "evidence": [
+        {
+          "path": "benchmarks/deep_performance_smoke.py",
+          "must_contain": [
+            "multinomial_native_masked",
+            "rss_peak_delta_mb"
+          ]
+        },
+        {
+          "path": "benchmarks/baselines/deep_performance_smoke.json",
+          "must_contain": [
+            "smooth_poisson_bs",
+            "max_rss_delta_mb"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "HAT-DEEP-CI-FINAL-LAYERS",
+      "title": "Deep CI wires the final mutation, fuzz, oracle, coverage, and performance layers.",
+      "evidence": [
+        {
+          "path": ".github/workflows/deep-assurance.yml",
+          "must_contain": [
+            "Mutation campaign dry-run",
+            "Rust fuzz target validation",
+            "Module coverage gates",
+            "Deep performance smoke"
+          ]
+        }
+      ]
+    }
+  ]
+}

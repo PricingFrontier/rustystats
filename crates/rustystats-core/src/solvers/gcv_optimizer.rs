@@ -467,6 +467,40 @@ fn compute_rss_from_cached(
     ztwz - 2.0 * beta_xtwz + beta_xtwx_beta
 }
 
+fn max_relative_lambda_change(new_lambdas: &[f64], old_lambdas: &[f64]) -> f64 {
+    new_lambdas
+        .iter()
+        .zip(old_lambdas)
+        .map(|(&new, &old)| ((new - old) / old.max(1e-10)).abs())
+        .fold(0.0, f64::max)
+}
+
+fn gradient_norm(grad: &[f64]) -> f64 {
+    grad.iter().map(|&g| g * g).sum::<f64>().sqrt()
+}
+
+fn solve_reml_newton_delta(
+    hess: &DMatrix<f64>,
+    g_vec: &DVector<f64>,
+    grad_norm: f64,
+) -> DVector<f64> {
+    match hess.clone().cholesky() {
+        Some(h_chol) => h_chol.solve(g_vec) * -1.0,
+        None => {
+            let reg = hess.diagonal().amax() * 0.1 + 1e-6;
+            let h_reg = hess + &DMatrix::from_diagonal(&DVector::from_element(hess.nrows(), reg));
+            match h_reg.cholesky() {
+                Some(h_chol) => h_chol.solve(g_vec) * -1.0,
+                None => g_vec * (-1.0 / grad_norm),
+            }
+        }
+    }
+}
+
+fn halve_step(step: f64) -> f64 {
+    step * 0.5
+}
+
 /// Fast GCV optimization for multiple smooth terms.
 ///
 /// Uses coordinate descent: optimize each lambda while holding others fixed.
@@ -624,11 +658,7 @@ impl MultiTermGCVOptimizer {
             }
 
             // Check convergence
-            let max_change: f64 = lambdas
-                .iter()
-                .zip(&old_lambdas)
-                .map(|(&new, &old)| ((new - old) / old.max(1e-10)).abs())
-                .fold(0.0, f64::max);
+            let max_change = max_relative_lambda_change(&lambdas, &old_lambdas);
 
             if max_change < 0.01 {
                 break;
@@ -769,7 +799,7 @@ impl MultiTermGCVOptimizer {
             }
 
             // Check gradient convergence
-            let grad_norm: f64 = grad.iter().map(|&g| g * g).sum::<f64>().sqrt();
+            let grad_norm = gradient_norm(&grad);
             if grad_norm < tol {
                 break;
             }
@@ -813,18 +843,7 @@ impl MultiTermGCVOptimizer {
 
             // Newton step: delta = -H^{-1} g
             let g_vec = DVector::from_vec(grad);
-            let delta = match hess.clone().cholesky() {
-                Some(h_chol) => h_chol.solve(&g_vec) * -1.0,
-                None => {
-                    // Regularize Hessian
-                    let reg = hess.diagonal().amax() * 0.1 + 1e-6;
-                    let h_reg = &hess + &DMatrix::from_diagonal(&DVector::from_element(m, reg));
-                    match h_reg.cholesky() {
-                        Some(h_chol) => h_chol.solve(&g_vec) * -1.0,
-                        None => &g_vec * (-1.0 / grad_norm),
-                    }
-                }
-            };
+            let delta = solve_reml_newton_delta(&hess, &g_vec, grad_norm);
 
             // Step halving on REML
             let current_reml = self.evaluate_reml_internal(&lambdas, &penalty_ranks);
@@ -843,7 +862,7 @@ impl MultiTermGCVOptimizer {
                     accepted = true;
                     break;
                 }
-                step *= 0.5;
+                step = halve_step(step);
             }
             if !accepted {
                 break;
@@ -872,6 +891,7 @@ mod tests {
     use crate::splines::bs_basis;
     use crate::splines::penalized::penalty_matrix;
     use ndarray::{Array1, Array2};
+    use std::cell::RefCell;
 
     // =========================================================================
     // Brent's method unit tests
@@ -901,6 +921,429 @@ mod tests {
         // Monotonically decreasing in [0, 5] => minimum at b=5
         let result = brent_minimize(|x| -x, 0.0, 5.0, 1e-6, 100);
         assert!((result.x_min - 5.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_brent_minimize_reports_nonconvergence_when_budget_exhausted() {
+        let result = brent_minimize(|x| (x - 1.0).powi(2), -5.0, 5.0, 1e-12, 0);
+        assert!(!result.converged);
+        assert_eq!(result.iterations, 0);
+        assert!(result.x_min.is_finite());
+        assert!(result.f_min.is_finite());
+    }
+
+    #[test]
+    fn test_brent_initial_point_and_first_golden_step_are_exact() {
+        let calls = RefCell::new(Vec::new());
+        let result = brent_minimize(
+            |x| {
+                calls.borrow_mut().push(x);
+                (x - 2.0).powi(2)
+            },
+            0.0,
+            5.0,
+            1e-6,
+            1,
+        );
+
+        let calls = calls.into_inner();
+        let golden = 0.381966011250105;
+        let expected_x0 = golden * 5.0;
+        let expected_x1 = expected_x0 + golden * (5.0 - expected_x0);
+
+        assert_eq!(calls.len(), 2);
+        assert!((calls[0] - expected_x0).abs() < 1e-15);
+        assert!((calls[1] - expected_x1).abs() < 1e-15);
+        assert!(!result.converged);
+        assert_eq!(result.iterations, 1);
+        assert!((result.x_min - expected_x0).abs() < 1e-15);
+        assert!((result.f_min - (expected_x0 - 2.0).powi(2)).abs() < 1e-15);
+    }
+
+    #[test]
+    fn test_brent_asymmetric_trace_matches_reference_sequence() {
+        let calls = RefCell::new(Vec::new());
+        let objective = |x: f64| {
+            let c = x - 1.2345;
+            c * c + 0.03 * c * c * c + 0.2 * (0.7 * x).sin()
+        };
+
+        let result = brent_minimize(
+            |x| {
+                calls.borrow_mut().push(x);
+                objective(x)
+            },
+            -2.0,
+            5.0,
+            1e-8,
+            12,
+        );
+
+        let expected_calls = [
+            0.6737620787507348,
+            2.3262379212492625,
+            -0.3475241575014725,
+            1.169029145879195,
+            1.1800629128458504,
+            1.1873616520504968,
+            1.1872137261885387,
+            1.1872122491447525,
+            1.1872122616720797,
+            1.1872122736442023,
+        ];
+        let calls = calls.into_inner();
+        assert_eq!(calls.len(), expected_calls.len());
+        for (actual, expected) in calls.iter().zip(expected_calls) {
+            assert!((*actual - expected).abs() < 1e-12, "{actual} != {expected}");
+        }
+
+        assert!(result.converged);
+        assert_eq!(result.iterations, 10);
+        assert!((result.x_min - 1.1872122616720797).abs() < 1e-12);
+        assert!((result.f_min - objective(result.x_min)).abs() < 1e-15);
+    }
+
+    fn assert_brent_trace<F>(
+        objective: F,
+        interval: (f64, f64),
+        tol: f64,
+        max_iter: usize,
+        expected_calls: &[f64],
+        expected_x: f64,
+        expected_iterations: usize,
+        expected_converged: bool,
+    ) where
+        F: Fn(f64) -> f64,
+    {
+        let calls = RefCell::new(Vec::new());
+        let result = brent_minimize(
+            |x| {
+                calls.borrow_mut().push(x);
+                objective(x)
+            },
+            interval.0,
+            interval.1,
+            tol,
+            max_iter,
+        );
+
+        let calls = calls.into_inner();
+        assert_eq!(calls.len(), expected_calls.len(), "actual calls: {calls:?}");
+        for (actual, expected) in calls.iter().zip(expected_calls.iter()) {
+            assert!(
+                (*actual - *expected).abs() < 1e-12,
+                "{actual} != {expected}"
+            );
+        }
+        assert_eq!(result.iterations, expected_iterations);
+        assert_eq!(result.converged, expected_converged);
+        assert!(
+            (result.x_min - expected_x).abs() < 1e-12,
+            "x_min {} != {}",
+            result.x_min,
+            expected_x
+        );
+        assert!((result.f_min - objective(result.x_min)).abs() < 1e-15);
+    }
+
+    #[test]
+    fn test_brent_endpoint_and_flat_traces_match_reference_sequences() {
+        assert_brent_trace(
+            |x| (x - 0.001).powi(2),
+            (0.0, 5.0),
+            1e-6,
+            10,
+            &[
+                1.909830056250525,
+                3.0901699437494732,
+                1.1803398874989484,
+                0.7294901687515774,
+                0.4508497187473714,
+                0.27864045000420623,
+                0.17220926874316528,
+                0.10643118126104105,
+                0.06577808748212428,
+                0.04065309377891681,
+                0.025124993703207497,
+            ],
+            0.025124993703207497,
+            10,
+            false,
+        );
+
+        assert_brent_trace(
+            |x| -x,
+            (0.0, 5.0),
+            1e-6,
+            10,
+            &[
+                1.909830056250525,
+                3.0901699437494732,
+                3.8196601125010505,
+                4.270509831248422,
+                4.549150281252628,
+                4.721359549995793,
+                4.827790731256835,
+                4.893568818738959,
+                4.934221912517876,
+                4.959346906221084,
+                4.974875006296793,
+            ],
+            4.974875006296793,
+            10,
+            false,
+        );
+
+        assert_brent_trace(
+            |x| (x - 1.0).powi(4) + 0.01 * (x + 0.3),
+            (-2.0, 3.0),
+            1e-7,
+            12,
+            &[
+                -0.09016994374947496,
+                1.0901699437494732,
+                1.8196601125010505,
+                1.1242094480968758,
+                1.0986607675961519,
+                0.6393202250021023,
+                0.99255142537187,
+                0.8312610217896113,
+                0.7990171324069528,
+                0.8883544418292069,
+                0.9281541480172908,
+                0.8684949291224098,
+                0.8662946339689632,
+            ],
+            0.8662946339689632,
+            12,
+            false,
+        );
+    }
+
+    fn poly_sin_objective(
+        center: f64,
+        quadratic: f64,
+        cubic: f64,
+        quartic: f64,
+        sine: f64,
+        frequency: f64,
+    ) -> impl Fn(f64) -> f64 {
+        move |x| {
+            let c = x - center;
+            quadratic * c * c
+                + cubic * c * c * c
+                + quartic * c * c * c * c
+                + sine * (frequency * x).sin()
+        }
+    }
+
+    #[test]
+    fn test_brent_adversarial_parabolic_traces_match_reference_sequences() {
+        assert_brent_trace(
+            poly_sin_objective(
+                -2.0079566942191485,
+                0.9660555800788191,
+                -0.1315883105115243,
+                0.038732269809014855,
+                0.06600816872886128,
+                0.5718819950375469,
+            ),
+            (-2.500280764727953, -1.9036736548858035),
+            4.181522340479938e-9,
+            11,
+            &[
+                -2.272397126698094,
+                -2.131557292915663,
+                -2.0445134886682346,
+                -2.0187565732807196,
+                -2.0161337322278388,
+                -2.015880233003032,
+                -2.015874062923127,
+                -2.0158740105756556,
+                -2.0158740020462336,
+                -2.0158740191050777,
+            ],
+            -2.0158740105756556,
+            10,
+            true,
+        );
+
+        assert_brent_trace(
+            poly_sin_objective(
+                -3.844917527402547,
+                1.78231679587613,
+                -0.21342502460256496,
+                0.130508061371047,
+                -0.3941068955843414,
+                1.7672496924519376,
+            ),
+            (-4.959960165311165, 1.8470899940559056),
+            8.095965392590611e-9,
+            11,
+            &[
+                -2.359898367558334,
+                -0.7529718036969284,
+                -3.35303360144976,
+                -3.3366966175625565,
+                -3.5717042817484526,
+                -4.101970844187392,
+                -3.6336634647693913,
+                -3.643762350273735,
+                -3.6459955636414305,
+                -3.646084569834434,
+                -3.646086932257349,
+                -3.646086961875943,
+            ],
+            -3.646086961875943,
+            11,
+            false,
+        );
+
+        assert_brent_trace(
+            poly_sin_objective(
+                0.2790335477615429,
+                2.492018446003564,
+                0.30712453305908294,
+                0.04646162259549243,
+                0.3731899671198792,
+                0.6976749896671028,
+            ),
+            (-3.6042733806295537, 1.8699036309347008),
+            1.0221065891057483e-5,
+            13,
+            &[
+                -1.5133238226453356,
+                -0.2210459270495193,
+                0.5776257353388833,
+                0.22448312947642018,
+                0.2180985898492533,
+                0.22672261760554405,
+                0.22695238236139428,
+                0.22695006256614003,
+                0.22694774279459656,
+            ],
+            0.22695006256614003,
+            9,
+            true,
+        );
+
+        assert_brent_trace(
+            poly_sin_objective(
+                -2.9101750698225697,
+                2.279222074664379,
+                -0.03913473772467524,
+                0.03638751543055143,
+                0.41893464981372175,
+                0.623938491662846,
+            ),
+            (-3.4143278969004527, 4.210893887201809),
+            7.320960179661741e-8,
+            7,
+            &[
+                -0.5017523471295022,
+                1.2983183374308562,
+                -1.6142572123400938,
+                -2.3483098997061904,
+                -2.801992649131509,
+                -2.891360476322163,
+                -2.896865744021123,
+                -2.8967336001960233,
+            ],
+            -2.8967336001960233,
+            7,
+            false,
+        );
+
+        assert_brent_trace(
+            poly_sin_objective(
+                6.083464029445333,
+                2.6776866501438326,
+                0.20816993851109322,
+                0.029303269507140507,
+                -0.17408438668213622,
+                1.9466131687817783,
+            ),
+            (-0.21485418970690606, 7.476125579341503),
+            1.0411198330114626e-9,
+            13,
+            &[
+                2.7228386752817686,
+                4.538432714352826,
+                5.660531540270444,
+                6.072673456086898,
+                6.164800561809594,
+                6.135388435751589,
+                6.134330352058865,
+                6.134478252685441,
+                6.13447645993344,
+                6.1344764700510215,
+                6.134476476537746,
+            ],
+            6.1344764700510215,
+            11,
+            true,
+        );
+
+        assert_brent_trace(
+            poly_sin_objective(
+                1.3260498661622095,
+                0.5895225514974294,
+                -0.2753445983417371,
+                0.02506353671029482,
+                0.19014477481947423,
+                2.163490520714161,
+            ),
+            (-0.3282906239608314, 1.6942383466264188),
+            1.2505142677956984e-8,
+            9,
+            &[
+                0.44424669957216134,
+                0.921701023093425,
+                1.2167840231051545,
+                1.5940544276511397,
+                1.4499499560639964,
+                1.5390114174356944,
+                1.6323212795735307,
+                1.6559714947040276,
+                1.6705881314959219,
+                1.6796217098345247,
+            ],
+            1.6796217098345247,
+            9,
+            false,
+        );
+
+        assert_brent_trace(
+            poly_sin_objective(
+                1.378041294354516,
+                0.4823095462273046,
+                0.03876200502708116,
+                0.16558739428665317,
+                0.4998867018614851,
+                1.85078244187337,
+            ),
+            (0.6236148340993282, 6.8707564867798565),
+            1.0110147779963037e-9,
+            14,
+            &[
+                3.0098106128880984,
+                4.4845607079910845,
+                2.098364929202314,
+                2.2663739913192473,
+                2.0619109352185205,
+                2.0066530014393553,
+                1.9954810048604184,
+                1.9929985544393423,
+                1.992638375694634,
+                1.9926237407022347,
+                1.992623377428286,
+                1.9926233753137144,
+                1.9926233731991427,
+            ],
+            1.9926233753137144,
+            13,
+            true,
+        );
     }
 
     // =========================================================================
@@ -943,6 +1386,139 @@ mod tests {
         let col_end = 1 + k_actual;
 
         (x_combined, z, w, penalty, n_parametric, col_start, col_end)
+    }
+
+    #[test]
+    fn test_cached_matrix_helpers_match_direct_weighted_formula() {
+        let x = DMatrix::from_row_slice(3, 2, &[1.0, 2.0, 1.0, -1.0, 0.5, 3.0]);
+        let z = DVector::from_row_slice(&[2.0, -1.0, 4.0]);
+        let w = DVector::from_row_slice(&[0.5, 2.0, 1.5]);
+
+        let (xtwx, xtwz) = compute_xtwx_xtwz_nalg(&x, &z, &w);
+        let w_diag = DMatrix::from_diagonal(&w);
+        let direct_xtwx = x.transpose() * &w_diag * &x;
+        let direct_xtwz = x.transpose() * &w_diag * &z;
+
+        for i in 0..xtwx.nrows() {
+            for j in 0..xtwx.ncols() {
+                assert!((xtwx[(i, j)] - direct_xtwx[(i, j)]).abs() < 1e-12);
+            }
+        }
+        for i in 0..xtwz.len() {
+            assert!((xtwz[i] - direct_xtwz[i]).abs() < 1e-12);
+        }
+
+        let beta = DVector::from_row_slice(&[0.25, 1.5]);
+        let raw_rss = compute_weighted_rss(&x, &z, &w, &beta);
+        let ztwz = z.dot(&(w_diag * &z));
+        let cached_rss = compute_rss_from_cached(&xtwx, &xtwz, ztwz, &beta);
+        assert!((raw_rss - cached_rss).abs() < 1e-12);
+
+        let penalty = DMatrix::from_row_slice(1, 1, &[3.0]);
+        let penalized = build_penalized_xtwx(&xtwx, &[penalty], &[(1, 2)], &[2.0]);
+        assert!((penalized[(1, 1)] - (xtwx[(1, 1)] + 6.0)).abs() < 1e-12);
+        assert_eq!(penalized[(0, 0)], xtwx[(0, 0)]);
+
+        assert!(gcv_from_rss_edf(5, 10.0, 4.5).is_infinite());
+        assert!((gcv_from_rss_edf(10, 5.0, 2.0) - 50.0 / 64.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_max_relative_lambda_change_uses_relative_scale_and_zero_guard() {
+        let old = [1.0, 10.0, 0.0, 4.0];
+        let new = [1.5, 5.0, 2.0e-10, 3.0];
+        assert!((max_relative_lambda_change(&new, &old) - 2.0).abs() < 1e-12);
+
+        let unchanged = [0.5, 2.0, 8.0];
+        assert_eq!(max_relative_lambda_change(&unchanged, &unchanged), 0.0);
+    }
+
+    #[test]
+    fn test_reml_newton_helper_math_is_exact_on_core_branches() {
+        assert!((gradient_norm(&[3.0, 4.0]) - 5.0).abs() < 1e-12);
+        assert_eq!(halve_step(1.0), 0.5);
+        assert_eq!(halve_step(0.125), 0.0625);
+
+        let positive_hess = DMatrix::from_diagonal(&DVector::from_vec(vec![2.0, 8.0]));
+        let g_vec = DVector::from_vec(vec![4.0, -16.0]);
+        let delta = solve_reml_newton_delta(&positive_hess, &g_vec, 5.0);
+        assert!((delta[0] + 2.0).abs() < 1e-12);
+        assert!((delta[1] - 2.0).abs() < 1e-12);
+
+        let singular_hess = DMatrix::zeros(2, 2);
+        let singular_delta = solve_reml_newton_delta(&singular_hess, &g_vec, 5.0);
+        assert!((singular_delta[0] + 4.0e6).abs() < 1e-6);
+        assert!((singular_delta[1] - 16.0e6).abs() < 1e-6);
+
+        let indefinite_hess = DMatrix::from_diagonal(&DVector::from_vec(vec![-1.0, -2.0]));
+        let fallback_g = DVector::from_vec(vec![3.0, 4.0]);
+        let fallback_delta = solve_reml_newton_delta(&indefinite_hess, &fallback_g, 5.0);
+        assert!((fallback_delta[0] + 0.6).abs() < 1e-12);
+        assert!((fallback_delta[1] + 0.8).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_to_nalgebra_accepts_nonstandard_layout() {
+        let x = Array2::from_shape_vec((2, 3), vec![1.0, 3.0, 5.0, 2.0, 4.0, 6.0])
+            .expect("shape")
+            .reversed_axes();
+        assert!(!x.is_standard_layout());
+        let z = Array1::from_vec(vec![10.0, 20.0, 30.0]);
+        let w = Array1::from_vec(vec![1.0, 0.5, 2.0]);
+
+        let (x_nalg, z_nalg, w_nalg) = to_nalgebra(&x, &z, &w);
+
+        assert_eq!(x_nalg.nrows(), 3);
+        assert_eq!(x_nalg.ncols(), 2);
+        assert_eq!(x_nalg[(0, 0)], 1.0);
+        assert_eq!(x_nalg[(0, 1)], 2.0);
+        assert_eq!(x_nalg[(2, 0)], 5.0);
+        assert_eq!(x_nalg[(2, 1)], 6.0);
+        assert_eq!(z_nalg[1], 20.0);
+        assert_eq!(w_nalg[2], 2.0);
+    }
+
+    #[test]
+    fn test_gcv_cache_accepts_nonstandard_penalty_layout() {
+        let x = Array2::from_shape_vec(
+            (4, 3),
+            vec![
+                1.0, 0.0, 1.0, 1.0, 1.0, 0.5, 1.0, 2.0, 0.25, 1.0, 3.0, 0.125,
+            ],
+        )
+        .expect("shape");
+        let z = Array1::from_vec(vec![1.0, 2.0, 2.5, 3.0]);
+        let w = Array1::ones(4);
+        let penalty = Array2::from_shape_vec((2, 2), vec![1.0, 0.25, 0.25, 2.0])
+            .expect("shape")
+            .reversed_axes();
+        assert!(!penalty.is_standard_layout());
+
+        let cache = GCVCache::new(&x, &z, &w, &penalty, 1, 3, 1);
+
+        assert!(cache.evaluate_gcv(0.0).is_finite());
+        assert!(cache.compute_edf(1.0).is_finite());
+    }
+
+    #[test]
+    fn test_gcv_cache_matches_closed_form_orthogonal_problem() {
+        let x = Array2::from_shape_vec((3, 2), vec![1.0, -1.0, 1.0, 0.0, 1.0, 1.0]).expect("shape");
+        let z = Array1::from_vec(vec![1.0, 2.0, 5.0]);
+        let w = Array1::ones(3);
+        let penalty = Array2::from_shape_vec((1, 1), vec![1.0]).expect("shape");
+        let cache = GCVCache::new(&x, &z, &w, &penalty, 1, 2, 1);
+
+        let beta = cache
+            .solve_coefficients(2.0)
+            .expect("orthogonal penalized system is positive definite");
+        assert!((beta[0] - 8.0 / 3.0).abs() < 1e-12);
+        assert!((beta[1] - 1.0).abs() < 1e-12);
+        assert!((cache.compute_edf(2.0) - 0.5).abs() < 1e-12);
+
+        let expected_rss = 8.0 / 3.0;
+        let expected_total_edf = 1.0 + 0.5;
+        let expected_gcv = 3.0 * expected_rss / ((3.0_f64 - expected_total_edf).powi(2));
+        assert!((cache.evaluate_gcv(2.0_f64.ln()) - expected_gcv).abs() < 1e-12);
     }
 
     #[test]
@@ -1011,6 +1587,19 @@ mod tests {
         assert!(beta.is_some());
         let beta = beta.expect("test setup should be valid");
         assert_eq!(beta.len(), x.ncols());
+    }
+
+    #[test]
+    fn test_gcv_cache_singular_penalized_system_degrades() {
+        let x = Array2::zeros((4, 2));
+        let z = Array1::from_vec(vec![1.0, 2.0, 3.0, 4.0]);
+        let w = Array1::ones(4);
+        let penalty = Array2::zeros((1, 1));
+        let cache = GCVCache::new(&x, &z, &w, &penalty, 1, 2, 1);
+
+        assert!(cache.evaluate_gcv(0.0).is_infinite());
+        assert_eq!(cache.compute_edf(1.0), 1.0);
+        assert!(cache.solve_coefficients(1.0).is_none());
     }
 
     // =========================================================================
@@ -1105,5 +1694,188 @@ mod tests {
         let gcv = optimizer.evaluate_gcv(&[1.0]);
         assert!(gcv.is_finite());
         assert!(gcv >= 0.0);
+    }
+
+    #[test]
+    fn test_multi_term_cached_constructor_matches_raw_constructor() {
+        let (x, z, w, penalty, n_param, col_start, col_end) = simple_smooth_problem(80, 7);
+        let raw = MultiTermGCVOptimizer::new(
+            &x,
+            &z,
+            &w,
+            vec![penalty.clone()],
+            vec![(col_start, col_end)],
+            n_param,
+        );
+
+        let cached = MultiTermGCVOptimizer::new_from_cached(
+            raw.xtwx.clone(),
+            raw.xtwz.clone(),
+            raw.ztwz,
+            vec![penalty.reversed_axes()],
+            vec![(col_start, col_end)],
+            raw.n,
+            raw.n_parametric,
+        );
+
+        let raw_gcv = raw.evaluate_gcv(&[0.75]);
+        let cached_gcv = cached.evaluate_gcv(&[0.75]);
+        assert!((raw_gcv - cached_gcv).abs() < 1e-10);
+        assert_eq!(cached.penalties[0].nrows(), col_end - col_start);
+    }
+
+    #[test]
+    fn test_multi_term_gcv_matches_closed_form_orthogonal_problem() {
+        let optimizer = MultiTermGCVOptimizer::new_from_cached(
+            DMatrix::from_diagonal(&DVector::from_vec(vec![4.0, 4.0, 4.0])),
+            DVector::from_vec(vec![14.0, 8.0, 6.0]),
+            78.0,
+            vec![
+                Array2::from_shape_vec((1, 1), vec![1.0]).expect("shape"),
+                Array2::from_shape_vec((1, 1), vec![1.0]).expect("shape"),
+            ],
+            vec![(1, 2), (2, 3)],
+            4,
+            1,
+        );
+
+        let lambdas = [1.0, 3.0];
+        let edfs = optimizer.compute_edfs(&lambdas);
+        assert!((edfs[0] - 4.0 / 5.0).abs() < 1e-12);
+        assert!((edfs[1] - 4.0 / 7.0).abs() < 1e-12);
+
+        let beta0 = 14.0 / 4.0;
+        let beta1 = 8.0 / 5.0;
+        let beta2 = 6.0 / 7.0;
+        let rss = 78.0 - 2.0 * (beta0 * 14.0 + beta1 * 8.0 + beta2 * 6.0)
+            + 4.0 * (beta0 * beta0 + beta1 * beta1 + beta2 * beta2);
+        let total_edf = 1.0 + edfs[0] + edfs[1];
+        let expected_gcv = 4.0 * rss / ((4.0_f64 - total_edf).powi(2));
+
+        assert!((optimizer.evaluate_gcv(&lambdas) - expected_gcv).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_reml_internal_matches_closed_form_single_penalty_problem() {
+        let optimizer = MultiTermGCVOptimizer::new_from_cached(
+            DMatrix::from_diagonal(&DVector::from_vec(vec![3.0, 2.0])),
+            DVector::from_vec(vec![8.0, 4.0]),
+            30.0,
+            vec![Array2::from_shape_vec((1, 1), vec![1.0]).expect("shape")],
+            vec![(1, 2)],
+            3,
+            1,
+        );
+
+        let expected = 14.0 / 3.0 + 6.0_f64.ln();
+        assert!((optimizer.evaluate_reml_internal(&[2.0], &[1.0]) - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_reml_optimizer_deterministic_fixture_outputs() {
+        let optimizer = MultiTermGCVOptimizer::new_from_cached(
+            DMatrix::from_diagonal(&DVector::from_vec(vec![4.0, 5.0, 7.0])),
+            DVector::from_vec(vec![9.0, 3.0, -2.0]),
+            25.0,
+            vec![
+                Array2::from_shape_vec((1, 1), vec![2.0]).expect("shape"),
+                Array2::from_shape_vec((1, 1), vec![3.0]).expect("shape"),
+            ],
+            vec![(1, 2), (2, 3)],
+            6,
+            1,
+        );
+
+        let coordinate = optimizer.optimize_lambdas(&[0.2, 8.0], -4.0, 4.0, 1e-5, 4);
+        let reml = optimizer.optimize_lambdas_reml(&[0.2, 8.0], -4.0, 4.0, 1e-5, 4);
+        let edfs = optimizer.compute_edfs(&[0.5, 2.0]);
+        assert!((coordinate[0] - 1.7195923460542553).abs() < 1e-12);
+        assert!((coordinate[1] - 54.59533366687368).abs() < 1e-10);
+        assert!((reml[0] - 8.936684744519129).abs() < 1e-12);
+        assert!((reml[1] - 10.76852497541976).abs() < 1e-12);
+        assert!((edfs[0] - 0.8333333333333335).abs() < 1e-12);
+        assert!((edfs[1] - 0.5384615384615385).abs() < 1e-12);
+        assert!((optimizer.evaluate_gcv(&[0.5, 2.0]) - 1.16240682241007).abs() < 1e-12);
+        assert!(
+            (optimizer.evaluate_reml_internal(&[0.5, 2.0], &[1.0, 1.0]) - 8.685310880117177).abs()
+                < 1e-12
+        );
+    }
+
+    #[test]
+    fn test_reml_optimizer_coupled_terms_fixture_outputs() {
+        let optimizer = MultiTermGCVOptimizer::new_from_cached(
+            DMatrix::from_row_slice(3, 3, &[4.0, 1.0, 0.5, 1.0, 5.0, 2.0, 0.5, 2.0, 7.0]),
+            DVector::from_vec(vec![9.0, 3.0, -2.0]),
+            25.0,
+            vec![
+                Array2::from_shape_vec((1, 1), vec![2.0]).expect("shape"),
+                Array2::from_shape_vec((1, 1), vec![3.0]).expect("shape"),
+            ],
+            vec![(1, 2), (2, 3)],
+            6,
+            1,
+        );
+
+        let reml = optimizer.optimize_lambdas_reml(&[0.2, 8.0], -4.0, 4.0, 1e-5, 4);
+        assert!((reml[0] - 54.598150033144236).abs() < 1e-10);
+        assert!((reml[1] - 7.225896126585857).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_multi_term_optimizer_zero_outer_iterations_preserves_warm_start() {
+        let (x, z, w, penalty, n_param, col_start, col_end) = simple_smooth_problem(50, 6);
+        let optimizer = MultiTermGCVOptimizer::new(
+            &x,
+            &z,
+            &w,
+            vec![penalty],
+            vec![(col_start, col_end)],
+            n_param,
+        );
+
+        let lambdas = optimizer.optimize_lambdas(&[2.5], -8.0, 8.0, 1e-4, 0);
+        assert_eq!(lambdas, vec![2.5]);
+    }
+
+    #[test]
+    fn test_multi_term_reml_and_singular_degradation_paths() {
+        let (x, z, w, penalty, n_param, col_start, col_end) = simple_smooth_problem(80, 7);
+        let optimizer = MultiTermGCVOptimizer::new(
+            &x,
+            &z,
+            &w,
+            vec![penalty],
+            vec![(col_start, col_end)],
+            n_param,
+        );
+
+        let lambdas = optimizer.optimize_lambdas_reml(&[1.0], -6.0, 6.0, 1e-4, 5);
+        assert_eq!(lambdas.len(), 1);
+        assert!(lambdas[0].is_finite());
+        assert!(lambdas[0] > 0.0);
+
+        let gradient_converged = optimizer.optimize_lambdas_reml(&[1.25], -6.0, 6.0, 1.0e12, 5);
+        assert_eq!(gradient_converged.len(), 1);
+        assert!((gradient_converged[0] - 1.25).abs() < 1e-12);
+        assert!(optimizer.evaluate_reml_internal(&[1.0], &[1.0]).is_finite());
+
+        let singular = MultiTermGCVOptimizer::new_from_cached(
+            DMatrix::zeros(2, 2),
+            DVector::zeros(2),
+            1.0,
+            vec![Array2::zeros((1, 1))],
+            vec![(1, 2)],
+            4,
+            1,
+        );
+        assert!(singular.evaluate_gcv(&[1.0]).is_infinite());
+        assert!(singular
+            .evaluate_reml_internal(&[1.0], &[0.0])
+            .is_infinite());
+        assert_eq!(singular.compute_edfs(&[1.0]), vec![0.0]);
+        let singular_lambdas = singular.optimize_lambdas_reml(&[3.0], -6.0, 6.0, 1e-4, 5);
+        assert_eq!(singular_lambdas.len(), 1);
+        assert!((singular_lambdas[0] - 3.0).abs() < 1e-12);
     }
 }

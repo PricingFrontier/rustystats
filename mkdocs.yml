@@ -104,6 +104,7 @@ nav:
     - Adding a New Link: maintenance/adding-link.md
     - Input Transforms: maintenance/input-transforms.md
     - Testing Strategy: maintenance/testing.md
+    - Deep Assurance Expansion: maintenance/deep-assurance-expansion-plan.md
     - Performance: maintenance/performance.md
   - Reference:
     - Glossary: reference/glossary.md

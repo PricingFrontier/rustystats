@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "waivers": [
+    {
+      "id": "COV-PY-OVERALL-2026Q3",
+      "scope": "python package overall",
+      "current": "97.01% combined line/branch coverage; 98.28% statement coverage and 93.71% branch coverage. All displayed Python modules are at or above 95% combined coverage.",
+      "target": "97% aggregate line/branch coverage with at least 95% combined coverage for displayed Python modules",
+      "metric": "module-threshold-enforcement",
+      "current_value": "aggregate gate enforced; module-level gate not yet enforced",
+      "target_value": "module-level threshold gate enforced for high-risk Python modules",
+      "file_patterns": [
+        "python/rustystats/**/*.py",
+        "tests/python/**/*.py"
+      ],
+      "last_verified": "2026-07-01",
+      "evidence_command": "uv run --extra dev pytest tests/python --cov=rustystats --cov-report=term-missing:skip-covered --cov-fail-under=97",
+      "owner": "RustyStats maintainers",
+      "reason": "Aggregate Python coverage target is now met and enforced at 97%; remaining work is replacing the aggregate waiver with machine-enforced module-level thresholds.",
+      "remediation": "Add module-level coverage gates for high-risk Python modules and keep any newly added modules above the high-assurance floor.",
+      "expires": "2026-12-31"
+    },
+    {
+      "id": "COV-RUST-PYO3-2026Q3",
+      "scope": "PyO3 binding crate cargo-only coverage",
+      "current": "cargo llvm-cov reports many binding files as 0% because Python integration drives those paths outside cargo-only coverage.",
+      "target": "90% measured through Python integration",
+      "metric": "pyo3-integration-coverage",
+      "current_value": "not implemented",
+      "target_value": "90",
+      "file_patterns": [
+        "crates/rustystats/src/**/*.rs",
+        "tests/python/**/*.py"
+      ],
+      "last_verified": "2026-07-01",
+      "evidence_command": "cargo llvm-cov --workspace --summary-only && uv run --extra dev pytest tests/python --cov=rustystats",
+      "owner": "RustyStats maintainers",
+      "reason": "Combined PyO3/Python coverage instrumentation is not yet implemented.",
+      "remediation": "Add a Python-driven coverage job for the extension crate or an approved equivalent integration coverage report.",
+      "expires": "2026-12-31"
+    },
+    {
+      "id": "COV-RUST-MODULE-GATES-2026Q3",
+      "scope": "rustystats-core module-level thresholds",
+      "current": "rustystats-core now exceeds the overall final line/region target; remaining coverage work is enforcing per-module floors and keeping defensive branch waivers explicit.",
+      "target": "95% line and 90% region for every high-risk Rust module, enforced by machine-readable module gates",
+      "metric": "module-threshold-enforcement",
+      "current_value": "overall gate met; module-level gate not yet enforced",
+      "target_value": "module-level threshold gate enforced for high-risk Rust modules",
+      "file_patterns": [
+        "crates/rustystats-core/src/**/*.rs",
+        "crates/rustystats-core/tests/**/*.rs"
+      ],
+      "last_verified": "2026-07-01",
+      "evidence_command": "cargo llvm-cov -p rustystats-core --summary-only",
+      "owner": "RustyStats maintainers",
+      "reason": "Overall Rust core coverage now clears the final aggregate standard, but the release gate does not yet enforce per-module floors from coverage output.",
+      "remediation": "Add a module-threshold parser over llvm-cov/lcov output and keep any impossible defensive branches under explicit expiring waivers.",
+      "expires": "2026-12-31"
+    }
+  ]
+}

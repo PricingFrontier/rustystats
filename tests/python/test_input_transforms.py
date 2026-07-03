@@ -7,8 +7,20 @@ import pytest
 import rustystats as rs
 from rustystats.exceptions import PredictionError, ValidationError
 from rustystats.input_transforms import (
+    _any_null_mask,
+    _check_unique_normalized_keys,
+    _dedup_key_value,
+    _sample_bad_keys,
+    _unique_temp_name,
+    _utf8_key_series,
+    _validate_key_value,
+    _validate_numeric_param,
+    _validate_value,
     apply_input_transforms,
     apply_input_transforms_lazy,
+    compile_input_transforms,
+    input_transform_output_columns,
+    input_transform_source_columns,
     validate_input_transforms,
 )
 
@@ -96,6 +108,46 @@ def test_lookup_transform_maps_multi_column_keys_and_preserves_order():
     assert "brand_region_fts" not in df.columns
 
 
+def test_compile_column_helpers_and_chained_transforms_are_reusable():
+    specs = [
+        {
+            "type": "center",
+            "name": "x_center",
+            "sources": ["x"],
+            "output": "x_ctr",
+            "center": 1.5,
+            "metadata": None,
+        },
+        {
+            "type": "lookup",
+            "name": "center_brand_lookup",
+            "sources": ["x_ctr", "brand"],
+            "output": "risk_group",
+            "output_dtype": "string",
+            "keys": [[-0.5, "A"], [0.5, "B"]],
+            "values": ["low", "high"],
+            "default": "other",
+            "on_unseen": "default",
+            "on_null": "default",
+        },
+    ]
+    canonical = validate_input_transforms(specs, data_schema={"x": pl.Float64, "brand": pl.String})
+    compiled = compile_input_transforms(canonical, assume_validated=True)
+
+    assert input_transform_source_columns(canonical) == {"x", "x_ctr", "brand"}
+    assert input_transform_output_columns(canonical) == {"x_ctr", "risk_group"}
+    assert [transform.name for transform in compiled] == ["x_center", "center_brand_lookup"]
+    assert compiled[0].sources == ["x"]
+    assert compiled[0].output == "x_ctr"
+
+    df = pl.DataFrame({"x": [1.0, 2.0, 3.0], "brand": ["A", "B", "A"]})
+    out = apply_input_transforms(df.lazy(), compiled)
+
+    assert out["x_ctr"].to_list() == [-0.5, 0.5, 1.5]
+    assert out["risk_group"].to_list() == ["low", "high", "other"]
+    assert apply_input_transforms(df, None).equals(df)
+
+
 def test_numeric_center_and_clip_transforms_match_manual_columns():
     df = pl.DataFrame({"x": [-2.0, 0.0, 1.5, 4.0, None]})
     specs = [
@@ -122,6 +174,74 @@ def test_numeric_center_and_clip_transforms_match_manual_columns():
     assert out["x_clip"].to_list() == [-1.0, 0.0, 1.5, 2.0, None]
 
 
+def test_input_transform_validation_rejects_malformed_specs():
+    base_lookup = {
+        "type": "lookup",
+        "name": "lookup",
+        "sources": ["x"],
+        "output": "y",
+        "output_dtype": "float64",
+        "keys": [[1.0]],
+        "values": [2.0],
+        "default": 0.0,
+    }
+    missing_default = {k: v for k, v in base_lookup.items() if k != "default"}
+    bad_cases = [
+        ({"type": "lookup"}, "must be a list"),
+        ([1], "must be a dictionary"),
+        ([{**base_lookup, "type": "scale"}], "unsupported type"),
+        ([{**base_lookup, "name": ""}], "requires a non-empty string 'name'"),
+        ([base_lookup, {**base_lookup, "output": "z"}], "duplicate input transform name"),
+        ([{**base_lookup, "sources": []}], "requires non-empty string sources"),
+        ([{**base_lookup, "output": ""}], "requires a non-empty string output"),
+        ([base_lookup, {**base_lookup, "name": "lookup2"}], "duplicate input transform output"),
+        ([{**base_lookup, "sources": ["y"]}], "collides with a source column"),
+        ([{**base_lookup, "output_dtype": "int64"}], "output_dtype must be"),
+        ([{**base_lookup, "metadata": "owner"}], "metadata must be a dictionary"),
+        ([{**base_lookup, "keys": "bad"}], "requires list 'keys' and 'values'"),
+        ([{**base_lookup, "keys": [[1.0], [2.0]]}], "requires len\\(keys\\) == len\\(values\\)"),
+        ([{**base_lookup, "keys": [[1.0, 2.0]]}], "must be a list of length 1"),
+        ([{**base_lookup, "on_unseen": "warn"}], "on_unseen must be"),
+        ([{**base_lookup, "on_null": "warn"}], "on_null must be"),
+        ([missing_default], "requires default"),
+        ([{**base_lookup, "source_cast": "native"}], "only 'string' is supported"),
+    ]
+
+    for specs, message in bad_cases:
+        with pytest.raises(ValidationError, match=message):
+            validate_input_transforms(specs)
+
+    with pytest.raises(ValidationError, match="missing source"):
+        validate_input_transforms([base_lookup], data_schema={"z": pl.Float64})
+
+    with pytest.raises(ValidationError, match="requires exactly one source"):
+        validate_input_transforms(
+            [
+                {
+                    "type": "center",
+                    "name": "center",
+                    "sources": ["x", "z"],
+                    "output": "x_ctr",
+                    "center": 1.0,
+                }
+            ]
+        )
+    with pytest.raises(ValidationError, match="requires output_dtype='float64'"):
+        validate_input_transforms(
+            [
+                {
+                    "type": "clip",
+                    "name": "clip",
+                    "sources": ["x"],
+                    "output": "x_clip",
+                    "output_dtype": "string",
+                    "lower": 0.0,
+                    "upper": 1.0,
+                }
+            ]
+        )
+
+
 def test_numeric_transform_rejects_bad_bounds():
     with pytest.raises(ValidationError, match="lower must be <= upper"):
         validate_input_transforms(
@@ -136,6 +256,152 @@ def test_numeric_transform_rejects_bad_bounds():
                 }
             ]
         )
+
+
+def test_input_transform_runtime_error_contracts_and_replacement_paths():
+    center = [{"type": "center", "name": "center", "sources": ["x"], "output": "y", "center": 1.0}]
+    with pytest.raises(PredictionError, match="already exists"):
+        apply_input_transforms(pl.DataFrame({"x": [1.0], "y": [99.0]}), center)
+
+    with pytest.raises(PredictionError, match="missing source"):
+        apply_input_transforms(pl.DataFrame({"z": [1.0]}), center)
+
+    fast_lookup = [
+        {
+            "type": "lookup",
+            "name": "fast",
+            "sources": ["x"],
+            "output": "y",
+            "output_dtype": "float64",
+            "keys": [[1.0]],
+            "values": [2.0],
+            "default": 0.0,
+            "on_unseen": "default",
+            "on_null": "default",
+        }
+    ]
+    with pytest.raises(PredictionError, match="already exists"):
+        apply_input_transforms(pl.DataFrame({"x": [1.0], "y": [99.0]}), fast_lookup)
+
+    generic_lookup = [
+        {
+            "type": "lookup",
+            "name": "generic",
+            "sources": ["x", "segment"],
+            "output": "y",
+            "output_dtype": "float64",
+            "keys": [[1.0, "A"]],
+            "values": [5.0],
+            "default": -1.0,
+            "on_unseen": "default",
+            "on_null": "default",
+        }
+    ]
+    with pytest.raises(PredictionError, match="already exists"):
+        apply_input_transforms(
+            pl.DataFrame({"x": [1.0], "segment": ["A"], "y": [99.0]}), generic_lookup
+        )
+
+    replaced = apply_input_transforms(
+        pl.DataFrame({"x": [1.0, 2.0], "segment": ["A", "B"], "y": [99.0, 98.0]}),
+        [{**generic_lookup[0], "replace_existing": True}],
+    )
+    assert replaced["y"].to_list() == [5.0, -1.0]
+
+    none_key_lookup = [{**fast_lookup[0], "keys": [[None], [1.0]], "values": [9.0, 2.0]}]
+    out = apply_input_transforms(pl.DataFrame({"x": [None, 1.0, 2.0]}), none_key_lookup)
+    assert out["y"].to_list() == [0.0, 2.0, 0.0]
+
+
+def test_input_transform_normalized_key_collision_fails_loud():
+    transform = compile_input_transforms(
+        [
+            {
+                "type": "lookup",
+                "name": "text_collision",
+                "sources": ["x"],
+                "output": "y",
+                "output_dtype": "float64",
+                "keys": [["1"], [1]],
+                "values": [2.0, 3.0],
+                "default": 0.0,
+            }
+        ]
+    )[0]
+    frame = pl.DataFrame({"norm": ["1", "1"], "match": [0, 1]})
+
+    with pytest.raises(ValidationError, match="collide after normalization"):
+        _check_unique_normalized_keys(frame, transform, ["norm"], "match")
+
+
+def test_input_transform_mixed_keys_against_string_source_fail_loud():
+    spec = [
+        {
+            "type": "lookup",
+            "name": "text_collision",
+            "sources": ["x", "segment"],
+            "output": "y",
+            "output_dtype": "float64",
+            "keys": [["1", "A"], [1, "A"]],
+            "values": [2.0, 3.0],
+            "default": 0.0,
+            "on_unseen": "default",
+            "on_null": "default",
+        }
+    ]
+
+    with pytest.raises(ValidationError, match="cannot be normalized"):
+        apply_input_transforms(pl.DataFrame({"x": ["1"], "segment": ["A"]}), spec)
+
+
+def test_input_transform_low_level_helpers_enforce_type_contracts():
+    mask_data = pl.DataFrame({"a": [1, None, 3], "b": [None, "x", "y"]})
+    mask = _any_null_mask(mask_data, ["a", "b"])
+    assert mask.to_list() == [True, True, False]
+    assert _any_null_mask(mask_data, []).len() == 0
+    assert _sample_bad_keys(mask_data, ["a", "b"], mask, n=1) == [(1, None)]
+    assert _unique_temp_name(["tmp", "tmp_1"], "tmp") == "tmp_2"
+    assert _dedup_key_value(10) == _dedup_key_value(10.0)
+    assert _dedup_key_value("10") != _dedup_key_value(10)
+
+    with pytest.raises(ValidationError, match="contains boolean"):
+        _validate_key_value("lookup", True, 0)
+    with pytest.raises(ValidationError, match="not finite"):
+        _validate_key_value("lookup", float("nan"), 0)
+    with pytest.raises(ValidationError, match="must be string"):
+        _validate_key_value("lookup", object(), 0)
+
+    with pytest.raises(ValidationError, match="contains boolean"):
+        _validate_value("lookup", "float64", False, "values")
+    with pytest.raises(ValidationError, match="not float64-compatible"):
+        _validate_value("lookup", "float64", object(), "values")
+    with pytest.raises(ValidationError, match="cannot be null"):
+        _validate_value("lookup", "string", None, "default")
+    assert _validate_value("lookup", "string", 123, "values") == "123"
+
+    with pytest.raises(ValidationError, match="contains boolean"):
+        _validate_numeric_param("center", True, "center")
+    with pytest.raises(ValidationError, match="not float64-compatible"):
+        _validate_numeric_param("center", object(), "center")
+    with pytest.raises(ValidationError, match="not finite"):
+        _validate_numeric_param("center", float("inf"), "center")
+
+    transform = compile_input_transforms(
+        [
+            {
+                "type": "lookup",
+                "name": "bad_utf8",
+                "sources": ["x"],
+                "output": "y",
+                "output_dtype": "float64",
+                "keys": [["a"]],
+                "values": [1.0],
+                "default": 0.0,
+            }
+        ]
+    )[0]
+    with pytest.raises(ValidationError, match="cannot be normalized"):
+        _utf8_key_series(transform, "x", [object()], "norm")
 
 
 @pytest.mark.parametrize("source_dtype", [pl.Float64, pl.Int64, pl.Int32])

@@ -158,6 +158,12 @@ mod tests {
     use ndarray::array;
 
     #[test]
+    fn test_poisson_name() {
+        let family = PoissonFamily;
+        assert_eq!(family.name(), "Poisson");
+    }
+
+    #[test]
     fn test_poisson_variance() {
         let family = PoissonFamily;
         let mu = array![0.5, 1.0, 2.0, 10.0];
@@ -225,8 +231,8 @@ mod tests {
 
         let mu_init = family.initialize_mu(&y);
 
-        // All values should be positive
-        assert!(mu_init.iter().all(|&x| x > 0.0));
+        assert_eq!(mu_init.len(), y.len());
+        assert_abs_diff_eq!(mu_init, array![0.1, 0.1, 1.1, 5.1], epsilon = 1e-12);
     }
 
     #[test]
@@ -241,5 +247,23 @@ mod tests {
 
         // Negative is NOT valid
         assert!(!family.is_valid_mu(&array![-1.0, 1.0]));
+    }
+
+    #[test]
+    fn test_poisson_clamp_fixed_dispersion_log_link_and_likelihood_contracts() {
+        let family = PoissonFamily;
+        let clamped = family.clamp_mu(&array![0.0, -1.0, 2.0]);
+        assert!(clamped[0] > 0.0);
+        assert!(clamped[1] > 0.0);
+        assert_eq!(clamped[2], 2.0);
+        assert!(family.fixed_dispersion());
+        assert!(family.is_log_link_default());
+
+        let y = array![0.0, 2.0, 5.0];
+        let mu = array![0.4, 1.8, 4.5];
+        let weights = array![1.0, 0.5, 2.0];
+        let ll = family.log_likelihood(&y, &mu, 99.0, Some(&weights));
+        let expected = crate::diagnostics::log_likelihood_poisson(&y, &mu, Some(&weights));
+        assert_abs_diff_eq!(ll, expected, epsilon = 1e-12);
     }
 }
