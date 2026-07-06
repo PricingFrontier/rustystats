@@ -65,9 +65,14 @@ pub struct PyGLMResults {
     pub(crate) offset: Option<Array1<f64>>,
     /// Whether step-halving was triggered during fitting (RS-ACT-007).
     pub(crate) step_halving_used: bool,
-    /// Terminal solver status: "converged", "max_iterations", or
-    /// "step_halving_no_improvement" (RS-ACT-007).
+    /// Terminal solver status: "converged", "max_iterations",
+    /// "step_halving_no_improvement", or "stalled_nonstationary" (RS-ACT-007).
     pub(crate) solver_status: String,
+    /// Exit stationarity (KKT) check result. `Some(...)` for smooth-path fits;
+    /// `None` for paths that do not run the check.
+    pub(crate) stationary: Option<bool>,
+    /// Largest standardized score over unpenalized coordinates at exit.
+    pub(crate) max_std_score: Option<f64>,
     /// User-facing warnings collected during fitting (e.g. non-convergence,
     /// fallback initialisation, final-extraction instability). Surfaced so the
     /// solver can communicate diagnostic context beyond the terminal status
@@ -200,11 +205,26 @@ impl PyGLMResults {
         self.converged
     }
 
-    /// Terminal solver status: "converged", "max_iterations", or
-    /// "step_halving_no_improvement" (RS-ACT-007).
+    /// Terminal solver status: "converged", "max_iterations",
+    /// "step_halving_no_improvement", or "stalled_nonstationary" (RS-ACT-007).
     #[getter]
     fn solver_status(&self) -> String {
         self.solver_status.clone()
+    }
+
+    /// Exit stationarity (KKT) check: True when the score of every
+    /// unpenalized, unconstrained coordinate vanished at exit. None for fit
+    /// paths that do not run the check. `converged=True` implies this passed.
+    #[getter]
+    fn stationary(&self) -> Option<bool> {
+        self.stationary
+    }
+
+    /// Largest standardized score |s_j| / sqrt(I_jj) over the coordinates
+    /// covered by the exit stationarity check. None when the check did not run.
+    #[getter]
+    fn max_std_score(&self) -> Option<f64> {
+        self.max_std_score
     }
 
     /// Whether step-halving was triggered during fitting (RS-ACT-007).

@@ -10,6 +10,23 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  pr-title-scope:
+    name: PR title scope
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      # Release hygiene (monotone-solver incident): a PR titled test:/ci: must
+      # not modify production source — see scripts/check_pr_title_scope.py.
+      - name: Check title/scope consistency
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: python3 scripts/check_pr_title_scope.py --title "$PR_TITLE" --base "origin/$BASE_REF"
+
   rust:
     name: Rust (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

@@ -39,6 +39,7 @@ from rustystats.constants import (
     DEFAULT_LAMBDA_MIN,
     DEFAULT_LINKS,
     DEFAULT_MAX_ITER,
+    DEFAULT_MONOTONE_SMOOTH_MAX_ITER,
     DEFAULT_N_ALPHAS,
     DEFAULT_N_LAMBDA,
     DEFAULT_NEGBINOMIAL_THETA,
@@ -456,6 +457,15 @@ def _get_constraint_indices(feature_names: list[str]) -> tuple:
     return nonneg_indices, nonpos_indices
 
 
+def _any_monotone_smooth(smooth_terms: list[Any]) -> bool:
+    """True when any penalized smooth term carries a monotonicity constraint."""
+    return any(
+        (getattr(term, "_smooth_monotonicity", None) or getattr(term, "monotonicity", None))
+        is not None
+        for term in smooth_terms
+    )
+
+
 @dataclass
 class SmoothTermResult:
     """Result for a single smooth term after fitting."""
@@ -670,7 +680,7 @@ def _fit_glm_core(
     weights: np.ndarray | None,
     alpha: float,
     l1_ratio: float,
-    max_iter: int,
+    max_iter: int | None,
     tol: float,
     feature_names: list[str],
     builder: InteractionBuilder,
@@ -727,6 +737,19 @@ def _fit_glm_core(
     # Compute sign constraints from feature names (pos()/neg() and monotonic splines)
     nonneg_indices, nonpos_indices = _get_constraint_indices(feature_names)
 
+    # `max_iter` is a hard TOTAL iteration budget for whichever solver this fit
+    # routes to (termination contract, bug.md Fix 1). When the user did not set
+    # it, the monotone smooth path gets its scam-style nested-solve default
+    # (warm start + all inner PIRLS iterations across lambda updates); every
+    # other path keeps the plain IRLS default. Resolved here, at the routing
+    # branch, so a CV-selected alpha of exactly 0.0 also lands correctly.
+    if max_iter is None:
+        max_iter = (
+            DEFAULT_MONOTONE_SMOOTH_MAX_ITER
+            if smooth_terms and alpha == 0.0 and _any_monotone_smooth(smooth_terms)
+            else DEFAULT_MAX_ITER
+        )
+
     if smooth_terms and alpha == 0.0:
         # Use penalized fitting with GCV-based lambda selection
         result, smooth_results, total_edf, gcv = _fit_with_smooth_penalties(
@@ -748,6 +771,21 @@ def _fit_glm_core(
             allow_extended_tweedie=allow_extended_tweedie,
         )
         return result, smooth_results, total_edf, gcv
+
+    if smooth_terms and alpha > 0.0 and _any_monotone_smooth(smooth_terms):
+        # The regularized path fits smooth basis columns with scalar penalties
+        # on the plain IRLS machinery — without the monotone reparameterization
+        # (and without the D'D smoothness penalty). Silently dropping a
+        # requested business constraint is worse than a noisy fit.
+        warnings.warn(
+            "Monotonicity constraints on penalized smooth terms are NOT enforced on "
+            "the regularized (alpha > 0) path: the fit applies scalar ridge/lasso "
+            "penalties to the raw basis columns without the monotone "
+            "reparameterization, so fitted curves may violate the requested "
+            "monotonicity. Fit with alpha=0 for enforced monotone smooth terms.",
+            UserWarning,
+            stacklevel=3,
+        )
 
     center = scale = None
     if standardize and alpha > 0.0:
@@ -3303,6 +3341,8 @@ class GLMModel:
             "optimizer_route": self.__dict__.get("optimizer_route"),
             "solver_status": self.__dict__.get("solver_status"),
             "step_halving_used": self.__dict__.get("step_halving_used"),
+            "stationary": self.__dict__.get("stationary"),
+            "max_std_score": self.__dict__.get("max_std_score"),
             "regularization_standardized": self.__dict__.get("_regularization_standardized", False),
             "covariance_available": self.__dict__.get("_covariance_available", True),
         }
@@ -3473,6 +3513,8 @@ class GLMModel:
         model.optimizer_route = result_state.get("optimizer_route")
         model.solver_status = result_state.get("solver_status")
         model.step_halving_used = result_state.get("step_halving_used")
+        model.stationary = result_state.get("stationary")
+        model.max_std_score = result_state.get("max_std_score")
         model._intercept_delta = float(state.get("intercept_delta", 0.0))
         model._intercept_delta_var = float(state.get("intercept_delta_var", 0.0))
         model._relevel_history = [dict(entry) for entry in state.get("relevel_history", [])]
@@ -4446,7 +4488,7 @@ class FormulaGLMDict(_GLMBase):
         self,
         alpha: float = 0.0,
         l1_ratio: float = 0.0,
-        max_iter: int = DEFAULT_MAX_ITER,
+        max_iter: int | None = None,
         tol: float = DEFAULT_TOLERANCE,
         # Cross-validation based regularization path parameters
         cv: int | None = None,
@@ -4477,8 +4519,12 @@ class FormulaGLMDict(_GLMBase):
             Elastic Net mixing parameter (0=Ridge, 1=Lasso).
             Ignored if regularization is specified with type.
 
-        max_iter : int, default=25
-            Maximum IRLS iterations.
+        max_iter : int, optional
+            Hard TOTAL iteration budget for the solver this fit routes to.
+            Small values visibly truncate the solve; large values are never
+            silently stopped at an internal cap. Defaults to 25 for
+            parametric/plain IRLS paths and 2000 for the monotone smooth path
+            (warm start + all inner PIRLS iterations across lambda updates).
         tol : float, default=1e-8
             Convergence tolerance.
 
@@ -4565,11 +4611,16 @@ class FormulaGLMDict(_GLMBase):
             allow_extended_tweedie=self.allow_extended_tweedie,
         )
 
+        # CV fold fits and theta estimation run on the plain IRLS machinery and
+        # need a concrete budget; the smooth-path default is resolved later at
+        # the routing branch in _fit_glm_core.
+        plain_max_iter = DEFAULT_MAX_ITER if max_iter is None else max_iter
+
         # Handle CV-based regularization path (shared logic in _GLMBase)
         alpha, l1_ratio, path_info = self._resolve_cv_path(
             alpha,
             l1_ratio,
-            max_iter,
+            plain_max_iter,
             tol,
             cv,
             selection,
@@ -4593,7 +4644,7 @@ class FormulaGLMDict(_GLMBase):
                 fit_offset,
                 fit_weights,
                 self.feature_names,
-                max_iter=max_iter,
+                max_iter=plain_max_iter,
                 tol=tol,
                 store_design_matrix=store_design_matrix,
             )
@@ -4685,6 +4736,10 @@ class FormulaGLMDict(_GLMBase):
             results.inference_status = "covariance_skipped"
         results.solver_status = getattr(result, "solver_status", "converged")
         results.step_halving_used = bool(getattr(result, "step_halving_used", False))
+        # Termination contract (bug.md Fix 1): exit stationarity check result
+        # and its max standardized score. None for paths without the check.
+        results.stationary = getattr(result, "stationary", None)
+        results.max_std_score = getattr(result, "max_std_score", None)
         # RS-ACT-004 backlog #1: carry the fitted prior-weights spec so
         # result.diagnostics() can auto-propagate it into weighted decile/lift
         # aggregates (mirrors how _exposure_spec is surfaced on the result).

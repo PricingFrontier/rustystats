@@ -24,7 +24,10 @@
 
 use ndarray::{s, Array1, Array2, ArrayView2};
 
-use crate::constants::{MAX_IRLS_WEIGHT, SMOOTH_CONVERGENCE_TOL, ZERO_TOL};
+use crate::constants::{
+    MAX_IRLS_WEIGHT, SMOOTH_CONVERGENCE_TOL, SMOOTH_INNER_MAX_PER_CYCLE, SMOOTH_KKT_SCORE_TOL,
+    SMOOTH_WARM_START_MAX_ITER, ZERO_TOL,
+};
 use crate::convert;
 use crate::error::{Result, RustyStatsError};
 use crate::families::Family;
@@ -114,6 +117,16 @@ pub struct SmoothGLMResult {
 
     /// Terminal solver status.
     pub solver_status: String,
+
+    /// Whether the returned fit satisfies first-order (KKT) stationarity for
+    /// every unpenalized, unconstrained coordinate — the intercept above all.
+    /// `converged` is gated on this: a progress-based inner convergence test
+    /// alone cannot claim convergence at a non-stationary point.
+    pub stationary: bool,
+
+    /// Largest standardized score |s_j| / sqrt(I_jj) over the coordinates
+    /// covered by the stationarity check (0.0 when nothing is checked).
+    pub max_std_score: f64,
 }
 
 /// Configuration for smooth GLM fitting.
@@ -516,11 +529,19 @@ fn clamp_monotonic_alpha_value(position: usize, alpha: f64) -> f64 {
     }
 }
 
-fn smooth_solver_status(step_halving_failed: bool, converged: bool) -> &'static str {
+fn smooth_solver_status(
+    step_halving_failed: bool,
+    converged: bool,
+    stationary: bool,
+) -> &'static str {
     if step_halving_failed {
         "step_halving_no_improvement"
-    } else if converged {
+    } else if converged && stationary {
         "converged"
+    } else if converged {
+        // The progress test passed but the exit KKT check did not: the solver
+        // stalled at a non-stationary point and must not report convergence.
+        "stalled_nonstationary"
     } else {
         "max_iterations"
     }
@@ -532,6 +553,394 @@ fn should_warn_smooth_nonconvergence(converged: bool) -> bool {
 
 fn smooth_nonconvergence_warning(solver_status: &str) -> String {
     format!("Smooth GLM did not converge (status: {solver_status}). Results may be approximate.")
+}
+
+// =============================================================================
+// Exit stationarity (KKT) check and intercept refresh (termination contract)
+// =============================================================================
+
+/// Locate the intercept: the first column outside all smooth ranges and all
+/// sign-constraint sets whose entries are exactly 1.0.
+fn find_intercept_column(
+    x: ArrayView2<'_, f64>,
+    smooth_cols: &std::collections::HashSet<usize>,
+    nonneg_indices: Option<&[usize]>,
+    nonpos_indices: Option<&[usize]>,
+) -> Option<usize> {
+    let constrained: std::collections::HashSet<usize> = nonneg_indices
+        .unwrap_or(&[])
+        .iter()
+        .chain(nonpos_indices.unwrap_or(&[]).iter())
+        .copied()
+        .collect();
+    (0..x.ncols())
+        .filter(|c| !smooth_cols.contains(c) && !constrained.contains(c))
+        .find(|&c| x.column(c).iter().all(|&v| v == 1.0))
+}
+
+/// Guard a quasi-score denominator away from zero while preserving its sign.
+fn guarded_denominator(denom: f64) -> f64 {
+    if denom.abs() < ZERO_TOL {
+        ZERO_TOL.copysign(denom)
+    } else {
+        denom
+    }
+}
+
+/// Per-observation quasi-score residuals r_i = w_i (y_i - μ_i) / (g'(μ_i) V(μ_i))
+/// and expected-information weights f_i = w_i / (g'(μ_i)² V(μ_i)).
+///
+/// The score for coefficient j is Σ_i r_i x_ij and its information diagonal is
+/// Σ_i f_i x_ij². For canonical links g'(μ) V(μ) = 1, so the intercept score
+/// reduces to Σ w (y - μ): the mean-prediction identity.
+fn quasi_score_arrays(
+    y: &Array1<f64>,
+    mu: &Array1<f64>,
+    prior_weights: &Array1<f64>,
+    family: &dyn Family,
+    link: &dyn Link,
+) -> (Array1<f64>, Array1<f64>) {
+    let link_deriv = link.derivative(mu);
+    let variance = family.variance(mu);
+    let n = y.len();
+    let mut score_resid = Array1::zeros(n);
+    let mut info_weight = Array1::zeros(n);
+    for i in 0..n {
+        let denom = guarded_denominator(link_deriv[i] * variance[i]);
+        score_resid[i] = prior_weights[i] * (y[i] - mu[i]) / denom;
+        let info_denom = (link_deriv[i] * link_deriv[i] * variance[i]).max(ZERO_TOL);
+        info_weight[i] = prior_weights[i] / info_denom;
+    }
+    (score_resid, info_weight)
+}
+
+/// Score and standardized score of a single design column.
+fn column_std_score(
+    x: ArrayView2<'_, f64>,
+    col: usize,
+    score_resid: &Array1<f64>,
+    info_weight: &Array1<f64>,
+) -> (f64, f64) {
+    let mut score = 0.0;
+    let mut info = 0.0;
+    for i in 0..x.nrows() {
+        let v = x[[i, col]];
+        score += score_resid[i] * v;
+        info += info_weight[i] * v * v;
+    }
+    (score, score.abs() / info.max(ZERO_TOL).sqrt())
+}
+
+/// KKT stationarity report over the unpenalized coordinates.
+///
+/// At any (constrained) local optimum, the score of every unpenalized,
+/// unconstrained coordinate must vanish; sign-constrained coordinates at an
+/// active bound may only carry a score pushing INTO the constraint
+/// (complementary slackness). Penalized (smooth-basis) coordinates balance
+/// the penalty gradient instead and are not checked here.
+///
+/// Returns `(stationary, max_std_score)`.
+#[allow(clippy::too_many_arguments)]
+fn stationarity_report(
+    x: ArrayView2<'_, f64>,
+    y: &Array1<f64>,
+    mu: &Array1<f64>,
+    prior_weights: &Array1<f64>,
+    family: &dyn Family,
+    link: &dyn Link,
+    smooth_cols: &std::collections::HashSet<usize>,
+    coefficients: &Array1<f64>,
+    nonneg_indices: Option<&[usize]>,
+    nonpos_indices: Option<&[usize]>,
+) -> (bool, f64) {
+    let (score_resid, info_weight) = quasi_score_arrays(y, mu, prior_weights, family, link);
+    let nonneg: std::collections::HashSet<usize> =
+        nonneg_indices.unwrap_or(&[]).iter().copied().collect();
+    let nonpos: std::collections::HashSet<usize> =
+        nonpos_indices.unwrap_or(&[]).iter().copied().collect();
+
+    let mut max_std_score = 0.0f64;
+    for col in 0..x.ncols() {
+        if smooth_cols.contains(&col) {
+            continue;
+        }
+        let (score, std_score) = column_std_score(x, col, &score_resid, &info_weight);
+        let at_lower_bound = nonneg.contains(&col) && coefficients[col] <= ZERO_TOL;
+        let at_upper_bound = nonpos.contains(&col) && coefficients[col] >= -ZERO_TOL;
+        if (at_lower_bound && score <= 0.0) || (at_upper_bound && score >= 0.0) {
+            continue;
+        }
+        max_std_score = max_std_score.max(std_score);
+    }
+    (max_std_score < SMOOTH_KKT_SCORE_TOL, max_std_score)
+}
+
+/// Final unconstrained-block re-solve (termination contract, bug.md Fix 1).
+///
+/// Holding the monotone (exp-reparameterised) blocks and sign-constrained
+/// columns fixed as an offset, the remaining coordinates — intercept,
+/// parametric columns, and unconstrained penalized smooths — form a penalized
+/// GLM sub-problem that is convex for canonical links. The stalled main loop
+/// can leave these coordinates non-stationary (its inner test measures
+/// progress, not stationarity); solving the sub-problem to convergence
+/// removes that residual bias. This is a block coordinate-descent step, so it
+/// can only improve the full penalized objective; it is accepted only when it
+/// does not worsen it.
+///
+/// Returns `Ok(true)` when a refinement was applied.
+#[allow(clippy::too_many_arguments)]
+fn refine_unconstrained_block(
+    y: &Array1<f64>,
+    x_combined: ArrayView2<'_, f64>,
+    smooth_specs: &[SmoothTermSpec],
+    lambdas: &[f64],
+    family: &dyn Family,
+    link: &dyn Link,
+    offset_vec: &Array1<f64>,
+    prior_weights: &Array1<f64>,
+    min_weight: f64,
+    smooth_tolerance: f64,
+    nonneg_indices: Option<&[usize]>,
+    nonpos_indices: Option<&[usize]>,
+    coefficients: &mut Array1<f64>,
+    eta: &mut Array1<f64>,
+    mu: &mut Array1<f64>,
+    deviance: &mut f64,
+    iteration: &mut usize,
+    budget: usize,
+) -> Result<bool> {
+    let mut fixed_cols = std::collections::HashSet::new();
+    for spec in smooth_specs {
+        if spec.is_monotonic() {
+            for col in spec.col_start..spec.col_end {
+                fixed_cols.insert(col);
+            }
+        }
+    }
+    for &col in nonneg_indices.unwrap_or(&[]) {
+        fixed_cols.insert(col);
+    }
+    for &col in nonpos_indices.unwrap_or(&[]) {
+        fixed_cols.insert(col);
+    }
+
+    let total_cols = x_combined.ncols();
+    let refit_cols: Vec<usize> = (0..total_cols)
+        .filter(|col| !fixed_cols.contains(col))
+        .collect();
+    if refit_cols.is_empty() || fixed_cols.is_empty() || *iteration >= budget {
+        // Nothing to refine, or the whole problem was already the
+        // unconstrained block (handled by the main loop), or no budget left.
+        return Ok(false);
+    }
+
+    let n = y.len();
+    let n_refit = refit_cols.len();
+
+    // Sub-design of the refit columns; fixed columns become a link-scale offset.
+    let mut x_sub = Array2::zeros((n, n_refit));
+    for (j_new, &j_old) in refit_cols.iter().enumerate() {
+        x_sub.column_mut(j_new).assign(&x_combined.column(j_old));
+    }
+    let mut offset_fixed = offset_vec.clone();
+    for &col in &fixed_cols {
+        let coef = coefficients[col];
+        if coef != 0.0 {
+            offset_fixed.scaled_add(coef, &x_combined.column(col));
+        }
+    }
+
+    // Penalties of the unconstrained smooth terms, re-indexed into sub-columns.
+    // Monotone ranges and sign-constrained columns are whole features, so a
+    // non-monotone smooth range stays contiguous after removal.
+    let mut penalty_sub = Array2::zeros((n_refit, n_refit));
+    for (i, spec) in smooth_specs.iter().enumerate() {
+        if spec.is_monotonic() {
+            continue;
+        }
+        let removed_before = (0..spec.col_start)
+            .filter(|col| fixed_cols.contains(col))
+            .count();
+        embed_penalty(
+            &mut penalty_sub,
+            &spec.penalty,
+            spec.col_start - removed_before,
+            lambdas[i],
+        );
+    }
+
+    let write_back = |beta_sub: &Array1<f64>, base: &Array1<f64>| -> Array1<f64> {
+        let mut full = base.clone();
+        for (j_new, &j_old) in refit_cols.iter().enumerate() {
+            full[j_old] = beta_sub[j_new];
+        }
+        full
+    };
+
+    let pen_dev_start = smooth_penalized_deviance(*deviance, coefficients, smooth_specs, lambdas);
+
+    let mut beta_sub: Array1<f64> = refit_cols.iter().map(|&c| coefficients[c]).collect();
+    let mut eta_cur = eta.clone();
+    let mut mu_cur = mu.clone();
+    let mut dev_cur = *deviance;
+    let mut pen_dev_cur = pen_dev_start;
+
+    let mut irls_weights = Array1::zeros(n);
+    let mut combined_weights = Array1::zeros(n);
+    let mut working_response = Array1::zeros(n);
+
+    while *iteration < budget {
+        *iteration += 1;
+
+        let link_deriv = link.derivative(&mu_cur);
+        let variance = family.variance(&mu_cur);
+        update_irls_work_arrays(
+            &eta_cur,
+            &offset_fixed,
+            y,
+            &mu_cur,
+            prior_weights,
+            &variance,
+            &link_deriv,
+            min_weight,
+            &mut irls_weights,
+            &mut combined_weights,
+            &mut working_response,
+        );
+        let (xtwx, xtwz) = compute_xtwx_xtwz(x_sub.view(), &working_response, &combined_weights)?;
+        let (beta_new, _) = solve_wls_from_precomputed(&xtwx, &xtwz, &penalty_sub, true)?;
+
+        // Step halving on the full penalized objective (convex sub-problem:
+        // the full step almost always accepts; the 0-fraction fallback exactly
+        // retains the previous iterate).
+        let mut accepted = false;
+        let mut pen_dev_next = pen_dev_cur;
+        for trial in 0..=10 {
+            let fraction = smooth_step_fraction_for_trial(trial, 10);
+            let beta_trial = blend_step_arrays(&beta_sub, &beta_new, fraction);
+            let full_trial = write_back(&beta_trial, coefficients);
+            let eta_trial = &x_sub.dot(&beta_trial) + &offset_fixed;
+            let mu_trial = family.clamp_mu(&link.inverse(&eta_trial));
+            let dev_trial = family.deviance(y, &mu_trial, Some(prior_weights));
+            let pen_dev_trial =
+                smooth_penalized_deviance(dev_trial, &full_trial, smooth_specs, lambdas);
+            if should_skip_smooth_trial(&eta_trial, &mu_trial, dev_trial, pen_dev_trial) {
+                continue;
+            }
+            if pen_dev_trial <= smooth_accept_threshold(pen_dev_cur, smooth_tolerance) {
+                beta_sub = beta_trial;
+                eta_cur = eta_trial;
+                mu_cur = mu_trial;
+                dev_cur = dev_trial;
+                pen_dev_next = pen_dev_trial;
+                accepted = true;
+                break;
+            }
+        }
+        if !accepted {
+            break;
+        }
+
+        let rel_change = relative_change_with_unit_offset(pen_dev_cur, pen_dev_next);
+        pen_dev_cur = pen_dev_next;
+        if change_below_tolerance(rel_change, smooth_tolerance) {
+            break;
+        }
+    }
+
+    if pen_dev_cur <= pen_dev_start + smooth_tolerance * (1.0 + pen_dev_start.abs()) {
+        *coefficients = write_back(&beta_sub, coefficients);
+        *eta = eta_cur;
+        *mu = mu_cur;
+        *deviance = dev_cur;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+/// Intercept-direction quasi-score at shift `d`: Σ w (y - μ(η + d)) / (g' V).
+fn intercept_shift_score(
+    shift: f64,
+    y: &Array1<f64>,
+    eta: &Array1<f64>,
+    prior_weights: &Array1<f64>,
+    family: &dyn Family,
+    link: &dyn Link,
+) -> f64 {
+    let eta_shifted = eta.mapv(|e| e + shift);
+    let mu_shifted = family.clamp_mu(&link.inverse(&eta_shifted));
+    let link_deriv = link.derivative(&mu_shifted);
+    let variance = family.variance(&mu_shifted);
+    let mut score = 0.0;
+    for i in 0..y.len() {
+        let denom = guarded_denominator(link_deriv[i] * variance[i]);
+        score += prior_weights[i] * (y[i] - mu_shifted[i]) / denom;
+    }
+    score
+}
+
+/// Solve `intercept_shift_score(d) = 0` by bracketing bisection.
+///
+/// This is the exact one-dimensional MLE along the intercept direction, so
+/// applying the root cannot materially worsen the deviance. Returns `None`
+/// when no sign change exists within |d| <= 64 (e.g. quasi-separation) or the
+/// score is non-finite.
+fn solve_intercept_shift(
+    y: &Array1<f64>,
+    eta: &Array1<f64>,
+    prior_weights: &Array1<f64>,
+    family: &dyn Family,
+    link: &dyn Link,
+) -> Option<f64> {
+    let score_at = |d: f64| intercept_shift_score(d, y, eta, prior_weights, family, link);
+
+    let score_zero = score_at(0.0);
+    if !score_zero.is_finite() {
+        return None;
+    }
+    if score_zero == 0.0 {
+        return Some(0.0);
+    }
+
+    let mut span = 1.0f64;
+    let (mut lo, mut hi) = (-span, span);
+    let (mut score_lo, mut score_hi) = (score_at(lo), score_at(hi));
+    while score_lo.is_finite()
+        && score_hi.is_finite()
+        && score_lo.signum() == score_hi.signum()
+        && span < 64.0
+    {
+        span *= 2.0;
+        lo = -span;
+        hi = span;
+        score_lo = score_at(lo);
+        score_hi = score_at(hi);
+    }
+    if !score_lo.is_finite() || !score_hi.is_finite() || score_lo.signum() == score_hi.signum() {
+        return None;
+    }
+
+    for _ in 0..200 {
+        let mid = 0.5 * (lo + hi);
+        let score_mid = score_at(mid);
+        if !score_mid.is_finite() {
+            return None;
+        }
+        if score_mid == 0.0 {
+            return Some(mid);
+        }
+        if score_mid.signum() == score_lo.signum() {
+            lo = mid;
+            score_lo = score_mid;
+        } else {
+            hi = mid;
+        }
+        if (hi - lo).abs() < 1e-13 * (1.0 + hi.abs().max(lo.abs())) {
+            break;
+        }
+    }
+    Some(0.5 * (lo + hi))
 }
 
 fn smooth_penalty_contribution(
@@ -779,6 +1188,8 @@ fn assemble_smooth_result_from_specs(
     warnings: Vec<String>,
     step_halving_used: bool,
     solver_status: String,
+    stationary: bool,
+    max_std_score: f64,
 ) -> SmoothGLMResult {
     let n = y.len();
 
@@ -838,6 +1249,8 @@ fn assemble_smooth_result_from_specs(
         warnings,
         step_halving_used,
         solver_status,
+        stationary,
+        max_std_score,
     }
 }
 
@@ -927,13 +1340,26 @@ pub fn fit_smooth_glm_full_matrix(
             weights,
             None,
         )?;
+        let no_smooth_cols = std::collections::HashSet::new();
+        let (stationary, max_std_score) = stationarity_report(
+            x_full,
+            y,
+            &irls.fitted_values,
+            &irls.prior_weights,
+            family,
+            link,
+            &no_smooth_cols,
+            &irls.coefficients,
+            nonneg_indices,
+            nonpos_indices,
+        );
         return Ok(SmoothGLMResult {
             coefficients: irls.coefficients,
             fitted_values: irls.fitted_values,
             linear_predictor: irls.linear_predictor,
             deviance: irls.deviance,
             iterations: irls.iterations,
-            converged: irls.converged,
+            converged: irls.converged && stationary,
             lambdas: vec![],
             smooth_edfs: vec![],
             total_edf: p as f64,
@@ -953,6 +1379,8 @@ pub fn fit_smooth_glm_full_matrix(
             warnings: irls.warnings,
             step_halving_used: irls.step_halving_used,
             solver_status: irls.solver_status,
+            stationary,
+            max_std_score,
         });
     }
 
@@ -998,7 +1426,13 @@ pub fn fit_smooth_glm_full_matrix(
 
     let offset_vec = offset.cloned().unwrap_or_else(|| Array1::zeros(n));
     let prior_weights = weights.cloned().unwrap_or_else(|| Array1::ones(n));
-    let mut lambdas: Vec<f64> = smooth_specs.iter().map(|s| s.initial_lambda).collect();
+    // Clamp initial lambdas into the configured bounds. Callers pin a fixed
+    // lambda by passing lambda_min == lambda_max; without the clamp the
+    // monotone path's REML update can keep an out-of-bounds initial value.
+    let mut lambdas: Vec<f64> = smooth_specs
+        .iter()
+        .map(|s| s.initial_lambda.clamp(config.lambda_min, config.lambda_max))
+        .collect();
 
     let has_monotonic = smooth_specs.iter().any(|s| s.is_monotonic());
 
@@ -1176,7 +1610,11 @@ pub fn fit_smooth_glm_full_matrix(
             let mut init_mu = mu.clone();
             let mut init_eta = eta.clone();
             let mut init_dev = deviance;
-            for _init_iter in 0..config.irls_config.max_iterations {
+            // The warm start is counted against the caller's total iteration
+            // budget so fit(max_iter=N) bounds ALL smooth-path work.
+            let warm_cap = SMOOTH_WARM_START_MAX_ITER.min(config.irls_config.max_iterations);
+            for _init_iter in 0..warm_cap {
+                iteration += 1;
                 let init_link_deriv = link.derivative(&init_mu);
                 let init_var = family.variance(&init_mu);
                 let mut init_iw = Array1::zeros(n);
@@ -1248,15 +1686,24 @@ pub fn fit_smooth_glm_full_matrix(
             deviance = family.deviance(y, &mu, Some(&prior_weights));
         }
 
-        // Outer loop: update lambda, then converge inner PIRLS
-        let max_outer = 10;
-        for _outer in 0..max_outer {
+        // Outer loop: update lambda, then converge inner PIRLS.
+        //
+        // The loop is bounded by the caller's TOTAL iteration budget
+        // (config.irls_config.max_iterations) instead of a hard-coded outer
+        // cap, so fit(max_iter=N) genuinely bounds the work done here:
+        // N=5 visibly truncates, N=5000 is not silently stopped at an
+        // internal cap. Each outer cycle with remaining budget performs at
+        // least one inner iteration, so the outer loop always terminates.
+        let budget = config.irls_config.max_iterations;
+        while iteration < budget {
             let lambdas_at_start = lambdas.clone();
 
             // Inner PIRLS loop: converge coefficients for fixed lambda.
-            // scam uses up to 200 inner iterations.
-            let inner_max = config.irls_config.max_iterations.max(200);
-            for _inner in 0..inner_max {
+            // scam uses up to 200 inner iterations per lambda update.
+            for _inner in 0..SMOOTH_INNER_MAX_PER_CYCLE {
+                if iteration >= budget {
+                    break;
+                }
                 iteration += 1;
                 let deviance_old = deviance;
 
@@ -1497,6 +1944,12 @@ pub fn fit_smooth_glm_full_matrix(
             if step_halving_failed {
                 break;
             }
+            if iteration >= budget {
+                // Budget exhausted mid-cycle: the inner state may claim
+                // convergence, but lambda stability was never verified.
+                converged = false;
+                break;
+            }
 
             // Outer loop: update lambdas via GCV on the converged X_tilde
             {
@@ -1614,8 +2067,8 @@ pub fn fit_smooth_glm_full_matrix(
             converged = false;
         }
         // converged remains true only if the last inner loop converged
-        // AND lambdas were stable. If the outer loop exhausted max_outer
-        // without meeting the break condition, converged stays false.
+        // AND lambdas were stable. If the outer loop exhausted the iteration
+        // budget without meeting the break condition, converged stays false.
     }
 
     // =========================================================================
@@ -1792,12 +2245,113 @@ pub fn fit_smooth_glm_full_matrix(
         }
     }
 
+    // =========================================================================
+    // Termination contract: intercept refresh + exit stationarity check
+    // =========================================================================
+    // The inner convergence test measures PROGRESS (penalized-deviance change),
+    // which a stalled solver passes. At any true (constrained) optimum the
+    // score of every unpenalized, unconstrained coordinate — the intercept
+    // above all — must vanish. Two safeguards enforce that contract:
+    //
+    // 1. Intercept refresh: one exact 1-D score solve along the intercept
+    //    direction. Guarantees mean(prediction) == mean(response) for
+    //    canonical links on every returned fit, whatever happened upstream.
+    //    Skipped when the intercept is already comfortably stationary, so
+    //    healthy fits are untouched.
+    // 2. Stationarity gate: `converged=True` additionally requires the KKT
+    //    check to pass; a stalled fit reports `stalled_nonstationary`.
+    //
+    // Before both, a final unconstrained-block re-solve: holding the monotone
+    // blocks fixed, the remaining coordinates form a convex penalized GLM that
+    // the stalled main loop may have left slightly off-optimum. Solving it is
+    // a block coordinate-descent step (never worsens the penalized objective).
+    if has_monotonic && iteration < config.irls_config.max_iterations {
+        let refined = refine_unconstrained_block(
+            y,
+            x_combined,
+            smooth_specs,
+            &lambdas,
+            family,
+            link,
+            &offset_vec,
+            &prior_weights,
+            config.irls_config.min_weight,
+            smooth_tolerance,
+            nonneg_indices,
+            nonpos_indices,
+            &mut coefficients,
+            &mut eta,
+            &mut mu,
+            &mut deviance,
+            &mut iteration,
+            config.irls_config.max_iterations,
+        )?;
+        if refined {
+            warnings.push(
+                "Applied final unconstrained-block re-solve (parametric and \
+                 unconstrained smooth coordinates) to restore exit stationarity."
+                    .to_string(),
+            );
+        }
+    }
+
+    if let Some(intercept_col) =
+        find_intercept_column(x_combined, &smooth_cols, nonneg_indices, nonpos_indices)
+    {
+        let (score_resid, info_weight) = quasi_score_arrays(y, &mu, &prior_weights, family, link);
+        let (_, intercept_std_score) =
+            column_std_score(x_combined, intercept_col, &score_resid, &info_weight);
+        if intercept_std_score >= 0.1 * SMOOTH_KKT_SCORE_TOL {
+            if let Some(shift) = solve_intercept_shift(y, &eta, &prior_weights, family, link) {
+                if shift != 0.0 {
+                    let eta_shifted = eta.mapv(|e| e + shift);
+                    let mu_shifted = family.clamp_mu(&link.inverse(&eta_shifted));
+                    let dev_shifted = family.deviance(y, &mu_shifted, Some(&prior_weights));
+                    // The exact 1-D score solve minimizes deviance along the
+                    // intercept direction; reject on the (non-canonical-link)
+                    // off-chance it does not improve within tolerance.
+                    if dev_shifted <= deviance + smooth_tolerance * (1.0 + deviance.abs()) {
+                        coefficients[intercept_col] += shift;
+                        eta = eta_shifted;
+                        mu = mu_shifted;
+                        deviance = dev_shifted;
+                        warnings.push(format!(
+                            "Applied final intercept refresh of {shift:+.6e} to restore \
+                             the intercept score equation (mean prediction = mean response)."
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    let (stationary, max_std_score) = stationarity_report(
+        x_combined,
+        y,
+        &mu,
+        &prior_weights,
+        family,
+        link,
+        &smooth_cols,
+        &coefficients,
+        nonneg_indices,
+        nonpos_indices,
+    );
+    let converged_raw = converged;
+    let converged = converged_raw && stationary;
+    if !stationary {
+        warnings.push(format!(
+            "Fit is non-stationary at exit: max standardized score {max_std_score:.3e} \
+             over unpenalized coordinates (tolerance {SMOOTH_KKT_SCORE_TOL:.0e})."
+        ));
+    }
+
     // Assemble result directly from SmoothTermSpec (no SmoothTermData conversion)
     let penalty_specs: Vec<(&Array2<f64>, usize, usize)> = smooth_specs
         .iter()
         .map(|s| (&s.penalty, s.col_start, s.col_end))
         .collect();
-    let solver_status = smooth_solver_status(step_halving_failed, converged);
+    let solver_status = smooth_solver_status(step_halving_failed, converged_raw, stationary);
     if should_warn_smooth_nonconvergence(converged) {
         warnings.push(smooth_nonconvergence_warning(solver_status));
     }
@@ -1824,6 +2378,8 @@ pub fn fit_smooth_glm_full_matrix(
         warnings,
         step_halving_used,
         solver_status.to_string(),
+        stationary,
+        max_std_score,
     ))
 }
 
@@ -1841,8 +2397,8 @@ impl SmoothTermSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::families::{GaussianFamily, PoissonFamily};
-    use crate::links::{IdentityLink, LogLink};
+    use crate::families::{BinomialFamily, GaussianFamily, PoissonFamily};
+    use crate::links::{IdentityLink, LogLink, LogitLink};
     use crate::splines::{bs_basis, is_basis};
     use approx::{assert_abs_diff_eq, assert_relative_eq};
     use ndarray::array;
@@ -2113,12 +2669,18 @@ mod tests {
         assert_eq!(clamp_monotonic_alpha_value(1, 25.0), MAX_EXP_ALPHA);
         assert_eq!(clamp_monotonic_alpha_value(1, -25.0), -MAX_EXP_ALPHA);
         assert_eq!(
-            smooth_solver_status(true, true),
+            smooth_solver_status(true, true, true),
             "step_halving_no_improvement",
             "step-halving failure takes precedence over the convergence flag"
         );
-        assert_eq!(smooth_solver_status(false, true), "converged");
-        assert_eq!(smooth_solver_status(false, false), "max_iterations");
+        assert_eq!(smooth_solver_status(false, true, true), "converged");
+        assert_eq!(
+            smooth_solver_status(false, true, false),
+            "stalled_nonstationary",
+            "a progress-converged but non-stationary exit must not report converged"
+        );
+        assert_eq!(smooth_solver_status(false, false, true), "max_iterations");
+        assert_eq!(smooth_solver_status(false, false, false), "max_iterations");
         assert!(should_warn_smooth_nonconvergence(false));
         assert!(!should_warn_smooth_nonconvergence(true));
         assert_eq!(
@@ -2390,6 +2952,8 @@ mod tests {
             vec!["kept warning".to_string()],
             true,
             "converged".to_string(),
+            true,
+            0.0,
         );
 
         assert_array1_close(
@@ -2474,11 +3038,352 @@ mod tests {
             Vec::new(),
             false,
             "max_iterations".to_string(),
+            false,
+            f64::NAN,
         );
 
         assert_array2_close(&result.covariance_unscaled, &Array2::eye(2), 1e-12);
         assert_eq!(result.offset, None);
         assert_eq!(result.total_edf, 2.0);
+    }
+
+    // =========================================================================
+    // Unit tests: termination-contract helpers (stationarity check, intercept
+    // refresh, unconstrained-block re-solve)
+    // =========================================================================
+
+    #[test]
+    fn test_guarded_denominator_preserves_sign_and_floors_magnitude() {
+        assert_eq!(guarded_denominator(0.5), 0.5);
+        assert_eq!(guarded_denominator(-0.5), -0.5);
+        assert_eq!(guarded_denominator(1e-14), ZERO_TOL);
+        assert_eq!(guarded_denominator(-1e-14), -ZERO_TOL);
+    }
+
+    #[test]
+    fn test_find_intercept_column_respects_smooth_and_constraint_exclusions() {
+        // col 0: all-ones but sign-constrained; col 1: all-ones but inside a
+        // smooth range; col 2: the true intercept; col 3: data.
+        let x = array![
+            [1.0, 1.0, 1.0, 0.2],
+            [1.0, 1.0, 1.0, 0.7],
+            [1.0, 1.0, 1.0, 0.4]
+        ];
+        let mut smooth_cols = std::collections::HashSet::new();
+        smooth_cols.insert(1usize);
+        assert_eq!(
+            find_intercept_column(x.view(), &smooth_cols, Some(&[0]), None),
+            Some(2)
+        );
+        assert_eq!(
+            find_intercept_column(x.view(), &smooth_cols, Some(&[0]), Some(&[2])),
+            None,
+            "all candidate ones-columns excluded"
+        );
+        let no_ones = array![[0.5, 2.0], [1.0, 3.0]];
+        let empty = std::collections::HashSet::new();
+        assert_eq!(
+            find_intercept_column(no_ones.view(), &empty, None, None),
+            None
+        );
+    }
+
+    #[test]
+    fn test_quasi_score_arrays_reduce_to_weighted_residuals_for_canonical_logit() {
+        let y = array![1.0, 0.0, 1.0];
+        let mu = array![0.8, 0.3, 0.5];
+        let prior_weights = array![1.0, 2.0, 1.0];
+        let (score_resid, info_weight) =
+            quasi_score_arrays(&y, &mu, &prior_weights, &BinomialFamily, &LogitLink);
+        // Canonical link: g'(mu) V(mu) = 1, so r_i = w_i (y_i - mu_i).
+        assert_abs_diff_eq!(score_resid[0], 0.2, epsilon = 1e-12);
+        assert_abs_diff_eq!(score_resid[1], -0.6, epsilon = 1e-12);
+        assert_abs_diff_eq!(score_resid[2], 0.5, epsilon = 1e-12);
+        // Expected-information weight f_i = w_i mu (1 - mu).
+        assert_abs_diff_eq!(info_weight[0], 0.16, epsilon = 1e-12);
+        assert_abs_diff_eq!(info_weight[1], 0.42, epsilon = 1e-12);
+        assert_abs_diff_eq!(info_weight[2], 0.25, epsilon = 1e-12);
+        // Column score of an intercept column: s = sum(r), I = sum(f).
+        let x = array![[1.0], [1.0], [1.0]];
+        let (score, std_score) = column_std_score(x.view(), 0, &score_resid, &info_weight);
+        assert_abs_diff_eq!(score, 0.1, epsilon = 1e-12);
+        assert_abs_diff_eq!(
+            std_score,
+            0.1 / (0.16f64 + 0.42 + 0.25).sqrt(),
+            epsilon = 1e-12
+        );
+    }
+
+    #[test]
+    fn test_stationarity_report_passes_at_score_zero_and_flags_biased_mean() {
+        let x = array![[1.0], [1.0], [1.0], [1.0]];
+        let y = array![1.0, 0.0, 1.0, 0.0];
+        let prior_weights = Array1::ones(4);
+        let empty = std::collections::HashSet::new();
+        let coefficients = array![0.0];
+
+        // mu == mean(y): the intercept score vanishes exactly.
+        let mu_exact = Array1::from_elem(4, 0.5);
+        let (stationary, max_std_score) = stationarity_report(
+            x.view(),
+            &y,
+            &mu_exact,
+            &prior_weights,
+            &BinomialFamily,
+            &LogitLink,
+            &empty,
+            &coefficients,
+            None,
+            None,
+        );
+        assert!(stationary);
+        assert_abs_diff_eq!(max_std_score, 0.0, epsilon = 1e-12);
+
+        // Biased mean (the historical failure signature): flagged, and the
+        // standardized score matches the hand computation.
+        let mu_biased = Array1::from_elem(4, 0.35);
+        let (stationary, max_std_score) = stationarity_report(
+            x.view(),
+            &y,
+            &mu_biased,
+            &prior_weights,
+            &BinomialFamily,
+            &LogitLink,
+            &empty,
+            &coefficients,
+            None,
+            None,
+        );
+        assert!(!stationary);
+        // score = 4 * 0.15 = 0.6; info = 4 * 0.35 * 0.65 = 0.91.
+        assert_abs_diff_eq!(max_std_score, 0.6 / 0.91f64.sqrt(), epsilon = 1e-10);
+
+        // The same violating column inside a smooth range is penalized and
+        // therefore not part of the check.
+        let mut smooth_cols = std::collections::HashSet::new();
+        smooth_cols.insert(0usize);
+        let (stationary, max_std_score) = stationarity_report(
+            x.view(),
+            &y,
+            &mu_biased,
+            &prior_weights,
+            &BinomialFamily,
+            &LogitLink,
+            &smooth_cols,
+            &coefficients,
+            None,
+            None,
+        );
+        assert!(stationary);
+        assert_abs_diff_eq!(max_std_score, 0.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn test_stationarity_report_complementary_slackness_for_sign_constraints() {
+        let x = array![[1.0], [1.0], [1.0], [1.0]];
+        let prior_weights = Array1::ones(4);
+        let empty = std::collections::HashSet::new();
+        let coefficients = array![0.0]; // constrained coordinate at its bound
+        let mu = Array1::from_elem(4, 0.5);
+
+        // Score pushes INTO a beta >= 0 bound (negative score at beta = 0):
+        // stationary by complementary slackness.
+        let y_low = array![0.0, 0.0, 1.0, 0.0];
+        let (stationary, _) = stationarity_report(
+            x.view(),
+            &y_low,
+            &mu,
+            &prior_weights,
+            &BinomialFamily,
+            &LogitLink,
+            &empty,
+            &coefficients,
+            Some(&[0]),
+            None,
+        );
+        assert!(stationary);
+
+        // Score pushes OUT of the bound (positive): a genuine KKT violation.
+        let y_high = array![1.0, 1.0, 1.0, 0.0];
+        let (stationary, max_std_score) = stationarity_report(
+            x.view(),
+            &y_high,
+            &mu,
+            &prior_weights,
+            &BinomialFamily,
+            &LogitLink,
+            &empty,
+            &coefficients,
+            Some(&[0]),
+            None,
+        );
+        assert!(!stationary);
+        assert!(max_std_score > SMOOTH_KKT_SCORE_TOL);
+
+        // Mirrored for beta <= 0: the same positive score pushes INTO that
+        // bound and is admissible.
+        let (stationary, _) = stationarity_report(
+            x.view(),
+            &y_high,
+            &mu,
+            &prior_weights,
+            &BinomialFamily,
+            &LogitLink,
+            &empty,
+            &coefficients,
+            None,
+            Some(&[0]),
+        );
+        assert!(stationary);
+    }
+
+    #[test]
+    fn test_solve_intercept_shift_matches_closed_forms() {
+        // Binomial/logit at eta = 0: the root of sum(y - sigmoid(d)) = 0 is
+        // logit(mean(y)).
+        let mut yv = vec![1.0; 7];
+        yv.extend(vec![0.0; 3]);
+        let y = Array1::from_vec(yv);
+        let eta = Array1::zeros(10);
+        let prior_weights = Array1::ones(10);
+        let shift = solve_intercept_shift(&y, &eta, &prior_weights, &BinomialFamily, &LogitLink)
+            .expect("root is bracketed");
+        assert_abs_diff_eq!(shift, (0.7f64 / 0.3).ln(), epsilon = 1e-9);
+
+        // Gaussian/identity: the root is mean(y) - mean(eta).
+        let y2 = array![1.0, 2.0, 6.0];
+        let eta2 = Array1::zeros(3);
+        let pw2 = Array1::ones(3);
+        let shift2 = solve_intercept_shift(&y2, &eta2, &pw2, &GaussianFamily, &IdentityLink)
+            .expect("root is bracketed");
+        assert_abs_diff_eq!(shift2, 3.0, epsilon = 1e-9);
+    }
+
+    #[test]
+    fn test_refine_unconstrained_block_solves_conditional_optimum() {
+        // Gaussian identity, x = [intercept | monotone column held fixed].
+        // y is exactly linear, so refining the free block (the intercept)
+        // must land on the conditional — here global — optimum.
+        let n = 12;
+        let mut xv = Vec::with_capacity(n * 2);
+        let mut yv = Vec::with_capacity(n);
+        for i in 0..n {
+            let c = i as f64 / n as f64;
+            xv.push(1.0);
+            xv.push(c);
+            yv.push(2.0 + 3.0 * c);
+        }
+        let x = Array2::from_shape_vec((n, 2), xv).expect("test setup should be valid");
+        let y = Array1::from_vec(yv);
+        let specs = vec![SmoothTermSpec {
+            col_start: 1,
+            col_end: 2,
+            penalty: Array2::zeros((1, 1)),
+            monotonicity: Monotonicity::Increasing,
+            initial_lambda: 0.0,
+        }];
+        let lambdas = vec![0.0];
+        let offset = Array1::zeros(n);
+        let prior_weights = Array1::ones(n);
+
+        let mut coefficients = array![0.0, 3.0]; // slope at truth, intercept off
+        let mut eta = x.dot(&coefficients);
+        let mut mu = eta.clone();
+        let mut deviance = GaussianFamily.deviance(&y, &mu, Some(&prior_weights));
+        let mut iteration = 0usize;
+        let refined = refine_unconstrained_block(
+            &y,
+            x.view(),
+            &specs,
+            &lambdas,
+            &GaussianFamily,
+            &IdentityLink,
+            &offset,
+            &prior_weights,
+            1e-10,
+            1e-8,
+            None,
+            None,
+            &mut coefficients,
+            &mut eta,
+            &mut mu,
+            &mut deviance,
+            &mut iteration,
+            50,
+        )
+        .expect("refine should not error");
+        assert!(refined);
+        assert_abs_diff_eq!(coefficients[0], 2.0, epsilon = 1e-8);
+        assert_abs_diff_eq!(coefficients[1], 3.0, epsilon = 1e-12); // held fixed
+        assert!(deviance < 1e-12);
+        assert!(iteration >= 1);
+
+        // Exhausted budget: no-op, state untouched.
+        let mut coef2 = array![0.0, 3.0];
+        let mut eta2 = x.dot(&coef2);
+        let mut mu2 = eta2.clone();
+        let mut dev2 = GaussianFamily.deviance(&y, &mu2, Some(&prior_weights));
+        let mut iter_full = 50usize;
+        let refined2 = refine_unconstrained_block(
+            &y,
+            x.view(),
+            &specs,
+            &lambdas,
+            &GaussianFamily,
+            &IdentityLink,
+            &offset,
+            &prior_weights,
+            1e-10,
+            1e-8,
+            None,
+            None,
+            &mut coef2,
+            &mut eta2,
+            &mut mu2,
+            &mut dev2,
+            &mut iter_full,
+            50,
+        )
+        .expect("refine should not error");
+        assert!(!refined2);
+        assert_abs_diff_eq!(coef2[0], 0.0, epsilon = 0.0);
+
+        // No fixed block (nothing monotone): the main loop owns the whole
+        // problem and the refine step declines.
+        let free_specs = vec![SmoothTermSpec {
+            col_start: 1,
+            col_end: 2,
+            penalty: Array2::zeros((1, 1)),
+            monotonicity: Monotonicity::None,
+            initial_lambda: 0.0,
+        }];
+        let mut coef3 = array![0.0, 3.0];
+        let mut eta3 = x.dot(&coef3);
+        let mut mu3 = eta3.clone();
+        let mut dev3 = GaussianFamily.deviance(&y, &mu3, Some(&prior_weights));
+        let mut iter3 = 0usize;
+        let refined3 = refine_unconstrained_block(
+            &y,
+            x.view(),
+            &free_specs,
+            &lambdas,
+            &GaussianFamily,
+            &IdentityLink,
+            &offset,
+            &prior_weights,
+            1e-10,
+            1e-8,
+            None,
+            None,
+            &mut coef3,
+            &mut eta3,
+            &mut mu3,
+            &mut dev3,
+            &mut iter3,
+            50,
+        )
+        .expect("refine should not error");
+        assert!(!refined3);
     }
 
     // =========================================================================

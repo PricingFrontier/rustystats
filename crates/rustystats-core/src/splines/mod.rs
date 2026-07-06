@@ -807,6 +807,54 @@ mod tests {
     }
 
     #[test]
+    fn test_boundary_knot_row_activates_last_basis() {
+        // Regression test for the right-boundary basis fix (bug.md Fix 3).
+        //
+        // Winsorised variables put point masses EXACTLY on the right boundary
+        // knot (e.g. a price ratio capped at 2.5). Before v0.8.14 the
+        // half-open-interval logic dropped x == max, producing an all-zero
+        // basis row: those rows silently fell out of the spline term. The
+        // correct limit activates the last basis function: [0, ..., 0, 1].
+        let boundary = 2.5;
+        let mut vals: Vec<f64> = (0..40).map(|i| 0.3 + 0.05 * i as f64).collect();
+        // ~10% point mass exactly at the winsorisation boundary
+        vals.extend(std::iter::repeat_n(boundary, 4));
+        let x = Array1::from_vec(vals);
+
+        // Full basis: boundary rows must be exactly [0, ..., 0, 1]
+        let full = bs_basis(&x, 8, 3, None, true);
+        for i in 40..44 {
+            let row = full.row(i);
+            for j in 0..row.len() - 1 {
+                assert_abs_diff_eq!(row[j], 0.0, epsilon = 1e-12);
+            }
+            assert_abs_diff_eq!(row[row.len() - 1], 1.0, epsilon = 1e-12);
+            assert_abs_diff_eq!(row.sum(), 1.0, epsilon = 1e-12);
+        }
+
+        // Identifiability basis (first column dropped): last column still 1
+        let no_icpt = bs_basis(&x, 8, 3, None, false);
+        for i in 40..44 {
+            let row = no_icpt.row(i);
+            assert_abs_diff_eq!(row[row.len() - 1], 1.0, epsilon = 1e-12);
+        }
+
+        // Natural splines use the truncated-power construction (no half-open
+        // interval logic), but the boundary row contract still matters: it
+        // must be finite and non-degenerate, and match the basis of a nearby
+        // interior point in the linear-extrapolation regime.
+        let ns = ns_basis(&x, 5, None, false);
+        for i in 40..44 {
+            let row = ns.row(i);
+            assert!(row.iter().all(|v| v.is_finite()));
+            assert!(
+                row.iter().any(|v| v.abs() > 1e-8),
+                "ns boundary row must not be all-zero"
+            );
+        }
+    }
+
+    #[test]
     fn test_bspline_all_basis_exact_degree_zero_and_one_values() {
         assert_eq!(
             bspline_all_basis_at_point(0.0, 0, &[0.0, 1.0, 2.0, 3.0], 3),

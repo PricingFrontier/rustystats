@@ -50,7 +50,7 @@ def test_exact_fixed_penalty_smooth_oracle_fixture(path: Path) -> None:
         1e-12,
         model["lambda"],
         model["lambda"],
-        None,
+        model.get("monotonicity"),
         False,
     )
 
@@ -60,16 +60,34 @@ def test_exact_fixed_penalty_smooth_oracle_fixture(path: Path) -> None:
         atol=tol["params_atol"],
         rtol=tol["params_rtol"],
     )
-    np.testing.assert_allclose(
-        x_full @ result.params,
-        np.asarray(expected["fittedvalues"], dtype=np.float64),
-        atol=tol["prediction_atol"],
-        rtol=tol["prediction_rtol"],
-    )
     full_penalty = np.zeros((x_full.shape[1], x_full.shape[1]), dtype=np.float64)
     full_penalty[1:, 1:] = model["lambda"] * smooth_penalty
-    gradient = x_full.T @ (x_full @ result.params - y) + full_penalty @ result.params
+    eta_hat = x_full @ result.params
+
+    if model["family"] == "binomial":
+        # Canonical logit: fitted values on the response scale; stationarity of
+        # the penalized deviance is X'(y - mu) = S_full @ beta.
+        mu_hat = 1.0 / (1.0 + np.exp(-eta_hat))
+        np.testing.assert_allclose(
+            mu_hat,
+            np.asarray(expected["fittedvalues"], dtype=np.float64),
+            atol=tol["prediction_atol"],
+            rtol=tol["prediction_rtol"],
+        )
+        gradient = x_full.T @ (y - mu_hat) - full_penalty @ result.params
+        weights = mu_hat * (1.0 - mu_hat)
+        xtwx = x_full.T @ (x_full * weights[:, None])
+        edf = float(np.trace(np.linalg.solve(xtwx + full_penalty, xtwx)))
+    else:
+        np.testing.assert_allclose(
+            eta_hat,
+            np.asarray(expected["fittedvalues"], dtype=np.float64),
+            atol=tol["prediction_atol"],
+            rtol=tol["prediction_rtol"],
+        )
+        gradient = x_full.T @ (eta_hat - y) + full_penalty @ result.params
+        edf = np.trace(x_full @ np.linalg.solve(x_full.T @ x_full + full_penalty, x_full.T))
+
     assert float(np.max(np.abs(gradient))) <= tol["kkt_atol"]
     assert expected["kkt_max_abs"] <= tol["kkt_atol"]
-    edf = np.trace(x_full @ np.linalg.solve(x_full.T @ x_full + full_penalty, x_full.T))
     assert edf == pytest.approx(expected["edf"], abs=tol["edf_atol"])

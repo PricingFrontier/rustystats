@@ -82,8 +82,116 @@ def _fixture() -> dict:
     }
 
 
+def _binomial_penalized_newton(
+    x_full: np.ndarray, y: np.ndarray, full_penalty: np.ndarray
+) -> np.ndarray:
+    """Exact penalized binomial-logit fit by damped-free Newton iteration.
+
+    Solves X'(y - mu) = S_full @ beta, the stationarity condition of the
+    penalized deviance dev + beta' S_full beta (factor 2 cancels). Quadratic
+    convergence to machine precision on this well-conditioned fixture.
+    """
+    beta = np.zeros(x_full.shape[1], dtype=np.float64)
+    for _ in range(100):
+        eta = x_full @ beta
+        mu = 1.0 / (1.0 + np.exp(-eta))
+        weights = mu * (1.0 - mu)
+        hessian = x_full.T @ (x_full * weights[:, None]) + full_penalty
+        gradient = x_full.T @ (y - mu) - full_penalty @ beta
+        delta = np.linalg.solve(hessian, gradient)
+        beta = beta + delta
+        if float(np.max(np.abs(delta))) < 1e-14:
+            break
+    return beta
+
+
+def _monotone_binomial_fixture() -> dict:
+    """Monotone-decreasing bs x binomial oracle (bug.md Fix 4).
+
+    The true coefficient sequence is strictly decreasing, so the monotone
+    constraint is SLACK at the optimum and the constrained solver must
+    reproduce the exact unconstrained penalized fit. A solver that stalls at a
+    non-stationary point (the historical failure mode) misses these values by
+    orders of magnitude more than the tolerances.
+    """
+    n = 480
+    k = 5
+    lambda_ = 0.5
+    x = np.linspace(0.0, 1.0, n)
+    centers = np.linspace(0.1, 0.9, k)
+    # Narrow bumps: adjacent-column overlap ~0.14, keeping the block well
+    # conditioned so the unconstrained optimum tracks the (strictly
+    # decreasing, penalty-null-space linear) truth with a wide margin.
+    basis = np.column_stack([np.exp(-((x - c) ** 2) / (2.0 * 0.10**2)) for c in centers])
+    design = np.column_stack([np.ones(n), basis])
+
+    beta_true = np.array([2.0, 1.0, 0.0, -1.0, -2.0])
+    rng = np.random.default_rng(20260706)
+    p_true = 1.0 / (1.0 + np.exp(-(-0.1 + basis @ beta_true)))
+    y = rng.binomial(1, p_true).astype(np.float64)
+
+    penalty = _difference_penalty(k, order=2)
+    full_penalty = np.zeros((k + 1, k + 1), dtype=np.float64)
+    full_penalty[1:, 1:] = lambda_ * penalty
+
+    params = _binomial_penalized_newton(design, y, full_penalty)
+    smooth_coefs = params[1:]
+    if not np.all(np.diff(smooth_coefs) < -1e-2):
+        raise RuntimeError(
+            "monotone-binomial fixture invalid: unconstrained optimum is not strictly "
+            f"decreasing with margin (coefs {smooth_coefs}); the constrained fit would "
+            "not equal the unconstrained oracle"
+        )
+
+    eta = design @ params
+    mu = 1.0 / (1.0 + np.exp(-eta))
+    gradient = design.T @ (y - mu) - full_penalty @ params
+    weights = mu * (1.0 - mu)
+    xtwx = design.T @ (design * weights[:, None])
+    edf = float(np.trace(np.linalg.solve(xtwx + full_penalty, xtwx)))
+
+    return {
+        "schema_version": 1,
+        "case_id": "exact-binomial-monotone-decreasing-fixed-smooth-penalty",
+        "oracle": "exact-penalized-binomial-newton",
+        "oracle_version": "numpy.linalg.solve",
+        "data": {
+            "columns": {
+                "y": _round_array(y),
+                "basis": _round_array(basis),
+            }
+        },
+        "model": {
+            "family": "binomial",
+            "link": "logit",
+            "smooth_col_ranges": [[1, k + 1]],
+            "monotonicity": ["decreasing"],
+            "lambda": lambda_,
+            "penalty_order": 2,
+        },
+        "expected": {
+            "penalty_matrix": _round_array(penalty),
+            "params": _round_array(params),
+            "fittedvalues": _round_array(mu),
+            "edf": float(f"{edf:.16g}"),
+            "kkt_max_abs": float(f"{np.max(np.abs(gradient)):.16g}"),
+        },
+        "tolerances": {
+            "params_atol": 5e-5,
+            "params_rtol": 5e-5,
+            "prediction_atol": 1e-5,
+            "prediction_rtol": 1e-5,
+            "edf_atol": 1e-4,
+            "kkt_atol": 1e-4,
+        },
+    }
+
+
 def build_fixtures() -> dict[str, dict]:
-    return {"fixed_penalty_gaussian.json": _fixture()}
+    return {
+        "fixed_penalty_gaussian.json": _fixture(),
+        "fixed_penalty_monotone_binomial.json": _monotone_binomial_fixture(),
+    }
 
 
 def _write_fixtures(directory: Path, fixtures: dict[str, dict]) -> None:

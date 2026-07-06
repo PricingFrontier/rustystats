@@ -59,6 +59,25 @@ Co-Authored-By: <name> <email>
 
 Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `release`
 
+The type is a scope declaration, not just a label: a PR titled `test:` or `ci:`
+must not modify production source (`crates/*/src/`, `python/rustystats/`). CI
+enforces this (`scripts/check_pr_title_scope.py`); for `.rs` files the check is
+hunk-aware, so Rust unit tests added inside a trailing `#[cfg(test)]` module of
+a src file are still test-scope. If a test change needs a source change,
+retitle the PR (`fix:`/`refactor:`) so the source diff is reviewed as a
+behavior change. This policy exists because a `test:`-titled
+commit once shipped ~1,600 changed non-test solver lines and regressed the
+monotone smooth solver in a release.
+
+## Numerical Tolerance Changes
+
+Loosening a numerical test tolerance is a **release blocker** until the
+underlying trajectory change is understood and written up in the PR
+description. A tolerance that needs loosening means fitted results moved;
+"make CI green" is not an explanation. (The v0.8.14 monotone-solver regression
+was flagged by exactly such a loosening — 1e-12 → 1e-10 in the GCV optimizer
+tests — that was accepted instead of investigated.)
+
 ## Pull Request Process
 
 1. Create a feature branch from `main`

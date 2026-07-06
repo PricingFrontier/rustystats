@@ -511,10 +511,13 @@ near the bottom of the summary table so the caller knows why.
 
 ```python
 result.solver_status        # "converged" | "max_iterations" | "step_halving_no_improvement"
+                            #   | "stalled_nonstationary"
 result.step_halving_used    # bool
 result.optimizer_route      # "irls" | "coordinate_descent" | "gcv_penalized"
-result.iterations           # final IRLS iteration count
+result.iterations           # final iteration count (total budget consumed)
 result.converged            # bool
+result.stationary           # bool | None — exit KKT check (smooth path); None elsewhere
+result.max_std_score        # float | None — largest standardized score at exit
 ```
 
 The status reports the *terminal* state of the solver — a
@@ -522,6 +525,15 @@ The status reports the *terminal* state of the solver — a
 and `converged == False`. Step-halving accepts only non-worsening steps, and
 the final $\mu$ is clamped through each family's `clamp_mu`, so
 `fittedvalues` never sits outside the family's support.
+
+On the smooth path, `converged == True` additionally requires the exit
+stationarity check: the score of every unpenalized, unconstrained coordinate
+(the intercept above all) must vanish, so a converged canonical-link fit
+satisfies `mean(fittedvalues) == mean(y)` on its training data. A fit whose
+progress test passed but whose scores did not vanish reports
+`stalled_nonstationary` with `converged == False`. `fit(max_iter=N)` is a hard
+total budget for the smooth path (warm start + all inner PIRLS iterations
+across lambda updates); the monotone-path default is 2000.
 
 ---
 

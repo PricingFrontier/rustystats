@@ -25,6 +25,24 @@ pub const CONVERGENCE_TOL: f64 = 1e-8;
 /// Convergence tolerance for smooth models. Matches scam's default of 1e-7.
 pub const SMOOTH_CONVERGENCE_TOL: f64 = 1e-7;
 
+/// Maximum inner PIRLS iterations per outer lambda update in the monotonic
+/// smooth solver (scam uses up to 200 inner iterations per cycle). Total work
+/// across all cycles is bounded by the caller's `max_iter` budget, not by a
+/// hard-coded outer-loop cap.
+pub const SMOOTH_INNER_MAX_PER_CYCLE: usize = 200;
+
+/// Maximum iterations for the unconstrained warm-start fit that seeds the
+/// monotonic smooth solver. Also counted against the caller's `max_iter`
+/// budget so `fit(max_iter=N)` genuinely bounds all smooth-path work.
+pub const SMOOTH_WARM_START_MAX_ITER: usize = 25;
+
+/// Tolerance for the exit stationarity (KKT) check of the smooth solver: the
+/// standardized score |s_j| / sqrt(I_jj) of every unpenalized, unconstrained
+/// coordinate must fall below this for `converged=True`. A numerically
+/// converged fit sits orders of magnitude below this; a stalled fit with a
+/// materially biased mean sits well above it.
+pub const SMOOTH_KKT_SCORE_TOL: f64 = 1e-2;
+
 /// Tolerance for checking if a value is effectively zero.
 /// Used for comparing floating point numbers to zero.
 pub const ZERO_TOL: f64 = 1e-10;

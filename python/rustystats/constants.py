@@ -8,6 +8,7 @@ and magic numbers used throughout the library.
 __all__ = [
     # IRLS
     "DEFAULT_MAX_ITER",
+    "DEFAULT_MONOTONE_SMOOTH_MAX_ITER",
     "DEFAULT_TOLERANCE",
     # Regularization
     "DEFAULT_N_ALPHAS",
@@ -67,6 +68,11 @@ __all__ = [
 # =============================================================================
 DEFAULT_MAX_ITER = 25
 DEFAULT_TOLERANCE = 1e-8
+
+# Default TOTAL iteration budget for the monotone smooth path: warm start plus
+# all inner PIRLS iterations across lambda updates (scam-style nested solve).
+# Matches the previous effective ceiling (10 outer cycles x 200 inner).
+DEFAULT_MONOTONE_SMOOTH_MAX_ITER = 2000
 
 # =============================================================================
 # Regularization Path Defaults
