@@ -1349,12 +1349,16 @@ fn fit_glm_core(
                 }
             }
             Err(_) => {
-                warnings.push(
-                    "Final coefficient extraction failed. \
-                    Using coefficients from best iteration instead. This may indicate numerical instability."
+                // Fail closed (pre-v0.8.14 contract): a failed final
+                // covariance solve must not return a "successful" fit with an
+                // all-zeros covariance — zero standard errors read as infinite
+                // significance downstream. Callers that do not need inference
+                // set skip_covariance and never reach this solve.
+                return Err(RustyStatsError::LinearAlgebraError(
+                    "Final coefficient/covariance extraction failed. \
+                    This often indicates multicollinearity in predictors."
                         .to_string(),
-                );
-                (use_coefficients, Array2::zeros((p, p)))
+                ));
             }
         }
     };

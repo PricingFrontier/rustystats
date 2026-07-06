@@ -74,6 +74,8 @@ fn smooth_result_to_py<'py>(
         offset: result.offset,
         step_halving_used: result.step_halving_used,
         solver_status: result.solver_status,
+        stationary: Some(result.stationary),
+        max_std_score: Some(result.max_std_score),
         warnings: result.warnings,
     };
 
@@ -488,6 +490,8 @@ pub fn fit_glm_py(
         offset: offset_array,
         step_halving_used: result.step_halving_used,
         solver_status: result.solver_status,
+        stationary: None,
+        max_std_score: None,
         warnings: result.warnings,
     })
 }
@@ -668,6 +672,8 @@ pub fn fit_negbinomial_py<'py>(
         offset: offset_array,
         step_halving_used: result.step_halving_used,
         solver_status: result.solver_status,
+        stationary: None,
+        max_std_score: None,
         warnings: result.warnings,
     };
 
