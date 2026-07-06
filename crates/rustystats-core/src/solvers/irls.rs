@@ -5461,6 +5461,82 @@ mod tests {
     }
 
     #[test]
+    fn test_singular_design_fails_closed() {
+        // Fail-closed contract (pre-v0.8.14, restored): a rank-deficient
+        // design must produce a loud error, never a "successful" fit whose
+        // covariance is all zeros (zero SEs read as infinite significance).
+        // The v0.8.14 refactor briefly converted the final-extraction failure
+        // into a soft success carrying Array2::zeros — this pins the
+        // fit-level contract for the singular class.
+        let n = 30usize;
+        let mut xv = Vec::with_capacity(n * 3);
+        let mut yv = Vec::with_capacity(n);
+        for i in 0..n {
+            let xi = (i as f64) / (n as f64);
+            xv.push(1.0);
+            xv.push(xi);
+            xv.push(xi); // exact duplicate column -> singular X'WX
+            yv.push(0.5 + 0.3 * xi + if i % 2 == 0 { 0.05 } else { -0.05 });
+        }
+        let x = Array2::from_shape_vec((n, 3), xv).expect("test setup should be valid");
+        let y = Array1::from_vec(yv);
+        let result = fit_glm_unified(
+            &y,
+            x.view(),
+            &GaussianFamily,
+            &IdentityLink,
+            &FitConfig::default(),
+            None,
+            None,
+            None,
+        );
+        let err = result.expect_err("singular design must fail loudly, not fit");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("singular") || msg.contains("multicollinearity"),
+            "error should point at the singular design, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_computed_covariance_is_never_all_zeros() {
+        // Companion canary to the fail-closed contract: whenever covariance
+        // is computed (skip_covariance = false), a successful fit must carry a
+        // usable covariance — an all-zeros matrix can only come from a
+        // failure path being wired to a soft success.
+        let n = 50usize;
+        let mut xv = Vec::with_capacity(n * 2);
+        let mut yv = Vec::with_capacity(n);
+        for i in 0..n {
+            let xi = (i as f64) / (n as f64);
+            xv.push(1.0);
+            xv.push(xi);
+            yv.push(1.0 + 2.0 * xi + if i % 3 == 0 { 0.1 } else { -0.05 });
+        }
+        let x = Array2::from_shape_vec((n, 2), xv).expect("test setup should be valid");
+        let y = Array1::from_vec(yv);
+        let result = fit_glm_unified(
+            &y,
+            x.view(),
+            &GaussianFamily,
+            &IdentityLink,
+            &FitConfig::default(),
+            None,
+            None,
+            None,
+        )
+        .expect("well-conditioned fit should succeed");
+        assert!(
+            result
+                .covariance_unscaled
+                .diag()
+                .iter()
+                .all(|&v| v.is_finite() && v > 0.0),
+            "computed covariance must have strictly positive finite diagonal"
+        );
+    }
+
+    #[test]
     fn test_final_mu_clamped_for_separated_binomial() {
         // RS-ACT-007: perfect separation drives eta to ±inf, so the final fitted
         // mu must be clamped strictly inside (0, 1) rather than hitting 0 or 1.

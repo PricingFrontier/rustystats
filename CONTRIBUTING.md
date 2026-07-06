@@ -61,9 +61,11 @@ Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `release`
 
 The type is a scope declaration, not just a label: a PR titled `test:` or `ci:`
 must not modify production source (`crates/*/src/`, `python/rustystats/`). CI
-enforces this (`scripts/check_pr_title_scope.py`). If a test change needs a
-source change, retitle the PR (`fix:`/`refactor:`) so the source diff is
-reviewed as a behavior change. This policy exists because a `test:`-titled
+enforces this (`scripts/check_pr_title_scope.py`); for `.rs` files the check is
+hunk-aware, so Rust unit tests added inside a trailing `#[cfg(test)]` module of
+a src file are still test-scope. If a test change needs a source change,
+retitle the PR (`fix:`/`refactor:`) so the source diff is reviewed as a
+behavior change. This policy exists because a `test:`-titled
 commit once shipped ~1,600 changed non-test solver lines and regressed the
 monotone smooth solver in a release.
 

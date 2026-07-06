@@ -257,6 +257,29 @@ def test_max_iter_budget_is_monotone():
     assert iters[0] == 5  # truncation is exact, not approximate
 
 
+def test_stationarity_gate_reports_nonstationary_on_truncated_fit():
+    """The gate must be able to say NO — guards against it degenerating into a
+    rubber stamp (a mutant that always reports stationary=True survives every
+    other test, because the intercept refresh keeps the mean exact anyway).
+
+    A hard-truncated fit with an unpenalized LINEAR coordinate strands that
+    coordinate's score far from zero: the refresh restores the intercept but
+    must not launder the rest. (In SMALL every non-intercept term is penalized
+    or monotone, so a truncated SMALL fit is honestly stationary — the linear
+    term is what gives the gate something to reject.)"""
+    data = make_data(n=3000, seed=5)
+    terms = {**SMALL, "x_q2i": {"type": "linear"}}
+    model = _fit(terms, data, max_iter=2)
+    assert model.converged is False
+    assert model.stationary is False
+    assert model.max_std_score > 1e-2
+    assert model.solver_status == "max_iterations"
+    # The mean backstop still holds even on this truncated fit.
+    y = data["y"].to_numpy()
+    fit_gap = abs(y.mean() - np.asarray(model.fittedvalues, dtype=float).mean())
+    assert fit_gap < MEAN_GAP_TOL
+
+
 # =============================================================================
 # Regularized path: monotonicity is not enforced there — must warn, not hide
 # =============================================================================

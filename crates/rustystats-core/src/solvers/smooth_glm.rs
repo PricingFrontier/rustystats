@@ -2397,8 +2397,8 @@ impl SmoothTermSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::families::{GaussianFamily, PoissonFamily};
-    use crate::links::{IdentityLink, LogLink};
+    use crate::families::{BinomialFamily, GaussianFamily, PoissonFamily};
+    use crate::links::{IdentityLink, LogLink, LogitLink};
     use crate::splines::{bs_basis, is_basis};
     use approx::{assert_abs_diff_eq, assert_relative_eq};
     use ndarray::array;
@@ -3045,6 +3045,345 @@ mod tests {
         assert_array2_close(&result.covariance_unscaled, &Array2::eye(2), 1e-12);
         assert_eq!(result.offset, None);
         assert_eq!(result.total_edf, 2.0);
+    }
+
+    // =========================================================================
+    // Unit tests: termination-contract helpers (stationarity check, intercept
+    // refresh, unconstrained-block re-solve)
+    // =========================================================================
+
+    #[test]
+    fn test_guarded_denominator_preserves_sign_and_floors_magnitude() {
+        assert_eq!(guarded_denominator(0.5), 0.5);
+        assert_eq!(guarded_denominator(-0.5), -0.5);
+        assert_eq!(guarded_denominator(1e-14), ZERO_TOL);
+        assert_eq!(guarded_denominator(-1e-14), -ZERO_TOL);
+    }
+
+    #[test]
+    fn test_find_intercept_column_respects_smooth_and_constraint_exclusions() {
+        // col 0: all-ones but sign-constrained; col 1: all-ones but inside a
+        // smooth range; col 2: the true intercept; col 3: data.
+        let x = array![
+            [1.0, 1.0, 1.0, 0.2],
+            [1.0, 1.0, 1.0, 0.7],
+            [1.0, 1.0, 1.0, 0.4]
+        ];
+        let mut smooth_cols = std::collections::HashSet::new();
+        smooth_cols.insert(1usize);
+        assert_eq!(
+            find_intercept_column(x.view(), &smooth_cols, Some(&[0]), None),
+            Some(2)
+        );
+        assert_eq!(
+            find_intercept_column(x.view(), &smooth_cols, Some(&[0]), Some(&[2])),
+            None,
+            "all candidate ones-columns excluded"
+        );
+        let no_ones = array![[0.5, 2.0], [1.0, 3.0]];
+        let empty = std::collections::HashSet::new();
+        assert_eq!(
+            find_intercept_column(no_ones.view(), &empty, None, None),
+            None
+        );
+    }
+
+    #[test]
+    fn test_quasi_score_arrays_reduce_to_weighted_residuals_for_canonical_logit() {
+        let y = array![1.0, 0.0, 1.0];
+        let mu = array![0.8, 0.3, 0.5];
+        let prior_weights = array![1.0, 2.0, 1.0];
+        let (score_resid, info_weight) =
+            quasi_score_arrays(&y, &mu, &prior_weights, &BinomialFamily, &LogitLink);
+        // Canonical link: g'(mu) V(mu) = 1, so r_i = w_i (y_i - mu_i).
+        assert_abs_diff_eq!(score_resid[0], 0.2, epsilon = 1e-12);
+        assert_abs_diff_eq!(score_resid[1], -0.6, epsilon = 1e-12);
+        assert_abs_diff_eq!(score_resid[2], 0.5, epsilon = 1e-12);
+        // Expected-information weight f_i = w_i mu (1 - mu).
+        assert_abs_diff_eq!(info_weight[0], 0.16, epsilon = 1e-12);
+        assert_abs_diff_eq!(info_weight[1], 0.42, epsilon = 1e-12);
+        assert_abs_diff_eq!(info_weight[2], 0.25, epsilon = 1e-12);
+        // Column score of an intercept column: s = sum(r), I = sum(f).
+        let x = array![[1.0], [1.0], [1.0]];
+        let (score, std_score) = column_std_score(x.view(), 0, &score_resid, &info_weight);
+        assert_abs_diff_eq!(score, 0.1, epsilon = 1e-12);
+        assert_abs_diff_eq!(
+            std_score,
+            0.1 / (0.16f64 + 0.42 + 0.25).sqrt(),
+            epsilon = 1e-12
+        );
+    }
+
+    #[test]
+    fn test_stationarity_report_passes_at_score_zero_and_flags_biased_mean() {
+        let x = array![[1.0], [1.0], [1.0], [1.0]];
+        let y = array![1.0, 0.0, 1.0, 0.0];
+        let prior_weights = Array1::ones(4);
+        let empty = std::collections::HashSet::new();
+        let coefficients = array![0.0];
+
+        // mu == mean(y): the intercept score vanishes exactly.
+        let mu_exact = Array1::from_elem(4, 0.5);
+        let (stationary, max_std_score) = stationarity_report(
+            x.view(),
+            &y,
+            &mu_exact,
+            &prior_weights,
+            &BinomialFamily,
+            &LogitLink,
+            &empty,
+            &coefficients,
+            None,
+            None,
+        );
+        assert!(stationary);
+        assert_abs_diff_eq!(max_std_score, 0.0, epsilon = 1e-12);
+
+        // Biased mean (the historical failure signature): flagged, and the
+        // standardized score matches the hand computation.
+        let mu_biased = Array1::from_elem(4, 0.35);
+        let (stationary, max_std_score) = stationarity_report(
+            x.view(),
+            &y,
+            &mu_biased,
+            &prior_weights,
+            &BinomialFamily,
+            &LogitLink,
+            &empty,
+            &coefficients,
+            None,
+            None,
+        );
+        assert!(!stationary);
+        // score = 4 * 0.15 = 0.6; info = 4 * 0.35 * 0.65 = 0.91.
+        assert_abs_diff_eq!(max_std_score, 0.6 / 0.91f64.sqrt(), epsilon = 1e-10);
+
+        // The same violating column inside a smooth range is penalized and
+        // therefore not part of the check.
+        let mut smooth_cols = std::collections::HashSet::new();
+        smooth_cols.insert(0usize);
+        let (stationary, max_std_score) = stationarity_report(
+            x.view(),
+            &y,
+            &mu_biased,
+            &prior_weights,
+            &BinomialFamily,
+            &LogitLink,
+            &smooth_cols,
+            &coefficients,
+            None,
+            None,
+        );
+        assert!(stationary);
+        assert_abs_diff_eq!(max_std_score, 0.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn test_stationarity_report_complementary_slackness_for_sign_constraints() {
+        let x = array![[1.0], [1.0], [1.0], [1.0]];
+        let prior_weights = Array1::ones(4);
+        let empty = std::collections::HashSet::new();
+        let coefficients = array![0.0]; // constrained coordinate at its bound
+        let mu = Array1::from_elem(4, 0.5);
+
+        // Score pushes INTO a beta >= 0 bound (negative score at beta = 0):
+        // stationary by complementary slackness.
+        let y_low = array![0.0, 0.0, 1.0, 0.0];
+        let (stationary, _) = stationarity_report(
+            x.view(),
+            &y_low,
+            &mu,
+            &prior_weights,
+            &BinomialFamily,
+            &LogitLink,
+            &empty,
+            &coefficients,
+            Some(&[0]),
+            None,
+        );
+        assert!(stationary);
+
+        // Score pushes OUT of the bound (positive): a genuine KKT violation.
+        let y_high = array![1.0, 1.0, 1.0, 0.0];
+        let (stationary, max_std_score) = stationarity_report(
+            x.view(),
+            &y_high,
+            &mu,
+            &prior_weights,
+            &BinomialFamily,
+            &LogitLink,
+            &empty,
+            &coefficients,
+            Some(&[0]),
+            None,
+        );
+        assert!(!stationary);
+        assert!(max_std_score > SMOOTH_KKT_SCORE_TOL);
+
+        // Mirrored for beta <= 0: the same positive score pushes INTO that
+        // bound and is admissible.
+        let (stationary, _) = stationarity_report(
+            x.view(),
+            &y_high,
+            &mu,
+            &prior_weights,
+            &BinomialFamily,
+            &LogitLink,
+            &empty,
+            &coefficients,
+            None,
+            Some(&[0]),
+        );
+        assert!(stationary);
+    }
+
+    #[test]
+    fn test_solve_intercept_shift_matches_closed_forms() {
+        // Binomial/logit at eta = 0: the root of sum(y - sigmoid(d)) = 0 is
+        // logit(mean(y)).
+        let mut yv = vec![1.0; 7];
+        yv.extend(vec![0.0; 3]);
+        let y = Array1::from_vec(yv);
+        let eta = Array1::zeros(10);
+        let prior_weights = Array1::ones(10);
+        let shift = solve_intercept_shift(&y, &eta, &prior_weights, &BinomialFamily, &LogitLink)
+            .expect("root is bracketed");
+        assert_abs_diff_eq!(shift, (0.7f64 / 0.3).ln(), epsilon = 1e-9);
+
+        // Gaussian/identity: the root is mean(y) - mean(eta).
+        let y2 = array![1.0, 2.0, 6.0];
+        let eta2 = Array1::zeros(3);
+        let pw2 = Array1::ones(3);
+        let shift2 = solve_intercept_shift(&y2, &eta2, &pw2, &GaussianFamily, &IdentityLink)
+            .expect("root is bracketed");
+        assert_abs_diff_eq!(shift2, 3.0, epsilon = 1e-9);
+    }
+
+    #[test]
+    fn test_refine_unconstrained_block_solves_conditional_optimum() {
+        // Gaussian identity, x = [intercept | monotone column held fixed].
+        // y is exactly linear, so refining the free block (the intercept)
+        // must land on the conditional — here global — optimum.
+        let n = 12;
+        let mut xv = Vec::with_capacity(n * 2);
+        let mut yv = Vec::with_capacity(n);
+        for i in 0..n {
+            let c = i as f64 / n as f64;
+            xv.push(1.0);
+            xv.push(c);
+            yv.push(2.0 + 3.0 * c);
+        }
+        let x = Array2::from_shape_vec((n, 2), xv).expect("test setup should be valid");
+        let y = Array1::from_vec(yv);
+        let specs = vec![SmoothTermSpec {
+            col_start: 1,
+            col_end: 2,
+            penalty: Array2::zeros((1, 1)),
+            monotonicity: Monotonicity::Increasing,
+            initial_lambda: 0.0,
+        }];
+        let lambdas = vec![0.0];
+        let offset = Array1::zeros(n);
+        let prior_weights = Array1::ones(n);
+
+        let mut coefficients = array![0.0, 3.0]; // slope at truth, intercept off
+        let mut eta = x.dot(&coefficients);
+        let mut mu = eta.clone();
+        let mut deviance = GaussianFamily.deviance(&y, &mu, Some(&prior_weights));
+        let mut iteration = 0usize;
+        let refined = refine_unconstrained_block(
+            &y,
+            x.view(),
+            &specs,
+            &lambdas,
+            &GaussianFamily,
+            &IdentityLink,
+            &offset,
+            &prior_weights,
+            1e-10,
+            1e-8,
+            None,
+            None,
+            &mut coefficients,
+            &mut eta,
+            &mut mu,
+            &mut deviance,
+            &mut iteration,
+            50,
+        )
+        .expect("refine should not error");
+        assert!(refined);
+        assert_abs_diff_eq!(coefficients[0], 2.0, epsilon = 1e-8);
+        assert_abs_diff_eq!(coefficients[1], 3.0, epsilon = 1e-12); // held fixed
+        assert!(deviance < 1e-12);
+        assert!(iteration >= 1);
+
+        // Exhausted budget: no-op, state untouched.
+        let mut coef2 = array![0.0, 3.0];
+        let mut eta2 = x.dot(&coef2);
+        let mut mu2 = eta2.clone();
+        let mut dev2 = GaussianFamily.deviance(&y, &mu2, Some(&prior_weights));
+        let mut iter_full = 50usize;
+        let refined2 = refine_unconstrained_block(
+            &y,
+            x.view(),
+            &specs,
+            &lambdas,
+            &GaussianFamily,
+            &IdentityLink,
+            &offset,
+            &prior_weights,
+            1e-10,
+            1e-8,
+            None,
+            None,
+            &mut coef2,
+            &mut eta2,
+            &mut mu2,
+            &mut dev2,
+            &mut iter_full,
+            50,
+        )
+        .expect("refine should not error");
+        assert!(!refined2);
+        assert_abs_diff_eq!(coef2[0], 0.0, epsilon = 0.0);
+
+        // No fixed block (nothing monotone): the main loop owns the whole
+        // problem and the refine step declines.
+        let free_specs = vec![SmoothTermSpec {
+            col_start: 1,
+            col_end: 2,
+            penalty: Array2::zeros((1, 1)),
+            monotonicity: Monotonicity::None,
+            initial_lambda: 0.0,
+        }];
+        let mut coef3 = array![0.0, 3.0];
+        let mut eta3 = x.dot(&coef3);
+        let mut mu3 = eta3.clone();
+        let mut dev3 = GaussianFamily.deviance(&y, &mu3, Some(&prior_weights));
+        let mut iter3 = 0usize;
+        let refined3 = refine_unconstrained_block(
+            &y,
+            x.view(),
+            &free_specs,
+            &lambdas,
+            &GaussianFamily,
+            &IdentityLink,
+            &offset,
+            &prior_weights,
+            1e-10,
+            1e-8,
+            None,
+            None,
+            &mut coef3,
+            &mut eta3,
+            &mut mu3,
+            &mut dev3,
+            &mut iter3,
+            50,
+        )
+        .expect("refine should not error");
+        assert!(!refined3);
     }
 
     // =========================================================================
