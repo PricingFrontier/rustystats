@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 from collections import OrderedDict
+from copy import copy
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -67,9 +68,6 @@ from rustystats._rustystats import (
     multiply_matrix_by_continuous_py as _multiply_matrix_cont_rust,
 )
 from rustystats._rustystats import (
-    predict_cat_basis_interaction_py as _predict_cat_basis_rust,
-)
-from rustystats._rustystats import (
     stack_columns_horizontal_py as _stack_columns_rust,
 )
 from rustystats._rustystats import (
@@ -103,6 +101,7 @@ class InteractionTerm:
     factors: list[str]  # Variables involved (e.g., ['x1', 'x2'] or ['cat1', 'x2'])
     categorical_flags: list[bool]  # Which factors are categorical
     force_linear: set[str] | None = None  # Factors that must stay linear (no spline expansion)
+    spline_terms: dict[str, SplineTerm] | None = None  # Interaction-local spline specs
 
     @property
     def order(self) -> int:
@@ -376,6 +375,18 @@ class InteractionBuilder:
             return self._parsed_formula.spline_terms_by_var.get(factor)
         return None
 
+    def _resolve_interaction_spline(
+        self,
+        interaction: InteractionTerm,
+        factor: str,
+    ) -> SplineTerm | None:
+        """Resolve an interaction-local spline before falling back to main effects."""
+        if interaction.spline_terms is not None:
+            spline = interaction.spline_terms.get(factor)
+            if spline is not None:
+                return spline
+        return self._parse_spline_factor(factor)
+
     def _parse_te_factor(self, factor: str) -> TargetEncodingTermSpec | None:
         """Look up a pre-parsed TE term by variable name."""
         if self._parsed_formula is not None:
@@ -514,12 +525,22 @@ class InteractionBuilder:
         names : list[str]
             Column names
         """
+        self._pending_interaction_smooth_blocks = []
         if interaction.is_pure_continuous:
             return self._build_continuous_interaction(interaction, te_encodings)
         elif interaction.is_pure_categorical:
             return self._build_categorical_interaction(interaction)
         else:
             return self._build_mixed_interaction(interaction)
+
+    @staticmethod
+    def _category_major_basis_order(n_cat_cols: int, n_basis: int) -> list[int]:
+        """Return indices that group categorical × spline columns by category."""
+        return [
+            basis_idx * n_cat_cols + cat_idx
+            for cat_idx in range(n_cat_cols)
+            for basis_idx in range(n_basis)
+        ]
 
     def _build_continuous_interaction(
         self,
@@ -539,7 +560,7 @@ class InteractionBuilder:
             if factor in force_linear:
                 cont_factors.append(factor)
                 continue
-            spline = self._parse_spline_factor(factor)
+            spline = self._resolve_interaction_spline(interaction, factor)
             te = self._parse_te_factor(factor)
             if spline is not None:
                 spline_factors.append((factor, spline))
@@ -768,7 +789,7 @@ class InteractionBuilder:
                 cont_factors.append(factor)
             else:
                 # Check if this is a spline term
-                spline = self._parse_spline_factor(factor)
+                spline = self._resolve_interaction_spline(interaction, factor)
                 if spline is not None:
                     spline_factors.append((factor, spline))
                 else:
@@ -801,12 +822,15 @@ class InteractionBuilder:
             # Build spline basis for each spline factor
             all_columns = []
             all_names = []
+            smooth_blocks = []
+            local_col_start = 0
 
             for _spline_str, spline in spline_factors:
                 x = self._get_column(spline.var_name)
                 spline_basis, spline_names = spline.transform(x)
                 # Store fitted spline for prediction
                 self._fitted_splines[spline.var_name] = spline
+                n_basis = spline_basis.shape[1]
 
                 if single_cat_indices is not None and single_cat_levels is not None:
                     result, col_names = _build_cat_basis_rust(
@@ -816,12 +840,14 @@ class InteractionBuilder:
                         list(cat_names),
                         list(spline_names),
                     )
-                    all_columns.append(np.asarray(result))
-                    all_names.extend(col_names)
+                    block = np.asarray(result)
+                    block_names = list(col_names)
                 else:
                     # Multiply each categorical block by each spline column in Rust.
                     # The returned order is cat columns inside each spline basis,
                     # matching the previous nested Python loop.
+                    block_parts = []
+                    block_names = []
                     for j, spl_name in enumerate(spline_names):
                         result, col_names = _multiply_matrix_cont_rust(
                             cat_encoding.astype(np.float64, copy=False),
@@ -829,8 +855,23 @@ class InteractionBuilder:
                             list(cat_names),
                             spl_name,
                         )
-                        all_columns.append(np.asarray(result))
-                        all_names.extend(col_names)
+                        block_parts.append(np.asarray(result))
+                        block_names.extend(col_names)
+                    block = self._stack_columns(block_parts, self._n, self.dtype)
+
+                if n_cat_cols > 1 and n_basis > 1:
+                    order = self._category_major_basis_order(n_cat_cols, n_basis)
+                    block = block[:, order]
+                    block_names = [block_names[i] for i in order]
+
+                all_columns.append(block)
+                all_names.extend(block_names)
+
+                if getattr(spline, "_is_smooth", False) and not cont_factors:
+                    for cat_idx in range(n_cat_cols):
+                        start = local_col_start + cat_idx * n_basis
+                        smooth_blocks.append((spline, start, start + n_basis))
+                local_col_start += block.shape[1]
 
             # Also include any regular continuous factors
             if cont_factors:
@@ -845,6 +886,7 @@ class InteractionBuilder:
                 all_names = [f"{name}:{cont_name}" for name in all_names]
 
             if all_columns:
+                self._pending_interaction_smooth_blocks = smooth_blocks
                 return self._stack_columns(all_columns, self._n, self.dtype), all_names
             return np.zeros((self._n, 0), dtype=self.dtype), []
 
@@ -1512,6 +1554,20 @@ class InteractionBuilder:
             columns.append(int_cols)
             names.extend(int_names)
             n_added = int_cols.shape[1]
+            for spline, local_start, local_end in getattr(
+                self, "_pending_interaction_smooth_blocks", []
+            ):
+                if local_end <= local_start:
+                    continue
+                col_start = n_cols + local_start
+                col_end = n_cols + local_end
+                registered_spline = copy(spline)
+                registered_spline._interaction_smooth_endpoint_constraint = True
+                self._all_spline_terms.append(registered_spline)
+                self._all_spline_col_indices.append((col_start, col_end))
+                if getattr(registered_spline, "_is_smooth", False):
+                    self._smooth_terms.append(registered_spline)
+                    self._smooth_col_indices.append((col_start, col_end))
             self._term_slots.append(
                 TermSlot(
                     term_name=":".join(interaction.factors),
@@ -2149,7 +2205,7 @@ class InteractionBuilder:
         spline_basis_cache: dict[str, np.ndarray] | None,
     ) -> int:
         resolved = [
-            self._resolve_factor_new(new_data, f, interaction.force_linear, spline_basis_cache)
+            self._resolve_interaction_factor_new(new_data, f, interaction, spline_basis_cache)
             for f in interaction.factors
         ]
         bases = [r if r.ndim == 2 else r.reshape(-1, 1) for r in resolved]
@@ -2259,7 +2315,7 @@ class InteractionBuilder:
             elif factor in force_linear:
                 cont_factors.append(factor)
             else:
-                spline = self._parse_spline_factor(factor)
+                spline = self._resolve_interaction_spline(interaction, factor)
                 if spline is not None:
                     spline_factors.append((factor, spline))
                 else:
@@ -2313,29 +2369,21 @@ class InteractionBuilder:
         if spline_factors:
             for _spline_str, spline in spline_factors:
                 spline_basis = self._spline_basis_new_cached(new_data, spline, spline_basis_cache)
-                if spline_basis.shape[0] > 0 and spline_basis.strides[0] == 0:
-                    lookup = np.zeros(n_cat_cols + 1, dtype=np.float64)
-                    for j in range(spline_basis.shape[1]):
-                        lookup[1:] += params[col : col + n_cat_cols] * float(spline_basis[0, j])
-                        col += n_cat_cols
-                    contribution = lookup[flat]
-                    if cont_product is not None:
-                        contribution = contribution * cont_product
-                    eta += contribution
-                else:
-                    n_basis = spline_basis.shape[1]
-                    contribution = np.asarray(
-                        _predict_cat_basis_rust(
-                            flat.astype(np.int32, copy=False),
-                            n_cat_cols,
-                            spline_basis.astype(np.float64, copy=False),
-                            params[col : col + n_cat_cols * n_basis].astype(np.float64, copy=False),
-                        )
+                n_basis = spline_basis.shape[1]
+                coef = params[col : col + n_cat_cols * n_basis].reshape(n_cat_cols, n_basis)
+                col += n_cat_cols * n_basis
+                contribution = np.zeros(n, dtype=np.float64)
+                valid = flat > 0
+                if np.any(valid):
+                    contribution[valid] = np.einsum(
+                        "ij,ij->i",
+                        spline_basis[valid].astype(np.float64, copy=False),
+                        coef[flat[valid].astype(np.intp) - 1],
+                        optimize=True,
                     )
-                    col += n_cat_cols * n_basis
-                    if cont_product is not None:
-                        contribution = contribution * cont_product
-                    eta += contribution
+                if cont_product is not None:
+                    contribution = contribution * cont_product
+                eta += contribution
             return col
 
         if cont_product is None:
@@ -2560,6 +2608,20 @@ class InteractionBuilder:
                 return self._spline_basis_new_cached(new_data, spline, spline_basis_cache)
         return new_data[factor].to_numpy().astype(self.dtype)
 
+    def _resolve_interaction_factor_new(
+        self,
+        new_data: pl.DataFrame,
+        factor: str,
+        interaction: InteractionTerm,
+        spline_basis_cache: dict[str, np.ndarray] | None = None,
+    ) -> np.ndarray:
+        force_linear = interaction.force_linear or set()
+        if factor not in force_linear and interaction.spline_terms is not None:
+            spline = interaction.spline_terms.get(factor)
+            if spline is not None:
+                return self._spline_basis_new_cached(new_data, spline, spline_basis_cache)
+        return self._resolve_factor_new(new_data, factor, force_linear, spline_basis_cache)
+
     def _build_continuous_interaction_new(
         self,
         new_data: pl.DataFrame,
@@ -2568,7 +2630,7 @@ class InteractionBuilder:
     ) -> np.ndarray:
         """Build continuous × continuous interaction for new data (may include spline/TE)."""
         resolved = [
-            self._resolve_factor_new(new_data, f, interaction.force_linear)
+            self._resolve_interaction_factor_new(new_data, f, interaction)
             for f in interaction.factors
         ]
 
@@ -2660,7 +2722,7 @@ class InteractionBuilder:
             elif factor in force_linear:
                 cont_factors.append(factor)
             else:
-                spline = self._parse_spline_factor(factor)
+                spline = self._resolve_interaction_spline(interaction, factor)
                 if spline is not None:
                     spline_factors.append((factor, spline))
                 else:
@@ -2683,13 +2745,16 @@ class InteractionBuilder:
                 return np.zeros((n, 0), dtype=self.dtype)
 
             all_columns = []
+            n_cat_cols = cat_enc.shape[1]
 
             for _spline_str, spline in spline_factors:
                 x = new_data[spline.var_name].to_numpy().astype(self.dtype)
                 fitted_spline = self._fitted_splines.get(spline.var_name, spline)
                 spline_basis, _ = fitted_spline.transform(x)
+                n_basis = spline_basis.shape[1]
 
                 # Use Rust to multiply categorical matrix by each spline column
+                block_parts = []
                 for j in range(spline_basis.shape[1]):
                     result, _ = _multiply_matrix_cont_rust(
                         cat_enc.astype(np.float64),
@@ -2699,7 +2764,13 @@ class InteractionBuilder:
                         else [f"c{i}" for i in range(cat_enc.shape[1])],
                         f"{spline.var_name}[{j}]",
                     )
-                    all_columns.append(np.asarray(result))
+                    block_parts.append(np.asarray(result))
+
+                block = self._stack_columns(block_parts, n, self.dtype)
+                if n_cat_cols > 1 and n_basis > 1:
+                    order = self._category_major_basis_order(n_cat_cols, n_basis)
+                    block = block[:, order]
+                all_columns.append(block)
 
             if cont_factors:
                 cont_product = new_data[cont_factors[0]].to_numpy().astype(self.dtype)

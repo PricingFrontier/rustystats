@@ -374,6 +374,97 @@ class TestInteractionBuilderHelperContracts:
         np.testing.assert_allclose(encoding, [[0.0], [1.0], [0.0]])
         assert names == ["cat[T.B]"]
 
+        builder._cat_encoding_cache["cat_False"] = CategoricalEncoding(
+            encoding=None,
+            names=[],
+            indices=None,
+            levels=[],
+        )
+        full_encoding, full_names = builder._get_categorical_encoding("cat", drop_first=False)
+        assert full_encoding.shape == (3, 2)
+        assert full_names == ["cat[T.A]", "cat[T.B]"]
+
+    def test_low_level_spline_interaction_branch_contracts(self):
+        df = pl.DataFrame(
+            {
+                "y": [0.0, 1.0, 0.0, 1.0, 0.0, 1.0],
+                "x": np.linspace(0.0, 1.0, 6),
+                "z": [1.0, 1.2, 0.8, 1.4, 1.1, 0.9],
+                "w": [0.5, 0.7, 0.6, 0.8, 0.9, 1.0],
+                "g": ["A", "B", "A", "B", "A", "B"],
+                "brand": ["a", "b", "a", "b", "a", "b"],
+            }
+        )
+        builder = InteractionBuilder(df)
+        spline = SplineTerm("x", "bs", df=4)
+        parsed = ParsedFormula(
+            response="y",
+            main_effects=[],
+            interactions=[],
+            categorical_vars=set(),
+            spline_terms=[spline],
+            target_encoding_terms=[TargetEncodingTermSpec("brand")],
+            has_intercept=True,
+        )
+        builder._parsed_formula = parsed
+
+        del builder._cont_cache
+        builder.clear_caches()
+        builder._cont_cache = {}
+
+        fallback = builder._resolve_interaction_spline(
+            InteractionTerm(["x"], [False], spline_terms={}),
+            "x",
+        )
+        assert fallback is spline
+
+        local_spline = SplineTerm("x", "bs", df=4)
+        local_basis = builder._resolve_interaction_factor_new(
+            df,
+            "x",
+            InteractionTerm(["x"], [False], spline_terms={"x": local_spline}),
+            {},
+        )
+        assert local_basis.ndim == 2
+
+        empty = pl.DataFrame({"cat": []}, schema={"cat": pl.String})
+        cat_builder = InteractionBuilder(pl.DataFrame({"cat": ["A", "B"]}))
+        cat_builder._get_categorical_encoding("cat")
+        mapped, levels = cat_builder._map_to_training_indices_cached(empty, "cat", {})
+        assert mapped.size == 0
+        assert levels == ["A", "B"]
+
+        direct = builder.build_interaction_columns(
+            InteractionTerm(["x", "z", "w"], [False, False, False], force_linear={"z", "w"})
+        )
+        assert direct[0].shape[0] == df.height
+        assert any(name.startswith("z:w:bs(x") for name in direct[1])
+
+        te_direct = builder.build_interaction_columns(
+            InteractionTerm(["z", "w", "TE(brand)"], [False, False, False]),
+            {"TE(brand)": np.arange(df.height, dtype=float)},
+        )
+        assert te_direct[0].shape == (df.height, 1)
+        assert te_direct[1] == ["z:w:TE(brand)"]
+
+        model = rs.glm_dict(
+            response="y",
+            terms={},
+            interactions=[
+                {
+                    "g": {"type": "categorical"},
+                    "x": {"type": "bs"},
+                    "z": {"type": "linear"},
+                    "w": {"type": "linear"},
+                    "include_main": False,
+                }
+            ],
+            data=df,
+            family="gaussian",
+        )
+        assert any(":z:w" in name for name in model.feature_names)
+        assert model._builder.transform_new_data(df).shape[0] == df.height
+
     def test_validate_design_matrix_reports_numerical_pathologies(self, capsys, monkeypatch):
         builder = InteractionBuilder(pl.DataFrame({"y": [1.0, 2.0, 3.0, 4.0]}))
 

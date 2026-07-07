@@ -436,7 +436,7 @@ def _get_constraint_indices(feature_names: list[str]) -> tuple:
     """
     # ms()/ns()/bs() with + and pos() terms require non-negative coefficients.
     # Smooth (penalized) terms with ", k," in the name use exp reparameterization
-    # for monotonicity and must NOT have sign clamping (which would corrupt beta[0]).
+    # for monotonicity; metadata-driven smooth constraints are added later.
     nonneg_indices = [
         i
         for i, name in enumerate(feature_names)
@@ -464,6 +464,28 @@ def _any_monotone_smooth(smooth_terms: list[Any]) -> bool:
         is not None
         for term in smooth_terms
     )
+
+
+def _monotone_smooth_endpoint_constraints(
+    smooth_terms: list[Any],
+    smooth_col_indices: list[tuple],
+    nonneg_indices: list[int] | None,
+    nonpos_indices: list[int] | None,
+) -> tuple[list[int] | None, list[int] | None]:
+    """Add endpoint sign constraints for marked interaction smooth blocks."""
+    nonneg = list(nonneg_indices or [])
+    nonpos = list(nonpos_indices or [])
+
+    for term, (start, end) in zip(smooth_terms, smooth_col_indices):
+        if end <= start or not getattr(term, "_interaction_smooth_endpoint_constraint", False):
+            continue
+        mono = getattr(term, "_smooth_monotonicity", None) or getattr(term, "monotonicity", None)
+        if mono == "increasing":
+            nonneg.extend(range(start, end))
+        elif mono == "decreasing":
+            nonpos.extend(range(start, end))
+
+    return (sorted(set(nonneg)) or None, sorted(set(nonpos)) or None)
 
 
 @dataclass
@@ -626,6 +648,12 @@ def _fit_with_smooth_penalties(
 
     # Call unified Rust solver — full design matrix, no splitting needed
     has_monotonic = any(m is not None for m in monotonicity_specs)
+    nonneg_indices, nonpos_indices = _monotone_smooth_endpoint_constraints(
+        smooth_terms,
+        smooth_col_indices,
+        nonneg_indices,
+        nonpos_indices,
+    )
     rust_result, smooth_meta = _fit_smooth_unified(
         y,
         X,
@@ -641,8 +669,8 @@ def _fit_with_smooth_penalties(
         lambda_max,
         monotonicity_specs if has_monotonic else None,
         store_design_matrix,
-        nonneg_indices if nonneg_indices else None,
-        nonpos_indices if nonpos_indices else None,
+        nonneg_indices,
+        nonpos_indices,
         var_power=var_power,
         theta=theta,
         allow_extended_tweedie=allow_extended_tweedie,
@@ -3579,6 +3607,73 @@ def _validate_explicit_knots(
     return [float(v) for v in knots_list]
 
 
+def _parse_spline_spec(var_name: str, spec: dict[str, Any]) -> SplineTerm:
+    """Parse a spline term spec without registering it as a main effect."""
+    term_type = spec.get("type", "linear")
+    if term_type not in ("bs", "ns", "ms", "s"):
+        raise ValidationError(f"Expected spline term for '{var_name}', got type='{term_type}'.")
+
+    monotonicity = spec.get("monotonicity")
+    if term_type == "ns" and monotonicity:
+        raise ValidationError(
+            "Monotonicity constraints are not supported for natural splines (ns). "
+            "Use type='bs' with monotonicity parameter instead for monotonic effects."
+        )
+    if term_type == "ms" and monotonicity is None:
+        monotonicity = "increasing"
+
+    explicit_knots = spec.get("knots")
+    user_boundary_knots = spec.get("boundary_knots")
+    degree = spec.get("degree", DEFAULT_SPLINE_DEGREE)
+    spline_type = "bs" if term_type == "s" else term_type
+    bk_tuple = tuple(user_boundary_knots) if user_boundary_knots is not None else None
+
+    if explicit_knots is not None:
+        knots_list = _validate_explicit_knots(var_name, explicit_knots, spec)
+        implied_df = len(knots_list) + degree if spline_type in ("bs", "ms") else len(knots_list)
+        term = SplineTerm(
+            var_name=var_name,
+            spline_type=spline_type,
+            df=implied_df,
+            degree=degree,
+            boundary_knots=bk_tuple,
+            monotonicity=monotonicity,
+        )
+        term._computed_internal_knots = knots_list
+        term._is_smooth = False
+    else:
+        k = spec.get("k")
+        df = spec.get("df")
+        if term_type == "s":
+            df = k if k is not None else DEFAULT_SPLINE_DF
+            is_penalized = True
+        elif df is None and k is None:
+            df = DEFAULT_SPLINE_DF
+            is_penalized = True
+        elif k is not None:
+            df = k
+            is_penalized = True
+        else:
+            is_penalized = False
+
+        term = SplineTerm(
+            var_name=var_name,
+            spline_type=spline_type,
+            df=df,
+            degree=degree,
+            boundary_knots=bk_tuple,
+            monotonicity=monotonicity,
+        )
+        if is_penalized:
+            term._is_smooth = True
+            if monotonicity:
+                term._smooth_monotonicity = monotonicity
+
+    if monotonicity:
+        term._monotonic = True
+    return term
+
+
 def _parse_term_spec(
     var_name: str,
     spec: dict[str, Any],
@@ -3941,7 +4036,7 @@ def _parse_interaction_spec(
     # Determine which factors are categorical, splines, or TE
     cat_factors = set()
     linear_factors = set()  # Factors explicitly typed as linear (no spline expansion)
-    spline_factors = []
+    interaction_spline_terms: dict[str, SplineTerm] = {}
     te_factor_names = {}  # Maps original name -> TE(name) format
 
     for var_name, spec in var_specs.items():
@@ -3953,56 +4048,7 @@ def _parse_interaction_spec(
             cat_factors.add(var_name)
             categorical_vars.add(var_name)
         elif term_type in ("bs", "ns", "ms", "s"):
-            explicit_knots = spec.get("knots")
-            user_boundary_knots = spec.get("boundary_knots")
-            # For s() smooth terms, use k parameter; for bs/ns/ms use df
-            if explicit_knots is not None:
-                knots_list = _validate_explicit_knots(var_name, explicit_knots, spec)
-                degree = spec.get("degree", DEFAULT_SPLINE_DEGREE)
-                spline_type_out = "bs" if term_type == "s" else term_type
-                if spline_type_out in ("bs", "ms"):
-                    implied_df = len(knots_list) + degree
-                else:
-                    implied_df = len(knots_list)
-                bk_tuple = tuple(user_boundary_knots) if user_boundary_knots is not None else None
-                monotonicity = spec.get("monotonicity")
-                spline = SplineTerm(
-                    var_name=var_name,
-                    spline_type=spline_type_out,
-                    df=implied_df,
-                    degree=degree,
-                    boundary_knots=bk_tuple,
-                    monotonicity=monotonicity,
-                )
-                spline._computed_internal_knots = knots_list
-                spline._is_smooth = False
-            else:
-                if term_type == "s":
-                    df = spec.get("k", DEFAULT_SPLINE_DF)
-                else:
-                    df = spec.get("df", 5 if term_type in ("bs", "ms") else 4)
-                degree = spec.get("degree", DEFAULT_SPLINE_DEGREE)
-                monotonicity = spec.get("monotonicity")
-                # For ms type, default monotonicity to "increasing"
-                if term_type == "ms" and monotonicity is None:
-                    monotonicity = "increasing"
-                # Use unified bs with monotonicity parameter
-                spline_type_out = "bs" if term_type == "s" else term_type
-                bk_tuple = tuple(user_boundary_knots) if user_boundary_knots is not None else None
-                spline = SplineTerm(
-                    var_name=var_name,
-                    spline_type=spline_type_out,
-                    df=df,
-                    degree=degree,
-                    boundary_knots=bk_tuple,
-                    monotonicity=monotonicity,
-                )
-                # Mark s() terms as smooth for penalized fitting
-                if term_type == "s":
-                    spline._is_smooth = True
-                    if monotonicity:
-                        spline._smooth_monotonicity = monotonicity
-            spline_factors.append((var_name, spline))
+            interaction_spline_terms[var_name] = _parse_spline_spec(var_name, spec)
         elif term_type == "target_encoding":
             prior_weight = spec.get("prior_weight", DEFAULT_PRIOR_WEIGHT)
             te_factor_names[var_name] = f"TE({var_name})"
@@ -4026,6 +4072,7 @@ def _parse_interaction_spec(
         factors=factors,
         categorical_flags=categorical_flags,
         force_linear=linear_factors if linear_factors else None,
+        spline_terms=interaction_spline_terms if interaction_spline_terms else None,
     )
     interactions.append(interaction_term)
 
