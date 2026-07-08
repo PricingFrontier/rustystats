@@ -1573,7 +1573,7 @@ def test_serialization_round_trip_preserves_predictions():
 
     payload = result.to_bytes()
     state = pickle.loads(payload)
-    assert state["schema_version"] == 2
+    assert state["schema_version"] == 3
     loaded = rs.MultinomialModel.from_bytes(payload)
 
     np.testing.assert_allclose(result.predict_proba(data), loaded.predict_proba(data))
@@ -1761,6 +1761,8 @@ def test_multinomial_target_encoding_stats_use_availability_and_row_weights_only
     )
     state = weighted._target_encoding_state
     assert state is not None
+    assert state.terms[0].prior_weight_spec == "auto"
+    assert state.terms[0].class_stats["premium"]["prior_weight"] == pytest.approx(20.0)
     premium_stats = state.terms[0].class_stats["premium"]["stats"]
     assert premium_stats["A"] == (2.0, 6.0)
     assert premium_stats["B"] == (6.5, 7.0)

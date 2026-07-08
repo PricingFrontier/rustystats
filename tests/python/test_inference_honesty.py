@@ -182,7 +182,7 @@ class TestInferenceStatus:
         """011.5: a penalized smooth fit is non-standard and reports effective df."""
         result = _fit(_frame(), terms={"x": {"type": "bs", "k": 8}})
         assert result.inference_status == "unavailable"
-        assert result.optimizer_route == "gcv_penalized"
+        assert result.optimizer_route == "gcv_smooth"
         expected_aic = -2.0 * result.llf() + 2.0 * result.total_edf
         expected_bic = -2.0 * result.llf() + result.total_edf * np.log(result.nobs)
         assert np.isclose(result.aic(), expected_aic)

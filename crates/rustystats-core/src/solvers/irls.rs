@@ -1795,22 +1795,45 @@ fn sparse_row_cache_estimated_nnz(density: f64, n: usize, p: usize) -> f64 {
     density * (n as f64) * (p as f64)
 }
 
-fn should_build_sparse_row_cache(n: usize, p: usize, density: f64) -> bool {
+fn should_build_sparse_row_cache_with_min_cells(
+    n: usize,
+    p: usize,
+    density: f64,
+    min_cells: usize,
+) -> bool {
     if n == 0 || p < 16 {
         return false;
     }
     let estimated_nnz = sparse_row_cache_estimated_nnz(density, n, p);
     density <= SPARSE_ROW_CACHE_DENSITY_THRESHOLD
         && estimated_nnz <= 60_000_000.0
-        && n.saturating_mul(p) >= 10_000_000
+        && n.saturating_mul(p) >= min_cells
+}
+
+#[cfg(test)]
+fn should_build_sparse_row_cache(n: usize, p: usize, density: f64) -> bool {
+    should_build_sparse_row_cache_with_min_cells(n, p, density, 10_000_000)
 }
 
 pub fn build_sparse_row_cache_if_beneficial(x: ArrayView2<'_, f64>) -> Option<SparseRowCache> {
+    build_sparse_row_cache_with_min_cells(x, 10_000_000)
+}
+
+/// Build a sparse row cache for callers that reuse the same design matrix across
+/// many weighted Gram products, such as multinomial Hessian assembly.
+pub fn build_sparse_row_cache_for_repeated_xtwx(x: ArrayView2<'_, f64>) -> Option<SparseRowCache> {
+    build_sparse_row_cache_with_min_cells(x, 1_000_000)
+}
+
+fn build_sparse_row_cache_with_min_cells(
+    x: ArrayView2<'_, f64>,
+    min_cells: usize,
+) -> Option<SparseRowCache> {
     let n = x.nrows();
     let p = x.ncols();
     let x_slice = x.as_slice()?;
     let density = sampled_density(x_slice, n, p);
-    if !should_build_sparse_row_cache(n, p, density) {
+    if !should_build_sparse_row_cache_with_min_cells(n, p, density, min_cells) {
         return None;
     }
 
@@ -3507,6 +3530,12 @@ mod tests {
         assert!(!should_build_sparse_row_cache(625_000, 15, 0.0));
         assert!(!should_build_sparse_row_cache(1_000_000, 15, 0.0));
         assert!(!should_build_sparse_row_cache(624_999, 16, 0.0));
+        assert!(!should_build_sparse_row_cache_with_min_cells(
+            62_499, 16, 0.0, 1_000_000
+        ));
+        assert!(should_build_sparse_row_cache_with_min_cells(
+            62_500, 16, 0.0, 1_000_000
+        ));
         assert!(should_build_sparse_row_cache(
             625_000,
             16,

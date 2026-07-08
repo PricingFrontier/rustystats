@@ -4,7 +4,7 @@ use ndarray::{Array1, Array2, Array3, ArrayView2, ArrayView3};
 use crate::error::{Result, RustyStatsError};
 use crate::regularization::{soft_threshold, Standardization};
 use crate::solvers::{
-    build_sparse_row_cache_if_beneficial, compute_xtwx_with_sparse_cache, SparseRowCache,
+    build_sparse_row_cache_for_repeated_xtwx, compute_xtwx_with_sparse_cache, SparseRowCache,
 };
 
 const DEFAULT_HESSIAN_MEMORY_LIMIT_BYTES: usize = 256 * 1024 * 1024;
@@ -776,7 +776,7 @@ fn fit_multinomial_internal(
         x.to_owned()
     };
     let x_fit = x_work.view();
-    let sparse_cache = build_sparse_row_cache_if_beneficial(x_fit);
+    let sparse_cache = build_sparse_row_cache_for_repeated_xtwx(x_fit);
     let alternative_generic_raw = prepared.alternative_generic.clone();
     let alternative_specific_raw = prepared.alternative_specific.clone();
     standardize_alternative_inputs(
@@ -928,16 +928,23 @@ fn fit_multinomial_internal(
         ));
     }
 
-    let final_evaluation = evaluate(
-        &theta,
-        x_fit,
-        n_classes,
-        &prepared,
-        l2_alpha,
-        config.fit_intercept,
-        sparse_cache.as_ref(),
-        &optimization_extensions.quadratic_penalties,
-    )?;
+    let needs_final_hessian = (!config.skip_covariance
+        && optimization_extensions.l1_penalty.alpha == 0.0)
+        || !config.smooth_penalties.is_empty();
+    let final_evaluation = if needs_final_hessian {
+        Some(evaluate(
+            &theta,
+            x_fit,
+            n_classes,
+            &prepared,
+            l2_alpha,
+            config.fit_intercept,
+            sparse_cache.as_ref(),
+            &optimization_extensions.quadratic_penalties,
+        )?)
+    } else {
+        None
+    };
     let covariance_work = if optimization_extensions.l1_penalty.alpha > 0.0 {
         if !config.skip_covariance {
             warnings.push(
@@ -953,7 +960,11 @@ fn fit_multinomial_internal(
         // A failed inversion (singular/ill-conditioned Hessian, typically from
         // separation or collinearity) must not discard an otherwise usable fit.
         // Degrade to no covariance and warn instead of propagating the error.
-        match invert_hessian(&final_evaluation.hessian) {
+        let final_hessian = &final_evaluation
+            .as_ref()
+            .expect("final Hessian was requested for covariance")
+            .hessian;
+        match invert_hessian(final_hessian) {
             Ok(cov) => Some(cov),
             Err(_) => {
                 warnings.push(
@@ -1002,6 +1013,10 @@ fn fit_multinomial_internal(
     let (smooth_edfs, total_edf) = if config.smooth_penalties.is_empty() {
         (Vec::new(), None)
     } else {
+        let final_hessian = &final_evaluation
+            .as_ref()
+            .expect("final Hessian was requested for smooth EDF diagnostics")
+            .hessian;
         let hessian_unpenalized = hessian(
             &theta,
             x_fit,
@@ -1013,7 +1028,7 @@ fn fit_multinomial_internal(
         )?;
         let (edfs, total) = smooth_edf_diagnostics(
             &hessian_unpenalized,
-            &final_evaluation.hessian,
+            final_hessian,
             &layout,
             &config.smooth_penalties,
         )?;

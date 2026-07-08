@@ -32,7 +32,6 @@ from rustystats.constants import (
     DEFAULT_N_ALPHAS,
     DEFAULT_N_LAMBDA,
     DEFAULT_N_PERMUTATIONS,
-    DEFAULT_PRIOR_WEIGHT,
 )
 from rustystats.exceptions import PredictionError, ValidationError
 from rustystats.formula import (
@@ -50,12 +49,17 @@ from rustystats.input_transforms import (
     input_transform_source_columns,
     validate_input_transforms,
 )
-from rustystats.interactions import InteractionBuilder, ParsedFormula, TargetEncodingTermSpec
+from rustystats.interactions import (
+    InteractionBuilder,
+    ParsedFormula,
+    TargetEncodingTermSpec,
+    _resolve_target_encoding_prior_weight,
+)
 
 _DEFAULT_HESSIAN_MEMORY_LIMIT_BYTES = 256 * 1024 * 1024
 _DEFAULT_MAX_DENSE_PARAMETERS = 5000
 _MIN_WEIGHTED_STD = 1e-12
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 
 def _resolve_regularization(
@@ -391,7 +395,7 @@ class _MultinomialTargetEncodingTermState:
     feature_name: str
     var_name: str
     interaction_vars: list[str] | None
-    prior_weight: float
+    prior_weight_spec: float | str
     n_permutations: int
     class_stats: dict[str, dict[str, Any]]
 
@@ -400,7 +404,7 @@ class _MultinomialTargetEncodingTermState:
             data,
             TargetEncodingTermSpec(
                 var_name=self.var_name,
-                prior_weight=self.prior_weight,
+                prior_weight=self.prior_weight_spec,
                 n_permutations=self.n_permutations,
                 interaction_vars=None
                 if self.interaction_vars is None
@@ -417,7 +421,7 @@ class _MultinomialTargetEncodingTermState:
                     categories,
                     state["stats"],
                     float(state["prior"]),
-                    self.prior_weight,
+                    float(state["prior_weight"]),
                 ),
                 dtype=np.float64,
             )
@@ -517,7 +521,12 @@ def _fit_target_encoding_term_for_class(
     claims: np.ndarray,
     exposure: np.ndarray,
     seed: int | None,
-) -> tuple[np.ndarray, float, dict[str, tuple[float, float]]]:
+) -> tuple[np.ndarray, float, float, dict[str, tuple[float, float]]]:
+    prior_weight = _resolve_target_encoding_prior_weight(
+        term.prior_weight,
+        claims,
+        exposure,
+    )
     if term.interaction_vars is not None and len(term.interaction_vars) == 2:
         import polars as pl
 
@@ -529,7 +538,7 @@ def _fit_target_encoding_term_for_class(
             exposure,
             var1,
             var2,
-            term.prior_weight,
+            prior_weight,
             term.n_permutations,
             seed,
         )
@@ -540,11 +549,11 @@ def _fit_target_encoding_term_for_class(
             claims,
             exposure,
             _target_encoding_feature_name(term)[3:-1],
-            term.prior_weight,
+            prior_weight,
             term.n_permutations,
             seed,
         )
-    return np.asarray(encoded, dtype=np.float64), float(prior), stats
+    return np.asarray(encoded, dtype=np.float64), float(prior), float(prior_weight), stats
 
 
 def _build_multinomial_target_encoding(
@@ -577,7 +586,7 @@ def _build_multinomial_target_encoding(
                 continue
             claims = weights * (y_codes == class_idx).astype(np.float64)
             exposure = weights * availability[:, class_idx].astype(np.float64)
-            encoded, prior, stats = _fit_target_encoding_term_for_class(
+            encoded, prior, prior_weight, stats = _fit_target_encoding_term_for_class(
                 data,
                 term,
                 claims.astype(np.float64, copy=False),
@@ -587,6 +596,7 @@ def _build_multinomial_target_encoding(
             tensor[:, class_idx, term_idx] = encoded
             class_stats[class_label] = {
                 "prior": prior,
+                "prior_weight": prior_weight,
                 "stats": stats,
             }
         term_states.append(
@@ -596,7 +606,7 @@ def _build_multinomial_target_encoding(
                 interaction_vars=None
                 if term.interaction_vars is None
                 else list(term.interaction_vars),
-                prior_weight=float(term.prior_weight),
+                prior_weight_spec=term.prior_weight,
                 n_permutations=int(term.n_permutations),
                 class_stats=class_stats,
             )
@@ -1885,7 +1895,7 @@ def _target_encoding_options(
     *,
     context: str,
     allowed_keys: set[str] | None = None,
-) -> tuple[float, int]:
+) -> tuple[float | str, int]:
     if "mode" in spec:
         raise ValidationError(
             "multinomial target_encoding mode is not configurable yet; only the default "
@@ -1898,17 +1908,24 @@ def _target_encoding_options(
                 f"Unknown key(s) in target_encoding spec ({context}): {unknown}. "
                 f"Valid keys are: {sorted(allowed_keys)}."
             )
-    try:
-        prior_weight = float(spec.get("prior_weight", DEFAULT_PRIOR_WEIGHT))
-    except (TypeError, ValueError) as exc:
-        raise ValidationError(f"target_encoding prior_weight must be numeric ({context}).") from exc
+    raw_prior_weight = spec.get("prior_weight", "auto")
+    if isinstance(raw_prior_weight, str) and raw_prior_weight.lower() == "auto":
+        prior_weight: float | str = "auto"
+    else:
+        try:
+            prior_weight = float(raw_prior_weight)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(
+                f"target_encoding prior_weight must be numeric, non-negative, or 'auto' "
+                f"({context})."
+            ) from exc
     try:
         n_permutations = int(spec.get("n_permutations", DEFAULT_N_PERMUTATIONS))
     except (TypeError, ValueError) as exc:
         raise ValidationError(
             f"target_encoding n_permutations must be an integer ({context})."
         ) from exc
-    if not np.isfinite(prior_weight) or prior_weight < 0.0:
+    if isinstance(prior_weight, float) and (not np.isfinite(prior_weight) or prior_weight < 0.0):
         raise ValidationError(
             f"target_encoding prior_weight must be finite and non-negative ({context})."
         )
@@ -3887,6 +3904,21 @@ class MultinomialModel:
         include_reference: bool = True,
     ) -> np.ndarray:
         data = self._prepare_prediction_data(new_data, availability, offset)
+        return self._decision_function_prepared(
+            data,
+            availability=availability,
+            offset=offset,
+            include_reference=include_reference,
+        )
+
+    def _decision_function_prepared(
+        self,
+        data: Any,
+        *,
+        availability: dict[str, str | bool | np.ndarray] | np.ndarray | None = None,
+        offset: dict[str, str | np.ndarray] | np.ndarray | None = None,
+        include_reference: bool = True,
+    ) -> np.ndarray:
         n_rows = len(data)
         n_features = len(self.feature_names)
         chunk_size = _compute_predict_chunk_size(n_features)
@@ -3894,6 +3926,10 @@ class MultinomialModel:
         params = self.params
         alternative_generic_coefficients = self.alternative_generic_coefficients
         alternative_specific_coefficients = self.alternative_specific_coefficients
+        non_reference_indices = np.asarray(
+            [idx for idx, label in enumerate(self.classes_) if label != self.reference_],
+            dtype=np.intp,
+        )
 
         for start in range(0, n_rows, chunk_size):
             stop = min(start + chunk_size, n_rows)
@@ -3916,23 +3952,24 @@ class MultinomialModel:
                 logits_chunk += np.tensordot(
                     alternative_generic, alternative_generic_coefficients, axes=([2], [0])
                 )
-            block = 0
-            for class_idx, class_label in enumerate(self.classes_):
-                if class_label == self.reference_:
-                    continue
-                logits_chunk[:, class_idx] += x_chunk @ params[block, :]
-                if alternative_specific_coefficients.size:
-                    logits_chunk[:, class_idx] += (
-                        alternative_specific[:, class_idx, :]
-                        @ alternative_specific_coefficients[block, :]
-                    )
-                block += 1
+            if params.size:
+                logits_chunk[:, non_reference_indices] = (
+                    logits_chunk[:, non_reference_indices] + x_chunk @ params.T
+                )
+            if alternative_specific_coefficients.size:
+                logits_chunk[:, non_reference_indices] = logits_chunk[
+                    :, non_reference_indices
+                ] + np.einsum(
+                    "nct,ct->nc",
+                    alternative_specific[:, non_reference_indices, :],
+                    alternative_specific_coefficients,
+                    optimize=True,
+                )
             logits[start:stop, :] = logits_chunk
 
         if include_reference:
             return logits
-        keep = [idx for idx, label in enumerate(self.classes_) if label != self.reference_]
-        return logits[:, keep]
+        return logits[:, non_reference_indices]
 
     def predict_proba(
         self,
@@ -3944,7 +3981,7 @@ class MultinomialModel:
         return_format: str = "numpy",
     ) -> np.ndarray:
         data = self._prepare_prediction_data(new_data, availability, offset)
-        logits = self.decision_function(data, availability=availability, offset=offset)
+        logits = self._decision_function_prepared(data, availability=availability, offset=offset)
         calibration_shift = self._calibration_shift_vector(calibration)
         if calibration_shift is not None:
             logits = logits + calibration_shift[None, :]

@@ -94,6 +94,50 @@ _PREDICT_SPLINE_CACHE_MIN_ROWS = 100_000
 _PREDICT_SPLINE_CACHE_MAX_BYTES = 256_000_000
 
 
+def _resolve_target_encoding_prior_weight(
+    prior_weight: float | str,
+    target: np.ndarray,
+    exposure: np.ndarray | None = None,
+) -> float:
+    """Resolve a TE prior weight, including the GLM dict ``"auto"`` contract."""
+    if isinstance(prior_weight, str):
+        if prior_weight.lower() != "auto":
+            raise ValidationError(
+                "target_encoding prior_weight must be numeric, non-negative, or 'auto'."
+            )
+        target_arr = np.asarray(target, dtype=np.float64)
+        finite_target = target_arr[np.isfinite(target_arr)]
+        if finite_target.size == 0:
+            return 50.0
+        if exposure is not None:
+            exposure_arr = np.asarray(exposure, dtype=np.float64)
+            finite = np.isfinite(target_arr) & np.isfinite(exposure_arr) & (exposure_arr > 0.0)
+            total_exposure = float(np.sum(exposure_arr[finite]))
+            total_target = float(np.sum(target_arr[finite]))
+            rate = total_target / total_exposure if total_exposure > 0.0 else np.nan
+            if np.isfinite(rate) and rate > 0.0:
+                return float(np.clip(5.0 / rate, 20.0, 1000.0))
+            return 100.0
+        t_min = float(np.min(finite_target))
+        t_max = float(np.max(finite_target))
+        if t_min >= 0.0 and t_max <= 1.0:
+            p = float(np.mean(finite_target))
+            minority = min(p, 1.0 - p)
+            if np.isfinite(minority) and minority > 0.0:
+                return float(np.clip(5.0 / minority, 20.0, 500.0))
+            return 500.0
+        return 50.0
+    try:
+        resolved = float(prior_weight)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(
+            "target_encoding prior_weight must be numeric, non-negative, or 'auto'."
+        ) from exc
+    if not np.isfinite(resolved) or resolved < 0.0:
+        raise ValidationError("target_encoding prior_weight must be finite and non-negative.")
+    return resolved
+
+
 @dataclass
 class InteractionTerm:
     """Represents a single interaction term like x1:x2 or C(cat1):x2."""
@@ -143,7 +187,7 @@ class TargetEncodingTermSpec:
     """Parsed target encoding term specification from formula."""
 
     var_name: str
-    prior_weight: float = DEFAULT_PRIOR_WEIGHT
+    prior_weight: float | str = DEFAULT_PRIOR_WEIGHT
     n_permutations: int = DEFAULT_N_PERMUTATIONS
     interaction_vars: list[str] | None = None  # For TE(a:b) interactions
 
@@ -1009,6 +1053,19 @@ class InteractionBuilder:
         has_exposure = exposure is not None
         target_f64 = target.astype(np.float64)
         exposure_f64 = exposure.astype(np.float64) if has_exposure else None
+        resolved_prior_weight = _resolve_target_encoding_prior_weight(
+            te_term.prior_weight,
+            target_f64,
+            exposure_f64,
+        )
+        try:
+            n_permutations = int(te_term.n_permutations)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(
+                "target_encoding n_permutations must be a positive integer."
+            ) from exc
+        if n_permutations < 1:
+            raise ValidationError("target_encoding n_permutations must be a positive integer.")
 
         # Check if this is a TE interaction (e.g., TE(brand:region))
         if te_term.interaction_vars is not None and len(te_term.interaction_vars) >= 2:
@@ -1027,7 +1084,7 @@ class InteractionBuilder:
                 from rustystats._rustystats import target_encode_interaction_py as _te_interact
 
                 target_args = (target_f64,)
-            tail_args = (te_term.prior_weight, te_term.n_permutations, seed)
+            tail_args = (resolved_prior_weight, n_permutations, seed)
 
             encoded, name, prior, stats = _te_interact(
                 cat1,
@@ -1064,8 +1121,8 @@ class InteractionBuilder:
                     target_f64,
                     exposure_f64,
                     te_term.var_name,
-                    te_term.prior_weight,
-                    te_term.n_permutations,
+                    resolved_prior_weight,
+                    n_permutations,
                     seed,
                 )
             else:
@@ -1073,8 +1130,8 @@ class InteractionBuilder:
                     categories,
                     target_f64,
                     te_term.var_name,
-                    te_term.prior_weight,
-                    te_term.n_permutations,
+                    resolved_prior_weight,
+                    n_permutations,
                     seed,
                 )
 
@@ -1084,7 +1141,8 @@ class InteractionBuilder:
             {
                 "prior": prior,
                 "stats": stats,
-                "prior_weight": te_term.prior_weight,
+                "prior_weight": resolved_prior_weight,
+                "prior_weight_spec": te_term.prior_weight,
                 "used_exposure_weighted": has_exposure,
                 "interaction_vars": te_term.interaction_vars,
             },
@@ -1517,7 +1575,10 @@ class InteractionBuilder:
                     extra={
                         "var_name": te_term.var_name,
                         "interaction_vars": te_term.interaction_vars,
-                        "prior_weight": te_term.prior_weight,
+                        "prior_weight": te_stats.get("prior_weight", te_term.prior_weight),
+                        "prior_weight_spec": te_stats.get(
+                            "prior_weight_spec", te_term.prior_weight
+                        ),
                     },
                 )
             )

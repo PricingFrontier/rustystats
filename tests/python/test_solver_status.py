@@ -140,7 +140,7 @@ class TestSmoothSolverStatus:
         result = rs.glm_dict(
             response="y", terms={"x": {"type": "bs", "k": 8}}, data=data, family="poisson"
         ).fit()
-        assert result.optimizer_route == "gcv_penalized"  # really routed through the smooth solver
+        assert result.optimizer_route == "gcv_smooth"  # really routed through the smooth solver
         assert result.solver_status == "converged"
         assert isinstance(result.step_halving_used, bool)
         assert np.isfinite(result.deviance)
