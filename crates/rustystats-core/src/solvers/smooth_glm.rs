@@ -2958,11 +2958,21 @@ mod tests {
 
         assert_array1_close(
             &result.coefficients,
-            coefficients.as_slice().unwrap(),
+            coefficients
+                .as_slice()
+                .expect("test coefficients should be contiguous"),
             1e-12,
         );
-        assert_array1_close(&result.fitted_values, mu.as_slice().unwrap(), 1e-12);
-        assert_array1_close(&result.linear_predictor, eta.as_slice().unwrap(), 1e-12);
+        assert_array1_close(
+            &result.fitted_values,
+            mu.as_slice().expect("test mu should be contiguous"),
+            1e-12,
+        );
+        assert_array1_close(
+            &result.linear_predictor,
+            eta.as_slice().expect("test eta should be contiguous"),
+            1e-12,
+        );
         assert_abs_diff_eq!(result.deviance, 4.0, epsilon = 1e-12);
         assert_eq!(result.iterations, 7);
         assert!(result.converged);
@@ -2982,19 +2992,27 @@ mod tests {
         assert_eq!(result.family_name, "gaussian");
         assert_array1_close(
             &result.irls_weights,
-            final_weights.as_slice().unwrap(),
+            final_weights
+                .as_slice()
+                .expect("test final weights should be contiguous"),
             1e-12,
         );
         assert_array1_close(
             &result.prior_weights,
-            prior_weights.as_slice().unwrap(),
+            prior_weights
+                .as_slice()
+                .expect("test prior weights should be contiguous"),
             1e-12,
         );
         assert_array2_close(&result.design_matrix, &x, 1e-12);
-        assert_array1_close(&result.y, y.as_slice().unwrap(), 1e-12);
+        assert_array1_close(
+            &result.y,
+            y.as_slice().expect("test y should be contiguous"),
+            1e-12,
+        );
         assert_array1_close(
             result.offset.as_ref().expect("offset should be cloned"),
-            offset.as_slice().unwrap(),
+            offset.as_slice().expect("test offset should be contiguous"),
             1e-12,
         );
         assert_eq!(result.warnings, vec!["kept warning"]);

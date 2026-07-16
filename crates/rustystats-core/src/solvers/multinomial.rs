@@ -18,6 +18,45 @@ const PROXIMAL_NEWTON_MAX_CD_ITERATIONS: usize = 1000;
 const PROXIMAL_NEWTON_CD_TOLERANCE: f64 = 1e-8;
 const PROXIMAL_NEWTON_ZERO_TOLERANCE: f64 = 1e-10;
 const PROXIMAL_NEWTON_MIN_DIAGONAL: f64 = 1e-12;
+const DEFAULT_MATRIX_FREE_CG_MAX_ITERATIONS: usize = 80;
+const DEFAULT_MATRIX_FREE_CG_RELATIVE_TOLERANCE: f64 = 1e-4;
+const DEFAULT_MATRIX_FREE_CG_DAMPING: f64 = 1e-6;
+const MATRIX_FREE_CG_MIN_DIAGONAL: f64 = 1e-10;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MultinomialSolver {
+    #[default]
+    DenseNewton,
+    MatrixFreeCg,
+    Auto,
+}
+
+impl MultinomialSolver {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::DenseNewton => "dense",
+            Self::MatrixFreeCg => "matrix_free_cg",
+            Self::Auto => "auto",
+        }
+    }
+}
+
+impl std::str::FromStr for MultinomialSolver {
+    type Err = RustyStatsError;
+
+    fn from_str(value: &str) -> Result<Self> {
+        let normalized = value.trim().to_ascii_lowercase().replace('-', "_");
+        match normalized.as_str() {
+            "dense" | "dense_newton" | "newton" => Ok(Self::DenseNewton),
+            "matrix_free_cg" | "matrix_free" | "cg" => Ok(Self::MatrixFreeCg),
+            "auto" => Ok(Self::Auto),
+            _ => Err(RustyStatsError::InvalidValue(format!(
+                "unknown multinomial solver '{}'; expected 'dense', 'matrix_free_cg', or 'auto'",
+                value
+            ))),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct MultinomialConfig {
@@ -30,6 +69,10 @@ pub struct MultinomialConfig {
     pub skip_covariance: bool,
     pub hessian_memory_limit_bytes: usize,
     pub max_dense_parameters: usize,
+    pub solver: MultinomialSolver,
+    pub matrix_free_cg_max_iterations: usize,
+    pub matrix_free_cg_tolerance: f64,
+    pub matrix_free_cg_damping: f64,
     pub verbose: bool,
     pub initial_theta: Option<Array1<f64>>,
     pub smooth_penalties: Vec<MultinomialSmoothPenalty>,
@@ -57,6 +100,10 @@ impl Default for MultinomialConfig {
             skip_covariance: false,
             hessian_memory_limit_bytes: DEFAULT_HESSIAN_MEMORY_LIMIT_BYTES,
             max_dense_parameters: DEFAULT_MAX_DENSE_PARAMETERS,
+            solver: MultinomialSolver::default(),
+            matrix_free_cg_max_iterations: DEFAULT_MATRIX_FREE_CG_MAX_ITERATIONS,
+            matrix_free_cg_tolerance: DEFAULT_MATRIX_FREE_CG_RELATIVE_TOLERANCE,
+            matrix_free_cg_damping: DEFAULT_MATRIX_FREE_CG_DAMPING,
             verbose: false,
             initial_theta: None,
             smooth_penalties: Vec::new(),
@@ -84,6 +131,8 @@ pub struct MultinomialResult {
     pub reference_index: usize,
     pub warnings: Vec<String>,
     pub solver_status: String,
+    pub solver_name: String,
+    pub matrix_free_cg_iterations: Vec<usize>,
     pub smooth_edfs: Vec<f64>,
     pub total_edf: Option<f64>,
 }
@@ -318,6 +367,21 @@ impl DenseMultinomialOperation {
         match self {
             Self::Fit => 1,
             Self::Covariance => 3,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActiveMultinomialSolver {
+    DenseNewton,
+    MatrixFreeCg,
+}
+
+impl ActiveMultinomialSolver {
+    fn label(self) -> &'static str {
+        match self {
+            Self::DenseNewton => "dense",
+            Self::MatrixFreeCg => "matrix_free_cg",
         }
     }
 }
@@ -570,8 +634,57 @@ struct Evaluation {
 }
 
 #[derive(Debug)]
+struct MatrixFreeEvaluation {
+    objective: f64,
+    gradient: Array1<f64>,
+    probabilities: Array2<f64>,
+    diagonal_preconditioner: Array1<f64>,
+}
+
+/// Per-iteration evaluation for the Newton loop, so the convergence contract
+/// (penalized objective + KKT check) is written once for both solvers.
+#[derive(Debug)]
+enum LoopEvaluation {
+    Dense(Evaluation),
+    MatrixFree(MatrixFreeEvaluation),
+}
+
+impl LoopEvaluation {
+    fn objective(&self) -> f64 {
+        match self {
+            Self::Dense(evaluation) => evaluation.objective,
+            Self::MatrixFree(evaluation) => evaluation.objective,
+        }
+    }
+
+    fn gradient(&self) -> &Array1<f64> {
+        match self {
+            Self::Dense(evaluation) => &evaluation.gradient,
+            Self::MatrixFree(evaluation) => &evaluation.gradient,
+        }
+    }
+}
+
+#[derive(Debug)]
 struct NewtonProposal {
     target: Array1<f64>,
+    matrix_free_cg_iterations: Option<usize>,
+}
+
+impl NewtonProposal {
+    fn dense(target: Array1<f64>) -> Self {
+        Self {
+            target,
+            matrix_free_cg_iterations: None,
+        }
+    }
+
+    fn matrix_free(target: Array1<f64>, cg_iterations: usize) -> Self {
+        Self {
+            target,
+            matrix_free_cg_iterations: Some(cg_iterations),
+        }
+    }
 }
 
 /// Fit a baseline-category multinomial logit model.
@@ -644,6 +757,73 @@ fn should_standardize_shared_inputs(
     standardization: Option<&Standardization>,
 ) -> bool {
     config.alpha > 0.0 && config.standardize && standardization.is_some()
+}
+
+fn matrix_free_unavailable_reasons(config: &MultinomialConfig) -> Vec<&'static str> {
+    let mut reasons = Vec::new();
+    if !config.skip_covariance {
+        reasons.push("covariance requires a dense final Hessian");
+    }
+    if !config.smooth_penalties.is_empty() {
+        reasons.push("smooth EDF diagnostics require dense Hessian products");
+    }
+    if config.alpha * config.l1_ratio > 0.0 {
+        reasons.push("lasso/elastic-net penalties need the dense proximal Newton subproblem");
+    }
+    if !config.nonneg_indices.is_empty() || !config.nonpos_indices.is_empty() {
+        reasons.push("sign constraints need the dense bound-projected Newton subproblem");
+    }
+    reasons
+}
+
+fn matrix_free_unavailable_message(config: &MultinomialConfig) -> Option<String> {
+    let reasons = matrix_free_unavailable_reasons(config);
+    (!reasons.is_empty()).then(|| reasons.join("; "))
+}
+
+fn select_multinomial_solver(
+    layout: &MultinomialParameterLayout,
+    config: &MultinomialConfig,
+) -> Result<ActiveMultinomialSolver> {
+    match config.solver {
+        MultinomialSolver::DenseNewton => {
+            validate_dense_multinomial_size(
+                layout,
+                config,
+                DenseMultinomialOperation::Fit,
+                !config.skip_covariance,
+                !config.smooth_penalties.is_empty(),
+            )?;
+            Ok(ActiveMultinomialSolver::DenseNewton)
+        }
+        MultinomialSolver::MatrixFreeCg => {
+            if let Some(reason) = matrix_free_unavailable_message(config) {
+                return Err(RustyStatsError::InvalidValue(format!(
+                    "multinomial solver='matrix_free_cg' is not available for this fit: {}",
+                    reason
+                )));
+            }
+            Ok(ActiveMultinomialSolver::MatrixFreeCg)
+        }
+        MultinomialSolver::Auto => match validate_dense_multinomial_size(
+            layout,
+            config,
+            DenseMultinomialOperation::Fit,
+            !config.skip_covariance,
+            !config.smooth_penalties.is_empty(),
+        ) {
+            Ok(()) => Ok(ActiveMultinomialSolver::DenseNewton),
+            Err(dense_error) => {
+                if let Some(reason) = matrix_free_unavailable_message(config) {
+                    return Err(RustyStatsError::InvalidValue(format!(
+                        "{}; solver='auto' could not fall back to matrix_free_cg because {}",
+                        dense_error, reason
+                    )));
+                }
+                Ok(ActiveMultinomialSolver::MatrixFreeCg)
+            }
+        },
+    }
 }
 
 fn parameter_l2_distance(candidate: &Array1<f64>, current: &Array1<f64>) -> f64 {
@@ -758,6 +938,7 @@ fn fit_multinomial_internal(
     )?;
     let l1_alpha = config.alpha * config.l1_ratio;
     let l2_alpha = config.alpha * (1.0 - config.l1_ratio);
+    let active_solver = select_multinomial_solver(&layout, config)?;
     let optimization_extensions = optimization_extensions_from_config(
         &layout,
         l1_alpha,
@@ -776,7 +957,14 @@ fn fit_multinomial_internal(
         x.to_owned()
     };
     let x_fit = x_work.view();
-    let sparse_cache = build_sparse_row_cache_for_repeated_xtwx(x_fit);
+    // Only the dense paths (in-loop evaluate, final Hessian, smooth EDF) read the
+    // cache; matrix-free eligibility excludes all of them, so skip the O(n*p)
+    // scan and CSR allocation the cache would cost on exactly those wide fits.
+    let sparse_cache = if active_solver == ActiveMultinomialSolver::DenseNewton {
+        build_sparse_row_cache_for_repeated_xtwx(x_fit)
+    } else {
+        None
+    };
     let alternative_generic_raw = prepared.alternative_generic.clone();
     let alternative_specific_raw = prepared.alternative_specific.clone();
     standardize_alternative_inputs(
@@ -792,27 +980,48 @@ fn fit_multinomial_internal(
     let mut solver_status = "max_iterations".to_string();
     let mut converged = false;
     let mut iterations = 0usize;
+    let mut matrix_free_cg_iterations = Vec::new();
+    if config.solver == MultinomialSolver::Auto
+        && active_solver == ActiveMultinomialSolver::MatrixFreeCg
+    {
+        warnings.push(
+            "multinomial solver='auto' selected matrix_free_cg because the dense \
+             Hessian fit exceeded max_dense_parameters or memory limits."
+                .to_string(),
+        );
+    }
 
     for iter in 0..config.max_iterations {
-        let evaluation = evaluate(
-            &theta,
-            x_fit,
-            n_classes,
-            &prepared,
-            l2_alpha,
-            config.fit_intercept,
-            sparse_cache.as_ref(),
-            &optimization_extensions.quadratic_penalties,
-        )?;
+        let evaluation = if active_solver == ActiveMultinomialSolver::MatrixFreeCg {
+            LoopEvaluation::MatrixFree(evaluate_matrix_free(
+                &theta,
+                x_fit,
+                n_classes,
+                &prepared,
+                l2_alpha,
+                config.fit_intercept,
+                &optimization_extensions.quadratic_penalties,
+            )?)
+        } else {
+            LoopEvaluation::Dense(evaluate(
+                &theta,
+                x_fit,
+                n_classes,
+                &prepared,
+                l2_alpha,
+                config.fit_intercept,
+                sparse_cache.as_ref(),
+                &optimization_extensions.quadratic_penalties,
+            )?)
+        };
         let current_objective = penalized_objective_from_smooth(
-            evaluation.objective,
+            evaluation.objective(),
             &theta,
             &optimization_extensions.l1_penalty,
         );
-
         let optimality = check_kkt(
             &theta,
-            &evaluation.gradient,
+            evaluation.gradient(),
             &optimization_extensions.l1_penalty,
             &optimization_extensions.bound_constraints,
         )?;
@@ -822,9 +1031,27 @@ fn fit_multinomial_internal(
             iterations = iter;
             break;
         }
-
-        let proposal =
-            solve_newton_proposal(&theta, &evaluation, &optimization_extensions, &mut warnings)?;
+        let proposal = match &evaluation {
+            LoopEvaluation::MatrixFree(evaluation) => solve_matrix_free_newton_proposal(
+                &theta,
+                evaluation,
+                x_fit,
+                &prepared,
+                l2_alpha,
+                config.fit_intercept,
+                &optimization_extensions.quadratic_penalties,
+                config.matrix_free_cg_max_iterations,
+                config.matrix_free_cg_tolerance,
+                config.matrix_free_cg_damping,
+                &mut warnings,
+            )?,
+            LoopEvaluation::Dense(evaluation) => {
+                solve_newton_proposal(&theta, evaluation, &optimization_extensions, &mut warnings)?
+            }
+        };
+        if let Some(cg_iterations) = proposal.matrix_free_cg_iterations {
+            matrix_free_cg_iterations.push(cg_iterations);
+        }
         let step_norm = parameter_l2_distance(&proposal.target, &theta);
         if !step_norm.is_finite() {
             return Err(RustyStatsError::NumericalError(
@@ -1082,6 +1309,8 @@ fn fit_multinomial_internal(
         reference_index,
         warnings,
         solver_status,
+        solver_name: active_solver.label().to_string(),
+        matrix_free_cg_iterations,
         smooth_edfs,
         total_edf,
     })
@@ -1146,6 +1375,21 @@ fn validate_and_prepare(
             "l1_ratio must be finite and in [0, 1]".to_string(),
         ));
     }
+    if config.matrix_free_cg_max_iterations == 0 {
+        return Err(RustyStatsError::InvalidValue(
+            "matrix_free_cg_max_iterations must be positive".to_string(),
+        ));
+    }
+    if !config.matrix_free_cg_tolerance.is_finite() || config.matrix_free_cg_tolerance <= 0.0 {
+        return Err(RustyStatsError::InvalidValue(
+            "matrix_free_cg_tolerance must be finite and positive".to_string(),
+        ));
+    }
+    if !config.matrix_free_cg_damping.is_finite() || config.matrix_free_cg_damping < 0.0 {
+        return Err(RustyStatsError::InvalidValue(
+            "matrix_free_cg_damping must be finite and non-negative".to_string(),
+        ));
+    }
     let alternative_generic_matrix =
         validate_alternative_tensor(alternative_generic, n, n_classes, "alternative_generic")?;
     let alternative_specific_matrix =
@@ -1158,13 +1402,7 @@ fn validate_and_prepare(
         alternative_specific_matrix.dim().2,
         config.fit_intercept,
     )?;
-    validate_dense_multinomial_size(
-        &layout,
-        config,
-        DenseMultinomialOperation::Fit,
-        !config.skip_covariance,
-        !config.smooth_penalties.is_empty(),
-    )?;
+    select_multinomial_solver(&layout, config)?;
 
     let weights_vec = match weights {
         Some(w) => {
@@ -1590,6 +1828,33 @@ fn evaluate(
     })
 }
 
+fn evaluate_matrix_free(
+    theta: &Array1<f64>,
+    x: ArrayView2<'_, f64>,
+    n_classes: usize,
+    prepared: &PreparedInputs,
+    alpha: f64,
+    fit_intercept: bool,
+    quadratic_penalties: &[QuadraticPenaltyBlock],
+) -> Result<MatrixFreeEvaluation> {
+    let probabilities = final_evaluation_probabilities(theta, x, n_classes, prepared)?;
+    let log_likelihood =
+        log_likelihood_from_probabilities(&probabilities, &prepared.y_codes, &prepared.weights)?;
+    let ridge = ridge_penalty(theta, x.ncols(), n_classes, alpha, fit_intercept);
+    let objective = -log_likelihood + ridge + quadratic_penalty(theta, quadratic_penalties);
+    let mut gradient = gradient(theta, x, prepared, &probabilities, alpha, fit_intercept)?;
+    add_quadratic_gradient(&mut gradient, theta, quadratic_penalties);
+    let mut diagonal_preconditioner =
+        hessian_diagonal(theta, x, prepared, &probabilities, alpha, fit_intercept)?;
+    add_quadratic_diagonal(&mut diagonal_preconditioner, quadratic_penalties);
+    Ok(MatrixFreeEvaluation {
+        objective,
+        gradient,
+        probabilities,
+        diagonal_preconditioner,
+    })
+}
+
 /// Gradient-only evaluation for the end-of-iteration KKT recheck.
 ///
 /// `evaluate` unconditionally assembles the full q x q Hessian, but the
@@ -1729,6 +1994,14 @@ fn add_quadratic_hessian(hessian: &mut Array2<f64>, penalties: &[QuadraticPenalt
             for (col_pos, &col_idx) in penalty.indices.iter().enumerate() {
                 hessian[[row_idx, col_idx]] += penalty.weight * penalty.matrix[[row_pos, col_pos]];
             }
+        }
+    }
+}
+
+fn add_quadratic_diagonal(diagonal: &mut Array1<f64>, penalties: &[QuadraticPenaltyBlock]) {
+    for penalty in penalties {
+        for (row_pos, &row_idx) in penalty.indices.iter().enumerate() {
+            diagonal[row_idx] += penalty.weight * penalty.matrix[[row_pos, row_pos]];
         }
     }
 }
@@ -2198,6 +2471,217 @@ fn hessian(
     Ok(hessian)
 }
 
+fn directional_logits_from_parameter_direction(
+    direction: &Array1<f64>,
+    x: ArrayView2<'_, f64>,
+    prepared: &PreparedInputs,
+    n_classes: usize,
+    fit_intercept: bool,
+) -> Result<Array2<f64>> {
+    let n = x.nrows();
+    let p = x.ncols();
+    let n_alt_generic = prepared.alternative_generic.dim().2;
+    let n_alt_specific = prepared.alternative_specific.dim().2;
+    let layout = MultinomialParameterLayout::new(
+        p,
+        n_classes,
+        n_alt_generic,
+        n_alt_specific,
+        fit_intercept,
+    )?;
+    let expected = layout.len()?;
+    if direction.len() != expected {
+        return Err(RustyStatsError::dim_mismatch(
+            expected,
+            direction.len(),
+            "multinomial direction length",
+        ));
+    }
+
+    let mut directional_logits = Array2::zeros((n, n_classes));
+    for row in 0..n {
+        for class_idx in 0..n_classes {
+            let mut value = 0.0;
+            for term_idx in 0..n_alt_generic {
+                value += prepared.alternative_generic[[row, class_idx, term_idx]]
+                    * direction[layout.alternative_generic(term_idx)?];
+            }
+            if let Some(block_idx) = prepared.class_to_block[class_idx] {
+                for feature_idx in 0..p {
+                    value +=
+                        x[[row, feature_idx]] * direction[layout.shared(block_idx, feature_idx)?];
+                }
+                for term_idx in 0..n_alt_specific {
+                    value += prepared.alternative_specific[[row, class_idx, term_idx]]
+                        * direction[layout.alternative_specific(block_idx, term_idx)?];
+                }
+            }
+            directional_logits[[row, class_idx]] = value;
+        }
+    }
+    Ok(directional_logits)
+}
+
+fn hessian_vector_product(
+    direction: &Array1<f64>,
+    x: ArrayView2<'_, f64>,
+    prepared: &PreparedInputs,
+    probabilities: &Array2<f64>,
+    alpha: f64,
+    fit_intercept: bool,
+    quadratic_penalties: &[QuadraticPenaltyBlock],
+) -> Result<Array1<f64>> {
+    let n = x.nrows();
+    let p = x.ncols();
+    let n_classes = probabilities.ncols();
+    let n_alt_generic = prepared.alternative_generic.dim().2;
+    let n_alt_specific = prepared.alternative_specific.dim().2;
+    let layout = MultinomialParameterLayout::new(
+        p,
+        n_classes,
+        n_alt_generic,
+        n_alt_specific,
+        fit_intercept,
+    )?;
+    let mut product = Array1::zeros(layout.len()?);
+    let directional_logits = directional_logits_from_parameter_direction(
+        direction,
+        x,
+        prepared,
+        n_classes,
+        fit_intercept,
+    )?;
+    let mut centered = Array2::zeros((n, n_classes));
+    for row in 0..n {
+        let mut expected_direction = 0.0;
+        for class_idx in 0..n_classes {
+            expected_direction +=
+                probabilities[[row, class_idx]] * directional_logits[[row, class_idx]];
+        }
+        for class_idx in 0..n_classes {
+            centered[[row, class_idx]] = directional_logits[[row, class_idx]] - expected_direction;
+        }
+    }
+
+    for (block_idx, &class_idx) in prepared.non_reference_classes.iter().enumerate() {
+        for row in 0..n {
+            let weighted = prepared.weights[row]
+                * probabilities[[row, class_idx]]
+                * centered[[row, class_idx]];
+            for feature_idx in 0..p {
+                product[layout.shared(block_idx, feature_idx)?] += x[[row, feature_idx]] * weighted;
+            }
+        }
+    }
+
+    for term_idx in 0..n_alt_generic {
+        let param_idx = layout.alternative_generic(term_idx)?;
+        for row in 0..n {
+            let mut value = 0.0;
+            for class_idx in 0..n_classes {
+                value += probabilities[[row, class_idx]]
+                    * prepared.alternative_generic[[row, class_idx, term_idx]]
+                    * centered[[row, class_idx]];
+            }
+            product[param_idx] += prepared.weights[row] * value;
+        }
+    }
+
+    for (block_idx, &class_idx) in prepared.non_reference_classes.iter().enumerate() {
+        for term_idx in 0..n_alt_specific {
+            let param_idx = layout.alternative_specific(block_idx, term_idx)?;
+            for row in 0..n {
+                product[param_idx] += prepared.weights[row]
+                    * probabilities[[row, class_idx]]
+                    * prepared.alternative_specific[[row, class_idx, term_idx]]
+                    * centered[[row, class_idx]];
+            }
+        }
+    }
+
+    if alpha > 0.0 {
+        for idx in 0..product.len() {
+            if !layout.is_shared_intercept(idx) {
+                product[idx] += alpha * direction[idx];
+            }
+        }
+    }
+    add_quadratic_gradient(&mut product, direction, quadratic_penalties);
+    Ok(product)
+}
+
+fn hessian_diagonal(
+    theta: &Array1<f64>,
+    x: ArrayView2<'_, f64>,
+    prepared: &PreparedInputs,
+    probabilities: &Array2<f64>,
+    alpha: f64,
+    fit_intercept: bool,
+) -> Result<Array1<f64>> {
+    let n = x.nrows();
+    let p = x.ncols();
+    let n_classes = probabilities.ncols();
+    let n_alt_generic = prepared.alternative_generic.dim().2;
+    let n_alt_specific = prepared.alternative_specific.dim().2;
+    let layout = MultinomialParameterLayout::new(
+        p,
+        n_classes,
+        n_alt_generic,
+        n_alt_specific,
+        fit_intercept,
+    )?;
+    let mut diagonal = Array1::zeros(theta.len());
+
+    for (block_idx, &class_idx) in prepared.non_reference_classes.iter().enumerate() {
+        for row in 0..n {
+            let weight = prepared.weights[row]
+                * probabilities[[row, class_idx]]
+                * (1.0 - probabilities[[row, class_idx]]);
+            for feature_idx in 0..p {
+                let value = x[[row, feature_idx]];
+                diagonal[layout.shared(block_idx, feature_idx)?] += weight * value * value;
+            }
+        }
+    }
+
+    for term_idx in 0..n_alt_generic {
+        let param_idx = layout.alternative_generic(term_idx)?;
+        for row in 0..n {
+            let mut expected = 0.0;
+            let mut expected_square = 0.0;
+            for class_idx in 0..n_classes {
+                let value = prepared.alternative_generic[[row, class_idx, term_idx]];
+                expected += probabilities[[row, class_idx]] * value;
+                expected_square += probabilities[[row, class_idx]] * value * value;
+            }
+            diagonal[param_idx] += prepared.weights[row] * (expected_square - expected * expected);
+        }
+    }
+
+    for (block_idx, &class_idx) in prepared.non_reference_classes.iter().enumerate() {
+        for term_idx in 0..n_alt_specific {
+            let param_idx = layout.alternative_specific(block_idx, term_idx)?;
+            for row in 0..n {
+                let value = prepared.alternative_specific[[row, class_idx, term_idx]];
+                diagonal[param_idx] += prepared.weights[row]
+                    * probabilities[[row, class_idx]]
+                    * (1.0 - probabilities[[row, class_idx]])
+                    * value
+                    * value;
+            }
+        }
+    }
+
+    if alpha > 0.0 {
+        for idx in 0..diagonal.len() {
+            if !layout.is_shared_intercept(idx) {
+                diagonal[idx] += alpha;
+            }
+        }
+    }
+    Ok(diagonal)
+}
+
 fn set_symmetric(hessian: &mut Array2<f64>, row: usize, col: usize, value: f64) {
     hessian[[row, col]] = value;
     hessian[[col, row]] = value;
@@ -2262,7 +2746,7 @@ fn solve_newton_proposal(
             .map(|(coef, delta)| coef - delta)
             .collect::<Array1<f64>>();
         target = apply_bound_projection(target, extensions);
-        Ok(NewtonProposal { target })
+        Ok(NewtonProposal::dense(target))
     }
 }
 
@@ -2300,9 +2784,10 @@ fn solve_bound_projected_newton_step(
     }
 
     if free_indices.is_empty() {
-        return Ok(NewtonProposal {
-            target: project_with_signs(theta.clone(), &signs),
-        });
+        return Ok(NewtonProposal::dense(project_with_signs(
+            theta.clone(),
+            &signs,
+        )));
     }
     let free_q = free_indices.len();
     let mut reduced_hessian = Array2::zeros((free_q, free_q));
@@ -2318,9 +2803,7 @@ fn solve_bound_projected_newton_step(
     for (pos, &idx) in free_indices.iter().enumerate() {
         target[idx] -= reduced_step[pos];
     }
-    Ok(NewtonProposal {
-        target: project_with_signs(target, &signs),
-    })
+    Ok(NewtonProposal::dense(project_with_signs(target, &signs)))
 }
 
 fn use_proximal_active_subset(cd_iter: usize, active_len: usize, q: usize) -> bool {
@@ -2440,7 +2923,7 @@ fn solve_proximal_newton_subproblem(
         }
     }
 
-    Ok(NewtonProposal { target: beta })
+    Ok(NewtonProposal::dense(beta))
 }
 
 fn l1_coordinate_is_active(
@@ -2599,6 +3082,148 @@ fn solve_newton_step(hessian: &Array2<f64>, gradient: &Array1<f64>) -> Result<Ar
                 .to_string(),
         )),
     }
+}
+
+fn vector_dot(left: &Array1<f64>, right: &Array1<f64>) -> f64 {
+    left.iter()
+        .zip(right.iter())
+        .map(|(left_value, right_value)| left_value * right_value)
+        .sum()
+}
+
+fn vector_l2_norm(values: &Array1<f64>) -> f64 {
+    values.iter().map(|value| value * value).sum::<f64>().sqrt()
+}
+
+fn apply_diagonal_preconditioner(residual: &Array1<f64>, diagonal: &Array1<f64>) -> Array1<f64> {
+    Array1::from_iter(residual.iter().zip(diagonal.iter()).map(|(value, diag)| {
+        let safe_diag = diag.abs().max(MATRIX_FREE_CG_MIN_DIAGONAL);
+        value / safe_diag
+    }))
+}
+
+fn solve_preconditioned_conjugate_gradient<F>(
+    rhs: &Array1<f64>,
+    diagonal_preconditioner: &Array1<f64>,
+    max_iterations: usize,
+    relative_tolerance: f64,
+    mut matvec: F,
+) -> Result<(Array1<f64>, usize, bool)>
+where
+    F: FnMut(&Array1<f64>) -> Result<Array1<f64>>,
+{
+    let q = rhs.len();
+    if diagonal_preconditioner.len() != q {
+        return Err(RustyStatsError::dim_mismatch(
+            q,
+            diagonal_preconditioner.len(),
+            "matrix-free CG rhs vs preconditioner length",
+        ));
+    }
+    let mut solution = Array1::zeros(q);
+    let mut residual = rhs.clone();
+    let rhs_norm = vector_l2_norm(rhs);
+    if rhs_norm <= MATRIX_FREE_CG_MIN_DIAGONAL {
+        return Ok((solution, 0, true));
+    }
+    let tolerance = relative_tolerance * rhs_norm;
+    let mut z = apply_diagonal_preconditioner(&residual, diagonal_preconditioner);
+    let mut direction = z.clone();
+    let mut rz_old = vector_dot(&residual, &z);
+    if !rz_old.is_finite() || rz_old <= 0.0 {
+        return Err(RustyStatsError::LinearAlgebraError(
+            "matrix-free multinomial CG received a non-positive preconditioned residual"
+                .to_string(),
+        ));
+    }
+
+    for iter in 0..max_iterations {
+        let mat_direction = matvec(&direction)?;
+        let curvature = vector_dot(&direction, &mat_direction);
+        if !curvature.is_finite() || curvature <= MATRIX_FREE_CG_MIN_DIAGONAL {
+            if iter == 0 {
+                solution = direction;
+            }
+            return Ok((solution, iter, false));
+        }
+        let alpha = rz_old / curvature;
+        for idx in 0..q {
+            solution[idx] += alpha * direction[idx];
+            residual[idx] -= alpha * mat_direction[idx];
+        }
+        if vector_l2_norm(&residual) <= tolerance {
+            return Ok((solution, iter + 1, true));
+        }
+        z = apply_diagonal_preconditioner(&residual, diagonal_preconditioner);
+        let rz_new = vector_dot(&residual, &z);
+        if !rz_new.is_finite() || rz_new <= 0.0 {
+            return Ok((solution, iter + 1, false));
+        }
+        let beta = rz_new / rz_old;
+        for idx in 0..q {
+            direction[idx] = z[idx] + beta * direction[idx];
+        }
+        rz_old = rz_new;
+    }
+    Ok((solution, max_iterations, false))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn solve_matrix_free_newton_proposal(
+    theta: &Array1<f64>,
+    evaluation: &MatrixFreeEvaluation,
+    x: ArrayView2<'_, f64>,
+    prepared: &PreparedInputs,
+    alpha: f64,
+    fit_intercept: bool,
+    quadratic_penalties: &[QuadraticPenaltyBlock],
+    cg_max_iterations: usize,
+    cg_tolerance: f64,
+    cg_damping: f64,
+    warnings: &mut Vec<String>,
+) -> Result<NewtonProposal> {
+    let mut damped_preconditioner = evaluation.diagonal_preconditioner.clone();
+    for value in damped_preconditioner.iter_mut() {
+        *value += cg_damping;
+    }
+    let (step, cg_iterations, cg_converged) = solve_preconditioned_conjugate_gradient(
+        &evaluation.gradient,
+        &damped_preconditioner,
+        cg_max_iterations,
+        cg_tolerance,
+        |direction| {
+            let mut product = hessian_vector_product(
+                direction,
+                x,
+                prepared,
+                &evaluation.probabilities,
+                alpha,
+                fit_intercept,
+                quadratic_penalties,
+            )?;
+            for idx in 0..product.len() {
+                product[idx] += cg_damping * direction[idx];
+            }
+            Ok(product)
+        },
+    )?;
+    if !cg_converged {
+        // Keep the message static so the contains() dedup holds across Newton
+        // iterations; per-iteration counts are in `matrix_free_cg_iterations`.
+        let warning = "matrix-free multinomial CG did not fully converge within its \
+             inner-iteration budget in at least one Newton iteration; using the \
+             best-effort Newton direction (see matrix_free_cg_iterations)."
+            .to_string();
+        if !warnings.contains(&warning) {
+            warnings.push(warning);
+        }
+    }
+    let target = theta
+        .iter()
+        .zip(step.iter())
+        .map(|(coef, delta)| coef - delta)
+        .collect::<Array1<f64>>();
+    Ok(NewtonProposal::matrix_free(target, cg_iterations))
 }
 
 fn invert_hessian(hessian: &Array2<f64>) -> Result<Array2<f64>> {
@@ -2891,11 +3516,21 @@ fn compute_null_deviance_value(
     null_config.skip_covariance = true;
     null_config.fit_intercept = true;
     null_config.standardize = false;
+    null_config.solver = MultinomialSolver::DenseNewton;
     null_config.initial_theta = None;
     null_config.smooth_penalties.clear();
     null_config.nonneg_indices.clear();
     null_config.nonpos_indices.clear();
-    null_config.max_dense_parameters = null_config.max_dense_parameters.max(n_classes - 1);
+    // The intercept-only null fit is always dense with q = K-1 parameters. Floor
+    // both dense guards at that size: the caller's limits are sized for the main
+    // fit, and a matrix-free main fit must not error afterwards in this sub-fit.
+    let null_q = n_classes - 1;
+    null_config.max_dense_parameters = null_config.max_dense_parameters.max(null_q);
+    null_config.hessian_memory_limit_bytes = null_config.hessian_memory_limit_bytes.max(
+        null_q
+            .saturating_mul(null_q)
+            .saturating_mul(std::mem::size_of::<f64>()),
+    );
 
     let result = fit_multinomial_internal(
         &prepared.y_codes,
@@ -2944,7 +3579,22 @@ mod tests {
         assert_eq!(config.hessian_memory_limit_bytes, 268_435_456);
         assert_eq!(config.max_dense_parameters, DEFAULT_MAX_DENSE_PARAMETERS);
         assert_eq!(config.max_iterations, DEFAULT_MAX_ITERATIONS);
+        assert_eq!(config.solver, MultinomialSolver::DenseNewton);
+        assert_eq!(
+            config.matrix_free_cg_max_iterations,
+            DEFAULT_MATRIX_FREE_CG_MAX_ITERATIONS
+        );
         assert_abs_diff_eq!(config.tolerance, DEFAULT_TOLERANCE, epsilon = 0.0);
+        assert_abs_diff_eq!(
+            config.matrix_free_cg_tolerance,
+            DEFAULT_MATRIX_FREE_CG_RELATIVE_TOLERANCE,
+            epsilon = 0.0
+        );
+        assert_abs_diff_eq!(
+            config.matrix_free_cg_damping,
+            DEFAULT_MATRIX_FREE_CG_DAMPING,
+            epsilon = 0.0
+        );
     }
 
     #[test]
@@ -5528,6 +6178,304 @@ mod tests {
         assert_abs_diff_eq!(hess[[5, 7]], -16.5, epsilon = 1e-12);
         assert_abs_diff_eq!(hess[[3, 0]], hess[[0, 3]], epsilon = 1e-12);
         assert_abs_diff_eq!(hess[[7, 3]], hess[[3, 7]], epsilon = 1e-12);
+    }
+
+    #[test]
+    fn matrix_free_hessian_vector_product_matches_dense_hessian() {
+        let x = array![[1.0, -0.4], [1.0, 0.2], [1.0, 0.9], [1.0, 1.3]];
+        let prepared = PreparedInputs {
+            y_codes: array![0usize, 1, 2, 1],
+            availability: array![
+                [true, true, true],
+                [true, true, false],
+                [true, false, true],
+                [true, true, true]
+            ],
+            offset: Array2::zeros((4, 3)),
+            weights: array![1.0, 0.7, 1.3, 0.9],
+            alternative_generic: Array3::from_shape_vec(
+                (4, 3, 1),
+                vec![0.0, 0.4, 1.2, 0.1, 0.6, 1.1, 0.0, 0.2, 0.9, 0.2, 0.8, 1.4],
+            )
+            .expect("generic shape"),
+            alternative_specific: Array3::from_shape_vec(
+                (4, 3, 1),
+                vec![0.0, 0.7, 1.1, 0.0, 0.2, 0.4, 0.0, 0.3, 0.8, 0.0, 0.6, 1.0],
+            )
+            .expect("specific shape"),
+            class_to_block: vec![None, Some(0), Some(1)],
+            non_reference_classes: vec![1, 2],
+        };
+        let theta = array![0.2, -0.1, 0.3, -0.4, 0.15, 0.25, -0.2];
+        let direction = array![0.5, -0.2, 0.1, 0.4, -0.3, 0.7, -0.6];
+        let penalty = QuadraticPenaltyBlock {
+            indices: vec![1, 3],
+            matrix: array![[1.2, 0.2], [0.2, 0.8]],
+            weight: 0.5,
+        };
+        let penalties = vec![penalty];
+        let dense_eval = evaluate(&theta, x.view(), 3, &prepared, 0.4, true, None, &penalties)
+            .expect("dense evaluation");
+        let matrix_free_eval =
+            evaluate_matrix_free(&theta, x.view(), 3, &prepared, 0.4, true, &penalties)
+                .expect("matrix-free evaluation");
+
+        let actual = hessian_vector_product(
+            &direction,
+            x.view(),
+            &prepared,
+            &matrix_free_eval.probabilities,
+            0.4,
+            true,
+            &penalties,
+        )
+        .expect("hessian-vector product");
+        let expected = dense_eval.hessian.dot(&direction);
+        for idx in 0..actual.len() {
+            assert_abs_diff_eq!(actual[idx], expected[idx], epsilon = 1e-8);
+        }
+        for idx in 0..actual.len() {
+            assert_abs_diff_eq!(
+                matrix_free_eval.diagonal_preconditioner[idx],
+                dense_eval.hessian[[idx, idx]],
+                epsilon = 1e-8
+            );
+        }
+
+        let dense_step =
+            solve_newton_step(&dense_eval.hessian, &dense_eval.gradient).expect("dense step");
+        let (cg_step, _iterations, converged) = solve_preconditioned_conjugate_gradient(
+            &dense_eval.gradient,
+            &matrix_free_eval.diagonal_preconditioner,
+            DEFAULT_MATRIX_FREE_CG_MAX_ITERATIONS,
+            DEFAULT_MATRIX_FREE_CG_RELATIVE_TOLERANCE,
+            |probe| {
+                hessian_vector_product(
+                    probe,
+                    x.view(),
+                    &prepared,
+                    &matrix_free_eval.probabilities,
+                    0.4,
+                    true,
+                    &penalties,
+                )
+            },
+        )
+        .expect("cg step");
+        assert!(converged);
+        for idx in 0..cg_step.len() {
+            assert_abs_diff_eq!(cg_step[idx], dense_step[idx], epsilon = 1e-4);
+        }
+    }
+
+    fn matrix_free_solver_fixture() -> (Array1<usize>, Array2<f64>) {
+        let y = array![0usize, 1, 2, 1, 0, 2, 1, 2, 0, 1, 2, 0];
+        let x = array![
+            [1.0, -1.3],
+            [1.0, -0.9],
+            [1.0, -0.5],
+            [1.0, -0.1],
+            [1.0, 0.2],
+            [1.0, 0.4],
+            [1.0, 0.7],
+            [1.0, 1.0],
+            [1.0, 1.2],
+            [1.0, 1.5],
+            [1.0, 1.8],
+            [1.0, 2.1],
+        ];
+        (y, x)
+    }
+
+    #[test]
+    fn matrix_free_solver_matches_dense_newton_on_small_ridge_fit() {
+        let (y, x) = matrix_free_solver_fixture();
+        let dense_config = MultinomialConfig {
+            alpha: 0.2,
+            skip_covariance: true,
+            max_iterations: 30,
+            tolerance: 1e-8,
+            solver: MultinomialSolver::DenseNewton,
+            ..Default::default()
+        };
+        let matrix_free_config = MultinomialConfig {
+            solver: MultinomialSolver::MatrixFreeCg,
+            ..dense_config.clone()
+        };
+
+        let dense = fit_multinomial(&y, x.view(), 3, 0, &dense_config, None, None, None, None)
+            .expect("dense fit");
+        let matrix_free = fit_multinomial(
+            &y,
+            x.view(),
+            3,
+            0,
+            &matrix_free_config,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("matrix-free fit");
+
+        assert_eq!(dense.solver_name, "dense");
+        assert_eq!(matrix_free.solver_name, "matrix_free_cg");
+        assert!(!matrix_free.matrix_free_cg_iterations.is_empty());
+        assert_abs_diff_eq!(matrix_free.deviance, dense.deviance, epsilon = 1e-5);
+        for (actual, expected) in matrix_free
+            .fitted_probabilities
+            .iter()
+            .zip(dense.fitted_probabilities.iter())
+        {
+            assert_abs_diff_eq!(*actual, *expected, epsilon = 1e-5);
+        }
+    }
+
+    #[test]
+    fn matrix_free_solver_bypasses_dense_fit_guard_when_covariance_is_skipped() {
+        let (y, x) = matrix_free_solver_fixture();
+        let dense_config = MultinomialConfig {
+            skip_covariance: true,
+            max_dense_parameters: 2,
+            solver: MultinomialSolver::DenseNewton,
+            ..Default::default()
+        };
+        let dense_err = fit_multinomial(&y, x.view(), 3, 0, &dense_config, None, None, None, None)
+            .expect_err("dense guard should reject q=4 > max_dense_parameters=2");
+        assert_error_contains(dense_err, "max_dense_parameters=2");
+
+        let matrix_free_config = MultinomialConfig {
+            solver: MultinomialSolver::MatrixFreeCg,
+            ..dense_config
+        };
+        let matrix_free = fit_multinomial(
+            &y,
+            x.view(),
+            3,
+            0,
+            &matrix_free_config,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("matrix-free fit should not assemble dense Hessian");
+        assert_eq!(matrix_free.solver_name, "matrix_free_cg");
+        assert!(!matrix_free.matrix_free_cg_iterations.is_empty());
+        assert!(matrix_free.covariance_unscaled.is_none());
+    }
+
+    #[test]
+    fn auto_solver_uses_dense_until_dense_guard_fails() {
+        let (y, x) = matrix_free_solver_fixture();
+        let dense_allowed = MultinomialConfig {
+            skip_covariance: true,
+            max_dense_parameters: 100,
+            solver: MultinomialSolver::Auto,
+            ..Default::default()
+        };
+        let dense_result =
+            fit_multinomial(&y, x.view(), 3, 0, &dense_allowed, None, None, None, None)
+                .expect("auto dense fit");
+        assert_eq!(dense_result.solver_name, "dense");
+
+        let dense_blocked = MultinomialConfig {
+            max_dense_parameters: 2,
+            ..dense_allowed
+        };
+        let matrix_free_result =
+            fit_multinomial(&y, x.view(), 3, 0, &dense_blocked, None, None, None, None)
+                .expect("auto matrix-free fit");
+        assert_eq!(matrix_free_result.solver_name, "matrix_free_cg");
+        assert!(matrix_free_result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("solver='auto' selected matrix_free_cg")));
+    }
+
+    #[test]
+    fn matrix_free_solver_rejects_unsupported_dense_only_features() {
+        let (y, x) = matrix_free_solver_fixture();
+        let covariance_config = MultinomialConfig {
+            solver: MultinomialSolver::MatrixFreeCg,
+            skip_covariance: false,
+            ..Default::default()
+        };
+        let err = fit_multinomial(
+            &y,
+            x.view(),
+            3,
+            0,
+            &covariance_config,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect_err("matrix-free covariance should be rejected");
+        assert_error_contains(err, "covariance requires a dense final Hessian");
+
+        let lasso_config = MultinomialConfig {
+            solver: MultinomialSolver::MatrixFreeCg,
+            skip_covariance: true,
+            alpha: 0.1,
+            l1_ratio: 1.0,
+            ..Default::default()
+        };
+        let err = fit_multinomial(&y, x.view(), 3, 0, &lasso_config, None, None, None, None)
+            .expect_err("matrix-free lasso should be rejected");
+        assert_error_contains(err, "lasso/elastic-net");
+
+        let bound_config = MultinomialConfig {
+            solver: MultinomialSolver::MatrixFreeCg,
+            skip_covariance: true,
+            nonneg_indices: vec![1],
+            ..Default::default()
+        };
+        let err = fit_multinomial(&y, x.view(), 3, 0, &bound_config, None, None, None, None)
+            .expect_err("matrix-free bounds should be rejected");
+        assert_error_contains(err, "sign constraints");
+    }
+
+    #[test]
+    fn matrix_free_null_deviance_survives_tiny_dense_memory_limit() {
+        // A nonzero offset defeats the closed-form null-deviance shortcut, so the
+        // intercept-only null sub-fit runs dense. Its guards must be floored at
+        // the null size (q = K-1) or a converged matrix-free fit errors at the end.
+        let (y, x) = matrix_free_solver_fixture();
+        let offset = Array2::from_elem((y.len(), 3), 0.1);
+        let config = MultinomialConfig {
+            solver: MultinomialSolver::MatrixFreeCg,
+            skip_covariance: true,
+            hessian_memory_limit_bytes: 1,
+            ..Default::default()
+        };
+        let result = fit_multinomial(&y, x.view(), 3, 0, &config, None, Some(&offset), None, None)
+            .expect("null-deviance sub-fit must not trip the main fit's memory guard");
+        assert_eq!(result.solver_name, "matrix_free_cg");
+        assert!(result.null_deviance.is_finite());
+    }
+
+    #[test]
+    fn matrix_free_cg_nonconvergence_warning_is_deduplicated() {
+        // One inner CG iteration per Newton step forces repeated non-convergence;
+        // the warning must appear once, not once per Newton iteration.
+        let (y, x) = matrix_free_solver_fixture();
+        let config = MultinomialConfig {
+            solver: MultinomialSolver::MatrixFreeCg,
+            skip_covariance: true,
+            matrix_free_cg_max_iterations: 1,
+            ..Default::default()
+        };
+        let result = fit_multinomial(&y, x.view(), 3, 0, &config, None, None, None, None)
+            .expect("matrix-free fit");
+        assert!(result.matrix_free_cg_iterations.len() > 1);
+        let cg_warnings = result
+            .warnings
+            .iter()
+            .filter(|w| w.contains("matrix-free multinomial CG did not fully converge"))
+            .count();
+        assert_eq!(cg_warnings, 1);
     }
 
     #[test]

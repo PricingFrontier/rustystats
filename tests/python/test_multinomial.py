@@ -181,6 +181,104 @@ def test_direct_rust_binding_with_alternative_tensors():
     np.testing.assert_allclose(result.fitted_probabilities.sum(axis=1), 1.0)
 
 
+def test_direct_rust_binding_matrix_free_solver_matches_dense_and_bypasses_guard():
+    x = np.array(
+        [
+            [1.0, -1.3],
+            [1.0, -0.9],
+            [1.0, -0.5],
+            [1.0, -0.1],
+            [1.0, 0.2],
+            [1.0, 0.4],
+            [1.0, 0.7],
+            [1.0, 1.0],
+            [1.0, 1.2],
+            [1.0, 1.5],
+            [1.0, 1.8],
+            [1.0, 2.1],
+        ],
+        dtype=np.float64,
+    )
+    y = np.array([0, 1, 2, 1, 0, 2, 1, 2, 0, 1, 2, 0], dtype=np.int64)
+
+    dense = fit_multinomial_py(
+        y,
+        x,
+        3,
+        0,
+        alpha=0.2,
+        skip_covariance=True,
+        max_dense_parameters=100,
+        solver="dense",
+    )
+    assert dense.solver_name == "dense"
+
+    with pytest.raises(ValueError, match="max_dense_parameters=2"):
+        fit_multinomial_py(
+            y,
+            x,
+            3,
+            0,
+            alpha=0.2,
+            skip_covariance=True,
+            max_dense_parameters=2,
+            solver="dense",
+        )
+
+    matrix_free = fit_multinomial_py(
+        y,
+        x,
+        3,
+        0,
+        alpha=0.2,
+        skip_covariance=True,
+        max_dense_parameters=2,
+        solver="matrix_free_cg",
+    )
+    assert matrix_free.solver_name == "matrix_free_cg"
+    assert matrix_free.matrix_free_cg_iterations
+    assert matrix_free.cov_params_unscaled is None
+    np.testing.assert_allclose(
+        matrix_free.fitted_probabilities, dense.fitted_probabilities, atol=1e-5
+    )
+
+    auto = fit_multinomial_py(
+        y,
+        x,
+        3,
+        0,
+        alpha=0.2,
+        skip_covariance=True,
+        max_dense_parameters=2,
+        solver="auto",
+    )
+    assert auto.solver_name == "matrix_free_cg"
+
+
+def test_direct_rust_binding_matrix_free_rejects_dense_only_options():
+    x = np.array(
+        [[1.0, -1.0], [1.0, -0.5], [1.0, 0.2], [1.0, 0.7], [1.0, 1.2], [1.0, 1.8]],
+        dtype=np.float64,
+    )
+    y = np.array([0, 1, 2, 0, 1, 2], dtype=np.int64)
+
+    with pytest.raises(ValueError, match="covariance requires a dense final Hessian"):
+        fit_multinomial_py(y, x, 3, 0, solver="matrix_free_cg")
+    with pytest.raises(ValueError, match="lasso/elastic-net"):
+        fit_multinomial_py(
+            y,
+            x,
+            3,
+            0,
+            alpha=0.1,
+            l1_ratio=1.0,
+            skip_covariance=True,
+            solver="matrix_free_cg",
+        )
+    with pytest.raises(ValueError, match="unknown multinomial solver"):
+        fit_multinomial_py(y, x, 3, 0, skip_covariance=True, solver="not-a-solver")
+
+
 def test_direct_rust_binding_accepts_regularized_alternative_tensors():
     x = np.array(
         [[1.0, -1.0], [1.0, -0.5], [1.0, 0.2], [1.0, 0.7], [1.0, 1.2], [1.0, 1.8]],
@@ -654,6 +752,10 @@ def test_standardized_multinomial_warm_start_preserves_ridge_solution_speedup():
         "verbose": False,
         "hessian_memory_limit_bytes": 256 * 1024 * 1024,
         "max_dense_parameters": 5000,
+        "solver": "dense",
+        "matrix_free_cg_max_iter": 80,
+        "matrix_free_cg_tol": 1e-4,
+        "matrix_free_cg_damping": 1e-6,
         "alternative_generic": model.alternative_generic,
         "alternative_specific": model.alternative_specific,
     }
@@ -2284,6 +2386,77 @@ def test_multinomial_hessian_memory_limit_rejects_at_public_fit_boundary():
             hessian_memory_limit_bytes=64,
             max_dense_parameters=1_000,
         )
+
+
+def test_multinomial_dict_matrix_free_solver_bypasses_dense_fit_guard_and_serializes_metadata():
+    data = pl.DataFrame(
+        {
+            "y": ["a", "b", "c"] * 20,
+            "x": np.linspace(-1.0, 1.0, 60),
+        }
+    )
+    dense_model = rs.multinomial_dict(
+        response="y",
+        terms={"x": {"type": "linear"}},
+        data=data,
+        classes=["a", "b", "c"],
+        reference="a",
+    )
+    with pytest.raises(ValueError, match="max_dense_parameters=2"):
+        dense_model.fit(compute_covariance=False, max_dense_parameters=2, solver="dense")
+
+    result = rs.multinomial_dict(
+        response="y",
+        terms={"x": {"type": "linear"}},
+        data=data,
+        classes=["a", "b", "c"],
+        reference="a",
+    ).fit(
+        compute_covariance=False,
+        max_dense_parameters=2,
+        solver="matrix_free_cg",
+        alpha=0.2,
+    )
+
+    assert result.solver_name == "matrix_free_cg"
+    assert result.matrix_free_cg_iterations
+    np.testing.assert_allclose(result.fitted_probabilities.sum(axis=1), 1.0, atol=1e-10)
+
+    loaded = rs.MultinomialModel.from_bytes(result.to_bytes())
+    assert loaded.solver_name == "matrix_free_cg"
+    assert loaded.matrix_free_cg_iterations == result.matrix_free_cg_iterations
+
+
+def test_multinomial_cv_matrix_free_incompatibilities_fail_fast():
+    """Matrix-free ineligibility must surface as an actionable error BEFORE the
+    CV sweep runs — not be swallowed per-fold into score=inf (silently selecting
+    alpha=0) or error only at the final covariance refit after all folds."""
+    data = pl.DataFrame(
+        {
+            "y": ["a", "b", "c"] * 20,
+            "x": np.linspace(-1.0, 1.0, 60),
+        }
+    )
+
+    def spec():
+        return rs.multinomial_dict(
+            response="y",
+            terms={"x": {"type": "linear"}},
+            data=data,
+            classes=["a", "b", "c"],
+            reference="a",
+        )
+
+    with pytest.raises(ValidationError, match="lasso/elastic-net"):
+        spec().fit(
+            cv=2,
+            regularization="lasso",
+            solver="matrix_free_cg",
+            compute_covariance=False,
+        )
+
+    with pytest.raises(ValidationError, match="covariance"):
+        spec().fit(cv=2, regularization="ridge", solver="matrix_free_cg")
 
 
 def test_multinomial_covariance_workspace_memory_guard_rejects_peak_allocation():

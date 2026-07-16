@@ -386,7 +386,7 @@ def test_glm_base_helper_branches_and_cv_path(monkeypatch, capsys):
     base.family = "poisson"
     base.link = "log"
     complement = _dummy_model()
-    complement.predict = lambda frame: np.array([2.0, 8.0])
+    complement.predict = lambda frame, **kwargs: np.array([2.0, 8.0])
     comp_link = base._process_complement(complement, raw_exposure=np.array([1.0, 4.0]))
     np.testing.assert_allclose(comp_link, np.log([2.0, 2.0]))
 
@@ -759,7 +759,7 @@ def test_glm_model_regularization_path_and_serialized_result_contracts():
 
 def test_calibration_extract_arrays_materializes_response_prediction_exposure_and_weights():
     model = _dummy_model(formula="claims ~ x", exposure_spec="expo")
-    model.predict = lambda data, exposure=None: np.array([1.0, 2.0, 3.0])
+    model.predict = lambda data, exposure=None, **kwargs: np.array([1.0, 2.0, 3.0])
     data = pl.DataFrame(
         {
             "claims": [1.0, 3.0, 2.0],
@@ -792,7 +792,7 @@ def test_calibration_extract_arrays_materializes_response_prediction_exposure_an
     np.testing.assert_allclose(weights_array, [1.0, 1.0, 1.0])
 
     bare_model = _dummy_model(formula="claims ~ x")
-    bare_model.predict = lambda data, exposure=None: np.array([1.0, 2.0, 3.0])
+    bare_model.predict = lambda data, exposure=None, **kwargs: np.array([1.0, 2.0, 3.0])
     _, _, _, no_exposure, no_weights = bare_model._calibration_extract_arrays(
         data.drop("expo"),
         exposure=None,

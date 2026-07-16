@@ -28,6 +28,8 @@ mean(fittedvalues) even at a perfect optimum. The score equation is defined
 with respect to the training design, i.e. the fitted values.
 """
 
+import warnings
+
 import numpy as np
 import polars as pl
 import pytest
@@ -281,18 +283,41 @@ def test_stationarity_gate_reports_nonstationary_on_truncated_fit():
 
 
 # =============================================================================
-# Regularized path: monotonicity is not enforced there — must warn, not hide
+# Regularized path: monotonicity is ENFORCED via the fixed λ=α D'D penalty route
 # =============================================================================
 
 
-def test_regularized_path_warns_monotone_not_enforced():
+def test_regularized_path_enforces_monotonicity():
+    """alpha > 0 with smooth terms routes to the fixed-spline-penalty path,
+    which runs the same monotone smooth solver with λ = α — the constraint is
+    enforced, not silently dropped (the pre-0.8.16 behavior merely warned).
+    The true x_price partial effect is INCREASING, so the decreasing
+    constraint binds: an unconstrained fit would slope upward.
+    """
     data = make_data(n=400, seed=0)
     terms = {
         "x_price": {"type": "bs", "monotonicity": "decreasing"},
         "x_q2i": {"type": "ns"},
     }
-    with pytest.warns(UserWarning, match="NOT enforced on"):
-        _fit(terms, data, alpha=0.05)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        model = _fit(terms, data, alpha=0.05)
+    assert not [w for w in caught if "NOT enforced" in str(w.message)], (
+        "obsolete 'monotonicity NOT enforced' warning re-emitted on a path that enforces it"
+    )
+    assert model.optimizer_route == "fixed_spline_penalty"
+
+    x_price = data["x_price"].to_numpy()
+    grid = pl.DataFrame(
+        {
+            "x_price": np.linspace(x_price.min(), x_price.max(), 50),
+            "x_q2i": np.full(50, float(data["x_q2i"].median())),
+        }
+    )
+    pred = np.asarray(model.predict(grid), dtype=float)
+    assert np.all(np.diff(pred) <= 1e-8), (
+        "decreasing monotonicity constraint violated on the alpha > 0 path"
+    )
 
 
 # =============================================================================

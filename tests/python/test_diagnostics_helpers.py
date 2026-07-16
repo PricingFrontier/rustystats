@@ -865,7 +865,7 @@ class TestDiagnosticsApiHelperContracts:
 
         calls: list[Any] = []
 
-        def predict(_frame, exposure=None):
+        def predict(_frame, exposure=None, **_kwargs):
             calls.append(exposure)
             return np.array([2.9, 4.1])
 
@@ -1458,7 +1458,7 @@ class TestDiagnosticsApiHelperContracts:
         test_data = pl.DataFrame({"y": [1.0, 2.0], "expo": [1.5, 2.5]})
         model = SimpleNamespace(
             params=np.array([0.0, 0.1]),
-            predict=lambda frame: np.asarray(frame["y"], dtype=np.float64) + 0.5,
+            predict=lambda frame, **_kwargs: np.asarray(frame["y"], dtype=np.float64) + 0.5,
         )
 
         assert diagnostics_api._compute_pair_diagnostics(

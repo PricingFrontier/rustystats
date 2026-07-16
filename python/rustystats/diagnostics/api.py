@@ -232,7 +232,12 @@ def _extract_response_and_predictions(
         if (
             has_te or getattr(result, "_is_deserialized", False) or exposure is not None
         ) and hasattr(result, "predict"):
-            mu = np.asarray(result.predict(train_data, exposure=exposure), dtype=np.float64)
+            # Diagnostics score the model's true mean; the response-ceiling
+            # extrapolation guardrail must not distort them.
+            mu = np.asarray(
+                result.predict(train_data, exposure=exposure, response_ceiling=None),
+                dtype=np.float64,
+            )
         else:
             mu = np.asarray(result.fittedvalues, dtype=np.float64)
         lp = np.log(mu) if np.all(mu > 0) else mu
@@ -619,7 +624,9 @@ def _compute_pair_diagnostics(
         if response_col and response_col in test_data.columns:
             test_y_arr = test_data[response_col].to_numpy().astype(np.float64)
         if hasattr(result, "predict"):
-            test_mu_arr = np.asarray(result.predict(test_data), dtype=np.float64)
+            test_mu_arr = np.asarray(
+                result.predict(test_data, response_ceiling=None), dtype=np.float64
+            )
         if exposure_col and exposure_col in test_data.columns:
             test_exposure_arr = test_data[exposure_col].to_numpy().astype(np.float64)
         elif test_y_arr is not None:
@@ -683,7 +690,11 @@ def _extract_test_arrays(
         )
     else:
         predict_exposure = None
-    mu_test = np.asarray(result.predict(test_data, exposure=predict_exposure), dtype=np.float64)
+    # Test-data diagnostics score the model's true mean, uncapped.
+    mu_test = np.asarray(
+        result.predict(test_data, exposure=predict_exposure, response_ceiling=None),
+        dtype=np.float64,
+    )
     exposure_test = np.ones(len(y_test), dtype=np.float64)
     has_exposure = False
     if isinstance(exposure_override, str):

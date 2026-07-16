@@ -3856,7 +3856,8 @@ mod tests {
             f64::NEG_INFINITY
         ]));
         assert_array1_close(
-            &finite_coefficients_or_none(array![2.0, -3.0]).unwrap(),
+            &finite_coefficients_or_none(array![2.0, -3.0])
+                .expect("finite coefficients should be retained"),
             &array![2.0, -3.0],
             1e-12,
         );

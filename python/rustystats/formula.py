@@ -46,6 +46,7 @@ from rustystats.constants import (
     DEFAULT_SPLINE_DF,
     DEFAULT_TOLERANCE,
     NEGBINOMIAL_ALIASES,
+    UNBOUNDED_MEAN_FAMILIES,
 )
 from rustystats.exceptions import (
     FittingError,
@@ -170,6 +171,33 @@ _PREDICT_TERMWISE_FEATURE_THRESHOLD = 512
 _PREDICT_TERMWISE_ROW_CHUNK_DEFAULT = 500_000
 _PREDICT_TERMWISE_CHUNK_BYTES_BUDGET = 900_000_000  # cap widest term block, not full X
 _EXTREME_LOG_ETA_THRESHOLD = 50.0
+
+# Default head-room for the data-driven response ceiling: ``predict`` caps mu for
+# unbounded-mean families at this multiple of the largest observed training
+# response. The reference is the *response*, not the fitted values, on purpose --
+# when a fit fails to converge it can emit in-sample fitted means orders of
+# magnitude above anything observed (e.g. mu ~ 1e9 against a max claim of 7.5e5),
+# so a fitted-value scale would be poisoned by the very pathology it must bound.
+# The observed response is immune to that. 10x is generous head-room: a predicted
+# *mean* essentially never exceeds ten times the largest single observed outcome,
+# so the cap only ever engages on runaway extrapolation, while a stray large
+# response only loosens the cap (fails safe) rather than tightening it.
+_MU_CEILING_FACTOR = 10.0
+
+
+def _family_has_unbounded_mean(family: str | None) -> bool:
+    """Whether ``family``'s mean has no intrinsic upper bound.
+
+    Normalizes the family string the same way as ``get_default_link`` /
+    ``is_quasi_likelihood`` (lower-case, strip any ``(...)`` parameter block)
+    before testing membership, so ``"tweedie(p=1.5)"`` and the negbinomial
+    aliases resolve correctly. Bounded-mean families (binomial, gaussian) and
+    unknown families return ``False`` -- the response ceiling is opt-in-safe.
+    """
+    family_base = (family or "").lower().split("(", 1)[0].strip()
+    if family_base in NEGBINOMIAL_ALIASES:
+        return True
+    return family_base in UNBOUNDED_MEAN_FAMILIES
 
 
 def _prediction_quantiles(values: np.ndarray) -> dict[str, float | None]:
@@ -1149,9 +1177,10 @@ class _GLMBase:
         if complement is None:
             return None
 
-        # Extract response-scale complement values
+        # Extract response-scale complement values. The prior's true mean feeds
+        # the offset, so the extrapolation guardrail must not truncate it here.
         if isinstance(complement, GLMModel):
-            comp_values = complement.predict(self.data)
+            comp_values = complement.predict(self.data, response_ceiling=None)
             # If the model has raw exposure, divide by it to recover the rate.
             if raw_exposure is not None:
                 comp_values = comp_values / raw_exposure
@@ -1490,7 +1519,9 @@ def _resolve_predict_complement(
     if comp_to_use is None:
         return None, None
     if isinstance(comp_to_use, GLMModel):
-        comp_response = comp_to_use.predict(new_data)
+        # Offset arithmetic needs the prior's true mean; the extrapolation
+        # guardrail must not truncate it (mirrors fit-time complement handling).
+        comp_response = comp_to_use.predict(new_data, response_ceiling=None)
         if exposure_spec_for_complement is not None:
             exposure, _, _ = _resolve_predict_exposure(new_data, exposure_spec_for_complement)
             comp_response = comp_response / exposure
@@ -1589,6 +1620,35 @@ class GLMModel:
         self._intercept_delta: float = 0.0
         self._intercept_delta_var: float = 0.0
         self._relevel_history: list[dict[str, Any]] = []
+        # Training-response scale, used to derive the data-driven response ceiling
+        # in ``predict``. Computed in the Rust core (``GLMResults.response_scale``,
+        # the largest observed |response|) and cached here as a plain float;
+        # ``None`` when unavailable, in which case the ceiling is skipped.
+        # Deserialized models restore it from the serialized state (``from_bytes``
+        # overrides after construction) so save/load does not change predict().
+        self._response_scale: float | None = self._compute_response_scale()
+
+    def _compute_response_scale(self) -> float | None:
+        """Robust reference scale for the unbounded-mean response ceiling.
+
+        The largest observed absolute training response (computed Rust-side), or
+        ``None`` if unavailable. Anchored to the response rather than the fitted
+        values on purpose: a non-converged fit can emit in-sample fitted means
+        orders of magnitude beyond anything observed, which would poison a
+        fitted-value scale; the response cannot be inflated that way. Deserialized
+        models do not retain the response, so this returns ``None``; ``from_bytes``
+        then restores the scale persisted by ``to_bytes``.
+        """
+        if self._is_deserialized:
+            return None
+        try:
+            scale = self._result.response_scale
+        except (AttributeError, ValueError, TypeError):
+            return None
+        if scale is None:
+            return None
+        scale = float(scale)
+        return scale if scale > 0.0 and np.isfinite(scale) else None
 
     @property
     def input_transforms(self) -> list[dict[str, Any]]:
@@ -2331,8 +2391,9 @@ class GLMModel:
 
         y = data[response].to_numpy().astype(np.float64)
 
-        # Re-predict to get consistent encoding (critical for TE terms)
-        mu = np.asarray(self.predict(data), dtype=np.float64)
+        # Re-predict to get consistent encoding (critical for TE terms). Score
+        # the model's true mean, not the response-ceiling guardrail's clipped mu.
+        mu = np.asarray(self.predict(data, response_ceiling=None), dtype=np.float64)
 
         # Compute family-appropriate loss
         loss_metrics = _rust_loss_metrics(y, mu, self.family)
@@ -2774,6 +2835,7 @@ class GLMModel:
         *,
         on_extreme_eta: str = "raise",
         eta_clip: float | tuple[float, float] | list[float] | None = None,
+        response_ceiling: float | str | None = "auto",
     ) -> np.ndarray:
         """Predict response-scale values for new data.
 
@@ -2781,6 +2843,25 @@ class GLMModel:
         large enough to imply overflow-scale means. Use ``predict_linear`` or
         ``predict_diagnostics`` to inspect eta directly, or pass
         ``on_extreme_eta="clip"``/``"warn"`` deliberately.
+
+        Parameters
+        ----------
+        response_ceiling : float, ``"auto"``, or None, default ``"auto"``
+            Upper cap on the returned mean for unbounded-mean families (Poisson,
+            Gamma, Tweedie, negative-binomial). These families have a log/inverse
+            link over a non-negative response, so an extrapolated linear predictor
+            on new data can drive mu to a numerically finite but nonsensical
+            magnitude (e.g. mu ~ 1e9 against a max observed response of ~1e6) that
+            silently dominates deviance-based scores. ``"auto"`` caps mu at
+            ``_MU_CEILING_FACTOR`` (10x) times the largest observed training
+            response -- a scale a non-converged fit cannot inflate, and generous
+            enough that a predicted mean never legitimately reaches it. Pass a
+            positive float to set an explicit cap (applied for any family), or
+            ``None`` to disable. The cap is one-sided (upper only) and never
+            applies to bounded-mean families (binomial, gaussian) under ``"auto"``.
+            When the auto cap engages, a ``UserWarning`` reports how many
+            predictions were capped — legitimate large means (e.g. aggregated
+            exposure) should be predicted with ``response_ceiling=None``.
         """
         linear_pred = self._linear_predict_new_data(
             new_data,
@@ -2793,7 +2874,49 @@ class GLMModel:
             on_extreme_eta=on_extreme_eta,
             eta_clip=eta_clip,
         )
-        return self._apply_inverse_link(linear_pred)
+        mu = self._apply_inverse_link(linear_pred)
+        ceiling = self._resolve_response_ceiling(response_ceiling)
+        if ceiling is not None:
+            n_capped = int(np.count_nonzero(mu > ceiling))
+            if n_capped > 0 and response_ceiling == "auto":
+                # The auto guardrail targets runaway extrapolation, but the cap
+                # is derived from per-row training responses, so legitimately
+                # large means (e.g. aggregated exposure) can also reach it. Never
+                # truncate silently.
+                warnings.warn(
+                    f"response_ceiling='auto' capped {n_capped} of {mu.size} "
+                    f"predictions at {ceiling:.6g} (10x the largest observed "
+                    "training response). If these rows are legitimate (e.g. "
+                    "aggregated exposure) pass response_ceiling=None or an "
+                    "explicit float cap.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            mu = np.minimum(mu, ceiling)
+        return mu
+
+    def _resolve_response_ceiling(self, response_ceiling: float | str | None) -> float | None:
+        """Resolve the ``response_ceiling`` argument to a concrete upper cap.
+
+        Returns the mu cap to apply, or ``None`` for no cap. ``"auto"`` derives a
+        data-driven cap from the in-sample fitted-mean scale for unbounded-mean
+        families only; an explicit float is honored for any family; ``None``
+        disables the cap.
+        """
+        if response_ceiling is None:
+            return None
+        if isinstance(response_ceiling, str):
+            if response_ceiling != "auto":
+                raise ValidationError("response_ceiling must be a positive float, 'auto', or None.")
+            if not _family_has_unbounded_mean(self.family):
+                return None
+            if self._response_scale is None:
+                return None
+            return self._response_scale * _MU_CEILING_FACTOR
+        ceiling = float(response_ceiling)
+        if not np.isfinite(ceiling) or ceiling <= 0.0:
+            raise ValidationError("response_ceiling float must be finite and strictly positive.")
+        return ceiling
 
     def predict_linear(
         self,
@@ -3362,7 +3485,10 @@ class GLMModel:
         if exposure_to_use is None and self._exposure_spec is not None:
             exposure_to_use = self._exposure_spec
 
-        mu = np.asarray(self.predict(data, exposure=exposure), dtype=np.float64)
+        # Calibrate against the model's true mean, not the guardrail-clipped mu.
+        mu = np.asarray(
+            self.predict(data, exposure=exposure, response_ceiling=None), dtype=np.float64
+        )
 
         exposure_arr: np.ndarray | None
         if exposure_to_use is None:
@@ -3792,6 +3918,10 @@ class GLMModel:
             "intercept_delta_var": float(self._intercept_delta_var),
             "relevel_history": self.relevel_history,
             "basis_impl": spline_basis_impl,
+            # Persist the response-ceiling reference scale so the default
+            # response_ceiling="auto" behaves identically before and after a
+            # save/load round-trip (the raw response itself is not serialized).
+            "response_scale": self._response_scale,
         }
 
         return pickle.dumps(state, protocol=pickle.HIGHEST_PROTOCOL)
@@ -3897,6 +4027,11 @@ class GLMModel:
         model._intercept_delta_var = float(state.get("intercept_delta_var", 0.0))
         model._relevel_history = [dict(entry) for entry in state.get("relevel_history", [])]
         model._weights_spec = state.get("weights_spec")
+        stored_scale = state.get("response_scale")
+        if stored_scale is not None:
+            stored_scale = float(stored_scale)
+            if np.isfinite(stored_scale) and stored_scale > 0.0:
+                model._response_scale = stored_scale
         return model
 
     def __repr__(self) -> str:
