@@ -300,7 +300,24 @@ def test_prediction_deviance_values_validation():
         model._prediction_deviance_values(np.ones(4), np.ones(4), np.ones(3))
 
 
-def test_predict_accepts_complement_column_override():
+def test_diagnostics_survive_extrapolating_test_rows():
+    """diagnostics() must produce a report on the pathological models it exists
+    to inspect: an extrapolating test row (extreme eta) is clipped into the
+    tables, not raised as PredictionError."""
+    rng = np.random.default_rng(29)
+    n = 200
+    x = rng.uniform(0.0, 1.0, n)
+    train = pl.DataFrame({"y": rng.poisson(np.exp(0.2 + 0.5 * x)).astype(float), "x": x})
+    model = rs.glm_dict(
+        response="y", terms={"x": {"type": "linear"}}, data=train, family="poisson"
+    ).fit()
+
+    test = pl.DataFrame({"y": [1.0, 0.0, 2.0], "x": [0.5, 150.0, 0.9]})
+    eta = model.predict_linear(test)
+    assert eta.max() > 50.0  # the middle row genuinely extrapolates past the guardrail
+
+    diag = model.diagnostics(train, test_data=test)
+    assert diag is not None
     model = _fit_poisson_rate_model()
     new_data = pl.DataFrame({"x": [0.2, 0.8], "prior": [1.5, 2.5]})
     exposure = np.ones(2)

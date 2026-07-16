@@ -233,9 +233,16 @@ def _extract_response_and_predictions(
             has_te or getattr(result, "_is_deserialized", False) or exposure is not None
         ) and hasattr(result, "predict"):
             # Diagnostics score the model's true mean; the response-ceiling
-            # extrapolation guardrail must not distort them.
+            # extrapolation guardrail must not distort them, and the
+            # extreme-eta guardrail must not abort them (clip keeps the report
+            # alive; extreme rows surface as extreme deviance/lift instead).
             mu = np.asarray(
-                result.predict(train_data, exposure=exposure, response_ceiling=None),
+                result.predict(
+                    train_data,
+                    exposure=exposure,
+                    response_ceiling=None,
+                    on_extreme_eta="clip",
+                ),
                 dtype=np.float64,
             )
         else:
@@ -625,7 +632,8 @@ def _compute_pair_diagnostics(
             test_y_arr = test_data[response_col].to_numpy().astype(np.float64)
         if hasattr(result, "predict"):
             test_mu_arr = np.asarray(
-                result.predict(test_data, response_ceiling=None), dtype=np.float64
+                result.predict(test_data, response_ceiling=None, on_extreme_eta="clip"),
+                dtype=np.float64,
             )
         if exposure_col and exposure_col in test_data.columns:
             test_exposure_arr = test_data[exposure_col].to_numpy().astype(np.float64)
@@ -690,9 +698,15 @@ def _extract_test_arrays(
         )
     else:
         predict_exposure = None
-    # Test-data diagnostics score the model's true mean, uncapped.
+    # Test-data diagnostics score the model's true mean, uncapped; clip (not
+    # raise) on extreme eta so the report survives extrapolating test rows.
     mu_test = np.asarray(
-        result.predict(test_data, exposure=predict_exposure, response_ceiling=None),
+        result.predict(
+            test_data,
+            exposure=predict_exposure,
+            response_ceiling=None,
+            on_extreme_eta="clip",
+        ),
         dtype=np.float64,
     )
     exposure_test = np.ones(len(y_test), dtype=np.float64)

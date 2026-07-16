@@ -876,14 +876,16 @@ def _fit_glm_core(
 
     # `max_iter` is a hard TOTAL iteration budget for whichever solver this fit
     # routes to (termination contract, bug.md Fix 1). When the user did not set
-    # it, the monotone smooth path gets its scam-style nested-solve default
-    # (warm start + all inner PIRLS iterations across lambda updates); every
-    # other path keeps the plain IRLS default. Resolved here, at the routing
-    # branch, so a CV-selected alpha of exactly 0.0 also lands correctly.
+    # it, any monotone smooth fit gets the scam-style nested-solve default
+    # (warm start + all inner PIRLS iterations across lambda updates) — the
+    # alpha == 0 GCV route and the alpha > 0 fixed-penalty route run the same
+    # monotone solver and need the same budget; every other path keeps the
+    # plain IRLS default. Resolved here, at the routing branch, so a
+    # CV-selected alpha of exactly 0.0 also lands correctly.
     if max_iter is None:
         max_iter = (
             DEFAULT_MONOTONE_SMOOTH_MAX_ITER
-            if smooth_terms and alpha == 0.0 and _any_monotone_smooth(smooth_terms)
+            if smooth_terms and _any_monotone_smooth(smooth_terms)
             else DEFAULT_MAX_ITER
         )
 
@@ -1553,7 +1555,11 @@ class GLMModel:
 
     # Serialized-state schema version written by ``to_bytes`` and required by
     # ``from_bytes``. Bumped whenever the persisted state shape changes.
-    _SCHEMA_VERSION = 4
+    # v5: categorical x spline interaction coefficient blocks became
+    # category-major. v4 blobs are ambiguous (v0.8.15 wrote basis-major,
+    # v0.8.16 category-major under the same version number), so v4 is
+    # rejected outright rather than risking silently permuted coefficients.
+    _SCHEMA_VERSION = 5
 
     def __init__(
         self,
@@ -3141,11 +3147,13 @@ class GLMModel:
                 f"nonfinite_eta_count={int(np.sum(nonfinite))}. "
                 "Use predict_linear() or predict_diagnostics() to inspect eta."
             )
+        # Validate the arguments on every link so a typo'd policy or malformed
+        # clip bounds fails loudly even where the guardrail itself is a no-op.
+        policy = _validate_extreme_eta_policy(on_extreme_eta)
+        lower, upper = _eta_clip_bounds(eta_clip)
         if self.link != "log":
             return eta_arr
 
-        policy = _validate_extreme_eta_policy(on_extreme_eta)
-        lower, upper = _eta_clip_bounds(eta_clip)
         extreme = (eta_arr < lower) | (eta_arr > upper)
         if not np.any(extreme):
             return eta_arr
@@ -3251,41 +3259,35 @@ class GLMModel:
         mu: np.ndarray,
         weights: np.ndarray | None,
     ) -> np.ndarray:
-        eps = 1e-12
-        family = self.family.lower().split("(", 1)[0].strip()
+        """Per-row unit deviance via the Rust family implementations.
+
+        Delegates to the same core code every other deviance in the library
+        uses, with the model's fitted ``var_power``/``theta`` embedded in the
+        family string so tweedie and negative-binomial rows are scored with
+        the model's actual variance function.
+        """
+        from rustystats._rustystats import compute_unit_deviance_py as _rust_unit_deviance
+
         y_arr = np.asarray(y, dtype=np.float64)
-        mu_arr = np.clip(np.asarray(mu, dtype=np.float64), eps, np.inf)
+        mu_arr = np.asarray(mu, dtype=np.float64)
         if y_arr.shape != mu_arr.shape:
             raise ValidationError("y must have the same length as predictions.")
-        if family in {"poisson", "quasipoisson", "negativebinomial", "negbinomial"}:
-            y_pos = np.clip(y_arr, 0.0, np.inf)
-            term = np.zeros_like(y_pos)
-            positive = y_pos > 0.0
-            term[positive] = y_pos[positive] * np.log(y_pos[positive] / mu_arr[positive])
-            dev = 2.0 * (term - (y_pos - mu_arr))
-        elif family == "gamma":
-            y_pos = np.clip(y_arr, eps, np.inf)
-            dev = 2.0 * ((y_pos - mu_arr) / mu_arr - np.log(y_pos / mu_arr))
-        elif family in {"binomial", "quasibinomial"}:
-            p = np.clip(mu_arr, eps, 1.0 - eps)
-            yy = np.clip(y_arr, 0.0, 1.0)
-            dev = -2.0 * (yy * np.log(p) + (1.0 - yy) * np.log(1.0 - p))
-        elif family == "tweedie":
-            pwr = float(getattr(self, "var_power", 1.5))
-            yy = np.clip(y_arr, 0.0, np.inf)
-            dev = 2.0 * (
-                np.power(yy, 2.0 - pwr) / ((1.0 - pwr) * (2.0 - pwr))
-                - yy * np.power(mu_arr, 1.0 - pwr) / (1.0 - pwr)
-                + np.power(mu_arr, 2.0 - pwr) / (2.0 - pwr)
-            )
-        else:
-            dev = np.square(y_arr - mu_arr)
+        family_str = str(self.family or "gaussian")
+        family_base = family_str.lower().split("(", 1)[0].strip()
+        if "(" not in family_str:
+            if family_base == "tweedie":
+                family_str = f"tweedie(p={float(getattr(self, 'var_power', 1.5))})"
+            elif family_base in NEGBINOMIAL_ALIASES:
+                theta = getattr(self, "theta", None)
+                if theta is not None and np.isfinite(float(theta)) and float(theta) > 0.0:
+                    family_str = f"negativebinomial(theta={float(theta)})"
+        dev = np.asarray(_rust_unit_deviance(y_arr, mu_arr, family_str), dtype=np.float64)
         if weights is not None:
             w = np.asarray(weights, dtype=np.float64)
             if w.shape != dev.shape:
                 raise ValidationError("weights must have the same length as predictions.")
             dev = dev * w
-        return np.asarray(dev, dtype=np.float64)
+        return dev
 
     def predict_diagnostics(
         self,
@@ -3958,13 +3960,22 @@ class GLMModel:
         state = pickle.loads(data)
 
         # Fail loud on a schema this build cannot read, rather than silently
-        # loading it and mis-handling fields (e.g. the pre-v4 exposure layout).
+        # loading it and mis-handling fields (e.g. the pre-v4 exposure layout,
+        # or the v4 basis-major vs category-major interaction-coefficient
+        # ambiguity: v0.8.15 and v0.8.16 both wrote schema_version 4 with
+        # incompatible categorical x spline interaction layouts).
         sv = state.get("schema_version")
         if sv != cls._SCHEMA_VERSION:
+            hint = (
+                " schema_version 4 models cannot be loaded safely because v0.8.15 and "
+                "v0.8.16 wrote incompatible interaction coefficient layouts under the "
+                "same version; re-fit the model with the current version."
+                if sv == 4
+                else " Re-serialize the model with the current version."
+            )
             raise ValidationError(
                 f"Cannot load model: serialized schema_version {sv!r} is not supported by "
-                f"this RustyStats build (schema_version {cls._SCHEMA_VERSION}). Re-serialize "
-                "the model with the current version."
+                f"this RustyStats build (schema_version {cls._SCHEMA_VERSION})." + hint
             )
 
         result_state = state["result_state"]
@@ -4535,7 +4546,13 @@ def _parse_interaction_spec(
             cat_factors.add(var_name)
             categorical_vars.add(var_name)
         elif term_type in ("bs", "ns", "ms", "s"):
-            interaction_spline_terms[var_name] = _parse_spline_spec(var_name, spec)
+            local_spline = _parse_spline_spec(var_name, spec)
+            # Interaction-local specs carry their own fitted knots; the marker
+            # stops predict paths from substituting a same-named main-effect
+            # spline out of the shared registry (which may have different
+            # df/degree/knots and would silently mis-score).
+            local_spline._interaction_local = True
+            interaction_spline_terms[var_name] = local_spline
         elif term_type == "target_encoding":
             prior_weight = spec.get("prior_weight", "auto")
             te_factor_names[var_name] = f"TE({var_name})"
@@ -5050,6 +5067,13 @@ class FormulaGLMDict(_GLMBase):
         alpha : float, default=0.0
             Regularization strength. Higher values = more shrinkage.
             Ignored if regularization is specified (uses CV to find optimal).
+            When the model contains smooth terms (``s()``/``k=`` splines),
+            ``alpha > 0`` routes to the fixed-penalty smooth solver: alpha is
+            applied as the smoothing parameter (a D'D difference penalty on
+            each spline basis, with monotonicity constraints enforced), while
+            parametric columns are fitted UNPENALIZED and ``standardize`` is
+            not applied. For scalar ridge on a parametric design, drop the
+            smooth terms (use fixed ``df=`` bases instead).
 
         l1_ratio : float, default=0.0
             Elastic Net mixing parameter (0=Ridge, 1=Lasso).

@@ -900,3 +900,26 @@ def test_parse_spline_spec_df_k_and_error_branches():
     assert k_spec.df == 4 and k_spec._is_smooth is True
     df_spec = formula._parse_spline_spec("x", {"type": "bs", "df": 4})
     assert df_spec.df == 4 and not getattr(df_spec, "_is_smooth", False)
+
+
+def test_prediction_deviance_embeds_family_parameters():
+    """negbinomial theta and tweedie var_power reach the Rust unit-deviance
+    helper via the embedded family string (a bare family name would silently
+    score with theta=1 / p=1.5 defaults)."""
+    y = np.array([0.0, 1.0, 3.0])
+    mu = np.array([0.5, 1.2, 2.5])
+
+    nb = _dummy_model(family="negbinomial")
+    nb.theta = 1.7
+    dev_theta = nb._prediction_deviance_values(y, mu, None)
+    nb.theta = 25.0
+    dev_other = nb._prediction_deviance_values(y, mu, None)
+    assert dev_theta.shape == (3,)
+    assert not np.allclose(dev_theta, dev_other)  # theta genuinely flows through
+
+    tw = _dummy_model(family="tweedie")
+    tw.var_power = 1.3
+    dev_p13 = tw._prediction_deviance_values(y, mu, np.ones(3))
+    tw.var_power = 1.8
+    dev_p18 = tw._prediction_deviance_values(y, mu, np.ones(3))
+    assert not np.allclose(dev_p13, dev_p18)  # var_power genuinely flows through
