@@ -32,8 +32,8 @@ def _monotone_interaction_spec(include_main: bool = True) -> list[dict]:
 def test_monotone_bs_categorical_interaction_is_monotone_by_level():
     model = rs.glm_dict(
         response="y",
-        terms={},
-        interactions=_monotone_interaction_spec(include_main=True),
+        terms={"g": {"type": "categorical"}},
+        interactions=_monotone_interaction_spec(include_main=False),
         data=_monotone_interaction_frame(),
         family="gaussian",
         link="identity",
@@ -43,18 +43,35 @@ def test_monotone_bs_categorical_interaction_is_monotone_by_level():
     assert model.converged
     assert model.stationary
     smooth_terms, smooth_ranges = model._builder.get_smooth_terms()
-    # Main-effect smooth plus one OWN monotone curve per category (full-k,
-    # category-major) — not k-1 sign-constrained deviations, which would force
-    # every category to lie at/above the reference everywhere.
-    assert smooth_ranges == [(2, 11), (11, 20), (20, 29)]
+    # One OWN monotone curve per category (full-k, category-major) — not k-1
+    # sign-constrained deviations, which would force every category to lie
+    # at/above the reference everywhere. No same-variable main smooth: the
+    # per-category curves already include the common component.
+    assert smooth_ranges == [(2, 11), (11, 20)]
     assert [
         getattr(term, "_interaction_smooth_endpoint_constraint", False) for term in smooth_terms
-    ] == [False, True, True]
+    ] == [True, True]
 
     for group in ("0", "1"):
         grid = pl.DataFrame({"x": np.linspace(0.01, 0.99, 201), "g": [group] * 201})
         diff = np.diff(np.asarray(model.predict(grid), dtype=float))
         assert diff.max() <= 1e-8
+
+
+def test_monotone_interaction_rejects_same_variable_main_spline():
+    """include_main=True (or an explicit main spline on the same variable) is
+    redundant with the per-category full curves and makes the monotone solve
+    ill-posed — the redundant split is what previously produced
+    platform-dependent monotonicity violations."""
+    with pytest.raises(ValidationError, match="same-variable main spline is redundant"):
+        rs.glm_dict(
+            response="y",
+            terms={},
+            interactions=_monotone_interaction_spec(include_main=True),
+            data=_monotone_interaction_frame(),
+            family="gaussian",
+            link="identity",
+        )
 
 
 def test_monotone_bs_interaction_without_main_fails_closed():
@@ -92,18 +109,18 @@ def test_multilevel_monotone_bs_interaction_blocks_are_category_contiguous_for_p
     )
     model = rs.glm_dict(
         response="y",
-        terms={},
-        interactions=_monotone_interaction_spec(include_main=True),
+        terms={"g": {"type": "categorical"}},
+        interactions=_monotone_interaction_spec(include_main=False),
         data=df,
         family="gaussian",
         link="identity",
     )
 
-    # Main smooth + one own-curve block per category (all 3 levels).
-    assert model._builder.get_smooth_terms()[1] == [(3, 12), (12, 21), (21, 30), (30, 39)]
-    assert all(name.startswith("g[0]:bs(") for name in model.feature_names[12:21])
-    assert all(name.startswith("g[1]:bs(") for name in model.feature_names[21:30])
-    assert all(name.startswith("g[2]:bs(") for name in model.feature_names[30:39])
+    # One own-curve block per category (all 3 levels), category-contiguous.
+    assert model._builder.get_smooth_terms()[1] == [(3, 12), (12, 21), (21, 30)]
+    assert all(name.startswith("g[0]:bs(") for name in model.feature_names[3:12])
+    assert all(name.startswith("g[1]:bs(") for name in model.feature_names[12:21])
+    assert all(name.startswith("g[2]:bs(") for name in model.feature_names[21:30])
 
     grid = pl.DataFrame(
         {

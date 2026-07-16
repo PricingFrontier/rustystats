@@ -948,10 +948,23 @@ class InteractionBuilder:
                         if cat_factors[0] not in main_cats:
                             raise ValidationError(
                                 f"Monotone smooth interaction with '{cat_factors[0]}' needs "
-                                "free per-category levels: include the categorical main "
-                                "effect (include_main=True or add it to terms). Without "
-                                "it, every category's curve is pinned to the same level "
-                                "at the lower boundary, silently biasing level shifts."
+                                "free per-category levels: add the categorical main effect "
+                                "to terms. Without it, every category's curve is pinned to "
+                                "the same level at the lower boundary, silently biasing "
+                                "level shifts."
+                            )
+                        main_splines = (
+                            getattr(self._parsed_formula, "spline_terms_by_var", {}) or {}
+                        )
+                        if spline.var_name in main_splines:
+                            raise ValidationError(
+                                f"Monotone smooth interaction on '{spline.var_name}' fits "
+                                "one full monotone curve per category, which already "
+                                "includes any common component — a same-variable main "
+                                "spline is redundant and makes the monotone solve "
+                                "ill-posed. Remove the main-effect spline for "
+                                f"'{spline.var_name}' (and use explicit terms instead of "
+                                "include_main=True, which would re-add it)."
                             )
                     k = len(single_cat_levels)
                     idx = np.asarray(single_cat_indices)
