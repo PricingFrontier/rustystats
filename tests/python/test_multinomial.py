@@ -3272,3 +3272,21 @@ def test_multinomial_smooth_lambda_is_gcv_argmin():
     argmin_lambda = min(candidates, key=lambda lam_gcv: lam_gcv[1])[0]
     # The reported selected lambda must be the GCV argmin of its final candidate sweep.
     assert result.smooth_lambdas[0] == pytest.approx(argmin_lambda)
+
+
+def test_multinomial_cv_lasso_reports_regularization_type():
+    rng = np.random.default_rng(41)
+    n = 90
+    x = rng.normal(size=n)
+    labels = np.array(["a", "b", "c"])[rng.integers(0, 3, n)]
+    data = pl.DataFrame({"y": labels, "x": x})
+    model = rs.multinomial_dict(
+        response="y",
+        terms={"x": {"type": "linear"}},
+        data=data,
+        classes=["a", "b", "c"],
+        reference="a",
+    ).fit(cv=2, regularization="lasso", n_alphas=3, compute_covariance=False)
+
+    assert model.regularization_type in {"lasso", "none"}
+    assert model.solver_status in {"converged", "max_iterations"}

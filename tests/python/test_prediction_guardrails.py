@@ -34,6 +34,11 @@ def test_log_link_prediction_fails_closed_on_extreme_eta():
     assert np.isfinite(clipped).all()
     assert clipped[0] <= np.exp(50.0)
 
+    # "warn" surfaces the problem but returns the honest un-clipped mean.
+    with pytest.warns(RuntimeWarning, match="extreme linear predictors"):
+        warned = model.predict(new_data, exposure=huge_exposure, on_extreme_eta="warn")
+    assert warned[0] > np.exp(50.0)
+
     diag = model.predict_diagnostics(new_data, exposure=huge_exposure)
     assert diag["extreme_eta_count"] == 1
     assert diag["eta"]["max"] > 50.0
@@ -229,6 +234,124 @@ def test_response_ceiling_rejects_invalid_values():
     for bad in ("tight", -1.0, 0.0, float("inf"), float("nan")):
         with pytest.raises(ValidationError):
             model.predict(new_data, exposure=exposure, response_ceiling=bad)
+
+
+# ---------------------------------------------------------------------------
+# Fit- and prediction-health diagnostics (fit_diagnostics / predict_diagnostics).
+# ---------------------------------------------------------------------------
+
+
+def test_fit_diagnostics_reports_fit_health():
+    model = _fit_poisson_rate_model()
+    diag = model.fit_diagnostics()
+
+    assert diag["nobs"] == 400
+    assert diag["family"] == "poisson"
+    assert diag["link"] == "log"
+    assert diag["converged"] is True
+    assert diag["iterations"] > 0
+    assert np.isfinite(diag["deviance"])
+    assert diag["nonfinite_eta_count"] == 0
+    assert diag["nonfinite_fitted_value_count"] == 0
+    assert diag["extreme_log_eta_count"] == 0
+    assert diag["warnings"] == []
+    for key in ("min", "p50", "p95", "p99", "max"):
+        assert np.isfinite(diag["eta"][key])
+        assert np.isfinite(diag["fitted_value"][key])
+
+
+def test_predict_diagnostics_deviance_rows_per_family():
+    rng = np.random.default_rng(3)
+    n = 60
+    x = np.linspace(0.0, 1.0, n)
+    cases = {
+        "poisson": rng.poisson(1.0 + x).astype(float),
+        "gamma": rng.gamma(2.0, 1.0 + x),
+        "binomial": rng.binomial(1, 0.3 + 0.4 * x).astype(float),
+        "tweedie": np.where(rng.uniform(size=n) < 0.3, 0.0, rng.gamma(2.0, 1.0 + x)),
+        "gaussian": 1.0 + 2.0 * x + rng.normal(0.0, 0.1, n),
+    }
+    for family, y in cases.items():
+        data = pl.DataFrame({"y": y, "x": x})
+        model = rs.glm_dict(
+            response="y", terms={"x": {"type": "linear"}}, data=data, family=family
+        ).fit()
+        diag = model.predict_diagnostics(data, y=y, weights=np.ones(n), top_n=3)
+
+        assert diag["n"] == n, family
+        dev_quantiles = diag["deviance"]
+        for key in ("min", "p50", "max"):
+            assert np.isfinite(dev_quantiles[key]), family
+        rows = diag["top_deviance_rows"]
+        assert len(rows) == 3, family
+        assert all(set(row) == {"row", "y", "prediction", "eta", "deviance"} for row in rows), (
+            family
+        )
+        # Rows are ranked worst-first.
+        devs = [row["deviance"] for row in rows]
+        assert devs == sorted(devs, reverse=True), family
+
+
+def test_prediction_deviance_values_validation():
+    model = _fit_poisson_rate_model()
+    with pytest.raises(ValidationError, match="same length as predictions"):
+        model._prediction_deviance_values(np.ones(3), np.ones(4), None)
+    with pytest.raises(ValidationError, match="weights must have the same length"):
+        model._prediction_deviance_values(np.ones(4), np.ones(4), np.ones(3))
+
+
+def test_predict_accepts_complement_column_override():
+    model = _fit_poisson_rate_model()
+    new_data = pl.DataFrame({"x": [0.2, 0.8], "prior": [1.5, 2.5]})
+    exposure = np.ones(2)
+    with_prior = model.predict(new_data, complement="prior", exposure=exposure)
+    base = model.predict(new_data.drop("prior"), exposure=exposure)
+    # For a log link the complement is added on the link scale, so the prior
+    # multiplies the predicted mean.
+    assert np.allclose(with_prior, base * np.array([1.5, 2.5]))
+
+
+def test_predict_accepts_complement_model_override_with_exposure():
+    model = _fit_poisson_rate_model()
+    rng = np.random.default_rng(13)
+    x = rng.uniform(0.0, 1.0, 100)
+    prior_data = pl.DataFrame({"y": rng.poisson(np.exp(0.1 + x)).astype(float), "x": x})
+    prior_model = rs.glm_dict(
+        response="y", terms={"x": {"type": "linear"}}, data=prior_data, family="poisson"
+    ).fit()
+
+    new_data = pl.DataFrame({"x": [0.2, 0.8]})
+    exposure = np.ones(2)
+    with_prior = model.predict(new_data, complement=prior_model, exposure=exposure)
+    base = model.predict(new_data, exposure=exposure)
+    prior_pred = prior_model.predict(new_data)
+    # With unit exposure, a model complement contributes its rate multiplicatively.
+    assert np.allclose(with_prior, base * prior_pred)
+
+
+def test_compute_loss_requires_response_column():
+    model = _fit_poisson_rate_model()
+    with pytest.raises(ValidationError, match="not found in data"):
+        model.compute_loss(pl.DataFrame({"x": [0.1, 0.2]}))
+
+
+def test_explore_supports_array_exposure():
+    rng = np.random.default_rng(23)
+    n = 80
+    x = rng.uniform(0.0, 1.0, n)
+    exposure = rng.uniform(0.5, 2.0, n)
+    data = pl.DataFrame({"y": rng.poisson(exposure * np.exp(0.2 * x)).astype(float), "x": x})
+    spec = rs.glm_dict(
+        response="y",
+        terms={"x": {"type": "linear"}},
+        data=data,
+        family="poisson",
+        exposure=exposure,
+    )
+    # Array exposure is materialized into a synthetic column for exploration.
+    # (Regression: this path raised NameError until the polars import was fixed.)
+    exploration = spec.explore()
+    assert exploration is not None
 
 
 # Local mirror of the library threshold so the test asserts against a literal.

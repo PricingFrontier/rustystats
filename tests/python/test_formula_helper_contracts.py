@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import numpy as np
 import polars as pl
 import pytest
+import rustystats as rs
 import rustystats.formula as formula
 from rustystats.exceptions import FittingError, PredictionError, ValidationError
 from rustystats.regularization_path import RegularizationPathInfo, RegularizationPathResult
@@ -840,3 +841,62 @@ def test_relevel_failure_edges_for_intercept_and_invalid_global_factor(monkeypat
 
     with pytest.raises(ValidationError, match="not finite/positive"):
         bad_factor.relevel(data)
+
+
+def test_cv_path_info_properties_exposed():
+    rng = np.random.default_rng(31)
+    n = 120
+    x = rng.normal(size=n)
+    y = 1.0 + 0.5 * x + rng.normal(0.0, 0.2, n)
+    data = pl.DataFrame({"y": y, "x": x})
+    model = rs.glm_dict(
+        response="y",
+        terms={"x": {"type": "linear"}},
+        data=data,
+        family="gaussian",
+    ).fit(cv=2, regularization="ridge", n_alphas=3, cv_seed=7)
+
+    assert model.cv_selection_method in {"min", "1se"}
+    se = model.cv_deviance_se
+    assert se is None or np.isfinite(float(se))
+    assert model.terms_dict == {"x": {"type": "linear"}}
+    assert model.interactions_spec is None
+
+
+def test_spline_spec_df_is_fixed_basis_and_k_is_penalized():
+    rng = np.random.default_rng(5)
+    n = 150
+    x = rng.uniform(0.0, 2.0, n)
+    y = rng.poisson(np.exp(0.2 + 0.3 * np.sin(x))).astype(float)
+    data = pl.DataFrame({"y": y, "x": x})
+
+    fixed = rs.glm_dict(
+        response="y", terms={"x": {"type": "bs", "df": 4}}, data=data, family="poisson"
+    ).fit()
+    assert np.isfinite(fixed.deviance)
+    assert not fixed.smooth_terms  # df= requests a fixed unpenalized basis
+
+    penalized = rs.glm_dict(
+        response="y", terms={"x": {"type": "bs", "k": 5}}, data=data, family="poisson"
+    ).fit()
+    assert np.isfinite(penalized.deviance)
+    assert penalized.smooth_terms  # k= requests a penalized smooth
+
+
+def test_parse_spline_spec_df_k_and_error_branches():
+    with pytest.raises(ValidationError, match="Expected spline term"):
+        formula._parse_spline_spec("x", {"type": "linear"})
+    with pytest.raises(ValidationError, match="not supported for natural splines"):
+        formula._parse_spline_spec("x", {"type": "ns", "monotonicity": "increasing"})
+
+    # s(k=) and bare specs are penalized smooths.
+    smooth = formula._parse_spline_spec("x", {"type": "s", "k": 5})
+    assert smooth.df == 5 and smooth._is_smooth is True
+    default = formula._parse_spline_spec("x", {"type": "bs"})
+    assert default.df == formula.DEFAULT_SPLINE_DF and default._is_smooth is True
+
+    # k= requests a penalized smooth; df= a fixed unpenalized basis.
+    k_spec = formula._parse_spline_spec("x", {"type": "bs", "k": 4})
+    assert k_spec.df == 4 and k_spec._is_smooth is True
+    df_spec = formula._parse_spline_spec("x", {"type": "bs", "df": 4})
+    assert df_spec.df == 4 and not getattr(df_spec, "_is_smooth", False)

@@ -4899,6 +4899,8 @@ class FormulaGLMDict(_GLMBase):
         DataExploration
             Pre-fit exploration results with to_json() method.
         """
+        import polars as pl
+
         from rustystats.diagnostics import explore_data
 
         data = self.data
