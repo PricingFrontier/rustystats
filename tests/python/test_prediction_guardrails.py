@@ -335,7 +335,10 @@ def test_compute_loss_requires_response_column():
         model.compute_loss(pl.DataFrame({"x": [0.1, 0.2]}))
 
 
-def test_explore_supports_array_exposure():
+def test_explore_supports_array_exposure(tmp_path, monkeypatch):
+    # explore_data auto-saves analysis/exploration.json relative to the CWD;
+    # run in a sandbox so the test never clobbers a real analysis artifact.
+    monkeypatch.chdir(tmp_path)
     rng = np.random.default_rng(23)
     n = 80
     x = rng.uniform(0.0, 1.0, n)
