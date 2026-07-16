@@ -17,7 +17,7 @@
 
 [package]
 name = "rustystats"
-version = "0.8.15"
+version = "0.8.16"
 edition = "2021"
 description = "Python bindings for RustyStats GLM library"
 license = "Elastic-2.0"
