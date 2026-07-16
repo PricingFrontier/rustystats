@@ -46,6 +46,7 @@ from rustystats.constants import (
     DEFAULT_SPLINE_DF,
     DEFAULT_TOLERANCE,
     NEGBINOMIAL_ALIASES,
+    UNBOUNDED_MEAN_FAMILIES,
 )
 from rustystats.exceptions import (
     FittingError,
@@ -169,6 +170,74 @@ _PREDICT_CHUNK_BYTES_BUDGET = 200_000_000  # ~200 MB per-chunk design matrix cap
 _PREDICT_TERMWISE_FEATURE_THRESHOLD = 512
 _PREDICT_TERMWISE_ROW_CHUNK_DEFAULT = 500_000
 _PREDICT_TERMWISE_CHUNK_BYTES_BUDGET = 900_000_000  # cap widest term block, not full X
+_EXTREME_LOG_ETA_THRESHOLD = 50.0
+
+# Head-room for the opt-in data-driven response ceiling: with
+# ``predict(response_ceiling="auto")``, mu for unbounded-mean families is capped
+# at this multiple of the largest observed training response. The reference is
+# the *response*, not the fitted values, on purpose --
+# when a fit fails to converge it can emit in-sample fitted means orders of
+# magnitude above anything observed (e.g. mu ~ 1e9 against a max claim of 7.5e5),
+# so a fitted-value scale would be poisoned by the very pathology it must bound.
+# The observed response is immune to that. 10x is generous head-room: a predicted
+# *mean* essentially never exceeds ten times the largest single observed outcome,
+# so the cap only ever engages on runaway extrapolation, while a stray large
+# response only loosens the cap (fails safe) rather than tightening it.
+_MU_CEILING_FACTOR = 10.0
+
+
+def _family_has_unbounded_mean(family: str | None) -> bool:
+    """Whether ``family``'s mean has no intrinsic upper bound.
+
+    Normalizes the family string the same way as ``get_default_link`` /
+    ``is_quasi_likelihood`` (lower-case, strip any ``(...)`` parameter block)
+    before testing membership, so ``"tweedie(p=1.5)"`` and the negbinomial
+    aliases resolve correctly. Bounded-mean families (binomial, gaussian) and
+    unknown families return ``False`` -- the response ceiling is opt-in-safe.
+    """
+    family_base = (family or "").lower().split("(", 1)[0].strip()
+    if family_base in NEGBINOMIAL_ALIASES:
+        return True
+    return family_base in UNBOUNDED_MEAN_FAMILIES
+
+
+def _prediction_quantiles(values: np.ndarray) -> dict[str, float | None]:
+    arr = np.asarray(values, dtype=np.float64)
+    arr = arr[np.isfinite(arr)]
+    if arr.size == 0:
+        return {"min": None, "p50": None, "p95": None, "p99": None, "max": None}
+    qs = np.percentile(arr, [0.0, 50.0, 95.0, 99.0, 100.0])
+    return {
+        "min": float(qs[0]),
+        "p50": float(qs[1]),
+        "p95": float(qs[2]),
+        "p99": float(qs[3]),
+        "max": float(qs[4]),
+    }
+
+
+def _eta_clip_bounds(
+    eta_clip: float | tuple[float, float] | list[float] | None,
+) -> tuple[float, float]:
+    if eta_clip is None:
+        eta_clip = _EXTREME_LOG_ETA_THRESHOLD
+    if isinstance(eta_clip, (tuple, list)):
+        if len(eta_clip) != 2:
+            raise ValidationError("eta_clip tuple must be (lower, upper).")
+        lower, upper = float(eta_clip[0]), float(eta_clip[1])
+    else:
+        upper_abs = abs(float(eta_clip))
+        lower, upper = -upper_abs, upper_abs
+    if not np.isfinite(lower) or not np.isfinite(upper) or lower >= upper:
+        raise ValidationError("eta_clip must define finite ordered bounds.")
+    return lower, upper
+
+
+def _validate_extreme_eta_policy(on_extreme_eta: str) -> str:
+    policy = str(on_extreme_eta).lower()
+    if policy not in {"raise", "warn", "clip", "ignore"}:
+        raise ValidationError("on_extreme_eta must be one of 'raise', 'warn', 'clip', or 'ignore'.")
+    return policy
 
 
 def _compute_predict_chunk_size(n_features: int) -> int:
@@ -194,6 +263,34 @@ def _compute_termwise_predict_chunk_size(builder: Any, n_features: int) -> int:
     max_term_width = min(max_term_width, max(1, n_features))
     budget_rows = _PREDICT_TERMWISE_CHUNK_BYTES_BUDGET // (max_term_width * 8)
     return max(1000, min(_PREDICT_TERMWISE_ROW_CHUNK_DEFAULT, budget_rows))
+
+
+def _should_use_termwise_predict_score(
+    builder: Any,
+    n_features: int,
+    chunk_size: int,
+    termwise_chunk_size: int,
+) -> bool:
+    """Choose the term-wise scorer for wide or many-small-encoded models."""
+    if not hasattr(builder, "linear_predict_new_data"):
+        return False
+    if termwise_chunk_size <= chunk_size * 2:
+        return False
+    if n_features >= _PREDICT_TERMWISE_FEATURE_THRESHOLD:
+        return True
+
+    slots = getattr(builder, "_term_slots", None) or []
+    encoded_slots = sum(
+        1
+        for slot in slots
+        if getattr(slot, "term_type", None)
+        in {"categorical", "target_encoding", "frequency_encoding"}
+    )
+    # Dense scoring is poor for models with many narrow encoded terms because
+    # prediction rebuilds each encoded block separately before stacking. The
+    # term-wise scorer caches category indices once and accumulates eta
+    # directly, which is much faster even below the global feature threshold.
+    return len(slots) >= 64 or encoded_slots >= 32
 
 
 def apply_link(mu: np.ndarray, link: str) -> np.ndarray:
@@ -516,6 +613,8 @@ def _fit_with_fixed_spline_penalties(
     max_iter: int = DEFAULT_MAX_ITER,
     tol: float = DEFAULT_TOLERANCE,
     store_design_matrix: bool = False,
+    nonneg_indices: list[int] | None = None,
+    nonpos_indices: list[int] | None = None,
     allow_extended_tweedie: bool = False,
 ) -> tuple:
     """
@@ -538,6 +637,14 @@ def _fit_with_fixed_spline_penalties(
         mono = getattr(term, "_smooth_monotonicity", None) or getattr(term, "monotonicity", None)
         monotonicity_specs.append(mono)
 
+    has_monotonic = any(m is not None for m in monotonicity_specs)
+    nonneg_indices, nonpos_indices = _monotone_smooth_endpoint_constraints(
+        spline_terms,
+        spline_col_indices,
+        nonneg_indices,
+        nonpos_indices,
+    )
+
     # Fixed lambda = alpha for all terms (no GCV search)
     # Pass lambda_min = lambda_max = alpha so optimizer returns alpha immediately
     rust_result, smooth_meta = _fit_smooth_unified(
@@ -553,8 +660,10 @@ def _fit_with_fixed_spline_penalties(
         tol,
         alpha,
         alpha,  # lambda_min = lambda_max = alpha → fixed lambda
-        monotonicity_specs if any(m is not None for m in monotonicity_specs) else None,
+        monotonicity_specs if has_monotonic else None,
         store_design_matrix,
+        nonneg_indices,
+        nonpos_indices,
         var_power=var_power,
         theta=theta,
         allow_extended_tweedie=allow_extended_tweedie,
@@ -767,14 +876,16 @@ def _fit_glm_core(
 
     # `max_iter` is a hard TOTAL iteration budget for whichever solver this fit
     # routes to (termination contract, bug.md Fix 1). When the user did not set
-    # it, the monotone smooth path gets its scam-style nested-solve default
-    # (warm start + all inner PIRLS iterations across lambda updates); every
-    # other path keeps the plain IRLS default. Resolved here, at the routing
-    # branch, so a CV-selected alpha of exactly 0.0 also lands correctly.
+    # it, any monotone smooth fit gets the scam-style nested-solve default
+    # (warm start + all inner PIRLS iterations across lambda updates) — the
+    # alpha == 0 GCV route and the alpha > 0 fixed-penalty route run the same
+    # monotone solver and need the same budget; every other path keeps the
+    # plain IRLS default. Resolved here, at the routing branch, so a
+    # CV-selected alpha of exactly 0.0 also lands correctly.
     if max_iter is None:
         max_iter = (
             DEFAULT_MONOTONE_SMOOTH_MAX_ITER
-            if smooth_terms and alpha == 0.0 and _any_monotone_smooth(smooth_terms)
+            if smooth_terms and _any_monotone_smooth(smooth_terms)
             else DEFAULT_MAX_ITER
         )
 
@@ -800,20 +911,33 @@ def _fit_glm_core(
         )
         return result, smooth_results, total_edf, gcv
 
-    if smooth_terms and alpha > 0.0 and _any_monotone_smooth(smooth_terms):
-        # The regularized path fits smooth basis columns with scalar penalties
-        # on the plain IRLS machinery — without the monotone reparameterization
-        # (and without the D'D smoothness penalty). Silently dropping a
-        # requested business constraint is worse than a noisy fit.
-        warnings.warn(
-            "Monotonicity constraints on penalized smooth terms are NOT enforced on "
-            "the regularized (alpha > 0) path: the fit applies scalar ridge/lasso "
-            "penalties to the raw basis columns without the monotone "
-            "reparameterization, so fitted curves may violate the requested "
-            "monotonicity. Fit with alpha=0 for enforced monotone smooth terms.",
-            UserWarning,
-            stacklevel=3,
+    if smooth_terms and alpha > 0.0:
+        if l1_ratio > 0.0:
+            raise ValidationError(
+                "L1/elastic-net regularization is not supported for smooth terms. "
+                "Use l1_ratio=0 for the fixed spline penalty path, or specify "
+                "df=/knots= for unpenalized fixed basis columns."
+            )
+        result, smooth_results, total_edf, gcv = _fit_with_fixed_spline_penalties(
+            y,
+            X,
+            smooth_terms,
+            smooth_col_indices,
+            family,
+            link,
+            var_power,
+            theta,
+            offset,
+            weights,
+            alpha,
+            max_iter,
+            tol,
+            store_design_matrix=store_design_matrix,
+            nonneg_indices=nonneg_indices if nonneg_indices else None,
+            nonpos_indices=nonpos_indices if nonpos_indices else None,
+            allow_extended_tweedie=allow_extended_tweedie,
         )
+        return result, smooth_results, total_edf, gcv
 
     center = scale = None
     if standardize and alpha > 0.0:
@@ -1056,9 +1180,10 @@ class _GLMBase:
         if complement is None:
             return None
 
-        # Extract response-scale complement values
+        # Extract response-scale complement values. The prior's true mean feeds
+        # the offset, so the extrapolation guardrail must not truncate it here.
         if isinstance(complement, GLMModel):
-            comp_values = complement.predict(self.data)
+            comp_values = complement.predict(self.data, response_ceiling=None)
             # If the model has raw exposure, divide by it to recover the rate.
             if raw_exposure is not None:
                 comp_values = comp_values / raw_exposure
@@ -1397,7 +1522,9 @@ def _resolve_predict_complement(
     if comp_to_use is None:
         return None, None
     if isinstance(comp_to_use, GLMModel):
-        comp_response = comp_to_use.predict(new_data)
+        # Offset arithmetic needs the prior's true mean; the extrapolation
+        # guardrail must not truncate it (mirrors fit-time complement handling).
+        comp_response = comp_to_use.predict(new_data, response_ceiling=None)
         if exposure_spec_for_complement is not None:
             exposure, _, _ = _resolve_predict_exposure(new_data, exposure_spec_for_complement)
             comp_response = comp_response / exposure
@@ -1428,7 +1555,11 @@ class GLMModel:
 
     # Serialized-state schema version written by ``to_bytes`` and required by
     # ``from_bytes``. Bumped whenever the persisted state shape changes.
-    _SCHEMA_VERSION = 4
+    # v5: categorical x spline interaction coefficient blocks became
+    # category-major. v4 blobs are ambiguous (v0.8.15 wrote basis-major,
+    # v0.8.16 category-major under the same version number), so v4 is
+    # rejected outright rather than risking silently permuted coefficients.
+    _SCHEMA_VERSION = 5
 
     def __init__(
         self,
@@ -1496,6 +1627,35 @@ class GLMModel:
         self._intercept_delta: float = 0.0
         self._intercept_delta_var: float = 0.0
         self._relevel_history: list[dict[str, Any]] = []
+        # Training-response scale, used to derive the data-driven response ceiling
+        # in ``predict``. Computed in the Rust core (``GLMResults.response_scale``,
+        # the largest observed |response|) and cached here as a plain float;
+        # ``None`` when unavailable, in which case the ceiling is skipped.
+        # Deserialized models restore it from the serialized state (``from_bytes``
+        # overrides after construction) so save/load does not change predict().
+        self._response_scale: float | None = self._compute_response_scale()
+
+    def _compute_response_scale(self) -> float | None:
+        """Robust reference scale for the unbounded-mean response ceiling.
+
+        The largest observed absolute training response (computed Rust-side), or
+        ``None`` if unavailable. Anchored to the response rather than the fitted
+        values on purpose: a non-converged fit can emit in-sample fitted means
+        orders of magnitude beyond anything observed, which would poison a
+        fitted-value scale; the response cannot be inflated that way. Deserialized
+        models do not retain the response, so this returns ``None``; ``from_bytes``
+        then restores the scale persisted by ``to_bytes``.
+        """
+        if self._is_deserialized:
+            return None
+        try:
+            scale = self._result.response_scale
+        except (AttributeError, ValueError, TypeError):
+            return None
+        if scale is None:
+            return None
+        scale = float(scale)
+        return scale if scale > 0.0 and np.isfinite(scale) else None
 
     @property
     def input_transforms(self) -> list[dict[str, Any]]:
@@ -2238,8 +2398,9 @@ class GLMModel:
 
         y = data[response].to_numpy().astype(np.float64)
 
-        # Re-predict to get consistent encoding (critical for TE terms)
-        mu = np.asarray(self.predict(data), dtype=np.float64)
+        # Re-predict to get consistent encoding (critical for TE terms). Score
+        # the model's true mean, not the response-ceiling guardrail's clipped mu.
+        mu = np.asarray(self.predict(data, response_ceiling=None), dtype=np.float64)
 
         # Compute family-appropriate loss
         loss_metrics = _rust_loss_metrics(y, mu, self.family)
@@ -2678,9 +2839,103 @@ class GLMModel:
         offset: str | np.ndarray | None = None,
         complement: str | np.ndarray | GLMModel | None = None,
         exposure: str | np.ndarray | None = None,
+        *,
+        on_extreme_eta: str = "raise",
+        eta_clip: float | tuple[float, float] | list[float] | None = None,
+        response_ceiling: float | str | None = None,
+    ) -> np.ndarray:
+        """Predict response-scale values for new data.
+
+        Log-link models now fail closed when finite linear predictors are
+        large enough to imply overflow-scale means. Use ``predict_linear`` or
+        ``predict_diagnostics`` to inspect eta directly, or pass
+        ``on_extreme_eta="clip"``/``"warn"`` deliberately.
+
+        Parameters
+        ----------
+        response_ceiling : float, ``"auto"``, or None, default None
+            Optional upper cap on the returned mean. By default no cap is
+            applied: ``predict`` is the honest inverse-link of eta, and the
+            pathological tail is already fail-closed by ``on_extreme_eta``.
+            Opt in for scoring pipelines where a finite-but-nonsense mean
+            (e.g. mu ~ 1e9 against a max observed response of ~1e6, from an
+            extrapolated linear predictor on an unbounded-mean family such as
+            Poisson/Gamma/Tweedie/negbinomial) would silently dominate
+            deviance-based scores. ``"auto"`` caps mu at ``_MU_CEILING_FACTOR``
+            (10x) times the largest observed training response -- a scale a
+            non-converged fit cannot inflate, and generous enough that a
+            predicted mean never legitimately reaches it; it never applies to
+            bounded-mean families (binomial, gaussian). Pass a positive float
+            to set an explicit cap (applied for any family). The cap is
+            one-sided (upper only). When the auto cap engages, a
+            ``UserWarning`` reports how many predictions were capped —
+            legitimate large means (e.g. aggregated exposure) should be
+            predicted without a ceiling.
+        """
+        linear_pred = self._linear_predict_new_data(
+            new_data,
+            offset=offset,
+            complement=complement,
+            exposure=exposure,
+        )
+        linear_pred = self._eta_for_response_prediction(
+            linear_pred,
+            on_extreme_eta=on_extreme_eta,
+            eta_clip=eta_clip,
+        )
+        mu = self._apply_inverse_link(linear_pred)
+        ceiling = self._resolve_response_ceiling(response_ceiling)
+        if ceiling is not None:
+            n_capped = int(np.count_nonzero(mu > ceiling))
+            if n_capped > 0 and response_ceiling == "auto":
+                # The auto guardrail targets runaway extrapolation, but the cap
+                # is derived from per-row training responses, so legitimately
+                # large means (e.g. aggregated exposure) can also reach it. Never
+                # truncate silently.
+                warnings.warn(
+                    f"response_ceiling='auto' capped {n_capped} of {mu.size} "
+                    f"predictions at {ceiling:.6g} (10x the largest observed "
+                    "training response). If these rows are legitimate (e.g. "
+                    "aggregated exposure) predict without a response_ceiling "
+                    "or pass an explicit float cap.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            mu = np.minimum(mu, ceiling)
+        return mu
+
+    def _resolve_response_ceiling(self, response_ceiling: float | str | None) -> float | None:
+        """Resolve the ``response_ceiling`` argument to a concrete upper cap.
+
+        Returns the mu cap to apply, or ``None`` for no cap. ``"auto"`` derives a
+        data-driven cap from the observed training-response scale for
+        unbounded-mean families only; an explicit float is honored for any
+        family; ``None`` (the default) disables the cap.
+        """
+        if response_ceiling is None:
+            return None
+        if isinstance(response_ceiling, str):
+            if response_ceiling != "auto":
+                raise ValidationError("response_ceiling must be a positive float, 'auto', or None.")
+            if not _family_has_unbounded_mean(self.family):
+                return None
+            if self._response_scale is None:
+                return None
+            return self._response_scale * _MU_CEILING_FACTOR
+        ceiling = float(response_ceiling)
+        if not np.isfinite(ceiling) or ceiling <= 0.0:
+            raise ValidationError("response_ceiling float must be finite and strictly positive.")
+        return ceiling
+
+    def predict_linear(
+        self,
+        new_data: pl.DataFrame | pl.LazyFrame,
+        offset: str | np.ndarray | None = None,
+        complement: str | np.ndarray | GLMModel | None = None,
+        exposure: str | np.ndarray | None = None,
     ) -> np.ndarray:
         """
-        Predict on new data using the fitted model.
+        Return the fitted linear predictor (eta) for new data.
 
         Parameters
         ----------
@@ -2705,19 +2960,30 @@ class GLMModel:
         Returns
         -------
         np.ndarray
-            Predicted values (on the response scale, i.e., μ = E[Y]).
+            Linear predictor values (on the link scale).
 
         Examples
         --------
         >>> model = rs.glm_dict(response="ClaimNb", terms={"Age": {"type": "linear"}, "Region": {"type": "categorical"}}, data=data, family="poisson", exposure="Exposure")
         >>> result = model.fit()
         >>>
-        >>> # Predict on new data
-        >>> predictions = result.predict(new_data)
-        >>>
-        >>> # Predict with custom exposure
-        >>> predictions = result.predict(new_data, exposure=new_exposures)
+        >>> eta = result.predict_linear(new_data)
         """
+        return self._linear_predict_new_data(
+            new_data,
+            offset=offset,
+            complement=complement,
+            exposure=exposure,
+        )
+
+    def _linear_predict_new_data(
+        self,
+        new_data: pl.DataFrame | pl.LazyFrame,
+        offset: str | np.ndarray | None = None,
+        complement: str | np.ndarray | GLMModel | None = None,
+        exposure: str | np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Compute eta for new data, including exposure/offset/complement adjustments."""
         if self._builder is None:
             raise PredictionError(
                 "Cannot predict: model was not fitted with formula API. "
@@ -2759,10 +3025,11 @@ class GLMModel:
         chunk_size = _compute_predict_chunk_size(n_features)
         params = np.asarray(self.params, dtype=np.float64)
         termwise_chunk_size = _compute_termwise_predict_chunk_size(self._builder, n_features)
-        use_termwise_score = (
-            n_features >= _PREDICT_TERMWISE_FEATURE_THRESHOLD
-            and hasattr(self._builder, "linear_predict_new_data")
-            and termwise_chunk_size > chunk_size * 2
+        use_termwise_score = _should_use_termwise_predict_score(
+            self._builder,
+            n_features,
+            chunk_size,
+            termwise_chunk_size,
         )
         if use_termwise_score:
             chunk_size = termwise_chunk_size
@@ -2863,11 +3130,222 @@ class GLMModel:
         if complement_link is not None:
             linear_pred = linear_pred + complement_link
 
-        return self._apply_inverse_link(linear_pred)
+        return linear_pred
+
+    def _eta_for_response_prediction(
+        self,
+        eta: np.ndarray,
+        *,
+        on_extreme_eta: str,
+        eta_clip: float | tuple[float, float] | list[float] | None,
+    ) -> np.ndarray:
+        eta_arr = np.asarray(eta, dtype=np.float64)
+        nonfinite = ~np.isfinite(eta_arr)
+        if np.any(nonfinite):
+            raise PredictionError(
+                "Prediction produced non-finite linear predictors. "
+                f"nonfinite_eta_count={int(np.sum(nonfinite))}. "
+                "Use predict_linear() or predict_diagnostics() to inspect eta."
+            )
+        # Validate the arguments on every link so a typo'd policy or malformed
+        # clip bounds fails loudly even where the guardrail itself is a no-op.
+        policy = _validate_extreme_eta_policy(on_extreme_eta)
+        lower, upper = _eta_clip_bounds(eta_clip)
+        if self.link != "log":
+            return eta_arr
+
+        extreme = (eta_arr < lower) | (eta_arr > upper)
+        if not np.any(extreme):
+            return eta_arr
+
+        count = int(np.sum(extreme))
+        msg = (
+            "Log-link prediction produced extreme linear predictors "
+            f"outside [{lower:g}, {upper:g}] for {count} row(s); "
+            f"eta_min={float(np.min(eta_arr)):.6g}, eta_max={float(np.max(eta_arr)):.6g}. "
+            "Use predict_linear() or predict_diagnostics() to inspect, or pass "
+            "on_extreme_eta='clip'/'warn' deliberately."
+        )
+        if policy == "raise":
+            raise PredictionError(msg)
+        if policy == "warn":
+            warnings.warn(msg, RuntimeWarning, stacklevel=3)
+            return eta_arr
+        if policy == "clip":
+            return np.clip(eta_arr, lower, upper)
+        return eta_arr
 
     def _apply_inverse_link(self, eta: np.ndarray) -> np.ndarray:
         """Apply inverse link function to linear predictor."""
         return apply_inverse_link(eta, self.link)
+
+    def target_encoding_diagnostics(self) -> list[dict[str, Any]]:
+        """Summarize fitted target-encoding terms and their shrinkage."""
+        stats_by_term = getattr(self._builder, "_te_stats", {}) if self._builder is not None else {}
+        rows: list[dict[str, Any]] = []
+        for term_name, info in stats_by_term.items():
+            prior = float(info.get("prior", np.nan))
+            prior_weight = float(info.get("prior_weight", np.nan))
+            level_stats = info.get("stats", {}) or {}
+            denominators: list[float] = []
+            encoded_values: list[float] = []
+            for raw_stat in level_stats.values():
+                try:
+                    total = float(raw_stat[0])
+                    denom = float(raw_stat[1])
+                except Exception:
+                    continue
+                denominators.append(denom)
+                if np.isfinite(prior) and np.isfinite(prior_weight):
+                    encoded_values.append((total + prior * prior_weight) / (denom + prior_weight))
+            rows.append(
+                {
+                    "term": term_name,
+                    "level_count": len(level_stats),
+                    "prior": prior if np.isfinite(prior) else None,
+                    "prior_weight": prior_weight if np.isfinite(prior_weight) else None,
+                    "prior_weight_spec": info.get("prior_weight_spec", prior_weight),
+                    "used_exposure_weighted": bool(info.get("used_exposure_weighted", False)),
+                    "interaction_vars": info.get("interaction_vars"),
+                    "denominator": _prediction_quantiles(np.asarray(denominators, dtype=float)),
+                    "encoded_value": _prediction_quantiles(np.asarray(encoded_values, dtype=float)),
+                }
+            )
+        return rows
+
+    def fit_diagnostics(self) -> dict[str, Any]:
+        """Return lightweight fit-health diagnostics."""
+        eta = getattr(self._result, "linear_predictor", None)
+        mu = getattr(self._result, "fittedvalues", None)
+        eta_arr = np.asarray(eta, dtype=np.float64) if eta is not None else np.asarray([])
+        mu_arr = np.asarray(mu, dtype=np.float64) if mu is not None else np.asarray([])
+        lower, upper = _eta_clip_bounds(None)
+        extreme_count = (
+            int(np.sum((eta_arr < lower) | (eta_arr > upper)))
+            if eta_arr.size and self.link == "log"
+            else 0
+        )
+        warnings_out: list[str] = []
+        if eta_arr.size and int(np.sum(~np.isfinite(eta_arr))) > 0:
+            warnings_out.append("nonfinite_eta")
+        if mu_arr.size and int(np.sum(~np.isfinite(mu_arr))) > 0:
+            warnings_out.append("nonfinite_fitted_values")
+        if extreme_count:
+            warnings_out.append("extreme_log_eta")
+        return {
+            "nobs": int(self.nobs),
+            "family": self.family,
+            "link": self.link,
+            "optimizer_route": getattr(self, "optimizer_route", None),
+            "solver_status": getattr(self, "solver_status", None),
+            "converged": bool(getattr(self._result, "converged", False)),
+            "iterations": int(getattr(self._result, "iterations", 0)),
+            "deviance": float(getattr(self._result, "deviance", np.nan)),
+            "inference_status": getattr(self, "inference_status", None),
+            "eta": _prediction_quantiles(eta_arr),
+            "fitted_value": _prediction_quantiles(mu_arr),
+            "nonfinite_eta_count": int(np.sum(~np.isfinite(eta_arr))) if eta_arr.size else 0,
+            "nonfinite_fitted_value_count": (
+                int(np.sum(~np.isfinite(mu_arr))) if mu_arr.size else 0
+            ),
+            "extreme_log_eta_count": extreme_count,
+            "target_encoding": self.target_encoding_diagnostics(),
+            "warnings": warnings_out,
+        }
+
+    def _prediction_deviance_values(
+        self,
+        y: np.ndarray,
+        mu: np.ndarray,
+        weights: np.ndarray | None,
+    ) -> np.ndarray:
+        """Per-row unit deviance via the Rust family implementations.
+
+        Delegates to the same core code every other deviance in the library
+        uses, with the model's fitted ``var_power``/``theta`` embedded in the
+        family string so tweedie and negative-binomial rows are scored with
+        the model's actual variance function.
+        """
+        from rustystats._rustystats import compute_unit_deviance_py as _rust_unit_deviance
+
+        y_arr = np.asarray(y, dtype=np.float64)
+        mu_arr = np.asarray(mu, dtype=np.float64)
+        if y_arr.shape != mu_arr.shape:
+            raise ValidationError("y must have the same length as predictions.")
+        family_str = str(self.family or "gaussian")
+        family_base = family_str.lower().split("(", 1)[0].strip()
+        if "(" not in family_str:
+            if family_base == "tweedie":
+                family_str = f"tweedie(p={float(getattr(self, 'var_power', 1.5))})"
+            elif family_base in NEGBINOMIAL_ALIASES:
+                theta = getattr(self, "theta", None)
+                if theta is not None and np.isfinite(float(theta)) and float(theta) > 0.0:
+                    family_str = f"negativebinomial(theta={float(theta)})"
+        dev = np.asarray(_rust_unit_deviance(y_arr, mu_arr, family_str), dtype=np.float64)
+        if weights is not None:
+            w = np.asarray(weights, dtype=np.float64)
+            if w.shape != dev.shape:
+                raise ValidationError("weights must have the same length as predictions.")
+            dev = dev * w
+        return dev
+
+    def predict_diagnostics(
+        self,
+        new_data: pl.DataFrame | pl.LazyFrame,
+        offset: str | np.ndarray | None = None,
+        complement: str | np.ndarray | GLMModel | None = None,
+        exposure: str | np.ndarray | None = None,
+        *,
+        y: np.ndarray | None = None,
+        weights: np.ndarray | None = None,
+        eta_clip: float | tuple[float, float] | list[float] | None = None,
+        top_n: int = 10,
+    ) -> dict[str, Any]:
+        """Inspect prediction health without failing on extreme finite log eta."""
+        eta = self._linear_predict_new_data(
+            new_data,
+            offset=offset,
+            complement=complement,
+            exposure=exposure,
+        )
+        eta_arr = np.asarray(eta, dtype=np.float64)
+        lower, upper = _eta_clip_bounds(eta_clip)
+        finite_eta = np.isfinite(eta_arr)
+        extreme = finite_eta & ((eta_arr < lower) | (eta_arr > upper))
+        safe_eta = np.nan_to_num(eta_arr, nan=0.0, posinf=upper, neginf=lower)
+        if self.link == "log":
+            safe_eta = np.clip(safe_eta, lower, upper)
+        mu = self._apply_inverse_link(safe_eta)
+        result: dict[str, Any] = {
+            "n": int(eta_arr.size),
+            "family": self.family,
+            "link": self.link,
+            "eta_clip": [float(lower), float(upper)],
+            "eta": _prediction_quantiles(eta_arr),
+            "prediction": _prediction_quantiles(mu),
+            "nonfinite_eta_count": int(np.sum(~finite_eta)),
+            "extreme_eta_count": int(np.sum(extreme)) if self.link == "log" else 0,
+            "nonfinite_prediction_count": int(np.sum(~np.isfinite(mu))),
+            "target_encoding": self.target_encoding_diagnostics(),
+        }
+        if y is not None:
+            dev = self._prediction_deviance_values(np.asarray(y), mu, weights)
+            result["deviance"] = _prediction_quantiles(dev)
+            if top_n > 0 and dev.size:
+                order = np.argsort(-np.nan_to_num(dev, nan=-np.inf), kind="stable")
+                top_rows = []
+                for idx in order[: int(top_n)]:
+                    top_rows.append(
+                        {
+                            "row": int(idx),
+                            "y": float(np.asarray(y, dtype=np.float64)[idx]),
+                            "prediction": float(mu[idx]),
+                            "eta": float(eta_arr[idx]),
+                            "deviance": float(dev[idx]),
+                        }
+                    )
+                result["top_deviance_rows"] = top_rows
+        return result
 
     def predict_contributions(
         self,
@@ -3012,7 +3490,10 @@ class GLMModel:
         if exposure_to_use is None and self._exposure_spec is not None:
             exposure_to_use = self._exposure_spec
 
-        mu = np.asarray(self.predict(data, exposure=exposure), dtype=np.float64)
+        # Calibrate against the model's true mean, not the guardrail-clipped mu.
+        mu = np.asarray(
+            self.predict(data, exposure=exposure, response_ceiling=None), dtype=np.float64
+        )
 
         exposure_arr: np.ndarray | None
         if exposure_to_use is None:
@@ -3442,6 +3923,10 @@ class GLMModel:
             "intercept_delta_var": float(self._intercept_delta_var),
             "relevel_history": self.relevel_history,
             "basis_impl": spline_basis_impl,
+            # Persist the response-ceiling reference scale so
+            # response_ceiling="auto" behaves identically before and after a
+            # save/load round-trip (the raw response itself is not serialized).
+            "response_scale": self._response_scale,
         }
 
         return pickle.dumps(state, protocol=pickle.HIGHEST_PROTOCOL)
@@ -3475,13 +3960,22 @@ class GLMModel:
         state = pickle.loads(data)
 
         # Fail loud on a schema this build cannot read, rather than silently
-        # loading it and mis-handling fields (e.g. the pre-v4 exposure layout).
+        # loading it and mis-handling fields (e.g. the pre-v4 exposure layout,
+        # or the v4 basis-major vs category-major interaction-coefficient
+        # ambiguity: v0.8.15 and v0.8.16 both wrote schema_version 4 with
+        # incompatible categorical x spline interaction layouts).
         sv = state.get("schema_version")
         if sv != cls._SCHEMA_VERSION:
+            hint = (
+                " schema_version 4 models cannot be loaded safely because v0.8.15 and "
+                "v0.8.16 wrote incompatible interaction coefficient layouts under the "
+                "same version; re-fit the model with the current version."
+                if sv == 4
+                else " Re-serialize the model with the current version."
+            )
             raise ValidationError(
                 f"Cannot load model: serialized schema_version {sv!r} is not supported by "
-                f"this RustyStats build (schema_version {cls._SCHEMA_VERSION}). Re-serialize "
-                "the model with the current version."
+                f"this RustyStats build (schema_version {cls._SCHEMA_VERSION})." + hint
             )
 
         result_state = state["result_state"]
@@ -3547,6 +4041,11 @@ class GLMModel:
         model._intercept_delta_var = float(state.get("intercept_delta_var", 0.0))
         model._relevel_history = [dict(entry) for entry in state.get("relevel_history", [])]
         model._weights_spec = state.get("weights_spec")
+        stored_scale = state.get("response_scale")
+        if stored_scale is not None:
+            stored_scale = float(stored_scale)
+            if np.isfinite(stored_scale) and stored_scale > 0.0:
+                model._response_scale = stored_scale
         return model
 
     def __repr__(self) -> str:
@@ -3563,7 +4062,6 @@ class GLMModel:
 
 from rustystats.constants import (
     DEFAULT_N_PERMUTATIONS,
-    DEFAULT_PRIOR_WEIGHT,
     DEFAULT_SPLINE_DEGREE,
 )
 from rustystats.interactions import (
@@ -3895,7 +4393,7 @@ def _parse_term_spec(
             spline_terms.append(term)
 
     elif term_type == "target_encoding":
-        prior_weight = spec.get("prior_weight", DEFAULT_PRIOR_WEIGHT)
+        prior_weight = spec.get("prior_weight", "auto")
         n_permutations = spec.get("n_permutations", DEFAULT_N_PERMUTATIONS)
         # Single variable TE - use 'variable' key if provided
         # For TE interactions, use the interactions list with target_encoding: True
@@ -4010,7 +4508,7 @@ def _parse_interaction_spec(
         target_encoding_terms.append(
             TargetEncodingTermSpec(
                 var_name=":".join(interaction_vars),
-                prior_weight=interaction.get("prior_weight", DEFAULT_PRIOR_WEIGHT),
+                prior_weight=interaction.get("prior_weight", "auto"),
                 n_permutations=interaction.get("n_permutations", DEFAULT_N_PERMUTATIONS),
                 interaction_vars=interaction_vars,
             )
@@ -4048,9 +4546,15 @@ def _parse_interaction_spec(
             cat_factors.add(var_name)
             categorical_vars.add(var_name)
         elif term_type in ("bs", "ns", "ms", "s"):
-            interaction_spline_terms[var_name] = _parse_spline_spec(var_name, spec)
+            local_spline = _parse_spline_spec(var_name, spec)
+            # Interaction-local specs carry their own fitted knots; the marker
+            # stops predict paths from substituting a same-named main-effect
+            # spline out of the shared registry (which may have different
+            # df/degree/knots and would silently mis-score).
+            local_spline._interaction_local = True
+            interaction_spline_terms[var_name] = local_spline
         elif term_type == "target_encoding":
-            prior_weight = spec.get("prior_weight", DEFAULT_PRIOR_WEIGHT)
+            prior_weight = spec.get("prior_weight", "auto")
             te_factor_names[var_name] = f"TE({var_name})"
             # TE in interaction - add to TE terms so encoding is available (if not already present)
             existing_te_vars = {te.var_name for te in target_encoding_terms}
@@ -4412,6 +4916,8 @@ class FormulaGLMDict(_GLMBase):
         DataExploration
             Pre-fit exploration results with to_json() method.
         """
+        import polars as pl
+
         from rustystats.diagnostics import explore_data
 
         data = self.data
@@ -4522,7 +5028,7 @@ class FormulaGLMDict(_GLMBase):
             status = "valid_standard"
 
         if smooth:
-            route = "gcv_penalized"
+            route = "fixed_spline_penalty" if requested_alpha > 0 else "gcv_smooth"
         elif regularization in ("lasso", "elastic_net") or (
             requested_alpha > 0 and requested_l1 > 0
         ):
@@ -4561,6 +5067,13 @@ class FormulaGLMDict(_GLMBase):
         alpha : float, default=0.0
             Regularization strength. Higher values = more shrinkage.
             Ignored if regularization is specified (uses CV to find optimal).
+            When the model contains smooth terms (``s()``/``k=`` splines),
+            ``alpha > 0`` routes to the fixed-penalty smooth solver: alpha is
+            applied as the smoothing parameter (a D'D difference penalty on
+            each spline basis, with monotonicity constraints enforced), while
+            parametric columns are fitted UNPENALIZED and ``standardize`` is
+            not applied. For scalar ridge on a parametric design, drop the
+            smooth terms (use fixed ``df=`` bases instead).
 
         l1_ratio : float, default=0.0
             Elastic Net mixing parameter (0=Ridge, 1=Lasso).
@@ -4662,6 +5175,14 @@ class FormulaGLMDict(_GLMBase):
         # need a concrete budget; the smooth-path default is resolved later at
         # the routing branch in _fit_glm_core.
         plain_max_iter = DEFAULT_MAX_ITER if max_iter is None else max_iter
+
+        if self._builder.get_smooth_terms()[0] and (cv is not None or regularization is not None):
+            raise ValidationError(
+                "CV-based regularization is not supported for smooth terms yet because "
+                "the path solver uses scalar penalties while smooth fits use spline "
+                "difference penalties. Pass a numeric alpha with l1_ratio=0, or use "
+                "df=/knots= for fixed basis columns."
+            )
 
         # Handle CV-based regularization path (shared logic in _GLMBase)
         alpha, l1_ratio, path_info = self._resolve_cv_path(

@@ -11,6 +11,44 @@ crates/rustystats-core/src/solvers/
 └── coordinate_descent.rs   # Regularized solver (~900 lines)
 ```
 
+## Multinomial Solvers
+
+Baseline-category multinomial logit uses dense Newton by default. The dense
+solver assembles the full `q x q` Hessian, where
+`q = shared_features * (classes - 1) + generic_alternative_terms + class_specific_alternative_terms * (classes - 1)`.
+This is usually fastest for moderate `q`, and it is required for covariance,
+smooth EDF diagnostics, lasso/elastic-net proximal Newton, and sign-constrained
+fits.
+
+For very wide multinomial designs, users can opt into a matrix-free Newton-CG
+solver:
+
+```python
+model = rs.multinomial_dict(...).fit(
+    compute_covariance=False,
+    solver="matrix_free_cg",
+)
+```
+
+The matrix-free solver computes Hessian-vector products from the current
+probabilities instead of materializing the dense Hessian. This is useful when
+the coefficient solve is blocked by `max_dense_parameters` or the Hessian memory
+guard, especially with many encoded features and several classes. It is not the
+default because dense Newton remains faster for many small and medium problems.
+
+`solver="auto"` keeps dense Newton when the dense guard passes, and falls back
+to matrix-free Newton-CG only when the dense fit would be rejected and the fit is
+eligible. Matrix-free eligibility currently requires:
+
+- `compute_covariance=False`
+- no multinomial smooth terms requiring EDF diagnostics
+- no lasso/elastic-net penalty (`alpha * l1_ratio == 0`)
+- no sign constraints
+
+Fitted results expose `solver_name` and `matrix_free_cg_iterations` so callers
+can audit whether `auto` selected dense or matrix-free and how much inner CG work
+was used.
+
 ## IRLS Solver
 
 ### Configuration

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import numpy as np
 import polars as pl
 import pytest
+import rustystats as rs
 import rustystats.formula as formula
 from rustystats.exceptions import FittingError, PredictionError, ValidationError
 from rustystats.regularization_path import RegularizationPathInfo, RegularizationPathResult
@@ -386,7 +387,7 @@ def test_glm_base_helper_branches_and_cv_path(monkeypatch, capsys):
     base.family = "poisson"
     base.link = "log"
     complement = _dummy_model()
-    complement.predict = lambda frame: np.array([2.0, 8.0])
+    complement.predict = lambda frame, **kwargs: np.array([2.0, 8.0])
     comp_link = base._process_complement(complement, raw_exposure=np.array([1.0, 4.0]))
     np.testing.assert_allclose(comp_link, np.log([2.0, 2.0]))
 
@@ -759,7 +760,7 @@ def test_glm_model_regularization_path_and_serialized_result_contracts():
 
 def test_calibration_extract_arrays_materializes_response_prediction_exposure_and_weights():
     model = _dummy_model(formula="claims ~ x", exposure_spec="expo")
-    model.predict = lambda data, exposure=None: np.array([1.0, 2.0, 3.0])
+    model.predict = lambda data, exposure=None, **kwargs: np.array([1.0, 2.0, 3.0])
     data = pl.DataFrame(
         {
             "claims": [1.0, 3.0, 2.0],
@@ -792,7 +793,7 @@ def test_calibration_extract_arrays_materializes_response_prediction_exposure_an
     np.testing.assert_allclose(weights_array, [1.0, 1.0, 1.0])
 
     bare_model = _dummy_model(formula="claims ~ x")
-    bare_model.predict = lambda data, exposure=None: np.array([1.0, 2.0, 3.0])
+    bare_model.predict = lambda data, exposure=None, **kwargs: np.array([1.0, 2.0, 3.0])
     _, _, _, no_exposure, no_weights = bare_model._calibration_extract_arrays(
         data.drop("expo"),
         exposure=None,
@@ -840,3 +841,85 @@ def test_relevel_failure_edges_for_intercept_and_invalid_global_factor(monkeypat
 
     with pytest.raises(ValidationError, match="not finite/positive"):
         bad_factor.relevel(data)
+
+
+def test_cv_path_info_properties_exposed():
+    rng = np.random.default_rng(31)
+    n = 120
+    x = rng.normal(size=n)
+    y = 1.0 + 0.5 * x + rng.normal(0.0, 0.2, n)
+    data = pl.DataFrame({"y": y, "x": x})
+    model = rs.glm_dict(
+        response="y",
+        terms={"x": {"type": "linear"}},
+        data=data,
+        family="gaussian",
+    ).fit(cv=2, regularization="ridge", n_alphas=3, cv_seed=7)
+
+    assert model.cv_selection_method in {"min", "1se"}
+    se = model.cv_deviance_se
+    assert se is None or np.isfinite(float(se))
+    assert model.terms_dict == {"x": {"type": "linear"}}
+    assert model.interactions_spec is None
+
+
+def test_spline_spec_df_is_fixed_basis_and_k_is_penalized():
+    rng = np.random.default_rng(5)
+    n = 150
+    x = rng.uniform(0.0, 2.0, n)
+    y = rng.poisson(np.exp(0.2 + 0.3 * np.sin(x))).astype(float)
+    data = pl.DataFrame({"y": y, "x": x})
+
+    fixed = rs.glm_dict(
+        response="y", terms={"x": {"type": "bs", "df": 4}}, data=data, family="poisson"
+    ).fit()
+    assert np.isfinite(fixed.deviance)
+    assert not fixed.smooth_terms  # df= requests a fixed unpenalized basis
+
+    penalized = rs.glm_dict(
+        response="y", terms={"x": {"type": "bs", "k": 5}}, data=data, family="poisson"
+    ).fit()
+    assert np.isfinite(penalized.deviance)
+    assert penalized.smooth_terms  # k= requests a penalized smooth
+
+
+def test_parse_spline_spec_df_k_and_error_branches():
+    with pytest.raises(ValidationError, match="Expected spline term"):
+        formula._parse_spline_spec("x", {"type": "linear"})
+    with pytest.raises(ValidationError, match="not supported for natural splines"):
+        formula._parse_spline_spec("x", {"type": "ns", "monotonicity": "increasing"})
+
+    # s(k=) and bare specs are penalized smooths.
+    smooth = formula._parse_spline_spec("x", {"type": "s", "k": 5})
+    assert smooth.df == 5 and smooth._is_smooth is True
+    default = formula._parse_spline_spec("x", {"type": "bs"})
+    assert default.df == formula.DEFAULT_SPLINE_DF and default._is_smooth is True
+
+    # k= requests a penalized smooth; df= a fixed unpenalized basis.
+    k_spec = formula._parse_spline_spec("x", {"type": "bs", "k": 4})
+    assert k_spec.df == 4 and k_spec._is_smooth is True
+    df_spec = formula._parse_spline_spec("x", {"type": "bs", "df": 4})
+    assert df_spec.df == 4 and not getattr(df_spec, "_is_smooth", False)
+
+
+def test_prediction_deviance_embeds_family_parameters():
+    """negbinomial theta and tweedie var_power reach the Rust unit-deviance
+    helper via the embedded family string (a bare family name would silently
+    score with theta=1 / p=1.5 defaults)."""
+    y = np.array([0.0, 1.0, 3.0])
+    mu = np.array([0.5, 1.2, 2.5])
+
+    nb = _dummy_model(family="negbinomial")
+    nb.theta = 1.7
+    dev_theta = nb._prediction_deviance_values(y, mu, None)
+    nb.theta = 25.0
+    dev_other = nb._prediction_deviance_values(y, mu, None)
+    assert dev_theta.shape == (3,)
+    assert not np.allclose(dev_theta, dev_other)  # theta genuinely flows through
+
+    tw = _dummy_model(family="tweedie")
+    tw.var_power = 1.3
+    dev_p13 = tw._prediction_deviance_values(y, mu, np.ones(3))
+    tw.var_power = 1.8
+    dev_p18 = tw._prediction_deviance_values(y, mu, np.ones(3))
+    assert not np.allclose(dev_p13, dev_p18)  # var_power genuinely flows through

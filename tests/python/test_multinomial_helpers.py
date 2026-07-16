@@ -318,13 +318,17 @@ def test_target_encoding_and_supported_term_contracts():
         2.0,
         3,
     )
+    assert _target_encoding_options({"n_permutations": 2}, context="main") == ("auto", 2)
+    assert _target_encoding_options(
+        {"prior_weight": "auto", "n_permutations": 3}, context="main"
+    ) == ("auto", 3)
     with pytest.raises(ValidationError, match="mode"):
         _target_encoding_options({"mode": "other"}, context="main")
     with pytest.raises(ValidationError, match="Unknown key"):
         _target_encoding_options(
             {"type": "target_encoding", "extra": 1}, context="main", allowed_keys={"type"}
         )
-    with pytest.raises(ValidationError, match="prior_weight must be numeric"):
+    with pytest.raises(ValidationError, match="numeric, non-negative, or 'auto'"):
         _target_encoding_options({"prior_weight": object()}, context="main")
     with pytest.raises(ValidationError, match="n_permutations must be an integer"):
         _target_encoding_options({"n_permutations": object()}, context="main")
@@ -869,6 +873,21 @@ def test_multinomial_prediction_formats_calibration_and_tier_mix_edges():
     assert logits.shape == (3, 2)
     probabilities = model.predict_proba(data)
     np.testing.assert_allclose(probabilities.sum(axis=1), 1.0)
+
+    prepare_calls = 0
+    original_prepare = model._prepare_prediction_data
+
+    def recording_prepare(data_arg, availability_arg, offset_arg, extra_columns=None):
+        nonlocal prepare_calls
+        prepare_calls += 1
+        return original_prepare(data_arg, availability_arg, offset_arg, extra_columns)
+
+    model._prepare_prediction_data = recording_prepare
+    try:
+        model.predict_proba(data)
+    finally:
+        model._prepare_prediction_data = original_prepare
+    assert prepare_calls == 1
 
     proba_frame = model.predict_proba(data, return_format="polars")
     assert proba_frame.columns == ["prob_none", "prob_basic", "prob_premium"]

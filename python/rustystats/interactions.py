@@ -94,6 +94,50 @@ _PREDICT_SPLINE_CACHE_MIN_ROWS = 100_000
 _PREDICT_SPLINE_CACHE_MAX_BYTES = 256_000_000
 
 
+def _resolve_target_encoding_prior_weight(
+    prior_weight: float | str,
+    target: np.ndarray,
+    exposure: np.ndarray | None = None,
+) -> float:
+    """Resolve a TE prior weight, including the GLM dict ``"auto"`` contract."""
+    if isinstance(prior_weight, str):
+        if prior_weight.lower() != "auto":
+            raise ValidationError(
+                "target_encoding prior_weight must be numeric, non-negative, or 'auto'."
+            )
+        target_arr = np.asarray(target, dtype=np.float64)
+        finite_target = target_arr[np.isfinite(target_arr)]
+        if finite_target.size == 0:
+            return 50.0
+        if exposure is not None:
+            exposure_arr = np.asarray(exposure, dtype=np.float64)
+            finite = np.isfinite(target_arr) & np.isfinite(exposure_arr) & (exposure_arr > 0.0)
+            total_exposure = float(np.sum(exposure_arr[finite]))
+            total_target = float(np.sum(target_arr[finite]))
+            rate = total_target / total_exposure if total_exposure > 0.0 else np.nan
+            if np.isfinite(rate) and rate > 0.0:
+                return float(np.clip(5.0 / rate, 20.0, 1000.0))
+            return 100.0
+        t_min = float(np.min(finite_target))
+        t_max = float(np.max(finite_target))
+        if t_min >= 0.0 and t_max <= 1.0:
+            p = float(np.mean(finite_target))
+            minority = min(p, 1.0 - p)
+            if np.isfinite(minority) and minority > 0.0:
+                return float(np.clip(5.0 / minority, 20.0, 500.0))
+            return 500.0
+        return 50.0
+    try:
+        resolved = float(prior_weight)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(
+            "target_encoding prior_weight must be numeric, non-negative, or 'auto'."
+        ) from exc
+    if not np.isfinite(resolved) or resolved < 0.0:
+        raise ValidationError("target_encoding prior_weight must be finite and non-negative.")
+    return resolved
+
+
 @dataclass
 class InteractionTerm:
     """Represents a single interaction term like x1:x2 or C(cat1):x2."""
@@ -143,7 +187,7 @@ class TargetEncodingTermSpec:
     """Parsed target encoding term specification from formula."""
 
     var_name: str
-    prior_weight: float = DEFAULT_PRIOR_WEIGHT
+    prior_weight: float | str = DEFAULT_PRIOR_WEIGHT
     n_permutations: int = DEFAULT_N_PERMUTATIONS
     interaction_vars: list[str] | None = None  # For TE(a:b) interactions
 
@@ -580,7 +624,12 @@ class InteractionBuilder:
             for _spline_str, spline in spline_factors:
                 x = self._get_column(spline.var_name)
                 basis, names = spline.transform(x)
-                self._fitted_splines[spline.var_name] = spline
+                # Interaction-local splines keep their fitted knots on the
+                # object itself (resolved via the interaction at predict);
+                # registering them under var_name would clobber a same-named
+                # main-effect spline in the shared registry.
+                if not getattr(spline, "_interaction_local", False):
+                    self._fitted_splines[spline.var_name] = spline
                 spline_bases.append(basis)
                 spline_name_lists.append(names)
 
@@ -597,6 +646,16 @@ class InteractionBuilder:
             # Combine: multiply each spline column by continuous factors
             # For multiple splines, create cross-product of all spline columns
             if len(spline_bases) == 1:
+                only_spline = spline_factors[0][1]
+                mono = getattr(only_spline, "_smooth_monotonicity", None) or getattr(
+                    only_spline, "monotonicity", None
+                )
+                if mono and not getattr(only_spline, "_is_smooth", False):
+                    raise ValidationError(
+                        f"Monotone fixed-df splines are not supported inside interactions "
+                        f"(factor '{only_spline.var_name}'). Use a penalized smooth "
+                        "instead: specify k= (not df=) with monotonicity."
+                    )
                 for j, spl_name in enumerate(spline_name_lists[0]):
                     col = spline_bases[0][:, j]
                     if cont_product is not None:
@@ -605,8 +664,28 @@ class InteractionBuilder:
                     else:
                         all_names.append(spl_name)
                     all_columns.append(col)
+                # The block's coefficients are the spline's own basis
+                # coefficients (row-wise scaling by the continuous co-factor
+                # does not change what they mean), so the D'D smoothing
+                # penalty — and, for monotone smooths, the sign constraint on
+                # the spline function f itself — applies unchanged. Note the
+                # monotonicity constraint governs f: the product z*f(x) is
+                # monotone in x wherever the co-factor z is positive, and
+                # reversed where z is negative.
+                if getattr(only_spline, "_is_smooth", False):
+                    n_basis = spline_bases[0].shape[1]
+                    self._pending_interaction_smooth_blocks = [(only_spline, 0, n_basis)]
             else:
                 # Multiple splines: cross-product (rare case)
+                if any(
+                    getattr(s, "_smooth_monotonicity", None) or getattr(s, "monotonicity", None)
+                    for _f, s in spline_factors
+                ):
+                    raise ValidationError(
+                        "Monotonicity constraints are not supported for tensor-product "
+                        "(multi-spline) interactions; constrain one spline per "
+                        "interaction term."
+                    )
                 from itertools import product as cartesian_product
 
                 indices = [range(b.shape[1]) for b in spline_bases]
@@ -828,9 +907,86 @@ class InteractionBuilder:
             for _spline_str, spline in spline_factors:
                 x = self._get_column(spline.var_name)
                 spline_basis, spline_names = spline.transform(x)
-                # Store fitted spline for prediction
-                self._fitted_splines[spline.var_name] = spline
+                # Store fitted spline for prediction — but never let an
+                # interaction-local spec clobber a same-named main effect;
+                # interaction-local splines are resolved via the interaction.
+                if not getattr(spline, "_interaction_local", False):
+                    self._fitted_splines[spline.var_name] = spline
                 n_basis = spline_basis.shape[1]
+
+                mono = getattr(spline, "_smooth_monotonicity", None) or getattr(
+                    spline, "monotonicity", None
+                )
+                is_smooth = getattr(spline, "_is_smooth", False)
+                if mono and not is_smooth:
+                    raise ValidationError(
+                        f"Monotone fixed-df splines are not supported inside interactions "
+                        f"(factor '{spline.var_name}'). Use a penalized smooth instead: "
+                        "specify k= (not df=) with monotonicity."
+                    )
+                if mono:
+                    # Per-category monotone curves: encode the spline against ALL
+                    # k categories (own curve per category, category-major), not
+                    # k-1 deviations from the reference. A deviation between two
+                    # monotone curves is not itself monotone, so sign-constraining
+                    # deviation blocks would force every category to lie at/above
+                    # the reference (over-constraint); own curves make the
+                    # block-wide sign constraint exactly "this category's curve
+                    # is monotone".
+                    if single_cat_indices is None or single_cat_levels is None:
+                        raise ValidationError(
+                            "Monotone smooth splines are supported with a single "
+                            "categorical factor per interaction; split multi-"
+                            "categorical monotone interactions into separate terms."
+                        )
+                    if self._parsed_formula is not None:
+                        main_cats = set(getattr(self._parsed_formula, "main_effects", []) or [])
+                        main_cats |= {
+                            term.var_name
+                            for term in getattr(self._parsed_formula, "categorical_terms", [])
+                        }
+                        if cat_factors[0] not in main_cats:
+                            raise ValidationError(
+                                f"Monotone smooth interaction with '{cat_factors[0]}' needs "
+                                "free per-category levels: add the categorical main effect "
+                                "to terms. Without it, every category's curve is pinned to "
+                                "the same level at the lower boundary, silently biasing "
+                                "level shifts."
+                            )
+                        main_splines = (
+                            getattr(self._parsed_formula, "spline_terms_by_var", {}) or {}
+                        )
+                        if spline.var_name in main_splines:
+                            raise ValidationError(
+                                f"Monotone smooth interaction on '{spline.var_name}' fits "
+                                "one full monotone curve per category, which already "
+                                "includes any common component — a same-variable main "
+                                "spline is redundant and makes the monotone solve "
+                                "ill-posed. Remove the main-effect spline for "
+                                f"'{spline.var_name}' (and use explicit terms instead of "
+                                "include_main=True, which would re-add it)."
+                            )
+                    k = len(single_cat_levels)
+                    idx = np.asarray(single_cat_indices)
+                    block = np.zeros((self._n, k * n_basis), dtype=self.dtype)
+                    for cat_idx in range(k):
+                        mask = idx == cat_idx
+                        if np.any(mask):
+                            block[mask, cat_idx * n_basis : (cat_idx + 1) * n_basis] = spline_basis[
+                                mask
+                            ]
+                    block_names = [
+                        f"{cat_factors[0]}[{level}]:{spl_name}"
+                        for level in single_cat_levels
+                        for spl_name in spline_names
+                    ]
+                    for cat_idx in range(k):
+                        start = local_col_start + cat_idx * n_basis
+                        smooth_blocks.append((spline, start, start + n_basis))
+                    all_columns.append(block)
+                    all_names.extend(block_names)
+                    local_col_start += block.shape[1]
+                    continue
 
                 if single_cat_indices is not None and single_cat_levels is not None:
                     result, col_names = _build_cat_basis_rust(
@@ -867,7 +1023,11 @@ class InteractionBuilder:
                 all_columns.append(block)
                 all_names.extend(block_names)
 
-                if getattr(spline, "_is_smooth", False) and not cont_factors:
+                # Register the D'D smoothing penalty for smooth interaction
+                # splines regardless of continuous co-factors: the block's
+                # coefficients are the spline's own basis coefficients, so the
+                # penalty applies unchanged when columns are scaled row-wise.
+                if is_smooth:
                     for cat_idx in range(n_cat_cols):
                         start = local_col_start + cat_idx * n_basis
                         smooth_blocks.append((spline, start, start + n_basis))
@@ -1009,6 +1169,19 @@ class InteractionBuilder:
         has_exposure = exposure is not None
         target_f64 = target.astype(np.float64)
         exposure_f64 = exposure.astype(np.float64) if has_exposure else None
+        resolved_prior_weight = _resolve_target_encoding_prior_weight(
+            te_term.prior_weight,
+            target_f64,
+            exposure_f64,
+        )
+        try:
+            n_permutations = int(te_term.n_permutations)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(
+                "target_encoding n_permutations must be a positive integer."
+            ) from exc
+        if n_permutations < 1:
+            raise ValidationError("target_encoding n_permutations must be a positive integer.")
 
         # Check if this is a TE interaction (e.g., TE(brand:region))
         if te_term.interaction_vars is not None and len(te_term.interaction_vars) >= 2:
@@ -1027,7 +1200,7 @@ class InteractionBuilder:
                 from rustystats._rustystats import target_encode_interaction_py as _te_interact
 
                 target_args = (target_f64,)
-            tail_args = (te_term.prior_weight, te_term.n_permutations, seed)
+            tail_args = (resolved_prior_weight, n_permutations, seed)
 
             encoded, name, prior, stats = _te_interact(
                 cat1,
@@ -1064,8 +1237,8 @@ class InteractionBuilder:
                     target_f64,
                     exposure_f64,
                     te_term.var_name,
-                    te_term.prior_weight,
-                    te_term.n_permutations,
+                    resolved_prior_weight,
+                    n_permutations,
                     seed,
                 )
             else:
@@ -1073,8 +1246,8 @@ class InteractionBuilder:
                     categories,
                     target_f64,
                     te_term.var_name,
-                    te_term.prior_weight,
-                    te_term.n_permutations,
+                    resolved_prior_weight,
+                    n_permutations,
                     seed,
                 )
 
@@ -1084,7 +1257,8 @@ class InteractionBuilder:
             {
                 "prior": prior,
                 "stats": stats,
-                "prior_weight": te_term.prior_weight,
+                "prior_weight": resolved_prior_weight,
+                "prior_weight_spec": te_term.prior_weight,
                 "used_exposure_weighted": has_exposure,
                 "interaction_vars": te_term.interaction_vars,
             },
@@ -1517,7 +1691,10 @@ class InteractionBuilder:
                     extra={
                         "var_name": te_term.var_name,
                         "interaction_vars": te_term.interaction_vars,
-                        "prior_weight": te_term.prior_weight,
+                        "prior_weight": te_stats.get("prior_weight", te_term.prior_weight),
+                        "prior_weight_spec": te_stats.get(
+                            "prior_weight_spec", te_term.prior_weight
+                        ),
                     },
                 )
             )
@@ -2070,13 +2247,21 @@ class InteractionBuilder:
                 return basis
             x = new_data[spline.var_name].to_numpy().astype(self.dtype)
             return self._cached_spline_basis_from_values(spline, x)
-        cached = cache.get(spline.var_name)
+        # Interaction-local splines get an object-scoped cache key: a plain
+        # var_name key would collide with a same-named main-effect basis of a
+        # different shape within the same predict call.
+        cache_key = (
+            f"{spline.var_name}#{id(spline)}"
+            if getattr(spline, "_interaction_local", False)
+            else spline.var_name
+        )
+        cached = cache.get(cache_key)
         if cached is None:
             cached = self._constant_spline_basis_new(new_data, spline)
             if cached is None:
                 x = new_data[spline.var_name].to_numpy().astype(self.dtype)
                 cached = self._cached_spline_basis_from_values(spline, x)
-            cache[spline.var_name] = cached
+            cache[cache_key] = cached
         return cached
 
     def _cached_spline_basis_from_values(
@@ -2084,7 +2269,12 @@ class InteractionBuilder:
         spline: SplineTerm,
         values: np.ndarray,
     ) -> np.ndarray:
-        fitted_spline = self._fitted_splines.get(spline.var_name, spline)
+        # Interaction-local splines carry their own fitted knots and must not
+        # be substituted by a same-named main-effect spline from the registry.
+        if getattr(spline, "_interaction_local", False):
+            fitted_spline = spline
+        else:
+            fitted_spline = self._fitted_splines.get(spline.var_name, spline)
         if values.shape[0] < _PREDICT_SPLINE_CACHE_MIN_ROWS:
             basis, _ = fitted_spline.transform(values)
             return basis
@@ -2370,6 +2560,26 @@ class InteractionBuilder:
             for _spline_str, spline in spline_factors:
                 spline_basis = self._spline_basis_new_cached(new_data, spline, spline_basis_cache)
                 n_basis = spline_basis.shape[1]
+                mono = getattr(spline, "_smooth_monotonicity", None) or getattr(
+                    spline, "monotonicity", None
+                )
+                if mono and getattr(spline, "_is_smooth", False) and len(cat_factors) == 1:
+                    # Full-k per-category monotone curves (category-major):
+                    # every row contributes via its own category's coefficient
+                    # block, including the reference category at index 0.
+                    k = n_cat_cols + 1
+                    coef = params[col : col + k * n_basis].reshape(k, n_basis)
+                    col += k * n_basis
+                    contribution = np.einsum(
+                        "ij,ij->i",
+                        spline_basis.astype(np.float64, copy=False),
+                        coef[flat.astype(np.intp)],
+                        optimize=True,
+                    )
+                    if cont_product is not None:
+                        contribution = contribution * cont_product
+                    eta += contribution
+                    continue
                 coef = params[col : col + n_cat_cols * n_basis].reshape(n_cat_cols, n_basis)
                 col += n_cat_cols * n_basis
                 contribution = np.zeros(n, dtype=np.float64)
@@ -2749,9 +2959,28 @@ class InteractionBuilder:
 
             for _spline_str, spline in spline_factors:
                 x = new_data[spline.var_name].to_numpy().astype(self.dtype)
-                fitted_spline = self._fitted_splines.get(spline.var_name, spline)
-                spline_basis, _ = fitted_spline.transform(x)
+                spline_basis = self._cached_spline_basis_from_values(
+                    spline, np.asarray(x, dtype=np.float64)
+                )
                 n_basis = spline_basis.shape[1]
+
+                mono = getattr(spline, "_smooth_monotonicity", None) or getattr(
+                    spline, "monotonicity", None
+                )
+                if mono and getattr(spline, "_is_smooth", False) and len(cat_factors) == 1:
+                    # Full-k per-category monotone curves, matching the
+                    # category-major fit-time layout (reference included).
+                    idx, levels = self._map_to_training_indices(new_data, cat_factors[0])
+                    k = len(levels)
+                    block = np.zeros((n, k * n_basis), dtype=self.dtype)
+                    for cat_idx in range(k):
+                        mask = idx == cat_idx
+                        if np.any(mask):
+                            block[mask, cat_idx * n_basis : (cat_idx + 1) * n_basis] = spline_basis[
+                                mask
+                            ]
+                    all_columns.append(block)
+                    continue
 
                 # Use Rust to multiply categorical matrix by each spline column
                 block_parts = []

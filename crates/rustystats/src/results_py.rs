@@ -184,6 +184,37 @@ impl PyGLMResults {
         self.linear_predictor.clone().into_pyarray(py)
     }
 
+    /// Get the original response variable the model was fit on.
+    ///
+    /// Mirrors `fittedvalues` / `linear_predictor`; exposed so callers can
+    /// inspect the training response without recovering it from residuals.
+    #[getter]
+    fn response<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        self.y.clone().into_pyarray(py)
+    }
+
+    /// Largest finite absolute training response — the robust reference scale for
+    /// the unbounded-mean prediction ceiling applied by `GLMModel.predict`.
+    ///
+    /// Anchored to the observed response, not the fitted values: a fit that fails
+    /// to converge can emit in-sample fitted means orders of magnitude beyond
+    /// anything observed, so a fitted-value scale would be poisoned by the very
+    /// pathology the ceiling must bound. The response cannot be inflated that way.
+    /// Returns `None` when no finite positive response is available (degenerate fit).
+    #[getter]
+    fn response_scale(&self) -> Option<f64> {
+        let scale = self
+            .y
+            .iter()
+            .filter(|v| v.is_finite())
+            .fold(0.0_f64, |acc, &v| acc.max(v.abs()));
+        if scale.is_finite() && scale > 0.0 {
+            Some(scale)
+        } else {
+            None
+        }
+    }
+
     /// Get the model deviance.
     ///
     /// Lower deviance indicates better fit.

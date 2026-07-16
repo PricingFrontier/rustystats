@@ -8,7 +8,7 @@ use pyo3::prelude::*;
 use rustystats_core::regularization::Standardization;
 use rustystats_core::solvers::{
     fit_multinomial_with_alternatives, AlternativeSpecificStandardization, MultinomialConfig,
-    MultinomialResult, MultinomialSmoothPenalty,
+    MultinomialResult, MultinomialSmoothPenalty, MultinomialSolver,
 };
 
 use crate::fitting_py::build_standardization;
@@ -32,6 +32,8 @@ pub struct PyMultinomialResults {
     pub(crate) reference_index: usize,
     pub(crate) warnings: Vec<String>,
     pub(crate) solver_status: String,
+    pub(crate) solver_name: String,
+    pub(crate) matrix_free_cg_iterations: Vec<usize>,
     pub(crate) alpha: f64,
     pub(crate) l1_ratio: f64,
     pub(crate) fit_intercept: bool,
@@ -67,6 +69,8 @@ impl From<(MultinomialResult, f64, f64, bool, Option<Array2<f64>>)> for PyMultin
             reference_index: result.reference_index,
             warnings: result.warnings,
             solver_status: result.solver_status,
+            solver_name: result.solver_name,
+            matrix_free_cg_iterations: result.matrix_free_cg_iterations,
             alpha,
             l1_ratio,
             fit_intercept,
@@ -162,6 +166,16 @@ impl PyMultinomialResults {
     #[getter]
     fn solver_status(&self) -> String {
         self.solver_status.clone()
+    }
+
+    #[getter]
+    fn solver_name(&self) -> String {
+        self.solver_name.clone()
+    }
+
+    #[getter]
+    fn matrix_free_cg_iterations(&self) -> Vec<usize> {
+        self.matrix_free_cg_iterations.clone()
     }
 
     #[getter]
@@ -291,7 +305,11 @@ impl PyMultinomialResults {
     smooth_penalties=None,
     smooth_lambdas=None,
     nonneg_indices=None,
-    nonpos_indices=None
+    nonpos_indices=None,
+    solver="dense",
+    matrix_free_cg_max_iter=80,
+    matrix_free_cg_tol=1e-4,
+    matrix_free_cg_damping=1e-6
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn fit_multinomial_py(
@@ -326,6 +344,10 @@ pub fn fit_multinomial_py(
     smooth_lambdas: Option<Vec<f64>>,
     nonneg_indices: Option<Vec<usize>>,
     nonpos_indices: Option<Vec<usize>>,
+    solver: &str,
+    matrix_free_cg_max_iter: usize,
+    matrix_free_cg_tol: f64,
+    matrix_free_cg_damping: f64,
 ) -> PyResult<PyMultinomialResults> {
     let y_codes_array = y_codes
         .as_array()
@@ -374,6 +396,9 @@ pub fn fit_multinomial_py(
     let use_standardization = standardization.is_some()
         || alternative_generic_standardization.is_some()
         || alternative_specific_standardization.is_some();
+    let solver_choice = solver
+        .parse::<MultinomialSolver>()
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
 
     let config = MultinomialConfig {
         max_iterations: max_iter,
@@ -385,6 +410,10 @@ pub fn fit_multinomial_py(
         skip_covariance,
         hessian_memory_limit_bytes,
         max_dense_parameters,
+        solver: solver_choice,
+        matrix_free_cg_max_iterations: matrix_free_cg_max_iter,
+        matrix_free_cg_tolerance: matrix_free_cg_tol,
+        matrix_free_cg_damping,
         verbose,
         initial_theta: initial_theta_array,
         smooth_penalties: smooth_penalty_specs,

@@ -182,7 +182,7 @@ class TestInferenceStatus:
         """011.5: a penalized smooth fit is non-standard and reports effective df."""
         result = _fit(_frame(), terms={"x": {"type": "bs", "k": 8}})
         assert result.inference_status == "unavailable"
-        assert result.optimizer_route == "gcv_penalized"
+        assert result.optimizer_route == "gcv_smooth"
         expected_aic = -2.0 * result.llf() + 2.0 * result.total_edf
         expected_bic = -2.0 * result.llf() + result.total_edf * np.log(result.nobs)
         assert np.isclose(result.aic(), expected_aic)
@@ -209,7 +209,7 @@ class TestInferenceSerialization:
         """011.7: serialization preserves inference + solver-status metadata."""
         result = _fit(_frame(), cv=3, regularization="ridge", n_alphas=3)
         state = pickle.loads(result.to_bytes())
-        assert state["schema_version"] == 4
+        assert state["schema_version"] == 5
         loaded = rs.GLMModel.from_bytes(result.to_bytes())
         assert loaded.inference_status == result.inference_status
         assert loaded.solver_status == result.solver_status
@@ -244,6 +244,11 @@ class TestInferenceSerialization:
             rs.GLMModel.from_bytes(pickle.dumps(state))
         state.pop("schema_version", None)
         with pytest.raises(rs.ValidationError, match="schema_version"):
+            rs.GLMModel.from_bytes(pickle.dumps(state))
+        # v4 is doubly unloadable: v0.8.15 and v0.8.16 wrote incompatible
+        # categorical x spline interaction layouts under the same version.
+        state["schema_version"] = 4
+        with pytest.raises(rs.ValidationError, match="incompatible interaction coefficient"):
             rs.GLMModel.from_bytes(pickle.dumps(state))
 
     def test_weights_spec_round_trips(self):

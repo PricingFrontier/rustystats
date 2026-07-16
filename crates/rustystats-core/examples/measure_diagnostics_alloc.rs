@@ -340,7 +340,7 @@ fn main() {
     // -------------------------------------------------------------------------
     // Sort & print
     // -------------------------------------------------------------------------
-    results.sort_by(|a, b| b.peak_bytes.cmp(&a.peak_bytes));
+    results.sort_by_key(|result| std::cmp::Reverse(result.peak_bytes));
 
     println!(
         "{:<55}  {:>14}  {:>14}  {:>10}  {:>10}",

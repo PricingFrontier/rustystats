@@ -159,6 +159,27 @@ NEGBINOMIAL_ALIASES = frozenset(
     }
 )
 
+# Families whose mean has no intrinsic upper bound. Unlike binomial (mean in
+# (0, 1)) or gaussian (identity link, symmetric and well-scaled), these use a
+# log/inverse link over a non-negative response, so an extrapolated linear
+# predictor on new data can drive mu to numerically-finite-but-nonsensical
+# magnitudes (e.g. exp(20) ~ 5e8 against a training scale of ~1e3). ``predict``
+# can cap mu for these families at a generous multiple of the observed-response
+# scale when the caller opts in via ``GLMModel.predict(response_ceiling="auto")``.
+# Membership is tested on the normalized family base (see
+# ``_family_has_unbounded_mean``), so the negbinomial aliases are covered
+# separately via ``NEGBINOMIAL_ALIASES``.
+UNBOUNDED_MEAN_FAMILIES = frozenset(
+    {
+        "poisson",
+        "quasipoisson",
+        "gamma",
+        "tweedie",
+        "negbinomial",
+        "negativebinomial",
+    }
+)
+
 # =============================================================================
 # Diagnostics Thresholds
 # =============================================================================

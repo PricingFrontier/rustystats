@@ -32,7 +32,6 @@ from rustystats.constants import (
     DEFAULT_N_ALPHAS,
     DEFAULT_N_LAMBDA,
     DEFAULT_N_PERMUTATIONS,
-    DEFAULT_PRIOR_WEIGHT,
 )
 from rustystats.exceptions import PredictionError, ValidationError
 from rustystats.formula import (
@@ -50,12 +49,21 @@ from rustystats.input_transforms import (
     input_transform_source_columns,
     validate_input_transforms,
 )
-from rustystats.interactions import InteractionBuilder, ParsedFormula, TargetEncodingTermSpec
+from rustystats.interactions import (
+    InteractionBuilder,
+    ParsedFormula,
+    TargetEncodingTermSpec,
+    _resolve_target_encoding_prior_weight,
+)
 
 _DEFAULT_HESSIAN_MEMORY_LIMIT_BYTES = 256 * 1024 * 1024
 _DEFAULT_MAX_DENSE_PARAMETERS = 5000
+_DEFAULT_MULTINOMIAL_SOLVER = "dense"
+_DEFAULT_MATRIX_FREE_CG_MAX_ITER = 80
+_DEFAULT_MATRIX_FREE_CG_TOL = 1e-4
+_DEFAULT_MATRIX_FREE_CG_DAMPING = 1e-6
 _MIN_WEIGHTED_STD = 1e-12
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 
 def _resolve_regularization(
@@ -391,7 +399,7 @@ class _MultinomialTargetEncodingTermState:
     feature_name: str
     var_name: str
     interaction_vars: list[str] | None
-    prior_weight: float
+    prior_weight_spec: float | str
     n_permutations: int
     class_stats: dict[str, dict[str, Any]]
 
@@ -400,7 +408,7 @@ class _MultinomialTargetEncodingTermState:
             data,
             TargetEncodingTermSpec(
                 var_name=self.var_name,
-                prior_weight=self.prior_weight,
+                prior_weight=self.prior_weight_spec,
                 n_permutations=self.n_permutations,
                 interaction_vars=None
                 if self.interaction_vars is None
@@ -417,7 +425,7 @@ class _MultinomialTargetEncodingTermState:
                     categories,
                     state["stats"],
                     float(state["prior"]),
-                    self.prior_weight,
+                    float(state["prior_weight"]),
                 ),
                 dtype=np.float64,
             )
@@ -517,7 +525,12 @@ def _fit_target_encoding_term_for_class(
     claims: np.ndarray,
     exposure: np.ndarray,
     seed: int | None,
-) -> tuple[np.ndarray, float, dict[str, tuple[float, float]]]:
+) -> tuple[np.ndarray, float, float, dict[str, tuple[float, float]]]:
+    prior_weight = _resolve_target_encoding_prior_weight(
+        term.prior_weight,
+        claims,
+        exposure,
+    )
     if term.interaction_vars is not None and len(term.interaction_vars) == 2:
         import polars as pl
 
@@ -529,7 +542,7 @@ def _fit_target_encoding_term_for_class(
             exposure,
             var1,
             var2,
-            term.prior_weight,
+            prior_weight,
             term.n_permutations,
             seed,
         )
@@ -540,11 +553,11 @@ def _fit_target_encoding_term_for_class(
             claims,
             exposure,
             _target_encoding_feature_name(term)[3:-1],
-            term.prior_weight,
+            prior_weight,
             term.n_permutations,
             seed,
         )
-    return np.asarray(encoded, dtype=np.float64), float(prior), stats
+    return np.asarray(encoded, dtype=np.float64), float(prior), float(prior_weight), stats
 
 
 def _build_multinomial_target_encoding(
@@ -577,7 +590,7 @@ def _build_multinomial_target_encoding(
                 continue
             claims = weights * (y_codes == class_idx).astype(np.float64)
             exposure = weights * availability[:, class_idx].astype(np.float64)
-            encoded, prior, stats = _fit_target_encoding_term_for_class(
+            encoded, prior, prior_weight, stats = _fit_target_encoding_term_for_class(
                 data,
                 term,
                 claims.astype(np.float64, copy=False),
@@ -587,6 +600,7 @@ def _build_multinomial_target_encoding(
             tensor[:, class_idx, term_idx] = encoded
             class_stats[class_label] = {
                 "prior": prior,
+                "prior_weight": prior_weight,
                 "stats": stats,
             }
         term_states.append(
@@ -596,7 +610,7 @@ def _build_multinomial_target_encoding(
                 interaction_vars=None
                 if term.interaction_vars is None
                 else list(term.interaction_vars),
-                prior_weight=float(term.prior_weight),
+                prior_weight_spec=term.prior_weight,
                 n_permutations=int(term.n_permutations),
                 class_stats=class_stats,
             )
@@ -1018,6 +1032,29 @@ def _multinomial_parameter_count(
     return n_shared * (n_classes - 1) + n_alt_generic + n_alt_specific * (n_classes - 1)
 
 
+def _normalize_multinomial_solver(solver: str) -> str:
+    normalized = str(solver).strip().lower().replace("-", "_")
+    aliases = {
+        "dense": "dense",
+        "dense_newton": "dense",
+        "newton": "dense",
+        "matrix_free": "matrix_free_cg",
+        "matrix_free_cg": "matrix_free_cg",
+        "cg": "matrix_free_cg",
+        "auto": "auto",
+    }
+    try:
+        return aliases[normalized]
+    except KeyError as exc:
+        raise ValidationError(
+            "solver must be one of 'dense', 'matrix_free_cg', or 'auto'."
+        ) from exc
+
+
+def _requires_dense_multinomial_preflight(solver: str) -> bool:
+    return _normalize_multinomial_solver(solver) == "dense"
+
+
 def _validate_multinomial_dense_fit_size(
     *,
     n_shared: int,
@@ -1220,6 +1257,10 @@ def _fit_multinomial_arrays(
     verbose: bool,
     hessian_memory_limit_bytes: int,
     max_dense_parameters: int,
+    solver: str,
+    matrix_free_cg_max_iter: int,
+    matrix_free_cg_tol: float,
+    matrix_free_cg_damping: float,
     alternative_generic: np.ndarray,
     alternative_specific: np.ndarray,
     initial_result: Any | None = None,
@@ -1229,6 +1270,7 @@ def _fit_multinomial_arrays(
     bound_nonneg_indices: list[int] | None = None,
     bound_nonpos_indices: list[int] | None = None,
 ) -> Any:
+    solver = _normalize_multinomial_solver(solver)
     (
         center,
         scale,
@@ -1289,6 +1331,10 @@ def _fit_multinomial_arrays(
         None if smooth_lambdas is None else list(map(float, smooth_lambdas)),
         bound_nonneg_indices,
         bound_nonpos_indices,
+        solver,
+        int(matrix_free_cg_max_iter),
+        float(matrix_free_cg_tol),
+        float(matrix_free_cg_damping),
     )
 
 
@@ -1344,6 +1390,10 @@ def _fit_multinomial_smooth_path(
     verbose: bool,
     hessian_memory_limit_bytes: int,
     max_dense_parameters: int,
+    solver: str,
+    matrix_free_cg_max_iter: int,
+    matrix_free_cg_tol: float,
+    matrix_free_cg_damping: float,
     n_lambda: int,
     lambda_min: float,
     lambda_max: float,
@@ -1403,6 +1453,10 @@ def _fit_multinomial_smooth_path(
             verbose=False,
             hessian_memory_limit_bytes=hessian_memory_limit_bytes,
             max_dense_parameters=max_dense_parameters,
+            solver=solver,
+            matrix_free_cg_max_iter=matrix_free_cg_max_iter,
+            matrix_free_cg_tol=matrix_free_cg_tol,
+            matrix_free_cg_damping=matrix_free_cg_damping,
             alternative_generic=model.alternative_generic,
             alternative_specific=model.alternative_specific,
             initial_result=initial_result,
@@ -1492,6 +1546,10 @@ def _fit_multinomial_smooth_path(
         verbose=verbose,
         hessian_memory_limit_bytes=hessian_memory_limit_bytes,
         max_dense_parameters=max_dense_parameters,
+        solver=solver,
+        matrix_free_cg_max_iter=matrix_free_cg_max_iter,
+        matrix_free_cg_tol=matrix_free_cg_tol,
+        matrix_free_cg_damping=matrix_free_cg_damping,
         alternative_generic=model.alternative_generic,
         alternative_specific=model.alternative_specific,
         initial_result=best_result,
@@ -1627,6 +1685,11 @@ def _fit_multinomial_cv_path(
     verbose: bool,
     hessian_memory_limit_bytes: int,
     max_dense_parameters: int,
+    solver: str,
+    matrix_free_cg_max_iter: int,
+    matrix_free_cg_tol: float,
+    matrix_free_cg_damping: float,
+    compute_covariance: bool,
 ) -> Any:
     from rustystats.regularization_path import (
         RegularizationPathInfo,
@@ -1654,16 +1717,48 @@ def _fit_multinomial_cv_path(
         build_multinomial_fold_design(model, train_idx, val_idx, seed=cv_seed)
         for train_idx, val_idx in folds
     ]
-    for fold_idx, fold in enumerate(fold_designs):
-        _validate_multinomial_dense_fit_size(
-            n_shared=fold.x_train.shape[1],
-            n_classes=len(model.classes_),
-            n_alt_generic=fold.alternative_generic_train.shape[2],
-            n_alt_specific=fold.alternative_specific_train.shape[2],
-            hessian_memory_limit_bytes=hessian_memory_limit_bytes,
-            max_dense_parameters=max_dense_parameters,
-            context=f"CV fold {fold_idx}",
+    solver = _normalize_multinomial_solver(solver)
+    if solver == "matrix_free_cg":
+        # Fail fast with the actionable incompatibility, rather than letting
+        # every fold fit raise inside the CV loop (where per-alpha errors are
+        # swallowed into score=inf and CV silently degrades to alpha=0).
+        reasons = []
+        if effective_l1_ratio > 0.0:
+            reasons.append("lasso/elastic-net penalties need the dense proximal Newton subproblem")
+        preflight_nonneg, preflight_nonpos, _shared_nonneg, _shared_nonpos = (
+            _multinomial_bound_indices(
+                fold_designs[0].feature_names,
+                n_classes=len(model.classes_),
+                reference_index=model.reference_index_,
+            )
         )
+        if preflight_nonneg or preflight_nonpos:
+            reasons.append("sign constraints need the dense bound-projected Newton subproblem")
+        if compute_covariance:
+            reasons.append(
+                "the final refit computes covariance, which requires the dense Hessian "
+                "(pass compute_covariance=False)"
+            )
+        if reasons:
+            raise ValidationError(
+                "solver='matrix_free_cg' is incompatible with this CV specification: "
+                + "; ".join(reasons)
+                + ". Use solver='dense' or 'auto', or drop the incompatible options."
+            )
+    if _requires_dense_multinomial_preflight(solver) or (solver == "auto" and compute_covariance):
+        # 'auto' may serve fold fits matrix-free, but a final refit that must
+        # compute covariance can only go dense — so the dense guards must pass
+        # up front, before the whole CV sweep is paid for.
+        for fold_idx, fold in enumerate(fold_designs):
+            _validate_multinomial_dense_fit_size(
+                n_shared=fold.x_train.shape[1],
+                n_classes=len(model.classes_),
+                n_alt_generic=fold.alternative_generic_train.shape[2],
+                n_alt_specific=fold.alternative_specific_train.shape[2],
+                hessian_memory_limit_bytes=hessian_memory_limit_bytes,
+                max_dense_parameters=max_dense_parameters,
+                context=f"CV fold {fold_idx}",
+            )
     candidate_alphas = _normalize_multinomial_cv_alphas(
         model,
         fold_designs,
@@ -1715,6 +1810,10 @@ def _fit_multinomial_cv_path(
                     verbose=False,
                     hessian_memory_limit_bytes=hessian_memory_limit_bytes,
                     max_dense_parameters=max_dense_parameters,
+                    solver=solver,
+                    matrix_free_cg_max_iter=matrix_free_cg_max_iter,
+                    matrix_free_cg_tol=matrix_free_cg_tol,
+                    matrix_free_cg_damping=matrix_free_cg_damping,
                     alternative_generic=fold.alternative_generic_train,
                     alternative_specific=fold.alternative_specific_train,
                     initial_result=previous_fold_result,
@@ -1829,6 +1928,10 @@ def _full_data_multinomial_warm_start_result(
     verbose: bool,
     hessian_memory_limit_bytes: int,
     max_dense_parameters: int,
+    solver: str,
+    matrix_free_cg_max_iter: int,
+    matrix_free_cg_tol: float,
+    matrix_free_cg_damping: float,
 ) -> Any | None:
     if path_info is None or not path_info.path:
         return None
@@ -1865,6 +1968,10 @@ def _full_data_multinomial_warm_start_result(
                 verbose=False,
                 hessian_memory_limit_bytes=hessian_memory_limit_bytes,
                 max_dense_parameters=max_dense_parameters,
+                solver=solver,
+                matrix_free_cg_max_iter=matrix_free_cg_max_iter,
+                matrix_free_cg_tol=matrix_free_cg_tol,
+                matrix_free_cg_damping=matrix_free_cg_damping,
                 alternative_generic=model.alternative_generic,
                 alternative_specific=model.alternative_specific,
                 initial_result=previous_result,
@@ -1885,7 +1992,7 @@ def _target_encoding_options(
     *,
     context: str,
     allowed_keys: set[str] | None = None,
-) -> tuple[float, int]:
+) -> tuple[float | str, int]:
     if "mode" in spec:
         raise ValidationError(
             "multinomial target_encoding mode is not configurable yet; only the default "
@@ -1898,17 +2005,24 @@ def _target_encoding_options(
                 f"Unknown key(s) in target_encoding spec ({context}): {unknown}. "
                 f"Valid keys are: {sorted(allowed_keys)}."
             )
-    try:
-        prior_weight = float(spec.get("prior_weight", DEFAULT_PRIOR_WEIGHT))
-    except (TypeError, ValueError) as exc:
-        raise ValidationError(f"target_encoding prior_weight must be numeric ({context}).") from exc
+    raw_prior_weight = spec.get("prior_weight", "auto")
+    if isinstance(raw_prior_weight, str) and raw_prior_weight.lower() == "auto":
+        prior_weight: float | str = "auto"
+    else:
+        try:
+            prior_weight = float(raw_prior_weight)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(
+                f"target_encoding prior_weight must be numeric, non-negative, or 'auto' "
+                f"({context})."
+            ) from exc
     try:
         n_permutations = int(spec.get("n_permutations", DEFAULT_N_PERMUTATIONS))
     except (TypeError, ValueError) as exc:
         raise ValidationError(
             f"target_encoding n_permutations must be an integer ({context})."
         ) from exc
-    if not np.isfinite(prior_weight) or prior_weight < 0.0:
+    if isinstance(prior_weight, float) and (not np.isfinite(prior_weight) or prior_weight < 0.0):
         raise ValidationError(
             f"target_encoding prior_weight must be finite and non-negative ({context})."
         )
@@ -2300,6 +2414,8 @@ class _DeserializedMultinomialResult:
     alpha: float
     l1_ratio: float
     fit_intercept: bool
+    solver_name: str = _DEFAULT_MULTINOMIAL_SOLVER
+    matrix_free_cg_iterations: list[int] = field(default_factory=list)
     smooth_edfs: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.float64))
     total_edf: float | None = None
 
@@ -2828,6 +2944,14 @@ class MultinomialModel:
     @property
     def solver_status(self) -> str:
         return str(self._result.solver_status)
+
+    @property
+    def solver_name(self) -> str:
+        return str(getattr(self._result, "solver_name", _DEFAULT_MULTINOMIAL_SOLVER))
+
+    @property
+    def matrix_free_cg_iterations(self) -> list[int]:
+        return [int(value) for value in getattr(self._result, "matrix_free_cg_iterations", [])]
 
     @property
     def warnings(self) -> list[str]:
@@ -3887,6 +4011,21 @@ class MultinomialModel:
         include_reference: bool = True,
     ) -> np.ndarray:
         data = self._prepare_prediction_data(new_data, availability, offset)
+        return self._decision_function_prepared(
+            data,
+            availability=availability,
+            offset=offset,
+            include_reference=include_reference,
+        )
+
+    def _decision_function_prepared(
+        self,
+        data: Any,
+        *,
+        availability: dict[str, str | bool | np.ndarray] | np.ndarray | None = None,
+        offset: dict[str, str | np.ndarray] | np.ndarray | None = None,
+        include_reference: bool = True,
+    ) -> np.ndarray:
         n_rows = len(data)
         n_features = len(self.feature_names)
         chunk_size = _compute_predict_chunk_size(n_features)
@@ -3894,6 +4033,10 @@ class MultinomialModel:
         params = self.params
         alternative_generic_coefficients = self.alternative_generic_coefficients
         alternative_specific_coefficients = self.alternative_specific_coefficients
+        non_reference_indices = np.asarray(
+            [idx for idx, label in enumerate(self.classes_) if label != self.reference_],
+            dtype=np.intp,
+        )
 
         for start in range(0, n_rows, chunk_size):
             stop = min(start + chunk_size, n_rows)
@@ -3916,23 +4059,24 @@ class MultinomialModel:
                 logits_chunk += np.tensordot(
                     alternative_generic, alternative_generic_coefficients, axes=([2], [0])
                 )
-            block = 0
-            for class_idx, class_label in enumerate(self.classes_):
-                if class_label == self.reference_:
-                    continue
-                logits_chunk[:, class_idx] += x_chunk @ params[block, :]
-                if alternative_specific_coefficients.size:
-                    logits_chunk[:, class_idx] += (
-                        alternative_specific[:, class_idx, :]
-                        @ alternative_specific_coefficients[block, :]
-                    )
-                block += 1
+            if params.size:
+                logits_chunk[:, non_reference_indices] = (
+                    logits_chunk[:, non_reference_indices] + x_chunk @ params.T
+                )
+            if alternative_specific_coefficients.size:
+                logits_chunk[:, non_reference_indices] = logits_chunk[
+                    :, non_reference_indices
+                ] + np.einsum(
+                    "nct,ct->nc",
+                    alternative_specific[:, non_reference_indices, :],
+                    alternative_specific_coefficients,
+                    optimize=True,
+                )
             logits[start:stop, :] = logits_chunk
 
         if include_reference:
             return logits
-        keep = [idx for idx, label in enumerate(self.classes_) if label != self.reference_]
-        return logits[:, keep]
+        return logits[:, non_reference_indices]
 
     def predict_proba(
         self,
@@ -3944,7 +4088,7 @@ class MultinomialModel:
         return_format: str = "numpy",
     ) -> np.ndarray:
         data = self._prepare_prediction_data(new_data, availability, offset)
-        logits = self.decision_function(data, availability=availability, offset=offset)
+        logits = self._decision_function_prepared(data, availability=availability, offset=offset)
         calibration_shift = self._calibration_shift_vector(calibration)
         if calibration_shift is not None:
             logits = logits + calibration_shift[None, :]
@@ -4572,6 +4716,8 @@ class MultinomialModel:
                 "reference_index": self.reference_index_,
                 "warnings": self.warnings,
                 "solver_status": self.solver_status,
+                "solver_name": self.solver_name,
+                "matrix_free_cg_iterations": self.matrix_free_cg_iterations,
                 "alpha": self.alpha,
                 "l1_ratio": self.l1_ratio,
                 "fit_intercept": bool(getattr(self._result, "fit_intercept", True)),
@@ -4631,6 +4777,8 @@ class MultinomialModel:
         )
         result_state.setdefault("smooth_edfs", np.zeros(0, dtype=np.float64))
         result_state.setdefault("total_edf", None)
+        result_state.setdefault("solver_name", _DEFAULT_MULTINOMIAL_SOLVER)
+        result_state.setdefault("matrix_free_cg_iterations", [])
         result = _DeserializedMultinomialResult(**result_state)
         builder = None
         if state["builder_state"] is not None:
@@ -4880,9 +5028,14 @@ class MultinomialDict:
         verbose: bool = False,
         hessian_memory_limit_bytes: int = _DEFAULT_HESSIAN_MEMORY_LIMIT_BYTES,
         max_dense_parameters: int = _DEFAULT_MAX_DENSE_PARAMETERS,
+        solver: str = _DEFAULT_MULTINOMIAL_SOLVER,
+        matrix_free_cg_max_iter: int = _DEFAULT_MATRIX_FREE_CG_MAX_ITER,
+        matrix_free_cg_tol: float = _DEFAULT_MATRIX_FREE_CG_TOL,
+        matrix_free_cg_damping: float = _DEFAULT_MATRIX_FREE_CG_DAMPING,
     ) -> MultinomialModel:
         if tol <= 0.0 or not np.isfinite(tol):
             raise ValidationError("tol must be finite and positive.")
+        solver = _normalize_multinomial_solver(solver)
         path_info = None
         smooth_terms, _smooth_col_ranges = self._builder.get_smooth_terms()
         has_smooth = bool(smooth_terms)
@@ -4906,6 +5059,11 @@ class MultinomialDict:
                 verbose=verbose,
                 hessian_memory_limit_bytes=int(hessian_memory_limit_bytes),
                 max_dense_parameters=int(max_dense_parameters),
+                solver=solver,
+                matrix_free_cg_max_iter=int(matrix_free_cg_max_iter),
+                matrix_free_cg_tol=float(matrix_free_cg_tol),
+                matrix_free_cg_damping=float(matrix_free_cg_damping),
+                compute_covariance=compute_covariance,
             )
             alpha = path_info.selected_alpha
             l1_ratio = path_info.selected_l1_ratio
@@ -4933,6 +5091,10 @@ class MultinomialDict:
                 verbose=verbose,
                 hessian_memory_limit_bytes=int(hessian_memory_limit_bytes),
                 max_dense_parameters=int(max_dense_parameters),
+                solver=solver,
+                matrix_free_cg_max_iter=int(matrix_free_cg_max_iter),
+                matrix_free_cg_tol=float(matrix_free_cg_tol),
+                matrix_free_cg_damping=float(matrix_free_cg_damping),
                 n_lambda=n_lambda,
                 lambda_min=lambda_min,
                 lambda_max=lambda_max,
@@ -4994,6 +5156,10 @@ class MultinomialDict:
             verbose=verbose,
             hessian_memory_limit_bytes=int(hessian_memory_limit_bytes),
             max_dense_parameters=int(max_dense_parameters),
+            solver=solver,
+            matrix_free_cg_max_iter=int(matrix_free_cg_max_iter),
+            matrix_free_cg_tol=float(matrix_free_cg_tol),
+            matrix_free_cg_damping=float(matrix_free_cg_damping),
         )
         if path_info is not None and path_info.cv_profile is not None:
             path_info.cv_profile["final_refit_warm_start"] = final_initial_result is not None
@@ -5017,6 +5183,10 @@ class MultinomialDict:
             verbose=verbose,
             hessian_memory_limit_bytes=int(hessian_memory_limit_bytes),
             max_dense_parameters=int(max_dense_parameters),
+            solver=solver,
+            matrix_free_cg_max_iter=int(matrix_free_cg_max_iter),
+            matrix_free_cg_tol=float(matrix_free_cg_tol),
+            matrix_free_cg_damping=float(matrix_free_cg_damping),
             alternative_generic=self.alternative_generic,
             alternative_specific=self.alternative_specific,
             initial_result=final_initial_result,
