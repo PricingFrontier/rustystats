@@ -164,10 +164,11 @@ NEGBINOMIAL_ALIASES = frozenset(
 # log/inverse link over a non-negative response, so an extrapolated linear
 # predictor on new data can drive mu to numerically-finite-but-nonsensical
 # magnitudes (e.g. exp(20) ~ 5e8 against a training scale of ~1e3). ``predict``
-# caps mu for these families at a generous multiple of the in-sample fitted-mean
-# scale; see ``GLMModel.predict(response_ceiling=...)``. Membership is tested on
-# the normalized family base (see ``_family_has_unbounded_mean``), so the
-# negbinomial aliases are covered separately via ``NEGBINOMIAL_ALIASES``.
+# can cap mu for these families at a generous multiple of the observed-response
+# scale when the caller opts in via ``GLMModel.predict(response_ceiling="auto")``.
+# Membership is tested on the normalized family base (see
+# ``_family_has_unbounded_mean``), so the negbinomial aliases are covered
+# separately via ``NEGBINOMIAL_ALIASES``.
 UNBOUNDED_MEAN_FAMILIES = frozenset(
     {
         "poisson",

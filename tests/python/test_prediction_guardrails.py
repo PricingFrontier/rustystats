@@ -30,10 +30,7 @@ def test_log_link_prediction_fails_closed_on_extreme_eta():
     with pytest.raises(PredictionError, match="extreme linear predictors"):
         model.predict(new_data, exposure=huge_exposure)
 
-    # Even after deliberate eta clipping, exp(50) still exceeds the auto
-    # response ceiling, which engages loudly rather than silently.
-    with pytest.warns(UserWarning, match="response_ceiling='auto' capped"):
-        clipped = model.predict(new_data, exposure=huge_exposure, on_extreme_eta="clip")
+    clipped = model.predict(new_data, exposure=huge_exposure, on_extreme_eta="clip")
     assert np.isfinite(clipped).all()
     assert clipped[0] <= np.exp(50.0)
 
@@ -129,7 +126,7 @@ def test_response_scale_is_recorded():
     assert scale == pytest.approx(float(model._result.response_scale))
 
 
-def test_response_ceiling_caps_unbounded_family_by_default():
+def test_response_ceiling_is_opt_in_and_auto_caps_unbounded_family():
     model = _fit_poisson_rate_model()
     scale = model._response_scale
     ceiling = scale * _MU_CEILING_FACTOR
@@ -143,21 +140,25 @@ def test_response_ceiling_caps_unbounded_family_by_default():
     eta = model.predict_linear(new_data, exposure=huge_exposure)
     assert eta[0] < _EXTREME_LOG_ETA_THRESHOLD_FOR_TEST  # no fail-closed raise
 
-    # The auto cap must never engage silently.
-    with pytest.warns(UserWarning, match="response_ceiling='auto' capped 1 of 1"):
-        capped = model.predict(new_data, exposure=huge_exposure)
-    assert capped[0] == pytest.approx(ceiling)
+    # Default predict is the honest inverse-link: NO cap unless opted in.
+    default_mu = model.predict(new_data, exposure=huge_exposure)
+    assert default_mu[0] > ceiling
+    assert default_mu[0] == pytest.approx(
+        model.predict(new_data, exposure=huge_exposure, response_ceiling=None)[0]
+    )
 
-    uncapped = model.predict(new_data, exposure=huge_exposure, response_ceiling=None)
-    assert uncapped[0] > ceiling  # the raw mean genuinely exceeds the cap
+    # Opting in caps -- and must never engage silently.
+    with pytest.warns(UserWarning, match="response_ceiling='auto' capped 1 of 1"):
+        capped = model.predict(new_data, exposure=huge_exposure, response_ceiling="auto")
+    assert capped[0] == pytest.approx(ceiling)
 
 
 def test_response_ceiling_leaves_in_range_predictions_untouched():
     model = _fit_poisson_rate_model()
     new_data = pl.DataFrame({"x": np.linspace(0.0, 1.0, 25)})
     exposure = np.ones(25)
-    auto = model.predict(new_data, exposure=exposure)
-    off = model.predict(new_data, exposure=exposure, response_ceiling=None)
+    auto = model.predict(new_data, exposure=exposure, response_ceiling="auto")
+    off = model.predict(new_data, exposure=exposure)
     # Ordinary in-range predictions live far below the cap and must be identical.
     assert np.allclose(auto, off)
 
@@ -176,7 +177,7 @@ def test_response_ceiling_explicit_float_overrides_and_applies_to_any_family():
     new_data = pl.DataFrame({"x": [0.5]})
     offset = np.array([1_000_000.0])  # identity link -> mean ~ 1e6
 
-    auto = model.predict(new_data, offset=offset)
+    auto = model.predict(new_data, offset=offset, response_ceiling="auto")
     assert auto[0] > 1e5  # "auto" does not cap a bounded-mean family
 
     explicit = model.predict(new_data, offset=offset, response_ceiling=42.0)
@@ -186,16 +187,16 @@ def test_response_ceiling_explicit_float_overrides_and_applies_to_any_family():
 def test_response_ceiling_survives_serialization_round_trip():
     model = _fit_poisson_rate_model()
     loaded = rs.GLMModel.from_bytes(model.to_bytes())
-    # The reference scale is persisted, so the default "auto" cap behaves
+    # The reference scale is persisted, so an opted-in "auto" cap behaves
     # identically in-session and after deployment via to_bytes/from_bytes.
     assert loaded._response_scale == pytest.approx(model._response_scale)
 
     new_data = pl.DataFrame({"x": [0.5]})
     huge_exposure = np.array([np.exp(20.0)])
     with pytest.warns(UserWarning, match="response_ceiling='auto' capped"):
-        capped_live = model.predict(new_data, exposure=huge_exposure)
+        capped_live = model.predict(new_data, exposure=huge_exposure, response_ceiling="auto")
     with pytest.warns(UserWarning, match="response_ceiling='auto' capped"):
-        capped_loaded = loaded.predict(new_data, exposure=huge_exposure)
+        capped_loaded = loaded.predict(new_data, exposure=huge_exposure, response_ceiling="auto")
     assert capped_loaded[0] == pytest.approx(capped_live[0])
 
 
@@ -209,9 +210,9 @@ def test_internal_scoring_uses_uncapped_mu():
         {"y": np.ones(4), "x": np.full(4, 0.5), "exposure": np.full(4, np.exp(20.0))}
     )
     y = eval_data["y"].to_numpy()
-    mu_uncapped = np.asarray(model.predict(eval_data, response_ceiling=None))
+    mu_uncapped = np.asarray(model.predict(eval_data))
     with pytest.warns(UserWarning, match="response_ceiling='auto' capped"):
-        mu_capped = np.asarray(model.predict(eval_data))
+        mu_capped = np.asarray(model.predict(eval_data, response_ceiling="auto"))
     assert mu_capped[0] < mu_uncapped[0]  # the cap genuinely engages here
 
     loss = model.compute_loss(eval_data)

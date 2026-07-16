@@ -172,9 +172,10 @@ _PREDICT_TERMWISE_ROW_CHUNK_DEFAULT = 500_000
 _PREDICT_TERMWISE_CHUNK_BYTES_BUDGET = 900_000_000  # cap widest term block, not full X
 _EXTREME_LOG_ETA_THRESHOLD = 50.0
 
-# Default head-room for the data-driven response ceiling: ``predict`` caps mu for
-# unbounded-mean families at this multiple of the largest observed training
-# response. The reference is the *response*, not the fitted values, on purpose --
+# Head-room for the opt-in data-driven response ceiling: with
+# ``predict(response_ceiling="auto")``, mu for unbounded-mean families is capped
+# at this multiple of the largest observed training response. The reference is
+# the *response*, not the fitted values, on purpose --
 # when a fit fails to converge it can emit in-sample fitted means orders of
 # magnitude above anything observed (e.g. mu ~ 1e9 against a max claim of 7.5e5),
 # so a fitted-value scale would be poisoned by the very pathology it must bound.
@@ -2835,7 +2836,7 @@ class GLMModel:
         *,
         on_extreme_eta: str = "raise",
         eta_clip: float | tuple[float, float] | list[float] | None = None,
-        response_ceiling: float | str | None = "auto",
+        response_ceiling: float | str | None = None,
     ) -> np.ndarray:
         """Predict response-scale values for new data.
 
@@ -2846,22 +2847,24 @@ class GLMModel:
 
         Parameters
         ----------
-        response_ceiling : float, ``"auto"``, or None, default ``"auto"``
-            Upper cap on the returned mean for unbounded-mean families (Poisson,
-            Gamma, Tweedie, negative-binomial). These families have a log/inverse
-            link over a non-negative response, so an extrapolated linear predictor
-            on new data can drive mu to a numerically finite but nonsensical
-            magnitude (e.g. mu ~ 1e9 against a max observed response of ~1e6) that
-            silently dominates deviance-based scores. ``"auto"`` caps mu at
-            ``_MU_CEILING_FACTOR`` (10x) times the largest observed training
-            response -- a scale a non-converged fit cannot inflate, and generous
-            enough that a predicted mean never legitimately reaches it. Pass a
-            positive float to set an explicit cap (applied for any family), or
-            ``None`` to disable. The cap is one-sided (upper only) and never
-            applies to bounded-mean families (binomial, gaussian) under ``"auto"``.
-            When the auto cap engages, a ``UserWarning`` reports how many
-            predictions were capped — legitimate large means (e.g. aggregated
-            exposure) should be predicted with ``response_ceiling=None``.
+        response_ceiling : float, ``"auto"``, or None, default None
+            Optional upper cap on the returned mean. By default no cap is
+            applied: ``predict`` is the honest inverse-link of eta, and the
+            pathological tail is already fail-closed by ``on_extreme_eta``.
+            Opt in for scoring pipelines where a finite-but-nonsense mean
+            (e.g. mu ~ 1e9 against a max observed response of ~1e6, from an
+            extrapolated linear predictor on an unbounded-mean family such as
+            Poisson/Gamma/Tweedie/negbinomial) would silently dominate
+            deviance-based scores. ``"auto"`` caps mu at ``_MU_CEILING_FACTOR``
+            (10x) times the largest observed training response -- a scale a
+            non-converged fit cannot inflate, and generous enough that a
+            predicted mean never legitimately reaches it; it never applies to
+            bounded-mean families (binomial, gaussian). Pass a positive float
+            to set an explicit cap (applied for any family). The cap is
+            one-sided (upper only). When the auto cap engages, a
+            ``UserWarning`` reports how many predictions were capped —
+            legitimate large means (e.g. aggregated exposure) should be
+            predicted without a ceiling.
         """
         linear_pred = self._linear_predict_new_data(
             new_data,
@@ -2887,8 +2890,8 @@ class GLMModel:
                     f"response_ceiling='auto' capped {n_capped} of {mu.size} "
                     f"predictions at {ceiling:.6g} (10x the largest observed "
                     "training response). If these rows are legitimate (e.g. "
-                    "aggregated exposure) pass response_ceiling=None or an "
-                    "explicit float cap.",
+                    "aggregated exposure) predict without a response_ceiling "
+                    "or pass an explicit float cap.",
                     UserWarning,
                     stacklevel=2,
                 )
@@ -2899,9 +2902,9 @@ class GLMModel:
         """Resolve the ``response_ceiling`` argument to a concrete upper cap.
 
         Returns the mu cap to apply, or ``None`` for no cap. ``"auto"`` derives a
-        data-driven cap from the in-sample fitted-mean scale for unbounded-mean
-        families only; an explicit float is honored for any family; ``None``
-        disables the cap.
+        data-driven cap from the observed training-response scale for
+        unbounded-mean families only; an explicit float is honored for any
+        family; ``None`` (the default) disables the cap.
         """
         if response_ceiling is None:
             return None
@@ -3918,7 +3921,7 @@ class GLMModel:
             "intercept_delta_var": float(self._intercept_delta_var),
             "relevel_history": self.relevel_history,
             "basis_impl": spline_basis_impl,
-            # Persist the response-ceiling reference scale so the default
+            # Persist the response-ceiling reference scale so
             # response_ceiling="auto" behaves identically before and after a
             # save/load round-trip (the raw response itself is not serialized).
             "response_scale": self._response_scale,
