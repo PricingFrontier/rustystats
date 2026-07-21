@@ -60,7 +60,7 @@ rayon = "1.10"                             # Data parallelism for multi-threaded
 
 # --- Statistical Functions ---
 # statrs provides probability distributions for p-value calculations
-statrs = "0.18"                            # Statistical distributions & functions
+statrs = "0.19"                            # Statistical distributions & functions
 
 # =============================================================================
 # Workspace Lints
