@@ -18,6 +18,7 @@
 // - target_encoding_py: Target / frequency encoding
 // =============================================================================
 
+mod cv_py;
 mod design_matrix_py;
 mod diagnostics_py;
 mod export_onnx_py;
@@ -25,6 +26,7 @@ mod families_py;
 mod fitting_py;
 mod inference_py;
 mod multinomial_py;
+mod out_of_core_py;
 mod residuals_py;
 mod results_py;
 mod splines_py;
@@ -66,10 +68,39 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // GLM fitting
     m.add_function(wrap_pyfunction!(fitting_py::compute_standardization_py, m)?)?;
     m.add_function(wrap_pyfunction!(fitting_py::fit_glm_py, m)?)?;
+    m.add_function(wrap_pyfunction!(out_of_core_py::fit_glm_batched_py, m)?)?;
+    m.add_function(wrap_pyfunction!(out_of_core_py::response_mean_py, m)?)?;
+    m.add_function(wrap_pyfunction!(out_of_core_py::row_dots_py, m)?)?;
+    m.add_function(wrap_pyfunction!(out_of_core_py::solver_constants_py, m)?)?;
+    m.add_function(wrap_pyfunction!(out_of_core_py::rayon_threads_py, m)?)?;
+    m.add_function(wrap_pyfunction!(out_of_core_py::sparse_rows_py, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        out_of_core_py::fit_smooth_glm_batched_py,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(out_of_core_py::alpha_max_batched_py, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        out_of_core_py::fit_negbinomial_batched_py,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(out_of_core_py::fit_cv_path_batched_py, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        out_of_core_py::compute_standardization_batched_py,
+        m
+    )?)?;
+    m.add_class::<out_of_core_py::ColumnFingerprintPy>()?;
+    m.add_class::<out_of_core_py::RowSumPy>()?;
     m.add_function(wrap_pyfunction!(fitting_py::fit_negbinomial_py, m)?)?;
     m.add_function(wrap_pyfunction!(fitting_py::fit_smooth_glm_unified_py, m)?)?;
-    m.add_function(wrap_pyfunction!(fitting_py::fit_fold_path_py, m)?)?;
-    m.add_function(wrap_pyfunction!(fitting_py::fit_cv_path_py, m)?)?;
+    m.add_function(wrap_pyfunction!(cv_py::fit_cv_path_py, m)?)?;
+    m.add_function(wrap_pyfunction!(cv_py::alpha_max_py, m)?)?;
+    m.add_function(wrap_pyfunction!(cv_py::fold_alpha_max_py, m)?)?;
+    m.add_function(wrap_pyfunction!(cv_py::fold_path_py, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        out_of_core_py::fold_alpha_max_batched_py,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(out_of_core_py::fold_path_batched_py, m)?)?;
     m.add_function(wrap_pyfunction!(multinomial_py::fit_multinomial_py, m)?)?;
 
     // IRLS residual helpers
@@ -104,6 +135,7 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(splines_py::ms_names_py, m)?)?;
     m.add_function(wrap_pyfunction!(splines_py::compute_knots_py, m)?)?;
     m.add_function(wrap_pyfunction!(splines_py::compute_knots_natural_py, m)?)?;
+    m.add_class::<splines_py::OrderStatisticsPy>()?;
 
     // Design matrix functions
     m.add_function(wrap_pyfunction!(
@@ -178,6 +210,10 @@ fn _rustystats(m: &Bound<'_, PyModule>) -> PyResult<()> {
         target_encoding_py::target_encode_interaction_with_exposure_py,
         m
     )?)?;
+    m.add_class::<target_encoding_py::TargetEncodingPriorPy>()?;
+    m.add_class::<target_encoding_py::TargetEncodingLevelTotalsPy>()?;
+    m.add_class::<target_encoding_py::TargetEncodingTermPy>()?;
+    m.add_function(wrap_pyfunction!(target_encoding_py::cv_fold_ids_py, m)?)?;
 
     // Diagnostics
     m.add_function(wrap_pyfunction!(

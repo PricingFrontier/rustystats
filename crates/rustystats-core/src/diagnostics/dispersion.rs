@@ -64,21 +64,23 @@ pub fn pearson_chi2(
     family: &dyn Family,
     weights: Option<&Array1<f64>>,
 ) -> f64 {
-    let variance = family.variance(mu);
+    let n = y.len();
+    crate::rows::reduce_rows(0.0f64, n, |total, rows| {
+        for i in rows {
+            let term = pearson_row(family, y[i], mu[i]);
+            *total += match weights {
+                Some(w) => term * w[i],
+                None => term,
+            };
+        }
+    })
+}
 
-    let contributions: Array1<f64> =
-        ndarray::Zip::from(y)
-            .and(mu)
-            .and(&*variance)
-            .map_collect(|&yi, &mui, &vi| {
-                let diff = yi - mui;
-                (diff * diff) / vi.max(ZERO_TOL)
-            });
-
-    match weights {
-        Some(w) => (&contributions * w).sum(),
-        None => contributions.sum(),
-    }
+/// One row's Pearson contribution (y − μ)² / max(V(μ), `ZERO_TOL`).
+#[inline]
+pub fn pearson_row(family: &dyn Family, yi: f64, mui: f64) -> f64 {
+    let diff = yi - mui;
+    (diff * diff) / family.variance_at(mui).max(ZERO_TOL)
 }
 
 /// Estimate dispersion using Pearson method: φ = X²/(n-p)

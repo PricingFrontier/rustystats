@@ -42,8 +42,6 @@
 //
 // =============================================================================
 
-use std::borrow::Cow;
-
 use super::Family;
 use crate::links::{Link, LogLink};
 use ndarray::Array1;
@@ -69,12 +67,54 @@ impl Family for GammaFamily {
         "Gamma"
     }
 
-    /// Variance function: V(μ) = μ²
-    ///
-    /// This means larger claims have proportionally larger variance.
-    /// The full variance is: Var(Y) = φ × μ² where φ is the dispersion.
-    fn variance<'a>(&self, mu: &'a Array1<f64>) -> Cow<'a, Array1<f64>> {
-        Cow::Owned(mu.mapv(|x| x * x))
+    fn log_likelihood_form(&self) -> crate::families::LogLikelihoodForm {
+        crate::families::LogLikelihoodForm::RowSum { needs_scale: true }
+    }
+
+    /// ℓ_i = (α−1)·log(y) − α·y/μ + α·log(α/μ) − log Γ(α) with α = 1/φ
+    /// (statsmodels' formula); y and μ floored at `MU_MIN_POSITIVE`.
+    #[inline]
+    fn log_likelihood_row(&self, yi: f64, mui: f64, scale: f64) -> f64 {
+        use crate::constants::MU_MIN_POSITIVE;
+        use statrs::function::gamma::ln_gamma;
+        let alpha = 1.0 / scale;
+        let yi_safe = yi.max(MU_MIN_POSITIVE);
+        let mui_safe = mui.max(MU_MIN_POSITIVE);
+        (alpha - 1.0) * yi_safe.ln() - alpha * yi_safe / mui_safe + alpha * (alpha / mui_safe).ln()
+            - ln_gamma(alpha)
+    }
+
+    /// Variance function V(μ) = μ².
+    #[inline]
+    fn variance_at(&self, mu: f64) -> f64 {
+        mu * mu
+    }
+
+    /// Starting μ: y, but at least 1% of the mean response.
+    #[inline]
+    fn initialize_mu_at(&self, yi: f64, y_mean: f64) -> f64 {
+        yi.max(y_mean * 0.01)
+    }
+
+    fn initialize_needs_mean(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    fn is_valid_mu_at(&self, mu: f64) -> bool {
+        mu > 0.0 && mu.is_finite()
+    }
+
+    #[inline]
+    fn clamp_mu_at(&self, mu: f64) -> f64 {
+        mu.max(crate::constants::MU_MIN_POSITIVE)
+    }
+
+    /// For Gamma with log link, the true Hessian weight is μ (unused while
+    /// `use_true_hessian_weights` is false, which matches statsmodels' Fisher weights).
+    #[inline]
+    fn true_hessian_weight_at(&self, mu: f64, _y: f64) -> f64 {
+        mu
     }
 
     /// Unit deviance: 2 × [-log(y/μ) + (y-μ)/μ]
@@ -108,40 +148,8 @@ impl Family for GammaFamily {
         Box::new(LogLink)
     }
 
-    /// Initialize μ to a smoothed version of y.
-    ///
-    /// We need to ensure μ > 0. A simple approach is to use y directly
-    /// (since y should be positive for Gamma) with a small floor.
-    fn initialize_mu(&self, y: &Array1<f64>) -> Array1<f64> {
-        // Use y, but ensure minimum value to avoid numerical issues
-        let y_mean = y.mean().unwrap_or(1.0);
-        let min_val = y_mean * 0.01; // At least 1% of the mean
-
-        y.mapv(|yi| yi.max(min_val))
-    }
-
-    /// μ must be strictly positive for Gamma.
-    fn is_valid_mu(&self, mu: &Array1<f64>) -> bool {
-        mu.iter().all(|&x| x > 0.0 && x.is_finite())
-    }
-
-    fn clamp_mu(&self, mu: &Array1<f64>) -> Array1<f64> {
-        use crate::constants::MU_MIN_POSITIVE;
-        mu.mapv(|x| x.max(MU_MIN_POSITIVE))
-    }
-
     fn is_log_link_default(&self) -> bool {
         true
-    }
-
-    fn log_likelihood(
-        &self,
-        y: &Array1<f64>,
-        mu: &Array1<f64>,
-        scale: f64,
-        weights: Option<&Array1<f64>>,
-    ) -> f64 {
-        crate::diagnostics::log_likelihood_gamma(y, mu, scale, weights)
     }
 
     /// Whether to use true Hessian weights for IRLS.
@@ -151,18 +159,6 @@ impl Family for GammaFamily {
     /// (W=1 for Gamma+log link), so we disable true Hessian to match standard inference.
     fn use_true_hessian_weights(&self) -> bool {
         false
-    }
-
-    /// For Gamma with log link, the true Hessian weight is μ.
-    ///
-    /// Derivation: For Gamma with log link (η = log(μ)):
-    ///   - The log-likelihood contribution is: l = -y/μ - log(μ)
-    ///   - Second derivative w.r.t. η: d²l/dη² = -μ (since dμ/dη = μ for log link)
-    ///   - The negative Hessian gives weight: w = μ
-    ///
-    /// This is more accurate than the Fisher information weight of 1.
-    fn true_hessian_weights(&self, mu: &Array1<f64>, _y: &Array1<f64>) -> Array1<f64> {
-        mu.clone()
     }
 }
 

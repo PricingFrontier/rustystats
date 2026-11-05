@@ -40,8 +40,6 @@
 //
 // =============================================================================
 
-use std::borrow::Cow;
-
 use super::Family;
 use crate::links::{Link, LogitLink};
 use ndarray::Array1;
@@ -67,11 +65,44 @@ impl Family for BinomialFamily {
         "Binomial"
     }
 
-    /// Variance function: V(μ) = μ(1-μ)
-    ///
-    /// Maximum at μ = 0.5, approaches 0 as μ approaches 0 or 1.
-    fn variance<'a>(&self, mu: &'a Array1<f64>) -> Cow<'a, Array1<f64>> {
-        Cow::Owned(mu.mapv(|p| p * (1.0 - p)))
+    fn log_likelihood_form(&self) -> crate::families::LogLikelihoodForm {
+        crate::families::LogLikelihoodForm::RowSum { needs_scale: false }
+    }
+
+    /// ℓ_i = y·log(μ) + (1−y)·log(1−μ), with μ clamped away from 0 and 1.
+    #[inline]
+    fn log_likelihood_row(&self, yi: f64, mui: f64, _scale: f64) -> f64 {
+        use crate::constants::{MU_MAX_PROBABILITY, MU_MIN_PROBABILITY};
+        let mui_safe = mui.clamp(MU_MIN_PROBABILITY, MU_MAX_PROBABILITY);
+        let ll = if yi > 0.0 { yi * mui_safe.ln() } else { 0.0 };
+        if yi < 1.0 {
+            ll + (1.0 - yi) * (1.0 - mui_safe).ln()
+        } else {
+            ll
+        }
+    }
+
+    /// Variance function V(μ) = μ(1 − μ).
+    #[inline]
+    fn variance_at(&self, p: f64) -> f64 {
+        p * (1.0 - p)
+    }
+
+    /// Starting μ: (y + 0.5) / 2, which maps 0 → 0.25 and 1 → 0.75.
+    #[inline]
+    fn initialize_mu_at(&self, yi: f64, _y_mean: f64) -> f64 {
+        (yi + 0.5) / 2.0
+    }
+
+    #[inline]
+    fn is_valid_mu_at(&self, mu: f64) -> bool {
+        mu > 0.0 && mu < 1.0 && mu.is_finite()
+    }
+
+    #[inline]
+    fn clamp_mu_at(&self, mu: f64) -> f64 {
+        use crate::constants::{MU_MAX_PROBABILITY, MU_MIN_PROBABILITY};
+        mu.clamp(MU_MIN_PROBABILITY, MU_MAX_PROBABILITY)
     }
 
     /// Unit deviance for binomial: 2 × [y×log(y/μ) + (1-y)×log((1-y)/(1-μ))]
@@ -123,42 +154,8 @@ impl Family for BinomialFamily {
         Box::new(LogitLink)
     }
 
-    /// Initialize μ to a smoothed proportion.
-    ///
-    /// For binary data (0/1), we can't use y directly because:
-    /// - logit(0) = -∞
-    /// - logit(1) = +∞
-    ///
-    /// We use a common trick: shrink y toward 0.5 slightly.
-    fn initialize_mu(&self, y: &Array1<f64>) -> Array1<f64> {
-        // Formula: (y + 0.5) / 2 = y/2 + 0.25
-        // This maps: 0 -> 0.25, 0.5 -> 0.5, 1 -> 0.75
-        // Keeps values safely away from 0 and 1
-        y.mapv(|yi| (yi + 0.5) / 2.0)
-    }
-
-    /// μ must be strictly between 0 and 1 for Binomial.
-    fn is_valid_mu(&self, mu: &Array1<f64>) -> bool {
-        mu.iter().all(|&x| x > 0.0 && x < 1.0 && x.is_finite())
-    }
-
-    fn clamp_mu(&self, mu: &Array1<f64>) -> Array1<f64> {
-        use crate::constants::{MU_MAX_PROBABILITY, MU_MIN_PROBABILITY};
-        mu.mapv(|x| x.clamp(MU_MIN_PROBABILITY, MU_MAX_PROBABILITY))
-    }
-
     fn fixed_dispersion(&self) -> bool {
         true
-    }
-
-    fn log_likelihood(
-        &self,
-        y: &Array1<f64>,
-        mu: &Array1<f64>,
-        _scale: f64,
-        weights: Option<&Array1<f64>>,
-    ) -> f64 {
-        crate::diagnostics::log_likelihood_binomial(y, mu, weights)
     }
 }
 

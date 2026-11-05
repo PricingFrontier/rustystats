@@ -1,5 +1,7 @@
 """Type stubs for the rustystats native Rust extension module."""
 
+from collections.abc import Callable, Iterable
+
 import numpy as np
 import numpy.typing as npt
 
@@ -144,6 +146,8 @@ class GLMResults:
     @property
     def solver_status(self) -> str: ...
     @property
+    def solver_trace(self) -> list[tuple[str, str, int, bool, str]]: ...
+    @property
     def step_halving_used(self) -> bool: ...
     @property
     def stationary(self) -> bool | None: ...
@@ -160,9 +164,9 @@ class GLMResults:
     @property
     def cov_params_unscaled(self) -> npt.NDArray[np.float64]: ...
     @property
-    def get_design_matrix(self) -> npt.NDArray[np.float64] | None: ...
+    def design_matrix(self) -> npt.NDArray[np.float64] | None: ...
     @property
-    def get_irls_weights(self) -> npt.NDArray[np.float64]: ...
+    def irls_weights(self) -> npt.NDArray[np.float64]: ...
     @property
     def family(self) -> str: ...
     @property
@@ -266,7 +270,7 @@ class MultinomialResults:
     @property
     def fit_intercept(self) -> bool: ...
     @property
-    def get_design_matrix(self) -> npt.NDArray[np.float64] | None: ...
+    def design_matrix(self) -> npt.NDArray[np.float64] | None: ...
 
 # =============================================================================
 # GLM Fitting Functions
@@ -277,6 +281,7 @@ def compute_standardization_py(
     weights: npt.NDArray[np.float64] | None = None,
     pen_mask: npt.NDArray[np.bool_] | None = None,
     fit_intercept: bool = True,
+    fold: tuple[int, int, int] | None = None,
 ) -> tuple[
     npt.NDArray[np.float64],
     npt.NDArray[np.float64],
@@ -303,7 +308,187 @@ def fit_glm_py(
     center: npt.NDArray[np.float64] | None = None,
     scale: npt.NDArray[np.float64] | None = None,
     skip_covariance: bool = False,
+    robust: list[str] | None = None,
+    max_row_nonzeros: int | None = None,
+    row_kernel: str | None = None,
 ) -> GLMResults: ...
+def fit_glm_batched_py(
+    open_pass: Callable[
+        [],
+        Iterable[
+            tuple[
+                npt.NDArray[np.float64],
+                npt.NDArray[np.float64],
+                npt.NDArray[np.float64],
+                npt.NDArray[np.float64],
+            ]
+        ],
+    ],
+    n_rows: int,
+    n_params: int,
+    y_mean: float,
+    family: str,
+    link: str | None = None,
+    var_power: float = 1.5,
+    theta: float = 1.0,
+    has_offset: bool = False,
+    alpha: float = 0.0,
+    l1_ratio: float = 0.0,
+    max_iter: int = 25,
+    tol: float = 1e-8,
+    nonneg_indices: list[int] | None = None,
+    nonpos_indices: list[int] | None = None,
+    allow_extended_tweedie: bool = False,
+    fit_intercept: bool = True,
+    center: npt.NDArray[np.float64] | None = None,
+    scale: npt.NDArray[np.float64] | None = None,
+    skip_covariance: bool = False,
+    robust: list[str] | None = None,
+    max_row_nonzeros: int | None = None,
+    row_kernel: str | None = None,
+    threads: int | None = None,
+) -> GLMResults: ...
+def response_mean_py(y: npt.NDArray[np.float64]) -> float: ...
+def solver_constants_py() -> tuple[int, int]: ...
+def row_dots_py(
+    x: npt.NDArray[np.float64], beta: npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64]: ...
+def rayon_threads_py() -> int: ...
+def sparse_rows_py(n_rows: int, n_params: int, max_row_nonzeros: int | None = None) -> bool: ...
+def fit_smooth_glm_batched_py(
+    open_pass: Callable[
+        [],
+        Iterable[
+            tuple[
+                npt.NDArray[np.float64],
+                npt.NDArray[np.float64],
+                npt.NDArray[np.float64],
+                npt.NDArray[np.float64],
+            ]
+        ],
+    ],
+    n_rows: int,
+    n_params: int,
+    y_mean: float,
+    smooth_col_ranges: list[tuple[int, int]],
+    smooth_penalties: list[npt.NDArray[np.float64]],
+    family: str,
+    link: str | None = None,
+    has_offset: bool = False,
+    max_iter: int = 25,
+    tol: float = 1e-8,
+    lambda_min: float = 0.001,
+    lambda_max: float = 1000.0,
+    smooth_monotonicity: list[str | None] | None = None,
+    nonneg_indices: list[int] | None = None,
+    nonpos_indices: list[int] | None = None,
+    var_power: float = 1.5,
+    theta: float = 1.0,
+    allow_extended_tweedie: bool = False,
+    robust: list[str] | None = None,
+    max_row_nonzeros: int | None = None,
+    row_kernel: str | None = None,
+    threads: int | None = None,
+) -> tuple[GLMResults, dict]: ...
+def compute_standardization_batched_py(
+    open_pass: Callable[
+        [],
+        Iterable[
+            tuple[
+                npt.NDArray[np.float64],
+                npt.NDArray[np.float64],
+                npt.NDArray[np.float64],
+                npt.NDArray[np.float64],
+            ]
+        ],
+    ],
+    n_rows: int,
+    n_params: int,
+    weighted: bool = False,
+    pen_mask: list[bool] | None = None,
+    fit_intercept: bool = True,
+    fold: tuple[int, int, int] | None = None,
+    threads: int | None = None,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]: ...
+def fit_cv_path_batched_py(
+    open_pass: Callable[[str], Iterable[tuple]],
+    n_rows: int,
+    n_params: int,
+    y_mean: float,
+    family: str,
+    link: str | None = None,
+    var_power: float = 1.5,
+    theta: float = 1.0,
+    has_offset: bool = False,
+    weighted: bool = False,
+    alphas: list[float] | None = None,
+    l1_ratio: float = 0.0,
+    n_folds: int = 5,
+    max_iter: int = 25,
+    tol: float = 1e-8,
+    seed: int | None = None,
+    nonneg_indices: list[int] | None = None,
+    nonpos_indices: list[int] | None = None,
+    allow_extended_tweedie: bool = False,
+    fit_intercept: bool = True,
+    center: npt.NDArray[np.float64] | None = None,
+    scale: npt.NDArray[np.float64] | None = None,
+    solve_workspaces: int = 1,
+    max_row_nonzeros: int | None = None,
+    row_kernel: str | None = None,
+    threads: int | None = None,
+) -> dict: ...
+def fit_negbinomial_batched_py(
+    open_pass: Callable[[str], Iterable[tuple]],
+    spill: Callable[[npt.NDArray[np.float64] | None], None],
+    open_theta: Callable[
+        [],
+        Iterable[tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]],
+    ],
+    n_rows: int,
+    n_params: int,
+    y_mean: float,
+    link: str | None = None,
+    init_theta: float | None = None,
+    theta_tol: float = 1e-5,
+    max_theta_iter: int = 10,
+    has_offset: bool = False,
+    weighted: bool = False,
+    max_iter: int = 25,
+    tol: float = 1e-8,
+    robust: list[str] | None = None,
+    max_row_nonzeros: int | None = None,
+    row_kernel: str | None = None,
+    threads: int | None = None,
+) -> tuple[GLMResults, dict]: ...
+
+class ColumnFingerprint:
+    def __init__(self) -> None: ...
+    def update_f64(
+        self, values: npt.NDArray[np.float64], valid: npt.NDArray[np.bool_] | None = None
+    ) -> None: ...
+    def update_bits(
+        self, values: npt.NDArray[np.uint64], valid: npt.NDArray[np.bool_] | None = None
+    ) -> None: ...
+    def update_words(
+        self,
+        kind: int,
+        values: npt.NDArray[np.uint64],
+        valid: npt.NDArray[np.bool_] | None = None,
+    ) -> None: ...
+    def update_bytes(self, kind: int, values: Iterable[bytes | None]) -> None: ...
+    @property
+    def rows(self) -> int: ...
+    def digest(self) -> int: ...
+
+class RowSum:
+    def __init__(self) -> None: ...
+    def update(self, values: npt.NDArray[np.float64]) -> None: ...
+    @property
+    def rows(self) -> int: ...
+    def total(self) -> float: ...
+    def mean(self) -> float: ...
+
 def fit_multinomial_py(
     y_codes: npt.NDArray[np.int64],
     x: npt.NDArray[np.float64],
@@ -359,6 +544,9 @@ def fit_negbinomial_py(
     store_design_matrix: bool = False,
     center: npt.NDArray[np.float64] | None = None,
     scale: npt.NDArray[np.float64] | None = None,
+    robust: list[str] | None = None,
+    max_row_nonzeros: int | None = None,
+    row_kernel: str | None = None,
 ) -> tuple[GLMResults, dict]: ...
 def fit_smooth_glm_unified_py(
     y: npt.NDArray[np.float64],
@@ -380,6 +568,9 @@ def fit_smooth_glm_unified_py(
     var_power: float = 1.5,
     theta: float = 1.0,
     allow_extended_tweedie: bool = False,
+    robust: list[str] | None = None,
+    max_row_nonzeros: int | None = None,
+    row_kernel: str | None = None,
 ) -> tuple[GLMResults, dict]: ...
 def fit_cv_path_py(
     y: npt.NDArray[np.float64],
@@ -402,20 +593,41 @@ def fit_cv_path_py(
     fit_intercept: bool = True,
     center: npt.NDArray[np.float64] | None = None,
     scale: npt.NDArray[np.float64] | None = None,
+    max_row_nonzeros: int | None = None,
+    row_kernel: str | None = None,
 ) -> dict: ...
-def fit_fold_path_py(
-    y_train: npt.NDArray[np.float64],
-    x_train: npt.NDArray[np.float64],
-    y_val: npt.NDArray[np.float64],
-    x_val: npt.NDArray[np.float64],
+def fold_alpha_max_py(
+    y: npt.NDArray[np.float64],
+    x: npt.NDArray[np.float64],
     family: str,
+    link: str,
+    l1_ratio: float,
+    fold: int,
+    n_folds: int,
+    seed: int,
+    offset: npt.NDArray[np.float64] | None = None,
+    weights: npt.NDArray[np.float64] | None = None,
+    var_power: float = 1.5,
+    theta: float = 1.0,
+    pen_mask: list[bool] | None = None,
+    center: npt.NDArray[np.float64] | None = None,
+    scale: npt.NDArray[np.float64] | None = None,
+    ridge_xtx_diag: list[float] | None = None,
+    allow_extended_tweedie: bool = False,
+    trace: list | None = None,
+) -> float: ...
+def fold_path_py(
+    y: npt.NDArray[np.float64],
+    x: npt.NDArray[np.float64],
+    family: str,
+    fold: int,
+    n_folds: int,
+    seed: int,
     link: str | None = None,
     var_power: float = 1.5,
     theta: float = 1.0,
-    offset_train: npt.NDArray[np.float64] | None = None,
-    weights_train: npt.NDArray[np.float64] | None = None,
-    offset_val: npt.NDArray[np.float64] | None = None,
-    weights_val: npt.NDArray[np.float64] | None = None,
+    offset: npt.NDArray[np.float64] | None = None,
+    weights: npt.NDArray[np.float64] | None = None,
     alphas: list[float] | None = None,
     l1_ratio: float = 0.0,
     max_iter: int = 25,
@@ -426,6 +638,99 @@ def fit_fold_path_py(
     fit_intercept: bool = True,
     center: npt.NDArray[np.float64] | None = None,
     scale: npt.NDArray[np.float64] | None = None,
+    max_row_nonzeros: int | None = None,
+    row_kernel: str | None = None,
+) -> dict: ...
+def fold_alpha_max_batched_py(
+    open_pass: Callable[[str], Iterable[tuple]],
+    n_rows: int,
+    n_params: int,
+    y_mean: float,
+    family: str,
+    link: str,
+    l1_ratio: float,
+    fold: int,
+    n_folds: int,
+    seed: int,
+    has_offset: bool = False,
+    var_power: float = 1.5,
+    theta: float = 1.0,
+    pen_mask: list[bool] | None = None,
+    center: npt.NDArray[np.float64] | None = None,
+    scale: npt.NDArray[np.float64] | None = None,
+    ridge_xtx_diag: list[float] | None = None,
+    allow_extended_tweedie: bool = False,
+    trace: list | None = None,
+    max_row_nonzeros: int | None = None,
+    row_kernel: str | None = None,
+    threads: int | None = None,
+) -> float: ...
+def alpha_max_py(
+    y: npt.NDArray[np.float64],
+    x: npt.NDArray[np.float64],
+    family: str,
+    link: str,
+    l1_ratio: float,
+    offset: npt.NDArray[np.float64] | None = None,
+    weights: npt.NDArray[np.float64] | None = None,
+    var_power: float = 1.5,
+    theta: float = 1.0,
+    pen_mask: list[bool] | None = None,
+    intercept_col: int | None = 0,
+    center: npt.NDArray[np.float64] | None = None,
+    scale: npt.NDArray[np.float64] | None = None,
+    ridge_xtx_diag: list[float] | None = None,
+    allow_extended_tweedie: bool = False,
+    trace: list | None = None,
+) -> float: ...
+def alpha_max_batched_py(
+    open_pass: Callable[[str], Iterable[tuple]],
+    n_rows: int,
+    n_params: int,
+    y_mean: float,
+    family: str,
+    link: str,
+    l1_ratio: float,
+    has_offset: bool = False,
+    var_power: float = 1.5,
+    theta: float = 1.0,
+    pen_mask: list[bool] | None = None,
+    center: npt.NDArray[np.float64] | None = None,
+    scale: npt.NDArray[np.float64] | None = None,
+    ridge_xtx_diag: list[float] | None = None,
+    allow_extended_tweedie: bool = False,
+    trace: list | None = None,
+    max_row_nonzeros: int | None = None,
+    row_kernel: str | None = None,
+    threads: int | None = None,
+) -> float: ...
+def fold_path_batched_py(
+    open_pass: Callable[[str], Iterable[tuple]],
+    n_rows: int,
+    n_params: int,
+    y_mean: float,
+    family: str,
+    fold: int,
+    n_folds: int,
+    seed: int,
+    link: str | None = None,
+    var_power: float = 1.5,
+    theta: float = 1.0,
+    has_offset: bool = False,
+    weighted: bool = False,
+    alphas: list[float] | None = None,
+    l1_ratio: float = 0.0,
+    max_iter: int = 25,
+    tol: float = 1e-8,
+    nonneg_indices: list[int] | None = None,
+    nonpos_indices: list[int] | None = None,
+    allow_extended_tweedie: bool = False,
+    fit_intercept: bool = True,
+    center: npt.NDArray[np.float64] | None = None,
+    scale: npt.NDArray[np.float64] | None = None,
+    max_row_nonzeros: int | None = None,
+    row_kernel: str | None = None,
+    threads: int | None = None,
 ) -> dict: ...
 
 # =============================================================================
@@ -488,94 +793,100 @@ def f_cdf_py(x: float, df1: float, df2: float) -> float: ...
 
 def bs_py(
     x: npt.NDArray[np.float64],
-    df: int | None = None,
-    knots: npt.NDArray[np.float64] | None = None,
+    df: int,
     degree: int = 3,
+    boundary_knots: tuple[float, float] | None = None,
     include_intercept: bool = False,
-    lower_bound: float | None = None,
-    upper_bound: float | None = None,
 ) -> npt.NDArray[np.float64]: ...
 def ns_py(
     x: npt.NDArray[np.float64],
-    df: int | None = None,
-    knots: npt.NDArray[np.float64] | None = None,
+    df: int,
+    boundary_knots: tuple[float, float] | None = None,
     include_intercept: bool = False,
-    lower_bound: float | None = None,
-    upper_bound: float | None = None,
 ) -> npt.NDArray[np.float64]: ...
 def ns_with_knots_py(
     x: npt.NDArray[np.float64],
-    df: int | None = None,
-    knots: npt.NDArray[np.float64] | None = None,
+    interior_knots: list[float],
+    boundary_knots: tuple[float, float],
     include_intercept: bool = False,
-    lower_bound: float | None = None,
-    upper_bound: float | None = None,
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]: ...
+) -> npt.NDArray[np.float64]: ...
 def bs_knots_py(
     x: npt.NDArray[np.float64],
-    df: int | None = None,
-    knots: npt.NDArray[np.float64] | None = None,
+    knots: list[float],
     degree: int = 3,
-    include_intercept: bool = False,
-    lower_bound: float | None = None,
-    upper_bound: float | None = None,
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]: ...
-def bs_names_py(prefix: str, n_cols: int) -> list[str]: ...
-def ns_names_py(prefix: str, n_cols: int) -> list[str]: ...
+    boundary_knots: tuple[float, float] | None = None,
+) -> npt.NDArray[np.float64]: ...
+def bs_names_py(var_name: str, df: int, include_intercept: bool = False) -> list[str]: ...
+def ns_names_py(var_name: str, df: int, include_intercept: bool = False) -> list[str]: ...
 def ms_py(
     x: npt.NDArray[np.float64],
-    df: int | None = None,
-    knots: npt.NDArray[np.float64] | None = None,
+    df: int,
     degree: int = 3,
-    include_intercept: bool = False,
-    lower_bound: float | None = None,
-    upper_bound: float | None = None,
+    boundary_knots: tuple[float, float] | None = None,
     increasing: bool = True,
 ) -> npt.NDArray[np.float64]: ...
 def ms_with_knots_py(
     x: npt.NDArray[np.float64],
-    df: int | None = None,
-    knots: npt.NDArray[np.float64] | None = None,
-    degree: int = 3,
-    include_intercept: bool = False,
-    lower_bound: float | None = None,
-    upper_bound: float | None = None,
+    interior_knots: list[float],
+    degree: int,
+    boundary_knots: tuple[float, float],
+    df: int,
     increasing: bool = True,
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]: ...
-def ms_names_py(prefix: str, n_cols: int) -> list[str]: ...
-def compute_knots_py(x: npt.NDArray[np.float64], n_knots: int) -> npt.NDArray[np.float64]: ...
-def compute_knots_natural_py(
-    x: npt.NDArray[np.float64], n_knots: int
 ) -> npt.NDArray[np.float64]: ...
+def ms_names_py(var_name: str, df: int, increasing: bool = True) -> list[str]: ...
+def compute_knots_py(
+    x: npt.NDArray[np.float64],
+    df: int,
+    degree: int = 3,
+    boundary_knots: tuple[float, float] | None = None,
+) -> tuple[list[float], tuple[float, float]]: ...
+def compute_knots_natural_py(
+    x: npt.NDArray[np.float64],
+    df: int,
+    boundary_knots: tuple[float, float] | None = None,
+) -> tuple[list[float], tuple[float, float]]: ...
+
+class OrderStatistics:
+    def __init__(self, ranks: list[int], n: int) -> None: ...
+    def passes_needed(self) -> int: ...
+    def begin_pass(self, pass_index: int) -> None: ...
+    def observe(self, values: npt.NDArray[np.float64]) -> None: ...
+    def end_pass(self) -> None: ...
+    def results(self) -> list[float]: ...
 
 # =============================================================================
 # Design Matrix Functions
 # =============================================================================
 
 def encode_categorical_py(
-    values: npt.NDArray[np.float64],
+    values: list[str],
+    var_name: str,
     drop_first: bool = True,
-) -> tuple[npt.NDArray[np.float64], list[str]]: ...
+) -> tuple[npt.NDArray[np.float64], list[str], list[int], list[str]]: ...
 def factorize_strings_py(
     values: list[str],
 ) -> tuple[npt.NDArray[np.int64], list[str]]: ...
 def encode_categorical_indices_py(
-    indices: npt.NDArray[np.int64],
+    indices: npt.NDArray[np.int32],
     n_levels: int,
-    drop_first: bool = True,
-) -> npt.NDArray[np.float64]: ...
-def build_cat_cat_interaction_py(
-    col_a: npt.NDArray[np.int64],
-    col_b: npt.NDArray[np.int64],
-    n_levels_a: int,
-    n_levels_b: int,
+    level_names: list[str],
+    var_name: str,
     drop_first: bool = True,
 ) -> tuple[npt.NDArray[np.float64], list[str]]: ...
+def build_cat_cat_interaction_py(
+    idx1: npt.NDArray[np.int32],
+    n_levels1: int,
+    idx2: npt.NDArray[np.int32],
+    n_levels2: int,
+    names1: list[str],
+    names2: list[str],
+) -> tuple[npt.NDArray[np.float64], list[str]]: ...
 def build_cat_cont_interaction_py(
-    cat_col: npt.NDArray[np.int64],
-    cont_col: npt.NDArray[np.float64],
+    cat_indices: npt.NDArray[np.int32],
     n_levels: int,
-    drop_first: bool = True,
+    continuous: npt.NDArray[np.float64],
+    cat_names: list[str],
+    cont_name: str,
 ) -> tuple[npt.NDArray[np.float64], list[str]]: ...
 def build_cat_basis_interaction_py(
     cat_indices: npt.NDArray[np.int64],
@@ -601,13 +912,17 @@ def build_two_cat_cont_interaction_py(
     cont_name: str,
 ) -> tuple[npt.NDArray[np.float64], list[str]]: ...
 def build_cont_cont_interaction_py(
-    col_a: npt.NDArray[np.float64],
-    col_b: npt.NDArray[np.float64],
-) -> npt.NDArray[np.float64]: ...
+    x1: npt.NDArray[np.float64],
+    x2: npt.NDArray[np.float64],
+    name1: str,
+    name2: str,
+) -> tuple[npt.NDArray[np.float64], str]: ...
 def multiply_matrix_by_continuous_py(
     matrix: npt.NDArray[np.float64],
     continuous: npt.NDArray[np.float64],
-) -> npt.NDArray[np.float64]: ...
+    matrix_names: list[str],
+    cont_name: str,
+) -> tuple[npt.NDArray[np.float64], list[str]]: ...
 def stack_columns_horizontal_py(
     blocks: list[npt.NDArray[np.float64]],
 ) -> npt.NDArray[np.float64]:
@@ -677,6 +992,67 @@ def target_encode_interaction_with_exposure_py(
     n_permutations: int = 4,
     seed: int | None = None,
 ) -> tuple[npt.NDArray[np.float64], str, float, dict[str, tuple[float, float]]]: ...
+
+class TargetEncodingPrior:
+    """The prior and "auto" prior weight's block-ordered sums (spec §6.6)."""
+
+    def __init__(self, exposure_weighted: bool) -> None: ...
+    def update(
+        self,
+        target: npt.NDArray[np.float64],
+        exposure: npt.NDArray[np.float64] | None = None,
+        include: npt.NDArray[np.bool_] | None = None,
+    ) -> None: ...
+    def prior(self) -> float: ...
+    def auto_prior_weight(self) -> float: ...
+    @property
+    def rows(self) -> int: ...
+
+class TargetEncodingLevelTotals:
+    """Each label's totals over a term's participating rows, in row order."""
+
+    def __init__(self, n_levels: int, exposure_weighted: bool) -> None: ...
+    def update(
+        self,
+        codes: npt.NDArray[np.int32],
+        target: npt.NDArray[np.float64],
+        exposure: npt.NDArray[np.float64] | None = None,
+        include: npt.NDArray[np.bool_] | None = None,
+    ) -> None: ...
+    def totals(
+        self,
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.uint64], npt.NDArray[np.float64]]: ...
+
+class TargetEncodingTerm:
+    """A term's training values in DEC-1's keyed order, in RAM or spilled (spec §6.6)."""
+
+    def __init__(
+        self,
+        seed: int,
+        n_permutations: int,
+        n_levels: int,
+        prior: float,
+        prior_weight: float,
+        exposure_weighted: bool,
+        scratch_dir: str | None = None,
+        run_records: int | None = None,
+    ) -> None: ...
+    def begin(self, permutation: int) -> None: ...
+    def push(
+        self,
+        first_row: int,
+        codes: npt.NDArray[np.int32],
+        target: npt.NDArray[np.float64],
+        exposure: npt.NDArray[np.float64] | None = None,
+        include: npt.NDArray[np.bool_] | None = None,
+    ) -> None: ...
+    def end(self, progress: Callable[[str, int, int, bool], None] | None = None) -> None: ...
+    def finish(
+        self, progress: Callable[[str, int, int, bool], None] | None = None
+    ) -> npt.NDArray[np.float64] | str: ...
+    def close(self) -> None: ...
+
+def cv_fold_ids_py(start: int, count: int, folds: int, seed: int) -> npt.NDArray[np.int64]: ...
 
 # =============================================================================
 # Diagnostics Functions
@@ -866,17 +1242,29 @@ def compute_loss_metrics_py(
     y: npt.NDArray[np.float64],
     mu: npt.NDArray[np.float64],
     family: str,
-    weights: npt.NDArray[np.float64] | None = None,
-    var_power: float | None = None,
-    theta: float | None = None,
 ) -> dict: ...
 def detect_interactions_py(
+    residuals: npt.NDArray[np.float64],
+    factor_names: list[str],
+    factor_values: list[list[str]],
+    factor_is_categorical: list[bool],
+    max_factors: int = 10,
+    max_candidates: int = 5,
+) -> list[dict]: ...
+def compute_cramers_v_matrix_from_codes_py(
+    codes_list: list[npt.NDArray[np.uint32]],
+    n_levels_per_factor: list[int],
+) -> npt.NDArray[np.float64]: ...
+def detect_exploratory_interactions_py(
     y: npt.NDArray[np.float64],
-    mu: npt.NDArray[np.float64],
-    columns: dict,
-    weights: npt.NDArray[np.float64] | None = None,
-    top_k: int = 20,
-    n_bins: int = 10,
+    exposure: npt.NDArray[np.float64],
+    factor_names: list[str],
+    codes_list: list[npt.NDArray[np.uint32]],
+    n_levels_per_factor: list[int],
+    max_factors: int = 10,
+    min_effect_size: float = 0.001,
+    max_candidates: int = 5,
+    min_cell_count: int = 30,
 ) -> list[dict]: ...
 def compute_lorenz_curve_py(
     y: npt.NDArray[np.float64],
@@ -887,16 +1275,15 @@ def compute_lorenz_curve_py(
 def hosmer_lemeshow_test_py(
     y: npt.NDArray[np.float64],
     mu: npt.NDArray[np.float64],
-    n_groups: int = 10,
+    n_bins: int,
 ) -> dict: ...
 def compute_fit_statistics_py(
     y: npt.NDArray[np.float64],
     mu: npt.NDArray[np.float64],
-    family: str,
+    deviance: float,
+    null_dev: float,
     n_params: int,
-    weights: npt.NDArray[np.float64] | None = None,
-    var_power: float | None = None,
-    theta: float | None = None,
+    family: str,
 ) -> dict: ...
 def compute_dataset_metrics_py(
     y: npt.NDArray[np.float64],
@@ -911,11 +1298,9 @@ def compute_residual_summary_py(
     residuals: npt.NDArray[np.float64],
 ) -> dict: ...
 def compute_residual_pattern_py(
-    y: npt.NDArray[np.float64],
-    mu: npt.NDArray[np.float64],
-    family: str,
-    var_power: float | None = None,
-    theta: float | None = None,
+    values: npt.NDArray[np.float64],
+    residuals: npt.NDArray[np.float64],
+    n_bins: int = 10,
 ) -> dict: ...
 def compute_residual_pattern_batch_py(
     values_list: list[npt.NDArray[np.float64]],
@@ -934,28 +1319,21 @@ def compute_pearson_residuals_py(
     y: npt.NDArray[np.float64],
     mu: npt.NDArray[np.float64],
     family: str,
-    var_power: float = 1.5,
-    theta: float = 1.0,
 ) -> npt.NDArray[np.float64]: ...
 def compute_deviance_residuals_py(
     y: npt.NDArray[np.float64],
     mu: npt.NDArray[np.float64],
     family: str,
-    var_power: float = 1.5,
-    theta: float = 1.0,
 ) -> npt.NDArray[np.float64]: ...
 def compute_null_deviance_py(
     y: npt.NDArray[np.float64],
     family: str,
-    weights: npt.NDArray[np.float64] | None = None,
-    offset: npt.NDArray[np.float64] | None = None,
+    exposure: npt.NDArray[np.float64] | None = None,
 ) -> float: ...
 def compute_unit_deviance_py(
     y: npt.NDArray[np.float64],
     mu: npt.NDArray[np.float64],
     family: str,
-    var_power: float = 1.5,
-    theta: float = 1.0,
 ) -> npt.NDArray[np.float64]: ...
 
 # =============================================================================

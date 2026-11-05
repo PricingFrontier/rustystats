@@ -35,6 +35,13 @@ print(f"CV deviance: {result.cv_deviance}")
 | `standardize` | `True` | Standardize penalized columns internally before applying the penalty |
 | `cv_seed` | `None` | Seed for reproducible folds |
 
+Row *r* belongs to fold `mix64(cv_seed ^ mix64(r)) mod K`, where `mix64` is the SplitMix64
+finaliser. The membership depends only on the seed and the row's position, so it is the
+same in memory and out of core, on every platform and Rust version. Since 0.10 this
+replaces a hash that was not stable across Rust releases, so fold membership, and the
+selected penalty, differ from earlier versions for the same seed. Folds with target
+encoding are now about equal in size, rather than exactly equal blocks.
+
 With `standardize=True`, coefficients, standard errors, predictions, and
 exports are still reported on the original data scale. Set
 `standardize=False` to penalize on the raw coefficient scale instead.

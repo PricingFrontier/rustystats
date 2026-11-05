@@ -42,7 +42,9 @@ keywords = ["statistics", "glm", "actuarial", "regression", "modeling"]
 # Python package dependencies (minimal for users)
 dependencies = [
     "numpy>=1.20,<2.4",
-    "polars>=1.0",
+    # The oldest Polars the package runs on: 1.32 has no hash joins on Decimal
+    # (i128) category keys, which 1.33 has (checked by running the suite on both).
+    "polars>=2.0,<3",
 ]
 
 [project.optional-dependencies]

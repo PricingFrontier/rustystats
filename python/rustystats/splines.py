@@ -204,17 +204,9 @@ def bs(
     # Default to penalized smooth (k=10) if neither df nor k specified
     effective_df = df if df is not None else (k if k is not None else 10)
 
-    # Handle monotonicity validation.
-    # Monotonicity is enforced by the solver via exp reparameterization
-    # on the B-spline coefficients (Pya & Wood, 2015).
-    if monotonicity is not None:
-        if monotonicity not in ("increasing", "decreasing"):
-            raise ValidationError(
-                f"monotonicity must be 'increasing' or 'decreasing', got '{monotonicity}'"
-            )
-        # Fall through to standard B-spline path below.
-        # Monotonicity is enforced by the solver via exp reparameterization
-        # on the B-spline coefficients (Pya & Wood, 2015).
+    # Monotonicity is enforced by the solver via exp reparameterization on the
+    # B-spline coefficients (Pya & Wood, 2015); the basis itself is the standard one.
+    _check_bs_monotonicity(monotonicity)
 
     if knots is not None:
         # Use explicit knots
@@ -226,6 +218,13 @@ def bs(
     else:
         # Compute knots automatically based on df
         return _bs_rust(x, effective_df, degree, boundary_knots, include_intercept)
+
+
+def _check_bs_monotonicity(monotonicity: str | None) -> None:
+    if monotonicity is not None and monotonicity not in ("increasing", "decreasing"):
+        raise ValidationError(
+            f"monotonicity must be 'increasing' or 'decreasing', got '{monotonicity}'"
+        )
 
 
 def ns(
@@ -455,7 +454,7 @@ class SplineTerm:
         # Compute boundary knots if not already computed (first call = training)
         # On subsequent calls (prediction), reuse the stored boundary knots
         x_arr = np.asarray(x).ravel()
-        if self._computed_boundary_knots is None:
+        if self._computed_boundary_knots is None and not self.adopt_frozen_knots():
             if self._computed_internal_knots is not None:
                 # Explicit knots were pre-set — only compute boundary knots
                 bk = self.boundary_knots
@@ -486,26 +485,94 @@ class SplineTerm:
                 self._computed_boundary_knots = (x_min, x_max)
                 self._computed_internal_knots = list(interior)
 
+        basis = self.basis(x)
+        return basis, self.column_names(basis.shape[1])
+
+    def basis(self, x: np.ndarray) -> np.ndarray:
+        """Evaluate the basis at ``x`` with the knots already placed.
+
+        ``transform`` places knots on its first call and then evaluates this; a
+        frozen design, whose knots are placed before any row is encoded, calls it
+        directly.
+        """
+        x_arr = np.asarray(x).ravel()
         # Use stored boundary knots for basis computation
         boundary_knots_to_use = self._computed_boundary_knots
-
-        effective_monotonicity = self.monotonicity
 
         if self.spline_type == "bs":
             # Use bs() with monotonicity parameter for unified API
             # Pass stored internal knots to ensure consistent basis on new data
-            basis = bs(
+            return bs(
                 x,
                 df=self.df,
                 degree=self.degree,
                 knots=self._computed_internal_knots,
                 boundary_knots=boundary_knots_to_use,
                 include_intercept=False,
-                monotonicity=effective_monotonicity,
+                monotonicity=self.monotonicity,
             )
+        if self.spline_type == "ns":
+            self._refuse_monotone_ns()
+            # Pass stored internal knots to ensure consistent basis on new data
+            return ns(
+                x,
+                df=self.df,
+                knots=self._computed_internal_knots,
+                boundary_knots=boundary_knots_to_use,
+                include_intercept=False,
+            )
+        if self.spline_type == "ms":
+            # Monotonic splines use I-spline (integrated M-spline) basis directly
+            if self._computed_internal_knots is not None:
+                bk = boundary_knots_to_use or (float(x_arr.min()), float(x_arr.max()))
+                basis = _ms_with_knots_rust(
+                    x_arr, self._computed_internal_knots, self.degree, bk, self.df, True
+                )
+            else:
+                basis = _ms_rust(x_arr, self.df, self.degree, boundary_knots_to_use, True)
+            # Drop first column for identifiability (collinear with intercept)
+            if basis.shape[1] > 1:
+                basis = basis[:, 1:]
+            return basis
+        raise ValidationError(f"Unknown spline_type: {self.spline_type}")
 
-            # Generate appropriate names
-            n_cols = basis.shape[1]
+    def basis_width(self) -> int:
+        """Columns :meth:`basis` returns once knots are placed, without evaluating it.
+
+        Raises what :meth:`basis` raises for the term itself before it evaluates.
+        """
+        if self.spline_type == "bs":
+            _check_bs_monotonicity(self.monotonicity)
+        elif self.spline_type == "ns":
+            self._refuse_monotone_ns()
+        interior = self._computed_internal_knots
+        if interior is None or self._computed_boundary_knots is None:
+            raise ValidationError(f"The knots of {self!r} are not placed yet.")
+        return self.width_with_interior(len(interior))
+
+    def width_with_interior(self, n_interior: int) -> int:
+        """Columns of the basis once ``n_interior`` interior knots are placed.
+
+        A frozen design needs the width before it learns the knots, to judge
+        ``max_design_columns`` while level sets grow.
+        """
+        if self.spline_type == "bs":
+            # bs_knots_py: one function per interior knot plus degree + 1, less the first.
+            width = n_interior + int(self.degree) + 1
+        elif self.spline_type == "ns":
+            # ns_with_knots_py without an intercept: one function per interior knot, at least one.
+            return max(n_interior, 1)
+        elif self.spline_type == "ms":
+            # ms_with_knots_py: df I-splines, less the first.
+            width = int(self.df)
+        else:
+            raise ValidationError(f"Unknown spline_type: {self.spline_type}")
+        return width - 1 if width > 1 else width
+
+    def column_names(self, n_cols: int) -> list[str]:
+        """Names of the basis's ``n_cols`` columns, as ``transform`` returns them."""
+        effective_monotonicity = self.monotonicity
+        if self.spline_type == "bs":
             if self._is_smooth:
                 if effective_monotonicity:
                     sign = "+" if effective_monotonicity == "increasing" else "-"
@@ -520,38 +587,13 @@ class SplineTerm:
             else:
                 names = bs_names(self.var_name, self.df, include_intercept=False)
         elif self.spline_type == "ns":
-            # Check if monotonicity was requested on natural splines
-            if effective_monotonicity:
-                raise ValidationError(
-                    f"Monotonicity constraints are not supported for natural splines (ns). "
-                    f"Use bs({self.var_name}, df={self.df}, monotonicity='increasing') "
-                    f"instead, which enforces monotonicity via exp reparameterization."
-                )
-            # Pass stored internal knots to ensure consistent basis on new data
-            basis = ns(
-                x,
-                df=self.df,
-                knots=self._computed_internal_knots,
-                boundary_knots=boundary_knots_to_use,
-                include_intercept=False,
-            )
+            self._refuse_monotone_ns()
             if self._is_smooth:
                 names = [f"ns({self.var_name}, {i + 1}/{self.df}, k)" for i in range(self.df)]
             else:
                 names = ns_names(self.var_name, self.df, include_intercept=False)
         elif self.spline_type == "ms":
-            # Monotonic splines use I-spline (integrated M-spline) basis directly
             mono = self.monotonicity or "increasing"
-            if self._computed_internal_knots is not None:
-                bk = boundary_knots_to_use or (float(x_arr.min()), float(x_arr.max()))
-                basis = _ms_with_knots_rust(
-                    x_arr, self._computed_internal_knots, self.degree, bk, self.df, True
-                )
-            else:
-                basis = _ms_rust(x_arr, self.df, self.degree, boundary_knots_to_use, True)
-            # Drop first column for identifiability (collinear with intercept)
-            if basis.shape[1] > 1:
-                basis = basis[:, 1:]
             sign = "+" if mono == "increasing" else "-"
             if self._is_smooth:
                 names = [
@@ -563,13 +605,55 @@ class SplineTerm:
             raise ValidationError(f"Unknown spline_type: {self.spline_type}")
 
         # Ensure names match columns
-        if len(names) != basis.shape[1]:
+        if len(names) != n_cols:
             names = [
-                f"{self.spline_type}({self.var_name}, {i + 1}/{basis.shape[1]})"
-                for i in range(basis.shape[1])
+                f"{self.spline_type}({self.var_name}, {i + 1}/{n_cols})" for i in range(n_cols)
             ]
+        return names
 
-        return basis, names
+    def _refuse_monotone_ns(self) -> None:
+        if self.monotonicity:
+            raise ValidationError(
+                f"Monotonicity constraints are not supported for natural splines (ns). "
+                f"Use bs({self.var_name}, df={self.df}, monotonicity='increasing') "
+                f"instead, which enforces monotonicity via exp reparameterization."
+            )
+
+    def freeze_knots(
+        self,
+        interior: list[float] | None,
+        boundary: tuple[float, float],
+    ) -> None:
+        """Hold knots learned from the whole training column until they are placed.
+
+        ``transform`` places knots from its input the first time it runs. A frozen
+        design learns them from slices of the column instead
+        (``specs/out-of-core-fit.md`` §6.5) and places them with
+        :meth:`adopt_frozen_knots`; a ``transform`` that runs first adopts them
+        rather than its input. ``interior`` is None when the interior knots were given.
+        """
+        self._frozen_knots = (
+            None if interior is None else [float(knot) for knot in interior],
+            (float(boundary[0]), float(boundary[1])),
+        )
+
+    def adopt_frozen_knots(self) -> bool:
+        """Place the knots held by :meth:`freeze_knots`, as the first ``transform`` would.
+
+        Returns False, changing nothing, when no knots are held.
+        """
+        frozen = self.__dict__.pop("_frozen_knots", None)
+        if frozen is None:
+            return False
+        interior, boundary = frozen
+        if interior is not None:
+            self._computed_internal_knots = interior
+        self._computed_boundary_knots = boundary
+        return True
+
+    def discard_frozen_knots(self) -> None:
+        """Drop knots held by :meth:`freeze_knots` that were never placed."""
+        self.__dict__.pop("_frozen_knots", None)
 
     def compute_penalty_matrix(self, n_cols: int, penalty_order: int = 2) -> np.ndarray:
         """

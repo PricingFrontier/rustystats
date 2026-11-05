@@ -39,8 +39,6 @@
 //
 // =============================================================================
 
-use std::borrow::Cow;
-
 use super::Family;
 use crate::links::{Link, LogLink};
 use ndarray::Array1;
@@ -66,13 +64,37 @@ impl Family for PoissonFamily {
         "Poisson"
     }
 
-    /// Variance function: V(μ) = μ
-    ///
-    /// This is the defining characteristic of Poisson: variance equals mean.
-    /// Higher expected counts have higher variance.
-    /// Returns `Cow::Borrowed` — zero-copy since variance IS mu.
-    fn variance<'a>(&self, mu: &'a Array1<f64>) -> Cow<'a, Array1<f64>> {
-        Cow::Borrowed(mu)
+    fn log_likelihood_form(&self) -> crate::families::LogLikelihoodForm {
+        crate::families::LogLikelihoodForm::RowSum { needs_scale: false }
+    }
+
+    /// ℓ_i = y·log(μ) − μ − log(y!).
+    #[inline]
+    fn log_likelihood_row(&self, yi: f64, mui: f64, _scale: f64) -> f64 {
+        let log_factorial = statrs::function::gamma::ln_gamma(yi + 1.0);
+        yi * mui.ln() - mui - log_factorial
+    }
+
+    /// Variance function V(μ) = μ.
+    #[inline]
+    fn variance_at(&self, mu: f64) -> f64 {
+        mu
+    }
+
+    /// Starting μ: (y + 0.1), at least 0.1, so μ > 0 even when y = 0.
+    #[inline]
+    fn initialize_mu_at(&self, yi: f64, _y_mean: f64) -> f64 {
+        (yi + 0.1).max(0.1)
+    }
+
+    #[inline]
+    fn is_valid_mu_at(&self, mu: f64) -> bool {
+        mu > 0.0 && mu.is_finite()
+    }
+
+    #[inline]
+    fn clamp_mu_at(&self, mu: f64) -> f64 {
+        mu.max(crate::constants::MU_MIN_POSITIVE)
     }
 
     /// Unit deviance: 2 × [y × log(y/μ) - (y - μ)]
@@ -105,45 +127,12 @@ impl Family for PoissonFamily {
         Box::new(LogLink)
     }
 
-    /// Initialize μ to a smoothed version of y.
-    ///
-    /// We can't use y directly because:
-    /// - log(0) = -∞, which would break things
-    /// - Starting too close to 0 can cause numerical issues
-    ///
-    /// A common approach: μ_init = (y + ȳ) / 2, or μ_init = max(y, small_value)
-    fn initialize_mu(&self, y: &Array1<f64>) -> Array1<f64> {
-        // Use (y + 0.1) as a simple starting point
-        // This ensures μ > 0 even when y = 0
-        y.mapv(|yi| (yi + 0.1).max(0.1))
-    }
-
-    /// μ must be strictly positive for Poisson.
-    fn is_valid_mu(&self, mu: &Array1<f64>) -> bool {
-        mu.iter().all(|&x| x > 0.0 && x.is_finite())
-    }
-
-    fn clamp_mu(&self, mu: &Array1<f64>) -> Array1<f64> {
-        use crate::constants::MU_MIN_POSITIVE;
-        mu.mapv(|x| x.max(MU_MIN_POSITIVE))
-    }
-
     fn fixed_dispersion(&self) -> bool {
         true
     }
 
     fn is_log_link_default(&self) -> bool {
         true
-    }
-
-    fn log_likelihood(
-        &self,
-        y: &Array1<f64>,
-        mu: &Array1<f64>,
-        _scale: f64,
-        weights: Option<&Array1<f64>>,
-    ) -> f64 {
-        crate::diagnostics::log_likelihood_poisson(y, mu, weights)
     }
 }
 

@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
+from oracle_fixture_compare import fixture_file_differences
 
 ROOT = Path(__file__).resolve().parents[1]
 ORACLE_DIR = ROOT / "tests" / "oracles" / "exact"
@@ -230,8 +231,9 @@ def main() -> int:
             generated = output_dir / name
             if not expected.is_file():
                 failures.append(f"missing checked-in fixture {expected.relative_to(ROOT)}")
-            elif expected.read_text(encoding="utf-8") != generated.read_text(encoding="utf-8"):
-                failures.append(f"fixture drift: {expected.relative_to(ROOT)}")
+            elif differences := fixture_file_differences(expected, generated):
+                shown = "; ".join(differences[:5])
+                failures.append(f"fixture drift: {expected.relative_to(ROOT)}: {shown}")
         if failures:
             print("Smooth oracle fixture generation check failed:")
             for failure in failures:

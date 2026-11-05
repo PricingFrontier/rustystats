@@ -31,20 +31,25 @@
 // =============================================================================
 
 mod coordinate_descent;
+pub mod cv;
 pub mod gcv_optimizer;
 mod irls;
 pub mod multinomial;
+pub mod nb_theta;
 pub mod nnls;
+pub mod passes;
 pub mod smooth_glm;
 
 pub use gcv_optimizer::{brent_minimize, MultiTermGCVOptimizer};
 pub use irls::{
     build_sparse_row_cache_for_repeated_xtwx, build_sparse_row_cache_if_beneficial, compute_xtwx,
-    compute_xtwx_with_sparse_cache, compute_xtwx_xtwz, fit_glm_unified_with_sparse_cache,
-    matrix_vector_dot_cached, solve_weighted_least_squares_with_penalty_matrix,
-    solve_wls_from_precomputed, SparseRowCache,
+    compute_xtwx_with_sparse_cache, compute_xtwx_xtwz, matrix_vector_dot_cached,
+    solve_weighted_least_squares_with_penalty_matrix, solve_wls_from_precomputed, SparseRowCache,
 };
-pub use irls::{fit_glm_unified, FitConfig, IRLSConfig, IRLSResult};
+pub use irls::{
+    fit_glm_unified, fit_glm_with_executor, ExecutorFit, FinalStatistics, FitConfig, IRLSConfig,
+    IRLSResult,
+};
 pub use multinomial::{
     fit_multinomial, fit_multinomial_with_alternatives, AlternativeSpecificStandardization,
     MultinomialConfig, MultinomialResult, MultinomialSmoothPenalty, MultinomialSolver,
@@ -53,8 +58,8 @@ pub use nnls::{
     nnls, nnls_penalized, nnls_weighted, nnls_weighted_penalized, NNLSConfig, NNLSResult,
 };
 pub use smooth_glm::{
-    fit_smooth_glm_full_matrix, Monotonicity, SmoothGLMConfig, SmoothGLMResult, SmoothTermData,
-    SmoothTermSpec,
+    fit_smooth_glm_full_matrix, fit_smooth_glm_with_executor, Monotonicity, SmoothExecutorFit,
+    SmoothGLMConfig, SmoothGLMResult, SmoothTermData, SmoothTermSpec,
 };
 
 use ndarray::{Array1, ArrayView2};
@@ -70,10 +75,19 @@ use crate::links::Link;
 /// Used as fallback when `family.initialize_mu(y)` produces invalid values
 /// (e.g., all zeros for Poisson). Computes a weighted average of each y_i
 /// with the global mean, then clamps to the family's valid range.
+#[cfg(test)]
 pub(crate) fn initialize_mu_safe(y: &Array1<f64>, family: &dyn Family) -> Array1<f64> {
-    let y_mean = y.mean().unwrap_or(1.0).max(0.01);
-    let raw: Array1<f64> = y.mapv(|yi| (yi + y_mean) / 2.0);
-    family.clamp_mu(&raw)
+    let y_mean = crate::families::response_mean(y);
+    y.mapv(|yi| initialize_mu_safe_at(family, yi, y_mean))
+}
+
+/// The safe starting μ for one response value: the clamped average of y and the
+/// mean response (the mean at least 0.01). `y_mean` is
+/// [`crate::families::response_mean`].
+#[inline]
+pub(crate) fn initialize_mu_safe_at(family: &dyn Family, yi: f64, y_mean: f64) -> f64 {
+    let y_mean = y_mean.max(0.01);
+    family.clamp_mu_at((yi + y_mean) / 2.0)
 }
 
 // =============================================================================
@@ -429,6 +443,18 @@ mod tests {
             "short-derivative"
         }
 
+        fn link_at(&self, mu: f64) -> f64 {
+            mu
+        }
+
+        fn inverse_at(&self, eta: f64) -> f64 {
+            eta
+        }
+
+        fn derivative_at(&self, _mu: f64) -> f64 {
+            1.0
+        }
+
         fn link(&self, mu: &Array1<f64>) -> Array1<f64> {
             mu.clone()
         }
@@ -447,6 +473,18 @@ mod tests {
     impl Link for ShortDerivativeLogLink {
         fn name(&self) -> &str {
             "log"
+        }
+
+        fn link_at(&self, mu: f64) -> f64 {
+            mu.ln()
+        }
+
+        fn inverse_at(&self, eta: f64) -> f64 {
+            eta.exp()
+        }
+
+        fn derivative_at(&self, _mu: f64) -> f64 {
+            1.0
         }
 
         fn link(&self, mu: &Array1<f64>) -> Array1<f64> {
@@ -471,6 +509,18 @@ mod tests {
             "BadLength"
         }
 
+        fn variance_at(&self, _mu: f64) -> f64 {
+            1.0
+        }
+
+        fn initialize_mu_at(&self, yi: f64, _y_mean: f64) -> f64 {
+            yi
+        }
+
+        fn is_valid_mu_at(&self, mu: f64) -> bool {
+            mu.is_finite()
+        }
+
         fn variance<'a>(&self, mu: &'a Array1<f64>) -> Cow<'a, Array1<f64>> {
             Cow::Owned(Array1::ones(mu.len().saturating_sub(1)))
         }
@@ -486,14 +536,6 @@ mod tests {
 
         fn default_link(&self) -> Box<dyn Link> {
             Box::new(IdentityLink)
-        }
-
-        fn initialize_mu(&self, y: &Array1<f64>) -> Array1<f64> {
-            y.clone()
-        }
-
-        fn is_valid_mu(&self, mu: &Array1<f64>) -> bool {
-            mu.iter().all(|v| v.is_finite())
         }
 
         fn use_true_hessian_weights(&self) -> bool {

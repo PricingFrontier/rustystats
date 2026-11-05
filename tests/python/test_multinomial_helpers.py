@@ -159,6 +159,18 @@ def test_multinomial_basic_validation_helpers():
     assert _extra_needed_columns(["raw", {"x": "produced"}], [{"output": "produced"}]) == {"raw"}
 
 
+def test_categorical_response_classes_are_the_values_present():
+    """Polars keeps one category list for every Categorical in the process, so a
+    Categorical response's classes are its own values (in order of first
+    appearance), never categories another frame registered. An Enum keeps its
+    declared categories."""
+    pl.Series("unrelated", ["zz_other_frame", "yy_other_frame"], dtype=pl.Categorical)
+    response = pl.Series("choice", ["medium", "low", "medium", None], dtype=pl.Categorical)
+    assert _derive_classes(response) == ["medium", "low"]
+    enum = pl.Series("choice", ["b", "a"], dtype=pl.Enum(["c", "b", "a"]))
+    assert _derive_classes(enum) == ["c", "b", "a"]
+
+
 def test_multinomial_class_and_weight_resolution_contracts():
     data = pl.DataFrame(
         {
@@ -168,7 +180,7 @@ def test_multinomial_class_and_weight_resolution_contracts():
     )
     assert _derive_classes(data["choice"]) == ["a", "b", "c"]
     categorical = pl.Series("choice", ["medium", "low"], dtype=pl.Categorical)
-    assert set(_derive_classes(categorical)) == {"low", "medium"}
+    assert _derive_classes(categorical) == ["medium", "low"]
 
     classes, reference, class_to_code, y_codes = _resolve_classes(
         ["b", "a", "c"],

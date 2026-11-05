@@ -38,6 +38,8 @@
 //
 // =============================================================================
 
+pub mod moments;
+
 use ndarray::{Array1, Array2, ArrayView2};
 use std::ops::Range;
 

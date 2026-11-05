@@ -49,22 +49,29 @@ mod vif;
 pub use ci::wilson_poisson_rate_ci;
 
 pub use residuals::{
-    compute_residual_summary, resid_deviance, resid_pearson, resid_response, resid_working,
-    ResidualSummary,
+    compute_residual_summary, pearson_residual_at, resid_deviance, resid_pearson, resid_response,
+    resid_working, ResidualSummary,
 };
 
-pub use dispersion::{estimate_dispersion_deviance, estimate_dispersion_pearson, pearson_chi2};
+pub use dispersion::{
+    estimate_dispersion_deviance, estimate_dispersion_pearson, pearson_chi2, pearson_row,
+};
 
 pub use family_params::{parse_family_params, FamilyParams};
 
 pub use fit_statistics::{compute_fit_statistics, FitStatistics};
 
 pub use model_fit::{
-    aic, bic, log_likelihood_binomial, log_likelihood_gamma, log_likelihood_gaussian,
-    log_likelihood_poisson, null_deviance, null_deviance_for_family, null_deviance_with_offset,
+    aic, bic, combine_gaussian_log_likelihood, log_likelihood_binomial, log_likelihood_for_family,
+    log_likelihood_gamma, log_likelihood_gaussian, log_likelihood_poisson, null_deviance,
+    null_deviance_for_family, null_deviance_with_offset, null_model_from_sums, null_model_sums,
+    NullModel,
 };
 
-pub use negbinomial::{estimate_theta_moments, estimate_theta_profile, nb_loglikelihood};
+pub use negbinomial::{
+    estimate_theta_moments, estimate_theta_profile, estimate_theta_with, fold_nb_loglik,
+    nb_loglik_row, nb_loglikelihood, nb_loglikelihood_slices, theta_moments_from_sums,
+};
 
 pub use loss::{
     compute_family_loss, default_loss_name, gamma_deviance_loss, log_loss, mae, mse,

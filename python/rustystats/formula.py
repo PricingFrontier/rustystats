@@ -28,6 +28,7 @@ from __future__ import annotations
 import copy
 import warnings
 import weakref
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -167,9 +168,6 @@ def get_default_link(family: str) -> str:
 # budget so the design-matrix allocation stays bounded regardless of width.
 _PREDICT_ROW_CHUNK_DEFAULT = 200_000
 _PREDICT_CHUNK_BYTES_BUDGET = 200_000_000  # ~200 MB per-chunk design matrix cap
-_PREDICT_TERMWISE_FEATURE_THRESHOLD = 512
-_PREDICT_TERMWISE_ROW_CHUNK_DEFAULT = 500_000
-_PREDICT_TERMWISE_CHUNK_BYTES_BUDGET = 900_000_000  # cap widest term block, not full X
 _EXTREME_LOG_ETA_THRESHOLD = 50.0
 
 # Head-room for the opt-in data-driven response ceiling: with
@@ -240,6 +238,14 @@ def _validate_extreme_eta_policy(on_extreme_eta: str) -> str:
     return policy
 
 
+def _row_dots(x: np.ndarray, params: np.ndarray) -> np.ndarray:
+    """Xβ with every row summed in column order, as the fit's row kernel sums it
+    (specs/out-of-core-fit.md §6.8): a row's value does not depend on chunking."""
+    from rustystats._rustystats import row_dots_py
+
+    return row_dots_py(np.ascontiguousarray(x, dtype=np.float64), params)
+
+
 def _compute_predict_chunk_size(n_features: int) -> int:
     """Rows per chunk in predict(), adaptive to model width.
 
@@ -252,45 +258,6 @@ def _compute_predict_chunk_size(n_features: int) -> int:
         return _PREDICT_ROW_CHUNK_DEFAULT
     budget_rows = _PREDICT_CHUNK_BYTES_BUDGET // (n_features * 8)
     return max(1000, min(_PREDICT_ROW_CHUNK_DEFAULT, budget_rows))
-
-
-def _compute_termwise_predict_chunk_size(builder: Any, n_features: int) -> int:
-    """Rows per chunk for wide-model term-wise prediction scoring."""
-    slots = getattr(builder, "_term_slots", None) or []
-    max_term_width = 1
-    for slot in slots:
-        max_term_width = max(max_term_width, int(slot.col_end) - int(slot.col_start))
-    max_term_width = min(max_term_width, max(1, n_features))
-    budget_rows = _PREDICT_TERMWISE_CHUNK_BYTES_BUDGET // (max_term_width * 8)
-    return max(1000, min(_PREDICT_TERMWISE_ROW_CHUNK_DEFAULT, budget_rows))
-
-
-def _should_use_termwise_predict_score(
-    builder: Any,
-    n_features: int,
-    chunk_size: int,
-    termwise_chunk_size: int,
-) -> bool:
-    """Choose the term-wise scorer for wide or many-small-encoded models."""
-    if not hasattr(builder, "linear_predict_new_data"):
-        return False
-    if termwise_chunk_size <= chunk_size * 2:
-        return False
-    if n_features >= _PREDICT_TERMWISE_FEATURE_THRESHOLD:
-        return True
-
-    slots = getattr(builder, "_term_slots", None) or []
-    encoded_slots = sum(
-        1
-        for slot in slots
-        if getattr(slot, "term_type", None)
-        in {"categorical", "target_encoding", "frequency_encoding"}
-    )
-    # Dense scoring is poor for models with many narrow encoded terms because
-    # prediction rebuilds each encoded block separately before stacking. The
-    # term-wise scorer caches category indices once and accumulates eta
-    # directly, which is much faster even below the global feature threshold.
-    return len(slots) >= 64 or encoded_slots >= 32
 
 
 def apply_link(mu: np.ndarray, link: str) -> np.ndarray:
@@ -378,6 +345,8 @@ if TYPE_CHECKING:
     import polars as pl
 
     from rustystats.diagnostics.types import DataExploration, ModelDiagnostics
+    from rustystats.out_of_core import BatchSource
+    from rustystats.out_of_core_fit import OutOfCoreGLMDict
     from rustystats.regularization_path import RegularizationPathInfo
 
 
@@ -512,6 +481,7 @@ def _collect_lazyframe(
 
 
 # Import from interactions module (the canonical implementation)
+from rustystats.frozen_design import build_design_matrix, builder_max_row_nonzeros
 from rustystats.interactions import InteractionBuilder
 
 
@@ -552,6 +522,45 @@ def _get_constraint_indices(feature_names: list[str]) -> tuple:
         or (name.startswith("bs(") and ", -)" in name and ", k," not in name)
     ]
     return nonneg_indices, nonpos_indices
+
+
+def _resolved_max_iter(max_iter: int | None, smooth_terms: list[Any]) -> int:
+    """The iteration budget a fit runs with: ``max_iter``, else the default of the
+    solver it routes to (the nested monotone smooth solve's, else plain IRLS's)."""
+    if max_iter is not None:
+        return int(max_iter)
+    if smooth_terms and _any_monotone_smooth(smooth_terms):
+        return DEFAULT_MONOTONE_SMOOTH_MAX_ITER
+    return DEFAULT_MAX_ITER
+
+
+def _solver_settings(
+    *,
+    max_iter: int,
+    tol: float,
+    target_encoding_seed: int | None,
+    theta_metadata: dict | None,
+) -> dict[str, Any]:
+    """A result's ``solver_settings`` (§4.5): the caps and tolerances its solve used.
+
+    ``max_half_steps`` and ``gram_block_rows`` are the Rust solver's own constants;
+    the θ entries appear when θ was estimated.
+    """
+    from rustystats._rustystats import solver_constants_py
+
+    max_half_steps, gram_block_rows = solver_constants_py()
+    settings: dict[str, Any] = {
+        "max_iter": int(max_iter),
+        "tol": float(tol),
+        "max_half_steps": int(max_half_steps),
+        "gram_block_rows": int(gram_block_rows),
+        "target_encoding_seed": target_encoding_seed,
+    }
+    if theta_metadata is not None and theta_metadata.get("estimated"):
+        settings["theta_tol"] = float(theta_metadata["theta_tol"])
+        settings["max_theta_iter"] = int(theta_metadata["max_theta_iter"])
+        settings["theta_rounds"] = int(theta_metadata["theta_iterations"])
+    return settings
 
 
 def _any_monotone_smooth(smooth_terms: list[Any]) -> bool:
@@ -616,6 +625,8 @@ def _fit_with_fixed_spline_penalties(
     nonneg_indices: list[int] | None = None,
     nonpos_indices: list[int] | None = None,
     allow_extended_tweedie: bool = False,
+    robust: list[str] | None = None,
+    max_row_nonzeros: int | None = None,
 ) -> tuple:
     """
     Fit GLM with fixed-df splines using D'D penalty scaled by alpha.
@@ -667,6 +678,8 @@ def _fit_with_fixed_spline_penalties(
         var_power=var_power,
         theta=theta,
         allow_extended_tweedie=allow_extended_tweedie,
+        robust=robust,
+        max_row_nonzeros=max_row_nonzeros,
     )
 
     smooth_results = []
@@ -709,6 +722,8 @@ def _fit_with_smooth_penalties(
     nonneg_indices: list[int] | None = None,
     nonpos_indices: list[int] | None = None,
     allow_extended_tweedie: bool = False,
+    robust: list[str] | None = None,
+    max_row_nonzeros: int | None = None,
 ) -> tuple:
     """
     Fit GLM with penalized smooth terms using fast GCV optimization.
@@ -783,6 +798,8 @@ def _fit_with_smooth_penalties(
         var_power=var_power,
         theta=theta,
         allow_extended_tweedie=allow_extended_tweedie,
+        robust=robust,
+        max_row_nonzeros=max_row_nonzeros,
     )
 
     # Build smooth term results — coefficients are already in original column order
@@ -804,6 +821,45 @@ def _fit_with_smooth_penalties(
         term._edf = smooth_meta["smooth_edfs"][i]
 
     return rust_result, smooth_results, smooth_meta["total_edf"], smooth_meta["gcv"]
+
+
+ROBUST_TYPES = ("HC0", "HC1", "HC2", "HC3")
+
+
+def _check_cv_folds(cv: Any) -> None:
+    """Refuse a fold count no cross-validation can run, in either fit mode, before
+    any fit runs: a fold needs other folds' rows to train on."""
+    if cv is None:
+        return
+    if isinstance(cv, bool) or not isinstance(cv, int | np.integer):
+        raise ValidationError(f"cv must be a whole number of folds, got {cv!r}.")
+    if cv < 2:
+        raise ValidationError(
+            f"cv must be at least 2 folds, got {cv}: with fewer, no fold has training rows to fit."
+        )
+
+
+def _resolve_robust_types(robust: Sequence[str], compute_covariance: bool) -> list[str] | None:
+    """Validate ``fit(robust=...)``: HC type names, each once, in order; None when empty."""
+    if isinstance(robust, str):
+        raise ValidationError(
+            f"robust= takes a list of covariance types, for example robust=[{robust!r}]."
+        )
+    types: list[str] = []
+    for name in robust:
+        upper = str(name).upper()
+        if upper not in ROBUST_TYPES:
+            raise ValidationError(
+                f"Unknown robust covariance type {name!r}; use one of {', '.join(ROBUST_TYPES)}."
+            )
+        if upper not in types:
+            types.append(upper)
+    if types and not compute_covariance:
+        raise ValidationError(
+            "robust= needs the covariance matrix, so it cannot be combined with "
+            "compute_covariance=False."
+        )
+    return types or None
 
 
 def _fit_glm_core(
@@ -829,6 +885,7 @@ def _fit_glm_core(
     standardization_scale: np.ndarray | None = None,
     inputs_validated: bool = False,
     compute_covariance: bool = True,
+    robust: list[str] | None = None,
 ) -> tuple:
     """
     Core GLM fitting logic for FormulaGLMDict.
@@ -870,6 +927,9 @@ def _fit_glm_core(
 
     # Check for smooth terms (s() terms with automatic lambda selection)
     smooth_terms, smooth_col_indices = builder.get_smooth_terms()
+    # The frozen design's structural nonzeros per row choose dense or sparse rows
+    # (specs/out-of-core-fit.md §5.2); None (today's builder) lets Rust scan X.
+    max_row_nonzeros = builder_max_row_nonzeros(builder)
 
     # Compute sign constraints from feature names (pos()/neg() and monotonic splines)
     nonneg_indices, nonpos_indices = _get_constraint_indices(feature_names)
@@ -882,12 +942,7 @@ def _fit_glm_core(
     # monotone solver and need the same budget; every other path keeps the
     # plain IRLS default. Resolved here, at the routing branch, so a
     # CV-selected alpha of exactly 0.0 also lands correctly.
-    if max_iter is None:
-        max_iter = (
-            DEFAULT_MONOTONE_SMOOTH_MAX_ITER
-            if smooth_terms and _any_monotone_smooth(smooth_terms)
-            else DEFAULT_MAX_ITER
-        )
+    max_iter = _resolved_max_iter(max_iter, smooth_terms)
 
     if smooth_terms and alpha == 0.0:
         # Use penalized fitting with GCV-based lambda selection
@@ -908,6 +963,8 @@ def _fit_glm_core(
             nonneg_indices=nonneg_indices if nonneg_indices else None,
             nonpos_indices=nonpos_indices if nonpos_indices else None,
             allow_extended_tweedie=allow_extended_tweedie,
+            robust=robust,
+            max_row_nonzeros=max_row_nonzeros,
         )
         return result, smooth_results, total_edf, gcv
 
@@ -936,6 +993,8 @@ def _fit_glm_core(
             nonneg_indices=nonneg_indices if nonneg_indices else None,
             nonpos_indices=nonpos_indices if nonpos_indices else None,
             allow_extended_tweedie=allow_extended_tweedie,
+            robust=robust,
+            max_row_nonzeros=max_row_nonzeros,
         )
         return result, smooth_results, total_edf, gcv
 
@@ -981,6 +1040,8 @@ def _fit_glm_core(
         center,
         scale,
         not compute_covariance,
+        robust=robust,
+        max_row_nonzeros=max_row_nonzeros,
     )
     return result, None, None, None
 
@@ -996,6 +1057,8 @@ def _estimate_negbinomial(
     tol: float = DEFAULT_TOLERANCE,
     init_theta: float | None = None,
     store_design_matrix: bool = False,
+    robust: list[str] | None = None,
+    max_row_nonzeros: int | None = None,
 ) -> tuple[Any, dict]:
     """Estimate Negative Binomial theta by profile likelihood (RS-ACT-010).
 
@@ -1027,6 +1090,8 @@ def _estimate_negbinomial(
         None,  # nonneg_indices
         None,  # nonpos_indices
         store_design_matrix,
+        robust=robust,
+        max_row_nonzeros=max_row_nonzeros,
     )
     return result, dict(theta_meta)
 
@@ -1082,6 +1147,44 @@ def _build_results(
         regularization_standardized=regularization_standardized,
         covariance_available=covariance_available,
     )
+
+
+def _resolve_family_spec(
+    family: str, var_power: float, theta: float | str | None
+) -> tuple[str, float, float | str | None]:
+    """The family base name (lowercase), Tweedie power and NB theta of a fit.
+
+    Embedded parameters (``"tweedie(p=1.7)"``, ``"negbinomial(theta=2)"``) are
+    parsed and checked against the explicit ``var_power`` / ``theta``.
+    """
+    raw_family_base, _embedded_params = _split_embedded_family_param(family)
+    if raw_family_base.lower() == "tweedie":
+        family_base, tweedie_p = _parse_embedded_numeric_param(family, "p")
+        embedded_theta = None
+    elif raw_family_base.lower() in NEGBINOMIAL_ALIASES:
+        family_base, embedded_theta = _parse_embedded_numeric_param(family, "theta")
+        tweedie_p = None
+    else:
+        family_base = raw_family_base
+        tweedie_p = None
+        embedded_theta = None
+    if tweedie_p is not None:
+        if var_power != 1.5 and not np.isclose(var_power, tweedie_p):
+            raise ValidationError(
+                f"Conflicting Tweedie variance powers: family={family!r} but var_power={var_power}."
+            )
+        var_power = tweedie_p
+    if embedded_theta is not None:
+        if (
+            theta is not None
+            and theta != "estimate"
+            and not np.isclose(float(theta), embedded_theta)
+        ):
+            raise ValidationError(
+                f"Conflicting Negative Binomial theta values: family={family!r} but theta={theta}."
+            )
+        theta = embedded_theta
+    return family_base.lower(), var_power, theta
 
 
 class _GLMBase:
@@ -1427,6 +1530,23 @@ class _DeserializedBuilder(InteractionBuilder):
         self._term_slots = state["term_slots"]
 
 
+class ArrayInputRequired:
+    """Stands in for an array input a model fitted out of core does not keep
+    (``specs/out-of-core-fit.md`` §4.5): prediction must be given the new data's
+    array. Tiny and picklable, so ``to_bytes`` does not grow with the training rows."""
+
+    __slots__ = ("name",)
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def __reduce__(self) -> tuple:
+        return (ArrayInputRequired, (self.name,))
+
+    def __repr__(self) -> str:
+        return f"ArrayInputRequired({self.name!r})"
+
+
 def _resolve_predict_offset(
     new_data: pl.DataFrame,
     offset_override: str | np.ndarray | None,
@@ -1443,6 +1563,11 @@ def _resolve_predict_offset(
     offset_to_use = offset_override if offset_override is not None else stored_offset_spec
     if offset_to_use is None:
         return None, None, None
+    if isinstance(offset_to_use, ArrayInputRequired):
+        raise PredictionError(
+            "This model was fit out of core with an offset array, which it does not keep. "
+            "Pass offset= for the prediction data."
+        )
     if isinstance(offset_to_use, str):
         if offset_to_use not in new_data.columns:
             raise PredictionError(
@@ -1891,6 +2016,17 @@ class GLMModel:
         out[0, 0] = corr["ci_lo"]
         out[0, 1] = corr["ci_hi"]
         return out
+
+    def _require_training_rows(self, method: str) -> None:
+        """Refuse a method that needs per-row training values on an out-of-core result
+        (``specs/out-of-core-fit.md`` §4.5), naming the method."""
+        if getattr(self, "fit_mode", None) == "out_of_core":
+            from rustystats.exceptions import OutOfCoreResultError
+
+            raise OutOfCoreResultError(
+                f"{method} needs the per-row training values, which an out-of-core fit "
+                "does not keep. Predict on the data instead."
+            )
 
     def _require_covariance_available(self) -> None:
         if not getattr(self, "_covariance_available", True):
@@ -2482,7 +2618,10 @@ class GLMModel:
     @property
     def has_complement(self) -> bool:
         """Whether the model was fitted with a complement of credibility."""
-        return self._complement_values is not None
+        # An out-of-core fit keeps no per-row complement values; it records the fact.
+        return self._complement_values is not None or getattr(
+            self, "_fitted_with_complement", False
+        )
 
     def credibility_summary(self) -> pl.DataFrame:
         """
@@ -2598,7 +2737,7 @@ class GLMModel:
 
     def diagnostics(
         self,
-        train_data: pl.DataFrame,
+        train_data: pl.DataFrame | None = None,
         categorical_factors: list[str] | None = None,
         continuous_factors: list[str] | None = None,
         n_calibration_bins: int = 10,
@@ -2733,6 +2872,10 @@ class GLMModel:
         """
         from rustystats.diagnostics import compute_diagnostics
 
+        if train_data is None:
+            self._require_training_rows("diagnostics without train_data")
+            raise TypeError("diagnostics() missing 1 required argument: 'train_data'")
+
         # Deserialized models lack covariance / design matrix — disable
         # features that depend on them to avoid AttributeErrors.
         if self._is_deserialized:
@@ -2769,7 +2912,7 @@ class GLMModel:
 
     def diagnostics_json(
         self,
-        train_data: pl.DataFrame,
+        train_data: pl.DataFrame | None = None,
         categorical_factors: list[str] | None = None,
         continuous_factors: list[str] | None = None,
         n_calibration_bins: int = 10,
@@ -3007,43 +3150,27 @@ class GLMModel:
         else:
             new_data = _collect_lazyframe(new_data, set())
 
-        # Compute linear predictor: η = X @ β
+        # Compute linear predictor: η = Xβ.
         # For large inputs we build the design matrix in row-chunks so that the
         # full (n × p) materialization never coexists in memory; each chunk's
         # X is dropped after its slice of η is written. The chunk size is
-        # adaptive to model width via `_compute_predict_chunk_size` — narrow
-        # models use the full `_PREDICT_ROW_CHUNK_DEFAULT` row cap, while wide
-        # models (many features) shrink per-chunk rows so the design matrix
-        # stays within `_PREDICT_CHUNK_BYTES_BUDGET` bytes. The result is
-        # FP-equivalent — but not bit-identical — to the single-shot `X @ β`:
-        # BLAS gemv reduces row contributions in a different order between one
-        # large call and several smaller calls, so per-element diffs are bounded
-        # at ~1-2 ULP. See
-        # `tests/python/test_dict_api.py::test_predict_chunked_matches_singleshot`.
+        # adaptive to model width via `_compute_predict_chunk_size`. Each row is
+        # summed by the row kernel, so chunked and single-shot η are bit-identical.
         n_rows = len(new_data)
         n_features = len(self.params)
         chunk_size = _compute_predict_chunk_size(n_features)
         params = np.asarray(self.params, dtype=np.float64)
-        termwise_chunk_size = _compute_termwise_predict_chunk_size(self._builder, n_features)
-        use_termwise_score = _should_use_termwise_predict_score(
-            self._builder,
-            n_features,
-            chunk_size,
-            termwise_chunk_size,
-        )
-        if use_termwise_score:
-            chunk_size = termwise_chunk_size
+        # Every row's η is its design row summed in column order by the fit's row
+        # kernel (specs/out-of-core-fit.md §6.8), so it does not depend on chunking
+        # or on how the rows arrive; the term-wise scorer's factorised sums would.
         prepared_all: pl.DataFrame | None = None
         if n_rows <= chunk_size:
             # Small input: skip slicing overhead, keep behavior identical to
             # the pre-chunking implementation.
             prepared_all = self._apply_model_input_transforms(new_data)
-            if use_termwise_score:
-                linear_pred = self._builder.linear_predict_new_data(prepared_all, params)
-            else:
-                X_new = self._builder.transform_new_data(prepared_all)
-                linear_pred = X_new @ params
-                del X_new
+            X_new = self._builder.transform_new_data(prepared_all)
+            linear_pred = _row_dots(X_new, params)
+            del X_new
         else:
             design_data = new_data
             if self._compiled_input_transforms:
@@ -3057,16 +3184,12 @@ class GLMModel:
             for start in range(0, n_rows, chunk_size):
                 stop = min(start + chunk_size, n_rows)
                 chunk = design_data.slice(start, stop - start)
-                if use_termwise_score:
-                    linear_pred[start:stop] = self._builder.linear_predict_new_data(chunk, params)
-                    del chunk
-                else:
-                    X_chunk = self._builder.transform_new_data(chunk)
-                    # Write directly into the pre-allocated output slice; the
-                    # X_chunk reference is rebound on the next iteration so the
-                    # ~chunk_size × p matrix is freed before the next one is built.
-                    linear_pred[start:stop] = X_chunk @ params
-                    del X_chunk, chunk
+                X_chunk = self._builder.transform_new_data(chunk)
+                # Write directly into the pre-allocated output slice; the
+                # X_chunk reference is rebound on the next iteration so the
+                # ~chunk_size × p matrix is freed before the next one is built.
+                linear_pred[start:stop] = _row_dots(X_chunk, params)
+                del X_chunk, chunk
 
         aux_data = new_data
         if self._prediction_aux_needs_prepared_data(
@@ -3215,6 +3338,7 @@ class GLMModel:
 
     def fit_diagnostics(self) -> dict[str, Any]:
         """Return lightweight fit-health diagnostics."""
+        self._require_training_rows("fit_diagnostics")
         eta = getattr(self._result, "linear_predictor", None)
         mu = getattr(self._result, "fittedvalues", None)
         eta_arr = np.asarray(eta, dtype=np.float64) if eta is not None else np.asarray([])
@@ -3637,6 +3761,10 @@ class GLMModel:
         mutate this object instead.
         """
         from rustystats.calibration import fit_global_calibration
+
+        # The shifted model's deviance and residuals are recomputed from the
+        # training rows, which an out-of-core fit does not keep.
+        self._require_training_rows("relevel")
 
         if self.link != "log":
             raise ValidationError(
@@ -4721,39 +4849,8 @@ class FormulaGLMDict(_GLMBase):
         # Store weak reference to data to allow garbage collection. When input
         # transforms are present, this is the transformed frame used for fitting.
         self._data_ref = weakref.ref(data)
-        raw_family_base, _embedded_params = _split_embedded_family_param(family)
-        if raw_family_base.lower() == "tweedie":
-            family_base, tweedie_p = _parse_embedded_numeric_param(family, "p")
-            embedded_theta = None
-        elif raw_family_base.lower() in NEGBINOMIAL_ALIASES:
-            family_base, embedded_theta = _parse_embedded_numeric_param(family, "theta")
-            tweedie_p = None
-        else:
-            family_base = raw_family_base
-            tweedie_p = None
-            embedded_theta = None
-        self.family = family_base.lower()
+        self.family, self.var_power, self.theta = _resolve_family_spec(family, var_power, theta)
         self.link = link
-        if tweedie_p is not None:
-            if var_power != 1.5 and not np.isclose(var_power, tweedie_p):
-                raise ValidationError(
-                    f"Conflicting Tweedie variance powers: family={family!r} "
-                    f"but var_power={var_power}."
-                )
-            var_power = tweedie_p
-        if embedded_theta is not None:
-            if (
-                theta is not None
-                and theta != "estimate"
-                and not np.isclose(float(theta), embedded_theta)
-            ):
-                raise ValidationError(
-                    f"Conflicting Negative Binomial theta values: family={family!r} "
-                    f"but theta={theta}."
-                )
-            theta = embedded_theta
-        self.var_power = var_power
-        self.theta = theta
         # RS-ACT-006: opt-in flag for the extended Tweedie regimes (p outside
         # the default compound Poisson-Gamma interior 1 < p < 2). Defaults off;
         # the per-regime support rules are enforced in validate_glm_inputs.
@@ -4807,10 +4904,11 @@ class FormulaGLMDict(_GLMBase):
         # training exposure.
         self._raw_exposure = raw_exposure
 
-        # Build design matrix using existing pipeline
-        self._builder = InteractionBuilder(data)
-        self.y, self.X, self.feature_names = self._builder.build_design_matrix_from_parsed(
-            parsed, exposure=raw_exposure, seed=seed
+        # The model learns a frozen design from slices and encodes them into one
+        # preallocated X (specs/out-of-core-fit.md §6.8); target encoding uses the
+        # keyed order of §6.6, its seed drawn once when `seed` is None (DEC-3).
+        self._builder, self.y, self.X, self.feature_names = build_design_matrix(
+            data, parsed, exposure=raw_exposure, seed=seed
         )
         self.n_obs = len(self.y)
         self.n_params = self.X.shape[1]
@@ -5058,6 +5156,8 @@ class FormulaGLMDict(_GLMBase):
         # Memory optimization
         store_design_matrix: bool = False,
         compute_covariance: bool = True,
+        robust: Sequence[str] = (),
+        out_of_core: Any = None,
     ) -> GLMModel:
         """
         Fit the GLM model, optionally with regularization.
@@ -5132,11 +5232,26 @@ class FormulaGLMDict(_GLMBase):
             Set False for faster large standard GLM fits when coefficient
             inference is not needed.
 
+        robust : sequence of str, default=()
+            Robust (sandwich) covariance types to compute while fitting, from
+            ``"HC0"``, ``"HC1"``, ``"HC2"`` and ``"HC3"``. ``bse_robust`` and the
+            other robust methods then serve these types without a stored design
+            matrix. Needs ``compute_covariance=True``.
+
         Returns
         -------
         GLMModel
             Fitted model results.
         """
+        if out_of_core is not None:
+            from rustystats.exceptions import OutOfCoreOptionError
+
+            raise OutOfCoreOptionError(
+                "out_of_core= applies to a model built on a BatchSource; this model was "
+                "built in memory from a DataFrame."
+            )
+        _check_cv_folds(cv)
+        robust_types = _resolve_robust_types(robust, compute_covariance)
         is_negbinomial = is_negbinomial_family(self.family)
         # RS-ACT-011: capture the requested penalty before CV resolution rewrites
         # alpha/l1_ratio, so inference honesty reflects what the user asked for.
@@ -5215,6 +5330,8 @@ class FormulaGLMDict(_GLMBase):
                 max_iter=plain_max_iter,
                 tol=tol,
                 store_design_matrix=store_design_matrix,
+                robust=robust_types,
+                max_row_nonzeros=builder_max_row_nonzeros(self._builder),
             )
             theta = theta_metadata["theta"]
             smooth_results = total_edf = gcv = None
@@ -5247,6 +5364,7 @@ class FormulaGLMDict(_GLMBase):
                 ),
                 inputs_validated=True,
                 compute_covariance=compute_covariance,
+                robust=robust_types,
             )
             if is_negbinomial:
                 theta_metadata = {
@@ -5312,13 +5430,29 @@ class FormulaGLMDict(_GLMBase):
         # result.diagnostics() can auto-propagate it into weighted decile/lift
         # aggregates (mirrors how _exposure_spec is surfaced on the result).
         results._weights_spec = getattr(self, "_weights_spec", None)
+        # §4.5: how the fit ran. In memory there are no I/O passes. The settings hold
+        # the caps the solve used and the target-encoding seed actually drawn (DEC-3).
+        results.fit_mode = "in_memory"
+        results.passes = {}
+        results.solver_settings = _solver_settings(
+            max_iter=_resolved_max_iter(max_iter, self._builder.get_smooth_terms()[0]),
+            tol=tol,
+            target_encoding_seed=getattr(self._builder, "_te_seed", None),
+            theta_metadata=theta_metadata,
+        )
+        # The drivers' steps: alpha_max and CV's, then the fit's (§4.5).
+        from rustystats.solver_trace import solver_steps
+
+        results.solver_trace = solver_steps(
+            getattr(path_info, "solver_trace", ()), getattr(result, "solver_trace", ())
+        )
         return results
 
 
 def glm_dict(
     response: str,
     terms: dict[str, dict[str, Any]],
-    data: pl.DataFrame | pl.LazyFrame,
+    data: pl.DataFrame | pl.LazyFrame | BatchSource,
     interactions: list[dict[str, Any]] | None = None,
     intercept: bool = True,
     family: str = "gaussian",
@@ -5332,7 +5466,7 @@ def glm_dict(
     complement: str | np.ndarray | GLMModel | None = None,
     input_transforms: list[dict[str, Any]] | None = None,
     allow_extended_tweedie: bool = False,
-) -> FormulaGLMDict:
+) -> FormulaGLMDict | OutOfCoreGLMDict:
     """
     Create a GLM model from a dict specification.
 
@@ -5459,6 +5593,31 @@ def glm_dict(
     ...     complement="countrywide_rate",
     ... ).fit(regularization="lasso")
     """
+    from rustystats.out_of_core import BatchSource
+
+    if isinstance(data, BatchSource):
+        # Out-of-core mode (specs/out-of-core-fit.md §4.2): no I/O until fit.
+        from rustystats.out_of_core_fit import OutOfCoreGLMDict
+
+        return OutOfCoreGLMDict(
+            response=response,
+            terms=terms,
+            data=data,
+            interactions=interactions,
+            intercept=intercept,
+            family=family,
+            link=link,
+            var_power=var_power,
+            theta=theta,
+            exposure=exposure,
+            offset=offset,
+            weights=weights,
+            seed=seed,
+            complement=complement,
+            input_transforms=input_transforms,
+            allow_extended_tweedie=allow_extended_tweedie,
+        )
+
     # Resolve LazyFrame: select only needed columns, then collect
     needed = _extract_needed_columns(
         terms,

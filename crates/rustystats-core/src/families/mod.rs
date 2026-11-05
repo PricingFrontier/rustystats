@@ -77,6 +77,32 @@ pub use tweedie::TweedieFamily;
 //
 // =============================================================================
 
+/// How a family's log-likelihood combines its rows (`specs/out-of-core-fit.md` §8).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogLikelihoodForm {
+    /// −½·(Σ w(y−μ)²/φ + Σw·ln(2πφ)), from two sums that do not read φ.
+    Gaussian,
+    /// Σ w·ℓ_i(y, μ, φ). `needs_scale` when ℓ_i reads φ (Gamma).
+    RowSum { needs_scale: bool },
+    /// −½ × the unweighted deviance.
+    DevianceFallback,
+}
+
+/// The unweighted mean response, block-ordered (`rows::reduce_rows`) so it does
+/// not depend on thread count or batching; 1.0 for an empty response.
+pub fn response_mean(y: &Array1<f64>) -> f64 {
+    let n = y.len();
+    if n == 0 {
+        return 1.0;
+    }
+    let total = crate::rows::reduce_rows(0.0f64, n, |acc, rows| {
+        for i in rows {
+            *acc += y[i];
+        }
+    });
+    total / n as f64
+}
+
 /// The Family trait defines the interface for all distribution families.
 ///
 /// # Key Concepts
@@ -88,22 +114,17 @@ pub trait Family: Send + Sync {
     /// Returns the name of this family (for display purposes).
     fn name(&self) -> &str;
 
-    /// Compute the variance function V(μ).
+    /// The variance function at one μ: V(μ).
     ///
-    /// The variance function relates the variance of Y to its mean:
-    ///   Var(Y) = φ × V(μ)
-    ///
-    /// where φ is the dispersion parameter (φ=1 for Poisson and Binomial).
-    ///
-    /// Returns `Cow::Borrowed` when variance equals mu (e.g. Poisson),
-    /// avoiding allocation on the hot path.
-    ///
-    /// # Arguments
-    /// * `mu` - Array of mean values
-    ///
-    /// # Returns
-    /// Array of variance function values (borrowed or owned)
-    fn variance<'a>(&self, mu: &'a Array1<f64>) -> Cow<'a, Array1<f64>>;
+    /// The scalar methods are the one definition of each family's arithmetic;
+    /// the array methods map them, so per-row kernels and whole-array code
+    /// produce identical bits.
+    fn variance_at(&self, mu: f64) -> f64;
+
+    /// The variance function V(μ) for every element.
+    fn variance<'a>(&self, mu: &'a Array1<f64>) -> Cow<'a, Array1<f64>> {
+        Cow::Owned(mu.mapv(|value| self.variance_at(value)))
+    }
 
     /// Compute the unit deviance for each observation.
     ///
@@ -136,11 +157,21 @@ pub trait Family: Send + Sync {
     ///
     /// This can be weighted if weights are provided.
     fn deviance(&self, y: &Array1<f64>, mu: &Array1<f64>, weights: Option<&Array1<f64>>) -> f64 {
-        let unit_dev = self.unit_deviance(y, mu);
-        match weights {
-            Some(w) => (&unit_dev * w).sum(),
-            None => unit_dev.sum(),
-        }
+        // Block-ordered (`rows::reduce_rows`): independent of thread count and of
+        // how rows arrive, with today's per-row expression `unit_deviance * w`.
+        let n = y.len();
+        crate::rows::reduce_rows(0.0f64, n, |total, rows| match weights {
+            Some(w) => {
+                for i in rows {
+                    *total += self.unit_deviance_at(y[i], mu[i]) * w[i];
+                }
+            }
+            None => {
+                for i in rows {
+                    *total += self.unit_deviance_at(y[i], mu[i]);
+                }
+            }
+        })
     }
 
     /// Return the default (canonical) link function for this family.
@@ -149,31 +180,45 @@ pub trait Family: Send + Sync {
     /// However, you can use other links if they make more sense for your data.
     fn default_link(&self) -> Box<dyn Link>;
 
-    /// Initialize starting values for μ.
+    /// The starting μ for one response value.
     ///
-    /// The IRLS algorithm needs starting values. This provides sensible
-    /// defaults based on the observed data.
-    ///
-    /// # Arguments
-    /// * `y` - Array of observed response values
-    ///
-    /// # Returns
-    /// Array of initial μ values
-    fn initialize_mu(&self, y: &Array1<f64>) -> Array1<f64>;
+    /// `y_mean` is the unweighted mean response (block-ordered, `rows::reduce_rows`)
+    /// when [`Family::initialize_needs_mean`] is true, and NaN otherwise.
+    fn initialize_mu_at(&self, yi: f64, y_mean: f64) -> f64;
 
-    /// Check if μ values are in the valid range for this family.
-    ///
-    /// For example:
-    /// - Poisson: μ must be positive
-    /// - Binomial: μ must be in (0, 1)
-    fn is_valid_mu(&self, mu: &Array1<f64>) -> bool;
+    /// Whether [`Family::initialize_mu_at`] reads the mean response.
+    fn initialize_needs_mean(&self) -> bool {
+        false
+    }
 
-    /// Clamp μ to the valid range for this family.
-    ///
-    /// This is called after each IRLS iteration to ensure μ stays in bounds.
-    /// Default: no clamping (Gaussian).
+    /// Starting values for μ: the IRLS algorithm needs a sensible start from the
+    /// observed data.
+    fn initialize_mu(&self, y: &Array1<f64>) -> Array1<f64> {
+        let y_mean = if self.initialize_needs_mean() {
+            response_mean(y)
+        } else {
+            f64::NAN
+        };
+        y.mapv(|yi| self.initialize_mu_at(yi, y_mean))
+    }
+
+    /// Whether one μ is in the valid range for this family (for example,
+    /// positive for Poisson, inside (0, 1) for Binomial).
+    fn is_valid_mu_at(&self, mu: f64) -> bool;
+
+    /// Whether every μ is in the valid range for this family.
+    fn is_valid_mu(&self, mu: &Array1<f64>) -> bool {
+        mu.iter().all(|&value| self.is_valid_mu_at(value))
+    }
+
+    /// Clamp one μ into the family's valid range. Default: unchanged (Gaussian).
+    fn clamp_mu_at(&self, mu: f64) -> f64 {
+        mu
+    }
+
+    /// Clamp μ to the valid range for this family, after each IRLS update.
     fn clamp_mu(&self, mu: &Array1<f64>) -> Array1<f64> {
-        mu.clone()
+        mu.mapv(|value| self.clamp_mu_at(value))
     }
 
     /// Whether this family has a fixed dispersion parameter (φ = 1).
@@ -184,25 +229,31 @@ pub trait Family: Send + Sync {
         false
     }
 
-    /// Compute the log-likelihood for this family.
+    /// How this family's log-likelihood combines its rows. Default: −½ × the
+    /// unweighted deviance, for families without a closed form.
+    fn log_likelihood_form(&self) -> LogLikelihoodForm {
+        LogLikelihoodForm::DevianceFallback
+    }
+
+    /// One row's log-likelihood term ℓ_i(y, μ, φ), for
+    /// [`LogLikelihoodForm::RowSum`] families. The total is Σ w·ℓ_i (or Σ ℓ_i
+    /// unweighted), reduced block by block.
+    fn log_likelihood_row(&self, _y: f64, _mu: f64, _scale: f64) -> f64 {
+        f64::NAN
+    }
+
+    /// The log-likelihood at fitted means `mu` with dispersion `scale`.
     ///
-    /// Default implementation returns a deviance-based approximation: -deviance/2.
-    /// Families with closed-form log-likelihoods override this.
-    ///
-    /// # Arguments
-    /// * `y` - Observed response
-    /// * `mu` - Fitted values
-    /// * `scale` - Dispersion parameter φ
-    /// * `weights` - Optional prior weights
+    /// One implementation for every family (`diagnostics::log_likelihood_for_family`),
+    /// shared with the fit-time passes so both give identical bits.
     fn log_likelihood(
         &self,
         y: &Array1<f64>,
         mu: &Array1<f64>,
-        _scale: f64,
-        _weights: Option<&Array1<f64>>,
+        scale: f64,
+        weights: Option<&Array1<f64>>,
     ) -> f64 {
-        // Fallback: deviance-based approximation
-        -self.deviance(y, mu, None) / 2.0
+        crate::diagnostics::log_likelihood_for_family(self, y, mu, scale, weights)
     }
 
     /// Whether this family uses a log link by default.
@@ -222,22 +273,19 @@ pub trait Family: Send + Sync {
         false
     }
 
-    /// Compute optimized IRLS weights using true Hessian (when applicable).
-    ///
-    /// For Gamma with log link: w = μ (instead of 1 from Fisher info)
-    /// For Tweedie (1 < p < 2) with log link: w = μ^(2-p)
-    ///
-    /// This method is only called when `use_true_hessian_weights()` returns true.
-    ///
-    /// # Arguments
-    /// * `mu` - Array of fitted mean values
-    /// * `y` - Array of observed response values (needed for some Hessians)
-    ///
-    /// # Returns
-    /// Array of optimized IRLS weights
-    fn true_hessian_weights(&self, mu: &Array1<f64>, _y: &Array1<f64>) -> Array1<f64> {
-        // Default: same as variance (which gives standard IRLS behavior)
-        self.variance(mu).into_owned()
+    /// The true-Hessian IRLS weight at one row, used only when
+    /// [`Family::use_true_hessian_weights`] is true. Default: the variance, which
+    /// gives standard IRLS behaviour.
+    fn true_hessian_weight_at(&self, mu: f64, _y: f64) -> f64 {
+        self.variance_at(mu)
+    }
+
+    /// True-Hessian IRLS weights for every row (Gamma with log link: μ;
+    /// Tweedie, 1 < p < 2, with log link: μ^(2−p)).
+    fn true_hessian_weights(&self, mu: &Array1<f64>, y: &Array1<f64>) -> Array1<f64> {
+        ndarray::Zip::from(mu)
+            .and(y)
+            .map_collect(|&mui, &yi| self.true_hessian_weight_at(mui, yi))
     }
 }
 
@@ -253,8 +301,16 @@ mod tests {
             "fallback"
         }
 
-        fn variance<'a>(&self, mu: &'a Array1<f64>) -> Cow<'a, Array1<f64>> {
-            Cow::Owned(mu.mapv(|v| v + 1.0))
+        fn variance_at(&self, mu: f64) -> f64 {
+            mu + 1.0
+        }
+
+        fn initialize_mu_at(&self, yi: f64, _y_mean: f64) -> f64 {
+            yi
+        }
+
+        fn is_valid_mu_at(&self, mu: f64) -> bool {
+            mu.is_finite()
         }
 
         fn unit_deviance(&self, y: &Array1<f64>, mu: &Array1<f64>) -> Array1<f64> {
@@ -268,14 +324,6 @@ mod tests {
 
         fn default_link(&self) -> Box<dyn Link> {
             Box::new(IdentityLink)
-        }
-
-        fn initialize_mu(&self, y: &Array1<f64>) -> Array1<f64> {
-            y.clone()
-        }
-
-        fn is_valid_mu(&self, mu: &Array1<f64>) -> bool {
-            mu.iter().all(|v| v.is_finite())
         }
     }
 

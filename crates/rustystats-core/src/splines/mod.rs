@@ -25,10 +25,15 @@
 //
 // =============================================================================
 
+pub mod knots;
 pub mod penalized;
+
+use std::borrow::Cow;
 
 use ndarray::{Array1, Array2};
 use rayon::prelude::*;
+
+use knots::{exact_order_statistics, knot_rank};
 
 use crate::constants::{DEFAULT_SPLINE_DEGREE, KNOT_TOL};
 
@@ -38,6 +43,25 @@ pub const DEFAULT_DEGREE: usize = DEFAULT_SPLINE_DEGREE;
 // =============================================================================
 // KNOT COMPUTATION
 // =============================================================================
+
+/// Interior knots `1..=n_interior` of `x`: interior knot i of m is
+/// `sorted[knot_rank(i, m, n)]` over `x` ordered by `f64::total_cmp`, duplicates
+/// kept (`specs/out-of-core-fit.md` §6.5). The order statistics come from
+/// [`exact_order_statistics`], the selection the out-of-core passes run, rather
+/// than a sorted copy of the column.
+fn quantile_interior_knots(x: &Array1<f64>, n_interior: usize) -> Vec<f64> {
+    if n_interior == 0 {
+        return Vec::new();
+    }
+    let ranks: Vec<u64> = (1..=n_interior)
+        .map(|i| knot_rank(i, n_interior, x.len()) as u64)
+        .collect();
+    let values: Cow<'_, [f64]> = match x.as_slice() {
+        Some(values) => Cow::Borrowed(values),
+        None => Cow::Owned(x.to_vec()),
+    };
+    exact_order_statistics(&values, &ranks).expect("interior knots need at least one data value")
+}
 
 /// Compute knot sequence for B-splines.
 ///
@@ -72,17 +96,7 @@ pub fn compute_knots(
     let n_interior = if df > degree + 1 { df - degree - 1 } else { 0 };
 
     // Create interior knots at quantiles of x
-    let mut interior_knots = Vec::with_capacity(n_interior);
-    if n_interior > 0 {
-        let mut sorted_x: Vec<f64> = x.iter().cloned().collect();
-        sorted_x.sort_by(|a, b| a.total_cmp(b));
-
-        for i in 1..=n_interior {
-            let p = (i as f64) / ((n_interior + 1) as f64);
-            let idx = (p * (sorted_x.len() - 1) as f64) as usize;
-            interior_knots.push(sorted_x[idx]);
-        }
-    }
+    let interior_knots = quantile_interior_knots(x, n_interior);
 
     // Build complete knot vector
     // [x_min repeated (degree+1), interior_knots, x_max repeated (degree+1)]
@@ -154,17 +168,7 @@ pub fn compute_knots_natural(
     });
 
     // Interior knots at quantiles
-    let mut interior_knots = Vec::with_capacity(n_interior);
-    if n_interior > 0 {
-        let mut sorted_x: Vec<f64> = x.iter().cloned().collect();
-        sorted_x.sort_by(|a, b| a.total_cmp(b));
-
-        for i in 1..=n_interior {
-            let p = (i as f64) / ((n_interior + 1) as f64);
-            let idx = (p * (sorted_x.len() - 1) as f64) as usize;
-            interior_knots.push(sorted_x[idx]);
-        }
-    }
+    let interior_knots = quantile_interior_knots(x, n_interior);
 
     (interior_knots, x_min, x_max)
 }
@@ -737,7 +741,7 @@ pub fn is_names(var_name: &str, df: usize, increasing: bool) -> Vec<String> {
 mod tests {
     use super::*;
     use approx::assert_abs_diff_eq;
-    use ndarray::array;
+    use ndarray::{array, s};
 
     fn assert_matrix_close(actual: &Array2<f64>, expected: &Array2<f64>, epsilon: f64) {
         assert_eq!(actual.shape(), expected.shape());
@@ -774,6 +778,62 @@ mod tests {
 
         let explicit = compute_knots(&x, 6, 1, Some((-2.0, 12.0)));
         assert_eq!(explicit, vec![-2.0, -2.0, 1.0, 3.0, 5.0, 7.0, 12.0, 12.0]);
+    }
+
+    /// The placement before the order-statistic selector: sort a copy, index it.
+    fn sorted_copy_interior_knots(x: &[f64], n_interior: usize) -> Vec<f64> {
+        let mut sorted_x = x.to_vec();
+        sorted_x.sort_by(|a, b| a.total_cmp(b));
+        (1..=n_interior)
+            .map(|i| {
+                let p = (i as f64) / ((n_interior + 1) as f64);
+                sorted_x[(p * (sorted_x.len() - 1) as f64) as usize]
+            })
+            .collect()
+    }
+
+    fn knot_bits(knots: &[f64]) -> Vec<u64> {
+        knots.iter().map(|k| k.to_bits()).collect()
+    }
+
+    #[test]
+    fn test_interior_knots_match_the_sorted_copy_bit_for_bit() {
+        let mut state = 0x1234_5678_u64;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            state >> 11
+        };
+        for n in [1usize, 2, 3, 7, 100, 1001] {
+            let mut x: Vec<f64> = (0..n)
+                .map(|_| ((next() % 400) as f64 - 200.0) * 0.37)
+                .collect();
+            x[0] = -0.0;
+            if n > 3 {
+                // Non-finite values keep their total_cmp place in memory.
+                x[1] = f64::NAN;
+                x[2] = f64::NEG_INFINITY;
+            }
+            let column = Array1::from_vec(x.clone());
+            for n_interior in [1usize, 2, 5, 12] {
+                let expected = sorted_copy_interior_knots(&x, n_interior);
+                let got = quantile_interior_knots(&column, n_interior);
+                assert_eq!(
+                    knot_bits(&got),
+                    knot_bits(&expected),
+                    "n = {n}, m = {n_interior}"
+                );
+            }
+        }
+        // A strided (non-contiguous) column takes the copying route.
+        let strided = Array1::from_shape_fn(101, |i| ((i * 7) % 11) as f64).slice_move(s![..;2]);
+        assert!(strided.as_slice().is_none());
+        let flat: Vec<f64> = strided.iter().copied().collect();
+        assert_eq!(
+            knot_bits(&quantile_interior_knots(&strided, 4)),
+            knot_bits(&sorted_copy_interior_knots(&flat, 4))
+        );
     }
 
     #[test]

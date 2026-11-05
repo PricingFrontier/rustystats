@@ -70,37 +70,37 @@ pub trait Link: Send + Sync {
     /// Returns the name of this link function (for display purposes).
     fn name(&self) -> &str;
 
+    /// Apply the link function to one value: η = g(μ).
+    ///
+    /// The scalar methods are the one definition of each link's arithmetic;
+    /// the array methods below map them, so per-row kernels (which evaluate one
+    /// row at a time over blocks) and whole-array code produce identical bits.
+    fn link_at(&self, mu: f64) -> f64;
+
+    /// Apply the inverse link to one value: μ = g⁻¹(η).
+    fn inverse_at(&self, eta: f64) -> f64;
+
+    /// The derivative of the link at one value: dη/dμ.
+    fn derivative_at(&self, mu: f64) -> f64;
+
     /// Apply the link function: η = g(μ)
     ///
     /// Transforms the mean (μ) to the linear predictor scale (η).
-    ///
-    /// # Arguments
-    /// * `mu` - Array of mean values
-    ///
-    /// # Returns
-    /// Array of linear predictor values
-    fn link(&self, mu: &Array1<f64>) -> Array1<f64>;
+    fn link(&self, mu: &Array1<f64>) -> Array1<f64> {
+        mu.mapv(|value| self.link_at(value))
+    }
 
     /// Apply the inverse link function: μ = g⁻¹(η)
     ///
     /// Transforms the linear predictor (η) back to the mean scale (μ).
-    /// This is used to get predicted values from the model.
-    ///
-    /// # Arguments
-    /// * `eta` - Array of linear predictor values
-    ///
-    /// # Returns
-    /// Array of mean values
-    fn inverse(&self, eta: &Array1<f64>) -> Array1<f64>;
+    fn inverse(&self, eta: &Array1<f64>) -> Array1<f64> {
+        eta.mapv(|value| self.inverse_at(value))
+    }
 
     /// Compute the derivative of the link function: dη/dμ
     ///
     /// This is needed by the IRLS algorithm to compute working weights.
-    ///
-    /// # Arguments
-    /// * `mu` - Array of mean values
-    ///
-    /// # Returns
-    /// Array of derivative values at each point
-    fn derivative(&self, mu: &Array1<f64>) -> Array1<f64>;
+    fn derivative(&self, mu: &Array1<f64>) -> Array1<f64> {
+        mu.mapv(|value| self.derivative_at(value))
+    }
 }

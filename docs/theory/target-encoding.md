@@ -84,6 +84,15 @@ CatBoost's solution:
 1. Randomly order all observations
 2. For each observation, compute the encoding using **only observations that came before it** in the random order
 
+!!! note "The random order since 0.10"
+    For permutation *m*, RustyStats orders the rows by the key
+    `mix64(mix64(seed + m) ^ row)`, where `mix64` is the SplitMix64 finaliser and `row` is
+    the row's position in the training data. The key depends only on the seed, the
+    permutation and the row. So the order, and every encoded value, is the same in memory
+    and out of core, however the rows arrive. Versions before 0.10 drew a permutation
+    from a random generator instead. The construction is the same, but the encoded
+    training values differ from those versions' for the same seed.
+
 ### Step-by-Step Example
 
 Data (6 observations):

@@ -7,9 +7,12 @@
 // =============================================================================
 
 use numpy::{IntoPyArray, PyArray2, PyReadonlyArray1};
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
+use rustystats_core::error::RustyStatsError;
 use rustystats_core::splines;
+use rustystats_core::splines::knots;
 
 /// Compute B-spline basis matrix.
 ///
@@ -359,4 +362,68 @@ pub fn compute_knots_natural_py(
     let x_array = x.as_array().to_owned();
     let (interior, x_min, x_max) = splines::compute_knots_natural(&x_array, df, boundary_knots);
     Ok((interior, (x_min, x_max)))
+}
+
+/// Exact order statistics over values that arrive in batches.
+///
+/// Wraps ``rustystats_core::splines::knots::OrderStatistics``: the MSD radix
+/// select that places interior spline knots without holding the column
+/// (``specs/out-of-core-fit.md`` §6.5). Stream the same values through every
+/// pass: ``begin_pass(j)``, ``observe(batch)`` as often as needed, ``end_pass()``
+/// for ``j`` in ``range(passes_needed())``, then read ``results()``.
+///
+/// Parameters
+/// ----------
+/// ranks : list of int
+///     0-based ranks into the values sorted by ``total_cmp`` (duplicates kept),
+///     in any order. Each must be below ``n``.
+/// n : int
+///     Number of values every pass sees (at least 1).
+#[pyclass(name = "OrderStatistics")]
+pub struct OrderStatisticsPy {
+    inner: knots::OrderStatistics,
+}
+
+fn order_statistics_error(err: RustyStatsError) -> PyErr {
+    PyValueError::new_err(err.to_string())
+}
+
+#[pymethods]
+impl OrderStatisticsPy {
+    #[new]
+    fn new(ranks: Vec<u64>, n: u64) -> PyResult<Self> {
+        let inner = knots::OrderStatistics::new(ranks, n).map_err(order_statistics_error)?;
+        Ok(Self { inner })
+    }
+
+    /// Passes over the data the selection takes (4, or 0 with no ranks).
+    fn passes_needed(&self) -> usize {
+        self.inner.passes_needed()
+    }
+
+    /// Open pass ``pass_index`` (0-based); passes run in order.
+    fn begin_pass(&mut self, pass_index: usize) -> PyResult<()> {
+        self.inner
+            .begin_pass(pass_index)
+            .map_err(order_statistics_error)
+    }
+
+    /// Count a contiguous 1-D float64 batch into the open pass. Non-finite
+    /// values are refused.
+    fn observe(&mut self, values: PyReadonlyArray1<f64>) -> PyResult<()> {
+        let values = values
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("values must be a contiguous 1-D float64 array"))?;
+        self.inner.observe(values).map_err(order_statistics_error)
+    }
+
+    /// Close the open pass.
+    fn end_pass(&mut self) -> PyResult<()> {
+        self.inner.end_pass().map_err(order_statistics_error)
+    }
+
+    /// The order statistics, in the order the ranks were given.
+    fn results(&self) -> PyResult<Vec<f64>> {
+        self.inner.results().map_err(order_statistics_error)
+    }
 }

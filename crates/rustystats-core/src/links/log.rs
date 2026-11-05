@@ -34,7 +34,6 @@
 // =============================================================================
 
 use super::Link;
-use ndarray::Array1;
 
 /// The Log link function: η = log(μ)
 ///
@@ -48,36 +47,25 @@ impl Link for LogLink {
         "log"
     }
 
-    /// Link function: η = log(μ)
-    ///
-    /// Takes the natural logarithm of each value.
-    ///
-    /// # Warning
-    /// μ must be positive! log(0) = -∞ and log(negative) is undefined.
-    /// In practice, we should add bounds checking.
-    fn link(&self, mu: &Array1<f64>) -> Array1<f64> {
-        mu.mapv(|x| x.ln())
+    /// Link function: η = log(μ). μ must be positive.
+    #[inline]
+    fn link_at(&self, mu: f64) -> f64 {
+        mu.ln()
     }
 
-    /// Inverse link: μ = exp(η)
-    ///
-    /// Exponentiates each value. This always produces positive results,
-    /// which is exactly what we want for count/positive data.
-    ///
-    /// Clamps input to [-700, 700] to prevent overflow (exp(709) ≈ 8.2e307 → inf).
-    fn inverse(&self, eta: &Array1<f64>) -> Array1<f64> {
-        // IEEE-754 f64: exp(709.78) overflows to inf, exp(-745.13) underflows to 0
-        // Use conservative bounds to ensure finite results
+    /// Inverse link: μ = exp(η), with η clamped to [-700, 700] so the result is
+    /// finite (exp(709.78) overflows to inf, exp(-745.13) underflows to 0).
+    #[inline]
+    fn inverse_at(&self, eta: f64) -> f64 {
         const EXP_MAX: f64 = 700.0;
         const EXP_MIN: f64 = -700.0;
-        eta.mapv(|x| x.clamp(EXP_MIN, EXP_MAX).exp())
+        eta.clamp(EXP_MIN, EXP_MAX).exp()
     }
 
-    /// Derivative: dη/dμ = 1/μ
-    ///
-    /// The derivative of log(μ) with respect to μ.
-    fn derivative(&self, mu: &Array1<f64>) -> Array1<f64> {
-        mu.mapv(|x| 1.0 / x)
+    /// Derivative: dη/dμ = 1/μ.
+    #[inline]
+    fn derivative_at(&self, mu: f64) -> f64 {
+        1.0 / mu
     }
 }
 

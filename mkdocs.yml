@@ -94,6 +94,7 @@ nav:
     - Rate Tables: api/rate-tables.md
     - Working Response & Weights: api/working-response-weights.md
     - Model Serialization: api/serialization.md
+    - Out-of-Core Fitting: api/out-of-core.md
   - Release Notes: changelog.md
   - Rust Guide:
     - Rust Fundamentals: rust-guide/fundamentals.md

@@ -1,4 +1,4 @@
-use super::{compute_irls_weights, initialize_mu_safe, validate_glm_inputs};
+use super::validate_glm_inputs;
 use ndarray::ArrayView2;
 
 // =============================================================================
@@ -48,19 +48,30 @@ use ndarray::ArrayView2;
 
 use ndarray::{Array1, Array2};
 
-use super::irls::{compute_xtwx, compute_xtwx_xtwz, IRLSConfig, IRLSResult};
+use super::irls::{
+    coef_predictor, finish_statistics, request_statistics, FinalStatistics, FirstPassFacts,
+    IRLSConfig, IRLSResult, RetainedWeights, RobustRequest, StatisticsEvals,
+};
+use super::passes::{
+    record_step, rows_stay_sparse, Eval, EvalSum, Facts, InMemoryExecutor, PassExecutor,
+    PassRequest, Predictor, ResponseSpec, RowContext, SolverStep, WeightsSpec,
+};
 use crate::constants::ZERO_TOL;
-use crate::error::Result;
+use crate::error::{Result, RustyStatsError};
 use crate::families::Family;
+use crate::inference::HCType;
 use crate::links::Link;
-use crate::regularization::{soft_threshold, RegularizationConfig};
+use crate::regularization::{soft_threshold, RegularizationConfig, Standardization};
+use crate::rows::GramPartial;
 
 const ACTIVE_SET_REFRESH_INTERVAL: usize = 5;
 const COEFFICIENT_UPDATE_TOL: f64 = 1e-15;
 
 /// Fit a GLM using coordinate descent with L1/Elastic Net penalty.
 ///
-/// This is the main entry point for Lasso and Elastic Net regularized GLMs.
+/// This is the main entry point for Lasso and Elastic Net regularized GLMs. The
+/// rows are served by an in-memory [`InMemoryExecutor`] to [`drive_cd`], the same
+/// driver an out-of-core fit runs (`specs/out-of-core-fit.md` §7.5).
 ///
 /// # Arguments
 /// * `y` - Response variable (n × 1)
@@ -72,12 +83,15 @@ const COEFFICIENT_UPDATE_TOL: f64 = 1e-15;
 /// * `offset` - Optional offset term
 /// * `weights` - Optional prior weights
 /// * `init_coefficients` - Optional initial coefficients for warm starting
-/// * `skip_covariance` - If true, skip the expensive O(n×p²) covariance computation
+/// * `skip_covariance` - If true, skip the covariance and the final statistics
 ///   (useful during CV path where only coefficients are needed)
+/// * `robust` - Robust covariance types for the final pass
+/// * `row_standardization` - Standardize every row before the kernels (§6.7)
 ///
 /// # Returns
 /// * `Ok(IRLSResult)` - Fitted model results
 /// * `Err(RustyStatsError)` - If fitting fails
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn fit_glm_coordinate_descent(
     y: &Array1<f64>,
     x: ArrayView2<'_, f64>,
@@ -89,15 +103,134 @@ pub(crate) fn fit_glm_coordinate_descent(
     weights: Option<&Array1<f64>>,
     init_coefficients: Option<&Array1<f64>>,
     skip_covariance: bool,
+    robust: &[HCType],
+    row_standardization: Option<&Standardization>,
 ) -> Result<IRLSResult> {
-    // -------------------------------------------------------------------------
-    // Step 0: Validate inputs and set up offset/weights
-    // -------------------------------------------------------------------------
-    let n = y.len();
-    let p = x.ncols();
     let validated = validate_glm_inputs(y, x, offset, weights)?;
     let offset_vec = validated.offset;
     let prior_weights_vec = validated.prior_weights;
+    let y_slice = y.as_slice().ok_or_else(|| {
+        RustyStatsError::LinearAlgebraError("Response y must be contiguous".to_string())
+    })?;
+    let y_mean = crate::families::response_mean(y);
+    let sparse_rows =
+        rows_stay_sparse(row_standardization) && irls_config.row_kernel.sparse_in_memory(x);
+    let ctx = RowContext {
+        family,
+        link,
+        y: y_slice,
+        offset: offset_vec
+            .as_slice()
+            .expect("validated offset is contiguous"),
+        prior_weights: prior_weights_vec
+            .as_slice()
+            .expect("validated prior weights are contiguous"),
+        y_mean,
+        min_weight: irls_config.min_weight,
+        has_offset: offset.is_some(),
+        standardization: None,
+    };
+    let mut executor = InMemoryExecutor::new(x, sparse_rows, ctx)?;
+    executor.set_row_standardization(row_standardization.cloned());
+    let outcome = drive_cd(
+        &mut executor,
+        &CdDriveSettings {
+            config: irls_config,
+            regularization: reg_config,
+            init_coefficients,
+            skip_covariance,
+            y_mean,
+            family,
+            link,
+            null_log_offset: offset.is_some() && family.is_log_link_default(),
+            robust,
+            statistics_without_covariance: false,
+        },
+    )?;
+
+    // In-memory results keep the per-row state of the returned fit.
+    let (eta, mu) = executor.materialize(&outcome.fitted);
+    let irls_weights = outcome.weights.materialize(&executor, x.nrows());
+    let solver_trace = executor.take_trace();
+    drop(executor);
+
+    Ok(IRLSResult {
+        coefficients: outcome.coefficients,
+        fitted_values: Array1::from_vec(mu),
+        linear_predictor: Array1::from_vec(eta),
+        deviance: outcome.deviance,
+        iterations: outcome.iterations,
+        converged: outcome.converged,
+        covariance_unscaled: outcome.covariance_unscaled,
+        irls_weights: Array1::from_vec(irls_weights),
+        prior_weights: prior_weights_vec,
+        offset: offset_vec,
+        y: y.to_owned(),
+        family_name: family.name().to_string(),
+        penalty: reg_config.penalty.clone(),
+        design_matrix: None, // Computed lazily in Python layer to avoid expensive copy
+        warnings: outcome.warnings,
+        step_halving_used: false,
+        solver_status: outcome.solver_status.to_string(),
+        profile: None,
+        statistics: outcome.statistics,
+        solver_trace,
+    })
+}
+
+/// What [`drive_cd`] needs besides the rows.
+pub(crate) struct CdDriveSettings<'a> {
+    /// Outer-loop settings: max_iterations, tolerance, verbose and sign constraints.
+    pub config: &'a IRLSConfig,
+    pub regularization: &'a RegularizationConfig,
+    pub init_coefficients: Option<&'a Array1<f64>>,
+    /// Skip the covariance and the final statistics (cross-validation folds).
+    pub skip_covariance: bool,
+    /// The block-ordered mean response (`families::response_mean`): a cold start's
+    /// intercept is g(clamp(mean y)).
+    pub y_mean: f64,
+    pub family: &'a dyn Family,
+    pub link: &'a dyn Link,
+    /// Whether the null model scales by exp(offset) (`RowContext::null_log_offset`).
+    pub null_log_offset: bool,
+    pub robust: &'a [HCType],
+    /// Compute the final statistics even when covariance is skipped (§8).
+    pub statistics_without_covariance: bool,
+}
+
+/// The result of driving coordinate descent: everything but per-row arrays.
+pub(crate) struct CdDriveOutcome {
+    pub coefficients: Array1<f64>,
+    pub covariance_unscaled: Array2<f64>,
+    pub deviance: f64,
+    pub iterations: usize,
+    pub converged: bool,
+    pub solver_status: &'static str,
+    pub warnings: Vec<String>,
+    /// The predictor the returned fitted values and linear predictor come from.
+    pub fitted: Predictor,
+    /// The weights of the last iteration's normal equations (the covariance's).
+    pub weights: RetainedWeights,
+    pub statistics: Option<FinalStatistics>,
+}
+
+/// Iteratively reweighted coordinate descent over passes (§7.5).
+///
+/// A cold start reads the initializer's validity and the y/weight/offset facts in
+/// one pass. Then each pass evaluates the deviance at the current predictor and
+/// accumulates the next iteration's normal equations there, so an iteration costs
+/// one pass. The sweeps run on the p×p Gram with their existing caps. The
+/// covariance reuses the last iteration's Gram, and the final statistics take one
+/// more pass (fused into the last one when `max_iterations` ends the loop).
+pub(crate) fn drive_cd(
+    executor: &mut dyn PassExecutor,
+    settings: &CdDriveSettings<'_>,
+) -> Result<CdDriveOutcome> {
+    let config = settings.config;
+    let reg_config = settings.regularization;
+    let (family, link) = (settings.family, settings.link);
+    let n = executor.n_rows();
+    let p = executor.n_params();
 
     // Get penalty parameters
     let l1_penalty = reg_config.penalty.l1_penalty();
@@ -108,18 +241,13 @@ pub(crate) fn fit_glm_coordinate_descent(
     let pen_start = if has_intercept { 1 } else { 0 };
 
     // -------------------------------------------------------------------------
-    // Step 1: Precompute X'X diagonal (sum of squared predictors, weighted)
-    // These are recomputed each IRLS iteration with updated weights
-    // -------------------------------------------------------------------------
-
-    // -------------------------------------------------------------------------
-    // Step 2: Initialize coefficients and μ (with warm start support)
+    // Initialize coefficients (with warm start support)
     // -------------------------------------------------------------------------
     let mut warnings: Vec<String> = Vec::new();
-    let mut coefficients = if let Some(init) = init_coefficients {
-        if init.len() == p {
-            init.clone()
-        } else {
+    let warm_start = settings.init_coefficients.is_some();
+    let mut coefficients = match settings.init_coefficients {
+        Some(init) if init.len() == p => init.clone(),
+        Some(init) => {
             // Dimension mismatch - fall back to cold start with warning
             warnings.push(format!(
                 "Warm-start coefficient dimension mismatch (got {}, expected {}). \
@@ -129,91 +257,89 @@ pub(crate) fn fit_glm_coordinate_descent(
             ));
             Array1::zeros(p)
         }
-    } else {
-        Array1::zeros(p)
+        None => Array1::zeros(p),
     };
 
     // Initialize intercept to link(mean(y)) only if not warm starting
-    if should_initialize_intercept_from_response(init_coefficients.is_some(), has_intercept) {
-        coefficients[0] = intercept_start_from_response(y, family, link);
+    if should_initialize_intercept_from_response(warm_start, has_intercept) {
+        coefficients[0] = intercept_start_from_mean(settings.y_mean, family, link);
     }
 
-    // Initialize μ from coefficients if warm starting, otherwise from y
-    let mut mu = if init_coefficients.is_some() {
-        initialize_mu_from_coefficients(x, &coefficients, &offset_vec, family, link)
+    // μ from the coefficients on a warm start (η = g(μ)), otherwise from y with the
+    // family initializer, or the safe one when any initial μ is invalid.
+    let mut first_facts: Option<Facts> = None;
+    let mut current = if warm_start {
+        Predictor::CoefRoundTrip(std::sync::Arc::from(
+            coefficients
+                .as_slice()
+                .expect("coefficients are contiguous"),
+        ))
     } else {
-        initialize_mu_from_response(y, family)
+        let mut request = PassRequest::default();
+        let invalid = request.eval(Eval::InitializerInvalid);
+        let facts = request.eval(Eval::Facts);
+        let sums = executor.run(&request)?;
+        first_facts = Some(sums[facts].facts().clone());
+        Predictor::Initializer {
+            safe: sums[invalid].count() > 0.0,
+        }
     };
 
-    // -------------------------------------------------------------------------
-    // Step 3: Initialize linear predictor
-    // -------------------------------------------------------------------------
-    let mut eta = link.link(&mu);
+    // The deviance at the start, and the first iteration's normal equations.
+    let max_iterations = config.max_iterations;
+    let (mut deviance, mut gram) = {
+        let mut request = PassRequest::default();
+        let index = request.predictor(current.clone());
+        let deviance = request.eval(Eval::Deviance(index));
+        let gram = (max_iterations > 0).then(|| request.eval(irls_gram(index)));
+        let facts = first_facts.is_none().then(|| request.eval(Eval::Facts));
+        let mut sums = executor.run(&request)?;
+        if let Some(eval) = facts {
+            first_facts = Some(sums[eval].facts().clone());
+        }
+        (
+            sums[deviance].deviance().0,
+            gram.map(|eval| take_gram(&mut sums, eval)),
+        )
+    };
+    let facts = FirstPassFacts::from_sums(
+        first_facts
+            .as_ref()
+            .expect("the first pass reads the facts"),
+        n,
+        settings.null_log_offset,
+    );
 
     // -------------------------------------------------------------------------
-    // Step 4: Calculate initial deviance
-    // -------------------------------------------------------------------------
-    let mut deviance = family.deviance(y, &mu, Some(&prior_weights_vec));
-    let mut deviance_old: f64;
-
-    // -------------------------------------------------------------------------
-    // Step 5: Outer IRLS loop
+    // Outer IRLS loop
     // -------------------------------------------------------------------------
     let mut converged = false;
     let mut outer_iteration = 0;
-    let mut irls_weights = Array1::zeros(n);
+    let mut retained = RetainedWeights::Zeros;
+    let mut retained_xwx: Option<Vec<f64>> = None;
+    let mut covariance: Option<Array2<f64>> = None;
+    let mut final_sums: Option<(Vec<EvalSum>, StatisticsEvals)> = None;
 
-    while should_continue_iteration(outer_iteration, irls_config.max_iterations) {
+    while should_continue_iteration(outer_iteration, max_iterations) {
         advance_iteration(&mut outer_iteration);
 
         // ---------------------------------------------------------------------
-        // Step 5a: Compute working weights and working response
-        // ---------------------------------------------------------------------
-        let weight_result = compute_irls_weights(
-            y,
-            &mu,
-            &eta,
-            &offset_vec,
-            &prior_weights_vec,
-            family,
-            link,
-            irls_config.min_weight,
-        )?;
-        irls_weights = weight_result.irls_weights;
-        let combined_weights = weight_result.combined_weights;
-        let working_response = weight_result.working_response;
-
-        // ---------------------------------------------------------------------
-        // Step 5b: Coordinate descent using COVARIANCE UPDATES (glmnet-style)
-        // ---------------------------------------------------------------------
-        // Key optimization: Precompute X'Wz and X'WX, then use O(p) updates
-        // instead of O(np) per coefficient.
-        //
-        // The normal equations: (X'WX + λI)β = X'Wz
-        // For coordinate descent, we need:
+        // Coordinate descent using COVARIANCE UPDATES (glmnet-style) on the Gram
+        // accumulated at the current predictor:
         //   β_j = S(X_j'W(z - X_{-j}β_{-j}), λ₁) / (X_j'WX_j + λ₂)
-        //
-        // Using covariance trick:
-        //   X_j'W(z - Xβ + X_jβ_j) = X_j'Wz - X_j'WXβ + X_j'WX_jβ_j
-        //                          = grad_j + (X'WX)_{jj}β_j
-        // where grad_j = X_j'Wz - Σ_k (X'WX)_{jk}β_k
+        // with X_j'W(z - Xβ + X_jβ_j) = grad_j + (X'WX)_{jj}β_j,
+        // where grad_j = X_j'Wz - Σ_k (X'WX)_{jk}β_k.
         // ---------------------------------------------------------------------
+        let system = gram
+            .take()
+            .expect("the pass at this iteration's predictor accumulated its Gram");
+        let xwz = system.xtz;
+        // Row-major X'WX: each gradient update scans a full row.
+        let xwx = packed_to_row_major(&system.xtx_packed, p);
+        drop(system.xtx_packed);
 
         let mut cd_converged = false;
         let mut cd_iteration = 0;
-
-        let (xwx_matrix, xwz_vector) = compute_xtwx_xtwz(x, &working_response, &combined_weights)?;
-
-        // Keep the coordinate-update loop on a row-major flat matrix. nalgebra
-        // stores DMatrix column-major, while each gradient update scans a full
-        // row of X'WX.
-        let xwz: Vec<f64> = xwz_vector.iter().copied().collect();
-        let mut xwx = vec![0.0_f64; p * p];
-        for j in 0..p {
-            for k in 0..p {
-                xwx[j * p + k] = xwx_matrix[(j, k)];
-            }
-        }
 
         // Active set: track which coefficients are non-zero for faster iterations
         let all_indices: Vec<usize> = (0..p).collect();
@@ -269,7 +395,7 @@ pub(crate) fn fit_glm_coordinate_descent(
         }
 
         if !cd_converged {
-            if irls_config.verbose {
+            if config.verbose {
                 eprintln!(
                     "Warning: Coordinate descent did not converge in {} iterations",
                     reg_config.max_cd_iterations
@@ -281,31 +407,69 @@ pub(crate) fn fit_glm_coordinate_descent(
             ));
         }
 
-        // ---------------------------------------------------------------------
-        // Step 5c: Apply coefficient sign constraints
-        // ---------------------------------------------------------------------
+        // Apply coefficient sign constraints
         project_sign_constraints(
             &mut coefficients,
-            &irls_config.nonneg_indices,
-            &irls_config.nonpos_indices,
+            &config.nonneg_indices,
+            &config.nonpos_indices,
         );
 
-        // ---------------------------------------------------------------------
-        // Step 5d: Update η and μ
-        // ---------------------------------------------------------------------
-        eta = linear_predictor_with_offset(x, &coefficients, &offset_vec);
-        mu = link.inverse(&eta);
-        mu = family.clamp_mu(&mu);
+        // This iteration's weights are the covariance's if it is the last.
+        retained = RetainedWeights::Irls(current.clone());
+        let next = coef_predictor(&coefficients);
 
-        // ---------------------------------------------------------------------
-        // Step 5e: Check outer loop convergence
-        // ---------------------------------------------------------------------
-        deviance_old = deviance;
-        deviance = family.deviance(y, &mu, Some(&prior_weights_vec));
+        // The next pass: the deviance at the new coefficients, and the next
+        // iteration's normal equations unless max_iterations ends the loop, in which
+        // case it is the final pass and carries the final statistics too.
+        let last = outer_iteration == max_iterations;
+        let cov_now = (last && !settings.skip_covariance)
+            .then(|| penalized_covariance(&xwx, &coefficients, pen_start));
+        let mut request = PassRequest::default();
+        let index = request.predictor(next.clone());
+        let deviance_eval = request.eval(Eval::Deviance(index));
+        let gram_eval = (!last).then(|| request.eval(irls_gram(index)));
+        let stats = cov_now.as_ref().map(|bread| {
+            request_statistics(
+                &mut request,
+                index,
+                &facts,
+                Some(RobustRequest {
+                    types: settings.robust,
+                    weights: &retained,
+                    bread,
+                }),
+                (n, p),
+            )
+        });
+        let mut sums = executor.run(&request)?;
+        record_step(
+            executor,
+            SolverStep::new(
+                "cd",
+                "iteration",
+                1,
+                true,
+                if cd_converged {
+                    "sweeps_converged"
+                } else {
+                    "sweeps_exhausted"
+                },
+            ),
+        );
+        let deviance_old = deviance;
+        deviance = sums[deviance_eval].deviance().0;
+        gram = gram_eval.map(|eval| take_gram(&mut sums, eval));
+        current = next;
+        retained_xwx = Some(xwx);
+        if let (Some(cov), Some(stats)) = (cov_now, stats) {
+            covariance = Some(cov);
+            final_sums = Some((sums, stats));
+        }
 
+        // Check outer loop convergence
         let (abs_change, rel_change) = deviance_changes(deviance_old, deviance);
 
-        if irls_config.verbose {
+        if config.verbose {
             let n_nonzero = count_nonzero_penalized(&coefficients, pen_start);
             eprintln!(
                 "IRLS iter {}: deviance = {:.6}, rel_change = {:.2e}, nonzero = {}",
@@ -314,14 +478,14 @@ pub(crate) fn fit_glm_coordinate_descent(
         }
 
         // Converge if relative change is small OR if deviance is very small (nearly perfect fit)
-        if outer_deviance_converged(rel_change, deviance, abs_change, irls_config.tolerance) {
+        if outer_deviance_converged(rel_change, deviance, abs_change, config.tolerance) {
             converged = true;
             break;
         }
     }
 
     // -------------------------------------------------------------------------
-    // Step 6: Compute covariance estimate
+    // Covariance estimate
     // -------------------------------------------------------------------------
     // IMPORTANT LIMITATION FOR ACTUARIAL USERS:
     // For penalized models (Lasso/Elastic Net), standard errors are approximate.
@@ -335,73 +499,107 @@ pub(crate) fn fit_glm_coordinate_descent(
     //
     // The standard errors returned here should be used with caution for
     // hypothesis testing or confidence interval construction.
-    let cov_unscaled = if skip_covariance {
-        Array2::zeros((p, p))
+    let (covariance_unscaled, statistics) = if settings.skip_covariance {
+        let statistics = if settings.statistics_without_covariance {
+            let mut request = PassRequest::default();
+            let index = request.predictor(current.clone());
+            let stats = request_statistics(&mut request, index, &facts, None, (n, p));
+            let sums = executor.run(&request)?;
+            Some(finish_statistics(
+                executor, family, &current, &facts, &sums, stats,
+            )?)
+        } else {
+            None
+        };
+        (Array2::zeros((p, p)), statistics)
     } else {
-        compute_penalized_covariance(
-            x,
-            &irls_weights,
-            &prior_weights_vec,
-            &coefficients,
-            pen_start,
-        )
+        // X'WX of the last iteration's weights; no iteration means zero weights,
+        // whose X'WX is exactly zero.
+        let covariance = covariance.unwrap_or_else(|| match &retained_xwx {
+            Some(xwx) => penalized_covariance(xwx, &coefficients, pen_start),
+            None => penalized_covariance(&vec![0.0; p * p], &coefficients, pen_start),
+        });
+        let (sums, stats) = match final_sums {
+            Some(final_sums) => final_sums,
+            None => {
+                let mut request = PassRequest::default();
+                let index = request.predictor(current.clone());
+                let stats = request_statistics(
+                    &mut request,
+                    index,
+                    &facts,
+                    Some(RobustRequest {
+                        types: settings.robust,
+                        weights: &retained,
+                        bread: &covariance,
+                    }),
+                    (n, p),
+                );
+                (executor.run(&request)?, stats)
+            }
+        };
+        let statistics = finish_statistics(executor, family, &current, &facts, &sums, stats)?;
+        (covariance, Some(statistics))
     };
 
-    Ok(IRLSResult {
+    let solver_status = if converged {
+        "converged"
+    } else {
+        "max_iterations"
+    };
+    record_step(
+        executor,
+        SolverStep::new("cd", "result", outer_iteration, converged, solver_status),
+    );
+    Ok(CdDriveOutcome {
         coefficients,
-        fitted_values: mu,
-        linear_predictor: eta,
+        covariance_unscaled,
         deviance,
         iterations: outer_iteration,
         converged,
-        covariance_unscaled: cov_unscaled,
-        irls_weights,
-        prior_weights: prior_weights_vec,
-        offset: offset_vec,
-        y: y.to_owned(),
-        family_name: family.name().to_string(),
-        penalty: reg_config.penalty.clone(),
-        design_matrix: None, // Computed lazily in Python layer to avoid expensive copy
+        solver_status,
         warnings,
-        step_halving_used: false,
-        solver_status: if converged {
-            "converged".to_string()
-        } else {
-            "max_iterations".to_string()
-        },
-        profile: None,
+        fitted: current,
+        weights: retained,
+        statistics,
     })
+}
+
+/// The ordinary IRLS Gram at a predictor: X'WX and X'Wz with W the prior times
+/// IRLS weights and z the working response (`compute_xtwx_xtwz` of
+/// `compute_irls_weights`).
+fn irls_gram(predictor: usize) -> Eval {
+    Eval::Gram {
+        weights: WeightsSpec::Irls(predictor),
+        response: ResponseSpec::Working(predictor),
+    }
+}
+
+fn take_gram(sums: &mut [EvalSum], eval: usize) -> GramPartial {
+    std::mem::replace(&mut sums[eval], EvalSum::Count(0.0)).into_gram()
+}
+
+/// The full row-major matrix of a packed upper triangle.
+fn packed_to_row_major(packed: &[f64], p: usize) -> Vec<f64> {
+    let mut matrix = vec![0.0_f64; p * p];
+    let mut idx = 0usize;
+    for j in 0..p {
+        for k in j..p {
+            matrix[j * p + k] = packed[idx];
+            matrix[k * p + j] = packed[idx];
+            idx += 1;
+        }
+    }
+    matrix
 }
 
 fn should_initialize_intercept_from_response(has_warm_start: bool, has_intercept: bool) -> bool {
     !has_warm_start && has_intercept
 }
 
-fn intercept_start_from_response(y: &Array1<f64>, family: &dyn Family, link: &dyn Link) -> f64 {
-    let y_mean = y.mean().unwrap_or(1.0);
-    let y_mean_clamped = family.clamp_mu(&Array1::from_elem(1, y_mean))[0];
-    link.link(&Array1::from_elem(1, y_mean_clamped))[0]
-}
-
-fn initialize_mu_from_coefficients(
-    x: ArrayView2<'_, f64>,
-    coefficients: &Array1<f64>,
-    offset: &Array1<f64>,
-    family: &dyn Family,
-    link: &dyn Link,
-) -> Array1<f64> {
-    let eta = linear_predictor_with_offset(x, coefficients, offset);
-    let mu_init = link.inverse(&eta);
-    family.clamp_mu(&mu_init)
-}
-
-fn initialize_mu_from_response(y: &Array1<f64>, family: &dyn Family) -> Array1<f64> {
-    let mu_init = family.initialize_mu(y);
-    if !family.is_valid_mu(&mu_init) {
-        initialize_mu_safe(y, family)
-    } else {
-        mu_init
-    }
+/// A cold start's intercept: g(clamp(mean y)).
+fn intercept_start_from_mean(y_mean: f64, family: &dyn Family, link: &dyn Link) -> f64 {
+    link.link_at(family.clamp_mu_at(y_mean))
 }
 
 fn should_continue_iteration(iteration: usize, max_iterations: usize) -> bool {
@@ -508,15 +706,6 @@ fn project_sign_constraints(
     }
 }
 
-fn linear_predictor_with_offset(
-    x: ArrayView2<'_, f64>,
-    coefficients: &Array1<f64>,
-    offset: &Array1<f64>,
-) -> Array1<f64> {
-    let eta_base = x.dot(coefficients);
-    &eta_base + offset
-}
-
 fn deviance_changes(deviance_old: f64, deviance: f64) -> (f64, f64) {
     let abs_change = (deviance_old - deviance).abs();
     let rel_change = if deviance_old.abs() > ZERO_TOL {
@@ -548,18 +737,8 @@ fn outer_deviance_converged(
 ///
 /// For Lasso/Elastic Net, standard errors are not well-defined in the classical sense.
 /// This computes a naive estimate that can be used for rough inference.
-fn compute_penalized_covariance(
-    x: ArrayView2<'_, f64>,
-    irls_weights: &Array1<f64>,
-    prior_weights: &Array1<f64>,
-    coefficients: &Array1<f64>,
-    pen_start: usize,
-) -> Array2<f64> {
-    let p = x.ncols();
-
-    let weights = combined_covariance_weights(irls_weights, prior_weights);
-
-    let xtwx = compute_xtwx(x, &weights);
+fn penalized_covariance(xtwx: &[f64], coefficients: &Array1<f64>, pen_start: usize) -> Array2<f64> {
+    let p = coefficients.len();
 
     let active_indices = active_set_from_coefficients(coefficients, pen_start);
 
@@ -572,7 +751,7 @@ fn compute_penalized_covariance(
     let mut xtx_active = DMatrix::zeros(active_p, active_p);
     for (ai, &i) in active_indices.iter().enumerate() {
         for (aj, &j) in active_indices.iter().enumerate() {
-            xtx_active[(ai, aj)] = xtwx[[i, j]];
+            xtx_active[(ai, aj)] = xtwx[i * p + j];
         }
     }
 
@@ -590,17 +769,6 @@ fn compute_penalized_covariance(
     }
 
     cov
-}
-
-fn combined_covariance_weights(
-    irls_weights: &Array1<f64>,
-    prior_weights: &Array1<f64>,
-) -> Array1<f64> {
-    irls_weights
-        .iter()
-        .zip(prior_weights.iter())
-        .map(|(&iw, &pw)| iw * pw)
-        .collect()
 }
 
 // =============================================================================
@@ -623,8 +791,24 @@ mod tests {
             "InvalidInitGaussian"
         }
 
-        fn variance<'a>(&self, mu: &'a Array1<f64>) -> Cow<'a, Array1<f64>> {
-            Cow::Owned(Array1::ones(mu.len()))
+        fn variance_at(&self, _mu: f64) -> f64 {
+            1.0
+        }
+
+        fn initialize_mu_at(&self, _yi: f64, _y_mean: f64) -> f64 {
+            f64::NAN
+        }
+
+        fn is_valid_mu_at(&self, mu: f64) -> bool {
+            mu.is_finite()
+        }
+
+        fn clamp_mu_at(&self, mu: f64) -> f64 {
+            if mu.is_finite() {
+                mu
+            } else {
+                0.0
+            }
         }
 
         fn unit_deviance(&self, y: &Array1<f64>, mu: &Array1<f64>) -> Array1<f64> {
@@ -639,18 +823,6 @@ mod tests {
         fn default_link(&self) -> Box<dyn Link> {
             Box::new(IdentityLink)
         }
-
-        fn initialize_mu(&self, y: &Array1<f64>) -> Array1<f64> {
-            Array1::from_elem(y.len(), f64::NAN)
-        }
-
-        fn is_valid_mu(&self, mu: &Array1<f64>) -> bool {
-            mu.iter().all(|value| value.is_finite())
-        }
-
-        fn clamp_mu(&self, mu: &Array1<f64>) -> Array1<f64> {
-            mu.mapv(|value| if value.is_finite() { value } else { 0.0 })
-        }
     }
 
     struct ShortVarianceGaussian;
@@ -658,6 +830,18 @@ mod tests {
     impl Family for ShortVarianceGaussian {
         fn name(&self) -> &str {
             "ShortVarianceGaussian"
+        }
+
+        fn variance_at(&self, _mu: f64) -> f64 {
+            1.0
+        }
+
+        fn initialize_mu_at(&self, yi: f64, _y_mean: f64) -> f64 {
+            yi
+        }
+
+        fn is_valid_mu_at(&self, mu: f64) -> bool {
+            mu.is_finite()
         }
 
         fn variance<'a>(&self, mu: &'a Array1<f64>) -> Cow<'a, Array1<f64>> {
@@ -675,18 +859,6 @@ mod tests {
 
         fn default_link(&self) -> Box<dyn Link> {
             Box::new(IdentityLink)
-        }
-
-        fn initialize_mu(&self, y: &Array1<f64>) -> Array1<f64> {
-            y.clone()
-        }
-
-        fn is_valid_mu(&self, mu: &Array1<f64>) -> bool {
-            mu.iter().all(|value| value.is_finite())
-        }
-
-        fn clamp_mu(&self, mu: &Array1<f64>) -> Array1<f64> {
-            mu.clone()
         }
     }
 
@@ -734,42 +906,50 @@ mod tests {
         assert!(!should_initialize_intercept_from_response(false, false));
         assert!(!should_initialize_intercept_from_response(true, false));
 
-        let y = array![1.0, 3.0, 5.0];
         assert_abs_diff_eq!(
-            intercept_start_from_response(&y, &GaussianFamily, &IdentityLink),
+            intercept_start_from_mean(3.0, &GaussianFamily, &IdentityLink),
             3.0,
             epsilon = 1e-12
         );
 
-        let x = Array2::from_shape_vec((2, 2), vec![1.0, 2.0, 1.0, -1.0])
+        // With no iteration the fit keeps its start: μ = Xβ + o on a warm start,
+        // the family initializer on a cold start, or the safe initializer when any
+        // initial μ is invalid.
+        let x = Array2::from_shape_vec((3, 2), vec![1.0, 2.0, 1.0, -1.0, 1.0, 0.0])
             .expect("test setup should be valid");
-        let coefficients = array![3.0, 4.0];
-        let offset = array![0.5, -0.25];
-        let expected_eta = array![11.5, -1.25];
-
-        assert_abs_diff_eq!(
-            linear_predictor_with_offset(x.view(), &coefficients, &offset),
-            expected_eta,
-            epsilon = 1e-12
-        );
-        assert_abs_diff_eq!(
-            initialize_mu_from_coefficients(
+        let y = array![1.0, 3.0, 5.0];
+        let offset = array![0.5, -0.25, 0.0];
+        let no_iterations = IRLSConfig {
+            max_iterations: 0,
+            ..IRLSConfig::default()
+        };
+        let lasso = RegularizationConfig::lasso(0.1);
+        let start = |family: &dyn Family, init: Option<&Array1<f64>>| {
+            fit_glm_coordinate_descent(
+                &y,
                 x.view(),
-                &coefficients,
-                &offset,
-                &GaussianFamily,
-                &IdentityLink
-            ),
-            expected_eta,
+                family,
+                &IdentityLink,
+                &no_iterations,
+                &lasso,
+                Some(&offset),
+                None,
+                init,
+                true,
+                &[],
+                None,
+            )
+            .expect("fit")
+            .fitted_values
+        };
+        assert_abs_diff_eq!(
+            start(&GaussianFamily, Some(&array![3.0, 4.0])),
+            array![11.5, -1.25, 3.0],
             epsilon = 1e-12
         );
+        assert_abs_diff_eq!(start(&GaussianFamily, None), y, epsilon = 1e-12);
         assert_abs_diff_eq!(
-            initialize_mu_from_response(&y, &GaussianFamily),
-            y,
-            epsilon = 1e-12
-        );
-        assert_abs_diff_eq!(
-            initialize_mu_from_response(&y, &InvalidInitGaussian),
+            start(&InvalidInitGaussian, None),
             array![2.0, 3.0, 4.0],
             epsilon = 1e-12
         );
@@ -940,14 +1120,6 @@ mod tests {
 
     #[test]
     fn penalized_covariance_helpers_pin_weights_and_active_threshold() {
-        let irls_weights = array![2.0, 4.0, 0.5];
-        let prior_weights = array![0.5, 3.0, 8.0];
-        assert_abs_diff_eq!(
-            combined_covariance_weights(&irls_weights, &prior_weights),
-            array![1.0, 12.0, 4.0],
-            epsilon = 1e-12
-        );
-
         let coefficients = array![0.0, ZERO_TOL, -2.0 * ZERO_TOL, 0.0];
         assert_eq!(active_set_from_coefficients(&coefficients, 0), vec![2]);
         assert_eq!(
@@ -989,6 +1161,8 @@ mod tests {
             None,
             None,
             false,
+            &[],
+            None,
         )
         .expect("test setup should be valid");
 
@@ -1035,6 +1209,8 @@ mod tests {
             None,
             None,
             false,
+            &[],
+            None,
         )
         .expect("safe initializer fallback should allow coordinate descent to run");
 
@@ -1047,13 +1223,36 @@ mod tests {
     }
 
     #[test]
-    fn test_coordinate_descent_propagates_malformed_weight_dimensions() {
+    fn test_coordinate_descent_reads_only_per_row_family_arithmetic() {
         let x = Array2::from_shape_vec((3, 2), vec![1.0, -1.0, 1.0, 0.0, 1.0, 1.0])
             .expect("test setup should be valid");
         let y = array![0.5, 1.0, 1.5];
         let reg_config = RegularizationConfig::lasso(0.05);
 
-        let err = fit_glm_coordinate_descent(
+        // The array helper still reports a malformed array variance...
+        let err = crate::solvers::compute_irls_weights(
+            &y,
+            &y,
+            &y,
+            &Array1::zeros(3),
+            &Array1::ones(3),
+            &ShortVarianceGaussian,
+            &IdentityLink,
+            crate::constants::MIN_IRLS_WEIGHT,
+        )
+        .err()
+        .expect("malformed family variance must be reported, not panicked");
+        assert!(matches!(
+            err,
+            crate::error::RustyStatsError::DimensionMismatch {
+                expected: 3,
+                got: 2,
+                ref context
+            } if context == "variance length vs y length"
+        ));
+
+        // ...but coordinate descent works per row (`variance_at`), so it fits.
+        let result = fit_glm_coordinate_descent(
             &y,
             x.view(),
             &ShortVarianceGaussian,
@@ -1064,17 +1263,11 @@ mod tests {
             None,
             None,
             false,
+            &[],
+            None,
         )
-        .expect_err("malformed family variance must be reported, not panicked");
-
-        assert!(matches!(
-            err,
-            crate::error::RustyStatsError::DimensionMismatch {
-                expected: 3,
-                got: 2,
-                ref context
-            } if context == "variance length vs y length"
-        ));
+        .expect("coordinate descent reads per-row variance");
+        assert!(result.coefficients.iter().all(|value| value.is_finite()));
     }
 
     #[test]
@@ -1107,6 +1300,8 @@ mod tests {
             None,
             None,
             false,
+            &[],
+            None,
         )
         .expect("test setup should be valid");
 
@@ -1157,6 +1352,8 @@ mod tests {
             None,
             None,
             false,
+            &[],
+            None,
         )
         .expect("test setup should be valid");
 
@@ -1193,6 +1390,8 @@ mod tests {
             None,
             None,
             false,
+            &[],
+            None,
         )
         .expect("test setup should be valid");
 
@@ -1227,6 +1426,8 @@ mod tests {
             None,
             None,
             false,
+            &[],
+            None,
         )
         .expect("test setup should be valid");
 
@@ -1277,6 +1478,8 @@ mod tests {
             None,
             None,
             false,
+            &[],
+            None,
         )
         .expect("test setup should be valid");
 
@@ -1321,6 +1524,8 @@ mod tests {
             Some(&weights),
             Some(&init),
             true,
+            &[],
+            None,
         )
         .expect("test setup should be valid");
 
@@ -1363,6 +1568,8 @@ mod tests {
             None,
             Some(&bad_init),
             true,
+            &[],
+            None,
         )
         .expect("test setup should be valid");
 
@@ -1409,6 +1616,8 @@ mod tests {
             None,
             None,
             true,
+            &[],
+            None,
         )
         .expect("test setup should be valid");
 
@@ -1418,28 +1627,16 @@ mod tests {
 
     #[test]
     fn test_penalized_covariance_empty_and_singular_active_set_contracts() {
-        let x = Array2::from_shape_vec(
-            (4, 3),
-            vec![1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0, 4.0, 4.0, 4.0],
-        )
-        .expect("test setup should be valid");
-        let irls_weights = array![1.0, 1.0, 1.0, 1.0];
-        let prior_weights = array![1.0, 0.5, 2.0, 1.5];
+        // X'WX of rows (k, k, k), k = 1..4, with weights 1, 0.5, 2, 1.5: every entry 45.
+        let xtwx = vec![45.0; 9];
 
         let inactive = array![0.0, 0.0, 0.0];
-        let cov =
-            compute_penalized_covariance(x.view(), &irls_weights, &prior_weights, &inactive, 0);
+        let cov = penalized_covariance(&xtwx, &inactive, 0);
         assert_eq!(cov.dim(), (3, 3));
         assert!(cov.iter().all(|&v| v == 0.0));
 
         let active_singular = array![1.0, -2.0, 3.0];
-        let cov = compute_penalized_covariance(
-            x.view(),
-            &irls_weights,
-            &prior_weights,
-            &active_singular,
-            0,
-        );
+        let cov = penalized_covariance(&xtwx, &active_singular, 0);
         assert!(cov[[0, 0]].is_nan());
         assert!(cov[[1, 1]].is_nan());
         assert!(cov[[2, 2]].is_nan());

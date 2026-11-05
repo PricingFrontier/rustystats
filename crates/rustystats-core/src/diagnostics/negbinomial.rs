@@ -103,53 +103,49 @@ pub fn nb_loglikelihood(
     theta: f64,
     weights: Option<&Array1<f64>>,
 ) -> f64 {
-    // For very large theta, NegBin converges to Poisson
-    // Use Poisson log-likelihood to avoid numerical instability from lgamma of large values
-    if theta > POISSON_THETA_THRESHOLD {
-        return poisson_loglikelihood(y, mu, weights);
-    }
+    let y = y.as_slice().expect("contiguous y");
+    let mu = mu.as_slice().expect("contiguous mu");
+    let weights = weights.map(|w| w.as_slice().expect("contiguous weights"));
+    nb_loglikelihood_slices(y, mu, theta, weights)
+}
 
-    match weights {
-        Some(w) => y
-            .iter()
-            .zip(mu.iter())
-            .zip(w.iter())
-            .map(|((&yi, &mui), &wi)| wi * nb_loglik_single(yi, mui, theta))
-            .sum(),
-        None => y
-            .iter()
-            .zip(mu.iter())
-            .map(|(&yi, &mui)| nb_loglik_single(yi, mui, theta))
-            .sum(),
+/// [`nb_loglikelihood`] over slices, block-ordered (`rows::reduce_rows`).
+pub fn nb_loglikelihood_slices(y: &[f64], mu: &[f64], theta: f64, weights: Option<&[f64]>) -> f64 {
+    crate::rows::reduce_rows(0.0f64, y.len(), |total, rows| {
+        fold_nb_loglik(
+            total,
+            &y[rows.clone()],
+            &mu[rows.clone()],
+            weights.map(|w| &w[rows]),
+            theta,
+        )
+    })
+}
+
+/// Add rows' Negative Binomial log-likelihood terms (`w·ℓ`, or `ℓ`) to `total`, in
+/// row order: the per-row fold a streamed θ pass shares.
+#[inline]
+pub fn fold_nb_loglik(total: &mut f64, y: &[f64], mu: &[f64], weights: Option<&[f64]>, theta: f64) {
+    for i in 0..y.len() {
+        let term = nb_loglik_row(y[i], mu[i], theta);
+        *total += match weights {
+            Some(w) => w[i] * term,
+            None => term,
+        };
     }
 }
 
-/// Poisson log-likelihood (used when NegBin theta is very large).
-///
-/// When theta → ∞, NegBin → Poisson. Using Poisson LL avoids numerical
-/// instability from lgamma of very large arguments.
-fn poisson_loglikelihood(y: &Array1<f64>, mu: &Array1<f64>, weights: Option<&Array1<f64>>) -> f64 {
-    // Poisson LL: y*log(mu) - mu - lgamma(y+1)
-    match weights {
-        Some(w) => y
-            .iter()
-            .zip(mu.iter())
-            .zip(w.iter())
-            .map(|((&yi, &mui), &wi)| {
-                let mui_safe = mui.max(1e-10);
-                let y_term = if yi > 0.0 { yi * mui_safe.ln() } else { 0.0 };
-                wi * (y_term - mui_safe - lgamma(yi + 1.0))
-            })
-            .sum(),
-        None => y
-            .iter()
-            .zip(mu.iter())
-            .map(|(&yi, &mui)| {
-                let mui_safe = mui.max(1e-10);
-                let y_term = if yi > 0.0 { yi * mui_safe.ln() } else { 0.0 };
-                y_term - mui_safe - lgamma(yi + 1.0)
-            })
-            .sum(),
+/// One row's Negative Binomial log-likelihood term. Above
+/// `POISSON_THETA_THRESHOLD` it is the (θ-free) Poisson limit, which avoids lgamma
+/// instability for large θ.
+#[inline]
+pub fn nb_loglik_row(y: f64, mu: f64, theta: f64) -> f64 {
+    if theta > POISSON_THETA_THRESHOLD {
+        let mui_safe = mu.max(1e-10);
+        let y_term = if y > 0.0 { y * mui_safe.ln() } else { 0.0 };
+        y_term - mui_safe - lgamma(y + 1.0)
+    } else {
+        nb_loglik_single(y, mu, theta)
     }
 }
 
@@ -176,8 +172,26 @@ pub fn estimate_theta_profile(
     tol: f64,
 ) -> f64 {
     // Objective: maximize log-likelihood = minimize negative log-likelihood
-    let objective = |theta: f64| -> f64 { -nb_loglikelihood(y, mu, theta, weights) };
+    let mut objective = |theta: f64| -> Result<f64, std::convert::Infallible> {
+        Ok(-nb_loglikelihood(y, mu, theta, weights))
+    };
+    match estimate_theta_with(&mut objective, min_theta, max_theta, tol) {
+        Ok(theta) => theta,
+        Err(never) => match never {},
+    }
+}
 
+/// [`estimate_theta_profile`] with the negative log-likelihood from `objective`
+/// (one θ pass per call out of core, §7.10).
+pub fn estimate_theta_with<E, F>(
+    objective: &mut F,
+    min_theta: f64,
+    max_theta: f64,
+    tol: f64,
+) -> Result<f64, E>
+where
+    F: FnMut(f64) -> Result<f64, E>,
+{
     // Restrict the search to the region where theta is identifiable. Above
     // POISSON_THETA_THRESHOLD the objective is flat (Poisson limit), which would
     // trap the optimizer; an optimum at this cap means "effectively Poisson"
@@ -190,9 +204,9 @@ pub fn estimate_theta_profile(
 ///
 /// Combines golden section search with parabolic interpolation for
 /// robust and efficient minimization.
-fn brent_minimize<F>(f: F, a: f64, b: f64, tol: f64) -> f64
+fn brent_minimize<E, F>(f: &mut F, a: f64, b: f64, tol: f64) -> Result<f64, E>
 where
-    F: Fn(f64) -> f64,
+    F: FnMut(f64) -> Result<f64, E>,
 {
     const GOLDEN: f64 = 0.381966011250105; // (3 - sqrt(5)) / 2
     const MAX_ITER: usize = 100;
@@ -202,7 +216,7 @@ where
     let mut x = a + GOLDEN * (b - a);
     let mut w = x;
     let mut v = x;
-    let mut fx = f(x);
+    let mut fx = f(x)?;
     let mut fw = fx;
     let mut fv = fx;
     let mut e: f64 = 0.0;
@@ -215,7 +229,7 @@ where
 
         // Check convergence
         if (x - midpoint).abs() <= tol2 - 0.5 * (b - a) {
-            return x;
+            return Ok(x);
         }
 
         // Try parabolic fit
@@ -265,7 +279,7 @@ where
             x - tol1
         };
 
-        let fu = f(u);
+        let fu = f(u)?;
 
         // Update interval
         if fu <= fx {
@@ -298,7 +312,7 @@ where
         }
     }
 
-    x
+    Ok(x)
 }
 
 /// Method-of-moments estimator for initial θ.
@@ -307,6 +321,18 @@ where
 /// Solving for θ: θ = μ² / (Var(Y) - μ)
 ///
 /// This provides a quick initial estimate before profile likelihood refinement.
+/// The moment θ₀ from its sums (Σμ, Σ(y − ȳ)², n): θ = μ̄² / (Var(y) − μ̄), 100 when
+/// there is no overdispersion, clamped to [0.01, 1000].
+pub fn theta_moments_from_sums(mu_sum: f64, squares: f64, n: f64) -> f64 {
+    let mu_mean = mu_sum / n;
+    let y_var = squares / (n - 1.0);
+    if y_var <= mu_mean {
+        return 100.0; // Near-Poisson
+    }
+    let theta = mu_mean.powi(2) / (y_var - mu_mean);
+    theta.clamp(0.01, 1000.0)
+}
+
 pub fn estimate_theta_moments(y: &Array1<f64>, mu: &Array1<f64>) -> f64 {
     let n = y.len() as f64;
 
@@ -378,14 +404,29 @@ mod tests {
         let mu = array![0.5, 1.2, 3.5];
         let weights = array![1.0, 0.5, 2.0];
 
+        // The Poisson limit: y·log(μ) − μ − log(y!), μ floored at 1e-10.
+        let poisson_terms: Vec<f64> = y
+            .iter()
+            .zip(mu.iter())
+            .map(|(&yi, &mui): (&f64, &f64)| {
+                let y_term = if yi > 0.0 { yi * mui.ln() } else { 0.0 };
+                y_term - mui - lgamma(yi + 1.0)
+            })
+            .collect();
+        let unweighted: f64 = poisson_terms.iter().sum();
+        let weighted: f64 = poisson_terms
+            .iter()
+            .zip(weights.iter())
+            .map(|(term, w)| w * term)
+            .sum();
         assert_abs_diff_eq!(
             nb_loglikelihood(&y, &mu, POISSON_THETA_THRESHOLD + 1.0, None),
-            poisson_loglikelihood(&y, &mu, None),
+            unweighted,
             epsilon = 1e-12
         );
         assert_abs_diff_eq!(
             nb_loglikelihood(&y, &mu, POISSON_THETA_THRESHOLD + 1.0, Some(&weights)),
-            poisson_loglikelihood(&y, &mu, Some(&weights)),
+            weighted,
             epsilon = 1e-12
         );
     }
@@ -453,7 +494,8 @@ mod tests {
         // Test with a simple quadratic: (x-3)^2, minimum at x=3
         let f = |x: f64| (x - 3.0).powi(2);
 
-        let x_min = brent_minimize(f, 0.0, 10.0, 1e-8);
+        let x_min =
+            brent_minimize(&mut |x| Ok::<f64, ()>(f(x)), 0.0, 10.0, 1e-8).expect("infallible");
 
         assert_abs_diff_eq!(x_min, 3.0, epsilon = 1e-6);
     }
