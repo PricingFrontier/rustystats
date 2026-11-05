@@ -30,6 +30,11 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from rustystats._rustystats import (
+    TargetEncodingLevelTotals,
+    TargetEncodingPrior,
+    TargetEncodingTerm,
+)
+from rustystats._rustystats import (
     apply_exposure_weighted_target_encoding_py as _apply_exposure_weighted_te_rust,
 )
 from rustystats._rustystats import (
@@ -69,9 +74,6 @@ from rustystats._rustystats import (
 )
 from rustystats._rustystats import (
     stack_columns_horizontal_py as _stack_columns_rust,
-)
-from rustystats._rustystats import (
-    target_encode_py as _target_encode_rust,
 )
 from rustystats.constants import (
     CONDITION_NUMBER_THRESHOLD,
@@ -136,6 +138,70 @@ def _resolve_target_encoding_prior_weight(
     if not np.isfinite(resolved) or resolved < 0.0:
         raise ValidationError("target_encoding prior_weight must be finite and non-negative.")
     return resolved
+
+
+def interaction_spline_monotonicity(spline: SplineTerm) -> str | None:
+    """The monotonicity a spline inside an interaction carries, smooth or fixed-df."""
+    return getattr(spline, "_smooth_monotonicity", None) or getattr(spline, "monotonicity", None)
+
+
+def refuse_fixed_df_monotone_interaction(spline: SplineTerm) -> None:
+    """Refuse a monotone fixed-df spline inside an interaction."""
+    if interaction_spline_monotonicity(spline) and not getattr(spline, "_is_smooth", False):
+        raise ValidationError(
+            f"Monotone fixed-df splines are not supported inside interactions "
+            f"(factor '{spline.var_name}'). Use a penalized smooth instead: "
+            "specify k= (not df=) with monotonicity."
+        )
+
+
+def refuse_monotone_tensor_interaction(splines: list[SplineTerm]) -> None:
+    """Refuse monotonicity on any spline of a multi-spline (tensor-product) interaction."""
+    if any(interaction_spline_monotonicity(spline) for spline in splines):
+        raise ValidationError(
+            "Monotonicity constraints are not supported for tensor-product "
+            "(multi-spline) interactions; constrain one spline per "
+            "interaction term."
+        )
+
+
+def check_monotone_by_category(
+    parsed: ParsedFormula | None,
+    cat_factors: list[str],
+    spline: SplineTerm,
+    *,
+    single_categorical: bool,
+) -> None:
+    """Check a monotone smooth × categorical interaction can fit one curve per category."""
+    if not single_categorical:
+        raise ValidationError(
+            "Monotone smooth splines are supported with a single "
+            "categorical factor per interaction; split multi-"
+            "categorical monotone interactions into separate terms."
+        )
+    if parsed is None:
+        return
+    main_cats = set(getattr(parsed, "main_effects", []) or [])
+    main_cats |= {term.var_name for term in getattr(parsed, "categorical_terms", [])}
+    if cat_factors[0] not in main_cats:
+        raise ValidationError(
+            f"Monotone smooth interaction with '{cat_factors[0]}' needs "
+            "free per-category levels: add the categorical main effect "
+            "to terms. Without it, every category's curve is pinned to "
+            "the same level at the lower boundary, silently biasing "
+            "level shifts."
+        )
+    main_splines = getattr(parsed, "spline_terms_by_var", {}) or {}
+    if spline.var_name in main_splines:
+        raise ValidationError(
+            f"Monotone smooth interaction on '{spline.var_name}' fits "
+            "one full monotone curve per category, which already "
+            "includes any common component — a same-variable main "
+            "spline is redundant and makes the monotone solve "
+            "ill-posed. Remove the main-effect spline for "
+            f"'{spline.var_name}' (and use explicit terms instead of "
+            "include_main=True, which would re-add it)."
+        )
 
 
 @dataclass
@@ -647,15 +713,7 @@ class InteractionBuilder:
             # For multiple splines, create cross-product of all spline columns
             if len(spline_bases) == 1:
                 only_spline = spline_factors[0][1]
-                mono = getattr(only_spline, "_smooth_monotonicity", None) or getattr(
-                    only_spline, "monotonicity", None
-                )
-                if mono and not getattr(only_spline, "_is_smooth", False):
-                    raise ValidationError(
-                        f"Monotone fixed-df splines are not supported inside interactions "
-                        f"(factor '{only_spline.var_name}'). Use a penalized smooth "
-                        "instead: specify k= (not df=) with monotonicity."
-                    )
+                refuse_fixed_df_monotone_interaction(only_spline)
                 for j, spl_name in enumerate(spline_name_lists[0]):
                     col = spline_bases[0][:, j]
                     if cont_product is not None:
@@ -677,15 +735,7 @@ class InteractionBuilder:
                     self._pending_interaction_smooth_blocks = [(only_spline, 0, n_basis)]
             else:
                 # Multiple splines: cross-product (rare case)
-                if any(
-                    getattr(s, "_smooth_monotonicity", None) or getattr(s, "monotonicity", None)
-                    for _f, s in spline_factors
-                ):
-                    raise ValidationError(
-                        "Monotonicity constraints are not supported for tensor-product "
-                        "(multi-spline) interactions; constrain one spline per "
-                        "interaction term."
-                    )
+                refuse_monotone_tensor_interaction([s for _f, s in spline_factors])
                 from itertools import product as cartesian_product
 
                 indices = [range(b.shape[1]) for b in spline_bases]
@@ -914,16 +964,9 @@ class InteractionBuilder:
                     self._fitted_splines[spline.var_name] = spline
                 n_basis = spline_basis.shape[1]
 
-                mono = getattr(spline, "_smooth_monotonicity", None) or getattr(
-                    spline, "monotonicity", None
-                )
+                mono = interaction_spline_monotonicity(spline)
                 is_smooth = getattr(spline, "_is_smooth", False)
-                if mono and not is_smooth:
-                    raise ValidationError(
-                        f"Monotone fixed-df splines are not supported inside interactions "
-                        f"(factor '{spline.var_name}'). Use a penalized smooth instead: "
-                        "specify k= (not df=) with monotonicity."
-                    )
+                refuse_fixed_df_monotone_interaction(spline)
                 if mono:
                     # Per-category monotone curves: encode the spline against ALL
                     # k categories (own curve per category, category-major), not
@@ -933,39 +976,14 @@ class InteractionBuilder:
                     # the reference (over-constraint); own curves make the
                     # block-wide sign constraint exactly "this category's curve
                     # is monotone".
-                    if single_cat_indices is None or single_cat_levels is None:
-                        raise ValidationError(
-                            "Monotone smooth splines are supported with a single "
-                            "categorical factor per interaction; split multi-"
-                            "categorical monotone interactions into separate terms."
-                        )
-                    if self._parsed_formula is not None:
-                        main_cats = set(getattr(self._parsed_formula, "main_effects", []) or [])
-                        main_cats |= {
-                            term.var_name
-                            for term in getattr(self._parsed_formula, "categorical_terms", [])
-                        }
-                        if cat_factors[0] not in main_cats:
-                            raise ValidationError(
-                                f"Monotone smooth interaction with '{cat_factors[0]}' needs "
-                                "free per-category levels: add the categorical main effect "
-                                "to terms. Without it, every category's curve is pinned to "
-                                "the same level at the lower boundary, silently biasing "
-                                "level shifts."
-                            )
-                        main_splines = (
-                            getattr(self._parsed_formula, "spline_terms_by_var", {}) or {}
-                        )
-                        if spline.var_name in main_splines:
-                            raise ValidationError(
-                                f"Monotone smooth interaction on '{spline.var_name}' fits "
-                                "one full monotone curve per category, which already "
-                                "includes any common component — a same-variable main "
-                                "spline is redundant and makes the monotone solve "
-                                "ill-posed. Remove the main-effect spline for "
-                                f"'{spline.var_name}' (and use explicit terms instead of "
-                                "include_main=True, which would re-add it)."
-                            )
+                    check_monotone_by_category(
+                        self._parsed_formula,
+                        cat_factors,
+                        spline,
+                        single_categorical=(
+                            single_cat_indices is not None and single_cat_levels is not None
+                        ),
+                    )
                     k = len(single_cat_levels)
                     idx = np.asarray(single_cat_indices)
                     block = np.zeros((self._n, k * n_basis), dtype=self.dtype)
@@ -1167,13 +1185,8 @@ class InteractionBuilder:
             Level statistics for prediction on new data
         """
         has_exposure = exposure is not None
-        target_f64 = target.astype(np.float64)
-        exposure_f64 = exposure.astype(np.float64) if has_exposure else None
-        resolved_prior_weight = _resolve_target_encoding_prior_weight(
-            te_term.prior_weight,
-            target_f64,
-            exposure_f64,
-        )
+        target_f64 = np.ascontiguousarray(target, dtype=np.float64)
+        exposure_f64 = np.ascontiguousarray(exposure, dtype=np.float64) if has_exposure else None
         try:
             n_permutations = int(te_term.n_permutations)
         except (TypeError, ValueError) as exc:
@@ -1183,73 +1196,58 @@ class InteractionBuilder:
         if n_permutations < 1:
             raise ValidationError("target_encoding n_permutations must be a positive integer.")
 
-        # Check if this is a TE interaction (e.g., TE(brand:region))
-        if te_term.interaction_vars is not None and len(te_term.interaction_vars) >= 2:
-            cols = [self.data[var].to_numpy() for var in te_term.interaction_vars]
-            cat1 = [str(v) for v in cols[0]]
-            cat2 = [str(v) for v in cols[1]]
+        # Labels: each variable's ``str()`` label, joined with ":" for TE(a:b:...).
+        variables = (
+            list(te_term.interaction_vars)
+            if te_term.interaction_vars is not None and len(te_term.interaction_vars) >= 2
+            else [te_term.var_name]
+        )
+        columns = [[str(v) for v in self.data[var].to_numpy()] for var in variables]
+        categories = columns[0] if len(columns) == 1 else [":".join(row) for row in zip(*columns)]
+        name = f"TE({te_term.var_name})"
+        labels, codes = _factorize_strings_rust(categories)
+        codes = np.ascontiguousarray(codes, dtype=np.int32)
 
-            # Select the appropriate Rust function and build shared arg tuples
-            if has_exposure:
-                from rustystats._rustystats import (
-                    target_encode_interaction_with_exposure_py as _te_interact,
-                )
-
-                target_args = (target_f64, exposure_f64)
-            else:
-                from rustystats._rustystats import target_encode_interaction_py as _te_interact
-
-                target_args = (target_f64,)
-            tail_args = (resolved_prior_weight, n_permutations, seed)
-
-            encoded, name, prior, stats = _te_interact(
-                cat1,
-                cat2,
-                *target_args,
-                te_term.interaction_vars[0],
-                te_term.interaction_vars[1],
-                *tail_args,
-            )
-
-            # For 3+ way interactions, combine first two then continue
-            for i in range(2, len(te_term.interaction_vars)):
-                combined = [f"{a}:{b}" for a, b in zip(cat1, cat2)]
-                cat1 = combined
-                cat2 = [str(v) for v in cols[i]]
-                encoded, name, prior, stats = _te_interact(
-                    cat1,
-                    cat2,
-                    *target_args,
-                    ":".join(te_term.interaction_vars[:i]),
-                    te_term.interaction_vars[i],
-                    *tail_args,
-                )
+        # DEC-1 (specs/out-of-core-fit.md §6.6): the prior and the "auto" weight are
+        # block-ordered reductions, the totals sums in row order, and the training
+        # values the keyed order's walk, as a frozen design computes them.
+        prior_sums = TargetEncodingPrior(has_exposure)
+        prior_sums.update(target_f64, exposure_f64)
+        if isinstance(te_term.prior_weight, str) and te_term.prior_weight.lower() == "auto":
+            resolved_prior_weight = float(prior_sums.auto_prior_weight())
         else:
-            # Single variable target encoding
-            col = self.data[te_term.var_name].to_numpy()
-            categories = [str(v) for v in col]
+            resolved_prior_weight = _resolve_target_encoding_prior_weight(
+                te_term.prior_weight, target_f64, exposure_f64
+            )
+        prior = float(prior_sums.prior())
+        totals = TargetEncodingLevelTotals(len(labels), has_exposure)
+        totals.update(codes, target_f64, exposure_f64)
+        sums, counts, exposures = totals.totals()
+        if has_exposure:
+            stats = {
+                label: (float(total), float(exp))
+                for label, total, exp in zip(labels, sums, exposures)
+            }
+        else:
+            stats = {
+                label: (float(total), int(count))
+                for label, total, count in zip(labels, sums, counts)
+            }
+        if seed is None:
+            from rustystats.frozen_design import draw_target_encoding_seed
 
-            if has_exposure:
-                from rustystats._rustystats import target_encode_with_exposure_py
-
-                encoded, name, prior, stats = target_encode_with_exposure_py(
-                    categories,
-                    target_f64,
-                    exposure_f64,
-                    te_term.var_name,
-                    resolved_prior_weight,
-                    n_permutations,
-                    seed,
-                )
-            else:
-                encoded, name, prior, stats = _target_encode_rust(
-                    categories,
-                    target_f64,
-                    te_term.var_name,
-                    resolved_prior_weight,
-                    n_permutations,
-                    seed,
-                )
+            seed = draw_target_encoding_seed()
+        encoder = TargetEncodingTerm(
+            seed, n_permutations, len(labels), prior, resolved_prior_weight, has_exposure
+        )
+        try:
+            for permutation in range(n_permutations):
+                encoder.begin(permutation)
+                encoder.push(0, codes, target_f64, exposure_f64)
+                encoder.end()
+            encoded = encoder.finish()
+        finally:
+            encoder.close()
 
         return (
             encoded,
@@ -1672,6 +1670,13 @@ class InteractionBuilder:
         # When exposure is provided, use rate (y/exposure) for encoding
         self._te_stats: dict[str, dict] = {}
         te_encodings: dict[str, np.ndarray] = {}  # For use in interactions
+        if parsed.target_encoding_terms:
+            # One seed keys every term's order (DEC-3: drawn once when not given).
+            if seed is None:
+                from rustystats.frozen_design import draw_target_encoding_seed
+
+                seed = draw_target_encoding_seed()
+            self._te_seed = seed
         for te_term in parsed.target_encoding_terms:
             te_col, te_name, te_stats = self._build_target_encoding_columns(
                 te_term, y, seed=seed, exposure=exposure
@@ -2141,8 +2146,11 @@ class InteractionBuilder:
             return col_start + 1
 
         n_cols = block.shape[1]
-        if n_cols:
-            eta += block.astype(np.float64, copy=False) @ params[col_start : col_start + n_cols]
+        # Column by column, in column order: the fit's row kernel adds x_j·β_j to
+        # each row's running sum in that order (specs/out-of-core-fit.md §6.8).
+        block = block.astype(np.float64, copy=False)
+        for j in range(n_cols):
+            eta += block[:, j] * params[col_start + j]
         return col_start + n_cols
 
     def _map_to_training_indices_cached(

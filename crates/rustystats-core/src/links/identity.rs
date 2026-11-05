@@ -25,7 +25,6 @@
 // =============================================================================
 
 use super::Link;
-use ndarray::Array1;
 
 /// The Identity link function: η = μ
 ///
@@ -39,26 +38,22 @@ impl Link for IdentityLink {
         "identity"
     }
 
-    /// Link function: η = μ
-    ///
-    /// Simply returns a copy of the input - no transformation.
-    fn link(&self, mu: &Array1<f64>) -> Array1<f64> {
-        mu.clone()
+    /// Link function: η = μ.
+    #[inline]
+    fn link_at(&self, mu: f64) -> f64 {
+        mu
     }
 
-    /// Inverse link: μ = η
-    ///
-    /// Simply returns a copy of the input - no transformation.
-    fn inverse(&self, eta: &Array1<f64>) -> Array1<f64> {
-        eta.clone()
+    /// Inverse link: μ = η.
+    #[inline]
+    fn inverse_at(&self, eta: f64) -> f64 {
+        eta
     }
 
-    /// Derivative: dη/dμ = 1
-    ///
-    /// The derivative of η = μ with respect to μ is always 1.
-    fn derivative(&self, mu: &Array1<f64>) -> Array1<f64> {
-        // Create an array of ones with the same length as mu
-        Array1::ones(mu.len())
+    /// Derivative: dη/dμ = 1.
+    #[inline]
+    fn derivative_at(&self, _mu: f64) -> f64 {
+        1.0
     }
 }
 

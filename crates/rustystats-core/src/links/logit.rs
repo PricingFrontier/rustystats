@@ -37,7 +37,6 @@
 // =============================================================================
 
 use super::Link;
-use ndarray::Array1;
 
 /// The Logit link function: η = log(μ / (1-μ))
 ///
@@ -51,46 +50,28 @@ impl Link for LogitLink {
         "logit"
     }
 
-    /// Link function: η = log(μ / (1-μ))
-    ///
-    /// Transforms a probability (0 < μ < 1) to the log-odds scale (-∞ to +∞).
-    ///
-    /// # Warning
-    /// μ must be strictly between 0 and 1. At the boundaries:
-    /// - logit(0) = -∞
-    /// - logit(1) = +∞
-    fn link(&self, mu: &Array1<f64>) -> Array1<f64> {
-        mu.mapv(|p| (p / (1.0 - p)).ln())
+    /// Link function: η = log(μ / (1-μ)). μ must be strictly inside (0, 1).
+    #[inline]
+    fn link_at(&self, p: f64) -> f64 {
+        (p / (1.0 - p)).ln()
     }
 
-    /// Inverse link: μ = 1 / (1 + exp(-η))
-    ///
-    /// This is the famous "sigmoid" or "logistic" function.
-    /// It transforms any real number to a probability between 0 and 1.
-    ///
-    /// Properties:
-    /// - sigmoid(0) = 0.5
-    /// - sigmoid(+large) → 1
-    /// - sigmoid(-large) → 0
-    fn inverse(&self, eta: &Array1<f64>) -> Array1<f64> {
-        eta.mapv(|x| {
-            // Use a numerically stable formulation
-            // This avoids overflow for large negative values
-            if x >= 0.0 {
-                1.0 / (1.0 + (-x).exp())
-            } else {
-                let exp_x = x.exp();
-                exp_x / (1.0 + exp_x)
-            }
-        })
+    /// Inverse link: μ = 1 / (1 + exp(-η)), in a form that does not overflow
+    /// for large negative η.
+    #[inline]
+    fn inverse_at(&self, x: f64) -> f64 {
+        if x >= 0.0 {
+            1.0 / (1.0 + (-x).exp())
+        } else {
+            let exp_x = x.exp();
+            exp_x / (1.0 + exp_x)
+        }
     }
 
-    /// Derivative: dη/dμ = 1 / (μ(1-μ))
-    ///
-    /// Note: This is also 1 / Var(Y) for binomial, which connects
-    /// to the variance function of the binomial family.
-    fn derivative(&self, mu: &Array1<f64>) -> Array1<f64> {
-        mu.mapv(|p| 1.0 / (p * (1.0 - p)))
+    /// Derivative: dη/dμ = 1 / (μ(1-μ)).
+    #[inline]
+    fn derivative_at(&self, p: f64) -> f64 {
+        1.0 / (p * (1.0 - p))
     }
 }
 

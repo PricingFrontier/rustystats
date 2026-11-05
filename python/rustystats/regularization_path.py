@@ -38,9 +38,8 @@ Example
 
 from __future__ import annotations
 
-import copy
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Protocol
 
 import numpy as np
 
@@ -56,6 +55,7 @@ from rustystats.constants import (
     DEFAULT_TOLERANCE,
 )
 from rustystats.exceptions import FittingError, ValidationError
+from rustystats.solver_trace import SolverStep, solver_steps
 
 if TYPE_CHECKING:
     from rustystats.formula import ParsedFormula
@@ -150,6 +150,8 @@ class RegularizationPathInfo:
     cv_profile: dict[str, object] | None = None
     final_fit_center: np.ndarray | None = None
     final_fit_scale: np.ndarray | None = None
+    #: The alpha_max and CV drivers' steps (§4.5), which the result's trace starts with.
+    solver_trace: tuple = ()
 
 
 def _apply_inverse_link(eta: np.ndarray, link: str) -> np.ndarray:
@@ -374,54 +376,11 @@ def compute_standardization_with_ridge_diag(
     if fit_intercept and p > 0:
         mask[0] = False
 
-    try:
-        from rustystats._rustystats import compute_standardization_py as _rust_standardization
+    # The moments are computed in Rust with the block-ordered reduction every fit
+    # shares (specs/out-of-core-fit.md §6.7), so they do not depend on thread count.
+    from rustystats._rustystats import compute_standardization_py as _rust_standardization
 
-        return _rust_standardization(x, w, mask, fit_intercept)
-    except ImportError:
-        pass
-
-    center = np.zeros(p, dtype=np.float64)
-    scale = np.ones(p, dtype=np.float64)
-    ridge_xtx_diag = np.zeros(p, dtype=np.float64)
-    active = np.flatnonzero(mask)
-    if active.size == 0:
-        return center, scale, ridge_xtx_diag
-
-    if active.size == p:
-        cols = x
-    elif active.size > 0 and np.all(active == np.arange(active[0], active[0] + active.size)):
-        cols = x[:, active[0] : active[-1] + 1]
-    else:
-        cols = x[:, active]
-    mean = (w @ cols) / weight_sum
-    # Two-pass weighted variance: centre before squaring. The one-pass
-    # ``E[x²] - E[x]²`` loses precision to catastrophic cancellation on the
-    # very high-magnitude columns this standardization exists to tame — a
-    # mean ~1e10 column can lose its variance entirely, which would clamp a
-    # genuinely varying column to "constant" below and let it escape the
-    # penalty (reintroducing the RS-ACT-012 defect for that column).
-    centered = cols - mean
-    np.square(centered, out=centered)
-    var = np.maximum((w @ centered) / weight_sum, 0.0)
-    sd = np.sqrt(var)
-    valid = np.isfinite(mean) & np.isfinite(sd) & (sd > MIN_WEIGHTED_STD)
-    valid_cols = active[valid]
-    raw_diag = weight_sum * (var + mean * mean)
-    active_diag = raw_diag.copy()
-    if np.any(valid):
-        if fit_intercept:
-            active_diag[valid] = weight_sum
-        else:
-            active_diag[valid] = raw_diag[valid] / (sd[valid] * sd[valid])
-    ridge_xtx_diag[active] = active_diag
-    if valid_cols.size == 0:
-        return center, scale, ridge_xtx_diag
-
-    if fit_intercept:
-        center[valid_cols] = mean[valid]
-    scale[valid_cols] = sd[valid]
-    return center, scale, ridge_xtx_diag
+    return _rust_standardization(x, w, mask, fit_intercept)
 
 
 def compute_standardization(
@@ -476,6 +435,7 @@ def compute_alpha_max(
     ridge_xtx_diag: np.ndarray | None = None,
     pen_mask: np.ndarray | None = None,
     allow_extended_tweedie: bool = False,
+    trace: list | None = None,
 ) -> float:
     """Maximum alpha that zeroes every penalised coefficient (RS-ACT-005).
 
@@ -540,12 +500,7 @@ def compute_alpha_max(
 
         link = get_default_link(family)
 
-    n, p = X.shape
-    if weights is None:
-        w = np.ones(n)
-    else:
-        w = np.asarray(weights, dtype=np.float64)
-    off = np.zeros(n) if offset is None else np.asarray(offset, dtype=np.float64)
+    _n, p = X.shape
 
     if pen_mask is None:
         penalty_mask = np.ones(p, dtype=bool)
@@ -588,48 +543,32 @@ def compute_alpha_max(
         if np.any(~np.isfinite(ridge_diag)) or np.any(ridge_diag < 0.0):
             raise ValidationError("ridge_xtx_diag for alpha_max must be finite and non-negative.")
 
-    if l1_ratio > 0:
-        beta_0 = _fit_null_intercept(
-            y,
+    # The null fit, the score and the column norms are block-ordered reductions in
+    # Rust (specs/out-of-core-fit.md §5.3, §7.8), the same an out-of-core fit runs.
+    from rustystats._rustystats import alpha_max_py
+
+    try:
+        value = alpha_max_py(
+            np.ascontiguousarray(y, dtype=np.float64),
+            np.ascontiguousarray(X, dtype=np.float64),
             family,
             link,
-            off,
-            w,
-            var_power,
-            theta,
+            float(l1_ratio),
+            offset=None if offset is None else np.ascontiguousarray(offset, dtype=np.float64),
+            weights=None if weights is None else np.ascontiguousarray(weights, dtype=np.float64),
+            var_power=float(var_power),
+            theta=float(theta),
+            pen_mask=[bool(v) for v in penalty_mask],
+            intercept_col=None,
+            center=c,
+            scale=s,
+            ridge_xtx_diag=None if ridge_diag is None else [float(v) for v in ridge_diag],
             allow_extended_tweedie=allow_extended_tweedie,
+            trace=trace,
         )
-        eta_0 = beta_0 + off
-        mu_0 = _apply_inverse_link(eta_0, link)
-        score_factor = _glm_score_gradient_factor(y, mu_0, family, link, var_power, theta, w)
-        # Per-feature unpenalised gradient magnitudes.
-        scores = X.T @ score_factor
-        if use_standardization:
-            # Centering term is included explicitly instead of assuming the
-            # intercept score is exactly zero; this keeps the endpoint stable
-            # across non-canonical links and fallback null fits.
-            scores = (scores - c * float(np.sum(score_factor))) / s
-        if not np.any(penalty_mask):
-            return ALPHA_MAX_FLOOR
-        max_score = float(np.max(np.abs(scores[penalty_mask])))
-        alpha_max = max_score / l1_ratio
-    else:
-        # Ridge has no all-zero KKT; use the median weighted column norm as a
-        # documented heuristic. Same shape as the pre-RS-ACT-005 fallback but
-        # weight-aware and intercept-excluding, with no division by ``n`` so
-        # the magnitude matches the solver's loss scale.
-        if not np.any(penalty_mask):
-            return ALPHA_MAX_FLOOR
-        if ridge_diag is not None:
-            XtX_diag = ridge_diag[penalty_mask]
-        elif use_standardization:
-            x_pen = (X[:, penalty_mask] - c[penalty_mask][None, :]) / s[penalty_mask][None, :]
-            XtX_diag = np.sum((x_pen**2) * w[:, None], axis=0)
-        else:
-            XtX_diag = np.sum((X[:, penalty_mask] ** 2) * w[:, None], axis=0)
-        alpha_max = float(np.median(XtX_diag)) * 10.0 if XtX_diag.size > 0 else ALPHA_MAX_FLOOR
-
-    return max(alpha_max, ALPHA_MAX_FLOOR)
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+    return float(value)
 
 
 def generate_alpha_path(
@@ -656,44 +595,6 @@ def generate_alpha_path(
     """
     alpha_min = alpha_max * alpha_min_ratio
     return np.logspace(np.log10(alpha_max), np.log10(alpha_min), n_alphas)
-
-
-def create_cv_folds(
-    n: int,
-    n_folds: int,
-    seed: int | None = None,
-) -> list[tuple[np.ndarray, np.ndarray]]:
-    """
-    Create K-fold cross-validation indices.
-
-    Parameters
-    ----------
-    n : int
-        Number of observations
-    n_folds : int
-        Number of folds
-    seed : int, optional
-        Random seed for reproducibility
-
-    Returns
-    -------
-    list[tuple[np.ndarray, np.ndarray]]
-        List of (train_indices, val_indices) tuples
-    """
-    rng = np.random.default_rng(seed)
-    indices = rng.permutation(n)
-    fold_sizes = np.full(n_folds, n // n_folds, dtype=int)
-    fold_sizes[: n % n_folds] += 1
-
-    folds = []
-    current = 0
-    for fold_size in fold_sizes:
-        val_idx = indices[current : current + fold_size]
-        train_idx = np.concatenate([indices[:current], indices[current + fold_size :]])
-        folds.append((train_idx, val_idx))
-        current += fold_size
-
-    return folds
 
 
 def compute_deviance(
@@ -905,6 +806,7 @@ def fit_cv_regularization_path(
         )
 
     # Compute alpha path: GLM-score-aware, offset+weight+family+link aware.
+    trace: list = []
     alpha_max = compute_alpha_max(
         X,
         y,
@@ -921,6 +823,7 @@ def fit_cv_regularization_path(
         ridge_xtx_diag=ridge_xtx_diag,
         pen_mask=pen_mask,
         allow_extended_tweedie=allow_extended_tweedie,
+        trace=trace,
     )
     alphas = generate_alpha_path(alpha_max, n_alphas, alpha_min_ratio)
     if include_unregularized and (alphas.size == 0 or not np.any(alphas == 0.0)):
@@ -937,6 +840,7 @@ def fit_cv_regularization_path(
     # Use Rust parallel implementation (no fallback)
     from rustystats._rustystats import fit_cv_path_py as _fit_cv_path_rust
     from rustystats.formula import _get_constraint_indices
+    from rustystats.frozen_design import builder_max_row_nonzeros
 
     if verbose:
         print("  Using Rust parallel CV")
@@ -976,16 +880,52 @@ def fit_cv_regularization_path(
         fit_intercept=fit_intercept,
         center=solver_center,
         scale=solver_scale,
+        # The frozen design's structural nonzeros per row (§5.2).
+        max_row_nonzeros=builder_max_row_nonzeros(getattr(glm_instance, "_builder", None)),
     )
 
-    # Convert Rust result to path_results format
+    return cv_path_info(
+        rust_result,
+        l1_ratio=effective_l1_ratio,
+        selection=selection,
+        n_folds=cv,
+        n_params=X.shape[1],
+        cv_max_iter=cv_max_iter,
+        cv_tol=cv_tol,
+        final_fit_center=solver_center,
+        final_fit_scale=solver_scale,
+        verbose=verbose,
+        solver_trace=trace,
+    )
+
+
+def cv_path_info(
+    rust_result: dict,
+    *,
+    l1_ratio: float,
+    selection: str,
+    n_folds: int,
+    n_params: int,
+    cv_max_iter: int,
+    cv_tol: float,
+    final_fit_center: np.ndarray | None,
+    final_fit_scale: np.ndarray | None,
+    verbose: bool = False,
+    solver_trace: list | tuple = (),
+) -> RegularizationPathInfo:
+    """The selected alpha and path metadata of a Rust CV path result.
+
+    ``solver_trace`` holds the steps before the path (alpha_max's); the path's own
+    follow from ``rust_result["solver_trace"]``.
+    """
+    effective_l1_ratio = l1_ratio
     path_results = [
         RegularizationPathResult(
             alpha=rust_result["alphas"][i],
             l1_ratio=effective_l1_ratio,
             cv_deviance_mean=rust_result["cv_deviance_mean"][i],
             cv_deviance_se=rust_result["cv_deviance_se"][i],
-            n_nonzero=X.shape[1] - 1,
+            n_nonzero=n_params - 1,
             max_coef=0.0,
         )
         for i in range(len(rust_result["alphas"]))
@@ -1007,8 +947,7 @@ def fit_cv_regularization_path(
     else:
         reg_type = "elastic_net"
 
-    # Create path info
-    path_info = RegularizationPathInfo(
+    return RegularizationPathInfo(
         selected_alpha=best.alpha,
         selected_l1_ratio=best.l1_ratio,
         cv_deviance=best.cv_deviance_mean,
@@ -1016,7 +955,7 @@ def fit_cv_regularization_path(
         selection_method=selection,
         regularization_type=reg_type,
         path=path_results,
-        n_folds=cv,
+        n_folds=n_folds,
         cv_max_iter=cv_max_iter,
         cv_tol=cv_tol,
         cv_fold_scores={
@@ -1026,11 +965,10 @@ def fit_cv_regularization_path(
         or None,
         cv_scoring_objective="weighted_mean_unit_deviance",
         cv_profile=dict(rust_result["profile"]) if "profile" in rust_result else None,
-        final_fit_center=solver_center,
-        final_fit_scale=solver_scale,
+        final_fit_center=final_fit_center,
+        final_fit_scale=final_fit_scale,
+        solver_trace=solver_steps(solver_trace, rust_result.get("solver_trace")),
     )
-
-    return path_info
 
 
 def reset_fold_local_spline_state(parsed: ParsedFormula) -> None:
@@ -1053,184 +991,141 @@ def reset_fold_local_spline_state(parsed: ParsedFormula) -> None:
             setattr(parsed, attr, None)
 
 
-def build_fold_design_matrices(
-    data,
-    parsed,
-    train_idx: np.ndarray,
-    val_idx: np.ndarray,
-    raw_exposure: np.ndarray | None = None,
-    seed: int | None = None,
-) -> tuple[np.ndarray, np.ndarray, list[str]]:
-    """Build ``(X_train, X_val, names)`` with target encoding fit on training rows only.
-
-    A fresh :class:`InteractionBuilder` is fit on the held-in rows, so every
-    response-dependent encoding (target encoding, including interactions and the
-    exposure-weighted variant) sees only training targets. The held-out rows are
-    then transformed through that fold-training encoder, which maps any level
-    absent from training to the training prior. This is what makes cross-validated
-    alpha selection fold-safe for target-encoded terms (RS-ACT-001b): no
-    validation target ever enters the encoding used to score a fold.
-
-    Per-fold column counts may differ when a categorical level is absent from a
-    fold's training rows; that is harmless because each fold fits and scores in
-    its own column space and only the scalar validation deviance is aggregated.
-    """
-    from rustystats.interactions import InteractionBuilder
-
-    data_train = data[train_idx]
-    data_val = data[val_idx]
-    exposure_train = raw_exposure[train_idx] if raw_exposure is not None else None
-
-    parsed_fold = copy.deepcopy(parsed)
-    reset_fold_local_spline_state(parsed_fold)
-
-    builder = InteractionBuilder(data_train)
-    _y_train, x_train, names = builder.build_design_matrix_from_parsed(
-        parsed_fold, exposure=exposure_train, seed=seed
-    )
-    x_val = builder.transform_new_data(data_val)
-    return x_train, x_val, names
+# ── Cross-validation with target encoding (specs/out-of-core-fit.md §7.9) ──────
 
 
-def fit_cv_te_regularization_path(
-    glm_instance,
-    cv: int = DEFAULT_CV_FOLDS,
-    selection: Literal["min", "1se"] = "min",
-    regularization: Literal["ridge", "lasso", "elastic_net"] = "ridge",
-    n_alphas: int = DEFAULT_N_ALPHAS,
-    alpha_min_ratio: float = DEFAULT_ALPHA_MIN_RATIO,
-    l1_ratio: float | None = None,
-    max_iter: int = DEFAULT_MAX_ITER,
-    tol: float = DEFAULT_TOLERANCE,
-    seed: int | None = None,
-    include_unregularized: bool = True,
-    verbose: bool = False,
-    standardize: bool = True,
-) -> RegularizationPathInfo:
-    """Fold-safe CV regularization path for models with target-encoded terms.
-
-    Unlike the fast Rust array path (:func:`fit_cv_regularization_path`, which
-    slices a design matrix built once on the full data), this rebuilds the design
-    matrix per fold via :func:`build_fold_design_matrices` so each fold's target
-    encoding is fit on its training rows only (RS-ACT-001b). Each candidate alpha
-    is fit on the fold-training design and scored on the fold-validation design,
-    mirroring the production fit -> predict pipeline. Non-target-encoded models
-    should use the fast path; this one is reserved for the target-encoding case.
-    """
-    from rustystats._rustystats import fit_fold_path_py as _fit_fold_path_rust
-
+def _effective_l1_ratio(regularization: str, l1_ratio: float | None) -> float:
     if regularization == "ridge":
-        effective_l1_ratio = 0.0
-    elif regularization == "lasso":
-        effective_l1_ratio = 1.0
-    elif regularization == "elastic_net":
-        effective_l1_ratio = l1_ratio if l1_ratio is not None else DEFAULT_ELASTIC_NET_L1_RATIO
-    else:
-        raise ValidationError(f"Unknown regularization type: {regularization}")
+        return 0.0
+    if regularization == "lasso":
+        return 1.0
+    if regularization == "elastic_net":
+        return l1_ratio if l1_ratio is not None else DEFAULT_ELASTIC_NET_L1_RATIO
+    raise ValidationError(f"Unknown regularization type: {regularization}")
 
-    X = glm_instance.X
-    y = glm_instance.y
-    family = glm_instance.family
-    link = glm_instance.link
-    var_power = glm_instance.var_power
-    theta = glm_instance.theta if glm_instance.theta is not None else DEFAULT_NEGBINOMIAL_THETA
-    offset = glm_instance.offset
-    weights = glm_instance.weights
-    allow_extended_tweedie = bool(getattr(glm_instance, "allow_extended_tweedie", False))
-    fit_intercept = bool(getattr(glm_instance, "intercept", True))
 
-    parsed = glm_instance._builder._parsed_formula
-    data = glm_instance.data
-    raw_exposure = getattr(glm_instance, "_raw_exposure", None)
+class TargetEncodedFolds(Protocol):
+    """One fit mode's view of the K fold designs of a target-encoded model (§7.9).
 
-    # CV fold fits use the requested convergence settings (RS-ACT-001), never a
-    # silently relaxed mode that could change which alpha is selected.
-    cv_max_iter = max_iter
-    cv_tol = tol
+    Fold k's design was learned from its training rows and encodes every row:
+    training rows with its training values, validation rows from its full
+    statistics. Each method reduces over the rows of that design, in blocks of
+    global rows, so the in-memory and out-of-core modes give identical bits.
+    """
 
+    def names(self, fold: int) -> list[str]: ...
+
+    def moments(
+        self, fold: int, pen_mask: np.ndarray, fit_intercept: bool
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Standardisation (centre, scale, ridge diagonal) over the training rows."""
+        ...
+
+    def alpha_max(
+        self,
+        fold: int,
+        *,
+        family: str,
+        link: str,
+        l1_ratio: float,
+        pen_mask: np.ndarray,
+        center: np.ndarray | None,
+        scale: np.ndarray | None,
+        ridge_xtx_diag: np.ndarray | None,
+        trace: list,
+    ) -> float:
+        """alpha_max over the training rows; its steps are appended to ``trace``."""
+        ...
+
+    def path(
+        self,
+        fold: int,
+        alphas: list[float],
+        *,
+        l1_ratio: float,
+        max_iter: int,
+        tol: float,
+        nonneg: list[int],
+        nonpos: list[int],
+        center: np.ndarray | None,
+        scale: np.ndarray | None,
+    ) -> dict:
+        """The fold's warm-started path, scored on its validation rows (its steps in
+        ``"solver_trace"``)."""
+        ...
+
+    def release(self, fold: int) -> None:
+        """Fold ``fold``'s path has ended: free what its design holds."""
+        ...
+
+
+def target_encoded_cv_path(
+    folds: TargetEncodedFolds,
+    *,
+    n_folds: int,
+    n_params: int,
+    family: str,
+    link: str | None,
+    regularization: str,
+    l1_ratio: float | None,
+    n_alphas: int,
+    alpha_min_ratio: float,
+    max_iter: int,
+    tol: float,
+    include_unregularized: bool,
+    standardize: bool,
+    fit_intercept: bool,
+    selection: str,
+    verbose: bool,
+) -> RegularizationPathInfo:
+    """The fold-safe CV path of a target-encoded model, in either fit mode (§7.9).
+
+    Every fold's design is learned from its training rows, so no validation target
+    enters the encoding that scores it (RS-ACT-001b). alpha_max is the maximum of the
+    folds' training-row alpha_max (a fold whose computation fails contributes the
+    floor). The folds then run in fold order; an alpha that failed in an earlier fold
+    is dropped from later folds' grids, as their warm-start chains always were.
+    """
+    from rustystats.formula import _get_constraint_indices, get_default_link
+
+    effective_l1_ratio = _effective_l1_ratio(regularization, l1_ratio)
     if verbose:
-        print(f"Fold-safe target-encoding CV: {regularization}, {cv} folds, {n_alphas} alphas")
+        print(f"Fold-safe target-encoding CV: {regularization}, {n_folds} folds, {n_alphas} alphas")
+    alpha_family = _alpha_family_base(family)
+    alpha_link = link or get_default_link(alpha_family)
 
-    # Default the CV seed to DEFAULT_CV_SEED for determinism. NOTE: only the seed
-    # value is shared with the fast Rust array path — NOT the resulting fold
-    # partition. This path splits a seeded ``permutation(n)`` into contiguous
-    # blocks (``create_cv_folds``); the Rust path assigns each row to a fold via
-    # ``(row, seed)`` hashing. For the same seed the two produce different
-    # partitions, so CV deviances and the selected alpha are not comparable
-    # across the two routes (each is internally deterministic). A model silently
-    # switches routes based on whether it has a target-encoded/spline term.
-    cv_seed = seed if seed is not None else DEFAULT_CV_SEED
-    folds = create_cv_folds(len(y), cv, cv_seed)
-    from rustystats.formula import _get_constraint_indices
-
-    # Cache the per-fold designs from the alpha-grid pass so the fit pass below
-    # can reuse them — building TE designs is the expensive step (sort + per-
-    # level shrinkage), and recomputing them once per fold roughly halves the
-    # builder workload on TE CV fits. ``build_fold_design_matrices`` is
-    # deterministic in ``(data, parsed, train_idx, val_idx, raw_exposure, seed)``,
-    # so caching is behaviour-preserving.
-    fold_designs: list[
-        tuple[np.ndarray, np.ndarray, list[str], np.ndarray | None, np.ndarray | None]
-    ] = []
-    fold_alpha_maxes = []
-    for train_idx, val_idx in folds:
-        x_train, x_val, names = build_fold_design_matrices(
-            data, parsed, train_idx, val_idx, raw_exposure=raw_exposure, seed=cv_seed
-        )
-        y_train = y[train_idx]
-        weights_train = weights[train_idx] if weights is not None else None
-        offset_train = offset[train_idx] if offset is not None else None
-        fold_center = fold_scale = None
-        fold_ridge_xtx_diag = None
-        fold_pen_mask = penalized_column_mask(x_train.shape[1], fit_intercept)
+    standardizations: list[tuple[np.ndarray | None, np.ndarray | None]] = []
+    fold_alpha_maxes: list[float] = []
+    trace: list = []
+    for fold in range(n_folds):
+        p = len(folds.names(fold))
+        pen_mask = penalized_column_mask(p, fit_intercept)
+        center = scale = ridge = None
         if standardize:
-            fold_center, fold_scale, fold_ridge_xtx_diag = compute_standardization_with_ridge_diag(
-                x_train,
-                weights_train,
-                fold_pen_mask,
-                fit_intercept=fit_intercept,
-            )
-        solver_center, solver_scale = solver_standardization(
-            fold_center,
-            fold_scale,
-            fit_intercept=fit_intercept,
-        )
-        fold_designs.append((x_train, x_val, names, solver_center, solver_scale))
+            center, scale, ridge = folds.moments(fold, pen_mask, fit_intercept)
+        standardizations.append(solver_standardization(center, scale, fit_intercept=fit_intercept))
         try:
-            fold_alpha_max = compute_alpha_max(
-                x_train,
-                y_train,
-                effective_l1_ratio,
-                family=family,
-                link=link,
-                offset=offset_train,
-                weights=weights_train,
-                var_power=var_power,
-                theta=theta,
-                intercept_col=0 if fit_intercept else None,
-                center=fold_center,
-                scale=fold_scale,
-                ridge_xtx_diag=fold_ridge_xtx_diag,
-                pen_mask=fold_pen_mask,
-                allow_extended_tweedie=allow_extended_tweedie,
+            fold_alpha_max = folds.alpha_max(
+                fold,
+                family=alpha_family,
+                link=alpha_link,
+                l1_ratio=effective_l1_ratio,
+                pen_mask=pen_mask,
+                center=center,
+                scale=scale,
+                ridge_xtx_diag=ridge,
+                trace=trace,
             )
         except (ValidationError, FittingError, ValueError, RuntimeError) as exc:
-            # A degenerate fold (all-zero counts, perfect separation, a singular
-            # null-intercept solve) must not abort the entire CV: the per-alpha
-            # fits below already fail closed, so the alpha_max that *gates* the
-            # grid must too. Floor this fold's contribution instead of letting a
-            # solver error escape.
+            # A degenerate fold (all-zero counts, separation, a singular null fit)
+            # must not abort the CV: floor its contribution to the grid.
             if verbose:
                 print(f"  fold alpha_max computation failed ({exc!r}); flooring this fold.")
             fold_alpha_max = ALPHA_MAX_FLOOR
+            trace.append(SolverStep("alpha_max", "alpha_max", 0, False, "failed"))
         fold_alpha_maxes.append(fold_alpha_max)
 
-    # Build the alpha search range only from fold-training designs. Taking the
-    # maximum keeps the grid regularized enough for every fold without letting
-    # validation targets enter a full-data target-encoded design.
-    alpha_max = max(fold_alpha_maxes)
-    alphas = list(generate_alpha_path(alpha_max, n_alphas, alpha_min_ratio))
-
+    alphas = list(generate_alpha_path(max(fold_alpha_maxes), n_alphas, alpha_min_ratio))
     # alpha -> per-fold validation deviances; alpha == 0.0 is the unregularized fit.
     candidate_alphas = list(alphas)
     if include_unregularized:
@@ -1238,68 +1133,48 @@ def fit_cv_te_regularization_path(
     deviances: dict[float, list[float]] = {a: [] for a in candidate_alphas}
     failed_alphas: set[float] = set()
 
-    for (train_idx, val_idx), (x_train, x_val, names, fold_center, fold_scale) in zip(
-        folds, fold_designs, strict=True
-    ):
-        y_train = y[train_idx]
-        y_val = y[val_idx]
-        offset_train = offset[train_idx] if offset is not None else None
-        offset_val = offset[val_idx] if offset is not None else None
-        weights_train = weights[train_idx] if weights is not None else None
-        weights_val = weights[val_idx] if weights is not None else None
-        nonneg_indices, nonpos_indices = _get_constraint_indices(names)
-
+    for fold in range(n_folds):
         active_alphas = [alpha for alpha in candidate_alphas if alpha not in failed_alphas]
         if not active_alphas:
+            folds.release(fold)
             continue
+        nonneg, nonpos = _get_constraint_indices(folds.names(fold))
+        center, scale = standardizations[fold]
         try:
-            fold_result = _fit_fold_path_rust(
-                y_train,
-                x_train,
-                y_val,
-                x_val,
-                family,
-                link,
-                var_power,
-                theta,
-                offset_train,
-                weights_train,
-                offset_val,
-                weights_val,
+            fold_result = folds.path(
+                fold,
                 active_alphas,
-                effective_l1_ratio,
-                cv_max_iter,
-                cv_tol,
-                nonneg_indices if nonneg_indices else None,
-                nonpos_indices if nonpos_indices else None,
-                allow_extended_tweedie,
-                fit_intercept,
-                fold_center,
-                fold_scale,
+                l1_ratio=effective_l1_ratio,
+                max_iter=max_iter,
+                tol=tol,
+                nonneg=nonneg,
+                nonpos=nonpos,
+                center=center,
+                scale=scale,
             )
         except ValueError:
             failed_alphas.update(active_alphas)
+            trace.extend(SolverStep("cv", "fold_alpha", 0, False, "error") for _ in active_alphas)
             continue
-        fold_deviances = list(fold_result["fold_deviances"])
-        for alpha, dev in zip(active_alphas, fold_deviances, strict=True):
+        finally:
+            folds.release(fold)
+        trace.extend(fold_result.get("solver_trace", ()))
+        for alpha, dev in zip(active_alphas, fold_result["fold_deviances"], strict=True):
             if np.isfinite(dev):
                 deviances[alpha].append(dev)
             else:
                 failed_alphas.add(alpha)
 
-    # ``n_nonzero`` is approximated from the full-data design column count
-    # (minus intercept). Per-fold target-encoded designs can have a slightly
-    # different column count when a categorical level is absent from a fold's
-    # training rows; we report the full-data column count for stability rather
-    # than averaging across folds. The penalised refit on the full data after
-    # alpha selection always has the full-data column count.
-    n_nonzero = X.shape[1] - 1
+    # ``n_nonzero`` is the full-data design's column count (minus the intercept): a
+    # fold's design can be narrower when a level is absent from its training rows,
+    # and the refit at the selected alpha always has the full-data width.
+    n_nonzero = n_params - 1
     path_results = []
     for alpha in candidate_alphas:
         if alpha in failed_alphas:
             continue
         fold_devs = deviances[alpha]
-        if len(fold_devs) != len(folds):
+        if len(fold_devs) != n_folds:
             continue
         path_results.append(
             RegularizationPathResult(
@@ -1311,7 +1186,6 @@ def fit_cv_te_regularization_path(
                     if len(fold_devs) > 1
                     else 0.0
                 ),
-                # See n_nonzero comment above — approximate from full-data design.
                 n_nonzero=n_nonzero,
                 max_coef=0.0,
             )
@@ -1345,10 +1219,255 @@ def fit_cv_te_regularization_path(
         selection_method=selection,
         regularization_type=reg_type,
         path=path_results,
-        n_folds=cv,
-        cv_max_iter=cv_max_iter,
-        cv_tol=cv_tol,
+        n_folds=n_folds,
+        cv_max_iter=max_iter,
+        cv_tol=tol,
         fold_safe_target_encoding=True,
         cv_fold_scores={float(a): list(map(float, ds)) for a, ds in deviances.items()},
         cv_scoring_objective="weighted_mean_unit_deviance",
+        solver_trace=solver_steps(trace),
     )
+
+
+class _InMemoryTargetFolds:
+    """K fold designs over an in-memory frame: fold k's X (n × p_k) is encoded for
+    every row when the fold is used and freed when it is released."""
+
+    def __init__(
+        self,
+        data,
+        designs: list,
+        *,
+        y: np.ndarray,
+        offset: np.ndarray | None,
+        weights: np.ndarray | None,
+        family: str,
+        link: str | None,
+        var_power: float,
+        theta: float,
+        fit_intercept: bool,
+        allow_extended_tweedie: bool,
+        cv_seed: int,
+    ) -> None:
+        self.data = data
+        self.designs = designs
+        self.y = np.ascontiguousarray(y, dtype=np.float64)
+        self.offset = None if offset is None else np.ascontiguousarray(offset, dtype=np.float64)
+        self.weights = None if weights is None else np.ascontiguousarray(weights, dtype=np.float64)
+        self.family = family
+        self.link = link
+        self.var_power = var_power
+        self.theta = theta
+        self.fit_intercept = fit_intercept
+        self.allow_extended_tweedie = allow_extended_tweedie
+        self.cv_seed = cv_seed
+        self._fold: int | None = None
+        self._x: np.ndarray | None = None
+
+    def _design(self, fold: int) -> np.ndarray:
+        if self._fold != fold:
+            from rustystats.frozen_design import E_LEARN
+
+            self._x = None
+            design = self.designs[fold]
+            n = self.data.height
+            x = np.empty((n, design.p), dtype=np.float64)
+            for start in range(0, n, E_LEARN):
+                rows = self.data.slice(start, E_LEARN)
+                design.encode_into(rows, x[start : start + rows.height], first_row=start)
+            self._x, self._fold = x, fold
+        assert self._x is not None
+        return self._x
+
+    def _fold_spec(self, fold: int) -> tuple[int, int, int]:
+        return (fold, len(self.designs), self.cv_seed)
+
+    def names(self, fold: int) -> list[str]:
+        return list(self.designs[fold].names)
+
+    def moments(self, fold, pen_mask, fit_intercept):
+        from rustystats._rustystats import compute_standardization_py
+
+        x = self._design(fold)
+        weights = self.weights if self.weights is not None else np.ones(x.shape[0])
+        center, scale, ridge = compute_standardization_py(
+            x,
+            weights,
+            np.asarray(pen_mask, dtype=bool),
+            fit_intercept,
+            fold=self._fold_spec(fold),
+        )
+        return np.asarray(center), np.asarray(scale), np.asarray(ridge)
+
+    def alpha_max(
+        self, fold, *, family, link, l1_ratio, pen_mask, center, scale, ridge_xtx_diag, trace
+    ):
+        from rustystats._rustystats import fold_alpha_max_py
+
+        fold_index, n_folds, seed = self._fold_spec(fold)
+        return float(
+            fold_alpha_max_py(
+                self.y,
+                self._design(fold),
+                family,
+                link,
+                float(l1_ratio),
+                fold_index,
+                n_folds,
+                seed,
+                offset=self.offset,
+                weights=self.weights,
+                var_power=float(self.var_power),
+                theta=float(self.theta),
+                pen_mask=[bool(v) for v in pen_mask],
+                center=center,
+                scale=scale,
+                ridge_xtx_diag=None
+                if ridge_xtx_diag is None
+                else [float(v) for v in ridge_xtx_diag],
+                allow_extended_tweedie=self.allow_extended_tweedie,
+                trace=trace,
+            )
+        )
+
+    def path(self, fold, alphas, *, l1_ratio, max_iter, tol, nonneg, nonpos, center, scale):
+        from rustystats._rustystats import fold_path_py
+
+        fold_index, n_folds, seed = self._fold_spec(fold)
+        return fold_path_py(
+            self.y,
+            self._design(fold),
+            self.family,
+            fold_index,
+            n_folds,
+            seed,
+            link=self.link,
+            var_power=self.var_power,
+            theta=self.theta,
+            offset=self.offset,
+            weights=self.weights,
+            alphas=list(alphas),
+            l1_ratio=l1_ratio,
+            max_iter=max_iter,
+            tol=tol,
+            nonneg_indices=nonneg or None,
+            nonpos_indices=nonpos or None,
+            allow_extended_tweedie=self.allow_extended_tweedie,
+            fit_intercept=self.fit_intercept,
+            center=center,
+            scale=scale,
+            max_row_nonzeros=self.designs[fold].max_row_nonzeros,
+        )
+
+    def release(self, fold: int) -> None:
+        if self._fold == fold:
+            self._x, self._fold = None, None
+        self.designs[fold].close()
+
+
+def fold_formulas(glm_instance, n_folds: int) -> list[ParsedFormula]:
+    """A fresh parse of the model's terms per fold: no knots or other state learned
+    from the full data reach a fold's design."""
+    from rustystats.formula import dict_to_parsed_formula
+
+    return [
+        dict_to_parsed_formula(
+            response=glm_instance.response,
+            terms=glm_instance.terms,
+            interactions=glm_instance.interactions_spec,
+            intercept=glm_instance.intercept,
+        )
+        for _ in range(n_folds)
+    ]
+
+
+def fit_cv_te_regularization_path(
+    glm_instance,
+    cv: int = DEFAULT_CV_FOLDS,
+    selection: Literal["min", "1se"] = "min",
+    regularization: Literal["ridge", "lasso", "elastic_net"] = "ridge",
+    n_alphas: int = DEFAULT_N_ALPHAS,
+    alpha_min_ratio: float = DEFAULT_ALPHA_MIN_RATIO,
+    l1_ratio: float | None = None,
+    max_iter: int = DEFAULT_MAX_ITER,
+    tol: float = DEFAULT_TOLERANCE,
+    seed: int | None = None,
+    include_unregularized: bool = True,
+    verbose: bool = False,
+    standardize: bool = True,
+) -> RegularizationPathInfo:
+    """Fold-safe CV regularization path for an in-memory target-encoded model (§7.9).
+
+    Rows are assigned to folds by DEC-2's hash of the row and the CV seed. Each
+    fold's design is learned from its training rows (target encoding in the model's
+    keyed order, over those rows only), and every row is encoded through it: the
+    fold fits its training rows and scores its validation rows, which take their
+    target encoding from the fold's full statistics. An out-of-core fit runs the same
+    steps over batches (``out_of_core_fit``) and gives the same bits.
+    """
+    from rustystats.frozen_design import (
+        E_LEARN,
+        FoldRows,
+        FrozenDesignUnsupported,
+        in_memory_target_inputs,
+        learn_frozen_designs,
+    )
+
+    _effective_l1_ratio(regularization, l1_ratio)
+    data = glm_instance.data
+    builder = glm_instance._builder
+    cv_seed = seed if seed is not None else DEFAULT_CV_SEED
+    n = data.height
+    slices = [data.slice(start, E_LEARN) for start in range(0, n, E_LEARN)]
+    try:
+        designs = learn_frozen_designs(
+            fold_formulas(glm_instance, cv),
+            slices,
+            [FoldRows(fold, cv, cv_seed) for fold in range(cv)],
+            target=in_memory_target_inputs(
+                builder._parsed_formula.response,
+                getattr(glm_instance, "_raw_exposure", None),
+                builder._te_seed,
+            ),
+        )
+    except FrozenDesignUnsupported as exc:
+        raise ValidationError(
+            f"Cross-validation with target encoding cannot learn this model's fold designs: {exc}."
+        ) from exc
+    theta = glm_instance.theta if glm_instance.theta is not None else DEFAULT_NEGBINOMIAL_THETA
+    folds = _InMemoryTargetFolds(
+        data,
+        designs,
+        y=glm_instance.y,
+        offset=glm_instance.offset,
+        weights=glm_instance.weights,
+        family=glm_instance.family,
+        link=glm_instance.link,
+        var_power=glm_instance.var_power,
+        theta=theta,
+        fit_intercept=bool(getattr(glm_instance, "intercept", True)),
+        allow_extended_tweedie=bool(getattr(glm_instance, "allow_extended_tweedie", False)),
+        cv_seed=cv_seed,
+    )
+    try:
+        return target_encoded_cv_path(
+            folds,
+            n_folds=cv,
+            n_params=glm_instance.X.shape[1],
+            family=glm_instance.family,
+            link=glm_instance.link,
+            regularization=regularization,
+            l1_ratio=l1_ratio,
+            n_alphas=n_alphas,
+            alpha_min_ratio=alpha_min_ratio,
+            max_iter=max_iter,
+            tol=tol,
+            include_unregularized=include_unregularized,
+            standardize=standardize,
+            fit_intercept=bool(getattr(glm_instance, "intercept", True)),
+            selection=selection,
+            verbose=verbose,
+        )
+    finally:
+        for design in designs:
+            design.close()

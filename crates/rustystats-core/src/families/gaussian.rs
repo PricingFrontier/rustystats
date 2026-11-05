@@ -31,8 +31,6 @@
 //
 // =============================================================================
 
-use std::borrow::Cow;
-
 use super::Family;
 use crate::links::{IdentityLink, Link};
 use ndarray::Array1;
@@ -58,12 +56,25 @@ impl Family for GaussianFamily {
         "Gaussian"
     }
 
-    /// Variance function: V(μ) = 1
-    ///
-    /// The Gaussian family has constant variance - it doesn't depend on μ.
-    /// This is the homoscedasticity assumption of linear regression.
-    fn variance<'a>(&self, mu: &'a Array1<f64>) -> Cow<'a, Array1<f64>> {
-        Cow::Owned(Array1::ones(mu.len()))
+    fn log_likelihood_form(&self) -> crate::families::LogLikelihoodForm {
+        crate::families::LogLikelihoodForm::Gaussian
+    }
+
+    /// Variance function V(μ) = 1.
+    #[inline]
+    fn variance_at(&self, _mu: f64) -> f64 {
+        1.0
+    }
+
+    /// Starting μ: the response itself.
+    #[inline]
+    fn initialize_mu_at(&self, yi: f64, _y_mean: f64) -> f64 {
+        yi
+    }
+
+    #[inline]
+    fn is_valid_mu_at(&self, mu: f64) -> bool {
+        mu.is_finite()
     }
 
     /// Unit deviance: (y - μ)²
@@ -84,29 +95,6 @@ impl Family for GaussianFamily {
     /// The canonical link for Gaussian is the identity link.
     fn default_link(&self) -> Box<dyn Link> {
         Box::new(IdentityLink)
-    }
-
-    /// Initialize μ to the observed values.
-    ///
-    /// For Gaussian, starting at y is natural. We add a tiny bit of smoothing
-    /// to avoid any numerical issues with exact zeros.
-    fn initialize_mu(&self, y: &Array1<f64>) -> Array1<f64> {
-        y.clone()
-    }
-
-    /// Any finite value is valid for Gaussian.
-    fn is_valid_mu(&self, mu: &Array1<f64>) -> bool {
-        mu.iter().all(|&x| x.is_finite())
-    }
-
-    fn log_likelihood(
-        &self,
-        y: &Array1<f64>,
-        mu: &Array1<f64>,
-        scale: f64,
-        weights: Option<&Array1<f64>>,
-    ) -> f64 {
-        crate::diagnostics::log_likelihood_gaussian(y, mu, scale, weights)
     }
 }
 

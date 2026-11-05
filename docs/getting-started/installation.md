@@ -65,7 +65,7 @@ print(f"RustyStats is working!")
 - `numpy>=1.20` - Array operations
 
 ### Optional
-- `polars>=1.0` - DataFrame support for formula API
+- `polars>=2.0,<3` - DataFrame support for formula API
 - `pyarrow` - Parquet file support
 
 ### Development

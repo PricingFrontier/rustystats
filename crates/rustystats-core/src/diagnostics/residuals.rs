@@ -72,15 +72,16 @@ pub fn resid_response(y: &Array1<f64>, mu: &Array1<f64>) -> Array1<f64> {
 /// Large |residuals| (e.g., > 2-3) may indicate outliers.
 /// Pattern in residuals vs fitted may indicate model problems.
 pub fn resid_pearson(y: &Array1<f64>, mu: &Array1<f64>, family: &dyn Family) -> Array1<f64> {
-    let variance = family.variance(mu);
-
     ndarray::Zip::from(y)
         .and(mu)
-        .and(&*variance)
-        .map_collect(|&yi, &mui, &vi| {
-            let std_dev = vi.sqrt().max(ZERO_TOL);
-            (yi - mui) / std_dev
-        })
+        .map_collect(|&yi, &mui| pearson_residual_at(family, yi, mui))
+}
+
+/// The Pearson residual (y − μ)/√V(μ) of one row, with √V floored at `ZERO_TOL`.
+#[inline]
+pub fn pearson_residual_at(family: &dyn Family, y: f64, mu: f64) -> f64 {
+    let std_dev = family.variance_at(mu).sqrt().max(ZERO_TOL);
+    (y - mu) / std_dev
 }
 
 /// Compute deviance residuals: sign(y - μ) × √d_i

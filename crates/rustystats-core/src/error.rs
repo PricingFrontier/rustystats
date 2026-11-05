@@ -74,6 +74,22 @@ pub enum RustyStatsError {
     /// A required parameter is missing.
     #[error("Missing parameter: {0}")]
     MissingParameter(String),
+
+    // -------------------------------------------------------------------------
+    // Pass execution
+    // -------------------------------------------------------------------------
+    /// A pass over the rows was aborted by its executor (for example, a Python
+    /// exception raised while reading or encoding an out-of-core batch). It is
+    /// never a numerical failure: every recovery boundary propagates it unchanged,
+    /// and the executor keeps the original cause to re-raise at the outer boundary
+    /// (`specs/out-of-core-fit.md` §7.1).
+    #[error("Pass aborted: {0}")]
+    PassAborted(String),
+
+    /// A spill file could not be created, written, read or removed: the path and
+    /// the OS error (`specs/out-of-core-fit.md` §10).
+    #[error("Spill failed: {0}")]
+    Spill(String),
 }
 
 impl RustyStatsError {

@@ -25,20 +25,27 @@
 use ndarray::{s, Array1, Array2, ArrayView2};
 
 use crate::constants::{
-    MAX_IRLS_WEIGHT, SMOOTH_CONVERGENCE_TOL, SMOOTH_INNER_MAX_PER_CYCLE, SMOOTH_KKT_SCORE_TOL,
+    SMOOTH_CONVERGENCE_TOL, SMOOTH_INNER_MAX_PER_CYCLE, SMOOTH_KKT_SCORE_TOL,
     SMOOTH_WARM_START_MAX_ITER, ZERO_TOL,
 };
 use crate::convert;
 use crate::error::{Result, RustyStatsError};
 use crate::families::Family;
+use crate::inference::HCType;
 use crate::links::Link;
 use crate::regularization::{Penalty, SmoothPenalty};
+use crate::rows::GramPartial;
 use crate::solvers::irls::{
-    compute_xtwx, compute_xtwx_xtwz, fit_glm_unified,
-    solve_weighted_least_squares_with_penalty_matrix, solve_wls_from_precomputed, FitConfig,
-    IRLSConfig,
+    coef_predictor, finish_statistics, fit_glm_unified, packed_to_array2, packed_to_dmatrix,
+    request_statistics, solve_wls_from_precomputed, FinalStatistics, FirstPassFacts, FitConfig,
+    IRLSConfig, RetainedWeights, RobustRequest, StatisticsEvals,
+};
+use crate::solvers::passes::{
+    record_step, Eval, EvalSum, InMemoryExecutor, MonotoneTermTransform, MonotoneTransform,
+    PassExecutor, PassRequest, Predictor, ResponseSpec, RowContext, SolverStep, WeightsSpec,
 };
 use crate::splines::penalized::{compute_edf, gcv_score, penalty_matrix};
+use nalgebra::DVector;
 
 /// Maximum absolute value for alpha parameters in exp reparameterization.
 /// Prevents exp() overflow: exp(20) ~ 4.9e8 which is large but finite.
@@ -101,7 +108,9 @@ pub struct SmoothGLMResult {
     pub prior_weights: Array1<f64>,
 
     /// Combined design matrix [parametric | smooth]
-    pub design_matrix: Array2<f64>,
+    /// Statistics of the fit computed in its final passes (penalised smooth fits
+    /// without monotonicity); None for the routes that do not run on passes yet.
+    pub statistics: Option<FinalStatistics>,
 
     /// Original response variable (for residuals/diagnostics)
     pub y: Array1<f64>,
@@ -127,6 +136,9 @@ pub struct SmoothGLMResult {
     /// Largest standardized score |s_j| / sqrt(I_jj) over the coordinates
     /// covered by the stationarity check (0.0 when nothing is checked).
     pub max_std_score: f64,
+
+    /// The drivers' semantic steps (`specs/out-of-core-fit.md` §4.5).
+    pub solver_trace: Vec<SolverStep>,
 }
 
 /// Configuration for smooth GLM fitting.
@@ -152,6 +164,9 @@ pub struct SmoothGLMConfig {
 
     /// Method for lambda selection: "gcv" or "fixed"
     pub lambda_method: String,
+
+    /// Robust covariance types for the final pass (`FinalStatistics::robust`).
+    pub robust: Vec<HCType>,
 }
 
 impl Default for SmoothGLMConfig {
@@ -164,6 +179,7 @@ impl Default for SmoothGLMConfig {
             lambda_tol: 1e-4,
             max_lambda_iter: 20,
             lambda_method: "gcv".to_string(),
+            robust: Vec::new(),
         }
     }
 }
@@ -297,49 +313,6 @@ fn project_coefficients_to_bounds(
     }
 }
 
-fn irls_work_weight(variance: f64, link_derivative: f64, min_weight: f64) -> f64 {
-    (1.0 / (variance * link_derivative * link_derivative))
-        .max(min_weight)
-        .min(MAX_IRLS_WEIGHT)
-}
-
-fn working_response_value(eta: f64, offset: f64, y: f64, mu: f64, link_derivative: f64) -> f64 {
-    (eta - offset) + (y - mu) * link_derivative
-}
-
-fn update_irls_work_arrays(
-    eta: &Array1<f64>,
-    offset: &Array1<f64>,
-    y: &Array1<f64>,
-    mu: &Array1<f64>,
-    prior_weights: &Array1<f64>,
-    variance: &Array1<f64>,
-    link_derivative: &Array1<f64>,
-    min_weight: f64,
-    irls_weights: &mut Array1<f64>,
-    combined_weights: &mut Array1<f64>,
-    working_response: &mut Array1<f64>,
-) {
-    for i in 0..eta.len() {
-        irls_weights[i] = irls_work_weight(variance[i], link_derivative[i], min_weight);
-        combined_weights[i] = prior_weights[i] * irls_weights[i];
-        working_response[i] =
-            working_response_value(eta[i], offset[i], y[i], mu[i], link_derivative[i]);
-    }
-}
-
-fn weighted_square(value: f64, weight: f64) -> f64 {
-    weight * value * value
-}
-
-fn weighted_response_sum_squares(response: &Array1<f64>, weights: &Array1<f64>) -> f64 {
-    response
-        .iter()
-        .zip(weights.iter())
-        .map(|(&value, &weight)| weighted_square(value, weight))
-        .sum()
-}
-
 fn blend_arrays(old: &Array1<f64>, new: &Array1<f64>, fraction: f64) -> Array1<f64> {
     old * (1.0 - fraction) + new * fraction
 }
@@ -378,35 +351,6 @@ fn initial_projection_if_finite(projected: Array1<f64>) -> Option<Array1<f64>> {
     } else {
         None
     }
-}
-
-fn smooth_trial_values_are_finite(
-    eta: &Array1<f64>,
-    mu: &Array1<f64>,
-    deviance: f64,
-    penalized_deviance: f64,
-) -> bool {
-    finite_array(eta) && finite_array(mu) && deviance.is_finite() && penalized_deviance.is_finite()
-}
-
-fn smooth_step_candidate_accepted(
-    eta: &Array1<f64>,
-    mu: &Array1<f64>,
-    deviance: f64,
-    penalized_deviance: f64,
-    accept_threshold: f64,
-) -> bool {
-    smooth_trial_values_are_finite(eta, mu, deviance, penalized_deviance)
-        && penalized_deviance <= accept_threshold
-}
-
-fn should_skip_smooth_trial(
-    eta: &Array1<f64>,
-    mu: &Array1<f64>,
-    deviance: f64,
-    penalized_deviance: f64,
-) -> bool {
-    !smooth_trial_values_are_finite(eta, mu, deviance, penalized_deviance)
 }
 
 fn smooth_trial_is_better(best_trial: Option<i32>, trial_pen_dev: f64, best_pen_dev: f64) -> bool {
@@ -497,22 +441,6 @@ fn parametric_column_count(total_cols: usize, smooth_col_count: usize) -> usize 
     total_cols - smooth_col_count
 }
 
-fn smooth_term_width(spec: &SmoothTermSpec) -> usize {
-    spec.col_end - spec.col_start
-}
-
-fn centered_eta(eta: &Array1<f64>, offset: &Array1<f64>) -> Array1<f64> {
-    eta - offset
-}
-
-fn linear_predictor_from_coefficients(
-    x: ArrayView2<'_, f64>,
-    coefficients: &Array1<f64>,
-    offset: &Array1<f64>,
-) -> Array1<f64> {
-    &x.dot(coefficients) + offset
-}
-
 fn smooth_coefficient_index(col_start: usize, offset: usize) -> usize {
     col_start + offset
 }
@@ -558,25 +486,6 @@ fn smooth_nonconvergence_warning(solver_status: &str) -> String {
 // =============================================================================
 // Exit stationarity (KKT) check and intercept refresh (termination contract)
 // =============================================================================
-
-/// Locate the intercept: the first column outside all smooth ranges and all
-/// sign-constraint sets whose entries are exactly 1.0.
-fn find_intercept_column(
-    x: ArrayView2<'_, f64>,
-    smooth_cols: &std::collections::HashSet<usize>,
-    nonneg_indices: Option<&[usize]>,
-    nonpos_indices: Option<&[usize]>,
-) -> Option<usize> {
-    let constrained: std::collections::HashSet<usize> = nonneg_indices
-        .unwrap_or(&[])
-        .iter()
-        .chain(nonpos_indices.unwrap_or(&[]).iter())
-        .copied()
-        .collect();
-    (0..x.ncols())
-        .filter(|c| !smooth_cols.contains(c) && !constrained.contains(c))
-        .find(|&c| x.column(c).iter().all(|&v| v == 1.0))
-}
 
 /// Guard a quasi-score denominator away from zero while preserving its sign.
 fn guarded_denominator(denom: f64) -> f64 {
@@ -675,274 +584,6 @@ fn stationarity_report(
     (max_std_score < SMOOTH_KKT_SCORE_TOL, max_std_score)
 }
 
-/// Final unconstrained-block re-solve (termination contract, bug.md Fix 1).
-///
-/// Holding the monotone (exp-reparameterised) blocks and sign-constrained
-/// columns fixed as an offset, the remaining coordinates — intercept,
-/// parametric columns, and unconstrained penalized smooths — form a penalized
-/// GLM sub-problem that is convex for canonical links. The stalled main loop
-/// can leave these coordinates non-stationary (its inner test measures
-/// progress, not stationarity); solving the sub-problem to convergence
-/// removes that residual bias. This is a block coordinate-descent step, so it
-/// can only improve the full penalized objective; it is accepted only when it
-/// does not worsen it.
-///
-/// Returns `Ok(true)` when a refinement was applied.
-#[allow(clippy::too_many_arguments)]
-fn refine_unconstrained_block(
-    y: &Array1<f64>,
-    x_combined: ArrayView2<'_, f64>,
-    smooth_specs: &[SmoothTermSpec],
-    lambdas: &[f64],
-    family: &dyn Family,
-    link: &dyn Link,
-    offset_vec: &Array1<f64>,
-    prior_weights: &Array1<f64>,
-    min_weight: f64,
-    smooth_tolerance: f64,
-    nonneg_indices: Option<&[usize]>,
-    nonpos_indices: Option<&[usize]>,
-    coefficients: &mut Array1<f64>,
-    eta: &mut Array1<f64>,
-    mu: &mut Array1<f64>,
-    deviance: &mut f64,
-    iteration: &mut usize,
-    budget: usize,
-) -> Result<bool> {
-    let mut fixed_cols = std::collections::HashSet::new();
-    for spec in smooth_specs {
-        if spec.is_monotonic() {
-            for col in spec.col_start..spec.col_end {
-                fixed_cols.insert(col);
-            }
-        }
-    }
-    for &col in nonneg_indices.unwrap_or(&[]) {
-        fixed_cols.insert(col);
-    }
-    for &col in nonpos_indices.unwrap_or(&[]) {
-        fixed_cols.insert(col);
-    }
-
-    let total_cols = x_combined.ncols();
-    let refit_cols: Vec<usize> = (0..total_cols)
-        .filter(|col| !fixed_cols.contains(col))
-        .collect();
-    if refit_cols.is_empty() || fixed_cols.is_empty() || *iteration >= budget {
-        // Nothing to refine, or the whole problem was already the
-        // unconstrained block (handled by the main loop), or no budget left.
-        return Ok(false);
-    }
-
-    let n = y.len();
-    let n_refit = refit_cols.len();
-
-    // Sub-design of the refit columns; fixed columns become a link-scale offset.
-    let mut x_sub = Array2::zeros((n, n_refit));
-    for (j_new, &j_old) in refit_cols.iter().enumerate() {
-        x_sub.column_mut(j_new).assign(&x_combined.column(j_old));
-    }
-    let mut offset_fixed = offset_vec.clone();
-    for &col in &fixed_cols {
-        let coef = coefficients[col];
-        if coef != 0.0 {
-            offset_fixed.scaled_add(coef, &x_combined.column(col));
-        }
-    }
-
-    // Penalties of the unconstrained smooth terms, re-indexed into sub-columns.
-    // Monotone ranges and sign-constrained columns are whole features, so a
-    // non-monotone smooth range stays contiguous after removal.
-    let mut penalty_sub = Array2::zeros((n_refit, n_refit));
-    for (i, spec) in smooth_specs.iter().enumerate() {
-        if spec.is_monotonic() {
-            continue;
-        }
-        let removed_before = (0..spec.col_start)
-            .filter(|col| fixed_cols.contains(col))
-            .count();
-        embed_penalty(
-            &mut penalty_sub,
-            &spec.penalty,
-            spec.col_start - removed_before,
-            lambdas[i],
-        );
-    }
-
-    let write_back = |beta_sub: &Array1<f64>, base: &Array1<f64>| -> Array1<f64> {
-        let mut full = base.clone();
-        for (j_new, &j_old) in refit_cols.iter().enumerate() {
-            full[j_old] = beta_sub[j_new];
-        }
-        full
-    };
-
-    let pen_dev_start = smooth_penalized_deviance(*deviance, coefficients, smooth_specs, lambdas);
-
-    let mut beta_sub: Array1<f64> = refit_cols.iter().map(|&c| coefficients[c]).collect();
-    let mut eta_cur = eta.clone();
-    let mut mu_cur = mu.clone();
-    let mut dev_cur = *deviance;
-    let mut pen_dev_cur = pen_dev_start;
-
-    let mut irls_weights = Array1::zeros(n);
-    let mut combined_weights = Array1::zeros(n);
-    let mut working_response = Array1::zeros(n);
-
-    while *iteration < budget {
-        *iteration += 1;
-
-        let link_deriv = link.derivative(&mu_cur);
-        let variance = family.variance(&mu_cur);
-        update_irls_work_arrays(
-            &eta_cur,
-            &offset_fixed,
-            y,
-            &mu_cur,
-            prior_weights,
-            &variance,
-            &link_deriv,
-            min_weight,
-            &mut irls_weights,
-            &mut combined_weights,
-            &mut working_response,
-        );
-        let (xtwx, xtwz) = compute_xtwx_xtwz(x_sub.view(), &working_response, &combined_weights)?;
-        let (beta_new, _) = solve_wls_from_precomputed(&xtwx, &xtwz, &penalty_sub, true)?;
-
-        // Step halving on the full penalized objective (convex sub-problem:
-        // the full step almost always accepts; the 0-fraction fallback exactly
-        // retains the previous iterate).
-        let mut accepted = false;
-        let mut pen_dev_next = pen_dev_cur;
-        for trial in 0..=10 {
-            let fraction = smooth_step_fraction_for_trial(trial, 10);
-            let beta_trial = blend_step_arrays(&beta_sub, &beta_new, fraction);
-            let full_trial = write_back(&beta_trial, coefficients);
-            let eta_trial = &x_sub.dot(&beta_trial) + &offset_fixed;
-            let mu_trial = family.clamp_mu(&link.inverse(&eta_trial));
-            let dev_trial = family.deviance(y, &mu_trial, Some(prior_weights));
-            let pen_dev_trial =
-                smooth_penalized_deviance(dev_trial, &full_trial, smooth_specs, lambdas);
-            if should_skip_smooth_trial(&eta_trial, &mu_trial, dev_trial, pen_dev_trial) {
-                continue;
-            }
-            if pen_dev_trial <= smooth_accept_threshold(pen_dev_cur, smooth_tolerance) {
-                beta_sub = beta_trial;
-                eta_cur = eta_trial;
-                mu_cur = mu_trial;
-                dev_cur = dev_trial;
-                pen_dev_next = pen_dev_trial;
-                accepted = true;
-                break;
-            }
-        }
-        if !accepted {
-            break;
-        }
-
-        let rel_change = relative_change_with_unit_offset(pen_dev_cur, pen_dev_next);
-        pen_dev_cur = pen_dev_next;
-        if change_below_tolerance(rel_change, smooth_tolerance) {
-            break;
-        }
-    }
-
-    if pen_dev_cur <= pen_dev_start + smooth_tolerance * (1.0 + pen_dev_start.abs()) {
-        *coefficients = write_back(&beta_sub, coefficients);
-        *eta = eta_cur;
-        *mu = mu_cur;
-        *deviance = dev_cur;
-        Ok(true)
-    } else {
-        Ok(false)
-    }
-}
-
-/// Intercept-direction quasi-score at shift `d`: Σ w (y - μ(η + d)) / (g' V).
-fn intercept_shift_score(
-    shift: f64,
-    y: &Array1<f64>,
-    eta: &Array1<f64>,
-    prior_weights: &Array1<f64>,
-    family: &dyn Family,
-    link: &dyn Link,
-) -> f64 {
-    let eta_shifted = eta.mapv(|e| e + shift);
-    let mu_shifted = family.clamp_mu(&link.inverse(&eta_shifted));
-    let link_deriv = link.derivative(&mu_shifted);
-    let variance = family.variance(&mu_shifted);
-    let mut score = 0.0;
-    for i in 0..y.len() {
-        let denom = guarded_denominator(link_deriv[i] * variance[i]);
-        score += prior_weights[i] * (y[i] - mu_shifted[i]) / denom;
-    }
-    score
-}
-
-/// Solve `intercept_shift_score(d) = 0` by bracketing bisection.
-///
-/// This is the exact one-dimensional MLE along the intercept direction, so
-/// applying the root cannot materially worsen the deviance. Returns `None`
-/// when no sign change exists within |d| <= 64 (e.g. quasi-separation) or the
-/// score is non-finite.
-fn solve_intercept_shift(
-    y: &Array1<f64>,
-    eta: &Array1<f64>,
-    prior_weights: &Array1<f64>,
-    family: &dyn Family,
-    link: &dyn Link,
-) -> Option<f64> {
-    let score_at = |d: f64| intercept_shift_score(d, y, eta, prior_weights, family, link);
-
-    let score_zero = score_at(0.0);
-    if !score_zero.is_finite() {
-        return None;
-    }
-    if score_zero == 0.0 {
-        return Some(0.0);
-    }
-
-    let mut span = 1.0f64;
-    let (mut lo, mut hi) = (-span, span);
-    let (mut score_lo, mut score_hi) = (score_at(lo), score_at(hi));
-    while score_lo.is_finite()
-        && score_hi.is_finite()
-        && score_lo.signum() == score_hi.signum()
-        && span < 64.0
-    {
-        span *= 2.0;
-        lo = -span;
-        hi = span;
-        score_lo = score_at(lo);
-        score_hi = score_at(hi);
-    }
-    if !score_lo.is_finite() || !score_hi.is_finite() || score_lo.signum() == score_hi.signum() {
-        return None;
-    }
-
-    for _ in 0..200 {
-        let mid = 0.5 * (lo + hi);
-        let score_mid = score_at(mid);
-        if !score_mid.is_finite() {
-            return None;
-        }
-        if score_mid == 0.0 {
-            return Some(mid);
-        }
-        if score_mid.signum() == score_lo.signum() {
-            lo = mid;
-            score_lo = score_mid;
-        } else {
-            hi = mid;
-        }
-        if (hi - lo).abs() < 1e-13 * (1.0 + hi.abs().max(lo.abs())) {
-            break;
-        }
-    }
-    Some(0.5 * (lo + hi))
-}
-
 fn smooth_penalty_contribution(
     lambda: f64,
     coeffs: ndarray::ArrayView1<'_, f64>,
@@ -972,22 +613,6 @@ fn add_penalty_to_xtwx(xtwx: &Array2<f64>, penalty_matrix: &Array2<f64>) -> Arra
 
 fn monotonic_offset(beta: &Array1<f64>, j_alpha: &Array1<f64>) -> Array1<f64> {
     beta - j_alpha
-}
-
-fn subtract_smooth_offset(
-    adjusted_response: &mut Array1<f64>,
-    x_smooth: ArrayView2<'_, f64>,
-    offset_mono: &Array1<f64>,
-) {
-    let offset_slice = offset_mono.as_slice().expect("contiguous array");
-    let adj_slice = adjusted_response.as_slice_mut().expect("contiguous array");
-    for row in 0..x_smooth.nrows() {
-        let mut dot = 0.0;
-        for col in 0..x_smooth.ncols() {
-            dot += x_smooth[[row, col]] * offset_slice[col];
-        }
-        adj_slice[row] -= dot;
-    }
 }
 
 /// Convert monotonic beta coefficients back to unconstrained alpha parameters.
@@ -1056,57 +681,6 @@ fn compute_monotonic_jacobian(alpha: &[f64], monotonicity: &Monotonicity) -> Arr
     j_mat
 }
 
-/// Efficiently compute X_tilde = X_smooth * J for the monotonic reparameterization.
-///
-/// Since J is lower-triangular with cumulative structure, we use reverse cumulative
-/// sums to compute this in O(n*k) instead of O(n*k^2).
-///
-/// Column j of X_tilde:
-/// - Column 0: sum of all X columns (each multiplied by 1)
-/// - Column j (j >= 1): sign * exp(alpha[j]) * sum of X columns j..k
-///
-/// Writes transformed smooth columns directly into `target` (in-place).
-/// Uses reverse cumulative sums computed row-by-row (no intermediate allocation).
-fn compute_x_tilde_inplace(
-    x_smooth: &ArrayView2<'_, f64>,
-    alpha: &[f64],
-    monotonicity: &Monotonicity,
-    target: &mut ndarray::ArrayViewMut2<'_, f64>,
-) {
-    let n = x_smooth.nrows();
-    let k = x_smooth.ncols();
-    let sign = match monotonicity {
-        Monotonicity::Increasing => 1.0,
-        Monotonicity::Decreasing => -1.0,
-        Monotonicity::None => {
-            target.assign(x_smooth);
-            return;
-        }
-    };
-
-    // Precompute exp(alpha[j]) * sign for each column
-    let scales: Vec<f64> = (0..k)
-        .map(|j| {
-            if j == 0 {
-                1.0 // Column 0: unscaled cumulative sum
-            } else {
-                sign * alpha[j].clamp(-MAX_EXP_ALPHA, MAX_EXP_ALPHA).exp()
-            }
-        })
-        .collect();
-
-    // Process row-by-row: compute reverse cumulative sum and scale in one pass.
-    // No intermediate n×k allocation needed.
-    for i in 0..n {
-        // Reverse cumulative sum for this row
-        let mut cumsum = 0.0;
-        for j in (0..k).rev() {
-            cumsum += x_smooth[[i, j]];
-            target[[i, j]] = scales[j] * cumsum;
-        }
-    }
-}
-
 /// Compute the transformed penalty S_tilde = J' * S * J for monotonic terms.
 fn compute_s_tilde(s_penalty: &Array2<f64>, j_mat: &Array2<f64>) -> Array2<f64> {
     // J' * S * J — straightforward matrix multiply for the small k x k matrices
@@ -1164,93 +738,6 @@ impl SmoothTermData {
     /// Number of basis functions.
     pub fn k(&self) -> usize {
         self.basis.ncols()
-    }
-}
-
-/// Compute final EDFs, GCV, and assemble the SmoothGLMResult from SmoothTermSpec data.
-fn assemble_smooth_result_from_specs(
-    coefficients: Array1<f64>,
-    mu: Array1<f64>,
-    eta: Array1<f64>,
-    deviance: f64,
-    iterations: usize,
-    converged: bool,
-    final_weights: &Array1<f64>,
-    x_combined: ArrayView2<'_, f64>,
-    penalty_specs: &[(&Array2<f64>, usize, usize)],
-    lambdas: &[f64],
-    p_param: usize,
-    family_name: &str,
-    prior_weights: Array1<f64>,
-    y: &Array1<f64>,
-    offset: Option<&Array1<f64>>,
-    cov_unscaled: Option<Array2<f64>>,
-    warnings: Vec<String>,
-    step_halving_used: bool,
-    solver_status: String,
-    stationary: bool,
-    max_std_score: f64,
-) -> SmoothGLMResult {
-    let n = y.len();
-
-    // Compute EDFs
-    let xtwx = compute_xtwx(x_combined, final_weights);
-    let mut smooth_edfs = Vec::with_capacity(penalty_specs.len());
-
-    for (i, &(penalty, start, _end)) in penalty_specs.iter().enumerate() {
-        let lambda = lambdas[i];
-        let k = penalty.nrows();
-        let xtwx_block = xtwx
-            .slice(s![start..start + k, start..start + k])
-            .to_owned();
-        let edf = compute_edf(&xtwx_block, penalty, lambda);
-        smooth_edfs.push(edf);
-    }
-
-    let total_edf = (p_param as f64) + smooth_edfs.iter().sum::<f64>();
-    let gcv = gcv_score(deviance, n, total_edf);
-
-    // Build SmoothPenalty for result
-    let mut smooth_penalty = SmoothPenalty::new();
-    for (i, &(penalty, start, end)) in penalty_specs.iter().enumerate() {
-        smooth_penalty.add_term(penalty.clone(), lambdas[i], start..end);
-    }
-
-    // Use provided covariance or compute from X'WX + S
-    let cov = cov_unscaled.unwrap_or_else(|| {
-        let total_cols = x_combined.ncols();
-        let mut penalty_matrix = Array2::zeros((total_cols, total_cols));
-        for (i, &(penalty, start, _end)) in penalty_specs.iter().enumerate() {
-            embed_penalty(&mut penalty_matrix, penalty, start, lambdas[i]);
-        }
-        let xtwx_pen = add_penalty_to_xtwx(&xtwx, &penalty_matrix);
-        invert_matrix(&xtwx_pen).unwrap_or_else(|| Array2::eye(total_cols))
-    });
-
-    SmoothGLMResult {
-        coefficients,
-        fitted_values: mu,
-        linear_predictor: eta,
-        deviance,
-        iterations,
-        converged,
-        lambdas: lambdas.to_vec(),
-        smooth_edfs,
-        total_edf,
-        gcv,
-        covariance_unscaled: cov,
-        family_name: family_name.to_string(),
-        penalty: Penalty::Smooth(smooth_penalty),
-        irls_weights: final_weights.clone(),
-        prior_weights,
-        design_matrix: x_combined.to_owned(),
-        y: y.clone(),
-        offset: offset.cloned(),
-        warnings,
-        step_halving_used,
-        solver_status,
-        stationary,
-        max_std_score,
     }
 }
 
@@ -1369,7 +856,7 @@ pub fn fit_smooth_glm_full_matrix(
             penalty: irls.penalty,
             irls_weights: irls.irls_weights,
             prior_weights: irls.prior_weights,
-            design_matrix: irls.design_matrix.unwrap_or_else(|| x_full.to_owned()),
+            statistics: irls.statistics,
             y: irls.y,
             offset: if irls.offset.iter().all(|&v| v == 0.0) {
                 None
@@ -1381,10 +868,201 @@ pub fn fit_smooth_glm_full_matrix(
             solver_status: irls.solver_status,
             stationary,
             max_std_score,
+            solver_trace: irls.solver_trace,
         });
     }
 
-    // Validate specs
+    validate_smooth_specs(smooth_specs, p)?;
+    fit_smooth_in_memory(
+        y,
+        x_full,
+        smooth_specs,
+        family,
+        link,
+        config,
+        offset,
+        weights,
+        nonneg_indices,
+        nonpos_indices,
+    )
+}
+
+// =============================================================================
+// Smooth driver over passes (`specs/out-of-core-fit.md` §7.6)
+// =============================================================================
+
+/// A penalised smooth fit served by any [`PassExecutor`]: everything but
+/// per-row arrays.
+#[derive(Debug, Clone)]
+pub struct SmoothExecutorFit {
+    pub coefficients: Array1<f64>,
+    pub deviance: f64,
+    pub iterations: usize,
+    pub converged: bool,
+    pub lambdas: Vec<f64>,
+    pub smooth_edfs: Vec<f64>,
+    pub total_edf: f64,
+    pub gcv: f64,
+    pub covariance_unscaled: Array2<f64>,
+    pub penalty: Penalty,
+    pub warnings: Vec<String>,
+    pub step_halving_used: bool,
+    pub solver_status: String,
+    pub stationary: bool,
+    pub max_std_score: f64,
+    pub statistics: FinalStatistics,
+}
+
+/// Fit a GLM with penalised smooth terms, monotone or not, whose rows `executor`
+/// serves (`specs/out-of-core-fit.md` §7.6, §7.7): the driver an in-memory fit runs.
+#[allow(clippy::too_many_arguments)]
+pub fn fit_smooth_glm_with_executor(
+    executor: &mut dyn PassExecutor,
+    smooth_specs: &[SmoothTermSpec],
+    family: &dyn Family,
+    config: &SmoothGLMConfig,
+    nonneg_indices: Option<&[usize]>,
+    nonpos_indices: Option<&[usize]>,
+    has_offset: bool,
+) -> Result<SmoothExecutorFit> {
+    if smooth_specs.is_empty() {
+        return Err(RustyStatsError::InvalidValue(
+            "A smooth fit needs at least one smooth term.".to_string(),
+        ));
+    }
+    let outcome = drive_smooth(
+        executor,
+        &SmoothDriveSettings {
+            specs: smooth_specs,
+            config,
+            family,
+            nonneg_indices,
+            nonpos_indices,
+            null_log_offset: has_offset && family.is_log_link_default(),
+            robust: &config.robust,
+        },
+    )?;
+    Ok(SmoothExecutorFit {
+        coefficients: outcome.coefficients,
+        deviance: outcome.deviance,
+        iterations: outcome.iterations,
+        converged: outcome.converged,
+        lambdas: outcome.lambdas,
+        smooth_edfs: outcome.smooth_edfs,
+        total_edf: outcome.total_edf,
+        gcv: outcome.gcv,
+        covariance_unscaled: outcome.covariance_unscaled,
+        penalty: outcome.penalty,
+        warnings: outcome.warnings,
+        step_halving_used: outcome.step_halving_used,
+        solver_status: outcome.solver_status.to_string(),
+        stationary: outcome.stationary,
+        max_std_score: outcome.max_std_score,
+        statistics: outcome.statistics,
+    })
+}
+
+/// A penalised smooth fit on an in-memory design: the pass driver
+/// [`drive_smooth`] over an [`InMemoryExecutor`].
+#[allow(clippy::too_many_arguments)]
+fn fit_smooth_in_memory(
+    y: &Array1<f64>,
+    x: ArrayView2<'_, f64>,
+    smooth_specs: &[SmoothTermSpec],
+    family: &dyn Family,
+    link: &dyn Link,
+    config: &SmoothGLMConfig,
+    offset: Option<&Array1<f64>>,
+    weights: Option<&Array1<f64>>,
+    nonneg_indices: Option<&[usize]>,
+    nonpos_indices: Option<&[usize]>,
+) -> Result<SmoothGLMResult> {
+    let n = y.len();
+    let offset_vec = offset.cloned().unwrap_or_else(|| Array1::zeros(n));
+    let prior_weights = weights.cloned().unwrap_or_else(|| Array1::ones(n));
+    if offset_vec.len() != n || prior_weights.len() != n {
+        return Err(RustyStatsError::dim_mismatch(
+            n,
+            if offset_vec.len() != n {
+                offset_vec.len()
+            } else {
+                prior_weights.len()
+            },
+            "smooth offset/weights length vs y length",
+        ));
+    }
+    let y_slice = y.as_slice().ok_or_else(|| {
+        RustyStatsError::LinearAlgebraError("Response y must be contiguous".to_string())
+    })?;
+    let sparse_rows = config.irls_config.row_kernel.sparse_in_memory(x);
+    let ctx = RowContext {
+        family,
+        link,
+        y: y_slice,
+        offset: offset_vec
+            .as_slice()
+            .expect("an owned offset is contiguous"),
+        prior_weights: prior_weights
+            .as_slice()
+            .expect("owned prior weights are contiguous"),
+        y_mean: crate::families::response_mean(y),
+        min_weight: config.irls_config.min_weight,
+        has_offset: offset.is_some(),
+        standardization: None,
+    };
+    let mut executor = InMemoryExecutor::new(x, sparse_rows, ctx)?;
+    let outcome = drive_smooth(
+        &mut executor,
+        &SmoothDriveSettings {
+            specs: smooth_specs,
+            config,
+            family,
+            nonneg_indices,
+            nonpos_indices,
+            null_log_offset: offset.is_some() && family.is_log_link_default(),
+            robust: &config.robust,
+        },
+    )?;
+    let (eta, mu) = executor.materialize(&outcome.fitted);
+    let irls_weights = outcome.weights.materialize(&executor, n);
+    let solver_trace = executor.take_trace();
+    Ok(SmoothGLMResult {
+        coefficients: outcome.coefficients,
+        fitted_values: Array1::from_vec(mu),
+        linear_predictor: Array1::from_vec(eta),
+        deviance: outcome.deviance,
+        iterations: outcome.iterations,
+        converged: outcome.converged,
+        lambdas: outcome.lambdas,
+        smooth_edfs: outcome.smooth_edfs,
+        total_edf: outcome.total_edf,
+        gcv: outcome.gcv,
+        covariance_unscaled: outcome.covariance_unscaled,
+        family_name: family.name().to_string(),
+        penalty: outcome.penalty,
+        irls_weights: Array1::from_vec(irls_weights),
+        prior_weights,
+        y: y.clone(),
+        offset: offset.cloned(),
+        warnings: outcome.warnings,
+        step_halving_used: outcome.step_halving_used,
+        solver_status: outcome.solver_status.to_string(),
+        stationary: outcome.stationary,
+        max_std_score: outcome.max_std_score,
+        statistics: Some(outcome.statistics),
+        solver_trace,
+    })
+}
+
+/// Bisection levels one speculative pass evaluates when the executor prefers few
+/// passes: a tree of 2^8 − 1 = 255 midpoints per row.
+const SPECULATIVE_BISECTION_LEVELS: usize = 8;
+
+/// The bracket spans the intercept refresh tries: 1, 2, …, 64.
+const INTERCEPT_BRACKET_SPANS: [f64; 7] = [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0];
+
+/// Check the smooth specs against a design of `p` columns.
+fn validate_smooth_specs(smooth_specs: &[SmoothTermSpec], p: usize) -> Result<()> {
     for (i, spec) in smooth_specs.iter().enumerate() {
         if spec.col_end > p || spec.col_start >= spec.col_end {
             return Err(RustyStatsError::InvalidValue(format!(
@@ -1408,456 +1086,1157 @@ pub fn fit_smooth_glm_full_matrix(
             ));
         }
     }
+    Ok(())
+}
 
-    // Determine parametric column count (everything NOT in a smooth term)
-    let mut smooth_cols = std::collections::HashSet::new();
-    for spec in smooth_specs {
-        for c in spec.col_start..spec.col_end {
-            smooth_cols.insert(c);
+/// What [`drive_smooth`] needs besides the rows.
+pub(crate) struct SmoothDriveSettings<'a> {
+    pub specs: &'a [SmoothTermSpec],
+    pub config: &'a SmoothGLMConfig,
+    pub family: &'a dyn Family,
+    pub nonneg_indices: Option<&'a [usize]>,
+    pub nonpos_indices: Option<&'a [usize]>,
+    /// Whether the null model scales by exp(offset) (`RowContext::null_log_offset`).
+    pub null_log_offset: bool,
+    pub robust: &'a [HCType],
+}
+
+/// The result of driving a penalised smooth fit: everything but per-row arrays.
+pub(crate) struct SmoothDriveOutcome {
+    pub coefficients: Array1<f64>,
+    pub deviance: f64,
+    pub iterations: usize,
+    pub converged: bool,
+    pub lambdas: Vec<f64>,
+    pub smooth_edfs: Vec<f64>,
+    pub total_edf: f64,
+    pub gcv: f64,
+    pub covariance_unscaled: Array2<f64>,
+    pub penalty: Penalty,
+    pub warnings: Vec<String>,
+    pub step_halving_used: bool,
+    pub solver_status: &'static str,
+    pub stationary: bool,
+    pub max_std_score: f64,
+    /// The predictor the fitted values come from (`Shifted` after a refresh).
+    pub fitted: Predictor,
+    /// The weights of the covariance, stored as the result's `irls_weights`.
+    pub weights: RetainedWeights,
+    pub statistics: FinalStatistics,
+}
+
+/// The ordinary smooth Gram at a predictor: X'WX, X'Wz and z'Wz with the smooth
+/// route's working weights and response (`update_irls_work_arrays`).
+fn smooth_gram(predictor: usize) -> Eval {
+    Eval::Gram {
+        weights: WeightsSpec::SmoothIrls(predictor),
+        response: ResponseSpec::Working(predictor),
+    }
+}
+
+fn take_gram_sum(sums: &mut [EvalSum], eval: usize) -> GramPartial {
+    std::mem::replace(&mut sums[eval], EvalSum::Count(0.0)).into_gram()
+}
+
+/// The sums of one exit pass (A or C) at a predictor.
+struct ExitPass {
+    deviance: f64,
+    kkt: Vec<f64>,
+    shift_scores: Vec<f64>,
+    sums: Vec<EvalSum>,
+    stats: StatisticsEvals,
+}
+
+/// One exit pass: the deviance, the KKT sums of the unpenalized columns, the
+/// intercept shift scores asked for, and the final statistics (robust included).
+#[allow(clippy::too_many_arguments)]
+fn exit_pass(
+    executor: &mut dyn PassExecutor,
+    predictor: &Predictor,
+    kkt_columns: &std::sync::Arc<[usize]>,
+    shifts: &[f64],
+    facts: &FirstPassFacts,
+    robust: RobustRequest<'_>,
+) -> Result<ExitPass> {
+    let (n, p) = (executor.n_rows(), executor.n_params());
+    let mut request = PassRequest::default();
+    let index = request.predictor(predictor.clone());
+    let deviance = request.eval(Eval::Deviance(index));
+    let kkt = request.eval(Eval::Kkt {
+        predictor: index,
+        columns: kkt_columns.clone(),
+    });
+    let scores = (!shifts.is_empty()).then(|| {
+        request.eval(Eval::ShiftScores {
+            predictor: index,
+            shifts: shifts.into(),
+        })
+    });
+    let stats = request_statistics(&mut request, index, facts, Some(robust), (n, p));
+    let sums = executor.run(&request)?;
+    Ok(ExitPass {
+        deviance: sums[deviance].deviance().0,
+        kkt: sums[kkt].sums().to_vec(),
+        shift_scores: scores
+            .map(|eval| sums[eval].sums().to_vec())
+            .unwrap_or_default(),
+        sums,
+        stats,
+    })
+}
+
+/// Intercept-direction scores at `shifts` from `base` in one pass.
+fn shift_scores(
+    executor: &mut dyn PassExecutor,
+    base: &Predictor,
+    shifts: &[f64],
+) -> Result<Vec<f64>> {
+    let mut request = PassRequest::default();
+    let index = request.predictor(base.clone());
+    let eval = request.eval(Eval::ShiftScores {
+        predictor: index,
+        shifts: shifts.into(),
+    });
+    Ok(executor.run(&request)?[eval].sums().to_vec())
+}
+
+/// The midpoints of `depth` bisection levels from (lo, hi), in level order: node i
+/// bisects its interval at 0.5·(lo + hi); its first child keeps the lower half
+/// (hi = mid), its second the upper half (lo = mid).
+fn bisection_tree(lo: f64, hi: f64, depth: usize) -> Vec<f64> {
+    let nodes = (1usize << depth) - 1;
+    let mut intervals = Vec::with_capacity(nodes);
+    intervals.push((lo, hi));
+    let mut mids = Vec::with_capacity(nodes);
+    for node in 0..nodes {
+        let (lo, hi) = intervals[node];
+        let mid = 0.5 * (lo + hi);
+        mids.push(mid);
+        if 2 * node + 2 < nodes {
+            intervals.push((lo, mid));
+            intervals.push((mid, hi));
         }
     }
-    let p_param = parametric_column_count(p, smooth_cols.len());
+    mids
+}
 
-    // Build column ranges in x_full order (smooth specs are already indexed into x_full)
-    let term_indices: Vec<(usize, usize)> = smooth_specs
-        .iter()
-        .map(|s| (s.col_start, s.col_end))
-        .collect();
+/// `solve_intercept_shift` over passes: the same bracketing and bisection, its
+/// scores evaluated a pair or a speculative tree of levels per pass. `scores` are
+/// pass A's: the score at 0 and, when the executor prefers few passes, at every
+/// bracket end (−1, 1, −2, 2, …, −64, 64). Also returns the scores the sequential
+/// search read (at 0, each bracket pair, each midpoint), whatever was speculated.
+fn solve_intercept_shift_over_passes(
+    executor: &mut dyn PassExecutor,
+    base: &Predictor,
+    scores: &[f64],
+) -> Result<(Option<f64>, usize)> {
+    let few = executor.prefers_few_passes();
+    let score_zero = scores[0];
+    let mut evaluations = 1usize;
+    if !score_zero.is_finite() {
+        return Ok((None, evaluations));
+    }
+    if score_zero == 0.0 {
+        return Ok((Some(0.0), evaluations));
+    }
 
-    let offset_vec = offset.cloned().unwrap_or_else(|| Array1::zeros(n));
-    let prior_weights = weights.cloned().unwrap_or_else(|| Array1::ones(n));
-    // Clamp initial lambdas into the configured bounds. Callers pin a fixed
-    // lambda by passing lambda_min == lambda_max; without the clamp the
-    // monotone path's REML update can keep an out-of-bounds initial value.
-    let mut lambdas: Vec<f64> = smooth_specs
-        .iter()
-        .map(|s| s.initial_lambda.clamp(config.lambda_min, config.lambda_max))
-        .collect();
-
-    let has_monotonic = smooth_specs.iter().any(|s| s.is_monotonic());
-
-    // Use x_full directly as x_combined — no reassembly needed
-    let x_combined = x_full;
-    let total_cols = p;
-
-    let mut warnings: Vec<String> = Vec::new();
-    let mut coefficients = Array1::zeros(total_cols);
-
-    // Initialize mu
-    let mut mu = family.initialize_mu(y);
-    let mut eta = link.link(&mu);
-    let mut deviance = family.deviance(y, &mu, Some(&prior_weights));
-
-    // Family initializers can be near-saturated and not representable by the
-    // smooth design matrix (Gaussian identity starts at mu=y). Project that
-    // initializer into coefficient space so the step-halving baseline is a real
-    // fitted iterate instead of the saturated response.
+    let bracket = |k: usize, executor: &mut dyn PassExecutor| -> Result<(f64, f64)> {
+        if few {
+            Ok((scores[1 + 2 * k], scores[2 + 2 * k]))
+        } else {
+            let span = INTERCEPT_BRACKET_SPANS[k];
+            let pair = shift_scores(executor, base, &[-span, span])?;
+            Ok((pair[0], pair[1]))
+        }
+    };
+    let mut k = 0;
+    let mut span = INTERCEPT_BRACKET_SPANS[k];
+    let (mut lo, mut hi) = (-span, span);
+    let (mut score_lo, mut score_hi) = bracket(k, executor)?;
+    evaluations += 2;
+    while score_lo.is_finite()
+        && score_hi.is_finite()
+        && score_lo.signum() == score_hi.signum()
+        && span < 64.0
     {
-        let eta_no_offset = centered_eta(&eta, &offset_vec);
-        let zero_penalty = Array2::zeros((total_cols, total_cols));
-        match solve_weighted_least_squares_with_penalty_matrix(
-            x_combined,
-            &eta_no_offset,
-            &prior_weights,
-            &zero_penalty,
-            true,
-        ) {
-            Ok((projected, _)) => {
-                if let Some(mut projected) = initial_projection_if_finite(projected) {
-                    project_coefficients_to_bounds(&mut projected, nonneg_indices, nonpos_indices);
-                    coefficients = projected;
-                    eta =
-                        linear_predictor_from_coefficients(x_combined, &coefficients, &offset_vec);
-                    mu = family.clamp_mu(&link.inverse(&eta));
-                    deviance = family.deviance(y, &mu, Some(&prior_weights));
-                } else {
-                    warnings.push(
-                        "Initial smooth coefficient projection failed. Starting from zero coefficients."
-                            .to_string(),
-                    );
-                }
+        k += 1;
+        span = INTERCEPT_BRACKET_SPANS[k];
+        lo = -span;
+        hi = span;
+        (score_lo, score_hi) = bracket(k, executor)?;
+        evaluations += 2;
+    }
+    if !score_lo.is_finite() || !score_hi.is_finite() || score_lo.signum() == score_hi.signum() {
+        return Ok((None, evaluations));
+    }
+
+    // Moving lo keeps its score's sign, so every comparison is against this sign.
+    let sign_lo = score_lo.signum();
+    let levels = if few { SPECULATIVE_BISECTION_LEVELS } else { 1 };
+    let mut steps = 0usize;
+    while steps < 200 {
+        let depth = levels.min(200 - steps);
+        let mids = bisection_tree(lo, hi, depth);
+        let mid_scores = shift_scores(executor, base, &mids)?;
+        let mut node = 0usize;
+        for _ in 0..depth {
+            let mid = mids[node];
+            let score_mid = mid_scores[node];
+            steps += 1;
+            evaluations += 1;
+            if !score_mid.is_finite() {
+                return Ok((None, evaluations));
             }
-            _ => warnings.push(
+            if score_mid == 0.0 {
+                return Ok((Some(mid), evaluations));
+            }
+            if score_mid.signum() == sign_lo {
+                lo = mid;
+                node = 2 * node + 2;
+            } else {
+                hi = mid;
+                node = 2 * node + 1;
+            }
+            if (hi - lo).abs() < 1e-13 * (1.0 + hi.abs().max(lo.abs())) {
+                return Ok((Some(0.5 * (lo + hi)), evaluations));
+            }
+        }
+    }
+    Ok((Some(0.5 * (lo + hi)), evaluations))
+}
+
+/// The iterate a smooth driver carries between its phases.
+struct SmoothLoop {
+    coefficients: Array1<f64>,
+    /// The predictor the coefficients' fitted state comes from.
+    state: Predictor,
+    deviance: f64,
+    lambdas: Vec<f64>,
+    iteration: usize,
+    converged: bool,
+    final_weights: RetainedWeights,
+    step_halving_used: bool,
+    step_halving_failed: bool,
+    warnings: Vec<String>,
+}
+
+/// The setting-derived constants of a smooth fit.
+struct SmoothShape {
+    n: usize,
+    p: usize,
+    p_param: usize,
+    term_indices: Vec<(usize, usize)>,
+    smooth_tolerance: f64,
+    log_lambda_min: f64,
+    log_lambda_max: f64,
+}
+
+/// Penalised IRLS for smooth terms over passes (§7.6, §7.7): the arithmetic of
+/// `fit_smooth_glm_full_matrix`, for fits with and without monotone terms.
+///
+/// - Initialisation: one pass for the family initializer's projection (with the
+///   y/weight/offset facts and the intercept candidates' exact-one counts), one
+///   for the projected state's deviance and first Gram.
+/// - Without monotone terms, each iteration runs GCV λ updates and the solve on
+///   the Gram held from the last pass, then one candidate pass (deviance, and the
+///   next Gram speculatively); a rejected candidate costs a trials pass and a
+///   Gram pass.
+/// - With monotone terms: REML λ on the start Gram, the warm start (one fused
+///   pass per iteration), the α reset, then nested PIRLS whose Gram is formed on
+///   the monotone-transformed rows per block, and the refinement of the
+///   unconstrained block (`Partitioned` state, fixed columns in ascending order).
+/// - Exit: the covariance and EDFs from the covariance weights' Gram on X (the
+///   last iteration's when it was on X, else pass R); pass A at the final state
+///   for the KKT sums, the intercept shift scores and the statistics; the
+///   intercept refresh's bisection passes; pass C at the refreshed state when a
+///   refresh is applied.
+///
+/// D1 is fixed: a penalised Gram that does not invert is an error.
+pub(crate) fn drive_smooth(
+    executor: &mut dyn PassExecutor,
+    settings: &SmoothDriveSettings<'_>,
+) -> Result<SmoothDriveOutcome> {
+    let n = executor.n_rows();
+    let p = executor.n_params();
+    let specs = settings.specs;
+    let config = settings.config;
+    let family = settings.family;
+    let (nonneg_indices, nonpos_indices) = (settings.nonneg_indices, settings.nonpos_indices);
+    validate_smooth_specs(specs, p)?;
+
+    let mut is_smooth = vec![false; p];
+    for spec in specs {
+        for flag in &mut is_smooth[spec.col_start..spec.col_end] {
+            *flag = true;
+        }
+    }
+    let shape = SmoothShape {
+        n,
+        p,
+        p_param: parametric_column_count(p, is_smooth.iter().filter(|&&flag| flag).count()),
+        term_indices: specs.iter().map(|s| (s.col_start, s.col_end)).collect(),
+        // Use a looser tolerance for smooth models — GCV lambda perturbation
+        // introduces noise larger than 1e-8, so tighter tolerance just wastes iterations
+        smooth_tolerance: config.irls_config.tolerance.max(SMOOTH_CONVERGENCE_TOL),
+        log_lambda_min: config.lambda_min.ln(),
+        log_lambda_max: config.lambda_max.ln(),
+    };
+    let constrained: std::collections::BTreeSet<usize> = nonneg_indices
+        .unwrap_or(&[])
+        .iter()
+        .chain(nonpos_indices.unwrap_or(&[]).iter())
+        .copied()
+        .collect();
+    let intercept_candidates: std::sync::Arc<[usize]> = (0..p)
+        .filter(|&c| !is_smooth[c] && !constrained.contains(&c))
+        .collect();
+    let kkt_columns: std::sync::Arc<[usize]> = (0..p).filter(|&c| !is_smooth[c]).collect();
+    let max_iterations = config.irls_config.max_iterations;
+    let has_monotonic = specs.iter().any(|s| s.is_monotonic());
+    let driver = if has_monotonic { "monotone" } else { "smooth" };
+
+    // Pass 1: the family initializer (η = g(μ₀)) projected into coefficient space
+    // with prior weights; the facts; which candidate intercept columns are all ones.
+    let start = Predictor::Initializer { safe: false };
+    let (facts, non_one, start_deviance, projection) = {
+        let mut request = PassRequest::default();
+        let index = request.predictor(start.clone());
+        let deviance = request.eval(Eval::Deviance(index));
+        let gram = request.eval(Eval::Gram {
+            weights: WeightsSpec::Prior,
+            response: ResponseSpec::LinkMinusOffset(index),
+        });
+        let facts = request.eval(Eval::Facts);
+        let non_one = request.eval(Eval::NonOneCounts(intercept_candidates.clone()));
+        let mut sums = executor.run(&request)?;
+        (
+            FirstPassFacts::from_sums(sums[facts].facts(), n, settings.null_log_offset),
+            sums[non_one].sums().to_vec(),
+            sums[deviance].deviance().0,
+            take_gram_sum(&mut sums, gram),
+        )
+    };
+    let mut ls = SmoothLoop {
+        coefficients: Array1::zeros(p),
+        state: start.clone(),
+        deviance: start_deviance,
+        // Clamp initial lambdas into the configured bounds. Callers pin a fixed
+        // lambda by passing lambda_min == lambda_max.
+        lambdas: specs
+            .iter()
+            .map(|s| s.initial_lambda.clamp(config.lambda_min, config.lambda_max))
+            .collect(),
+        iteration: 0,
+        converged: false,
+        final_weights: RetainedWeights::Ones,
+        step_halving_used: false,
+        step_halving_failed: false,
+        warnings: Vec::new(),
+    };
+    {
+        let xtx = packed_to_dmatrix(&projection.xtx_packed, p);
+        let xtz = DVector::from_column_slice(&projection.xtz);
+        let projected = solve_wls_from_precomputed(&xtx, &xtz, &Array2::zeros((p, p)), true);
+        match projected
+            .ok()
+            .and_then(|(beta, _)| initial_projection_if_finite(beta))
+        {
+            Some(mut projected) => {
+                project_coefficients_to_bounds(&mut projected, nonneg_indices, nonpos_indices);
+                ls.coefficients = projected;
+                ls.state = coef_predictor(&ls.coefficients);
+            }
+            None => ls.warnings.push(
                 "Initial smooth coefficient projection failed. Starting from zero coefficients."
                     .to_string(),
             ),
         }
     }
 
-    let mut converged = false;
-    let mut iteration = 0;
-    let mut final_weights = Array1::ones(n);
-    let mut step_halving_used = false;
-    let mut step_halving_failed = false;
-
-    let log_lambda_min = config.lambda_min.ln();
-    let log_lambda_max = config.lambda_max.ln();
-    let mut penalty_matrix = Array2::zeros((total_cols, total_cols));
-    let mut lambdas_stable_count = 0u32;
-
-    // Track previous lambdas to skip rebuilding penalty_matrix when unchanged.
-    // Only used in the non-monotonic path (monotonic always rebuilds due to J changes).
-    let mut prev_lambdas: Vec<f64> = vec![f64::NAN; smooth_specs.len()];
-    let mut penalty_dirty = true;
-
-    // Pre-allocate per-iteration buffers to avoid heap allocations inside the IRLS loop
-    let mut irls_weights = Array1::zeros(n);
-    let mut combined_weights = Array1::zeros(n);
-    let mut working_response = Array1::zeros(n);
-
-    // Use a looser tolerance for smooth models — GCV lambda perturbation
-    // introduces noise larger than 1e-8, so tighter tolerance just wastes iterations
-    let smooth_tolerance = config.irls_config.tolerance.max(SMOOTH_CONVERGENCE_TOL);
-
-    // Pre-allocate adjusted_response for the monotonic path — avoids cloning
-    // working_response each iteration (saves one n-sized allocation per iteration)
-    let mut adjusted_response = if has_monotonic {
-        Array1::zeros(n)
-    } else {
-        Array1::zeros(0) // Not used in non-monotonic path
-    };
-
-    // Pre-allocate x_tilde for the monotonic path — cloned once from x_combined,
-    // then only the monotonic smooth columns are overwritten each iteration.
-    // Parametric columns (intercept, etc.) never change and stay correct.
-    let mut x_tilde = if has_monotonic {
-        x_combined.to_owned()
-    } else {
-        Array2::zeros((0, 0)) // Not used in non-monotonic path
-    };
-
-    // =========================================================================
-    // Exp reparameterization state for monotonic terms
-    // =========================================================================
-    // For each monotonic smooth term, we maintain alpha parameters in unconstrained
-    // space. Non-monotonic terms and parametric columns are unaffected.
-    //
-    // alpha_params[i] holds the alpha vector for smooth_specs[i] (only used if monotonic).
-    let mut alpha_params: Vec<Option<Array1<f64>>> = smooth_specs
-        .iter()
-        .map(|spec| {
-            if spec.is_monotonic() {
-                let k = smooth_term_width(spec);
-                // Initialize alpha to small values (beta starts near zero)
-                Some(Array1::zeros(k))
-            } else {
-                None
+    // Pass 2: the start's deviance, and its Gram (the first iteration's, or the
+    // monotone path's REML and warm start); with no iteration at all, the
+    // all-ones Gram the covariance then uses.
+    let mut retained_gram: Option<GramPartial> = None;
+    let mut start_gram: Option<GramPartial> = None;
+    {
+        let mut request = PassRequest::default();
+        let index = request.predictor(ls.state.clone());
+        let deviance_eval = (ls.state != start).then(|| request.eval(Eval::Deviance(index)));
+        let gram_eval = request.eval(if max_iterations > 0 {
+            smooth_gram(index)
+        } else {
+            Eval::Gram {
+                weights: WeightsSpec::Ones,
+                response: ResponseSpec::Working(index),
             }
-        })
-        .collect();
+        });
+        let mut sums = executor.run(&request)?;
+        if let Some(eval) = deviance_eval {
+            ls.deviance = sums[eval].deviance().0;
+        }
+        let accumulated = take_gram_sum(&mut sums, gram_eval);
+        if max_iterations > 0 {
+            start_gram = Some(accumulated);
+        } else {
+            retained_gram = Some(accumulated);
+        }
+    }
 
     if has_monotonic {
-        // =================================================================
-        // MONOTONIC PATH: Nested iteration following scam (Pya & Wood 2015)
-        // =================================================================
-        //
-        // Architecture: outer loop updates lambda via GCV, inner loop runs
-        // PIRLS to convergence with fixed lambda. This is more stable than
-        // interleaving GCV within PIRLS because X_tilde changes every
-        // iteration (as alpha updates the Jacobian).
-        //
-        // Initialization: zero alpha (flat monotonic start), matching scam.
-        // REML selects initial lambda, then nested iteration refines.
-        // =================================================================
-
-        // Phase 1: GCV on unconstrained basis for starting lambda
+        if let Some(start_gram) = start_gram {
+            monotone_pirls(executor, settings, &shape, &mut ls, start_gram)?;
+        }
+        // Before the exit checks, a final unconstrained-block re-solve: holding
+        // the monotone blocks fixed, the remaining coordinates form a convex
+        // penalized GLM the stalled main loop may have left slightly off-optimum.
+        if ls.iteration < max_iterations && refine_over_passes(executor, settings, &shape, &mut ls)?
         {
-            let link_deriv = link.derivative(&mu);
-            let variance = family.variance(&mu);
-            update_irls_work_arrays(
-                &eta,
-                &offset_vec,
-                y,
-                &mu,
-                &prior_weights,
-                &variance,
-                &link_deriv,
-                config.irls_config.min_weight,
-                &mut irls_weights,
-                &mut combined_weights,
-                &mut working_response,
+            ls.warnings.push(
+                "Applied final unconstrained-block re-solve (parametric and \
+                 unconstrained smooth coordinates) to restore exit stationarity."
+                    .to_string(),
             );
-            let (init_xtwx, init_xtwz) =
-                compute_xtwx_xtwz(x_combined, &working_response, &combined_weights)?;
-            let init_ztwz = weighted_response_sum_squares(&working_response, &combined_weights);
-            let init_penalties: Vec<Array2<f64>> =
-                smooth_specs.iter().map(|s| s.penalty.clone()).collect();
+        }
+    } else if let Some(start_gram) = start_gram {
+        retained_gram = Some(gcv_pirls(executor, settings, &shape, &mut ls, start_gram)?);
+    }
+
+    // Result assembly from the covariance weights' Gram on X (`compute_xtwx` form):
+    // held from the last iteration when it was on X, else pass R.
+    let retained_gram = match retained_gram {
+        Some(gram) => gram,
+        None => {
+            let mut request = PassRequest::reconstruct();
+            let weights = ls.final_weights.spec(&mut request);
+            let index = request.predictor(ls.state.clone());
+            let eval = request.eval(Eval::Gram {
+                weights,
+                response: ResponseSpec::Working(index),
+            });
+            let mut sums = executor.run(&request)?;
+            take_gram_sum(&mut sums, eval)
+        }
+    };
+    let xtwx = packed_to_array2(&retained_gram.xtx_packed, p);
+    drop(retained_gram);
+    let lambdas = ls.lambdas.clone();
+    let mut smooth_edfs = Vec::with_capacity(specs.len());
+    for (i, spec) in specs.iter().enumerate() {
+        let (start_col, k) = (spec.col_start, spec.penalty.nrows());
+        let xtwx_block = xtwx
+            .slice(s![start_col..start_col + k, start_col..start_col + k])
+            .to_owned();
+        smooth_edfs.push(compute_edf(&xtwx_block, &spec.penalty, lambdas[i]));
+    }
+    let total_edf = (shape.p_param as f64) + smooth_edfs.iter().sum::<f64>();
+    let mut full_penalty = Array2::zeros((p, p));
+    for (i, spec) in specs.iter().enumerate() {
+        embed_penalty(&mut full_penalty, &spec.penalty, spec.col_start, lambdas[i]);
+    }
+    let covariance =
+        invert_matrix(&add_penalty_to_xtwx(&xtwx, &full_penalty)).ok_or_else(|| {
+            RustyStatsError::LinearAlgebraError(
+                "The smooth fit's penalised normal equations X'WX + S are singular, so its \
+             covariance is undefined. This usually means collinear or empty basis \
+             columns; remove them or raise the smoothing penalty."
+                    .to_string(),
+            )
+        })?;
+    drop(xtwx);
+
+    // Exit: KKT sums, intercept scores and statistics at the final state (pass A).
+    let few_passes = executor.prefers_few_passes();
+    let intercept_col = intercept_candidates
+        .iter()
+        .zip(non_one.iter())
+        .find(|(_, &count)| count == 0.0)
+        .map(|(&column, _)| column);
+    let mut shifts = Vec::new();
+    if intercept_col.is_some() {
+        shifts.push(0.0);
+        if few_passes {
+            for span in INTERCEPT_BRACKET_SPANS {
+                shifts.push(-span);
+                shifts.push(span);
+            }
+        }
+    }
+    let state = ls.state.clone();
+    let mut fitted = state.clone();
+    let mut exit = exit_pass(
+        executor,
+        &state,
+        &kkt_columns,
+        &shifts,
+        &facts,
+        RobustRequest {
+            types: settings.robust,
+            weights: &ls.final_weights,
+            bread: &covariance,
+        },
+    )?;
+    let kkt_position = |column: usize| {
+        kkt_columns
+            .binary_search(&column)
+            .expect("an unpenalized column has KKT sums")
+    };
+    if let Some(intercept_col) = intercept_col {
+        let position = kkt_position(intercept_col);
+        let (score, info) = (exit.kkt[2 * position], exit.kkt[2 * position + 1]);
+        let intercept_std_score = score.abs() / info.max(ZERO_TOL).sqrt();
+        if intercept_std_score >= 0.1 * SMOOTH_KKT_SCORE_TOL {
+            let (shift, mut evaluations) =
+                solve_intercept_shift_over_passes(executor, &state, &exit.shift_scores)?;
+            let mut status = match shift {
+                None => "unbracketed",
+                Some(_) => "zero",
+            };
+            let mut applied = false;
+            if let Some(shift) = shift.filter(|&shift| shift != 0.0) {
+                // The deviance at the shifted state decides the refresh.
+                evaluations += 1;
+                status = "rejected";
+                let shifted = Predictor::Shifted(Box::new(state.clone()), shift);
+                let refreshed = exit_pass(
+                    executor,
+                    &shifted,
+                    &kkt_columns,
+                    &[],
+                    &facts,
+                    RobustRequest {
+                        types: settings.robust,
+                        weights: &ls.final_weights,
+                        bread: &covariance,
+                    },
+                )?;
+                // The exact 1-D score solve minimizes deviance along the
+                // intercept direction; reject on the (non-canonical-link)
+                // off-chance it does not improve within tolerance.
+                let deviance = ls.deviance;
+                if refreshed.deviance <= deviance + shape.smooth_tolerance * (1.0 + deviance.abs())
+                {
+                    status = "applied";
+                    applied = true;
+                    ls.coefficients[intercept_col] += shift;
+                    ls.deviance = refreshed.deviance;
+                    fitted = shifted;
+                    exit = refreshed;
+                    ls.warnings.push(format!(
+                        "Applied final intercept refresh of {shift:+.6e} to restore \
+                         the intercept score equation (mean prediction = mean response)."
+                    ));
+                }
+            }
+            record_step(
+                executor,
+                SolverStep::new(driver, "refresh", evaluations, applied, status),
+            );
+        }
+    }
+
+    // KKT stationarity over the unpenalized coordinates.
+    let nonneg: std::collections::BTreeSet<usize> =
+        nonneg_indices.unwrap_or(&[]).iter().copied().collect();
+    let nonpos: std::collections::BTreeSet<usize> =
+        nonpos_indices.unwrap_or(&[]).iter().copied().collect();
+    let mut max_std_score = 0.0f64;
+    for (position, &col) in kkt_columns.iter().enumerate() {
+        let (score, info) = (exit.kkt[2 * position], exit.kkt[2 * position + 1]);
+        let std_score = score.abs() / info.max(ZERO_TOL).sqrt();
+        let at_lower_bound = nonneg.contains(&col) && ls.coefficients[col] <= ZERO_TOL;
+        let at_upper_bound = nonpos.contains(&col) && ls.coefficients[col] >= -ZERO_TOL;
+        if (at_lower_bound && score <= 0.0) || (at_upper_bound && score >= 0.0) {
+            continue;
+        }
+        max_std_score = max_std_score.max(std_score);
+    }
+    let stationary = max_std_score < SMOOTH_KKT_SCORE_TOL;
+    let converged_raw = ls.converged;
+    let converged = converged_raw && stationary;
+    if !stationary {
+        ls.warnings.push(format!(
+            "Fit is non-stationary at exit: max standardized score {max_std_score:.3e} \
+             over unpenalized coordinates (tolerance {SMOOTH_KKT_SCORE_TOL:.0e})."
+        ));
+    }
+    let solver_status = smooth_solver_status(ls.step_halving_failed, converged_raw, stationary);
+    if should_warn_smooth_nonconvergence(converged) {
+        ls.warnings
+            .push(smooth_nonconvergence_warning(solver_status));
+    }
+    record_step(
+        executor,
+        SolverStep::new(driver, "result", ls.iteration, converged, solver_status),
+    );
+
+    let statistics = finish_statistics(executor, family, &fitted, &facts, &exit.sums, exit.stats)?;
+    let mut smooth_penalty = SmoothPenalty::new();
+    for (i, spec) in specs.iter().enumerate() {
+        smooth_penalty.add_term(
+            spec.penalty.clone(),
+            lambdas[i],
+            spec.col_start..spec.col_end,
+        );
+    }
+    Ok(SmoothDriveOutcome {
+        coefficients: ls.coefficients,
+        deviance: ls.deviance,
+        iterations: ls.iteration,
+        converged,
+        lambdas,
+        smooth_edfs,
+        total_edf,
+        gcv: gcv_score(ls.deviance, n, total_edf),
+        covariance_unscaled: covariance,
+        penalty: Penalty::Smooth(smooth_penalty),
+        warnings: ls.warnings,
+        step_halving_used: ls.step_halving_used,
+        solver_status,
+        stationary,
+        max_std_score,
+        fitted,
+        weights: ls.final_weights,
+        statistics,
+    })
+}
+
+/// A pass's deviance (total, all rows finite) and Gram, each when asked for.
+type DevianceAndGram = (Option<(f64, bool)>, Option<GramPartial>);
+
+/// A monotone PIRLS trial: its coefficients and its per-term α.
+type MonotoneTrial = (Array1<f64>, Vec<Option<Array1<f64>>>);
+
+/// One pass at `state`: its deviance (when asked) and the Gram `gram` (when asked).
+fn deviance_and_gram(
+    executor: &mut dyn PassExecutor,
+    state: &Predictor,
+    with_deviance: bool,
+    gram: Option<&dyn Fn(usize) -> Eval>,
+) -> Result<DevianceAndGram> {
+    let mut request = PassRequest::default();
+    let index = request.predictor(state.clone());
+    let deviance = with_deviance.then(|| request.eval(Eval::Deviance(index)));
+    let gram_eval = gram.map(|gram| request.eval(gram(index)));
+    let mut sums = executor.run(&request)?;
+    Ok((
+        deviance.map(|eval| sums[eval].deviance()),
+        gram_eval.map(|eval| take_gram_sum(&mut sums, eval)),
+    ))
+}
+
+/// Penalised IRLS with interleaved GCV λ updates (fits without monotone terms).
+/// Returns the Gram of the covariance weights (the last iteration's).
+fn gcv_pirls(
+    executor: &mut dyn PassExecutor,
+    settings: &SmoothDriveSettings<'_>,
+    shape: &SmoothShape,
+    ls: &mut SmoothLoop,
+    start_gram: GramPartial,
+) -> Result<GramPartial> {
+    let (specs, config) = (settings.specs, settings.config);
+    let (nonneg_indices, nonpos_indices) = (settings.nonneg_indices, settings.nonpos_indices);
+    let (n, p) = (shape.n, shape.p);
+    let max_iterations = config.irls_config.max_iterations;
+    let few_passes = executor.prefers_few_passes();
+    let mut gram = Some(start_gram);
+    let mut retained_gram = None;
+    let mut penalty_matrix = Array2::zeros((p, p));
+    let mut lambdas_stable_count = 0u32;
+    let mut prev_lambdas: Vec<f64> = vec![f64::NAN; specs.len()];
+    let mut penalty_dirty = true;
+
+    while ls.iteration < max_iterations {
+        ls.iteration += 1;
+        let deviance_old = ls.deviance;
+        let system = gram
+            .take()
+            .expect("the pass at this iteration's state accumulated its Gram");
+        // These weights are the covariance's if the loop ends here.
+        ls.final_weights = RetainedWeights::SmoothSolve(ls.state.clone());
+        let cached_xtwx = packed_to_dmatrix(&system.xtx_packed, p);
+        let cached_xtwz = DVector::from_column_slice(&system.xtz);
+        let ztwz = system.ztwz;
+        retained_gram = Some(system);
+
+        if should_run_smooth_gcv(lambdas_stable_count, ls.iteration) {
+            let old_lambdas = ls.lambdas.clone();
+            let penalties: Vec<Array2<f64>> = specs.iter().map(|s| s.penalty.clone()).collect();
             let optimizer = MultiTermGCVOptimizer::new_from_cached(
-                init_xtwx,
-                init_xtwz,
-                init_ztwz,
-                init_penalties,
-                term_indices.clone(),
+                cached_xtwx.clone(),
+                cached_xtwz.clone(),
+                ztwz,
+                penalties,
+                shape.term_indices.clone(),
                 n,
-                p_param,
+                shape.p_param,
             );
-            lambdas = optimizer.optimize_lambdas_reml(
-                &lambdas,
-                log_lambda_min,
-                log_lambda_max,
+            ls.lambdas = optimizer.optimize_lambdas(
+                &ls.lambdas,
+                shape.log_lambda_min,
+                shape.log_lambda_max,
                 config.lambda_tol,
-                5,
+                3,
+            );
+            let max_rel_change = max_lambda_relative_change(&old_lambdas, &ls.lambdas);
+            lambdas_stable_count = next_lambdas_stable_count(max_rel_change, lambdas_stable_count);
+            penalty_dirty = lambdas_changed(&ls.lambdas, &prev_lambdas);
+            record_step(
+                executor,
+                SolverStep::new(
+                    "smooth",
+                    "lambda_update",
+                    0,
+                    lambdas_changed(&ls.lambdas, &old_lambdas),
+                    "gcv",
+                ),
             );
         }
 
-        // Warm-start: run unconstrained IRLS to convergence, then convert
-        // betas to alpha via beta_to_alpha (with PAV projection). This seeds
-        // the PIRLS with good parametric estimates and a reasonable monotonic
-        // starting shape, matching scam's approach of initializing from an
-        // unconstrained preliminary fit.
-        {
-            let mut init_coef = coefficients.clone();
-            let mut init_mu = mu.clone();
-            let mut init_eta = eta.clone();
-            let mut init_dev = deviance;
-            // The warm start is counted against the caller's total iteration
-            // budget so fit(max_iter=N) bounds ALL smooth-path work.
-            let warm_cap = SMOOTH_WARM_START_MAX_ITER.min(config.irls_config.max_iterations);
-            for _init_iter in 0..warm_cap {
-                iteration += 1;
-                let init_link_deriv = link.derivative(&init_mu);
-                let init_var = family.variance(&init_mu);
-                let mut init_iw = Array1::zeros(n);
-                let mut init_cw = Array1::zeros(n);
-                let mut init_z = Array1::zeros(n);
-                update_irls_work_arrays(
-                    &init_eta,
-                    &offset_vec,
-                    y,
-                    &init_mu,
-                    &prior_weights,
-                    &init_var,
-                    &init_link_deriv,
-                    config.irls_config.min_weight,
-                    &mut init_iw,
-                    &mut init_cw,
-                    &mut init_z,
+        if penalty_dirty {
+            penalty_matrix.fill(0.0);
+            for (i, spec) in specs.iter().enumerate() {
+                embed_penalty(
+                    &mut penalty_matrix,
+                    &spec.penalty,
+                    spec.col_start,
+                    ls.lambdas[i],
                 );
-                let mut init_penalty = Array2::zeros((total_cols, total_cols));
-                for (i, spec) in smooth_specs.iter().enumerate() {
-                    embed_penalty(&mut init_penalty, &spec.penalty, spec.col_start, lambdas[i]);
-                }
-                let (new_init_coef, _) = solve_weighted_least_squares_with_penalty_matrix(
-                    x_combined,
-                    &init_z,
-                    &init_cw,
-                    &init_penalty,
-                    true,
-                )?;
-                init_coef = new_init_coef;
-                init_eta = linear_predictor_from_coefficients(x_combined, &init_coef, &offset_vec);
-                init_mu = family.clamp_mu(&link.inverse(&init_eta));
-                let new_dev = family.deviance(y, &init_mu, Some(&prior_weights));
-                let init_rel = relative_change_with_unit_offset(init_dev, new_dev);
-                init_dev = new_dev;
-                if change_below_tolerance(init_rel, config.irls_config.tolerance) {
-                    break;
-                }
             }
-
-            // Convert unconstrained betas to alpha (PAV projection ensures monotonicity)
-            for (i, spec) in smooth_specs.iter().enumerate() {
-                if let Some(ref mut alpha) = alpha_params[i] {
-                    let beta_slice =
-                        &init_coef.as_slice().expect("contiguous")[spec.col_start..spec.col_end];
-                    *alpha = beta_to_alpha(beta_slice, &spec.monotonicity);
-                }
-            }
-
-            // Set coefficients: parametric from init, monotonic from alpha→beta
-            coefficients = init_coef;
-            for (i, spec) in smooth_specs.iter().enumerate() {
-                if let Some(ref alpha) = alpha_params[i] {
-                    let beta = alpha_to_beta(
-                        alpha.as_slice().expect("contiguous array"),
-                        &spec.monotonicity,
-                    );
-                    let cs = coefficients.as_slice_mut().expect("contiguous array");
-                    for (j, &b) in beta.iter().enumerate() {
-                        cs[smooth_coefficient_index(spec.col_start, j)] = b;
-                    }
-                }
-            }
-
-            project_coefficients_to_bounds(&mut coefficients, nonneg_indices, nonpos_indices);
-
-            eta = linear_predictor_from_coefficients(x_combined, &coefficients, &offset_vec);
-            mu = family.clamp_mu(&link.inverse(&eta));
-            deviance = family.deviance(y, &mu, Some(&prior_weights));
+            prev_lambdas.clone_from_slice(&ls.lambdas);
+            penalty_dirty = false;
         }
 
-        // Outer loop: update lambda, then converge inner PIRLS.
-        //
-        // The loop is bounded by the caller's TOTAL iteration budget
-        // (config.irls_config.max_iterations) instead of a hard-coded outer
-        // cap, so fit(max_iter=N) genuinely bounds the work done here:
-        // N=5 visibly truncates, N=5000 is not silently stopped at an
-        // internal cap. Each outer cycle with remaining budget performs at
-        // least one inner iteration, so the outer loop always terminates.
-        let budget = config.irls_config.max_iterations;
-        while iteration < budget {
-            let lambdas_at_start = lambdas.clone();
+        let (mut new_coef, _) =
+            solve_wls_from_precomputed(&cached_xtwx, &cached_xtwz, &penalty_matrix, true)?;
+        // Enforce sign constraints before evaluating deviance
+        project_coefficients_to_bounds(&mut new_coef, nonneg_indices, nonpos_indices);
 
-            // Inner PIRLS loop: converge coefficients for fixed lambda.
-            // scam uses up to 200 inner iterations per lambda update.
-            for _inner in 0..SMOOTH_INNER_MAX_PER_CYCLE {
-                if iteration >= budget {
+        // The penalized deviance is the objective this solver optimizes.
+        let lambdas = ls.lambdas.clone();
+        let pen_dev_old =
+            smooth_penalized_deviance(deviance_old, &ls.coefficients, specs, &lambdas);
+        let accept_threshold = smooth_accept_threshold(pen_dev_old, shape.smooth_tolerance);
+        let more = ls.iteration < max_iterations;
+        let acceptable = |dev: (f64, bool), coef: &Array1<f64>| {
+            let pen_dev = smooth_penalized_deviance(dev.0, coef, specs, &lambdas);
+            dev.1 && dev.0.is_finite() && pen_dev.is_finite() && pen_dev <= accept_threshold
+        };
+
+        // Candidate pass: its deviance, and the next iteration's Gram speculatively.
+        let candidate = coef_predictor(&new_coef);
+        let (candidate_deviance, candidate_gram) =
+            deviance_and_gram(executor, &candidate, true, more.then_some(&smooth_gram))?;
+        let candidate_deviance = candidate_deviance.expect("asked for");
+
+        let accepted_gram = if acceptable(candidate_deviance, &new_coef) {
+            record_step(
+                executor,
+                SolverStep::new("smooth", "iteration", 1, true, "full_step"),
+            );
+            ls.coefficients = new_coef;
+            ls.state = candidate;
+            ls.deviance = candidate_deviance.0;
+            candidate_gram
+        } else {
+            // 10 halving steps plus a final fraction = 0 fallback (the previous
+            // accepted coefficients), which is known finite and non-worsening.
+            let mut fractions = Vec::with_capacity(11);
+            let mut step = 0.5;
+            for half_step in 0..=10 {
+                fractions.push(if half_step == 10 { 0.0 } else { step });
+                step = next_smooth_half_step(step);
+            }
+            let blends: Vec<Array1<f64>> = fractions
+                .iter()
+                .map(|&fraction| {
+                    let mut blended = blend_arrays(&ls.coefficients, &new_coef, fraction);
+                    project_coefficients_to_bounds(&mut blended, nonneg_indices, nonpos_indices);
+                    blended
+                })
+                .collect();
+            let predictors: Vec<Predictor> = blends.iter().map(coef_predictor).collect();
+            let mut deviances = LazyDeviances::new(predictors, few_passes);
+            let mut accepted = None;
+            for trial in 0..blends.len() {
+                let trial_deviance = deviances.get(executor, trial)?;
+                if acceptable(trial_deviance, &blends[trial]) {
+                    accepted = Some((trial, trial_deviance));
                     break;
                 }
-                iteration += 1;
-                let deviance_old = deviance;
-
-                // Compute IRLS weights and working response
-                let link_deriv = link.derivative(&mu);
-                let variance = family.variance(&mu);
-                update_irls_work_arrays(
-                    &eta,
-                    &offset_vec,
-                    y,
-                    &mu,
-                    &prior_weights,
-                    &variance,
-                    &link_deriv,
-                    config.irls_config.min_weight,
-                    &mut irls_weights,
-                    &mut combined_weights,
-                    &mut working_response,
+            }
+            let Some((trial, trial_deviance)) = accepted else {
+                record_step(
+                    executor,
+                    SolverStep::new("smooth", "iteration", 1 + blends.len(), false, "exhausted"),
                 );
-                // Reflect the current iterate's weights immediately so that a
-                // step-halving failure on the FIRST iteration still yields the
-                // retained-iterate weights for covariance/EDF/GCV — not all-ones.
-                final_weights = combined_weights.clone();
-
-                // Save alpha state before WLS for step halving
-                let pre_wls_alphas: Vec<Option<Array1<f64>>> = alpha_params.clone();
-
-                // Build X_tilde: replace monotonic smooth columns with X*J
-                for (i, spec) in smooth_specs.iter().enumerate() {
-                    if let Some(ref alpha) = alpha_params[i] {
-                        let x_smooth = x_combined.slice(s![.., spec.col_start..spec.col_end]);
-                        let mut target = x_tilde.slice_mut(s![.., spec.col_start..spec.col_end]);
-                        compute_x_tilde_inplace(
-                            &x_smooth,
-                            alpha.as_slice().expect("contiguous array"),
-                            &spec.monotonicity,
-                            &mut target,
-                        );
-                    }
-                }
-
-                // Pre-compute Jacobians for monotonic terms (used for both linearization and penalty)
-                let cached_jacobians: Vec<Option<Array2<f64>>> = smooth_specs
-                    .iter()
-                    .enumerate()
-                    .map(|(i, spec)| {
-                        alpha_params[i].as_ref().map(|alpha| {
-                            compute_monotonic_jacobian(
-                                alpha.as_slice().expect("contiguous array"),
-                                &spec.monotonicity,
-                            )
-                        })
-                    })
-                    .collect();
-
-                // Linearization offset: z_adj = z - X*(beta - J*alpha)
-                adjusted_response.assign(&working_response);
-                for (i, spec) in smooth_specs.iter().enumerate() {
-                    if let Some(ref alpha) = alpha_params[i] {
-                        let alpha_slice = alpha.as_slice().expect("contiguous array");
-                        let beta_mono = alpha_to_beta(alpha_slice, &spec.monotonicity);
-                        let j_mat = cached_jacobians[i]
-                            .as_ref()
-                            .expect("cached Jacobian exists for monotonic term");
-                        let j_alpha = j_mat.dot(alpha);
-                        let offset_mono = monotonic_offset(&beta_mono, &j_alpha);
-                        let x_smooth = x_combined.slice(s![.., spec.col_start..spec.col_end]);
-                        subtract_smooth_offset(&mut adjusted_response, x_smooth, &offset_mono);
-                    }
-                }
-
-                // Build transformed penalty and solve WLS
-                let x_tilde_view = x_tilde.view();
-                let (cached_xtwx_t, cached_xtwz_t) =
-                    compute_xtwx_xtwz(x_tilde_view, &adjusted_response, &combined_weights)?;
-
-                penalty_matrix.fill(0.0);
-                for (i, spec) in smooth_specs.iter().enumerate() {
-                    if let Some(ref _alpha) = alpha_params[i] {
-                        let j_mat = cached_jacobians[i]
-                            .as_ref()
-                            .expect("cached Jacobian exists for monotonic term");
-                        let s_tilde = compute_s_tilde(&spec.penalty, j_mat);
-                        embed_penalty(&mut penalty_matrix, &s_tilde, spec.col_start, lambdas[i]);
-                    } else {
-                        embed_penalty(
-                            &mut penalty_matrix,
-                            &spec.penalty,
-                            spec.col_start,
-                            lambdas[i],
-                        );
-                    }
-                }
-
-                let (alpha_coef, _) = solve_wls_from_precomputed(
-                    &cached_xtwx_t,
-                    &cached_xtwz_t,
-                    &penalty_matrix,
+                ls.step_halving_failed = true;
+                ls.warnings.push(
+                    "Smooth IRLS step halving found no finite non-worsening step; \
+                     retained the previous iterate."
+                        .to_string(),
+                );
+                break;
+            };
+            // A fraction-0 fallback is not a genuine halving "step", it simply
+            // retains the previous iterate.
+            let genuine = fraction_is_genuine_halving(fractions[trial]);
+            record_step(
+                executor,
+                SolverStep::new(
+                    "smooth",
+                    "iteration",
+                    trial + 2,
                     true,
-                )?;
+                    if genuine { "halved" } else { "retained" },
+                ),
+            );
+            if genuine {
+                ls.step_halving_used = true;
+            }
+            ls.coefficients = blends[trial].clone();
+            ls.state = coef_predictor(&ls.coefficients);
+            ls.deviance = trial_deviance.0;
+            None
+        };
 
-                // Build candidate coefficients: all non-monotonic from WLS
-                let new_coef = alpha_coef.clone();
+        let pen_dev = smooth_penalized_deviance(ls.deviance, &ls.coefficients, specs, &lambdas);
+        let rel_change = relative_change_with_floor(pen_dev_old, pen_dev, ZERO_TOL);
+        if change_below_tolerance(rel_change, shape.smooth_tolerance) {
+            ls.converged = true;
+            break;
+        }
+        gram = match accepted_gram {
+            Some(accepted_gram) => Some(accepted_gram),
+            None if more => deviance_and_gram(executor, &ls.state, false, Some(&smooth_gram))?.1,
+            None => None,
+        };
+    }
+    Ok(retained_gram.expect("at least one iteration ran"))
+}
 
-                // WLS-proposed alpha for monotonic terms (clamped)
-                let wls_alphas: Vec<Option<Array1<f64>>> = smooth_specs
-                    .iter()
-                    .enumerate()
-                    .map(|(i, spec)| {
-                        if alpha_params[i].is_some() {
-                            let alpha_wls = &alpha_coef.as_slice().expect("contiguous")
-                                [spec.col_start..spec.col_end];
-                            let clamped: Vec<f64> = alpha_wls
-                                .iter()
-                                .enumerate()
-                                .map(|(j, &a)| clamp_monotonic_alpha_value(j, a))
-                                .collect();
-                            Some(Array1::from_vec(clamped))
-                        } else {
-                            None
-                        }
+/// Deviances of a list of trial predictors, evaluated on demand: one per pass, or
+/// every remaining one in a single pass when the executor prefers few passes.
+struct LazyDeviances {
+    predictors: Vec<Predictor>,
+    values: Vec<Option<(f64, bool)>>,
+    few_passes: bool,
+}
+
+impl LazyDeviances {
+    fn new(predictors: Vec<Predictor>, few_passes: bool) -> Self {
+        let values = vec![None; predictors.len()];
+        Self {
+            predictors,
+            values,
+            few_passes,
+        }
+    }
+
+    /// Record a deviance already evaluated (a candidate pass's).
+    fn set(&mut self, trial: usize, value: (f64, bool)) {
+        self.values[trial] = Some(value);
+    }
+
+    fn get(&mut self, executor: &mut dyn PassExecutor, trial: usize) -> Result<(f64, bool)> {
+        if let Some(value) = self.values[trial] {
+            return Ok(value);
+        }
+        let last = if self.few_passes {
+            self.predictors.len()
+        } else {
+            trial + 1
+        };
+        let mut request = PassRequest::default();
+        let mut evals = Vec::new();
+        for t in trial..last {
+            if self.values[t].is_none() {
+                let index = request.predictor(self.predictors[t].clone());
+                evals.push((t, request.eval(Eval::Deviance(index))));
+            }
+        }
+        let sums = executor.run(&request)?;
+        for (t, eval) in evals {
+            self.values[t] = Some(sums[eval].deviance());
+        }
+        Ok(self.values[trial].expect("just evaluated"))
+    }
+}
+
+/// The monotone transform of the current α: per monotone term, the column scales
+/// (1, then ±exp(α_j) clamped) and the linearisation offset β(α) − J(α)α.
+fn monotone_transform(
+    specs: &[SmoothTermSpec],
+    alpha_params: &[Option<Array1<f64>>],
+) -> MonotoneTransform {
+    let terms = specs
+        .iter()
+        .zip(alpha_params.iter())
+        .filter_map(|(spec, alpha)| {
+            let alpha = alpha.as_ref()?;
+            let alpha_slice = alpha.as_slice().expect("contiguous array");
+            let sign = match spec.monotonicity {
+                Monotonicity::Increasing => 1.0,
+                Monotonicity::Decreasing => -1.0,
+                Monotonicity::None => return None,
+            };
+            let scales = (0..alpha_slice.len())
+                .map(|j| {
+                    if j == 0 {
+                        1.0 // Column 0: unscaled cumulative sum
+                    } else {
+                        sign * alpha_slice[j].clamp(-MAX_EXP_ALPHA, MAX_EXP_ALPHA).exp()
+                    }
+                })
+                .collect();
+            let beta_mono = alpha_to_beta(alpha_slice, &spec.monotonicity);
+            let j_mat = compute_monotonic_jacobian(alpha_slice, &spec.monotonicity);
+            let j_alpha = j_mat.dot(alpha);
+            let offset = monotonic_offset(&beta_mono, &j_alpha).to_vec();
+            Some(MonotoneTermTransform {
+                start: spec.col_start,
+                end: spec.col_end,
+                scales,
+                offset,
+            })
+        })
+        .collect();
+    MonotoneTransform { terms }
+}
+
+/// The penalties of the reparameterised problem: S̃ = J'SJ for monotone terms.
+fn transformed_penalties(
+    specs: &[SmoothTermSpec],
+    alpha_params: &[Option<Array1<f64>>],
+) -> Vec<Array2<f64>> {
+    specs
+        .iter()
+        .zip(alpha_params.iter())
+        .map(|(spec, alpha)| match alpha {
+            Some(alpha) => {
+                let j_mat = compute_monotonic_jacobian(
+                    alpha.as_slice().expect("contiguous array"),
+                    &spec.monotonicity,
+                );
+                compute_s_tilde(&spec.penalty, &j_mat)
+            }
+            None => spec.penalty.clone(),
+        })
+        .collect()
+}
+
+/// The monotone path's nested iteration (scam, Pya & Wood 2015): REML λ on the
+/// start Gram, an unconstrained warm start, the α reset, then PIRLS with fixed λ
+/// inside an outer REML λ update, on the monotone-transformed rows.
+fn monotone_pirls(
+    executor: &mut dyn PassExecutor,
+    settings: &SmoothDriveSettings<'_>,
+    shape: &SmoothShape,
+    ls: &mut SmoothLoop,
+    start_gram: GramPartial,
+) -> Result<()> {
+    let (specs, config) = (settings.specs, settings.config);
+    let (nonneg_indices, nonpos_indices) = (settings.nonneg_indices, settings.nonpos_indices);
+    let (n, p) = (shape.n, shape.p);
+    let few_passes = executor.prefers_few_passes();
+    let budget = config.irls_config.max_iterations;
+
+    // Phase 1: REML on the unconstrained basis for starting lambda.
+    {
+        let optimizer = MultiTermGCVOptimizer::new_from_cached(
+            packed_to_dmatrix(&start_gram.xtx_packed, p),
+            DVector::from_column_slice(&start_gram.xtz),
+            start_gram.ztwz,
+            specs.iter().map(|s| s.penalty.clone()).collect(),
+            shape.term_indices.clone(),
+            n,
+            shape.p_param,
+        );
+        let old_lambdas = ls.lambdas.clone();
+        ls.lambdas = optimizer.optimize_lambdas_reml(
+            &ls.lambdas,
+            shape.log_lambda_min,
+            shape.log_lambda_max,
+            config.lambda_tol,
+            5,
+        );
+        record_step(
+            executor,
+            SolverStep::new(
+                "monotone",
+                "lambda_update",
+                0,
+                lambdas_changed(&ls.lambdas, &old_lambdas),
+                "reml",
+            ),
+        );
+    }
+
+    // Warm start: unconstrained penalised IRLS, counted against the caller's
+    // total iteration budget, then betas → alpha (with PAV projection).
+    let mut init_coef = ls.coefficients.clone();
+    let mut init_dev = ls.deviance;
+    let warm_cap = SMOOTH_WARM_START_MAX_ITER.min(budget);
+    let mut warm_gram = Some(start_gram);
+    for warm in 0..warm_cap {
+        ls.iteration += 1;
+        let gram = warm_gram
+            .take()
+            .expect("the pass at the warm start's state accumulated its Gram");
+        let mut init_penalty = Array2::zeros((p, p));
+        for (i, spec) in specs.iter().enumerate() {
+            embed_penalty(
+                &mut init_penalty,
+                &spec.penalty,
+                spec.col_start,
+                ls.lambdas[i],
+            );
+        }
+        let (new_init_coef, _) = solve_wls_from_precomputed(
+            &packed_to_dmatrix(&gram.xtx_packed, p),
+            &DVector::from_column_slice(&gram.xtz),
+            &init_penalty,
+            true,
+        )?;
+        init_coef = new_init_coef;
+        let more = warm + 1 < warm_cap;
+        let (deviance, next_gram) = deviance_and_gram(
+            executor,
+            &coef_predictor(&init_coef),
+            true,
+            more.then_some(&smooth_gram),
+        )?;
+        let new_dev = deviance.expect("asked for").0;
+        let init_rel = relative_change_with_unit_offset(init_dev, new_dev);
+        init_dev = new_dev;
+        let settled = change_below_tolerance(init_rel, config.irls_config.tolerance);
+        record_step(
+            executor,
+            SolverStep::new(
+                "monotone",
+                "warm_start",
+                1,
+                true,
+                if settled { "converged" } else { "step" },
+            ),
+        );
+        if settled {
+            break;
+        }
+        warm_gram = next_gram;
+    }
+
+    // Convert unconstrained betas to alpha; set the coefficients from alpha.
+    let mut alpha_params: Vec<Option<Array1<f64>>> = specs
+        .iter()
+        .map(|spec| {
+            spec.is_monotonic().then(|| {
+                let beta_slice =
+                    &init_coef.as_slice().expect("contiguous")[spec.col_start..spec.col_end];
+                beta_to_alpha(beta_slice, &spec.monotonicity)
+            })
+        })
+        .collect();
+    ls.coefficients = init_coef;
+    for (spec, alpha) in specs.iter().zip(alpha_params.iter()) {
+        if let Some(alpha) = alpha {
+            let beta = alpha_to_beta(
+                alpha.as_slice().expect("contiguous array"),
+                &spec.monotonicity,
+            );
+            let cs = ls.coefficients.as_slice_mut().expect("contiguous array");
+            for (j, &b) in beta.iter().enumerate() {
+                cs[smooth_coefficient_index(spec.col_start, j)] = b;
+            }
+        }
+    }
+    project_coefficients_to_bounds(&mut ls.coefficients, nonneg_indices, nonpos_indices);
+    ls.state = coef_predictor(&ls.coefficients);
+    let tilde = |transform: MonotoneTransform| {
+        let transform = std::sync::Arc::new(transform);
+        move |predictor: usize| Eval::MonotoneGram {
+            predictor,
+            transform: transform.clone(),
+        }
+    };
+    // The state after the reset, and the first inner iteration's transformed Gram.
+    let mut tilde_gram = {
+        let gram = (ls.iteration < budget).then(|| tilde(monotone_transform(specs, &alpha_params)));
+        let (deviance, gram) = deviance_and_gram(
+            executor,
+            &ls.state,
+            true,
+            gram.as_ref().map(|g| g as &dyn Fn(usize) -> Eval),
+        )?;
+        ls.deviance = deviance.expect("asked for").0;
+        record_step(
+            executor,
+            SolverStep::new("monotone", "alpha_reset", 1, true, "reset"),
+        );
+        gram
+    };
+
+    // Outer loop: update lambda, then converge inner PIRLS, within the caller's
+    // total iteration budget.
+    while ls.iteration < budget {
+        let lambdas_at_start = ls.lambdas.clone();
+
+        for _inner in 0..SMOOTH_INNER_MAX_PER_CYCLE {
+            if ls.iteration >= budget {
+                break;
+            }
+            ls.iteration += 1;
+            let deviance_old = ls.deviance;
+            ls.final_weights = RetainedWeights::SmoothSolve(ls.state.clone());
+            let pre_wls_alphas = alpha_params.clone();
+            let gram = tilde_gram
+                .take()
+                .expect("the pass at this iteration's state accumulated its transformed Gram");
+
+            let mut penalty_matrix = Array2::zeros((p, p));
+            for (i, (spec, penalty)) in specs
+                .iter()
+                .zip(transformed_penalties(specs, &alpha_params))
+                .enumerate()
+            {
+                embed_penalty(&mut penalty_matrix, &penalty, spec.col_start, ls.lambdas[i]);
+            }
+            let (alpha_coef, _) = solve_wls_from_precomputed(
+                &packed_to_dmatrix(&gram.xtx_packed, p),
+                &DVector::from_column_slice(&gram.xtz),
+                &penalty_matrix,
+                true,
+            )?;
+            let new_coef = alpha_coef.clone();
+            // WLS-proposed alpha for monotonic terms (clamped)
+            let wls_alphas: Vec<Option<Array1<f64>>> = specs
+                .iter()
+                .enumerate()
+                .map(|(i, spec)| {
+                    alpha_params[i].as_ref().map(|_| {
+                        let alpha_wls = &alpha_coef.as_slice().expect("contiguous")
+                            [spec.col_start..spec.col_end];
+                        alpha_wls
+                            .iter()
+                            .enumerate()
+                            .map(|(j, &a)| clamp_monotonic_alpha_value(j, a))
+                            .collect()
                     })
-                    .collect();
+                })
+                .collect();
 
-                // Penalized deviance at current point. With REML-selected lambdas,
-                // penalized deviance is well-calibrated for step acceptance.
-                let pen_dev_old =
-                    smooth_penalized_deviance(deviance_old, &coefficients, smooth_specs, &lambdas);
+            let lambdas = ls.lambdas.clone();
+            let pen_dev_old =
+                smooth_penalized_deviance(deviance_old, &ls.coefficients, specs, &lambdas);
 
-                // Step halving on penalized deviance with unified blending
-                // of all coefficients. Accept only finite non-worsening steps
-                // so a failed PIRLS proposal cannot silently replace the last
-                // valid iterate.
-                let mut best_pen_dev = f64::INFINITY;
-                let mut best_coef = new_coef.clone();
-                let mut best_alphas = wls_alphas.clone();
-                let mut best_trial: Option<i32> = None;
-
-                // 20 halving trials plus a final fraction = 0 fallback (trial 20),
-                // which exactly retains the previous accepted iterate (alphas =
-                // pre_wls_alphas, coef = coefficients) and is known finite and
-                // non-worsening. This guarantees a finite non-worsening step
-                // always exists when the previous iterate was valid.
-                for trial in 0..=20 {
+            // 20 halving trials plus a final fraction = 0 fallback (trial 20),
+            // which exactly retains the previous accepted iterate.
+            let trials: Vec<MonotoneTrial> = (0..=20)
+                .map(|trial| {
                     let step = smooth_step_fraction_for_trial(trial, 20);
-
-                    // Blend all coefficients: parametric + non-monotonic smooth
-                    let mut trial_coef = blend_step_arrays(&coefficients, &new_coef, step);
-
-                    // Monotonic terms: blend in alpha-space, recover beta
-                    let mut trial_alphas: Vec<Option<Array1<f64>>> =
-                        Vec::with_capacity(smooth_specs.len());
-                    for (i, spec) in smooth_specs.iter().enumerate() {
-                        if let (Some(ref old_alpha), Some(ref new_alpha)) =
+                    let mut trial_coef = blend_step_arrays(&ls.coefficients, &new_coef, step);
+                    let mut trial_alphas = Vec::with_capacity(specs.len());
+                    for (i, spec) in specs.iter().enumerate() {
+                        if let (Some(old_alpha), Some(new_alpha)) =
                             (&pre_wls_alphas[i], &wls_alphas[i])
                         {
                             let blended = blend_step_arrays(old_alpha, new_alpha, step);
@@ -1874,513 +2253,361 @@ pub fn fit_smooth_glm_full_matrix(
                             trial_alphas.push(None);
                         }
                     }
-
-                    // Re-apply sign constraints after blending
                     project_coefficients_to_bounds(&mut trial_coef, nonneg_indices, nonpos_indices);
+                    (trial_coef, trial_alphas)
+                })
+                .collect();
 
-                    let trial_eta =
-                        linear_predictor_from_coefficients(x_combined, &trial_coef, &offset_vec);
-                    let trial_mu = family.clamp_mu(&link.inverse(&trial_eta));
-                    let trial_dev = family.deviance(y, &trial_mu, Some(&prior_weights));
-                    // Penalized deviance for step acceptance
-                    let trial_pen_dev =
-                        smooth_penalized_deviance(trial_dev, &trial_coef, smooth_specs, &lambdas);
-                    if should_skip_smooth_trial(&trial_eta, &trial_mu, trial_dev, trial_pen_dev) {
-                        continue;
-                    }
+            // Candidate pass (trial 0): its deviance and, speculatively, the next
+            // transformed Gram at its state and α.
+            let more = ls.iteration < budget;
+            let candidate = coef_predictor(&trials[0].0);
+            let candidate_gram_eval = more.then(|| tilde(monotone_transform(specs, &trials[0].1)));
+            let (candidate_deviance, candidate_gram) = deviance_and_gram(
+                executor,
+                &candidate,
+                true,
+                candidate_gram_eval
+                    .as_ref()
+                    .map(|g| g as &dyn Fn(usize) -> Eval),
+            )?;
+            let mut deviances = LazyDeviances::new(
+                trials
+                    .iter()
+                    .map(|(coef, _)| coef_predictor(coef))
+                    .collect(),
+                few_passes,
+            );
+            deviances.set(0, candidate_deviance.expect("asked for"));
 
-                    if smooth_trial_is_better(best_trial, trial_pen_dev, best_pen_dev) {
-                        best_pen_dev = trial_pen_dev;
-                        best_coef = trial_coef;
-                        best_alphas = trial_alphas;
-                        best_trial = Some(trial);
-                        if immediate_trial_accepts(trial, trial_pen_dev, pen_dev_old) {
-                            break;
-                        }
-                    }
-                    if halved_trial_accepts(trial, best_pen_dev, pen_dev_old) {
+            let mut best_pen_dev = f64::INFINITY;
+            let mut best_trial: Option<i32> = None;
+            // Trials the sequential rule read, up to the one it stopped at.
+            let mut examined = 0usize;
+            for trial in 0..=20i32 {
+                let t = trial as usize;
+                examined = t + 1;
+                let (trial_dev, finite) = deviances.get(executor, t)?;
+                let trial_pen_dev =
+                    smooth_penalized_deviance(trial_dev, &trials[t].0, specs, &lambdas);
+                if !(finite && trial_dev.is_finite() && trial_pen_dev.is_finite()) {
+                    continue;
+                }
+                if smooth_trial_is_better(best_trial, trial_pen_dev, best_pen_dev) {
+                    best_pen_dev = trial_pen_dev;
+                    best_trial = Some(trial);
+                    if immediate_trial_accepts(trial, trial_pen_dev, pen_dev_old) {
                         break;
                     }
                 }
-
-                let accept_threshold = smooth_accept_threshold(pen_dev_old, smooth_tolerance);
-                if smooth_step_halving_failed(best_trial, best_pen_dev, accept_threshold) {
-                    step_halving_failed = true;
-                    warnings.push(
-                        "Smooth PIRLS step halving found no finite non-worsening step; \
-                         retained the previous iterate."
-                            .to_string(),
-                    );
-                    break;
-                }
-                // trial 20 is the fraction-0 fallback (retained previous iterate),
-                // not a genuine halved step.
-                if genuine_halved_step(best_trial, 20) {
-                    step_halving_used = true;
-                }
-
-                for (i, _spec) in smooth_specs.iter().enumerate() {
-                    if let Some(ref best_a) = best_alphas[i] {
-                        if let Some(ref mut alpha) = alpha_params[i] {
-                            *alpha = best_a.clone();
-                        }
-                    }
-                }
-                coefficients = best_coef;
-
-                // Update state
-                eta = linear_predictor_from_coefficients(x_combined, &coefficients, &offset_vec);
-                mu = family.clamp_mu(&link.inverse(&eta));
-                deviance = family.deviance(y, &mu, Some(&prior_weights));
-                final_weights = combined_weights.clone();
-
-                // Inner convergence: penalized deviance change
-                let rel_change = relative_change_with_unit_offset(pen_dev_old, best_pen_dev);
-                if change_below_tolerance(rel_change, smooth_tolerance) {
-                    converged = true;
+                if halved_trial_accepts(trial, best_pen_dev, pen_dev_old) {
                     break;
                 }
             }
-            if step_halving_failed {
-                break;
-            }
-            if iteration >= budget {
-                // Budget exhausted mid-cycle: the inner state may claim
-                // convergence, but lambda stability was never verified.
-                converged = false;
-                break;
-            }
 
-            // Outer loop: update lambdas via GCV on the converged X_tilde
-            {
-                // Recompute IRLS quantities at convergence point
-                let link_deriv = link.derivative(&mu);
-                let variance = family.variance(&mu);
-                update_irls_work_arrays(
-                    &eta,
-                    &offset_vec,
-                    y,
-                    &mu,
-                    &prior_weights,
-                    &variance,
-                    &link_deriv,
-                    config.irls_config.min_weight,
-                    &mut irls_weights,
-                    &mut combined_weights,
-                    &mut working_response,
+            let accept_threshold = smooth_accept_threshold(pen_dev_old, shape.smooth_tolerance);
+            let failed = smooth_step_halving_failed(best_trial, best_pen_dev, accept_threshold);
+            record_step(
+                executor,
+                SolverStep::new(
+                    "monotone",
+                    "iteration",
+                    examined,
+                    !failed,
+                    match best_trial {
+                        _ if failed => "exhausted",
+                        Some(0) => "full_step",
+                        _ if genuine_halved_step(best_trial, 20) => "halved",
+                        _ => "retained",
+                    },
+                ),
+            );
+            if failed {
+                ls.step_halving_failed = true;
+                ls.warnings.push(
+                    "Smooth PIRLS step halving found no finite non-worsening step; \
+                     retained the previous iterate."
+                        .to_string(),
                 );
-
-                // Rebuild X_tilde at converged alpha
-                for (i, spec) in smooth_specs.iter().enumerate() {
-                    if let Some(ref alpha) = alpha_params[i] {
-                        let x_smooth = x_combined.slice(s![.., spec.col_start..spec.col_end]);
-                        let mut target = x_tilde.slice_mut(s![.., spec.col_start..spec.col_end]);
-                        compute_x_tilde_inplace(
-                            &x_smooth,
-                            alpha.as_slice().expect("contiguous array"),
-                            &spec.monotonicity,
-                            &mut target,
-                        );
-                    }
+                break;
+            }
+            // trial 20 is the fraction-0 fallback (retained previous iterate),
+            // not a genuine halved step.
+            if genuine_halved_step(best_trial, 20) {
+                ls.step_halving_used = true;
+            }
+            let best = best_trial.expect("an accepted step has a trial") as usize;
+            let (best_coef, best_alphas) = trials[best].clone();
+            for (alpha, best_alpha) in alpha_params.iter_mut().zip(best_alphas.iter()) {
+                if let (Some(alpha), Some(best_alpha)) = (alpha.as_mut(), best_alpha) {
+                    *alpha = best_alpha.clone();
                 }
-
-                // Pre-compute Jacobians for monotonic terms (used for both linearization and penalty)
-                let cached_jacobians_outer: Vec<Option<Array2<f64>>> = smooth_specs
-                    .iter()
-                    .enumerate()
-                    .map(|(i, spec)| {
-                        alpha_params[i].as_ref().map(|alpha| {
-                            compute_monotonic_jacobian(
-                                alpha.as_slice().expect("contiguous array"),
-                                &spec.monotonicity,
-                            )
-                        })
-                    })
-                    .collect();
-
-                // Rebuild adjusted response at converged alpha
-                adjusted_response.assign(&working_response);
-                for (i, spec) in smooth_specs.iter().enumerate() {
-                    if let Some(ref alpha) = alpha_params[i] {
-                        let alpha_slice = alpha.as_slice().expect("contiguous array");
-                        let beta_mono = alpha_to_beta(alpha_slice, &spec.monotonicity);
-                        let j_mat = cached_jacobians_outer[i]
-                            .as_ref()
-                            .expect("cached Jacobian exists for monotonic term");
-                        let j_alpha = j_mat.dot(alpha);
-                        let offset_mono = monotonic_offset(&beta_mono, &j_alpha);
-                        let x_smooth = x_combined.slice(s![.., spec.col_start..spec.col_end]);
-                        subtract_smooth_offset(&mut adjusted_response, x_smooth, &offset_mono);
-                    }
-                }
-
-                let x_tilde_view = x_tilde.view();
-                let (cached_xtwx_t, cached_xtwz_t) =
-                    compute_xtwx_xtwz(x_tilde_view, &adjusted_response, &combined_weights)?;
-                let ztwz = weighted_response_sum_squares(&adjusted_response, &combined_weights);
-
-                let transformed_penalties: Vec<Array2<f64>> = smooth_specs
-                    .iter()
-                    .enumerate()
-                    .map(|(i, spec)| {
-                        if let Some(ref _alpha) = alpha_params[i] {
-                            let j_mat = cached_jacobians_outer[i]
-                                .as_ref()
-                                .expect("cached Jacobian exists for monotonic term");
-                            compute_s_tilde(&spec.penalty, j_mat)
-                        } else {
-                            spec.penalty.clone()
-                        }
-                    })
-                    .collect();
-
-                let optimizer = MultiTermGCVOptimizer::new_from_cached(
-                    cached_xtwx_t,
-                    cached_xtwz_t,
-                    ztwz,
-                    transformed_penalties,
-                    term_indices.clone(),
-                    n,
-                    p_param,
-                );
-
-                // Use REML for monotonic models — more stable than GCV because
-                // it accounts for posterior uncertainty via the log-determinant
-                // term, rather than relying on trace-based EDF which doesn't
-                // capture the effect of monotonicity constraints.
-                lambdas = optimizer.optimize_lambdas_reml(
-                    &lambdas,
-                    log_lambda_min,
-                    log_lambda_max,
-                    config.lambda_tol,
-                    5,
-                );
             }
+            ls.coefficients = best_coef;
+            ls.state = coef_predictor(&ls.coefficients);
+            ls.deviance = deviances.get(executor, best)?.0;
 
-            // Check outer convergence: lambdas stabilized?
-            let max_lambda_change = max_lambda_relative_change(&lambdas_at_start, &lambdas);
+            // The transformed Gram at the new state and α, for the next inner
+            // iteration or the outer REML update.
+            tilde_gram = if best == 0 {
+                candidate_gram
+            } else if more {
+                let eval = tilde(monotone_transform(specs, &alpha_params));
+                deviance_and_gram(executor, &ls.state, false, Some(&eval))?.1
+            } else {
+                None
+            };
 
-            if should_stop_monotonic_outer(max_lambda_change, converged) {
+            // Inner convergence: penalized deviance change
+            let rel_change = relative_change_with_unit_offset(pen_dev_old, best_pen_dev);
+            if change_below_tolerance(rel_change, shape.smooth_tolerance) {
+                ls.converged = true;
                 break;
             }
-            // Reset inner convergence flag for next outer iteration
-            converged = false;
         }
-        // converged remains true only if the last inner loop converged
-        // AND lambdas were stable. If the outer loop exhausted the iteration
-        // budget without meeting the break condition, converged stays false.
-    }
+        if ls.step_halving_failed {
+            break;
+        }
+        if ls.iteration >= budget {
+            // Budget exhausted mid-cycle: the inner state may claim
+            // convergence, but lambda stability was never verified.
+            ls.converged = false;
+            break;
+        }
 
-    // =========================================================================
-    // NON-MONOTONIC PATH: Standard penalized IRLS with interleaved GCV
-    // =========================================================================
-    while !has_monotonic && iteration < config.irls_config.max_iterations {
-        iteration += 1;
-        let deviance_old = deviance;
-
-        let link_deriv = link.derivative(&mu);
-        let variance = family.variance(&mu);
-
-        update_irls_work_arrays(
-            &eta,
-            &offset_vec,
-            y,
-            &mu,
-            &prior_weights,
-            &variance,
-            &link_deriv,
-            config.irls_config.min_weight,
-            &mut irls_weights,
-            &mut combined_weights,
-            &mut working_response,
-        );
-        // Reflect the current iterate's weights immediately so that a
-        // step-halving failure on the FIRST iteration still yields the
-        // retained-iterate weights for covariance/EDF/GCV — not all-ones.
-        final_weights = combined_weights.clone();
-
-        let mut new_coef;
-
-        // Compute X'WX and X'Wz ONCE per iteration — shared by GCV and WLS
-        let (cached_xtwx, cached_xtwz) =
-            compute_xtwx_xtwz(x_combined, &working_response, &combined_weights)?;
-
-        let ztwz = weighted_response_sum_squares(&working_response, &combined_weights);
-
-        let run_gcv = should_run_smooth_gcv(lambdas_stable_count, iteration);
-        if run_gcv {
-            let old_lambdas = lambdas.clone();
-            let penalties: Vec<Array2<f64>> =
-                smooth_specs.iter().map(|s| s.penalty.clone()).collect();
+        // Outer loop: REML λ update on the transformed sums at the current state
+        // and α (the Gram the next inner iteration also uses).
+        {
+            let gram = tilde_gram
+                .as_ref()
+                .expect("the transformed Gram at the current state was accumulated");
             let optimizer = MultiTermGCVOptimizer::new_from_cached(
-                cached_xtwx.clone(),
-                cached_xtwz.clone(),
-                ztwz,
-                penalties,
-                term_indices.clone(),
+                packed_to_dmatrix(&gram.xtx_packed, p),
+                DVector::from_column_slice(&gram.xtz),
+                gram.ztwz,
+                transformed_penalties(specs, &alpha_params),
+                shape.term_indices.clone(),
                 n,
-                p_param,
+                shape.p_param,
             );
-            lambdas = optimizer.optimize_lambdas(
-                &lambdas,
-                log_lambda_min,
-                log_lambda_max,
+            ls.lambdas = optimizer.optimize_lambdas_reml(
+                &ls.lambdas,
+                shape.log_lambda_min,
+                shape.log_lambda_max,
                 config.lambda_tol,
-                3,
+                5,
             );
-            let max_rel_change = max_lambda_relative_change(&old_lambdas, &lambdas);
-            lambdas_stable_count = next_lambdas_stable_count(max_rel_change, lambdas_stable_count);
-            penalty_dirty = lambdas_changed(&lambdas, &prev_lambdas);
         }
-
-        if penalty_dirty {
-            penalty_matrix.fill(0.0);
-            for (i, spec) in smooth_specs.iter().enumerate() {
-                embed_penalty(
-                    &mut penalty_matrix,
-                    &spec.penalty,
-                    spec.col_start,
-                    lambdas[i],
-                );
-            }
-            prev_lambdas.clone_from_slice(&lambdas);
-            penalty_dirty = false;
-        }
-
-        let (coef, _) =
-            solve_wls_from_precomputed(&cached_xtwx, &cached_xtwz, &penalty_matrix, true)?;
-        new_coef = coef;
-
-        // Enforce sign constraints before evaluating deviance
-        project_coefficients_to_bounds(&mut new_coef, nonneg_indices, nonpos_indices);
-
-        // Step halving if the full step is non-finite or worsens the fitted
-        // smooth objective. Raw deviance can rise slightly as smoothing
-        // increases; the penalized deviance is the objective this solver
-        // actually optimizes.
-        let pen_dev_old =
-            smooth_penalized_deviance(deviance_old, &coefficients, smooth_specs, &lambdas);
-        let accept_threshold = smooth_accept_threshold(pen_dev_old, smooth_tolerance);
-        let eta_new = linear_predictor_from_coefficients(x_combined, &new_coef, &offset_vec);
-        let mu_new = family.clamp_mu(&link.inverse(&eta_new));
-        let deviance_new = family.deviance(y, &mu_new, Some(&prior_weights));
-        let pen_dev_new =
-            smooth_penalized_deviance(deviance_new, &new_coef, smooth_specs, &lambdas);
-        let mut step_accepted = smooth_step_candidate_accepted(
-            &eta_new,
-            &mu_new,
-            deviance_new,
-            pen_dev_new,
-            accept_threshold,
+        record_step(
+            executor,
+            SolverStep::new(
+                "monotone",
+                "lambda_update",
+                0,
+                lambdas_changed(&ls.lambdas, &lambdas_at_start),
+                "reml",
+            ),
         );
-        let mut accepted_coef = if step_accepted {
-            new_coef.clone()
-        } else {
-            coefficients.clone()
-        };
 
-        if !step_accepted {
-            let mut step = 0.5;
-            // 10 halving steps plus a final fraction = 0 fallback (the previous
-            // accepted coefficients), which is known finite and non-worsening.
-            // This guarantees a finite non-worsening step always exists when the
-            // previous iterate was valid, rather than blending toward but never
-            // reaching it.
-            for half_step in 0..=10 {
-                let fraction = if half_step == 10 { 0.0 } else { step };
-                let mut blended = blend_arrays(&coefficients, &new_coef, fraction);
-
-                project_coefficients_to_bounds(&mut blended, nonneg_indices, nonpos_indices);
-
-                let eta_full =
-                    linear_predictor_from_coefficients(x_combined, &blended, &offset_vec);
-                let mu_blend = family.clamp_mu(&link.inverse(&eta_full));
-                let dev_blend = family.deviance(y, &mu_blend, Some(&prior_weights));
-                let pen_dev_blend =
-                    smooth_penalized_deviance(dev_blend, &blended, smooth_specs, &lambdas);
-
-                if smooth_step_candidate_accepted(
-                    &eta_full,
-                    &mu_blend,
-                    dev_blend,
-                    pen_dev_blend,
-                    accept_threshold,
-                ) {
-                    accepted_coef = blended;
-                    step_accepted = true;
-                    // A fraction-0 fallback is not a genuine halving "step",
-                    // it simply retains the previous iterate.
-                    if fraction_is_genuine_halving(fraction) {
-                        step_halving_used = true;
-                    }
-                    break;
-                }
-                step = next_smooth_half_step(step);
-            }
-        }
-
-        if !step_accepted {
-            step_halving_failed = true;
-            warnings.push(
-                "Smooth IRLS step halving found no finite non-worsening step; \
-                 retained the previous iterate."
-                    .to_string(),
-            );
+        // Check outer convergence: lambdas stabilized?
+        let max_lambda_change = max_lambda_relative_change(&lambdas_at_start, &ls.lambdas);
+        if should_stop_monotonic_outer(max_lambda_change, ls.converged) {
             break;
         }
-        coefficients = accepted_coef;
+        // Reset inner convergence flag for next outer iteration
+        ls.converged = false;
+    }
+    Ok(())
+}
 
-        // Update state
-        eta = linear_predictor_from_coefficients(x_combined, &coefficients, &offset_vec);
-        mu = family.clamp_mu(&link.inverse(&eta));
-        deviance = family.deviance(y, &mu, Some(&prior_weights));
-        final_weights = combined_weights.clone();
-        let pen_dev = smooth_penalized_deviance(deviance, &coefficients, smooth_specs, &lambdas);
-
-        let rel_change = relative_change_with_floor(pen_dev_old, pen_dev, ZERO_TOL);
-
-        if change_below_tolerance(rel_change, smooth_tolerance) {
-            converged = true;
-            break;
+/// `refine_unconstrained_block` over passes: penalised IRLS on the refit columns
+/// R with the monotone and sign-constrained columns F held as the offset
+/// o_F = o + Σ_F β_c·x_c (ascending columns, D11). Returns whether it was applied.
+fn refine_over_passes(
+    executor: &mut dyn PassExecutor,
+    settings: &SmoothDriveSettings<'_>,
+    shape: &SmoothShape,
+    ls: &mut SmoothLoop,
+) -> Result<bool> {
+    let specs = settings.specs;
+    let budget = settings.config.irls_config.max_iterations;
+    let mut fixed_cols = std::collections::BTreeSet::new();
+    for spec in specs {
+        if spec.is_monotonic() {
+            fixed_cols.extend(spec.col_start..spec.col_end);
         }
     }
-
-    // =========================================================================
-    // Termination contract: intercept refresh + exit stationarity check
-    // =========================================================================
-    // The inner convergence test measures PROGRESS (penalized-deviance change),
-    // which a stalled solver passes. At any true (constrained) optimum the
-    // score of every unpenalized, unconstrained coordinate — the intercept
-    // above all — must vanish. Two safeguards enforce that contract:
-    //
-    // 1. Intercept refresh: one exact 1-D score solve along the intercept
-    //    direction. Guarantees mean(prediction) == mean(response) for
-    //    canonical links on every returned fit, whatever happened upstream.
-    //    Skipped when the intercept is already comfortably stationary, so
-    //    healthy fits are untouched.
-    // 2. Stationarity gate: `converged=True` additionally requires the KKT
-    //    check to pass; a stalled fit reports `stalled_nonstationary`.
-    //
-    // Before both, a final unconstrained-block re-solve: holding the monotone
-    // blocks fixed, the remaining coordinates form a convex penalized GLM that
-    // the stalled main loop may have left slightly off-optimum. Solving it is
-    // a block coordinate-descent step (never worsens the penalized objective).
-    if has_monotonic && iteration < config.irls_config.max_iterations {
-        let refined = refine_unconstrained_block(
-            y,
-            x_combined,
-            smooth_specs,
-            &lambdas,
-            family,
-            link,
-            &offset_vec,
-            &prior_weights,
-            config.irls_config.min_weight,
-            smooth_tolerance,
-            nonneg_indices,
-            nonpos_indices,
-            &mut coefficients,
-            &mut eta,
-            &mut mu,
-            &mut deviance,
-            &mut iteration,
-            config.irls_config.max_iterations,
-        )?;
-        if refined {
-            warnings.push(
-                "Applied final unconstrained-block re-solve (parametric and \
-                 unconstrained smooth coordinates) to restore exit stationarity."
-                    .to_string(),
-            );
-        }
-    }
-
-    if let Some(intercept_col) =
-        find_intercept_column(x_combined, &smooth_cols, nonneg_indices, nonpos_indices)
-    {
-        let (score_resid, info_weight) = quasi_score_arrays(y, &mu, &prior_weights, family, link);
-        let (_, intercept_std_score) =
-            column_std_score(x_combined, intercept_col, &score_resid, &info_weight);
-        if intercept_std_score >= 0.1 * SMOOTH_KKT_SCORE_TOL {
-            if let Some(shift) = solve_intercept_shift(y, &eta, &prior_weights, family, link) {
-                if shift != 0.0 {
-                    let eta_shifted = eta.mapv(|e| e + shift);
-                    let mu_shifted = family.clamp_mu(&link.inverse(&eta_shifted));
-                    let dev_shifted = family.deviance(y, &mu_shifted, Some(&prior_weights));
-                    // The exact 1-D score solve minimizes deviance along the
-                    // intercept direction; reject on the (non-canonical-link)
-                    // off-chance it does not improve within tolerance.
-                    if dev_shifted <= deviance + smooth_tolerance * (1.0 + deviance.abs()) {
-                        coefficients[intercept_col] += shift;
-                        eta = eta_shifted;
-                        mu = mu_shifted;
-                        deviance = dev_shifted;
-                        warnings.push(format!(
-                            "Applied final intercept refresh of {shift:+.6e} to restore \
-                             the intercept score equation (mean prediction = mean response)."
-                        ));
-                    }
-                }
-            }
-        }
-    }
-
-    let (stationary, max_std_score) = stationarity_report(
-        x_combined,
-        y,
-        &mu,
-        &prior_weights,
-        family,
-        link,
-        &smooth_cols,
-        &coefficients,
-        nonneg_indices,
-        nonpos_indices,
-    );
-    let converged_raw = converged;
-    let converged = converged_raw && stationary;
-    if !stationary {
-        warnings.push(format!(
-            "Fit is non-stationary at exit: max standardized score {max_std_score:.3e} \
-             over unpenalized coordinates (tolerance {SMOOTH_KKT_SCORE_TOL:.0e})."
-        ));
-    }
-
-    // Assemble result directly from SmoothTermSpec (no SmoothTermData conversion)
-    let penalty_specs: Vec<(&Array2<f64>, usize, usize)> = smooth_specs
-        .iter()
-        .map(|s| (&s.penalty, s.col_start, s.col_end))
+    fixed_cols.extend(settings.nonneg_indices.unwrap_or(&[]).iter().copied());
+    fixed_cols.extend(settings.nonpos_indices.unwrap_or(&[]).iter().copied());
+    let refit_cols: Vec<usize> = (0..shape.p)
+        .filter(|col| !fixed_cols.contains(col))
         .collect();
-    let solver_status = smooth_solver_status(step_halving_failed, converged_raw, stationary);
-    if should_warn_smooth_nonconvergence(converged) {
-        warnings.push(smooth_nonconvergence_warning(solver_status));
+    if refit_cols.is_empty() || fixed_cols.is_empty() || ls.iteration >= budget {
+        // Nothing to refine, or the whole problem was already the
+        // unconstrained block (handled by the main loop), or no budget left.
+        return Ok(false);
+    }
+    let n_refit = refit_cols.len();
+    let refit: std::sync::Arc<[usize]> = refit_cols.iter().copied().collect();
+    let fixed: std::sync::Arc<[(usize, f64)]> = fixed_cols
+        .iter()
+        .map(|&col| (col, ls.coefficients[col]))
+        .filter(|&(_, coef)| coef != 0.0)
+        .collect();
+
+    // Penalties of the unconstrained smooth terms, re-indexed into sub-columns.
+    let mut penalty_sub = Array2::zeros((n_refit, n_refit));
+    for (i, spec) in specs.iter().enumerate() {
+        if spec.is_monotonic() {
+            continue;
+        }
+        let removed_before = (0..spec.col_start)
+            .filter(|col| fixed_cols.contains(col))
+            .count();
+        embed_penalty(
+            &mut penalty_sub,
+            &spec.penalty,
+            spec.col_start - removed_before,
+            ls.lambdas[i],
+        );
+    }
+    let write_back = |beta_sub: &Array1<f64>, base: &Array1<f64>| -> Array1<f64> {
+        let mut full = base.clone();
+        for (j_new, &j_old) in refit_cols.iter().enumerate() {
+            full[j_old] = beta_sub[j_new];
+        }
+        full
+    };
+    let partitioned = |beta: &Array1<f64>| Predictor::Partitioned {
+        refit: refit.clone(),
+        beta: beta.iter().copied().collect(),
+        fixed: fixed.clone(),
+    };
+    let sub_gram = |predictor: usize| Eval::SubGram {
+        columns: refit.clone(),
+        weights: WeightsSpec::SmoothIrls(predictor),
+        response: ResponseSpec::PartitionedWorking {
+            predictor,
+            fixed: fixed.clone(),
+        },
+    };
+
+    let lambdas = ls.lambdas.clone();
+    let tolerance = shape.smooth_tolerance;
+    let pen_dev_start = smooth_penalized_deviance(ls.deviance, &ls.coefficients, specs, &lambdas);
+    let mut beta_sub: Array1<f64> = refit_cols.iter().map(|&c| ls.coefficients[c]).collect();
+    let mut state = ls.state.clone();
+    let mut dev_cur = ls.deviance;
+    let mut pen_dev_cur = pen_dev_start;
+    let mut gram: Option<GramPartial> = None;
+    let few_passes = executor.prefers_few_passes();
+
+    while ls.iteration < budget {
+        ls.iteration += 1;
+        let system = match gram.take() {
+            Some(system) => system,
+            None => deviance_and_gram(executor, &state, false, Some(&sub_gram))?
+                .1
+                .expect("asked for"),
+        };
+        let (beta_new, _) = solve_wls_from_precomputed(
+            &packed_to_dmatrix(&system.xtx_packed, n_refit),
+            &DVector::from_column_slice(&system.xtz),
+            &penalty_sub,
+            true,
+        )?;
+
+        // Step halving on the full penalized objective; the 0-fraction fallback
+        // exactly retains the previous iterate.
+        let threshold = smooth_accept_threshold(pen_dev_cur, tolerance);
+        let betas: Vec<Array1<f64>> = (0..=10)
+            .map(|trial| {
+                blend_step_arrays(
+                    &beta_sub,
+                    &beta_new,
+                    smooth_step_fraction_for_trial(trial, 10),
+                )
+            })
+            .collect();
+        let more = ls.iteration < budget;
+        let (candidate_deviance, candidate_gram) = deviance_and_gram(
+            executor,
+            &partitioned(&betas[0]),
+            true,
+            more.then_some(&sub_gram),
+        )?;
+        let mut deviances =
+            LazyDeviances::new(betas.iter().map(&partitioned).collect(), few_passes);
+        deviances.set(0, candidate_deviance.expect("asked for"));
+        let mut accepted = None;
+        let mut examined = 0usize;
+        for (trial, beta_trial) in betas.iter().enumerate() {
+            examined = trial + 1;
+            let (dev_trial, finite) = deviances.get(executor, trial)?;
+            let pen_dev_trial = smooth_penalized_deviance(
+                dev_trial,
+                &write_back(beta_trial, &ls.coefficients),
+                specs,
+                &lambdas,
+            );
+            if !(finite && dev_trial.is_finite() && pen_dev_trial.is_finite()) {
+                continue;
+            }
+            if pen_dev_trial <= threshold {
+                accepted = Some((trial, dev_trial, pen_dev_trial));
+                break;
+            }
+        }
+        let last_trial = betas.len() - 1;
+        record_step(
+            executor,
+            SolverStep::new(
+                "monotone",
+                "refine_iteration",
+                examined,
+                accepted.is_some(),
+                match accepted {
+                    None => "exhausted",
+                    Some((0, _, _)) => "full_step",
+                    Some((trial, _, _)) if trial < last_trial => "halved",
+                    Some(_) => "retained",
+                },
+            ),
+        );
+        let Some((trial, dev_trial, pen_dev_next)) = accepted else {
+            break;
+        };
+        beta_sub = betas[trial].clone();
+        state = partitioned(&beta_sub);
+        dev_cur = dev_trial;
+        gram = if trial == 0 { candidate_gram } else { None };
+
+        let rel_change = relative_change_with_unit_offset(pen_dev_cur, pen_dev_next);
+        pen_dev_cur = pen_dev_next;
+        if change_below_tolerance(rel_change, tolerance) {
+            break;
+        }
     }
 
-    Ok(assemble_smooth_result_from_specs(
-        coefficients,
-        mu,
-        eta,
-        deviance,
-        iteration,
-        converged,
-        &final_weights,
-        x_combined,
-        &penalty_specs,
-        &lambdas,
-        p_param,
-        family.name(),
-        prior_weights,
-        y,
-        offset,
-        // Covariance is computed once here by assemble_smooth_result_from_specs,
-        // rather than redundantly on every intermediate IRLS iteration.
-        None,
-        warnings,
-        step_halving_used,
-        solver_status.to_string(),
-        stationary,
-        max_std_score,
-    ))
+    let applied = pen_dev_cur <= pen_dev_start + tolerance * (1.0 + pen_dev_start.abs());
+    record_step(
+        executor,
+        SolverStep::new(
+            "monotone",
+            "refine",
+            0,
+            applied,
+            if applied { "applied" } else { "rejected" },
+        ),
+    );
+    if applied {
+        ls.coefficients = write_back(&beta_sub, &ls.coefficients);
+        ls.state = state;
+        ls.deviance = dev_cur;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
 }
 
 impl SmoothTermSpec {
@@ -2478,45 +2705,6 @@ mod tests {
         assert_eq!(bounded, array![0.0, 0.0, -3.0, -0.0, 0.0]);
         assert_eq!(bounded[3].to_bits(), (-0.0_f64).to_bits());
 
-        assert_abs_diff_eq!(irls_work_weight(2.0, 0.5, 0.1), 2.0, epsilon = 1e-12);
-        assert_abs_diff_eq!(
-            working_response_value(2.0, 0.5, 4.0, 3.0, 2.0),
-            3.5,
-            epsilon = 1e-12
-        );
-        let eta = array![2.0, 3.0];
-        let offset = array![0.5, 1.0];
-        let y = array![4.0, 1.0];
-        let mu = array![3.0, 2.0];
-        let prior = array![1.5, 2.0];
-        let variance = array![2.0, 4.0];
-        let deriv = array![2.0, -1.0];
-        let mut irls = Array1::zeros(2);
-        let mut combined = Array1::zeros(2);
-        let mut z = Array1::zeros(2);
-        update_irls_work_arrays(
-            &eta,
-            &offset,
-            &y,
-            &mu,
-            &prior,
-            &variance,
-            &deriv,
-            0.1,
-            &mut irls,
-            &mut combined,
-            &mut z,
-        );
-        assert_array1_close(&irls, &[0.125, 0.25], 1e-12);
-        assert_array1_close(&combined, &[0.1875, 0.5], 1e-12);
-        assert_array1_close(&z, &[3.5, 3.0], 1e-12);
-        assert_abs_diff_eq!(weighted_square(3.0, 2.0), 18.0, epsilon = 1e-12);
-        assert_abs_diff_eq!(
-            weighted_response_sum_squares(&array![2.0, 3.0], &array![0.5, 2.0]),
-            20.0,
-            epsilon = 1e-12
-        );
-
         assert_eq!(
             blend_arrays(&array![1.0, 5.0], &array![5.0, 1.0], 0.25),
             array![2.0, 4.0]
@@ -2542,126 +2730,9 @@ mod tests {
             array![1.0, 2.0]
         );
         assert!(initial_projection_if_finite(array![1.0, f64::NAN]).is_none());
-        assert!(smooth_trial_values_are_finite(
-            &array![1.0],
-            &array![2.0],
-            3.0,
-            4.0
-        ));
-        assert!(!smooth_trial_values_are_finite(
-            &array![1.0],
-            &array![2.0],
-            3.0,
-            f64::INFINITY
-        ));
-        assert!(smooth_step_candidate_accepted(
-            &array![1.0],
-            &array![2.0],
-            3.0,
-            4.0,
-            4.0
-        ));
-        assert!(!smooth_step_candidate_accepted(
-            &array![1.0],
-            &array![2.0],
-            3.0,
-            4.1,
-            4.0
-        ));
-        assert!(should_skip_smooth_trial(
-            &array![1.0],
-            &array![f64::NAN],
-            3.0,
-            4.0
-        ));
-        assert!(!should_skip_smooth_trial(
-            &array![1.0],
-            &array![2.0],
-            3.0,
-            4.0
-        ));
-
-        assert!(smooth_trial_is_better(None, 9.0, 10.0));
-        assert!(smooth_trial_is_better(Some(0), 9.0, 10.0));
-        assert!(!smooth_trial_is_better(Some(0), 10.0, 10.0));
-        assert!(!smooth_trial_is_better(Some(0), 11.0, 10.0));
-        assert!(smooth_trial_is_nonworsening(10.0, 10.0));
-        assert!(!smooth_trial_is_nonworsening(11.0, 10.0));
-        assert!(immediate_trial_accepts(0, 10.0, 10.0));
-        assert!(!immediate_trial_accepts(1, 10.0, 10.0));
-        assert!(halved_trial_accepts(1, 9.0, 10.0));
-        assert!(!halved_trial_accepts(0, 9.0, 10.0));
-        assert!(smooth_step_accepted(Some(1), 5.0, 6.0));
-        assert!(!smooth_step_accepted(None, 5.0, 6.0));
-        assert!(!smooth_step_accepted(Some(1), 7.0, 6.0));
-        assert!(!smooth_step_halving_failed(Some(1), 5.0, 6.0));
-        assert!(smooth_step_halving_failed(None, 5.0, 6.0));
-        assert!(smooth_step_halving_failed(Some(1), 7.0, 6.0));
-        assert!(genuine_halved_step(Some(1), 20));
-        assert!(!genuine_halved_step(Some(0), 20));
-        assert!(!genuine_halved_step(Some(20), 20));
-
-        assert_abs_diff_eq!(
-            relative_change_with_unit_offset(10.0, 7.0),
-            3.0 / 11.0,
-            epsilon = 1e-12
-        );
-        assert_abs_diff_eq!(
-            relative_change_with_floor(10.0, 7.0, 0.1),
-            0.3,
-            epsilon = 1e-12
-        );
-        assert_abs_diff_eq!(
-            relative_change_with_floor(0.01, 0.04, 0.1),
-            0.03,
-            epsilon = 1e-12
-        );
-        assert_abs_diff_eq!(
-            relative_change_with_floor(0.1, 0.05, 0.1),
-            0.05,
-            epsilon = 1e-12
-        );
-        assert_abs_diff_eq!(lambda_relative_change(0.0, 0.02), 0.02, epsilon = 1e-12);
-        assert!(change_below_tolerance(0.009, 0.01));
-        assert!(!change_below_tolerance(0.01, 0.01));
-        assert_abs_diff_eq!(
-            max_lambda_relative_change(&[0.0, 10.0], &[0.02, 15.0]),
-            0.5,
-            epsilon = 1e-12
-        );
-        assert!(lambdas_stable(0.009));
-        assert!(!lambdas_stable(0.01));
-        assert!(should_stop_monotonic_outer(0.009, true));
-        assert!(!should_stop_monotonic_outer(0.009, false));
-        assert!(should_run_smooth_gcv(0, 1));
-        assert!(should_run_smooth_gcv(0, 4));
-        assert!(!should_run_smooth_gcv(0, 5));
-        assert!(!should_run_smooth_gcv(1, 2));
-        assert_eq!(next_lambdas_stable_count(0.009, 2), 3);
-        assert_eq!(next_lambdas_stable_count(0.01, 2), 0);
         assert!(lambdas_changed(&[1.0, 2.0], &[1.0, 3.0]));
         assert!(!lambdas_changed(&[1.0, 2.0], &[1.0, 2.0]));
         assert_eq!(parametric_column_count(5, 2), 3);
-        let width_spec = SmoothTermSpec {
-            col_start: 2,
-            col_end: 5,
-            penalty: Array2::eye(3),
-            monotonicity: Monotonicity::Increasing,
-            initial_lambda: 1.0,
-        };
-        assert_eq!(smooth_term_width(&width_spec), 3);
-        assert_eq!(
-            centered_eta(&array![2.0, 5.0], &array![0.5, 1.5]),
-            array![1.5, 3.5]
-        );
-        assert_eq!(
-            linear_predictor_from_coefficients(
-                array![[1.0, 2.0], [3.0, 4.0]].view(),
-                &array![0.5, -1.0],
-                &array![10.0, 20.0],
-            ),
-            array![8.5, 17.5]
-        );
         assert_eq!(smooth_coefficient_index(4, 3), 7);
         assert!(fraction_is_genuine_halving(0.5));
         assert!(!fraction_is_genuine_halving(0.0));
@@ -2717,13 +2788,6 @@ mod tests {
 
         let offset_mono = monotonic_offset(&array![3.0, 5.0], &array![1.0, 2.0]);
         assert_eq!(offset_mono, array![2.0, 3.0]);
-        let mut adjusted = array![10.0, 20.0];
-        subtract_smooth_offset(
-            &mut adjusted,
-            array![[1.0, 2.0], [3.0, 4.0]].view(),
-            &offset_mono,
-        );
-        assert_eq!(adjusted, array![2.0, 2.0]);
     }
 
     #[test]
@@ -2831,41 +2895,6 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_x_tilde_inplace_matches_cumulative_jacobian_product() {
-        let x = array![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]];
-        let alpha = [0.0, 2.0_f64.ln(), 3.0_f64.ln()];
-
-        let mut copied = Array2::zeros((2, 3));
-        compute_x_tilde_inplace(
-            &x.view(),
-            &alpha,
-            &Monotonicity::None,
-            &mut copied.view_mut(),
-        );
-        assert_array2_close(&copied, &x, 1e-12);
-
-        let mut increasing = Array2::zeros((2, 3));
-        compute_x_tilde_inplace(
-            &x.view(),
-            &alpha,
-            &Monotonicity::Increasing,
-            &mut increasing.view_mut(),
-        );
-        let expected_increasing = array![[6.0, 10.0, 9.0], [15.0, 22.0, 18.0]];
-        assert_array2_close(&increasing, &expected_increasing, 1e-12);
-
-        let mut decreasing = Array2::zeros((2, 3));
-        compute_x_tilde_inplace(
-            &x.view(),
-            &alpha,
-            &Monotonicity::Decreasing,
-            &mut decreasing.view_mut(),
-        );
-        let expected_decreasing = array![[6.0, -10.0, -9.0], [15.0, -22.0, -18.0]];
-        assert_array2_close(&decreasing, &expected_decreasing, 1e-12);
-    }
-
-    #[test]
     fn test_compute_s_tilde_matches_j_transpose_s_j() {
         let penalty = array![[2.0, 1.0], [1.0, 3.0]];
         let jacobian = array![[1.0, 0.0], [1.0, 2.0]];
@@ -2918,153 +2947,6 @@ mod tests {
         assert!(invert_matrix(&singular).is_none());
     }
 
-    #[test]
-    fn test_assemble_smooth_result_from_specs_preserves_fields_and_penalty_metadata() {
-        let coefficients = array![0.5, 0.25, -0.1];
-        let mu = array![1.1, 1.9, 3.0];
-        let eta = array![1.0, 2.0, 3.1];
-        let y = array![1.0, 2.0, 3.0];
-        let prior_weights = array![1.0, 2.0, 1.0];
-        let final_weights = array![1.5, 2.5, 3.5];
-        let x = array![[1.0, 1.0, 0.0], [1.0, 0.0, 1.0], [1.0, 1.0, 1.0]];
-        let penalty = Array2::eye(2);
-        let lambdas = vec![0.5];
-        let offset = array![0.1, 0.2, 0.3];
-        let cov = array![[2.0, 0.1, 0.2], [0.1, 3.0, 0.3], [0.2, 0.3, 4.0],];
-
-        let result = assemble_smooth_result_from_specs(
-            coefficients.clone(),
-            mu.clone(),
-            eta.clone(),
-            4.0,
-            7,
-            true,
-            &final_weights,
-            x.view(),
-            &[(&penalty, 1, 3)],
-            &lambdas,
-            1,
-            "gaussian",
-            prior_weights.clone(),
-            &y,
-            Some(&offset),
-            Some(cov.clone()),
-            vec!["kept warning".to_string()],
-            true,
-            "converged".to_string(),
-            true,
-            0.0,
-        );
-
-        assert_array1_close(
-            &result.coefficients,
-            coefficients
-                .as_slice()
-                .expect("test coefficients should be contiguous"),
-            1e-12,
-        );
-        assert_array1_close(
-            &result.fitted_values,
-            mu.as_slice().expect("test mu should be contiguous"),
-            1e-12,
-        );
-        assert_array1_close(
-            &result.linear_predictor,
-            eta.as_slice().expect("test eta should be contiguous"),
-            1e-12,
-        );
-        assert_abs_diff_eq!(result.deviance, 4.0, epsilon = 1e-12);
-        assert_eq!(result.iterations, 7);
-        assert!(result.converged);
-        assert_eq!(result.lambdas, lambdas);
-        assert_eq!(result.smooth_edfs.len(), 1);
-        assert_abs_diff_eq!(
-            result.total_edf,
-            1.0 + result.smooth_edfs[0],
-            epsilon = 1e-12
-        );
-        assert_abs_diff_eq!(
-            result.gcv,
-            gcv_score(result.deviance, y.len(), result.total_edf),
-            epsilon = 1e-12
-        );
-        assert_array2_close(&result.covariance_unscaled, &cov, 1e-12);
-        assert_eq!(result.family_name, "gaussian");
-        assert_array1_close(
-            &result.irls_weights,
-            final_weights
-                .as_slice()
-                .expect("test final weights should be contiguous"),
-            1e-12,
-        );
-        assert_array1_close(
-            &result.prior_weights,
-            prior_weights
-                .as_slice()
-                .expect("test prior weights should be contiguous"),
-            1e-12,
-        );
-        assert_array2_close(&result.design_matrix, &x, 1e-12);
-        assert_array1_close(
-            &result.y,
-            y.as_slice().expect("test y should be contiguous"),
-            1e-12,
-        );
-        assert_array1_close(
-            result.offset.as_ref().expect("offset should be cloned"),
-            offset.as_slice().expect("test offset should be contiguous"),
-            1e-12,
-        );
-        assert_eq!(result.warnings, vec!["kept warning"]);
-        assert!(result.step_halving_used);
-        assert_eq!(result.solver_status, "converged");
-
-        let smooth_penalty = result.penalty.as_smooth().expect("smooth penalty result");
-        assert_eq!(smooth_penalty.n_terms(), 1);
-        assert_eq!(smooth_penalty.lambdas, vec![0.5]);
-        assert_eq!(smooth_penalty.term_indices[0], 1..3);
-        assert_array2_close(&smooth_penalty.penalty_matrices[0], &penalty, 1e-12);
-    }
-
-    #[test]
-    fn test_assemble_smooth_result_falls_back_to_identity_covariance_for_singular_system() {
-        let coefficients = array![0.0, 0.0];
-        let mu = array![0.0, 0.0];
-        let eta = array![0.0, 0.0];
-        let y = array![0.0, 0.0];
-        let weights = array![1.0, 1.0];
-        let x = Array2::zeros((2, 2));
-        let penalty = Array2::zeros((2, 2));
-
-        let result = assemble_smooth_result_from_specs(
-            coefficients,
-            mu,
-            eta,
-            0.0,
-            0,
-            false,
-            &weights,
-            x.view(),
-            &[(&penalty, 0, 2)],
-            &[0.0],
-            0,
-            "gaussian",
-            weights.clone(),
-            &y,
-            None,
-            None,
-            Vec::new(),
-            false,
-            "max_iterations".to_string(),
-            false,
-            f64::NAN,
-        );
-
-        assert_array2_close(&result.covariance_unscaled, &Array2::eye(2), 1e-12);
-        assert_eq!(result.offset, None);
-        assert_eq!(result.total_edf, 2.0);
-    }
-
     // =========================================================================
     // Unit tests: termination-contract helpers (stationarity check, intercept
     // refresh, unconstrained-block re-solve)
@@ -3076,34 +2958,6 @@ mod tests {
         assert_eq!(guarded_denominator(-0.5), -0.5);
         assert_eq!(guarded_denominator(1e-14), ZERO_TOL);
         assert_eq!(guarded_denominator(-1e-14), -ZERO_TOL);
-    }
-
-    #[test]
-    fn test_find_intercept_column_respects_smooth_and_constraint_exclusions() {
-        // col 0: all-ones but sign-constrained; col 1: all-ones but inside a
-        // smooth range; col 2: the true intercept; col 3: data.
-        let x = array![
-            [1.0, 1.0, 1.0, 0.2],
-            [1.0, 1.0, 1.0, 0.7],
-            [1.0, 1.0, 1.0, 0.4]
-        ];
-        let mut smooth_cols = std::collections::HashSet::new();
-        smooth_cols.insert(1usize);
-        assert_eq!(
-            find_intercept_column(x.view(), &smooth_cols, Some(&[0]), None),
-            Some(2)
-        );
-        assert_eq!(
-            find_intercept_column(x.view(), &smooth_cols, Some(&[0]), Some(&[2])),
-            None,
-            "all candidate ones-columns excluded"
-        );
-        let no_ones = array![[0.5, 2.0], [1.0, 3.0]];
-        let empty = std::collections::HashSet::new();
-        assert_eq!(
-            find_intercept_column(no_ones.view(), &empty, None, None),
-            None
-        );
     }
 
     #[test]
@@ -3255,30 +3109,102 @@ mod tests {
         assert!(stationary);
     }
 
-    #[test]
-    fn test_solve_intercept_shift_matches_closed_forms() {
-        // Binomial/logit at eta = 0: the root of sum(y - sigmoid(d)) = 0 is
-        // logit(mean(y)).
-        let mut yv = vec![1.0; 7];
-        yv.extend(vec![0.0; 3]);
-        let y = Array1::from_vec(yv);
-        let eta = Array1::zeros(10);
-        let prior_weights = Array1::ones(10);
-        let shift = solve_intercept_shift(&y, &eta, &prior_weights, &BinomialFamily, &LogitLink)
-            .expect("root is bracketed");
-        assert_abs_diff_eq!(shift, (0.7f64 / 0.3).ln(), epsilon = 1e-9);
+    /// An in-memory executor that asks drivers to speculate, as an out-of-core
+    /// executor does.
+    struct Speculative<'a>(InMemoryExecutor<'a>);
 
-        // Gaussian/identity: the root is mean(y) - mean(eta).
-        let y2 = array![1.0, 2.0, 6.0];
-        let eta2 = Array1::zeros(3);
-        let pw2 = Array1::ones(3);
-        let shift2 = solve_intercept_shift(&y2, &eta2, &pw2, &GaussianFamily, &IdentityLink)
-            .expect("root is bracketed");
-        assert_abs_diff_eq!(shift2, 3.0, epsilon = 1e-9);
+    impl PassExecutor for Speculative<'_> {
+        fn n_rows(&self) -> usize {
+            self.0.n_rows()
+        }
+        fn n_params(&self) -> usize {
+            self.0.n_params()
+        }
+        fn run(&mut self, request: &PassRequest) -> Result<Vec<EvalSum>> {
+            self.0.run(request)
+        }
+        fn set_row_standardization(&mut self, s: Option<crate::regularization::Standardization>) {
+            self.0.set_row_standardization(s)
+        }
+        fn set_intercept_only(&mut self, on: bool) {
+            self.0.set_intercept_only(on)
+        }
+        fn prefers_few_passes(&self) -> bool {
+            true
+        }
+        fn trace(&mut self) -> Option<&mut Vec<SolverStep>> {
+            self.0.trace()
+        }
+    }
+
+    fn in_memory<'a>(
+        x: ArrayView2<'a, f64>,
+        y: &'a Array1<f64>,
+        offset: &'a Array1<f64>,
+        prior: &'a Array1<f64>,
+        family: &'a dyn Family,
+        link: &'a dyn Link,
+    ) -> InMemoryExecutor<'a> {
+        let ctx = RowContext {
+            family,
+            link,
+            y: y.as_slice().expect("contiguous"),
+            offset: offset.as_slice().expect("contiguous"),
+            prior_weights: prior.as_slice().expect("contiguous"),
+            y_mean: crate::families::response_mean(y),
+            min_weight: 1e-10,
+            has_offset: false,
+            standardization: None,
+        };
+        InMemoryExecutor::new(x, false, ctx).expect("executor")
     }
 
     #[test]
-    fn test_refine_unconstrained_block_solves_conditional_optimum() {
+    fn test_intercept_shift_over_passes_matches_closed_forms_in_both_modes() {
+        // Binomial/logit at eta = 0: the root of sum(y - sigmoid(d)) = 0 is
+        // logit(mean(y)); Gaussian/identity: the root is mean(y) - mean(eta).
+        let mut yv = vec![1.0; 7];
+        yv.extend(vec![0.0; 3]);
+        type Case<'a> = (Array1<f64>, &'a dyn Family, &'a dyn Link, f64);
+        let cases: [Case<'_>; 2] = [
+            (
+                Array1::from_vec(yv),
+                &BinomialFamily,
+                &LogitLink,
+                (0.7f64 / 0.3).ln(),
+            ),
+            (array![1.0, 2.0, 6.0], &GaussianFamily, &IdentityLink, 3.0),
+        ];
+        for (y, family, link, expected) in cases {
+            let n = y.len();
+            let x = Array2::zeros((n, 1));
+            let (offset, prior) = (Array1::zeros(n), Array1::ones(n));
+            let base = Predictor::coef(&[0.0]);
+            let mut shifts = vec![0.0];
+            for span in INTERCEPT_BRACKET_SPANS {
+                shifts.extend([-span, span]);
+            }
+            let mut sequential = in_memory(x.view(), &y, &offset, &prior, family, link);
+            let scores = shift_scores(&mut sequential, &base, &[0.0]).expect("pass");
+            let (one, read) =
+                solve_intercept_shift_over_passes(&mut sequential, &base, &scores).expect("passes");
+            let one = one.expect("root is bracketed");
+            assert_abs_diff_eq!(one, expected, epsilon = 1e-9);
+
+            let mut speculative =
+                Speculative(in_memory(x.view(), &y, &offset, &prior, family, link));
+            let scores = shift_scores(&mut speculative, &base, &shifts).expect("pass");
+            let (tree, tree_read) =
+                solve_intercept_shift_over_passes(&mut speculative, &base, &scores)
+                    .expect("passes");
+            let tree = tree.expect("root is bracketed");
+            assert_eq!(one.to_bits(), tree.to_bits(), "speculation changes nothing");
+            assert_eq!(read, tree_read, "the trace counts the same scores");
+        }
+    }
+
+    #[test]
+    fn test_refine_over_passes_solves_conditional_optimum() {
         // Gaussian identity, x = [intercept | monotone column held fixed].
         // y is exactly linear, so refining the free block (the intercept)
         // must land on the conditional — here global — optimum.
@@ -3293,115 +3219,80 @@ mod tests {
         }
         let x = Array2::from_shape_vec((n, 2), xv).expect("test setup should be valid");
         let y = Array1::from_vec(yv);
-        let specs = vec![SmoothTermSpec {
-            col_start: 1,
-            col_end: 2,
-            penalty: Array2::zeros((1, 1)),
-            monotonicity: Monotonicity::Increasing,
-            initial_lambda: 0.0,
-        }];
-        let lambdas = vec![0.0];
-        let offset = Array1::zeros(n);
-        let prior_weights = Array1::ones(n);
+        let (offset, prior) = (Array1::zeros(n), Array1::ones(n));
+        let mut config = SmoothGLMConfig::default();
+        config.irls_config.max_iterations = 50;
+        let run = |monotonicity: Monotonicity, iteration: usize| {
+            let specs = vec![SmoothTermSpec {
+                col_start: 1,
+                col_end: 2,
+                penalty: Array2::zeros((1, 1)),
+                monotonicity,
+                initial_lambda: 0.0,
+            }];
+            let settings = SmoothDriveSettings {
+                specs: &specs,
+                config: &config,
+                family: &GaussianFamily,
+                nonneg_indices: None,
+                nonpos_indices: None,
+                null_log_offset: false,
+                robust: &[],
+            };
+            let shape = SmoothShape {
+                n,
+                p: 2,
+                p_param: 1,
+                term_indices: vec![(1, 2)],
+                smooth_tolerance: 1e-8,
+                log_lambda_min: 0.0,
+                log_lambda_max: 0.0,
+            };
+            let coefficients = array![0.0, 3.0]; // slope at truth, intercept off
+            let state = coef_predictor(&coefficients);
+            let mut executor = in_memory(
+                x.view(),
+                &y,
+                &offset,
+                &prior,
+                &GaussianFamily,
+                &IdentityLink,
+            );
+            let (deviance, _) = deviance_and_gram(&mut executor, &state, true, None).expect("pass");
+            let mut ls = SmoothLoop {
+                coefficients,
+                state,
+                deviance: deviance.expect("asked for").0,
+                lambdas: vec![0.0],
+                iteration,
+                converged: false,
+                final_weights: RetainedWeights::Ones,
+                step_halving_used: false,
+                step_halving_failed: false,
+                warnings: Vec::new(),
+            };
+            let refined =
+                refine_over_passes(&mut executor, &settings, &shape, &mut ls).expect("refine");
+            (refined, ls)
+        };
 
-        let mut coefficients = array![0.0, 3.0]; // slope at truth, intercept off
-        let mut eta = x.dot(&coefficients);
-        let mut mu = eta.clone();
-        let mut deviance = GaussianFamily.deviance(&y, &mu, Some(&prior_weights));
-        let mut iteration = 0usize;
-        let refined = refine_unconstrained_block(
-            &y,
-            x.view(),
-            &specs,
-            &lambdas,
-            &GaussianFamily,
-            &IdentityLink,
-            &offset,
-            &prior_weights,
-            1e-10,
-            1e-8,
-            None,
-            None,
-            &mut coefficients,
-            &mut eta,
-            &mut mu,
-            &mut deviance,
-            &mut iteration,
-            50,
-        )
-        .expect("refine should not error");
+        let (refined, ls) = run(Monotonicity::Increasing, 0);
         assert!(refined);
-        assert_abs_diff_eq!(coefficients[0], 2.0, epsilon = 1e-8);
-        assert_abs_diff_eq!(coefficients[1], 3.0, epsilon = 1e-12); // held fixed
-        assert!(deviance < 1e-12);
-        assert!(iteration >= 1);
+        assert_abs_diff_eq!(ls.coefficients[0], 2.0, epsilon = 1e-8);
+        assert_abs_diff_eq!(ls.coefficients[1], 3.0, epsilon = 1e-12); // held fixed
+        assert!(ls.deviance < 1e-12);
+        assert!(ls.iteration >= 1);
+        assert!(matches!(ls.state, Predictor::Partitioned { .. }));
 
         // Exhausted budget: no-op, state untouched.
-        let mut coef2 = array![0.0, 3.0];
-        let mut eta2 = x.dot(&coef2);
-        let mut mu2 = eta2.clone();
-        let mut dev2 = GaussianFamily.deviance(&y, &mu2, Some(&prior_weights));
-        let mut iter_full = 50usize;
-        let refined2 = refine_unconstrained_block(
-            &y,
-            x.view(),
-            &specs,
-            &lambdas,
-            &GaussianFamily,
-            &IdentityLink,
-            &offset,
-            &prior_weights,
-            1e-10,
-            1e-8,
-            None,
-            None,
-            &mut coef2,
-            &mut eta2,
-            &mut mu2,
-            &mut dev2,
-            &mut iter_full,
-            50,
-        )
-        .expect("refine should not error");
-        assert!(!refined2);
-        assert_abs_diff_eq!(coef2[0], 0.0, epsilon = 0.0);
+        let (refined, ls) = run(Monotonicity::Increasing, 50);
+        assert!(!refined);
+        assert_eq!(ls.coefficients[0], 0.0);
 
         // No fixed block (nothing monotone): the main loop owns the whole
         // problem and the refine step declines.
-        let free_specs = vec![SmoothTermSpec {
-            col_start: 1,
-            col_end: 2,
-            penalty: Array2::zeros((1, 1)),
-            monotonicity: Monotonicity::None,
-            initial_lambda: 0.0,
-        }];
-        let mut coef3 = array![0.0, 3.0];
-        let mut eta3 = x.dot(&coef3);
-        let mut mu3 = eta3.clone();
-        let mut dev3 = GaussianFamily.deviance(&y, &mu3, Some(&prior_weights));
-        let mut iter3 = 0usize;
-        let refined3 = refine_unconstrained_block(
-            &y,
-            x.view(),
-            &free_specs,
-            &lambdas,
-            &GaussianFamily,
-            &IdentityLink,
-            &offset,
-            &prior_weights,
-            1e-10,
-            1e-8,
-            None,
-            None,
-            &mut coef3,
-            &mut eta3,
-            &mut mu3,
-            &mut dev3,
-            &mut iter3,
-            50,
-        )
-        .expect("refine should not error");
-        assert!(!refined3);
+        let (refined, _) = run(Monotonicity::None, 0);
+        assert!(!refined);
     }
 
     // =========================================================================
@@ -3554,6 +3445,66 @@ mod tests {
             smooth_coefficients_are_monotone(&result, &specs[0]),
             "increasing monotonic reparameterization must return ordered smooth coefficients"
         );
+    }
+
+    #[test]
+    fn test_smooth_trace_and_fit_do_not_depend_on_speculation() {
+        // A GCV fit and a monotone fit, driven one pass per trial (in memory) and
+        // with every trial and bisection level speculated (out of core): the same
+        // bits and the same solver trace.
+        let n = 80;
+        let x_vals: Array1<f64> = (0..n).map(|i| i as f64 / (n - 1) as f64).collect();
+        let y: Array1<f64> = x_vals
+            .iter()
+            .map(|&x| (0.4 + 1.2 * x + 0.3 * (9.0 * x).sin()).exp().round())
+            .collect();
+        let x_param = Array2::from_shape_fn((n, 1), |(_, _)| 1.0);
+        let cases = [
+            make_full_matrix(&x_param, &bs_basis(&x_vals, 8, 3, None, false)),
+            make_full_matrix_with_monotonicity(
+                &x_param,
+                &is_basis(&x_vals, 6, 3, Some((0.0, 1.0)), true),
+                Monotonicity::Increasing,
+            ),
+        ];
+        for (x_full, specs) in cases {
+            let (offset, prior) = (Array1::zeros(n), Array1::ones(n));
+            let mut config = SmoothGLMConfig::default();
+            config.irls_config.max_iterations = 30;
+            let fit = |executor: &mut dyn PassExecutor| {
+                fit_smooth_glm_with_executor(
+                    executor,
+                    &specs,
+                    &PoissonFamily,
+                    &config,
+                    None,
+                    None,
+                    false,
+                )
+                .expect("fit")
+            };
+            let mut sequential =
+                in_memory(x_full.view(), &y, &offset, &prior, &PoissonFamily, &LogLink);
+            let one = fit(&mut sequential);
+            let one_trace = sequential.take_trace();
+            let mut speculative = Speculative(in_memory(
+                x_full.view(),
+                &y,
+                &offset,
+                &prior,
+                &PoissonFamily,
+                &LogLink,
+            ));
+            let tree = fit(&mut speculative);
+            let tree_trace = speculative.0.take_trace();
+            let bits = |c: &Array1<f64>| c.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&one.coefficients), bits(&tree.coefficients));
+            assert_eq!(one_trace, tree_trace);
+            let last = one_trace.last().expect("a result step");
+            assert_eq!(last.kind, "result");
+            assert_eq!(last.status, one.solver_status);
+            assert!(one_trace.iter().any(|step| step.kind == "iteration"));
+        }
     }
 
     #[test]
@@ -4176,7 +4127,6 @@ mod tests {
         assert_eq!(result.linear_predictor.len(), n);
         assert_eq!(result.irls_weights.len(), n);
         assert_eq!(result.prior_weights.len(), n);
-        assert_eq!(result.design_matrix.nrows(), n);
         assert_eq!(result.y.len(), n);
         assert!(result.family_name.contains("Gaussian") || result.family_name.contains("gaussian"));
     }
@@ -4347,8 +4297,11 @@ mod tests {
 
     #[test]
     fn test_fit_smooth_glm_failed_initial_projection_warns_and_returns_initialized_state() {
+        // An intercept and an empty smooth column: X'X is singular, so the
+        // unpenalised projection fails, while X'X + S inverts.
         let y = array![1.0, 2.0, 3.0, 4.0];
-        let x_full = Array2::zeros((4, 2));
+        let mut x_full = Array2::zeros((4, 2));
+        x_full.column_mut(0).fill(1.0);
         let specs = vec![SmoothTermSpec {
             col_start: 1,
             col_end: 2,
@@ -4380,6 +4333,37 @@ mod tests {
             .warnings
             .iter()
             .any(|w| w.contains("Initial smooth coefficient projection failed")));
+    }
+
+    #[test]
+    fn test_fit_smooth_glm_singular_penalised_gram_is_an_error_not_identity() {
+        // D1: an unpenalised empty column makes X'WX + S singular; the covariance
+        // used to fall back to the identity matrix.
+        let y = array![1.0, 2.0, 3.0, 4.0];
+        let x_full = Array2::zeros((4, 2));
+        let specs = vec![SmoothTermSpec {
+            col_start: 1,
+            col_end: 2,
+            penalty: Array2::eye(1),
+            monotonicity: Monotonicity::None,
+            initial_lambda: 1.0,
+        }];
+        let mut config = SmoothGLMConfig::default();
+        config.irls_config.max_iterations = 0;
+        let error = fit_smooth_glm_full_matrix(
+            &y,
+            x_full.view(),
+            &specs,
+            &GaussianFamily,
+            &IdentityLink,
+            &config,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect_err("a singular penalised Gram is refused");
+        assert!(error.to_string().contains("singular"), "{error}");
     }
 
     #[test]

@@ -20,8 +20,78 @@ use rustystats_core::inference::{
     confidence_interval_z, pvalue_z, robust_covariance, robust_standard_errors, HCType,
 };
 use rustystats_core::regularization::Penalty;
+use rustystats_core::solvers::passes::SolverStep;
 
 use crate::families_py::family_from_name_with_tweedie_support;
+
+/// Parse a fit's `robust=` list: HC type names, each once, in order. Robust
+/// covariances need the bread, so they are refused without covariance.
+pub(crate) fn parse_robust_types(
+    robust: Option<Vec<String>>,
+    skip_covariance: bool,
+) -> PyResult<Vec<HCType>> {
+    let mut types: Vec<HCType> = Vec::new();
+    for name in robust.unwrap_or_default() {
+        let hc_type = HCType::from_str(&name).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "Unknown robust covariance type {name:?}; use HC0, HC1, HC2 or HC3."
+            ))
+        })?;
+        if !types.contains(&hc_type) {
+            types.push(hc_type);
+        }
+    }
+    if skip_covariance && !types.is_empty() {
+        return Err(PyValueError::new_err(
+            "robust= needs the covariance matrix, so it cannot be combined with \
+             skipping covariance (compute_covariance=False).",
+        ));
+    }
+    Ok(types)
+}
+
+/// The fit-time robust covariances of an in-memory fit: those its final pass
+/// computed, or, for a route whose final pass did not, the same sandwich formed
+/// from the rows it was given (`inference::robust_covariance`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn fit_time_robust(
+    types: &[HCType],
+    statistics: Option<&mut rustystats_core::solvers::FinalStatistics>,
+    x: ndarray::ArrayView2<'_, f64>,
+    y: &Array1<f64>,
+    fitted_values: &Array1<f64>,
+    irls_weights: &Array1<f64>,
+    prior_weights: &Array1<f64>,
+    bread: &Array2<f64>,
+    family: &dyn Family,
+) -> Vec<(HCType, Array2<f64>)> {
+    if types.is_empty() {
+        return Vec::new();
+    }
+    if let Some(statistics) = statistics {
+        let computed: Vec<HCType> = statistics.robust.iter().map(|(t, _)| *t).collect();
+        if computed == types {
+            return std::mem::take(&mut statistics.robust);
+        }
+    }
+    let pearson_resid = resid_pearson(y, fitted_values, family);
+    types
+        .iter()
+        .map(|&hc_type| {
+            (
+                hc_type,
+                rustystats_core::inference::robust_covariance_view(
+                    x,
+                    &pearson_resid,
+                    irls_weights,
+                    prior_weights,
+                    bread,
+                    hc_type,
+                ),
+            )
+        })
+        .collect()
+}
 
 /// Results from fitting a GLM.
 ///
@@ -78,6 +148,38 @@ pub struct PyGLMResults {
     /// solver can communicate diagnostic context beyond the terminal status
     /// string (RS-ACT-007).
     pub(crate) warnings: Vec<String>,
+    /// Statistics computed from the rows at fit time (`specs/out-of-core-fit.md`
+    /// §8). When present, they replace recomputation from the per-row arrays; they
+    /// equal it bit for bit because both use the same row functions and order.
+    pub(crate) statistics: Option<rustystats_core::solvers::FinalStatistics>,
+    /// Robust covariances computed at fit time (`robust=`), by type.
+    pub(crate) robust_covariances: Vec<(HCType, Array2<f64>)>,
+    /// The exact Negative Binomial θ the fit used. `family_name` shows it to four
+    /// decimals, which must not be what later statistics use (§16, D12).
+    pub(crate) exact_theta: Option<f64>,
+    /// The exact Tweedie variance power the fit used (likewise).
+    pub(crate) exact_var_power: Option<f64>,
+    /// An out-of-core result: it holds no per-row arrays, and methods that need
+    /// them refuse (`specs/out-of-core-fit.md` §4.5).
+    pub(crate) rowless: bool,
+    /// The drivers' semantic steps (`specs/out-of-core-fit.md` §4.5).
+    pub(crate) solver_trace: Vec<SolverStep>,
+}
+
+/// A trace as Python tuples `(driver, kind, evaluations, accepted, status)`.
+pub(crate) fn trace_tuples(trace: &[SolverStep]) -> Vec<(String, String, usize, bool, String)> {
+    trace
+        .iter()
+        .map(|step| {
+            (
+                step.driver.to_string(),
+                step.kind.to_string(),
+                step.evaluations,
+                step.accepted,
+                step.status.clone(),
+            )
+        })
+        .collect()
 }
 
 // =============================================================================
@@ -85,10 +187,39 @@ pub struct PyGLMResults {
 // =============================================================================
 
 impl PyGLMResults {
+    /// Refuse a method that needs per-row training values on an out-of-core result.
+    fn require_rows(&self, method: &str) -> PyResult<()> {
+        if !self.rowless {
+            return Ok(());
+        }
+        Python::attach(|py| {
+            let message = format!(
+                "{method} needs the per-row training values, which an out-of-core fit does \
+                 not keep. Predict on the data instead."
+            );
+            let error_class = py
+                .import("rustystats.exceptions")?
+                .getattr("OutOfCoreResultError")?;
+            Err(PyErr::from_value(error_class.call1((message,))?))
+        })
+    }
+
     /// Get the appropriate Family trait object based on family_name.
     /// Used internally by diagnostics and robust SE methods.
     /// Note: family_name is validated at model creation, so this should never fail.
     fn get_family(&self) -> Box<dyn Family> {
+        if let Some(theta) = self.exact_theta {
+            return Box::new(
+                rustystats_core::families::NegativeBinomialFamily::new(theta)
+                    .expect("the fitted theta is valid"),
+            );
+        }
+        if let Some(var_power) = self.exact_var_power {
+            return Box::new(
+                rustystats_core::families::TweedieFamily::new(var_power)
+                    .expect("the fitted variance power is valid"),
+            );
+        }
         family_from_name_with_tweedie_support(&self.family_name, 1.5, 1.0, true)
             .expect("Invalid family name stored in results - this is a bug")
     }
@@ -116,6 +247,9 @@ impl PyGLMResults {
     /// Get prior weights as Option, returning None if all weights are 1.0.
     /// Many functions accept Option<&Array1<f64>> for weights.
     fn maybe_weights(&self) -> Option<&Array1<f64>> {
+        if let Some(statistics) = &self.statistics {
+            return (!statistics.all_unit_weights).then_some(&self.prior_weights);
+        }
         if self
             .prior_weights
             .iter()
@@ -131,6 +265,13 @@ impl PyGLMResults {
     /// Factored out to avoid repeating the same logic in cov_robust, bse_robust, etc.
     /// Returns Err if design_matrix was not stored (lean mode).
     fn compute_robust_cov(&self, hc_type: HCType) -> PyResult<Array2<f64>> {
+        if let Some((_, cov)) = self.robust_covariances.iter().find(|(t, _)| *t == hc_type) {
+            return Ok(cov.clone());
+        }
+        self.require_rows(&format!(
+            "robust standard errors of type {} (not listed in robust= at fit)",
+            hc_type.name()
+        ))?;
         let dm = self.design_matrix.as_ref().ok_or_else(|| {
             PyValueError::new_err(
                 "Design matrix not stored (lean mode). Robust standard errors require \
@@ -174,14 +315,16 @@ impl PyGLMResults {
     ///
     /// These are the predicted means on the response scale.
     #[getter]
-    fn fittedvalues<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        self.fitted_values.clone().into_pyarray(py)
+    fn fittedvalues<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        self.require_rows("fittedvalues")?;
+        Ok(self.fitted_values.clone().into_pyarray(py))
     }
 
     /// Get the linear predictor η = Xβ.
     #[getter]
-    fn linear_predictor<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        self.linear_predictor.clone().into_pyarray(py)
+    fn linear_predictor<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        self.require_rows("linear_predictor")?;
+        Ok(self.linear_predictor.clone().into_pyarray(py))
     }
 
     /// Get the original response variable the model was fit on.
@@ -189,8 +332,9 @@ impl PyGLMResults {
     /// Mirrors `fittedvalues` / `linear_predictor`; exposed so callers can
     /// inspect the training response without recovering it from residuals.
     #[getter]
-    fn response<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        self.y.clone().into_pyarray(py)
+    fn response<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        self.require_rows("response")?;
+        Ok(self.y.clone().into_pyarray(py))
     }
 
     /// Largest finite absolute training response — the robust reference scale for
@@ -203,6 +347,9 @@ impl PyGLMResults {
     /// Returns `None` when no finite positive response is available (degenerate fit).
     #[getter]
     fn response_scale(&self) -> Option<f64> {
+        if let Some(statistics) = &self.statistics {
+            return statistics.response_scale;
+        }
         let scale = self
             .y
             .iter()
@@ -241,6 +388,13 @@ impl PyGLMResults {
     #[getter]
     fn solver_status(&self) -> String {
         self.solver_status.clone()
+    }
+
+    /// The drivers' semantic steps, as `(driver, kind, evaluations, accepted,
+    /// status)` tuples in order (`specs/out-of-core-fit.md` §4.5).
+    #[getter]
+    fn solver_trace(&self) -> Vec<(String, String, usize, bool, String)> {
+        trace_tuples(&self.solver_trace)
     }
 
     /// Exit stationarity (KKT) check: True when the score of every
@@ -321,8 +475,9 @@ impl PyGLMResults {
     /// weighted least squares problem: (X'WX)β = X'Wz.
     /// Useful for computing score tests for unfitted factors.
     #[getter]
-    fn get_irls_weights<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        self.irls_weights.clone().into_pyarray(py)
+    fn get_irls_weights<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        self.require_rows("get_irls_weights")?;
+        Ok(self.irls_weights.clone().into_pyarray(py))
     }
 
     /// Get the dispersion parameter φ for standard error computation.
@@ -334,6 +489,9 @@ impl PyGLMResults {
     /// This matches statsmodels default behavior for SE computation.
     /// Note: For log-likelihood/AIC, deviance-based scale is used separately.
     fn scale(&self) -> f64 {
+        if let Some(statistics) = &self.statistics {
+            return statistics.scale;
+        }
         let family = self.get_family();
         if family.fixed_dispersion() {
             1.0
@@ -697,19 +855,21 @@ impl PyGLMResults {
     ///
     /// Simple difference between observed and predicted values.
     /// Not standardized.
-    fn resid_response<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+    fn resid_response<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        self.require_rows("resid_response")?;
         let resid = resid_response(&self.y, &self.fitted_values);
-        resid.into_pyarray(py)
+        Ok(resid.into_pyarray(py))
     }
 
     /// Get Pearson residuals: (y - μ) / √V(μ)
     ///
     /// Standardized residuals that account for the variance function.
     /// For a well-specified model, should have approximately constant variance.
-    fn resid_pearson<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+    fn resid_pearson<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        self.require_rows("resid_pearson")?;
         let family = self.get_family();
         let resid = resid_pearson(&self.y, &self.fitted_values, family.as_ref());
-        resid.into_pyarray(py)
+        Ok(resid.into_pyarray(py))
     }
 
     /// Get deviance residuals: sign(y - μ) × √d_i
@@ -717,21 +877,23 @@ impl PyGLMResults {
     /// Based on the unit deviance contributions. Often more normally
     /// distributed than Pearson residuals for non-Gaussian families.
     /// sum(resid_deviance²) = model deviance
-    fn resid_deviance<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+    fn resid_deviance<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        self.require_rows("resid_deviance")?;
         let family = self.get_family();
         let resid = resid_deviance(&self.y, &self.fitted_values, family.as_ref());
-        resid.into_pyarray(py)
+        Ok(resid.into_pyarray(py))
     }
 
     /// Get working residuals: (y - μ) × g'(μ)
     ///
     /// Used internally by IRLS. On the scale of the linear predictor.
     /// Useful for understanding the fitting process.
-    fn resid_working<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+    fn resid_working<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        self.require_rows("resid_working")?;
         let family = self.get_family();
         let link = family.default_link();
         let resid = resid_working(&self.y, &self.fitted_values, link.as_ref());
-        resid.into_pyarray(py)
+        Ok(resid.into_pyarray(py))
     }
 
     // =========================================================================
@@ -745,6 +907,9 @@ impl PyGLMResults {
     /// For a well-specified model with known dispersion φ=1,
     /// X² should be approximately chi-squared with (n-p) df.
     fn pearson_chi2(&self) -> f64 {
+        if let Some(statistics) = &self.statistics {
+            return statistics.pearson_chi2;
+        }
         let family = self.get_family();
         pearson_chi2(
             &self.y,
@@ -758,6 +923,14 @@ impl PyGLMResults {
     ///
     /// φ_pearson = X² / (n - p)
     fn scale_pearson(&self) -> f64 {
+        if let Some(statistics) = &self.statistics {
+            let df_resid = self.df_resid();
+            return if df_resid == 0 {
+                1.0
+            } else {
+                statistics.pearson_chi2 / (df_resid as f64)
+            };
+        }
         let family = self.get_family();
         estimate_dispersion_pearson(
             &self.y,
@@ -777,6 +950,9 @@ impl PyGLMResults {
     /// This is the log of the probability of observing the data given
     /// the fitted model. Higher (less negative) is better.
     fn llf(&self) -> f64 {
+        if let Some(statistics) = &self.statistics {
+            return statistics.log_likelihood;
+        }
         let family = self.get_family();
         let scale = self.scale();
         let weights = self.maybe_weights();
@@ -815,6 +991,9 @@ impl PyGLMResults {
     /// Compare to residual deviance to assess explanatory power.
     /// Accounts for offset if present (e.g., exposure in count models).
     fn null_deviance(&self) -> f64 {
+        if let Some(statistics) = &self.statistics {
+            return statistics.null_deviance;
+        }
         let family = self.get_family();
         null_deviance_for_family(
             &self.y,

@@ -122,13 +122,21 @@ def _string_labels(values: Any) -> list[str]:
 
 
 def _derive_classes(response_series: Any) -> list[str]:
-    try:
-        categories = response_series.cat.get_categories()
-        values = [str(value) for value in categories.to_list()]
-        if values:
-            return values
-    except Exception:
-        pass
+    """The response's classes when ``classes=`` is not given.
+
+    An Enum's classes are its declared categories, in order. A Categorical's are
+    the values present, in order of first appearance: Polars keeps one category
+    list for every Categorical in the process, so that list also holds categories
+    only other frames have. Any other response gives its sorted string values.
+    """
+    import polars as pl
+
+    dtype = getattr(response_series, "dtype", None)
+    if isinstance(dtype, pl.Enum):
+        return [str(value) for value in dtype.categories.to_list()]
+    if isinstance(dtype, pl.Categorical):
+        present = response_series.drop_nulls().unique(maintain_order=True)
+        return [str(value) for value in present.to_list()]
     return sorted({str(value) for value in response_series.to_list()})
 
 

@@ -50,8 +50,6 @@
 //
 // =============================================================================
 
-use std::borrow::Cow;
-
 use super::{BinomialFamily, Family, PoissonFamily};
 use crate::links::{Link, LogLink, LogitLink};
 use ndarray::Array1;
@@ -91,13 +89,34 @@ impl Family for QuasiPoissonFamily {
         "QuasiPoisson"
     }
 
-    /// Variance function: V(μ) = μ (same as Poisson)
-    ///
-    /// The full variance is Var(Y) = φ × μ where φ is estimated.
-    /// Returns `Cow::Borrowed` — zero-copy since variance IS mu.
+    fn log_likelihood_form(&self) -> crate::families::LogLikelihoodForm {
+        PoissonFamily.log_likelihood_form()
+    }
+
     #[inline]
-    fn variance<'a>(&self, mu: &'a Array1<f64>) -> Cow<'a, Array1<f64>> {
-        Cow::Borrowed(mu)
+    fn log_likelihood_row(&self, yi: f64, mui: f64, scale: f64) -> f64 {
+        PoissonFamily.log_likelihood_row(yi, mui, scale)
+    }
+
+    /// Variance function V(μ) = μ (scaled by φ).
+    #[inline]
+    fn variance_at(&self, mu: f64) -> f64 {
+        mu
+    }
+
+    #[inline]
+    fn initialize_mu_at(&self, yi: f64, y_mean: f64) -> f64 {
+        PoissonFamily.initialize_mu_at(yi, y_mean)
+    }
+
+    #[inline]
+    fn is_valid_mu_at(&self, mu: f64) -> bool {
+        PoissonFamily.is_valid_mu_at(mu)
+    }
+
+    #[inline]
+    fn clamp_mu_at(&self, mu: f64) -> f64 {
+        PoissonFamily.clamp_mu_at(mu)
     }
 
     /// Unit deviance (same as Poisson)
@@ -119,32 +138,8 @@ impl Family for QuasiPoissonFamily {
         Box::new(LogLink)
     }
 
-    /// Initialize μ (same as Poisson)
-    fn initialize_mu(&self, y: &Array1<f64>) -> Array1<f64> {
-        PoissonFamily.initialize_mu(y)
-    }
-
-    /// Valid μ check (same as Poisson: must be positive)
-    fn is_valid_mu(&self, mu: &Array1<f64>) -> bool {
-        PoissonFamily.is_valid_mu(mu)
-    }
-
-    fn clamp_mu(&self, mu: &Array1<f64>) -> Array1<f64> {
-        PoissonFamily.clamp_mu(mu)
-    }
-
     fn is_log_link_default(&self) -> bool {
         true
-    }
-
-    fn log_likelihood(
-        &self,
-        y: &Array1<f64>,
-        mu: &Array1<f64>,
-        _scale: f64,
-        weights: Option<&Array1<f64>>,
-    ) -> f64 {
-        crate::diagnostics::log_likelihood_poisson(y, mu, weights)
     }
 }
 
@@ -184,12 +179,34 @@ impl Family for QuasiBinomialFamily {
         "QuasiBinomial"
     }
 
-    /// Variance function: V(μ) = μ(1-μ) (same as Binomial)
-    ///
-    /// The full variance is Var(Y) = φ × μ(1-μ) where φ is estimated.
+    fn log_likelihood_form(&self) -> crate::families::LogLikelihoodForm {
+        BinomialFamily.log_likelihood_form()
+    }
+
     #[inline]
-    fn variance<'a>(&self, mu: &'a Array1<f64>) -> Cow<'a, Array1<f64>> {
-        Cow::Owned(mu.mapv(|p| p * (1.0 - p)))
+    fn log_likelihood_row(&self, yi: f64, mui: f64, scale: f64) -> f64 {
+        BinomialFamily.log_likelihood_row(yi, mui, scale)
+    }
+
+    /// Variance function V(μ) = μ(1 − μ) (scaled by φ).
+    #[inline]
+    fn variance_at(&self, p: f64) -> f64 {
+        p * (1.0 - p)
+    }
+
+    #[inline]
+    fn initialize_mu_at(&self, yi: f64, y_mean: f64) -> f64 {
+        BinomialFamily.initialize_mu_at(yi, y_mean)
+    }
+
+    #[inline]
+    fn is_valid_mu_at(&self, mu: f64) -> bool {
+        BinomialFamily.is_valid_mu_at(mu)
+    }
+
+    #[inline]
+    fn clamp_mu_at(&self, mu: f64) -> f64 {
+        BinomialFamily.clamp_mu_at(mu)
     }
 
     /// Unit deviance (same as Binomial)
@@ -209,30 +226,6 @@ impl Family for QuasiBinomialFamily {
     /// Default link: Logit (same as Binomial)
     fn default_link(&self) -> Box<dyn Link> {
         Box::new(LogitLink)
-    }
-
-    /// Initialize μ (same as Binomial)
-    fn initialize_mu(&self, y: &Array1<f64>) -> Array1<f64> {
-        BinomialFamily.initialize_mu(y)
-    }
-
-    /// Valid μ check (same as Binomial: must be in (0, 1))
-    fn is_valid_mu(&self, mu: &Array1<f64>) -> bool {
-        BinomialFamily.is_valid_mu(mu)
-    }
-
-    fn clamp_mu(&self, mu: &Array1<f64>) -> Array1<f64> {
-        BinomialFamily.clamp_mu(mu)
-    }
-
-    fn log_likelihood(
-        &self,
-        y: &Array1<f64>,
-        mu: &Array1<f64>,
-        _scale: f64,
-        weights: Option<&Array1<f64>>,
-    ) -> f64 {
-        crate::diagnostics::log_likelihood_binomial(y, mu, weights)
     }
 }
 

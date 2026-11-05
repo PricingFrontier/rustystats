@@ -31,8 +31,6 @@
 //
 // =============================================================================
 
-use std::borrow::Cow;
-
 use crate::constants::{MU_MIN_POSITIVE, ZERO_TOL};
 use crate::families::Family;
 use crate::links::{Link, LogLink};
@@ -111,9 +109,39 @@ impl Family for TweedieFamily {
         "Tweedie"
     }
 
-    /// Variance function: V(μ) = μ^p
-    fn variance<'a>(&self, mu: &'a Array1<f64>) -> Cow<'a, Array1<f64>> {
-        Cow::Owned(mu.mapv(|m| m.powf(self.var_power).max(MU_MIN_POSITIVE)))
+    /// Variance function V(μ) = μ^p, at least `MU_MIN_POSITIVE`.
+    #[inline]
+    fn variance_at(&self, m: f64) -> f64 {
+        m.powf(self.var_power).max(MU_MIN_POSITIVE)
+    }
+
+    /// Starting μ: the average of y and the mean response (the mean at least 0.1),
+    /// at least 0.001.
+    #[inline]
+    fn initialize_mu_at(&self, yi: f64, y_mean: f64) -> f64 {
+        let y_mean = y_mean.max(0.1);
+        let val = (yi + y_mean) / 2.0;
+        val.max(0.001)
+    }
+
+    fn initialize_needs_mean(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    fn is_valid_mu_at(&self, m: f64) -> bool {
+        m > 0.0
+    }
+
+    #[inline]
+    fn clamp_mu_at(&self, mu: f64) -> f64 {
+        mu.max(crate::constants::MU_MIN_POSITIVE)
+    }
+
+    /// For Tweedie with log link, the true Hessian weight is μ^(2−p), at least 1e-10.
+    #[inline]
+    fn true_hessian_weight_at(&self, m: f64, _y: f64) -> f64 {
+        m.powf(2.0 - self.var_power).max(1e-10)
     }
 
     /// Unit deviance for Tweedie distribution.
@@ -186,30 +214,6 @@ impl Family for TweedieFamily {
         Box::new(LogLink)
     }
 
-    /// Initialize μ from observed y values.
-    ///
-    /// For Tweedie, we need μ > 0, but y can be exactly 0.
-    /// We use a weighted average of y and the mean to avoid zeros.
-    fn initialize_mu(&self, y: &Array1<f64>) -> Array1<f64> {
-        let y_mean = y.mean().unwrap_or(1.0).max(0.1);
-
-        y.mapv(|yi| {
-            // Weighted average of y and mean, ensuring positive
-            let val = (yi + y_mean) / 2.0;
-            val.max(0.001) // Ensure strictly positive
-        })
-    }
-
-    /// Check if μ values are valid (must be positive for Tweedie).
-    fn is_valid_mu(&self, mu: &Array1<f64>) -> bool {
-        mu.iter().all(|&m| m > 0.0)
-    }
-
-    fn clamp_mu(&self, mu: &Array1<f64>) -> Array1<f64> {
-        use crate::constants::MU_MIN_POSITIVE;
-        mu.mapv(|x| x.max(MU_MIN_POSITIVE))
-    }
-
     fn is_log_link_default(&self) -> bool {
         true
     }
@@ -220,18 +224,6 @@ impl Family for TweedieFamily {
     fn use_true_hessian_weights(&self) -> bool {
         // Only enable for 1 < p < 2 (compound Poisson-Gamma) where Hessian is PD
         self.var_power > 1.0 && self.var_power < 2.0
-    }
-
-    /// For Tweedie with log link, the true Hessian weight is μ^(2-p).
-    ///
-    /// Derivation: For Tweedie with variance V(μ) = μ^p and log link:
-    ///   - The Hessian of the log-likelihood w.r.t. η involves μ^(2-p)
-    ///   - This provides better curvature information than Fisher info
-    ///
-    /// For p in (1, 2), this gives weights between μ (p=1, Poisson) and 1 (p=2, Gamma).
-    fn true_hessian_weights(&self, mu: &Array1<f64>, _y: &Array1<f64>) -> Array1<f64> {
-        let exp = 2.0 - self.var_power;
-        mu.mapv(|m| m.powf(exp).max(1e-10))
     }
 }
 

@@ -229,8 +229,10 @@ def _extract_response_and_predictions(
     if response_col_temp and response_col_temp in train_data.columns:
         y = train_data[response_col_temp].to_numpy().astype(np.float64)
         has_te = any(fn.startswith("TE(") for fn in getattr(result, "feature_names", []))
+        # An out-of-core result keeps no fitted values; it predicts on the data.
+        rowless = getattr(result, "fit_mode", None) == "out_of_core"
         if (
-            has_te or getattr(result, "_is_deserialized", False) or exposure is not None
+            has_te or getattr(result, "_is_deserialized", False) or exposure is not None or rowless
         ) and hasattr(result, "predict"):
             # Diagnostics score the model's true mean; the response-ceiling
             # extrapolation guardrail must not distort them, and the
@@ -484,7 +486,9 @@ def _extract_score_test_matrices(
                 del X_chunk
     if hasattr(result, "get_bread_matrix"):
         bread_matrix = result.get_bread_matrix()
-    if hasattr(result, "get_irls_weights"):
+    # An out-of-core result keeps no per-row IRLS weights (score tests then go
+    # without them, as for a deserialized model).
+    if hasattr(result, "get_irls_weights") and getattr(result, "fit_mode", None) != "out_of_core":
         irls_weights = result.get_irls_weights()
     return design_matrix, bread_matrix, irls_weights
 

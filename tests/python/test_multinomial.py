@@ -306,6 +306,24 @@ def test_direct_rust_binding_accepts_regularized_alternative_tensors():
     np.testing.assert_allclose(result.fitted_probabilities.sum(axis=1), 1.0)
 
 
+def test_a_categorical_response_fits_whatever_other_frames_registered():
+    """Another frame's Categorical categories are not classes of this response (they
+    used to leak in through Polars' process-wide category list and fail the fit
+    with "classes with no observed rows")."""
+    pl.Series("unrelated", ["gold_other_frame", "tin_other_frame"], dtype=pl.Categorical)
+    data = _tier_frame().with_columns(pl.col("tier").cast(pl.Categorical))
+
+    result = rs.multinomial_dict(
+        response="tier",
+        terms={"x": {"type": "linear"}, "channel": {"type": "categorical"}},
+        data=data,
+        reference="none",
+    ).fit()
+
+    assert result.converged
+    assert sorted(result.classes_) == ["basic", "none", "premium", "standard"]
+
+
 def test_multinomial_dict_fit_predict_and_coef_table():
     data = _tier_frame()
 

@@ -21,6 +21,7 @@ description = "Core statistical algorithms for GLM fitting"
 license = "MIT"
 
 [dependencies]
+xxhash-rust = { workspace = true }
 # N-dimensional arrays - think of it like NumPy for Rust
 # We use this for all matrix and vector operations
 ndarray = { workspace = true }

@@ -14,6 +14,8 @@ use ndarray::Array1;
 use rayon::prelude::*;
 use std::collections::HashMap;
 
+pub mod ordered;
+
 /// Result of target encoding
 #[derive(Debug, Clone)]
 pub struct TargetEncoding {

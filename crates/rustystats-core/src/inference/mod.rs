@@ -217,7 +217,7 @@ pub fn significance_stars(pvalue: f64) -> &'static str {
 //
 // =============================================================================
 
-use ndarray::{Array1, Array2};
+use ndarray::{Array1, Array2, ArrayView2};
 use rayon::prelude::*;
 
 use crate::families::Family;
@@ -248,6 +248,88 @@ impl HCType {
             _ => None,
         }
     }
+
+    /// The type's name: "HC0" to "HC3".
+    pub fn name(self) -> &'static str {
+        match self {
+            HCType::HC0 => "HC0",
+            HCType::HC1 => "HC1",
+            HCType::HC2 => "HC2",
+            HCType::HC3 => "HC3",
+        }
+    }
+}
+
+/// The HC1 factor n/(n − p).
+#[inline]
+pub fn hc1_scale(n: usize, p: usize) -> f64 {
+    n as f64 / (n.saturating_sub(p)) as f64
+}
+
+/// ω_i of one row: the weight of x_i·x_i' in the meat X'ΩX.
+///
+/// `r` is the row's Pearson residual, `w` its combined weight, `h` its leverage
+/// (read by HC2 and HC3 only) and `hc1` is [`hc1_scale`]. An out-of-core fit forms
+/// the meat row by row with this, so it matches [`robust_covariance`] bit for bit.
+#[inline]
+pub fn robust_omega(hc_type: HCType, r: f64, w: f64, h: f64, hc1: f64) -> f64 {
+    match hc_type {
+        HCType::HC0 => w * r * r,
+        HCType::HC1 => hc1 * w * r * r,
+        HCType::HC2 => {
+            let denom = (1.0 - h).max(0.01); // Avoid division by zero
+            w * r * r / denom
+        }
+        HCType::HC3 => {
+            let denom = (1.0 - h).max(0.01);
+            w * r * r / (denom * denom)
+        }
+    }
+}
+
+/// Leverage h_ii = x_i'·(X'WX)⁻¹·x_i·w_i of one dense row, clamped to [0, 0.9999].
+#[inline]
+pub fn leverage_dense_row(x_i: &[f64], cov_flat: &[f64], w_i: f64) -> f64 {
+    let p = x_i.len();
+    let mut h_ii = 0.0;
+    for j in 0..p {
+        let mut temp_j = 0.0;
+        for k in 0..p {
+            temp_j += cov_flat[j * p + k] * x_i[k];
+        }
+        h_ii += x_i[j] * temp_j;
+    }
+    h_ii *= w_i;
+    // Clamp to avoid numerical issues (h should be in [0, 1])
+    h_ii.clamp(0.0, 0.9999)
+}
+
+/// [`leverage_dense_row`] from a row's `count` nonzeros, `entry(a)` giving the
+/// a-th (column, value) in column order. Every product it skips is an exact zero,
+/// so it gives the dense kernel's bits.
+#[inline]
+pub fn leverage_nonzero_row<F>(count: usize, entry: F, cov_flat: &[f64], p: usize, w_i: f64) -> f64
+where
+    F: Fn(usize) -> (usize, f64),
+{
+    let mut h_ii = 0.0;
+    for a in 0..count {
+        let (j, xij) = entry(a);
+        let mut temp_j = 0.0;
+        for b in 0..count {
+            let (k, xik) = entry(b);
+            temp_j += cov_flat[j * p + k] * xik;
+        }
+        h_ii += xij * temp_j;
+    }
+    h_ii *= w_i;
+    h_ii.clamp(0.0, 0.9999)
+}
+
+/// The sandwich bread·meat·bread from a packed (upper-triangle) meat.
+pub fn sandwich_from_packed_meat(bread: &Array2<f64>, packed_meat: &[f64]) -> Array2<f64> {
+    let meat = packed_symmetric(packed_meat, bread.nrows());
+    bread.dot(&meat).dot(bread)
 }
 
 /// Compute robust (sandwich) covariance matrix for GLM coefficients.
@@ -271,6 +353,25 @@ impl HCType {
 /// The meat B = X' Ω X where Ω depends on the HC type.
 pub fn robust_covariance(
     x: &Array2<f64>,
+    pearson_resid: &Array1<f64>,
+    irls_weights: &Array1<f64>,
+    prior_weights: &Array1<f64>,
+    bread: &Array2<f64>,
+    hc_type: HCType,
+) -> Array2<f64> {
+    robust_covariance_view(
+        x.view(),
+        pearson_resid,
+        irls_weights,
+        prior_weights,
+        bread,
+        hc_type,
+    )
+}
+
+/// [`robust_covariance`] over a borrowed design.
+pub fn robust_covariance_view(
+    x: ArrayView2<'_, f64>,
     pearson_resid: &Array1<f64>,
     irls_weights: &Array1<f64>,
     prior_weights: &Array1<f64>,
@@ -307,7 +408,7 @@ pub fn robust_covariance(
     );
 
     // Sandwich: bread × meat × bread
-    bread.dot(&meat).dot(bread)
+    sandwich_from_packed_meat(bread, &meat)
 }
 
 /// Compute leverage (hat matrix diagonal) values.
@@ -317,7 +418,7 @@ pub fn robust_covariance(
 /// These measure how much each observation influences its own fitted value.
 /// PARALLEL: Uses Rayon for large datasets.
 fn compute_leverage(
-    x: &Array2<f64>,
+    x: ArrayView2<'_, f64>,
     weights: &Array1<f64>,
     cov_unscaled: &Array2<f64>,
 ) -> Array1<f64> {
@@ -338,21 +439,10 @@ fn compute_leverage(
         .into_par_iter()
         .map(|i| {
             let x_i = x.row(i);
-            let w_i = weights[i];
-
-            // Compute x_i' × (X'WX)⁻¹ × x_i manually for thread safety
-            let mut h_ii = 0.0;
-            for j in 0..p {
-                let mut temp_j = 0.0;
-                for k in 0..p {
-                    temp_j += cov_flat[j * p + k] * x_i[k];
-                }
-                h_ii += x_i[j] * temp_j;
+            match x_i.as_slice() {
+                Some(row) => leverage_dense_row(row, &cov_flat, weights[i]),
+                None => leverage_dense_row(&x_i.to_vec(), &cov_flat, weights[i]),
             }
-            h_ii *= w_i;
-
-            // Clamp to avoid numerical issues (h should be in [0, 1])
-            h_ii.clamp(0.0, 0.9999)
         })
         .collect();
 
@@ -383,25 +473,13 @@ fn compute_leverage_sparse(
                     }
                 }
 
-                let mut h_ii = 0.0;
-                for a in 0..nz_idx.len() {
-                    // SAFETY: a is within both nz vectors populated in lockstep above.
-                    let j = unsafe { *nz_idx.get_unchecked(a) };
-                    let xij = unsafe { *nz_val.get_unchecked(a) };
-                    let mut temp_j = 0.0;
-                    for b in 0..nz_idx.len() {
-                        // SAFETY: b is within both nz vectors; j and k are column
-                        // indices < p, so j*p + k < cov_flat.len().
-                        let k = unsafe { *nz_idx.get_unchecked(b) };
-                        let xik = unsafe { *nz_val.get_unchecked(b) };
-                        // SAFETY: j and k are column indices < p, so this
-                        // flattened covariance index is within cov_flat.
-                        temp_j += unsafe { *cov_flat.get_unchecked(j * p + k) } * xik;
-                    }
-                    h_ii += xij * temp_j;
-                }
-                h_ii *= weights[i];
-                h_ii.clamp(0.0, 0.9999)
+                leverage_nonzero_row(
+                    nz_idx.len(),
+                    |a| (nz_idx[a], nz_val[a]),
+                    cov_flat,
+                    p,
+                    weights[i],
+                )
             },
         )
         .collect();
@@ -409,111 +487,67 @@ fn compute_leverage_sparse(
     Array1::from_vec(leverage_vec)
 }
 
-/// Compute the "meat" matrix for the sandwich estimator.
+/// The packed "meat" X'ΩX of the sandwich estimator.
 fn compute_meat(
-    x: &Array2<f64>,
+    x: ArrayView2<'_, f64>,
     pearson_resid: &Array1<f64>,
     weights: &Array1<f64>,
     leverage: &Array1<f64>,
     hc_type: HCType,
     n: usize,
     p: usize,
-) -> Array2<f64> {
-    // Compute adjusted squared residuals based on HC type
-    let omega: Array1<f64> = match hc_type {
-        HCType::HC0 => {
-            // ω_i = w_i × ε_i²
-            pearson_resid
-                .iter()
-                .zip(weights.iter())
-                .map(|(&r, &w)| w * r * r)
-                .collect()
-        }
-        HCType::HC1 => {
-            // ω_i = w_i × ε_i² × n/(n-p)
-            let scale = n as f64 / (n.saturating_sub(p)) as f64;
-            pearson_resid
-                .iter()
-                .zip(weights.iter())
-                .map(|(&r, &w)| scale * w * r * r)
-                .collect()
-        }
-        HCType::HC2 => {
-            // ω_i = w_i × ε_i² / (1 - h_ii)
-            pearson_resid
-                .iter()
-                .zip(weights.iter())
-                .zip(leverage.iter())
-                .map(|((&r, &w), &h)| {
-                    let denom = (1.0 - h).max(0.01); // Avoid division by zero
-                    w * r * r / denom
-                })
-                .collect()
-        }
-        HCType::HC3 => {
-            // ω_i = w_i × ε_i² / (1 - h_ii)²
-            pearson_resid
-                .iter()
-                .zip(weights.iter())
-                .zip(leverage.iter())
-                .map(|((&r, &w), &h)| {
-                    let denom = (1.0 - h).max(0.01);
-                    w * r * r / (denom * denom)
-                })
-                .collect()
-        }
-    };
+) -> Vec<f64> {
+    // Adjusted squared residuals ω_i, one row at a time (`robust_omega`).
+    let hc1 = hc1_scale(n, p);
+    let omega: Array1<f64> = (0..n)
+        .map(|i| robust_omega(hc_type, pearson_resid[i], weights[i], leverage[i], hc1))
+        .collect();
 
-    // Compute X' Ω X where Ω = diag(omega)
-    // This is equivalent to: sum over i of omega[i] * x_i * x_i'
-    // PARALLEL: Use fold-reduce pattern for thread-safe accumulation
+    // X'ΩX = Σ_i ω_i·x_i·x_i', reduced block by block (`rows::reduce_rows`) so it
+    // does not depend on thread count. Each row adds (x_ij·ω_i)·x_ik into packed
+    // entry (j, k), j <= k. The sparse kernel skips zero rows and entries, which
+    // are exact zeros, so it gives the dense kernel's bits.
     let p = x.ncols();
     let n = x.nrows();
+    let sparse_slice = x
+        .as_slice()
+        .filter(|x_slice| should_use_sparse_sandwich_kernel(x_slice, n, p));
 
-    if let Some(x_slice) = x.as_slice() {
-        if should_use_sparse_sandwich_kernel(x_slice, n, p) {
-            return compute_meat_sparse(x_slice, &omega, n, p);
-        }
-    }
-
-    let meat_flat: Vec<f64> = (0..n)
-        .into_par_iter()
-        .fold(
-            || vec![0.0; p * p],
-            |mut acc, i| {
-                let omega_i = omega[i];
-                let x_i = x.row(i);
-                // Only compute upper triangle (symmetric matrix)
-                for j in 0..p {
-                    let xij_omega = x_i[j] * omega_i;
-                    for k in j..p {
-                        acc[j * p + k] += xij_omega * x_i[k];
+    let packed = crate::rows::reduce_rows(vec![0.0; crate::rows::packed_len(p)], n, |acc, rows| {
+        match sparse_slice {
+            Some(x_slice) => accumulate_meat_sparse_rows(acc, x_slice, &omega, p, rows),
+            None => {
+                for i in rows {
+                    let omega_i = omega[i];
+                    let x_i = x.row(i);
+                    let mut idx = 0usize;
+                    for j in 0..p {
+                        let xij_omega = x_i[j] * omega_i;
+                        for k in j..p {
+                            acc[idx] += xij_omega * x_i[k];
+                            idx += 1;
+                        }
                     }
                 }
-                acc
-            },
-        )
-        .reduce(
-            || vec![0.0; p * p],
-            |mut a, b| {
-                for i in 0..a.len() {
-                    a[i] += b[i];
-                }
-                a
-            },
-        );
+            }
+        }
+    });
 
-    // Convert to Array2 and fill symmetric entries
-    let mut meat = Array2::zeros((p, p));
+    packed
+}
+
+/// Expand a packed upper triangle into a symmetric matrix.
+fn packed_symmetric(packed: &[f64], p: usize) -> Array2<f64> {
+    let mut matrix = Array2::zeros((p, p));
+    let mut idx = 0usize;
     for j in 0..p {
         for k in j..p {
-            let val = meat_flat[j * p + k];
-            meat[[j, k]] = val;
-            meat[[k, j]] = val;
+            matrix[[j, k]] = packed[idx];
+            matrix[[k, j]] = packed[idx];
+            idx += 1;
         }
     }
-
-    meat
+    matrix
 }
 
 fn should_use_sparse_sandwich_kernel(x_slice: &[f64], n: usize, p: usize) -> bool {
@@ -536,69 +570,40 @@ fn should_use_sparse_sandwich_kernel(x_slice: &[f64], n: usize, p: usize) -> boo
     density <= SPARSE_SANDWICH_DENSITY_THRESHOLD
 }
 
-fn compute_meat_sparse(x_slice: &[f64], omega: &Array1<f64>, n: usize, p: usize) -> Array2<f64> {
-    let (meat_flat, _, _): (Vec<f64>, Vec<usize>, Vec<f64>) = (0..n)
-        .into_par_iter()
-        .fold(
-            || {
-                (
-                    vec![0.0; p * p],
-                    Vec::with_capacity(p),
-                    Vec::with_capacity(p),
-                )
-            },
-            |(mut acc, mut nz_idx, mut nz_val), i| {
-                let omega_i = omega[i];
-                if omega_i == 0.0 {
-                    return (acc, nz_idx, nz_val);
-                }
-
-                nz_idx.clear();
-                nz_val.clear();
-                let row_start = i * p;
-                for j in 0..p {
-                    // SAFETY: row_start + j < n*p = x_slice.len()
-                    let xij = unsafe { *x_slice.get_unchecked(row_start + j) };
-                    if xij != 0.0 {
-                        nz_idx.push(j);
-                        nz_val.push(xij);
-                    }
-                }
-
-                for a in 0..nz_idx.len() {
-                    // SAFETY: a is within both nz vectors populated in lockstep above.
-                    let j = unsafe { *nz_idx.get_unchecked(a) };
-                    let xij_omega = unsafe { *nz_val.get_unchecked(a) } * omega_i;
-                    for b in a..nz_idx.len() {
-                        // SAFETY: b is within both nz vectors populated in lockstep above.
-                        let k = unsafe { *nz_idx.get_unchecked(b) };
-                        let xik = unsafe { *nz_val.get_unchecked(b) };
-                        // SAFETY: j, k < p, so j*p + k < p*p.
-                        unsafe { *acc.get_unchecked_mut(j * p + k) += xij_omega * xik };
-                    }
-                }
-                (acc, nz_idx, nz_val)
-            },
-        )
-        .reduce(
-            || (vec![0.0; p * p], Vec::new(), Vec::new()),
-            |(mut a, a_idx, a_val), (b, _b_idx, _b_val)| {
-                for i in 0..a.len() {
-                    a[i] += b[i];
-                }
-                (a, a_idx, a_val)
-            },
-        );
-
-    let mut meat = Array2::zeros((p, p));
-    for j in 0..p {
-        for k in j..p {
-            let val = meat_flat[j * p + k];
-            meat[[j, k]] = val;
-            meat[[k, j]] = val;
+fn accumulate_meat_sparse_rows(
+    acc: &mut [f64],
+    x_slice: &[f64],
+    omega: &Array1<f64>,
+    p: usize,
+    rows: std::ops::Range<usize>,
+) {
+    let row_offsets: Vec<usize> = (0..p)
+        .map(|j| j * p - j * (j.saturating_sub(1)) / 2)
+        .collect();
+    let mut nz_idx: Vec<usize> = Vec::with_capacity(p);
+    let mut nz_val: Vec<f64> = Vec::with_capacity(p);
+    for i in rows {
+        let omega_i = omega[i];
+        if omega_i == 0.0 {
+            continue;
+        }
+        nz_idx.clear();
+        nz_val.clear();
+        for (j, &xij) in x_slice[i * p..(i + 1) * p].iter().enumerate() {
+            if xij != 0.0 {
+                nz_idx.push(j);
+                nz_val.push(xij);
+            }
+        }
+        for a in 0..nz_idx.len() {
+            let j = nz_idx[a];
+            let xij_omega = nz_val[a] * omega_i;
+            for b in a..nz_idx.len() {
+                let k = nz_idx[b];
+                acc[row_offsets[j] + (k - j)] += xij_omega * nz_val[b];
+            }
         }
     }
-    meat
 }
 
 /// Compute robust standard errors from robust covariance matrix.
@@ -1095,6 +1100,67 @@ mod tests {
     use super::*;
     use crate::families::{GammaFamily, GaussianFamily};
     use approx::assert_abs_diff_eq;
+
+    #[test]
+    fn robust_meat_is_block_ordered_and_kernel_independent() {
+        let n = 2 * crate::rows::GRAM_BLOCK_ROWS + 41;
+        let p = 20;
+        let x = Array2::from_shape_fn((n, p), |(i, j)| {
+            if (i + 2 * j) % 5 == 0 {
+                ((i * 13 + j * 7) % 89) as f64 / 89.0 * 10f64.powi(((i + j) % 11) as i32 - 5)
+            } else {
+                0.0
+            }
+        });
+        let resid = Array1::from_shape_fn(n, |i| ((i % 17) as f64 - 8.0) * 0.25);
+        let weights = Array1::from_shape_fn(n, |i| 0.5 + (i % 3) as f64);
+        let leverage = Array1::zeros(n);
+        let meat_with = |threads: usize| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("pool")
+                .install(|| compute_meat(x.view(), &resid, &weights, &leverage, HCType::HC1, n, p))
+        };
+        let one = meat_with(1);
+        for threads in [2, 8] {
+            let other = meat_with(threads);
+            assert!(one
+                .iter()
+                .zip(other.iter())
+                .all(|(a, b)| a.to_bits() == b.to_bits()));
+        }
+        // The sparse kernel (this design is 20% dense) gives the dense kernel's bits.
+        let x_slice = x.as_slice().expect("contiguous");
+        assert!(should_use_sparse_sandwich_kernel(x_slice, n, p));
+        let scale = n as f64 / (n - p) as f64;
+        let omega: Array1<f64> = resid
+            .iter()
+            .zip(weights.iter())
+            .map(|(&r, &w)| scale * w * r * r)
+            .collect();
+        let mut dense = vec![0.0; crate::rows::packed_len(p)];
+        for block in (0..n).step_by(crate::rows::GRAM_BLOCK_ROWS) {
+            let mut partial = vec![0.0; crate::rows::packed_len(p)];
+            for i in block..(block + crate::rows::GRAM_BLOCK_ROWS).min(n) {
+                let mut idx = 0;
+                for j in 0..p {
+                    let xij_omega = x[[i, j]] * omega[i];
+                    for k in j..p {
+                        partial[idx] += xij_omega * x[[i, k]];
+                        idx += 1;
+                    }
+                }
+            }
+            for (total, value) in dense.iter_mut().zip(partial) {
+                *total += value;
+            }
+        }
+        assert!(one
+            .iter()
+            .zip(dense.iter())
+            .all(|(a, b)| a.to_bits() == b.to_bits()));
+    }
 
     #[test]
     fn test_pvalue_z_zero() {

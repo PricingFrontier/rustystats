@@ -7,7 +7,6 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import rustystats._rustystats as rust_backend
-import rustystats.regularization_path as reg_path
 from rustystats.exceptions import FittingError, ValidationError
 from rustystats.regularization_path import (
     ALPHA_MAX_FLOOR,
@@ -19,7 +18,6 @@ from rustystats.regularization_path import (
     compute_deviance,
     compute_standardization,
     compute_standardization_with_ridge_diag,
-    create_cv_folds,
     fit_cv_regularization_path,
     fit_cv_te_regularization_path,
     generate_alpha_path,
@@ -27,20 +25,8 @@ from rustystats.regularization_path import (
     reset_fold_local_spline_state,
     select_optimal_alpha,
     solver_standardization,
+    target_encoded_cv_path,
 )
-
-
-def _force_python_standardization(monkeypatch):
-    import builtins
-
-    real_import = builtins.__import__
-
-    def block_rust_standardization(name, globals=None, locals=None, fromlist=(), level=0):
-        if name == "rustystats._rustystats" and "compute_standardization_py" in fromlist:
-            raise ImportError("force Python fallback")
-        return real_import(name, globals, locals, fromlist, level)
-
-    monkeypatch.setattr(builtins, "__import__", block_rust_standardization)
 
 
 def _path_result(alpha: float, mean: float, se: float = 0.0) -> RegularizationPathResult:
@@ -79,20 +65,6 @@ class TestRegularizationPathUtilities:
         path = generate_alpha_path(alpha_max=ALPHA_MAX_FLOOR, n_alphas=1, alpha_min_ratio=0.1)
 
         np.testing.assert_allclose(path, np.array([ALPHA_MAX_FLOOR]))
-
-    def test_create_cv_folds_is_deterministic_balanced_and_exhaustive(self):
-        folds = create_cv_folds(11, 4, seed=123)
-        folds_again = create_cv_folds(11, 4, seed=123)
-
-        val_sets = [tuple(val.tolist()) for _train, val in folds]
-        assert val_sets == [tuple(val.tolist()) for _train, val in folds_again]
-        assert sorted(len(val) for _train, val in folds) == [2, 3, 3, 3]
-
-        all_val = np.concatenate([val for _train, val in folds])
-        np.testing.assert_array_equal(np.sort(all_val), np.arange(11))
-        for train, val in folds:
-            assert set(train).isdisjoint(set(val))
-            np.testing.assert_array_equal(np.sort(np.concatenate([train, val])), np.arange(11))
 
     @pytest.mark.parametrize(
         ("family", "expected"),
@@ -170,8 +142,7 @@ class TestRegularizationPathUtilities:
         assert ridge_diag[1] == pytest.approx(300.0)
         assert ridge_diag[2] == pytest.approx(3.0)
 
-    def test_standardization_python_fallback_matches_weighted_oracle(self, monkeypatch):
-        _force_python_standardization(monkeypatch)
+    def test_standardization_matches_weighted_oracle(self):
         x = np.array(
             [
                 [1.0, 10.0, 5.0],
@@ -203,9 +174,7 @@ class TestRegularizationPathUtilities:
         np.testing.assert_allclose(center_only, center)
         np.testing.assert_allclose(scale_only, scale)
 
-    def test_standardization_python_fallback_covers_active_column_layouts(self, monkeypatch):
-        _force_python_standardization(monkeypatch)
-
+    def test_standardization_covers_active_column_layouts(self):
         x = np.array(
             [
                 [1.0, 2.0, 10.0],
@@ -713,33 +682,54 @@ class TestRegularizationPathSelection:
         with pytest.raises(ValidationError, match="Unknown regularization"):
             fit_cv_regularization_path(glm, regularization="adaptive")
 
-    def _mock_te_designs(self, monkeypatch):
-        calls = []
+    class _Folds:
+        """A ``TargetEncodedFolds`` whose alpha_max and paths the test scripts."""
 
-        def fake_build_fold_design_matrices(
-            data,
-            parsed,
-            train_idx,
-            val_idx,
-            raw_exposure=None,
-            seed=None,
-        ):
-            calls.append(
-                {
-                    "data": data,
-                    "parsed": parsed,
-                    "train_idx": train_idx.copy(),
-                    "val_idx": val_idx.copy(),
-                    "raw_exposure": raw_exposure,
-                    "seed": seed,
-                }
-            )
-            x_train = np.column_stack([np.ones(train_idx.size), train_idx.astype(np.float64) + 1.0])
-            x_val = np.column_stack([np.ones(val_idx.size), val_idx.astype(np.float64) + 1.0])
-            return x_train, x_val, ["Intercept", "pos(x)"]
+        def __init__(self, alpha_max, path):
+            self._alpha_max = alpha_max
+            self._path = path
+            self.alpha_max_calls = []
+            self.path_calls = []
+            self.released = []
 
-        monkeypatch.setattr(reg_path, "build_fold_design_matrices", fake_build_fold_design_matrices)
-        return calls
+        def names(self, fold):
+            return ["Intercept", "pos(x)"]
+
+        def moments(self, fold, pen_mask, fit_intercept):
+            return np.zeros(2), np.ones(2), np.ones(2)
+
+        def alpha_max(self, fold, **kwargs):
+            self.alpha_max_calls.append((fold, kwargs))
+            return self._alpha_max(fold)
+
+        def path(self, fold, alphas, **kwargs):
+            self.path_calls.append((fold, list(alphas), kwargs))
+            return self._path(fold, list(alphas))
+
+        def release(self, fold):
+            self.released.append(fold)
+
+    @staticmethod
+    def _te_path(folds, **overrides):
+        settings = {
+            "n_folds": 2,
+            "n_params": 2,
+            "family": "gaussian",
+            "link": "identity",
+            "regularization": "ridge",
+            "l1_ratio": None,
+            "n_alphas": 2,
+            "alpha_min_ratio": 0.1,
+            "max_iter": 9,
+            "tol": 1e-6,
+            "include_unregularized": True,
+            "standardize": True,
+            "fit_intercept": True,
+            "selection": "min",
+            "verbose": False,
+        }
+        settings.update(overrides)
+        return target_encoded_cv_path(folds, **settings)
 
     @pytest.mark.parametrize(
         ("regularization", "l1_ratio", "expected_l1", "expected_type"),
@@ -749,66 +739,21 @@ class TestRegularizationPathSelection:
             ("elastic_net", 0.3, 0.3, "elastic_net"),
         ],
     )
-    def test_fit_cv_te_regularization_path_handles_fold_failures_and_reg_types(
-        self,
-        monkeypatch,
-        capsys,
-        regularization,
-        l1_ratio,
-        expected_l1,
-        expected_type,
+    def test_target_encoded_cv_path_handles_fold_failures_and_reg_types(
+        self, capsys, regularization, l1_ratio, expected_l1, expected_type
     ):
-        design_calls = self._mock_te_designs(monkeypatch)
-        alpha_calls = []
-
-        def fake_compute_alpha_max(*_args, **_kwargs):
-            alpha_calls.append(_kwargs)
-            if len(alpha_calls) == 1:
+        def alpha_max(fold):
+            if fold == 0:
                 raise ValidationError("degenerate fold")
             return 10.0
 
-        fold_fit_calls = []
+        def path(fold, alphas):
+            if fold == 0:
+                return {"fold_deviances": [1.0, np.inf, 2.0][: len(alphas)]}
+            return {"fold_deviances": [1.2, 2.0][: len(alphas)]}
 
-        def fake_fit_fold_path(*args):
-            active_alphas = list(args[12])
-            fold_fit_calls.append(active_alphas)
-            if len(fold_fit_calls) == 1:
-                return {"fold_deviances": [1.0, np.inf, 2.0][: len(active_alphas)]}
-            return {"fold_deviances": [1.2, 2.0][: len(active_alphas)]}
-
-        monkeypatch.setattr(reg_path, "compute_alpha_max", fake_compute_alpha_max)
-        monkeypatch.setattr(rust_backend, "fit_fold_path_py", fake_fit_fold_path)
-        glm = SimpleNamespace(
-            X=np.ones((4, 2)),
-            y=np.array([0.0, 1.0, 2.0, 3.0]),
-            family="gaussian",
-            link="identity",
-            var_power=1.5,
-            theta=None,
-            offset=np.array([0.0, 0.1, 0.2, 0.3]),
-            weights=np.array([1.0, 2.0, 1.0, 2.0]),
-            allow_extended_tweedie=True,
-            intercept=True,
-            _builder=SimpleNamespace(_parsed_formula=SimpleNamespace(label="parsed")),
-            data=SimpleNamespace(label="data"),
-            _raw_exposure=np.array([1.0, 1.0, 2.0, 2.0]),
-        )
-
-        info = fit_cv_te_regularization_path(
-            glm,
-            cv=2,
-            selection="min",
-            regularization=regularization,
-            n_alphas=2,
-            alpha_min_ratio=0.1,
-            l1_ratio=l1_ratio,
-            max_iter=9,
-            tol=1e-6,
-            seed=None,
-            include_unregularized=True,
-            verbose=True,
-            standardize=True,
-        )
+        folds = self._Folds(alpha_max, path)
+        info = self._te_path(folds, regularization=regularization, l1_ratio=l1_ratio, verbose=True)
 
         assert info.fold_safe_target_encoding is True
         assert info.regularization_type == expected_type
@@ -820,83 +765,38 @@ class TestRegularizationPathSelection:
         assert 1.0 in info.cv_fold_scores
         assert len(info.path) == 2
         assert all(result.n_nonzero == 1 for result in info.path)
-        assert design_calls[0]["seed"] == 42
-        np.testing.assert_array_equal(design_calls[0]["raw_exposure"], glm._raw_exposure)
+        # The alpha that failed in fold 0 is dropped from fold 1's grid.
+        assert folds.path_calls[0][1] == [10.0, 1.0, 0.0]
+        assert folds.path_calls[1][1] == [10.0, 0.0]
+        assert folds.path_calls[0][2]["nonneg"] == [1]
+        assert folds.path_calls[0][2]["l1_ratio"] == pytest.approx(expected_l1)
+        assert folds.alpha_max_calls[1][1]["l1_ratio"] == pytest.approx(expected_l1)
+        assert folds.released == [0, 1]
         assert "fold alpha_max computation failed" in capsys.readouterr().out
 
-    def test_fit_cv_te_regularization_path_reports_none_when_zero_alpha_wins(
-        self,
-        monkeypatch,
-    ):
-        self._mock_te_designs(monkeypatch)
-        monkeypatch.setattr(reg_path, "compute_alpha_max", lambda *_args, **_kwargs: 10.0)
-
-        def fake_fit_fold_path(*args):
-            active_alphas = list(args[12])
-            return {"fold_deviances": [0.5 if alpha == 0.0 else 2.0 for alpha in active_alphas]}
-
-        monkeypatch.setattr(rust_backend, "fit_fold_path_py", fake_fit_fold_path)
-        glm = SimpleNamespace(
-            X=np.ones((4, 2)),
-            y=np.array([0.0, 1.0, 2.0, 3.0]),
-            family="gaussian",
-            link="identity",
-            var_power=1.5,
-            theta=2.0,
-            offset=None,
-            weights=None,
-            intercept=True,
-            _builder=SimpleNamespace(_parsed_formula=SimpleNamespace()),
-            data=SimpleNamespace(),
+    def test_target_encoded_cv_path_reports_none_when_zero_alpha_wins(self):
+        folds = self._Folds(
+            lambda fold: 10.0,
+            lambda fold, alphas: {
+                "fold_deviances": [0.5 if alpha == 0.0 else 2.0 for alpha in alphas]
+            },
         )
-
-        info = fit_cv_te_regularization_path(
-            glm,
-            cv=2,
-            regularization="lasso",
-            n_alphas=1,
-            include_unregularized=True,
-            standardize=False,
-        )
+        info = self._te_path(folds, regularization="lasso", n_alphas=1, standardize=False)
 
         assert info.selected_alpha == 0.0
         assert info.regularization_type == "none"
         assert info.path[-1].l1_ratio == 0.0
 
-    def test_fit_cv_te_regularization_path_fails_closed_when_all_fold_fits_fail(
-        self,
-        monkeypatch,
-    ):
-        self._mock_te_designs(monkeypatch)
-        monkeypatch.setattr(reg_path, "compute_alpha_max", lambda *_args, **_kwargs: 1.0)
-        monkeypatch.setattr(
-            rust_backend,
-            "fit_fold_path_py",
-            lambda *_args: (_ for _ in ()).throw(ValueError("fold failed")),
-        )
-        glm = SimpleNamespace(
-            X=np.ones((4, 2)),
-            y=np.array([0.0, 1.0, 2.0, 3.0]),
-            family="gaussian",
-            link="identity",
-            var_power=1.5,
-            theta=None,
-            offset=None,
-            weights=None,
-            intercept=True,
-            _builder=SimpleNamespace(_parsed_formula=SimpleNamespace()),
-            data=SimpleNamespace(),
-        )
+    def test_target_encoded_cv_path_fails_closed_when_all_fold_fits_fail(self):
+        def path(fold, alphas):
+            raise ValueError("fold failed")
 
+        folds = self._Folds(lambda fold: 1.0, path)
         with pytest.raises(ValidationError, match="no finite validation deviances"):
-            fit_cv_te_regularization_path(
-                glm,
-                cv=2,
-                regularization="ridge",
-                n_alphas=1,
-                include_unregularized=True,
-                standardize=False,
-            )
+            self._te_path(folds, n_alphas=1, standardize=False)
+        assert folds.released == [0, 1]
 
         with pytest.raises(ValidationError, match="Unknown regularization"):
-            fit_cv_te_regularization_path(glm, regularization="adaptive")
+            self._te_path(folds, regularization="adaptive")
+        with pytest.raises(ValidationError, match="Unknown regularization"):
+            fit_cv_te_regularization_path(SimpleNamespace(), regularization="adaptive")

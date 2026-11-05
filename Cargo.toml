@@ -62,6 +62,10 @@ rayon = "1.10"                             # Data parallelism for multi-threaded
 # statrs provides probability distributions for p-value calculations
 statrs = "0.18"                            # Statistical distributions & functions
 
+# --- Hashing ---
+# Order-sensitive source fingerprints for out-of-core fits (specs/out-of-core-fit.md §9)
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+
 # =============================================================================
 # Workspace Lints
 # =============================================================================

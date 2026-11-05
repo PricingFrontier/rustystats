@@ -48,8 +48,6 @@
 //
 // =============================================================================
 
-use std::borrow::Cow;
-
 use super::Family;
 use crate::constants::MU_MIN_POSITIVE;
 use crate::links::{Link, LogLink};
@@ -126,14 +124,36 @@ impl Family for NegativeBinomialFamily {
         "NegativeBinomial"
     }
 
-    /// Variance function: V(μ) = μ + μ²/θ = μ(1 + μ/θ)
-    ///
-    /// This is the NB2 (quadratic) variance function.
-    /// The full variance is Var(Y) = V(μ) (no additional dispersion parameter).
+    fn log_likelihood_form(&self) -> crate::families::LogLikelihoodForm {
+        crate::families::LogLikelihoodForm::RowSum { needs_scale: false }
+    }
+
     #[inline]
-    fn variance<'a>(&self, mu: &'a Array1<f64>) -> Cow<'a, Array1<f64>> {
+    fn log_likelihood_row(&self, yi: f64, mui: f64, _scale: f64) -> f64 {
+        crate::diagnostics::nb_loglik_row(yi, mui, self.theta)
+    }
+
+    /// Variance function V(μ) = μ + αμ² with α = 1/θ.
+    #[inline]
+    fn variance_at(&self, m: f64) -> f64 {
         let alpha = self.alpha();
-        Cow::Owned(mu.mapv(|m| m + alpha * m * m))
+        m + alpha * m * m
+    }
+
+    /// Starting μ: (y + 0.1), at least 0.1.
+    #[inline]
+    fn initialize_mu_at(&self, yi: f64, _y_mean: f64) -> f64 {
+        (yi + 0.1).max(0.1)
+    }
+
+    #[inline]
+    fn is_valid_mu_at(&self, m: f64) -> bool {
+        m > 0.0 && m.is_finite()
+    }
+
+    #[inline]
+    fn clamp_mu_at(&self, mu: f64) -> f64 {
+        mu.max(crate::constants::MU_MIN_POSITIVE)
     }
 
     /// Unit deviance for Negative Binomial.
@@ -166,35 +186,8 @@ impl Family for NegativeBinomialFamily {
         Box::new(LogLink)
     }
 
-    /// Initialize μ from observed y values.
-    ///
-    /// Same strategy as Poisson: ensure positive starting values.
-    fn initialize_mu(&self, y: &Array1<f64>) -> Array1<f64> {
-        y.mapv(|yi| (yi + 0.1).max(0.1))
-    }
-
-    /// μ must be strictly positive.
-    fn is_valid_mu(&self, mu: &Array1<f64>) -> bool {
-        mu.iter().all(|&m| m > 0.0 && m.is_finite())
-    }
-
-    fn clamp_mu(&self, mu: &Array1<f64>) -> Array1<f64> {
-        use crate::constants::MU_MIN_POSITIVE;
-        mu.mapv(|x| x.max(MU_MIN_POSITIVE))
-    }
-
     fn is_log_link_default(&self) -> bool {
         true
-    }
-
-    fn log_likelihood(
-        &self,
-        y: &Array1<f64>,
-        mu: &Array1<f64>,
-        _scale: f64,
-        weights: Option<&Array1<f64>>,
-    ) -> f64 {
-        crate::diagnostics::nb_loglikelihood(y, mu, self.theta, weights)
     }
 }
 

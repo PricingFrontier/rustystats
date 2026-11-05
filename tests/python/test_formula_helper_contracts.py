@@ -606,9 +606,9 @@ def test_predict_direct_edge_paths_for_no_terms_termwise_and_aux_projection(monk
     with pytest.raises(ValidationError, match="only meaningful for log-link"):
         non_log_exposure.predict(data)
 
-    monkeypatch.setattr(formula, "_PREDICT_TERMWISE_FEATURE_THRESHOLD", 3)
+    # Wide models no longer score term by term: every row is summed by the row
+    # kernel over its design row, in chunks (specs/out-of-core-fit.md §6.8).
     monkeypatch.setattr(formula, "_compute_predict_chunk_size", lambda _n: 2)
-    monkeypatch.setattr(formula, "_compute_termwise_predict_chunk_size", lambda *_args: 10)
     termwise_builder = _RecordingPredictionBuilder()
     termwise = _dummy_model(
         result=_DummyResult(params=params),
@@ -623,11 +623,10 @@ def test_predict_direct_edge_paths_for_no_terms_termwise_and_aux_projection(monk
             params[0] + params[1] * data["x"].to_numpy()[:4] + params[2] * data["z"].to_numpy()[:4]
         ),
     )
-    assert termwise_builder.transform_batches == []
-    assert termwise_builder.termwise_batches == [("x", "z")]
+    assert termwise_builder.termwise_batches == []
+    assert len(termwise_builder.transform_batches) == 2
 
     monkeypatch.setattr(formula, "_compute_predict_chunk_size", lambda _n: 1)
-    monkeypatch.setattr(formula, "_compute_termwise_predict_chunk_size", lambda *_args: 3)
     aux_builder = _RecordingPredictionBuilder()
     aux_model = _dummy_model(
         result=_DummyResult(params=params),
@@ -659,11 +658,8 @@ def test_predict_direct_edge_paths_for_no_terms_termwise_and_aux_projection(monk
     chunked_pred = aux_model.predict(data)
     linear = params[0] + params[1] * data["x"].to_numpy() + params[2] * data["z"].to_numpy()
     np.testing.assert_allclose(chunked_pred, np.exp(linear) * data["expo"].to_numpy())
-    assert aux_builder.transform_batches == []
-    assert aux_builder.termwise_batches == [
-        ("x", "z", "raw", "expo", "unused"),
-        ("x", "z", "raw", "expo", "unused"),
-    ]
+    assert aux_builder.termwise_batches == []
+    assert aux_builder.transform_batches == [("x", "z", "raw", "expo", "unused")] * data.height
     assert prepared_columns == [("raw", "expo")]
 
 

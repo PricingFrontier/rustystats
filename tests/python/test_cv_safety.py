@@ -21,6 +21,41 @@ from _fixtures import RARE_BRAND, make_freq_frame
 CV_KW = {"cv": 3, "regularization": "ridge", "n_alphas": 5, "verbose": False}
 
 
+def _fold_designs(
+    df: pl.DataFrame,
+    terms: dict,
+    n_folds: int,
+    cv_seed: int,
+    interactions: list | None = None,
+) -> tuple[list[np.ndarray], list[list[str]], np.ndarray]:
+    """Each fold's design as the fold-safe path learns it (spec §7.9), every row encoded
+    through it, its names, and each row's DEC-2 fold."""
+    from rustystats._rustystats import cv_fold_ids_py
+    from rustystats.formula import dict_to_parsed_formula
+    from rustystats.frozen_design import FoldRows, in_memory_target_inputs, learn_frozen_designs
+
+    parsed = [
+        dict_to_parsed_formula(response="y", terms=terms, interactions=interactions, intercept=True)
+        for _ in range(n_folds)
+    ]
+    designs = learn_frozen_designs(
+        parsed,
+        [df],
+        [FoldRows(fold, n_folds, cv_seed) for fold in range(n_folds)],
+        target=in_memory_target_inputs("y", None, 0),
+    )
+    xs = []
+    for design in designs:
+        x = np.empty((df.height, design.p))
+        design.encode_into(df, x, first_row=0)
+        xs.append(x)
+    return (
+        xs,
+        [list(design.names) for design in designs],
+        cv_fold_ids_py(0, df.height, n_folds, cv_seed),
+    )
+
+
 def _te_col(names: list[str], needle: str = "Brand") -> int:
     """Index of the single target-encoding design column for ``needle``."""
     cols = [i for i, nm in enumerate(names) if needle in nm]
@@ -29,20 +64,23 @@ def _te_col(names: list[str], needle: str = "Brand") -> int:
 
 
 class TestFoldSafeDesignMatrices:
-    """Unit-level guarantees for the per-fold fit/transform split (RS-ACT-001b)."""
+    """Unit-level guarantees of a fold's design (RS-ACT-001b, spec §7.9): learned from
+    the fold's training rows, it encodes the validation rows as new data."""
 
-    def _frame_with_isolated_rare_level(self):
-        """A frame whose RARE rows carry an extreme rate and sit only in the val fold."""
+    def _frame_with_isolated_rare_level(self, exposure: bool = False):
+        """A frame whose RARE rows carry an extreme rate and sit only in fold 0."""
+        from rustystats._rustystats import cv_fold_ids_py
         from rustystats.formula import dict_to_parsed_formula
 
         rng = np.random.default_rng(0)
         n = 600
-        n_rare = 10
         brand = np.array(["A", "B", "C"], dtype=object)[rng.integers(0, 3, n)]
         y = rng.poisson(1.0, n).astype(float)
-        # Inject a rare level with a wildly different (extreme) rate.
-        brand[:n_rare] = RARE_BRAND
-        y[:n_rare] = 50.0
+        # Inject a rare level with a wildly different (extreme) rate, in fold 0 only.
+        in_fold = np.flatnonzero(cv_fold_ids_py(0, n, 3, 7) == 0)
+        rare = in_fold[:10]
+        brand[rare] = RARE_BRAND
+        y[rare] = 50.0
         data = pl.DataFrame({"y": y, "Brand": brand})
         parsed = dict_to_parsed_formula(
             response="y",
@@ -50,69 +88,77 @@ class TestFoldSafeDesignMatrices:
             interactions=None,
             intercept=True,
         )
-        # All RARE rows land in validation; training never sees the level.
-        val_idx = np.arange(20)
-        train_idx = np.arange(20, n)
-        return data, parsed, train_idx, val_idx, n_rare
+        raw_exposure = rng.uniform(0.5, 1.5, n) if exposure else None
+        return data, parsed, rare, raw_exposure
+
+    def _fold_design(self, data, parsed, raw_exposure=None):
+        from rustystats.frozen_design import (
+            FoldRows,
+            in_memory_target_inputs,
+            learn_frozen_designs,
+        )
+
+        (design,) = learn_frozen_designs(
+            [parsed],
+            [data],
+            [FoldRows(0, 3, 7)],
+            target=in_memory_target_inputs("y", raw_exposure, 3),
+        )
+        x = np.empty((data.height, design.p))
+        design.encode_into(data, x, first_row=0)
+        return design, x
 
     def test_rare_level_isolated_to_validation_fold_is_not_leaked(self):
         """001.1: a level held out of training gets the fold-training prior, not its own rate."""
         from rustystats.interactions import InteractionBuilder
-        from rustystats.regularization_path import build_fold_design_matrices
 
-        data, parsed, train_idx, val_idx, n_rare = self._frame_with_isolated_rare_level()
-
-        _x_train, x_val, names = build_fold_design_matrices(data, parsed, train_idx, val_idx)
-        te_col = _te_col(names)
-
-        # The RARE rows are the first n_rare entries of val_idx.
-        safe = x_val[:n_rare, te_col]
-        # Unseen-in-training -> every RARE row collapses to the same training prior.
-        np.testing.assert_allclose(safe, safe[0])
+        data, parsed, rare, _exposure = self._frame_with_isolated_rare_level()
+        design, x = self._fold_design(data, parsed)
+        (frozen,) = design.target
+        assert RARE_BRAND not in frozen.labels
+        safe = x[rare, _te_col(list(design.names))]
+        # Unseen in training -> every RARE row is the fold-training prior.
+        np.testing.assert_array_equal(safe, np.full(rare.size, frozen.prior))
 
         # The leaky one-shot encoding (fit on full data) sees y=50 for RARE.
         full = InteractionBuilder(data)
-        _, x_full, full_names = full.build_design_matrix_from_parsed(parsed)
-        leaky = x_full[:n_rare, _te_col(full_names)]
-        # Fold-safe encoding must differ from -- and be far below -- the leaked rate.
-        assert not np.isclose(safe[0], leaky[0])
-        assert safe[0] < leaky[0]
+        _, x_full, full_names = full.build_design_matrix_from_parsed(parsed, seed=3)
+        leaky = x_full[rare, _te_col(full_names)]
+        assert np.all(safe < leaky)
 
     def test_exposure_weighted_te_in_fold_uses_training_exposure_only(self):
         """001.5: exposure-weighted TE in a fold uses fold-training claims & exposure only."""
-        from rustystats.regularization_path import build_fold_design_matrices
+        from rustystats._rustystats import cv_fold_ids_py
 
-        data, parsed, train_idx, val_idx, n_rare = self._frame_with_isolated_rare_level()
-        rng = np.random.default_rng(1)
-        exposure = rng.uniform(0.5, 1.5, data.height)
+        data, parsed, rare, exposure = self._frame_with_isolated_rare_level(exposure=True)
+        design, x = self._fold_design(data, parsed, exposure)
+        (frozen,) = design.target
+        training = cv_fold_ids_py(0, data.height, 3, 7) != 0
+        y = data["y"].to_numpy()
+        assert frozen.exposure_weighted
+        assert frozen.prior == pytest.approx(y[training].sum() / exposure[training].sum())
+        safe = x[rare, _te_col(list(design.names))]
+        np.testing.assert_array_equal(safe, np.full(rare.size, frozen.prior))
 
-        _x_train, x_val, names = build_fold_design_matrices(
-            data, parsed, train_idx, val_idx, raw_exposure=exposure
-        )
-        # Unseen level still collapses to the (exposure-weighted) training prior.
-        safe = x_val[:n_rare, _te_col(names)]
-        np.testing.assert_allclose(safe, safe[0])
+    def test_validation_rows_use_the_folds_full_statistics(self):
+        """A seen level's validation rows take the fold's full-statistics value."""
+        from rustystats._rustystats import cv_fold_ids_py
 
-    def test_full_fold_reproduces_one_shot_design(self):
-        """(R) the helper with train=all rows reproduces the one-shot build (behaviour-preserving).
-
-        Fit-time target encoding is cross-fitted per row (out-of-fold), so it does
-        *not* equal the transform-time encoding -- that asymmetry is by design. The
-        guarantee we pin is that building a fold whose training set is the whole
-        frame yields the same design matrix as the existing one-shot path.
-        """
-        from rustystats.interactions import InteractionBuilder
-        from rustystats.regularization_path import build_fold_design_matrices
-
-        data, parsed, _train_idx, _val_idx, _n_rare = self._frame_with_isolated_rare_level()
-        all_idx = np.arange(data.height)
-        x_train, _x_val, _names = build_fold_design_matrices(
-            data, parsed, all_idx, all_idx[:5], seed=0
-        )
-
-        builder = InteractionBuilder(data)
-        _, x_one_shot, _ = builder.build_design_matrix_from_parsed(parsed, seed=0)
-        np.testing.assert_allclose(x_train, x_one_shot, rtol=1e-12, atol=1e-12)
+        data, parsed, _rare, _exposure = self._frame_with_isolated_rare_level()
+        design, x = self._fold_design(data, parsed)
+        (frozen,) = design.target
+        stats = frozen.stats()
+        held_out = np.flatnonzero(cv_fold_ids_py(0, data.height, 3, 7) == 0)
+        column = _te_col(list(design.names))
+        for row in held_out:
+            label = data["Brand"][int(row)]
+            if label == RARE_BRAND:
+                continue
+            total, count = stats["stats"][label]
+            expected = (total + frozen.prior * frozen.prior_weight) / (
+                float(count) + frozen.prior_weight
+            )
+            assert x[row, column] == expected
 
 
 class TestFoldSafeTargetEncodingCV:
@@ -191,17 +237,17 @@ class TestFoldSafeTargetEncodingCV:
 
     def test_cv_te_alpha_grid_uses_fold_training_designs(self, monkeypatch):
         """001.2: alpha candidates are derived after the fold split, not from full-data TE."""
-        from rustystats import regularization_path as rp
+        import rustystats._rustystats as rust
 
         df = make_freq_frame()
-        seen_rows = []
-        original = rp.compute_alpha_max
+        seen_folds = []
+        original = rust.fold_alpha_max_py
 
-        def spy_compute_alpha_max(X, y, l1_ratio, **kwargs):
-            seen_rows.append(X.shape[0])
-            return original(X, y, l1_ratio, **kwargs)
+        def spy_fold_alpha_max(y, x, family, link, l1_ratio, fold, n_folds, seed, **kwargs):
+            seen_folds.append((fold, n_folds, x.shape[0]))
+            return original(y, x, family, link, l1_ratio, fold, n_folds, seed, **kwargs)
 
-        monkeypatch.setattr(rp, "compute_alpha_max", spy_compute_alpha_max)
+        monkeypatch.setattr(rust, "fold_alpha_max_py", spy_fold_alpha_max)
         result = rs.glm_dict(
             response="ClaimCount",
             terms={"DrivAge": {"type": "linear"}, "Brand": {"type": "target_encoding"}},
@@ -211,8 +257,8 @@ class TestFoldSafeTargetEncodingCV:
         ).fit(cv=3, regularization="ridge", n_alphas=3, cv_seed=7, verbose=False)
 
         assert result.cv_deviance is not None
-        assert len(seen_rows) == 3
-        assert all(n_rows < df.height for n_rows in seen_rows)
+        # Each fold's alpha_max reduces over that fold's training rows of its own design.
+        assert [(fold, n_folds) for fold, n_folds, _rows in seen_folds] == [(0, 3), (1, 3), (2, 3)]
 
     def test_cv_te_fold_fits_receive_sign_constraints(self, monkeypatch):
         import rustystats._rustystats as rust
@@ -224,17 +270,14 @@ class TestFoldSafeTargetEncodingCV:
         y = rng.poisson(np.exp(0.2 + 0.1 * x)).astype(float)
         data = pl.DataFrame({"y": y, "x": x, "Brand": brand})
 
-        original = rust.fit_fold_path_py
+        original = rust.fold_path_py
         seen_nonneg = []
 
-        def spy_fit_fold_path_py(*args, **kwargs):
-            if len(args) >= 17:
-                seen_nonneg.append(args[16])
-            else:
-                seen_nonneg.append(kwargs.get("nonneg_indices"))
+        def spy_fold_path_py(*args, **kwargs):
+            seen_nonneg.append(kwargs.get("nonneg_indices"))
             return original(*args, **kwargs)
 
-        monkeypatch.setattr(rust, "fit_fold_path_py", spy_fit_fold_path_py)
+        monkeypatch.setattr(rust, "fold_path_py", spy_fold_path_py)
         result = rs.glm_dict(
             response="y",
             terms={
@@ -252,10 +295,10 @@ class TestFoldSafeTargetEncodingCV:
         import rustystats._rustystats as rust
 
         df = make_freq_frame()
-        original = rust.fit_fold_path_py
+        original = rust.fold_path_py
         failed = {"alpha": None}
 
-        def spy_fit_fold_path_py(*args, **kwargs):
+        def spy_fold_path_py(*args, **kwargs):
             result = original(*args, **kwargs)
             alphas = list(result["alphas"])
             fold_deviances = list(result["fold_deviances"])
@@ -268,7 +311,7 @@ class TestFoldSafeTargetEncodingCV:
                 result["fold_deviances"] = fold_deviances
             return result
 
-        monkeypatch.setattr(rust, "fit_fold_path_py", spy_fit_fold_path_py)
+        monkeypatch.setattr(rust, "fold_path_py", spy_fold_path_py)
         result = rs.glm_dict(
             response="ClaimCount",
             terms={"DrivAge": {"type": "linear"}, "Brand": {"type": "target_encoding"}},
@@ -531,20 +574,13 @@ class TestCVWeightedScoring:
         must NOT contribute to the CV score.
 
         Constructs a small ridge fit (routed through the fold-safe Python path
-        via a TE term so we can reproduce the fold split with
-        :func:`create_cv_folds`), recovers per-fold β from a manual CV
+        via a TE term so we can reproduce its fold designs), recovers per-fold β from a manual CV
         reproduction, hand-computes the weighted-mean validation unit
         deviance, and asserts it matches the reported ``cv_deviance``. A leak
         would show up as ``cv_deviance ≈ unit_dev + α||β||²`` (strictly larger).
         """
         from rustystats._rustystats import fit_glm_py
-        from rustystats.formula import dict_to_parsed_formula
-        from rustystats.regularization_path import (
-            build_fold_design_matrices,
-            compute_deviance,
-            compute_standardization,
-            create_cv_folds,
-        )
+        from rustystats.regularization_path import compute_deviance, compute_standardization
 
         rng = np.random.default_rng(101)
         n = 300
@@ -573,16 +609,12 @@ class TestCVWeightedScoring:
         selected_alpha = row["alpha"]
         expected_dev = row["cv_deviance_mean"]
 
-        parsed = dict_to_parsed_formula(
-            response="y", terms=terms, interactions=None, intercept=True
-        )
-        folds = create_cv_folds(n, n_folds, cv_seed)
+        xs, _names, fold_ids = _fold_designs(df, terms, n_folds, cv_seed)
         fold_devs: list[float] = []
         fold_penalty_contributions: list[float] = []
-        for train_idx, val_idx in folds:
-            x_train, x_val, _names = build_fold_design_matrices(
-                df, parsed, train_idx, val_idx, raw_exposure=None, seed=cv_seed
-            )
+        for fold, x in enumerate(xs):
+            train_idx, val_idx = np.flatnonzero(fold_ids != fold), np.flatnonzero(fold_ids == fold)
+            x_train, x_val = x[train_idx], x[val_idx]
             center, scale = compute_standardization(x_train)
             fit_res = fit_glm_py(
                 y[train_idx],
@@ -642,18 +674,13 @@ class TestManualFoldCV:
     def test_manual_kfold_matches_fold_safe_te_cv(self):
         """001.2 (manual): hand-rolled CV reproduces ``cv_deviance`` on a TE fit.
 
-        Replays the fold-safe path step by step (KFold split -> per-fold
-        ``build_fold_design_matrices`` -> per-fold IRLS -> manual mean unit
+        Replays the fold-safe path step by step (DEC-2 folds -> per-fold design
+        learned from the training rows -> per-fold IRLS -> manual mean unit
         deviance) and checks it matches the result the high-level API returns
         for the same seed/grid.
         """
         from rustystats._rustystats import fit_glm_py
-        from rustystats.regularization_path import (
-            build_fold_design_matrices,
-            compute_deviance,
-            compute_standardization,
-            create_cv_folds,
-        )
+        from rustystats.regularization_path import compute_deviance, compute_standardization
 
         rng = np.random.default_rng(31)
         n = 200
@@ -687,21 +714,12 @@ class TestManualFoldCV:
         target_alpha = target["alpha"]
         expected_dev = target["cv_deviance_mean"]
 
-        from rustystats.formula import dict_to_parsed_formula
-
-        parsed = dict_to_parsed_formula(
-            response="y",
-            terms={"x": {"type": "linear"}, "Brand": {"type": "target_encoding"}},
-            interactions=None,
-            intercept=True,
-        )
-
-        folds = create_cv_folds(n, n_folds, cv_seed)
+        terms = {"x": {"type": "linear"}, "Brand": {"type": "target_encoding"}}
+        xs, _names, fold_ids = _fold_designs(df, terms, n_folds, cv_seed)
         fold_devs = []
-        for train_idx, val_idx in folds:
-            x_train, x_val, _names = build_fold_design_matrices(
-                df, parsed, train_idx, val_idx, raw_exposure=None, seed=cv_seed
-            )
+        for fold, x_fold in enumerate(xs):
+            train_idx, val_idx = np.flatnonzero(fold_ids != fold), np.flatnonzero(fold_ids == fold)
+            x_train, x_val = x_fold[train_idx], x_fold[val_idx]
             center, scale = compute_standardization(x_train)
             fit_res = fit_glm_py(
                 y[train_idx],
@@ -748,48 +766,43 @@ class TestInteractionTELeakage:
         (so all held-out rows in that cell collapse to one value) — the
         leaky one-shot build would encode it with its own y, instead.
         """
+        from rustystats._rustystats import cv_fold_ids_py
         from rustystats.formula import dict_to_parsed_formula
         from rustystats.interactions import InteractionBuilder
-        from rustystats.regularization_path import build_fold_design_matrices
 
         rng = np.random.default_rng(0)
         n = 600
-        # Two factors; the (R_X, B_X) cell only exists in the first 10 rows
-        # (the val fold), with an extreme y. All other cells are common.
+        # Two factors; the (R_X, B_X) cell only exists in 10 rows of fold 0 (its
+        # validation rows), with an extreme y. All other cells are common.
         region = rng.choice(["A", "B"], n).astype(object)
         brand = rng.choice(["P", "Q"], n).astype(object)
         y = rng.poisson(1.0, n).astype(float)
         # Held-out interaction cell:
         n_rare = 10
-        region[:n_rare] = "R_X"
-        brand[:n_rare] = "B_X"
-        y[:n_rare] = 50.0
+        rare = np.flatnonzero(cv_fold_ids_py(0, n, 3, 7) == 0)[:n_rare]
+        region[rare] = "R_X"
+        brand[rare] = "B_X"
+        y[rare] = 50.0
 
         data = pl.DataFrame({"y": y, "Region": region, "Brand": brand})
-        parsed = dict_to_parsed_formula(
-            response="y",
-            terms={
+        terms = {"Region": {"type": "categorical"}, "Brand": {"type": "categorical"}}
+        interactions = [
+            {
                 "Region": {"type": "categorical"},
                 "Brand": {"type": "categorical"},
-            },
-            interactions=[
-                {
-                    "Region": {"type": "categorical"},
-                    "Brand": {"type": "categorical"},
-                    "target_encoding": True,
-                }
-            ],
-            intercept=True,
+                "target_encoding": True,
+            }
+        ]
+        parsed = dict_to_parsed_formula(
+            response="y", terms=terms, interactions=interactions, intercept=True
         )
-        val_idx = np.arange(n_rare)
-        train_idx = np.arange(n_rare, n)
-
-        _x_train, x_val, names = build_fold_design_matrices(data, parsed, train_idx, val_idx)
+        xs, fold_names, _fold_ids = _fold_designs(data, terms, 3, 7, interactions)
+        names = fold_names[0]
         te_cols = [i for i, nm in enumerate(names) if "Region" in nm and "Brand" in nm]
         assert te_cols, f"no TE interaction column in design: {names}"
         te_col = te_cols[0]
 
-        held_out_rows = x_val[:n_rare, te_col]
+        held_out_rows = xs[0][rare, te_col]
         # Every held-out (R_X, B_X) row gets the same training prior because
         # the level is unseen — fold-safe encoding cannot tell them apart.
         np.testing.assert_allclose(held_out_rows, held_out_rows[0])
@@ -799,7 +812,7 @@ class TestInteractionTELeakage:
         full_builder = InteractionBuilder(data)
         _, x_full, full_names = full_builder.build_design_matrix_from_parsed(parsed)
         full_te_cols = [i for i, nm in enumerate(full_names) if "Region" in nm and "Brand" in nm]
-        leaked = x_full[:n_rare, full_te_cols[0]]
+        leaked = x_full[rare, full_te_cols[0]]
         assert not np.isclose(held_out_rows[0], leaked[0]), (
             "fold-safe encoding matched the leaky full-data encoding: "
             f"safe={held_out_rows[0]} leaky={leaked[0]}"
@@ -808,22 +821,23 @@ class TestInteractionTELeakage:
 
 
 class TestFoldDesignCaching:
-    """RS-ACT-001b (PR5 review): the fold-safe path builds each fold's design
-    once for the alpha grid and reuses it for the fit pass — not twice."""
+    """RS-ACT-001b (PR5 review): the fold-safe path learns every fold's design once,
+    in the same passes, and reuses it for the alpha grid and the fit pass."""
 
     def test_fold_design_built_once_per_fold(self, monkeypatch):
-        """001 (perf): builder calls equal exactly cv (n_folds), not 2 * cv."""
-        from rustystats import regularization_path as rp
+        """001 (perf): one learning call learns the n_folds fold designs."""
+        from rustystats import frozen_design
 
         df = make_freq_frame()
-        call_count = {"n": 0}
-        original = rp.build_fold_design_matrices
+        call_count = {"n": 0, "designs": 0}
+        original = frozen_design.learn_frozen_designs
 
-        def spy(*args, **kwargs):
+        def spy(parsed_formulas, *args, **kwargs):
             call_count["n"] += 1
-            return original(*args, **kwargs)
+            call_count["designs"] += len(parsed_formulas)
+            return original(parsed_formulas, *args, **kwargs)
 
-        monkeypatch.setattr(rp, "build_fold_design_matrices", spy)
+        monkeypatch.setattr(frozen_design, "learn_frozen_designs", spy)
         n_folds = 3
         result = rs.glm_dict(
             response="ClaimCount",
@@ -834,18 +848,16 @@ class TestFoldDesignCaching:
         ).fit(cv=n_folds, regularization="ridge", n_alphas=3, cv_seed=7, verbose=False)
 
         assert result.cv_deviance is not None
-        # Before the cache: 2 * n_folds (alpha-grid pass + fit pass). After:
-        # exactly n_folds.
-        assert call_count["n"] == n_folds, (
-            f"expected {n_folds} builder calls (one per fold), got {call_count['n']}"
-        )
+        # The full-data design at construction, then the fold designs together.
+        assert call_count == {"n": 2, "designs": 1 + n_folds}
 
 
 class TestFoldSafeDefaultSeed:
     """RS-ACT-001b (PR5 review): the fold-safe path must default to
     ``DEFAULT_CV_SEED`` when ``cv_seed`` is None — same convention as the fast
-    Rust array path. A ``None`` propagated to ``create_cv_folds`` would seed
-    from OS entropy and break run-to-run reproducibility."""
+    Rust array path, for the folds and the fold designs' target-encoding order.
+    A ``None`` seed would draw from OS entropy and break run-to-run
+    reproducibility."""
 
     def test_default_cv_seed_is_reproducible_without_explicit_seed(self):
         df = make_freq_frame()
@@ -925,3 +937,28 @@ class TestCvConvergenceOverrides:
         assert result.cv_deviance is not None
         assert result.alpha > 0.0
         assert result.converged
+
+
+def test_cv_folds_follow_the_dec2_hash() -> None:
+    """Row r is in fold mix64(seed ^ mix64(r)) mod K, mix64 SplitMix64's finaliser
+    (specs/out-of-core-fit.md §7.8, DEC-2), so folds are reproducible anywhere."""
+    from rustystats._rustystats import fit_cv_path_py
+
+    mask = (1 << 64) - 1
+
+    def mix64(z: int) -> int:
+        z = ((z ^ (z >> 30)) * 0xBF58476D1CE4E5B9) & mask
+        z = ((z ^ (z >> 27)) * 0x94D049BB133111EB) & mask
+        return z ^ (z >> 31)
+
+    rng = np.random.default_rng(3)
+    n, folds, seed = 2000, 5, 1234
+    x = np.column_stack([np.ones(n), rng.normal(size=n)])
+    y = rng.poisson(1.0, n).astype(float)
+    result = fit_cv_path_py(
+        y, x, "poisson", "log", alphas=[0.1, 0.0], l1_ratio=0.0, n_folds=folds, seed=seed
+    )
+    expected = [mix64(seed ^ mix64(r)) % folds for r in range(n)]
+    assert list(result["fold_assignments"]) == expected
+    sizes = np.bincount(expected, minlength=folds)
+    assert sizes.min() > 0.8 * n / folds

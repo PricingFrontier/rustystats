@@ -33,7 +33,8 @@
 //
 // =============================================================================
 
-use crate::constants::{MU_MAX_PROBABILITY, MU_MIN_PROBABILITY};
+use crate::families::{Family, LogLikelihoodForm};
+use crate::rows::reduce_rows;
 use ndarray::Array1;
 use std::f64::consts::PI;
 
@@ -59,29 +60,63 @@ pub fn log_likelihood_gaussian(
     scale: f64,
     weights: Option<&Array1<f64>>,
 ) -> f64 {
-    let n = y.len() as f64;
-    let sum_wt = weights.map_or(n, |w| w.sum());
+    log_likelihood_for_family(&crate::families::GaussianFamily, y, mu, scale, weights)
+}
 
-    // Sum of squared residuals
-    let ss: f64 = ndarray::Zip::from(y).and(mu).fold(0.0, |acc, &yi, &mui| {
-        let diff = yi - mui;
-        acc + diff * diff
-    });
+/// The Gaussian log-likelihood from its two φ-free sums: the (weighted) sum of
+/// squared residuals and the total weight (or n).
+pub fn combine_gaussian_log_likelihood(sum_squares: f64, total_weight: f64, scale: f64) -> f64 {
+    -0.5 * (sum_squares / scale + total_weight * (2.0 * PI * scale).ln())
+}
 
-    // If weighted, scale the sum
-    let ss_weighted = match weights {
-        Some(w) => ndarray::Zip::from(y)
-            .and(mu)
-            .and(w)
-            .fold(0.0, |acc, &yi, &mui, &wi| {
-                let diff = yi - mui;
-                acc + wi * diff * diff
-            }),
-        None => ss,
-    };
-
-    // Log-likelihood
-    -0.5 * (ss_weighted / scale + sum_wt * (2.0 * PI * scale).ln())
+/// One family's log-likelihood at fitted means `mu` (`specs/out-of-core-fit.md` §8).
+///
+/// Every sum is block-ordered (`rows::reduce_rows`), with the same per-row terms the
+/// fit-time passes use, so an in-memory result and an out-of-core fit report the
+/// same bits.
+pub fn log_likelihood_for_family<F: Family + ?Sized>(
+    family: &F,
+    y: &Array1<f64>,
+    mu: &Array1<f64>,
+    scale: f64,
+    weights: Option<&Array1<f64>>,
+) -> f64 {
+    let n = y.len();
+    match family.log_likelihood_form() {
+        LogLikelihoodForm::Gaussian => {
+            let sums = reduce_rows(vec![0.0; 2], n, |sums, rows| {
+                for i in rows {
+                    let diff = y[i] - mu[i];
+                    match weights {
+                        Some(w) => {
+                            sums[0] += w[i] * diff * diff;
+                            sums[1] += w[i];
+                        }
+                        None => sums[0] += diff * diff,
+                    }
+                }
+            });
+            let total_weight = if weights.is_some() { sums[1] } else { n as f64 };
+            combine_gaussian_log_likelihood(sums[0], total_weight, scale)
+        }
+        LogLikelihoodForm::RowSum { .. } => reduce_rows(0.0f64, n, |total, rows| {
+            for i in rows {
+                let term = family.log_likelihood_row(y[i], mu[i], scale);
+                *total += match weights {
+                    Some(w) => term * w[i],
+                    None => term,
+                };
+            }
+        }),
+        LogLikelihoodForm::DevianceFallback => {
+            let deviance = reduce_rows(0.0f64, n, |total, rows| {
+                for i in rows {
+                    *total += family.unit_deviance_at(y[i], mu[i]);
+                }
+            });
+            -deviance / 2.0
+        }
+    }
 }
 
 /// Log-likelihood for Poisson family.
@@ -104,19 +139,7 @@ pub fn log_likelihood_poisson(
     mu: &Array1<f64>,
     weights: Option<&Array1<f64>>,
 ) -> f64 {
-    use statrs::function::gamma::ln_gamma;
-
-    let contributions: Array1<f64> = ndarray::Zip::from(y).and(mu).map_collect(|&yi, &mui| {
-        // y × log(μ) - μ - log(y!)
-        // log(y!) = ln_gamma(y + 1)
-        let log_factorial = ln_gamma(yi + 1.0);
-        yi * mui.ln() - mui - log_factorial
-    });
-
-    match weights {
-        Some(w) => (&contributions * w).sum(),
-        None => contributions.sum(),
-    }
+    log_likelihood_for_family(&crate::families::PoissonFamily, y, mu, 1.0, weights)
 }
 
 /// Log-likelihood for Binomial family (binary case).
@@ -135,24 +158,7 @@ pub fn log_likelihood_binomial(
     mu: &Array1<f64>,
     weights: Option<&Array1<f64>>,
 ) -> f64 {
-    let contributions: Array1<f64> = ndarray::Zip::from(y).and(mu).map_collect(|&yi, &mui| {
-        // Clamp μ to avoid log(0)
-        let mui_safe = mui.clamp(MU_MIN_PROBABILITY, MU_MAX_PROBABILITY);
-
-        // y × log(μ) + (1-y) × log(1-μ)
-        let ll = if yi > 0.0 { yi * mui_safe.ln() } else { 0.0 };
-
-        if yi < 1.0 {
-            ll + (1.0 - yi) * (1.0 - mui_safe).ln()
-        } else {
-            ll
-        }
-    });
-
-    match weights {
-        Some(w) => (&contributions * w).sum(),
-        None => contributions.sum(),
-    }
+    log_likelihood_for_family(&crate::families::BinomialFamily, y, mu, 1.0, weights)
 }
 
 /// Log-likelihood for Gamma family.
@@ -176,30 +182,7 @@ pub fn log_likelihood_gamma(
     scale: f64,
     weights: Option<&Array1<f64>>,
 ) -> f64 {
-    use crate::constants::MU_MIN_POSITIVE;
-    use statrs::function::gamma::ln_gamma;
-
-    // shape α = 1/scale = 1/φ
-    let alpha = 1.0 / scale;
-
-    let contributions: Array1<f64> = ndarray::Zip::from(y).and(mu).map_collect(|&yi, &mui| {
-        // Floor y and mu to prevent log(0) issues
-        // Note: Gamma requires y > 0, but we handle zeros gracefully
-        let yi_safe = yi.max(MU_MIN_POSITIVE);
-        let mui_safe = mui.max(MU_MIN_POSITIVE);
-
-        // Full Gamma log-likelihood (statsmodels formula):
-        // ℓ_i = (α-1)·log(y) - α·y/μ + α·log(α/μ) - log(Γ(α))
-        //     = (α-1)·log(y) - α·y/μ + α·log(α) - α·log(μ) - log(Γ(α))
-
-        (alpha - 1.0) * yi_safe.ln() - alpha * yi_safe / mui_safe + alpha * (alpha / mui_safe).ln()
-            - ln_gamma(alpha)
-    });
-
-    match weights {
-        Some(w) => (&contributions * w).sum(),
-        None => contributions.sum(),
-    }
+    log_likelihood_for_family(&crate::families::GammaFamily, y, mu, scale, weights)
 }
 
 // =============================================================================
@@ -423,61 +406,84 @@ pub fn null_deviance_for_family(
     offset: Option<&Array1<f64>>,
 ) -> f64 {
     let n = y.len();
-
-    // Resolve the single scalar (mean_rate for log-link + offset, else y_mean)
-    // that parameterises the null model, then fold
-    // `family.unit_deviance_at(yi, mu_i)` in one pass. No `mu_null` array,
-    // no intermediate `unit_dev` array — matches the streaming design of
-    // `null_deviance_with_offset` so the two cannot drift apart.
-    let (mean_rate, y_mean, use_log_link_offset) = match offset {
-        Some(off) if family.is_log_link_default() => {
-            let (sum_exp_off, sum_y) = match weights {
-                Some(w) => ndarray::Zip::from(off)
-                    .and(y)
-                    .and(w)
-                    .fold((0.0_f64, 0.0_f64), |(se, sy), &oi, &yi, &wi| {
-                        (se + oi.exp() * wi, sy + yi * wi)
-                    }),
-                None => ndarray::Zip::from(off)
-                    .and(y)
-                    .fold((0.0_f64, 0.0_f64), |(se, sy), &oi, &yi| {
-                        (se + oi.exp(), sy + yi)
-                    }),
+    let log_offset = offset.filter(|_| family.is_log_link_default());
+    let sums = reduce_rows(vec![0.0; 2], n, |sums, rows| {
+        null_model_sums(sums, y, weights, log_offset, rows)
+    });
+    let null = null_model_from_sums(&sums, n, weights.is_some(), log_offset.is_some());
+    reduce_rows(0.0f64, n, |total, rows| {
+        for i in rows {
+            let mu = null.mean_at(log_offset.map(|o| o[i]));
+            let unit = family.unit_deviance_at(y[i], mu);
+            *total += match weights {
+                Some(w) => unit * w[i],
+                None => unit,
             };
-            (sum_y / sum_exp_off, f64::NAN, true)
         }
-        _ => {
-            let (sum_y, sum_w) = match weights {
-                Some(w) => ndarray::Zip::from(y)
-                    .and(w)
-                    .fold((0.0_f64, 0.0_f64), |(sy, sw), &yi, &wi| {
-                        (sy + yi * wi, sw + wi)
-                    }),
-                None => (y.sum(), n as f64),
-            };
-            (f64::NAN, sum_y / sum_w, false)
-        }
-    };
+    })
+}
 
-    match (weights, offset, use_log_link_offset) {
-        (Some(w), Some(off), true) => ndarray::Zip::from(y)
-            .and(w)
-            .and(off)
-            .fold(0.0, |a, &yi, &wi, &oi| {
-                a + family.unit_deviance_at(yi, mean_rate * oi.exp()) * wi
-            }),
-        (Some(w), _, _) => {
-            let mu_const = y_mean;
-            ndarray::Zip::from(y).and(w).fold(0.0, |a, &yi, &wi| {
-                a + family.unit_deviance_at(yi, mu_const) * wi
-            })
+/// The scalar that parameterises the null (intercept-only) model.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NullModel {
+    /// Σw·y / Σw·exp(o) under a log-link default family with an offset;
+    /// otherwise the (weighted) mean response.
+    pub value: f64,
+    /// Whether μ_i = value·exp(o_i) (log-link offset) rather than a constant.
+    pub log_offset: bool,
+}
+
+impl NullModel {
+    /// The null model's mean for one row (`offset` is that row's offset).
+    #[inline]
+    pub fn mean_at(&self, offset: Option<f64>) -> f64 {
+        match (self.log_offset, offset) {
+            (true, Some(o)) => self.value * o.exp(),
+            _ => self.value,
         }
-        (None, Some(off), true) => ndarray::Zip::from(y).and(off).fold(0.0, |a, &yi, &oi| {
-            a + family.unit_deviance_at(yi, mean_rate * oi.exp())
-        }),
-        (None, _, _) => {
-            let mu_const = y_mean;
-            ndarray::Zip::from(y).fold(0.0, |a, &yi| a + family.unit_deviance_at(yi, mu_const))
+    }
+}
+
+/// Fold the null model's two sums over `rows`: (Σw·exp(o), Σw·y) under a log-link
+/// offset, else (Σw·y, Σw); unweighted when `weights` is None.
+pub fn null_model_sums(
+    sums: &mut [f64],
+    y: &Array1<f64>,
+    weights: Option<&Array1<f64>>,
+    log_offset: Option<&Array1<f64>>,
+    rows: std::ops::Range<usize>,
+) {
+    for i in rows {
+        match (log_offset, weights) {
+            (Some(o), Some(w)) => {
+                sums[0] += o[i].exp() * w[i];
+                sums[1] += y[i] * w[i];
+            }
+            (Some(o), None) => {
+                sums[0] += o[i].exp();
+                sums[1] += y[i];
+            }
+            (None, Some(w)) => {
+                sums[0] += y[i] * w[i];
+                sums[1] += w[i];
+            }
+            (None, None) => sums[0] += y[i],
+        }
+    }
+}
+
+/// The null model from its sums (`null_model_sums`).
+pub fn null_model_from_sums(sums: &[f64], n: usize, weighted: bool, log_offset: bool) -> NullModel {
+    if log_offset {
+        NullModel {
+            value: sums[1] / sums[0],
+            log_offset: true,
+        }
+    } else {
+        let total_weight = if weighted { sums[1] } else { n as f64 };
+        NullModel {
+            value: sums[0] / total_weight,
+            log_offset: false,
         }
     }
 }

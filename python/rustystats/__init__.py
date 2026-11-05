@@ -96,6 +96,7 @@ from rustystats.calibration import (
     fit_isotonic_calibration,
 )
 
+# Out-of-core fitting (specs/out-of-core-fit.md)
 # Model diagnostics
 from rustystats.diagnostics import (
     DataExploration,
@@ -142,6 +143,8 @@ from rustystats.multinomial import (
     multinomial_alpha_max,
     multinomial_dict,
 )
+from rustystats.out_of_core import BatchProgress, BatchSource, OutOfCoreOptions
+from rustystats.out_of_core_fit import MemoryPlan, OutOfCoreGLMDict, observed_category_labels
 
 # Rate-table export (resolved deployment tables), sibling to to_pmml / to_onnx
 from rustystats.rate_tables import to_rate_tables
@@ -151,6 +154,9 @@ from rustystats.residuals import working_response_weights
 
 # Penalized spline utilities (for GAMs with automatic smoothness selection)
 from rustystats.smooth import compute_edf, difference_matrix, gcv_score, penalty_matrix
+
+# A result's solver trace (specs/out-of-core-fit.md §4.5)
+from rustystats.solver_trace import SolverStep
 
 # Spline basis functions (for non-linear continuous effects)
 from rustystats.splines import SplineTerm, bs, bs_names, ns, ns_names
@@ -180,6 +186,14 @@ __all__ = [
     "GLMResults",
     "glm_dict",
     "FormulaGLMDict",
+    # Out-of-core fitting
+    "BatchProgress",
+    "BatchSource",
+    "MemoryPlan",
+    "OutOfCoreGLMDict",
+    "OutOfCoreOptions",
+    "observed_category_labels",
+    "SolverStep",
     "MultinomialDatasetDiagnostics",
     "MultinomialDiagnostics",
     "MultinomialDict",

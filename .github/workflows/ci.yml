@@ -266,9 +266,33 @@ jobs:
       - name: Run metamorphic, torture, and oracle fixture tests
         run: uv run --extra dev pytest tests/python/test_metamorphic_contracts.py tests/python/test_numerical_torture_contracts.py tests/python/test_oracle_fixtures.py tests/python/test_glum_oracle_fixtures.py tests/python/test_multinomial_oracle_fixtures.py tests/python/test_smooth_oracle_fixtures.py -q
 
+  out-of-core-memory-smoke:
+    name: Out-of-core memory smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build installed extension (release)
+        run: uv run --extra dev maturin develop --release
+
+      - name: Memory bound and build peak (T13, T14 at smoke scale)
+        # Exits non-zero when an out-of-core fit's peak grows with n, exceeds its
+        # memory plan, or the in-memory build exceeds 1.1 × 8np (specs/out-of-core-fit.md §14).
+        run: uv run --extra dev python benchmarks/bench_out_of_core_memory.py --smoke
+
   diagnostics-verification:
     name: Diagnostics correctness harness
-    needs: [python, rust-release, packaging-smoke, deployment-parity, fuzz-replay, deep-contract-smoke]
+    needs: [python, rust-release, packaging-smoke, deployment-parity, fuzz-replay, deep-contract-smoke, out-of-core-memory-smoke]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
