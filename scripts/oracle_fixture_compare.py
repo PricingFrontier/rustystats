@@ -16,6 +16,12 @@ from typing import Any
 
 #: Relative tolerance for a regenerated fixture's floats.
 RTOL = 1e-10
+#: Convergence residuals (a KKT or gradient maximum) sit at rounding level, around
+#: 1e-11, where a relative tolerance is meaningless: their last-bit noise between
+#: platforms is as large as the values. They are compared with this absolute
+#: tolerance instead, which still fails a residual that has grown to a real size.
+RESIDUAL_ATOL = 1e-9
+RESIDUAL_FIELDS = frozenset({"kkt_max_abs"})
 
 
 def fixture_differences(
@@ -31,6 +37,10 @@ def fixture_differences(
         if math.isnan(a) or math.isnan(e) or math.isinf(a) or math.isinf(e):
             same = (math.isnan(a) and math.isnan(e)) or a == e
             return [] if same else [f"{path}: {a!r} != {e!r}"]
+        if path.rsplit(".", 1)[-1] in RESIDUAL_FIELDS:
+            if abs(a - e) <= RESIDUAL_ATOL:
+                return []
+            return [f"{path}: {a!r} != {e!r} (absolute tolerance {RESIDUAL_ATOL:g})"]
         if abs(a - e) <= rtol * max(abs(a), abs(e)):
             return []
         return [f"{path}: {a!r} != {e!r} (relative tolerance {rtol:g})"]

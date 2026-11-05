@@ -59,3 +59,18 @@ def test_real_differences_fail() -> None:
     assert compare.fixture_differences(FIXTURE, shorter) == ["$.params: length 2 != 3"]
     extra = dict(FIXTURE, extra=1)
     assert "keys differ" in compare.fixture_differences(FIXTURE, extra)[0]
+
+
+def test_convergence_residuals_compare_absolutely() -> None:
+    """A KKT residual at rounding level is noise across platforms (glum's gaussian
+    fixtures regenerate 1.83e-14 against 9.33e-15), but a residual that has grown
+    to a real size still fails."""
+    expected = {"expected": {"kkt_max_abs": 9.325873406851315e-15, "deviance": 1.5}}
+    noisy = {"expected": {"kkt_max_abs": 1.831867990631508e-14, "deviance": 1.5}}
+    grown = {"expected": {"kkt_max_abs": 1e-6, "deviance": 1.5}}
+    assert compare.fixture_differences(expected, noisy) == []
+    assert compare.fixture_differences(expected, grown) == [
+        "$.expected.kkt_max_abs: 1e-06 != 9.325873406851315e-15 (absolute tolerance 1e-09)"
+    ]
+    # Other near-zero floats keep the relative tolerance.
+    assert compare.fixture_differences({"x": 9.3e-15}, {"x": 1.8e-14})

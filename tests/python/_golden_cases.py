@@ -539,7 +539,10 @@ CASES: tuple[GoldenCase, ...] = (
     GoldenCase(
         "negbinomial_theta_estimate",
         _case("y_nb", LINEAR_CAT, "negbinomial", theta="estimate"),
-        rtol_overrides={"theta": 1e-4, "params": 1e-6},
+        # θ comes from a Brent search, so platform libm noise in the inputs and links
+        # moves it (hence 1e-4); the statistics that depend on θ move with it. Windows
+        # gives pearson_chi2 4.2e-9 relative from the record.
+        rtol_overrides={"theta": 1e-4, "params": 1e-6, "statistic": 1e-7},
     ),
     GoldenCase(
         "complement_column",
