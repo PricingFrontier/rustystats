@@ -224,10 +224,10 @@ class _RowInput:
         """The values of global rows ``first_row .. first_row + len(rows)`` as float64."""
         if self.column is not None:
             return _float64(rows, self.column)
+        # Every pass reads an array through the slice `_Run.slices` prepared for it.
         held = self._slice
-        if held is not None and held[:2] == (first_row, rows.height):
-            return held[2]
-        return self._read_array(first_row, rows.height)
+        assert held is not None and held[:2] == (first_row, rows.height)
+        return held[2]
 
     def prepare(self, first_row: int, n: int) -> np.ndarray:
         """Read an array's values for a pass's next slice and hold them for its
@@ -358,6 +358,8 @@ class OutOfCoreGLMDict:
                 f"The source has no column(s) {missing}; its schema has {sorted(data.schema)}."
             )
         self._source_columns = sorted(needed)
+        #: Whether the fit estimates θ, which spills μ (set by :meth:`fit`).
+        self._needs_mu_spill = False
         self._check_key_dtypes()
         # Learned by fit.
         self._builder = None
@@ -813,8 +815,8 @@ class OutOfCoreGLMDict:
         """The CV path over batches (§7.8): ``fit_cv_regularization_path``'s steps."""
         from rustystats._rustystats import alpha_max_batched_py, fit_cv_path_batched_py
         from rustystats.constants import DEFAULT_CV_SEED, DEFAULT_ELASTIC_NET_L1_RATIO
-        from rustystats.formula import get_default_link
         from rustystats.regularization_path import (
+            _alpha_link,
             cv_path_info,
             generate_alpha_path,
             penalized_column_mask,
@@ -842,7 +844,7 @@ class OutOfCoreGLMDict:
                 **run.threads_kwargs,
             )
             center, scale, ridge = np.asarray(center), np.asarray(scale), np.asarray(ridge)
-        link = self.link or get_default_link(self.family)
+        link = _alpha_link(self.link, self.family)
         trace: list = []
         try:
             alpha_max = alpha_max_batched_py(
@@ -1194,8 +1196,7 @@ class _MuSpill:
     def __call__(self, block: np.ndarray | None) -> None:
         try:
             if block is None:
-                if self._file is not None:
-                    self._file.close()
+                # Each round's spill follows a θ pass, which closed the last one.
                 self._file = open(self.path, "wb")  # noqa: SIM115
             else:
                 np.asarray(block, dtype=np.float64).tofile(self._file)
@@ -1451,6 +1452,9 @@ class _Run:
                 admit=lambda phase, extra: self._admit(phase, learning + extra),
             )
         except FrozenDesignUnsupported as exc:
+            if self.n_rows is None and facts.rows == 0:
+                # An empty source: refused as in memory, for its empty response.
+                self._finish_freeze(facts)
             raise OutOfCoreOptionError(
                 f"This model cannot be learned out of core: {exc}. Fit it in memory."
             ) from exc
@@ -1463,8 +1467,8 @@ class _Run:
     def learn_values(self, design: FrozenDesign) -> None:
         """Sort a design's target-encoding training values (te_sort and the spill
         stages), when :meth:`learn` deferred them."""
-        if design.target and self._target is not None and self._open_learning is not None:
-            learn_target_values([design], self._open_learning, self._target)
+        assert self._target is not None and self._open_learning is not None
+        learn_target_values([design], self._open_learning, self._target)
 
     def charge_learned(self, nbytes: int, *, term: str, count: int) -> None:
         """Charge learned state the solve keeps (centres and scales, §6.7) to the
@@ -1568,10 +1572,9 @@ class _Run:
         """A design's passes have ended: close its columns and remove its spill files."""
         design.close()
         for frozen in design.target:
-            path = None if frozen.values is None else frozen.values.path
-            if path is not None and path in self.spill_paths:
-                self.spill_paths.discard(path)
-                _remove_spill(path)
+            # A fold design's training values are always spilled (out of core).
+            self.spill_paths.discard(frozen.values.path)
+            _remove_spill(frozen.values.path)
 
     def close(self, quiet: bool = False) -> None:
         """End the fit: close every design and remove every spill file. A file that
@@ -1623,11 +1626,11 @@ class _Run:
                     validate_offset(offset, len(y), model.family)
             except ValidationError as exc:
                 raise ValidationError(f"{exc}{where}") from exc
-        if y.size:
-            if facts.first_response is None:
-                facts.first_response = float(y[0])
-            if not facts.response_varies and np.any(y != facts.first_response):
-                facts.response_varies = True
+        # A slice is never empty.
+        if facts.first_response is None:
+            facts.first_response = float(y[0])
+        if not facts.response_varies and np.any(y != facts.first_response):
+            facts.response_varies = True
         facts.response_sum.update(np.ascontiguousarray(y))
         facts.rows += len(y)
 
@@ -2019,8 +2022,8 @@ class _BatchedTargetFolds:
         )
 
     def release(self, fold: int) -> None:
-        if self._current is not None and self._current[0] == fold:
-            self._current = None
+        # Folds run one at a time, so the fold released is the one open, if any.
+        self._current = None
         self.run.release_design(self.designs[fold])
 
 

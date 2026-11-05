@@ -275,11 +275,6 @@ def _row_payload(
     return sizes, widest
 
 
-def _row_payload_bytes(batch: pl.DataFrame, fixed_bytes: int = 8) -> np.ndarray:
-    """Bytes per row of ``batch`` (see :func:`_row_payload`)."""
-    return _row_payload(batch, 0, batch.height, fixed_bytes)[0]
-
-
 #: Rows a fingerprint call converts at a time: its scratch is bounded by this many rows,
 #: whatever the slice it is given.
 FINGERPRINT_ROWS = 4_096

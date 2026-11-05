@@ -175,6 +175,16 @@ def _alpha_family_base(family: str) -> str:
     return family_base
 
 
+def _alpha_link(link: str | None, family: str) -> str:
+    """The link alpha_max scores with, in either fit mode: the family's default when
+    none is given, matched case-insensitively as the fits match link names."""
+    if not link:
+        from rustystats.formula import get_default_link
+
+        return get_default_link(_alpha_family_base(family))
+    return link.lower()
+
+
 def _glm_score_gradient_factor(
     y: np.ndarray,
     mu: np.ndarray,
@@ -494,11 +504,8 @@ def compute_alpha_max(
     # Resolve link to the family default when the caller passed None / "" —
     # ``FormulaGLMDict.link`` is allowed to stay unset until fit time, and we
     # used to break with ``unsupported link None`` for CV-regularised fits on
-    # those models. Mirrors ``formula.py``'s ``link or get_default_link()`` idiom.
-    if not link:
-        from rustystats.formula import get_default_link
-
-        link = get_default_link(family)
+    # those models — and match it case-insensitively, as the fits do.
+    link = _alpha_link(link, family)
 
     _n, p = X.shape
 
@@ -1086,13 +1093,13 @@ def target_encoded_cv_path(
     floor). The folds then run in fold order; an alpha that failed in an earlier fold
     is dropped from later folds' grids, as their warm-start chains always were.
     """
-    from rustystats.formula import _get_constraint_indices, get_default_link
+    from rustystats.formula import _get_constraint_indices
 
     effective_l1_ratio = _effective_l1_ratio(regularization, l1_ratio)
     if verbose:
         print(f"Fold-safe target-encoding CV: {regularization}, {n_folds} folds, {n_alphas} alphas")
     alpha_family = _alpha_family_base(family)
-    alpha_link = link or get_default_link(alpha_family)
+    alpha_link = _alpha_link(link, family)
 
     standardizations: list[tuple[np.ndarray | None, np.ndarray | None]] = []
     fold_alpha_maxes: list[float] = []

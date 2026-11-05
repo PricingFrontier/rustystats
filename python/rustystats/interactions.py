@@ -1151,7 +1151,7 @@ class InteractionBuilder:
         self,
         te_term: TargetEncodingTermSpec,
         target: np.ndarray,
-        seed: int | None = None,
+        seed: int,
         exposure: np.ndarray | None = None,
     ) -> tuple[np.ndarray, str, dict]:
         """
@@ -1169,8 +1169,8 @@ class InteractionBuilder:
             Target encoding term specification
         target : np.ndarray
             Target variable values (e.g., ClaimCount)
-        seed : int, optional
-            Random seed for reproducibility
+        seed : int
+            The keyed order's seed (DEC-1); the build draws one once when not given.
         exposure : np.ndarray, optional
             Exposure values. If provided, uses exposure-weighted target encoding
             (sum_claims / sum_exposure) instead of observation-weighted encoding.
@@ -1233,10 +1233,6 @@ class InteractionBuilder:
                 label: (float(total), int(count))
                 for label, total, count in zip(labels, sums, counts)
             }
-        if seed is None:
-            from rustystats.frozen_design import draw_target_encoding_seed
-
-            seed = draw_target_encoding_seed()
         encoder = TargetEncodingTerm(
             seed, n_permutations, len(labels), prior, resolved_prior_weight, has_exposure
         )

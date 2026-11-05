@@ -591,10 +591,8 @@ class FrozenFrequency:
 def _frequency_for(
     frequency: Iterable[FrozenFrequency], term: FrequencyEncodingTermSpec
 ) -> FrozenFrequency:
-    for frozen in frequency:
-        if frozen.term is term:
-            return frozen
-    raise DesignMatrixError(f"FE({term.var_name}) was not learned by this design.")
+    """The learned state of ``term``: learning finishes one per frequency-encoded term."""
+    return next(frozen for frozen in frequency if frozen.term is term)
 
 
 # ── Target encoding (§6.6) ──────────────────────────────────────────────────
@@ -813,9 +811,9 @@ class FrozenTarget:
 
     def column(self, codes: _SliceCodes, n: int) -> np.ndarray:
         """The term's value for each row of a slice (kept until the next slice)."""
+        # ``encode_into`` refuses a target-encoded design's slice without its first row.
         first_row = codes.first_row
-        if first_row is None:
-            raise DesignMatrixError(f"{self.name} needs the slice's first row to encode.")
+        assert first_row is not None
         if self._cache is not None and self._cache[:2] == (first_row, n):
             return self._cache[2]
         if self.values is None:
@@ -1497,8 +1495,6 @@ def _active_cells(codes: list[np.ndarray], sizes: Sequence[int]) -> tuple[np.nda
 
 def _grouped(block: np.ndarray, groups: int, width: int) -> np.ndarray:
     """``block`` (rows × groups·width) as rows × groups × width, sharing its memory."""
-    if block.shape[1] != groups * width:
-        raise DesignMatrixError(f"A block of {block.shape[1]} columns is not {groups} × {width}.")
     row_stride, column_stride = block.strides
     return np.lib.stride_tricks.as_strided(
         block,
@@ -1689,9 +1685,7 @@ class _ContinuousProduct:
     def write(self, rows, out, codes) -> None:
         column = out[:, self.start]
         first = _float_column(rows, self.factors[0])
-        if len(self.factors) == 1:
-            column[...] = first
-            return
+        # An interaction has two factors or more (the parser refuses fewer).
         # ``build_cont_cont_interaction_py`` multiplies elementwise, pair by pair.
         with _as_rust():
             np.multiply(first, _float_column(rows, self.factors[1]), out=column)
@@ -1939,8 +1933,6 @@ class _LevelIndicators:
     categoricals = ()
 
     def write(self, rows, out, codes) -> None:
-        if not self.matches:
-            return
         explicit = codes.explicit(self.column)
         unseen = explicit < 0
         for offset, matches in enumerate(self.matches):
@@ -2014,9 +2006,12 @@ def _expression_columns(expression: str, columns: Sequence[str]) -> list[str]:
 
 
 def _place(spline: SplineTerm) -> tuple[int, list[str]]:
-    """Place a spline's learned knots, as its first ``transform`` would; its width and names."""
-    if spline._computed_boundary_knots is None and not spline.adopt_frozen_knots():
-        raise DesignMatrixError(f"No knots were learned for {spline!r}.")
+    """Place a spline's learned knots, as its first ``transform`` would; its width and names.
+
+    Learning froze knots for every spline the layout reaches without placed ones.
+    """
+    if spline._computed_boundary_knots is None:
+        spline.adopt_frozen_knots()
     width = spline.basis_width()
     return width, spline.column_names(width)
 
@@ -2142,14 +2137,12 @@ def check_design_width(parsed: ParsedFormula, labels: Callable[[str], int], limi
     p = sum(width for _term, width in widths)
     if p <= limit:
         return
-    total = 0
-    for term, width in widths:
-        total += width
-        if total > limit:
-            raise DesignTooWideError(
-                f"The design has at least p = {p:,} columns, more than max_design_columns = "
-                f"{limit:,}; term {term!r} crossed the limit with {width:,} columns."
-            )
+    running = itertools.accumulate(width for _term, width in widths)
+    term, width = next(entry for entry, total in zip(widths, running) if total > limit)
+    raise DesignTooWideError(
+        f"The design has at least p = {p:,} columns, more than max_design_columns = "
+        f"{limit:,}; term {term!r} crossed the limit with {width:,} columns."
+    )
 
 
 class _Planner:
@@ -2254,24 +2247,21 @@ class _Planner:
         term_type: str,
         factors: Sequence[str],
         extra: dict | None = None,
-        *,
-        slot: bool = True,
     ) -> None:
         start = self.n_cols
         self.names.extend(names)
         self.writers.append(writer)
-        if slot:
-            self.slots.append(
-                TermSlot(
-                    term_name=term_name,
-                    term_type=term_type,
-                    factors=list(factors),
-                    col_start=start,
-                    col_end=start + len(names),
-                    design_column_names=list(names),
-                    extra={} if extra is None else extra,
-                )
+        self.slots.append(
+            TermSlot(
+                term_name=term_name,
+                term_type=term_type,
+                factors=list(factors),
+                col_start=start,
+                col_end=start + len(names),
+                design_column_names=list(names),
+                extra={} if extra is None else extra,
             )
+        )
 
     # Main effects ----------------------------------------------------------
 
@@ -2298,10 +2288,8 @@ class _Planner:
         self._add(writer, names, spline.var_name, spline.spline_type, [spline.var_name], extra)
 
     def _frozen_target(self, te_term: TargetEncodingTermSpec) -> FrozenTarget:
-        for frozen in self.targets:
-            if frozen.term is te_term:
-                return frozen
-        raise DesignMatrixError(f"TE({te_term.var_name}) was not learned by this design.")
+        """The learned state of ``te_term``: learning finishes one per target-encoded term."""
+        return next(frozen for frozen in self.targets if frozen.term is te_term)
 
     def _target(self, te_term: TargetEncodingTermSpec) -> None:
         frozen = self._frozen_target(te_term)
@@ -2345,11 +2333,9 @@ class _Planner:
         self._add(writer, [name], name, "constraint", factors, extra)
 
     def _level_indicators(self, cat_term: CategoricalTermSpec) -> None:
+        # The parser keeps a categorical term here only when it lists levels.
         levels = cat_term.levels or []
         var = cat_term.var_name
-        if not levels:
-            self._add(_LevelIndicators(self.n_cols, var, ()), [], var, "", [], slot=False)
-            return
         # Today: ``column.to_numpy().astype(str) == level`` over the whole column.
         labels = np.array(self.categories[var].explicit_labels)
         matches = tuple(labels == level for level in levels)
@@ -2391,17 +2377,16 @@ class _Planner:
         else:
             writer, names, pending = self._mixed_interaction(interaction, start)
         self.pending = pending
+        # Every pending spline is a smooth with columns: an interaction refuses a
+        # fixed-df monotone spline, and one without categorical columns has none.
         for spline, local_start, local_end in pending:
-            if local_end <= local_start:
-                continue
             columns = (start + local_start, start + local_end)
             registered = copy(spline)
             registered._interaction_smooth_endpoint_constraint = True
             self.spline_terms.append(registered)
             self.spline_columns.append(columns)
-            if getattr(registered, "_is_smooth", False):
-                self.smooth_terms.append(registered)
-                self.smooth_columns.append(columns)
+            self.smooth_terms.append(registered)
+            self.smooth_columns.append(columns)
         extra = {
             "categorical_flags": list(interaction.categorical_flags),
             "force_linear": list(interaction.force_linear or []),
