@@ -30,10 +30,14 @@ from _design_cases import (
     DIGEST_SCHEMA,
     LIN,
     TERM_KINDS,
+    TRANSCENDENTAL_RTOL,
     _frame,
     _spec,
     design_record,
     design_specs,
+    evaluates_transcendentals,
+    frame_digest,
+    portable,
 )
 from _golden_cases import CASES
 from rustystats.category_keys import ENTRY_OVERHEAD_BYTES, LearnedStateBudget
@@ -193,22 +197,81 @@ def _pinned() -> dict[str, Any]:
     return document["designs"]
 
 
+def _stored_array(key: str) -> np.ndarray:
+    with np.load(_DIGESTS.with_suffix(".npz")) as archive:
+        return archive[key]
+
+
 _SPECS = design_specs()
 
 
 def test_every_design_case_has_a_pinned_digest() -> None:
     assert set(_pinned()) == set(_SPECS)
+    # Only the designs with a power in an expression term are compared within ulps.
+    assert sorted(
+        name for name, (_d, spec) in _SPECS.items() if evaluates_transcendentals(spec)
+    ) == [
+        "golden/frequency_encoding_expression",
+        "term_kind/expressions_and_constraints",
+    ]
+
+
+@pytest.mark.parametrize("name", sorted(_SPECS))
+def test_the_input_frame_is_the_pinned_one(name: str) -> None:
+    """T1's inputs are bit-identical on every platform: rounded onto a dyadic grid."""
+    data, _spec = _SPECS[name]
+    assert frame_digest(data) == _pinned()[name]["input"], (
+        f"{name}'s input frame differs from the pinned one on this platform, so the "
+        "design digests cannot be compared: a generator's output moved across a "
+        "2⁻²⁰ grid boundary (see _design_cases.portable)"
+    )
+
+
+def _nudged(frame: pl.DataFrame, direction: float) -> pl.DataFrame:
+    """Every generated float one ulp towards ``direction``: what another platform's libm
+    may give. Zero, non-finite values and magnitudes of 2³¹ or more (literals such as
+    1e300, coarser than the grid already) are left as they are."""
+    columns = []
+    for name, dtype in frame.schema.items():
+        column = frame[name]
+        if dtype == pl.Float64:
+            values = column.to_numpy()
+            generated = np.isfinite(values) & (values != 0.0) & (np.abs(values) < 2.0**31)
+            moved = np.where(generated, np.nextafter(values, direction), values)
+            nulls = np.flatnonzero(column.is_null().to_numpy())
+            column = pl.Series(name, moved, dtype=pl.Float64).scatter(nulls, None)
+        columns.append(column)
+    return pl.DataFrame(columns)
+
+
+def test_the_portable_inputs_absorb_last_bit_differences() -> None:
+    """A generated input one ulp off, either way, gives the same portable frame: no
+    value in these inputs sits within an ulp of a grid boundary."""
+    raw = design_specs(raw=True)
+    for name, (data, _model) in _SPECS.items():
+        expected = frame_digest(data)
+        for direction in (-np.inf, np.inf):
+            assert frame_digest(portable(_nudged(raw[name][0], direction))) == expected, name
 
 
 @pytest.mark.parametrize("name", sorted(_SPECS))
 @pytest.mark.parametrize("slice_rows", [None, 1024])
 def test_frozen_design_matches_the_pinned_v0_9_0_digest(name: str, slice_rows) -> None:
-    """X, y and the names hash to what v0.9.0's builder gave (not the retained builder)."""
+    """X, y and the names are what v0.9.0's builder gave (not the retained builder): by
+    digest, or, for a design that evaluates a transcendental function, within a few ulps
+    of v0.9.0's stored X."""
     data, spec = _SPECS[name]
+    pinned = _pinned()[name]
+    assert frame_digest(data) == pinned["input"], "the input frame differs (see above)"
     build = {} if slice_rows is None else {"slice_rows": slice_rows}
     _builder, y, X, names = build_design_in_memory(data, _parse(spec), **build)
     assert X.dtype == np.float64 and X.flags.c_contiguous
-    assert design_record(y, X, names) == _pinned()[name]
+    record = design_record(data, spec, name, y, X, names)
+    assert record == pinned
+    if "array" in pinned["X"]:
+        np.testing.assert_allclose(
+            X, _stored_array(pinned["X"]["array"]), rtol=TRANSCENDENTAL_RTOL, atol=0.0
+        )
 
 
 def _rich_spec() -> dict[str, Any]:

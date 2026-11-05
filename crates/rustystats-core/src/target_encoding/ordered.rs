@@ -1242,8 +1242,10 @@ mod tests {
                 let bytes = std::fs::read(&path).expect("column");
                 std::fs::remove_file(&path).expect("remove");
                 bytes
-                    .chunks_exact(8)
-                    .map(|b| f64::from_le_bytes(b.try_into().expect("8 bytes")))
+                    .as_chunks::<8>()
+                    .0
+                    .iter()
+                    .map(|b| f64::from_le_bytes(*b))
                     .collect()
             }
         }

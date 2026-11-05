@@ -207,9 +207,62 @@ TERM_KINDS: dict[str, dict[str, Any]] = {
 
 
 # ── Pinned digests (T1) ──────────────────────────────────────────────────────
+#
+# A design's digest can only be pinned when every platform builds the same bits. The
+# inputs come from generators that call libm (``np.exp``, the normal and gamma
+# samplers), whose last bits differ by CPU and compiler, so each T1 input frame is
+# first rounded onto a dyadic grid, exactly, and the result is pinned too. Building a
+# design is then IEEE arithmetic, identical everywhere, except where it evaluates a
+# transcendental function itself (``**`` in an expression term goes through ``pow``):
+# those designs are compared with stored arrays within a few ulps instead.
 
 #: The digest record's format.
-DIGEST_SCHEMA = 1
+DIGEST_SCHEMA = 2
+#: T1's float inputs are multiples of 2⁻²⁰: x·2²⁰, rounded half to even, then ÷2²⁰.
+#: Each step is exact, so the result depends on nothing but x's grid cell.
+PORTABLE_GRID = 2.0**20
+#: The relative tolerance for the designs that evaluate a transcendental function.
+TRANSCENDENTAL_RTOL = 4 * np.finfo(np.float64).eps
+
+
+def portable(frame: pl.DataFrame) -> pl.DataFrame:
+    """``frame`` with every float column rounded onto the dyadic grid (nulls, NaN,
+    infinities and the sign of zero kept), so its bits are the same on every platform."""
+    columns = []
+    for name, dtype in frame.schema.items():
+        column = frame[name]
+        if dtype.is_float():
+            values = column.cast(pl.Float64).to_numpy()
+            rounded = np.round(values * PORTABLE_GRID) / PORTABLE_GRID
+            column = (
+                pl.Series(name, rounded, dtype=pl.Float64)
+                .scatter(np.flatnonzero(column.is_null().to_numpy()), None)
+                .cast(dtype)
+            )
+        columns.append(column)
+    return pl.DataFrame(columns)
+
+
+def frame_digest(frame: pl.DataFrame) -> str:
+    """A digest of a frame's names, dtype classes and values (floats by their exact
+    shortest repr), independent of the Polars version's memory layout."""
+    hasher = hashlib.sha256()
+    for name in frame.columns:
+        column = frame[name]
+        hasher.update(f"{name}\0{type(column.dtype).__name__}\0".encode())
+        hasher.update(repr(column.to_list()).encode("utf-8"))
+    return hasher.hexdigest()
+
+
+def evaluates_transcendentals(spec: dict[str, Any]) -> bool:
+    """Whether building ``spec``'s design calls a libm function: an expression term
+    with a power (Polars evaluates ``**`` with ``pow``)."""
+    terms = list(spec["terms"].values())
+    for interaction in spec.get("interactions") or []:
+        terms += [term for term in interaction.values() if isinstance(term, dict)]
+    return any(
+        term.get("type") == "expression" and "**" in str(term.get("expr", "")) for term in terms
+    )
 
 
 def digest(array: np.ndarray) -> dict[str, Any]:
@@ -222,15 +275,38 @@ def names_digest(names: list[str]) -> str:
     return hashlib.sha256(json.dumps(list(names)).encode("utf-8")).hexdigest()
 
 
-def design_record(y: np.ndarray, x: np.ndarray, names: list[str]) -> dict[str, Any]:
-    return {"X": digest(x), "y": digest(y), "names": names_digest(names)}
+def array_key(name: str) -> str:
+    """A design's key in the stored-array archive."""
+    return name.replace("/", "__")
 
 
-def design_specs() -> dict[str, tuple[pl.DataFrame, dict[str, Any]]]:
-    """Every pinned design: its data and its dict specification."""
+def design_record(
+    data: pl.DataFrame, spec: dict[str, Any], name: str, y: np.ndarray, x: np.ndarray, names
+) -> dict[str, Any]:
+    """What T1 pins for one design: its input frame's digest, y's and the names'
+    digests, and X's digest, or, for a design that evaluates a transcendental function,
+    X's shape and its key in the stored-array archive."""
+    if evaluates_transcendentals(spec):
+        x_record: dict[str, Any] = {"shape": list(np.shape(x)), "array": array_key(name)}
+    else:
+        x_record = digest(x)
+    return {
+        "input": frame_digest(data),
+        "X": x_record,
+        "y": digest(y),
+        "names": names_digest(names),
+    }
+
+
+def design_specs(*, raw: bool = False) -> dict[str, tuple[pl.DataFrame, dict[str, Any]]]:
+    """Every pinned design: its portable input frame (with ``raw``, the generated frame
+    before rounding) and its dict specification."""
     from rustystats.formula import dict_to_parsed_formula
 
-    frame = _frame()
+    def prepare(frame: pl.DataFrame) -> pl.DataFrame:
+        return frame if raw else portable(frame)
+
+    frame = prepare(_frame())
     specs = {f"term_kind/{name}": (frame, spec) for name, spec in TERM_KINDS.items()}
     for case in CASES:
         kwargs, _fit, _holdout = case.build()
@@ -241,5 +317,5 @@ def design_specs() -> dict[str, tuple[pl.DataFrame, dict[str, Any]]]:
             intercept=kwargs.get("intercept", True),
         )
         if not parsed.target_encoding_terms:
-            specs[f"golden/{case.name}"] = (kwargs["data"], kwargs)
+            specs[f"golden/{case.name}"] = (prepare(kwargs["data"]), kwargs)
     return specs

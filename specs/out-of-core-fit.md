@@ -1352,6 +1352,22 @@ Every item ships. The order only manages risk.
   - The digests were captured by `scripts/capture_design_digests.py` from a
     `git archive` of 28e7373 with its extension built.
   - The frozen build must reproduce them with and without slicing.
+  - **Portable inputs.** The generators call libm (`np.exp`, the normal and gamma
+    samplers), whose last bits differ by CPU and compiler (AVX-512, NEON, MSVC).
+    - So T1 rounds every float input onto the 2⁻²⁰ grid first: x·2²⁰, rounded half to
+      even, then ÷2²⁰. Each step is exact.
+    - Each input frame's digest is pinned too, so input drift fails on its own.
+    - A test checks that moving every generated input one ulp either way leaves the
+      rounded frame unchanged.
+    - Building a design is IEEE arithmetic, so its X is then the same on every platform.
+  - **Transcendental designs.** A design that evaluates a transcendental function itself
+    is not portable bit for bit. Here those are the designs with `**` in an expression
+    term, which Polars evaluates with `pow`: `term_kind/expressions_and_constraints` and
+    `golden/frequency_encoding_expression`.
+    - Their X is compared with v0.9.0's stored arrays (`design_digests_v0_9_0.npz`)
+      within a relative 4 ulps, rather than by digest.
+    - Their inputs, y and names are still compared by digest.
+  - The inputs were re-captured this way on 2026-11-05.
 
 | ID | Scenario | Oracle |
 |---|---|---|

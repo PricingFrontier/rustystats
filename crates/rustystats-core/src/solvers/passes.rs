@@ -1493,7 +1493,9 @@ pub fn process_rows<'r, F>(
                 }
                 (Eval::Kkt { predictor, columns }, EvalSum::Sums(sums)) => {
                     let (resid, info_weight) = quasi_score_terms(ctx, states[*predictor].mu, i);
-                    for (pair, &column) in sums.chunks_exact_mut(2).zip(columns.iter()) {
+                    for (pair, &column) in
+                        sums.as_chunks_mut::<2>().0.iter_mut().zip(columns.iter())
+                    {
                         let v = x.value(column);
                         pair[0] += resid * v;
                         pair[1] += info_weight * v * v;
