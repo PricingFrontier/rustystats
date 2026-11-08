@@ -363,22 +363,23 @@ terms = {
 
 ### expression
 
-Arbitrary arithmetic expressions (like R's `I()`).
+One arithmetic operation on columns or numbers (like a simple R `I()`).
 
 ```python
 terms = {
     "Age2": {"type": "expression", "expr": "Age ** 2"},
-    "BMI": {"type": "expression", "expr": "Weight / (Height ** 2)"},
-    "LogDensity": {"type": "expression", "expr": "log(Density)"},
+    "IncomeK": {"type": "expression", "expr": "Income / 1000"},
+    "PowerToWeight": {"type": "expression", "expr": "Power / Weight"},
 }
 ```
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `expr` | str | Python expression using column names |
+| `expr` | str | One operation on a column and a column or number |
 | `monotonicity` | str | `"increasing"` or `"decreasing"` (optional) |
 
-**Supported operations:** `+`, `-`, `*`, `/`, `**`, `log`, `exp`, `sqrt`
+**Supported operations:** `+`, `-`, `*`, `/`, `**`. For anything else, such as a log or a
+compound formula, add the column to your DataFrame first.
 
 ---
 

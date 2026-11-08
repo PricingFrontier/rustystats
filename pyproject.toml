@@ -42,8 +42,8 @@ keywords = ["statistics", "glm", "actuarial", "regression", "modeling"]
 # Python package dependencies (minimal for users)
 dependencies = [
     "numpy>=1.20,<2.4",
-    # The oldest Polars the package runs on: 1.32 has no hash joins on Decimal
-    # (i128) category keys, which 1.33 has (checked by running the suite on both).
+    # Polars 2 is the supported line: the lock runs the suite on 2.0 (Python 3.10)
+    # and 2.1 (Python 3.11+).
     "polars>=2.0,<3",
 ]
 
