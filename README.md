@@ -19,9 +19,10 @@
 - **Target Encoding** - Ordered target encoding for high-cardinality categoricals
 - **Regularization** - Ridge, Lasso, and Elastic Net via coordinate descent
 - **Lasso Credibility** - Shrink toward a prior model instead of zero (CAS Monograph 13)
+- **Out-of-Core** - Fit from batches within a memory budget, bitwise identical to the in-memory fit
 - **Validation** - Design matrix checks with fix suggestions before fitting
 - **Complete** - 8 families, robust SEs, full diagnostics, VIF, partial dependence
-- **Minimal** - Only `numpy` and `polars` required
+- **Minimal** - Only `numpy` and `polars` 2 required
 
 ## Installation
 
@@ -319,13 +320,14 @@ result = rs.glm_dict(
         "age2": {"type": "expression", "expr": "age ** 2"},
         "age3": {"type": "expression", "expr": "age ** 3"},
         "income_k": {"type": "expression", "expr": "income / 1000"},
-        "bmi": {"type": "expression", "expr": "weight / (height ** 2)"},
+        "power_to_weight": {"type": "expression", "expr": "power / weight"},
     },
     data=data, family="gaussian",
 ).fit()
 ```
 
-**Supported operations:** `+`, `-`, `*`, `/`, `**` (power)
+**Supported operations:** `+`, `-`, `*`, `/`, `**` (power). An expression is one operation on
+columns or numbers. For anything else, such as a log, add the column to your DataFrame first.
 
 ---
 
@@ -402,6 +404,35 @@ print(state_result.credibility_summary())  # Deviation from complement per term
 - `GLMModel`: fitted model; predictions are computed automatically
 
 Works with all families/links, splines, categoricals, interactions, and target encoding.
+
+---
+
+## Out-of-Core Fitting
+
+Fit data too large for memory from a source that can be re-read in batches. Memory is bounded
+by a budget you set, and the result is bitwise identical to an in-memory fit.
+
+```python
+import polars as pl
+import rustystats as rs
+
+path = "training.parquet"
+
+def open_batches(columns):
+    # Every call must yield the same rows in the same order.
+    yield from pl.scan_parquet(path).select(columns).collect_batches()
+
+result = rs.glm_dict(
+    response="ClaimCount",
+    terms={"Age": {"type": "bs", "df": 5}, "Region": {"type": "categorical"}},
+    data=rs.BatchSource(open_batches, pl.read_parquet_schema(path)),
+    family="poisson",
+    exposure="Exposure",
+).fit(out_of_core=rs.OutOfCoreOptions(max_bytes=2 * 1024**3))
+```
+
+See [Out-of-Core Fitting](https://pricingfrontier.github.io/rustystats/api/out-of-core/) for
+the options and what a result serves.
 
 ---
 
@@ -720,7 +751,7 @@ errors.
 
 ### Python
 - `numpy` - Array operations (required)
-- `polars` - DataFrame support (required)
+- `polars` 2.x - DataFrame support (required)
 
 ---
 

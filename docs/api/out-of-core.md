@@ -73,6 +73,9 @@ category, L1 with a smooth term, and so on) are refused before the source is ope
 | `scratch_dir` | Where spill files go. Required for target encoding and for θ estimation. Every spill file is removed when the fit ends, however it ends. |
 | `on_batch` | Called with a `BatchProgress(pass_index, pass_kind, rows_done, n_rows)` after every source batch. An exception it raises stops the fit and reaches the caller unchanged: use it for cancellation and memory checks. |
 
+Every error named on this page can be caught from the package, for example
+`except rs.MemoryPlanExceededError`.
+
 ## Results
 
 Both modes report how the fit ran:

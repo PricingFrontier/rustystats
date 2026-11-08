@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import pickle
 import re
 import tracemalloc
 from dataclasses import dataclass
@@ -24,6 +25,7 @@ import polars as pl
 import pytest
 import rustystats as rs
 from _golden_cases import CASES, RESULT_FIELDS, _read, design_frame
+from rustystats import exceptions
 from rustystats.exceptions import (
     DesignTooWideError,
     LearnedStateTooLargeError,
@@ -843,6 +845,73 @@ def test_an_out_of_core_result_refuses_each_per_row_method(frame) -> None:
         frame, categorical_factors=["cat_a"], continuous_factors=["x1"]
     )
     assert diagnostics is not None
+
+
+# ── §4.5: the fit record through to_bytes ───────────────────────────────────
+
+
+RECORD_GLM = {
+    "response": "y_pois",
+    "family": "poisson",
+    "terms": {"x1": {"type": "linear"}, "cat_a": {"type": "categorical"}},
+}
+
+
+def _record(result: rs.GLMModel) -> tuple:
+    return result.fit_mode, result.passes, result.solver_settings, result.solver_trace
+
+
+@pytest.mark.parametrize("out_of_core", [False, True], ids=["in_memory", "out_of_core"])
+def test_a_restored_result_reports_how_the_fit_ran(frame, out_of_core: bool) -> None:
+    if out_of_core:
+        result = rs.glm_dict(data=_source(frame)[0], **RECORD_GLM).fit(
+            out_of_core=rs.OutOfCoreOptions()
+        )
+    else:
+        result = rs.glm_dict(data=frame, **RECORD_GLM).fit()
+
+    restored = rs.GLMModel.from_bytes(result.to_bytes())
+
+    assert _record(restored) == _record(result)
+    assert restored.solver_trace
+    assert all(isinstance(step, rs.SolverStep) for step in restored.solver_trace)
+    if out_of_core:
+        assert restored.memory_plan == result.memory_plan
+        assert restored.encode_rows == result.encode_rows
+
+
+def test_a_restored_out_of_core_result_still_refuses_per_row_methods(frame) -> None:
+    result = rs.glm_dict(data=_source(frame)[0], **RECORD_GLM).fit(
+        out_of_core=rs.OutOfCoreOptions()
+    )
+    restored = rs.GLMModel.from_bytes(result.to_bytes())
+
+    with pytest.raises(OutOfCoreResultError, match="relevel"):
+        restored.relevel(frame)
+
+
+def test_a_payload_without_the_fit_record_reads_as_an_in_memory_fit(frame) -> None:
+    """0.9.0 wrote the same schema version without these fields."""
+    state = pickle.loads(rs.glm_dict(data=frame, **RECORD_GLM).fit().to_bytes())
+    for key in (
+        "fit_mode",
+        "passes",
+        "solver_settings",
+        "solver_trace",
+        "memory_plan",
+        "encode_rows",
+    ):
+        del state["result_state"][key]
+
+    restored = rs.GLMModel.from_bytes(pickle.dumps(state))
+
+    assert _record(restored) == ("in_memory", {}, {}, ())
+
+
+def test_every_exception_can_be_caught_from_the_package() -> None:
+    for name in exceptions.__all__:
+        assert getattr(rs, name) is getattr(exceptions, name), name
+        assert name in rs.__all__, name
 
 
 # ── §6.8: array inputs ──────────────────────────────────────────────────────

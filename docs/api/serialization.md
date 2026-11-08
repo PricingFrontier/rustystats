@@ -118,6 +118,7 @@ The serialized model includes everything needed for prediction:
 | Frequency encoding stats | ✓ | Level frequencies |
 | Input transforms | ✓ | Deterministic lookup specs for raw-data scoring |
 | Formula/term specs | ✓ | For design matrix construction |
+| Fit record | ✓ | `fit_mode`, `passes`, `solver_settings`, `solver_trace`; `memory_plan` and `encode_rows` for out-of-core fits |
 
 For `MultinomialModel`, serialization also preserves class order, reference
 class, the coefficient matrix, alternative-term specifications and

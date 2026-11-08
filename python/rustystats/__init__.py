@@ -109,13 +109,21 @@ from rustystats.diagnostics import (
 
 # Exceptions
 from rustystats.exceptions import (
+    BatchSourceChangedError,
     ConvergenceError,
     DesignMatrixError,
+    DesignTooWideError,
     EncodingError,
     FittingError,
+    LearnedStateTooLargeError,
+    MemoryPlanExceededError,
+    OutOfCoreOptionError,
+    OutOfCoreResultError,
     PredictionError,
     RustyStatsError,
     SerializationError,
+    SpillError,
+    UnseenLabelError,
     ValidationError,
 )
 from rustystats.export_onnx import to_onnx
@@ -267,6 +275,14 @@ __all__ = [
     "EncodingError",
     "ValidationError",
     "SerializationError",
+    "UnseenLabelError",
+    "BatchSourceChangedError",
+    "DesignTooWideError",
+    "LearnedStateTooLargeError",
+    "MemoryPlanExceededError",
+    "OutOfCoreOptionError",
+    "OutOfCoreResultError",
+    "SpillError",
     # Input validation
     "validate_glm_inputs",
     "validate_residual_inputs",
