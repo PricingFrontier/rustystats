@@ -1,93 +1,118 @@
-# One-click release: bump version, build wheels for all platforms, publish to PyPI.
+# Publishes the version the code declares on main to PyPI, then tags it.
 #
-# Usage: Actions tab → Release → Run workflow → type version (e.g. 0.4.7)
+# Releasing: in a pull request, run `uv version --bump minor --no-sync` (or patch, or
+# major), set the same version in crates/rustystats/Cargo.toml and
+# crates/rustystats-core/Cargo.toml, and add the version's section to CHANGELOG.md.
+# Merge it, wait for main's CI to pass, then run this workflow from the Actions tab
+# (Release -> Run workflow, on main). It never edits or commits to the repository, and
+# it refuses a version PyPI already has or that is already tagged, so an unbumped main
+# cannot be released twice.
 #
-# What happens:
-#   1. Bumps version in pyproject.toml
-#   2. Commits + tags (v0.4.7)
-#   3. Builds wheels for Linux/Windows/macOS × Python 3.10-3.13
-#   4. Creates a GitHub Release
-#   5. Publishes to PyPI via trusted publishing
+# Tick "dry run" to build and smoke-check without publishing. A dry run can run on any
+# branch, which is how to test a change to this workflow before it merges.
 #
-# A dry run only builds the wheels and sdist, from the commit it runs on, so they keep
-# that commit's version. It makes no version commit, tag, GitHub Release or PyPI upload.
+# If a run fails after publishing started, use "Re-run failed jobs": the upload skips
+# files PyPI already has, and the tag is created only once PyPI serves exactly this
+# run's files.
 
 name: Release
 
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: "Version to release (e.g. 0.4.7)"
-        required: true
-        type: string
       dry_run:
-        description: "Dry run (build only: no version commit, tag, GitHub Release or PyPI upload)"
+        description: "Dry run: build and smoke-check only, publish nothing"
         required: false
         type: boolean
         default: false
 
 permissions:
-  contents: write  # Needed to push version bump commit + create release
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
-  # ── Bump version, commit, and tag ───────────────────────────────────────
-  version:
+  # ── Check the version and main's CI ─────────────────────────────────────
+  check:
+    name: Check the version and main's CI
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     outputs:
-      version: ${{ steps.bump.outputs.version }}
-      tag: ${{ steps.bump.outputs.tag }}
-      ref: ${{ inputs.dry_run && github.sha || steps.bump.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
     steps:
+      - name: Publish from main only
+        if: ${{ github.ref != 'refs/heads/main' && !inputs.dry_run }}
+        run: |
+          echo "::error::Run Release on main; this run is on ${GITHUB_REF}."
+          exit 1
+
+      - name: Require main's CI to have passed on this commit
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch main \
+            --event push --commit "$GITHUB_SHA" --limit 1 --json status,conclusion,url \
+            --jq '.[0] | select(. != null) | "\(.status)|\(.conclusion)|\(.url)"')
+          if [ -z "$run" ]; then
+            echo "::error::No CI run on main for ${GITHUB_SHA}; release a commit main's CI has checked."
+            exit 1
+          fi
+          # A running job has an empty conclusion, so split on a separator that
+          # keeps empty fields rather than on whitespace.
+          IFS='|' read -r status conclusion url <<< "$run"
+          if [ "$status" != "completed" ]; then
+            echo "::error::main's CI is still running for this commit ($url); run Release when it finishes."
+            exit 1
+          fi
+          if [ "$conclusion" != "success" ]; then
+            echo "::error::main's CI finished '$conclusion' for this commit ($url); fix main before releasing."
+            exit 1
+          fi
+          echo "main's CI passed for ${GITHUB_SHA}: $url"
+
       - uses: actions/checkout@v6
 
-      - name: Validate version format
+      - name: Refuse a version PyPI already has
+        id: version
         run: |
-          if ! echo "${{ inputs.version }}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "❌ Invalid version format: ${{ inputs.version }}"
-            echo "   Expected: X.Y.Z (e.g. 0.4.7)"
-            exit 1
-          fi
+          curl -sSf -o pypi.json https://pypi.org/pypi/rustystats/json
+          python3 scripts/check_release_version.py --pypi-json pypi.json \
+            --github-output "$GITHUB_OUTPUT"
 
-      - name: Check version is not already tagged
+      - name: Refuse a version that is already tagged
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          if git rev-parse "v${{ inputs.version }}" >/dev/null 2>&1; then
-            echo "❌ Tag v${{ inputs.version }} already exists"
-            exit 1
-          fi
-
-      - name: Bump version in pyproject.toml and Cargo.toml files
-        id: bump
-        run: |
-          sed -i 's/^version = ".*"/version = "${{ inputs.version }}"/' pyproject.toml
-          sed -i '0,/^version = ".*"/s//version = "${{ inputs.version }}"/' crates/rustystats-core/Cargo.toml
-          sed -i '0,/^version = ".*"/s//version = "${{ inputs.version }}"/' crates/rustystats/Cargo.toml
-          echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
-          echo "tag=v${{ inputs.version }}" >> "$GITHUB_OUTPUT"
-          echo "✅ Version bumped to ${{ inputs.version }}"
-          grep '^version' pyproject.toml crates/rustystats-core/Cargo.toml crates/rustystats/Cargo.toml
-
-      - name: Commit and tag
-        if: ${{ !inputs.dry_run }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add pyproject.toml crates/rustystats-core/Cargo.toml crates/rustystats/Cargo.toml
-          git commit -m "release: v${{ inputs.version }}"
-          git tag "v${{ inputs.version }}"
-          git push origin HEAD --tags
+          # --exit-code exits 2 only when no tag matches; any other failure of the
+          # lookup must not read as "untagged".
+          lookup=0
+          git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null || lookup=$?
+          case "$lookup" in
+            2) echo "v$VERSION is not tagged yet." ;;
+            0)
+              echo "::error::Tag v$VERSION already exists. Set a new version in a pull request."
+              exit 1
+              ;;
+            *)
+              echo "::error::Could not look up tag v$VERSION (git ls-remote exited $lookup); run Release again."
+              exit 1
+              ;;
+          esac
 
   # ── Linux wheels (x86_64 + aarch64) ──────────────────────────────────────
   linux:
-    needs: [version]
+    needs: [check]
     runs-on: ubuntu-latest
     strategy:
       matrix:
         target: [x86_64, aarch64]
     steps:
       - uses: actions/checkout@v6
-        with:
-          ref: ${{ needs.version.outputs.ref }}
 
       - uses: actions/setup-python@v6
         with:
@@ -109,15 +134,13 @@ jobs:
 
   # ── Windows wheels (x86_64) ──────────────────────────────────────────────
   windows:
-    needs: [version]
+    needs: [check]
     runs-on: windows-latest
     strategy:
       matrix:
         target: [x64]
     steps:
       - uses: actions/checkout@v6
-        with:
-          ref: ${{ needs.version.outputs.ref }}
 
       - uses: actions/setup-python@v6
         with:
@@ -139,15 +162,13 @@ jobs:
 
   # ── macOS wheels (x86_64 + aarch64) ─────────────────────────────────────
   macos:
-    needs: [version]
+    needs: [check]
     runs-on: macos-latest
     strategy:
       matrix:
         target: [x86_64, aarch64]
     steps:
       - uses: actions/checkout@v6
-        with:
-          ref: ${{ needs.version.outputs.ref }}
 
       - uses: actions/setup-python@v6
         with:
@@ -168,12 +189,10 @@ jobs:
 
   # ── Source distribution ──────────────────────────────────────────────────
   sdist:
-    needs: [version]
+    needs: [check]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-        with:
-          ref: ${{ needs.version.outputs.ref }}
 
       - name: Build sdist
         uses: PyO3/maturin-action@v1
@@ -187,21 +206,124 @@ jobs:
           name: wheels-sdist
           path: dist
 
-  # ── Create GitHub Release ────────────────────────────────────────────────
-  github-release:
-    name: Create GitHub Release
+  # ── Check and smoke-test what was built ─────────────────────────────────
+  smoke:
+    name: Check and smoke-test the built files
+    needs: [check, linux, windows, macos, sdist]
     runs-on: ubuntu-latest
-    needs: [linux, windows, macos, sdist]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Download all wheels
+        uses: actions/download-artifact@v7
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+
+      - name: Check the files carry the version
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          ls -l dist
+          test -f "dist/rustystats-${VERSION}.tar.gz"
+          test "$(ls dist/rustystats-${VERSION}-*.whl | wc -l)" -eq 20
+          test "$(ls dist | wc -l)" -eq 21
+
+      - name: Wheel install smoke
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          uv venv .pkg-wheel --python 3.12
+          uv pip install --python .pkg-wheel/bin/python dist/*-cp312-*manylinux*x86_64*.whl
+          ./.pkg-wheel/bin/python scripts/package_smoke.py
+          test "$(./.pkg-wheel/bin/python -c 'import rustystats; print(rustystats.__version__)')" = "$VERSION"
+
+      - name: Sdist install smoke
+        run: |
+          uv venv .pkg-sdist --python 3.12
+          uv pip install --python .pkg-sdist/bin/python dist/*.tar.gz
+          ./.pkg-sdist/bin/python scripts/package_smoke.py
+
+  # ── Publish to PyPI ──────────────────────────────────────────────────────
+  publish:
+    name: Publish to PyPI
     if: ${{ !inputs.dry_run }}
+    needs: [check, smoke]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/rustystats/${{ needs.check.outputs.version }}/
+    permissions:
+      id-token: write  # Required for trusted publishing
+    steps:
+      - name: Download all wheels
+        uses: actions/download-artifact@v7
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+
+      # A re-run after a partial upload completes it rather than failing on the
+      # file that already made it; `verify` then checks the files are this run's.
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
+
+  # ── Verify PyPI serves this run's files ─────────────────────────────────
+  verify:
+    name: Verify PyPI serves this run's files
+    if: ${{ !inputs.dry_run }}
+    needs: [check, publish]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download all wheels
+        uses: actions/download-artifact@v7
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+
+      - name: Wait for PyPI to list exactly the built files
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          # PyPI's JSON API can lag an upload by a few minutes.
+          for attempt in $(seq 1 20); do
+            if curl -sSf -o release.json "https://pypi.org/pypi/rustystats/$VERSION/json" \
+              && python3 scripts/verify_pypi_release.py --dist dist --pypi-json release.json; then
+              exit 0
+            fi
+            echo "Attempt $attempt: PyPI does not list exactly the built files yet."
+            sleep 30
+          done
+          echo "::error::PyPI does not serve exactly this run's files for rustystats $VERSION; re-run the failed jobs."
+          exit 1
+
+  # ── Tag and create the GitHub Release ───────────────────────────────────
+  github-release:
+    name: Tag and create the GitHub Release
+    if: ${{ !inputs.dry_run }}
+    needs: [check, verify]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Needed to create the tag and the release
     steps:
       # Before the download: checkout cleans the workspace.
       - uses: actions/checkout@v6
-        with:
-          ref: v${{ inputs.version }}
 
       - name: Extract this version's notes from CHANGELOG.md
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
         run: |
-          awk -v header="## ${{ inputs.version }}" '
+          awk -v header="## $VERSION" '
             $0 == header { found = 1; next }
             found && /^## / { exit }
             found { print }
@@ -217,30 +339,9 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ inputs.version }}
-          name: v${{ inputs.version }}
+          tag_name: v${{ needs.check.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: v${{ needs.check.outputs.version }}
           body_path: release-notes.md
           generate_release_notes: true
           files: dist/*
-
-  # ── Publish to PyPI ──────────────────────────────────────────────────────
-  publish:
-    name: Publish to PyPI
-    runs-on: ubuntu-latest
-    needs: [linux, windows, macos, sdist]
-    if: ${{ !inputs.dry_run }}
-    environment:
-      name: pypi
-      url: https://pypi.org/p/rustystats
-    permissions:
-      id-token: write  # Required for trusted publishing
-    steps:
-      - name: Download all wheels
-        uses: actions/download-artifact@v7
-        with:
-          pattern: wheels-*
-          merge-multiple: true
-          path: dist
-
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1

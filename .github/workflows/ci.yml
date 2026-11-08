@@ -189,6 +189,9 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Check the version files agree
+        run: python scripts/check_release_version.py
+
       - uses: astral-sh/setup-uv@v7
 
       - uses: dtolnay/rust-toolchain@stable
