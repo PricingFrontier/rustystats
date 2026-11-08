@@ -8,6 +8,9 @@
 #   3. Builds wheels for Linux/Windows/macOS × Python 3.10-3.13
 #   4. Creates a GitHub Release
 #   5. Publishes to PyPI via trusted publishing
+#
+# A dry run only builds the wheels and sdist, from the commit it runs on, so they keep
+# that commit's version. It makes no version commit, tag, GitHub Release or PyPI upload.
 
 name: Release
 
@@ -19,7 +22,7 @@ on:
         required: true
         type: string
       dry_run:
-        description: "Dry run (build only, no publish)"
+        description: "Dry run (build only: no version commit, tag, GitHub Release or PyPI upload)"
         required: false
         type: boolean
         default: false
@@ -34,6 +37,7 @@ jobs:
     outputs:
       version: ${{ steps.bump.outputs.version }}
       tag: ${{ steps.bump.outputs.tag }}
+      ref: ${{ inputs.dry_run && github.sha || steps.bump.outputs.tag }}
     steps:
       - uses: actions/checkout@v6
 
@@ -64,6 +68,7 @@ jobs:
           grep '^version' pyproject.toml crates/rustystats-core/Cargo.toml crates/rustystats/Cargo.toml
 
       - name: Commit and tag
+        if: ${{ !inputs.dry_run }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -82,7 +87,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: v${{ inputs.version }}
+          ref: ${{ needs.version.outputs.ref }}
 
       - uses: actions/setup-python@v6
         with:
@@ -112,7 +117,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: v${{ inputs.version }}
+          ref: ${{ needs.version.outputs.ref }}
 
       - uses: actions/setup-python@v6
         with:
@@ -142,7 +147,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: v${{ inputs.version }}
+          ref: ${{ needs.version.outputs.ref }}
 
       - uses: actions/setup-python@v6
         with:
@@ -168,7 +173,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: v${{ inputs.version }}
+          ref: ${{ needs.version.outputs.ref }}
 
       - name: Build sdist
         uses: PyO3/maturin-action@v1
@@ -187,7 +192,21 @@ jobs:
     name: Create GitHub Release
     runs-on: ubuntu-latest
     needs: [linux, windows, macos, sdist]
+    if: ${{ !inputs.dry_run }}
     steps:
+      # Before the download: checkout cleans the workspace.
+      - uses: actions/checkout@v6
+        with:
+          ref: v${{ inputs.version }}
+
+      - name: Extract this version's notes from CHANGELOG.md
+        run: |
+          awk -v header="## ${{ inputs.version }}" '
+            $0 == header { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+
       - name: Download all wheels
         uses: actions/download-artifact@v7
         with:
@@ -200,6 +219,7 @@ jobs:
         with:
           tag_name: v${{ inputs.version }}
           name: v${{ inputs.version }}
+          body_path: release-notes.md
           generate_release_notes: true
           files: dist/*
 
