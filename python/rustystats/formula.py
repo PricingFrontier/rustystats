@@ -29,7 +29,7 @@ import copy
 import warnings
 import weakref
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -3960,6 +3960,7 @@ class GLMModel:
         # Extract state from the Rust result object
         # NOTE: We intentionally exclude fittedvalues and linear_predictor
         # as they are large arrays not needed for prediction (can be ~5MB each)
+        memory_plan = self.__dict__.get("memory_plan")
         result_state = {
             "params": np.asarray(self._result.params),
             "deviance": self._result.deviance,
@@ -3982,6 +3983,14 @@ class GLMModel:
             "max_std_score": self.__dict__.get("max_std_score"),
             "regularization_standardized": self.__dict__.get("_regularization_standardized", False),
             "covariance_available": self.__dict__.get("_covariance_available", True),
+            # How the fit ran, as plain values: reading a payload never needs the
+            # classes that hold them.
+            "fit_mode": self.__dict__.get("fit_mode"),
+            "passes": self.__dict__.get("passes"),
+            "solver_settings": self.__dict__.get("solver_settings"),
+            "solver_trace": [tuple(step) for step in self.__dict__.get("solver_trace", ())],
+            "memory_plan": asdict(memory_plan) if memory_plan is not None else None,
+            "encode_rows": self.__dict__.get("encode_rows"),
         }
 
         # Extract builder state for prediction
@@ -4085,6 +4094,9 @@ class GLMModel:
         """
         import pickle
 
+        from rustystats.out_of_core_fit import MemoryPlan
+        from rustystats.solver_trace import solver_steps
+
         state = pickle.loads(data)
 
         # Fail loud on a schema this build cannot read, rather than silently
@@ -4165,6 +4177,14 @@ class GLMModel:
         model.step_halving_used = result_state.get("step_halving_used")
         model.stationary = result_state.get("stationary")
         model.max_std_score = result_state.get("max_std_score")
+        # A payload written before these were recorded came from an in-memory fit.
+        model.fit_mode = result_state.get("fit_mode") or "in_memory"
+        model.passes = result_state.get("passes") or {}
+        model.solver_settings = result_state.get("solver_settings") or {}
+        model.solver_trace = solver_steps(result_state.get("solver_trace"))
+        if result_state.get("memory_plan") is not None:
+            model.memory_plan = MemoryPlan(**result_state["memory_plan"])
+            model.encode_rows = result_state["encode_rows"]
         model._intercept_delta = float(state.get("intercept_delta", 0.0))
         model._intercept_delta_var = float(state.get("intercept_delta_var", 0.0))
         model._relevel_history = [dict(entry) for entry in state.get("relevel_history", [])]
