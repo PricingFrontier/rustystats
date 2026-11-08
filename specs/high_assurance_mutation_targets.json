@@ -40,8 +40,8 @@
       "module": "crates/rustystats-core/src/families/poisson.rs",
       "path": "crates/rustystats-core/src/families/poisson.rs",
       "description": "Poisson variance must equal the mean.",
-      "original": "Cow::Borrowed(mu)",
-      "mutated": "Cow::Owned(mu.mapv(|x| x + 1.0))",
+      "original": "fn variance_at(&self, mu: f64) -> f64 {\n        mu\n    }",
+      "mutated": "fn variance_at(&self, mu: f64) -> f64 {\n        mu + 1.0\n    }",
       "test_command": [
         "cargo",
         "test",
@@ -58,8 +58,8 @@
       "module": "crates/rustystats-core/src/links/log.rs",
       "path": "crates/rustystats-core/src/links/log.rs",
       "description": "Log-link derivative must be 1 / mu.",
-      "original": "mu.mapv(|x| 1.0 / x)",
-      "mutated": "mu.mapv(|x| x)",
+      "original": "fn derivative_at(&self, mu: f64) -> f64 {\n        1.0 / mu\n    }",
+      "mutated": "fn derivative_at(&self, mu: f64) -> f64 {\n        mu\n    }",
       "test_command": [
         "cargo",
         "test",
