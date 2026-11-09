@@ -28,9 +28,6 @@ from rustystats._rustystats import (
     compute_deviance_residuals_py as _rust_deviance_residuals,
 )
 from rustystats._rustystats import (
-    compute_lorenz_curve_py as _rust_lorenz_curve,
-)
-from rustystats._rustystats import (
     compute_null_deviance_py as _rust_null_deviance,
 )
 from rustystats.diagnostics.api import (
@@ -221,16 +218,19 @@ def _variance(kind: str, mu: np.ndarray, power: float, theta: float) -> np.ndarr
     return np.asarray(v, dtype=np.float64)
 
 
-def _offset(model: Any, data: pl.DataFrame, *, train: bool) -> np.ndarray | None:
-    """The offset of ``data``: its column, or for the train rows an array given at the fit."""
-    spec = getattr(model, "_offset_spec", None)
-    if spec is None:
-        return None
-    if isinstance(spec, str):
-        frame = data if spec in data.columns else model.prepare_input(data)
-        return frame[spec].to_numpy().astype(np.float64) if spec in frame.columns else None
-    values = np.asarray(spec, dtype=np.float64)
-    return values if train and values.shape == (data.height,) else None
+def _offset(model: Any, data: pl.DataFrame) -> np.ndarray | None:
+    """What prediction adds to the linear predictor beyond exposure: offset and complement."""
+    from rustystats.formula import _resolve_predict_complement, _resolve_predict_offset
+
+    spec, prior = model._offset_spec, model._complement_spec
+    needs_transform = any(isinstance(v, str) and v not in data.columns for v in (spec, prior))
+    frame = model.prepare_input(data) if needs_transform else data
+    _, offset, _ = _resolve_predict_offset(frame, None, spec)
+    _, complement = _resolve_predict_complement(
+        frame, None, prior, model._exposure_spec, model.link
+    )
+    parts = [part for part in (offset, complement) if part is not None]
+    return np.sum(parts, axis=0) if parts else None
 
 
 # --------------------------------------------------------------------------- datasets --------
@@ -278,18 +278,29 @@ def _null_deviance(d: _Scored, family: str, link: str) -> float:
     return float(_rust_null_deviance(d.y, family, weights=d.weight, offset=offset, link=link))
 
 
-def _gini(actual: np.ndarray, score: np.ndarray, mass: np.ndarray) -> float | None:
-    """Concentration Gini of ``actual`` ranked by ``score``, ``mass`` on the x-axis."""
+def _concentration(
+    actual: np.ndarray, score: np.ndarray, mass: np.ndarray
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """The Lorenz curve of ``actual`` by ascending ``score``; tied scores form one segment."""
     keep = mass > 0
     if not keep.any():
         return None
-    order = np.argsort(score[keep], kind="stable")
-    a, m = actual[keep][order], mass[keep][order]
-    total_a, total_m = a.sum(), m.sum()
-    if total_a <= 0 or total_m <= 0:
+    uniques, inverse = np.unique(score[keep], return_inverse=True)
+    a = np.bincount(inverse, weights=actual[keep], minlength=uniques.size)
+    m = np.bincount(inverse, weights=mass[keep], minlength=uniques.size)
+    if a.sum() <= 0 or m.sum() <= 0:
         return None
-    x = np.concatenate([[0.0], np.cumsum(m) / total_m])
-    y = np.concatenate([[0.0], np.cumsum(a) / total_a])
+    x = np.concatenate([[0.0], np.cumsum(m) / m.sum()])
+    y = np.concatenate([[0.0], np.cumsum(a) / a.sum()])
+    return x, y
+
+
+def _gini(actual: np.ndarray, score: np.ndarray, mass: np.ndarray) -> float | None:
+    """Concentration Gini of ``actual`` ranked by ``score``, ``mass`` on the x-axis."""
+    curve = _concentration(actual, score, mass)
+    if curve is None:
+        return None
+    x, y = curve
     return float(1.0 - np.sum((x[1:] - x[:-1]) * (y[1:] + y[:-1])))
 
 
@@ -414,16 +425,18 @@ def _curves(
     """Calibration, ranking and spread of one dataset's predictions."""
     mass = d.mass
     rate = d.rate
-    points = _rust_lorenz_curve(d.weight * d.y, d.weight * d.mu, mass, _LORENZ_POINTS)
+    curve = _concentration(d.weight * d.y, rate, mass)
+    grid = np.linspace(0.0, 1.0, _LORENZ_POINTS)
     edges, is_log = rate_bins
     quantiles = (1, 5, 25, 50, 75, 95, 99)
     return {
         "deciles": _deciles(d, variance, phi),
         "fit_bands": _fit_bands(d, variance, phi),
-        "lorenz": {
-            "x": [float(p["cumulative_exposure_pct"]) for p in points],
-            "y": [float(p["cumulative_actual_pct"]) for p in points],
-        },
+        "lorenz": (
+            None
+            if curve is None
+            else {"x": grid.tolist(), "y": np.interp(grid, curve[0], curve[1]).tolist()}
+        ),
         "rate_histogram": {
             "edges": [float(e) for e in edges],
             "mass": _histogram(rate, mass, edges),
@@ -621,6 +634,11 @@ def _psi(first: list[float], second: list[float]) -> float | None:
     return float(np.sum((q - p) * np.log(q / p)))
 
 
+def _unseen_mass(codes: np.ndarray, d: _Scored) -> float:
+    """The mass of rows no band holds: levels the train data did not have, or missing."""
+    return float(d.mass[codes < 0].sum())
+
+
 def _main_columns(model: Any, feature: str) -> list[int]:
     """The design columns of the single-factor terms of ``feature``."""
     slots = getattr(getattr(model, "_builder", None), "_term_slots", None) or []
@@ -796,10 +814,12 @@ def _features(
             continue
         n = len(defs["labels"])
         bands = []
+        unseen: list[float] = []
         missing = []
         for d, v in zip(scored, variance):
             codes = _codes(d.data[factor.name], defs)
             bands.append(_band_rows(codes, n, d, v, phi))
+            unseen.append(_unseen_mass(codes, d))
             miss = d.data[factor.name].is_null().to_numpy() | (codes < 0)
             missing.append(
                 {
@@ -810,7 +830,10 @@ def _features(
             )
         psi = None
         if len(scored) > 1:
-            psi = _psi([b["mass"] for b in bands[0]], [b["mass"] for b in bands[1]])
+            psi = _psi(
+                [b["mass"] for b in bands[0]] + [unseen[0]],
+                [b["mass"] for b in bands[1]] + [unseen[1]],
+            )
         effect = None
         if factor.in_model:
             effect = _effect(
@@ -1765,7 +1788,7 @@ def build_report(
             mu,
             exposure_arr if exposure_arr is not None else np.ones(n),
             train_weight if train_weight is not None else np.ones(n),
-            _offset(model, train_data, train=True),
+            _offset(model, train_data),
             has_exposure,
         )
     ]
@@ -1785,7 +1808,7 @@ def build_report(
                 mu_t,
                 exp_t,
                 wt if wt is not None else np.ones(y_t.shape[0]),
-                _offset(model, test_data, train=False),
+                _offset(model, test_data),
                 has_exposure,
             )
         )

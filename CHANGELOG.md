@@ -18,11 +18,13 @@ Notable changes in each RustyStats release. For releases before 0.10.0, see
 ### Fixed
 
 - **Null deviance with an offset.** The null model now places the offset by the fitted link:
-  `c + offset` on an identity link and `c * exp(offset)` on a log link, in every fit path. A
-  Gaussian fit with an offset used to ignore it, so its null deviance now matches statsmodels
-  and its deviance explained and likelihood-ratio test change. A fit whose link differs from its
-  family's default also changes. Fits with no offset, and log-link families with their default
-  link, do not.
+  `c + offset` on an identity link and `c * exp(offset)` on a log link, in every fit path, with
+  the constant that is optimal for the family's variance function. Null deviance, deviance
+  explained and the likelihood-ratio test therefore change for a Gaussian, Gamma or Tweedie fit
+  with an offset, and now match statsmodels. So does any fit whose link is not its family's
+  default. Fits with no offset, and Poisson-type fits with a log link, do not change.
+- **Continuous factor bands kept four decimal places**, which collapsed the bands of a factor on
+  a small scale. Bands now keep their true edges; the JSON output still rounds them.
 - **`compute_null_deviance_py`** no longer treats exposure as a weight, which gave the wrong null
   deviance for a rated model. It now takes `weights`, `offset` and `link`.
 - **`diagnostics()` with null categorical values.** A null in a categorical factor raised a

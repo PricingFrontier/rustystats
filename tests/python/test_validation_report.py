@@ -1160,3 +1160,126 @@ def test_out_of_core_fit_renders(tmp_path):
     )
     assert report["fit"]["influence"]["available"] is False
     _assert_page(report)
+
+
+def test_multinomial_likelihood_ratio_uses_the_weights_given():
+    df = choice_frame(3000, seed=32).with_columns(pl.lit(0.5).alias("half"))
+    model = rs.multinomial_dict(
+        response="tier", terms=CHOICE_TERMS, data=df, reference="basic"
+    ).fit()
+    plain = model.validation_report(df)["fit"]["model_comparison"]
+    halved = model.validation_report(df, weights="half")["fit"]["model_comparison"]
+    assert halved["likelihood_ratio_chi2"] == pytest.approx(
+        0.5 * plain["likelihood_ratio_chi2"], rel=1e-9
+    )
+
+
+def test_multinomial_smooth_terms_render():
+    df = choice_frame(2500, seed=33)
+    model = rs.multinomial_dict(
+        response="tier",
+        terms={"age": {"type": "bs"}, "veh": {"type": "categorical"}},
+        data=df,
+        reference="basic",
+    ).fit()
+    report = model.validation_report(df)
+    assert report["fit"]["smooth_terms"]
+    assert "Smooth terms" in _assert_page(report)
+
+
+def test_complement_reaches_the_null_deviance():
+    df = frame(2000, seed=34).with_columns((pl.col("exp") * 0.3).alias("prior"))
+    train, test = df[:1500], df[1500:]
+    model = _fit(train, "poisson", terms={"age": {"type": "linear"}}, complement="prior")
+    metrics = model.validation_report(train, test)["datasets"]
+    assert metrics[0]["metrics"]["null_deviance"] == pytest.approx(model.null_deviance(), rel=1e-9)
+    y, prior = test["y"].to_numpy(), test["prior"].to_numpy()
+    mean = prior * y.sum() / prior.sum()
+    with np.errstate(divide="ignore", invalid="ignore"):
+        term = np.where(y > 0, y * np.log(y / mean), 0.0)
+    assert metrics[1]["metrics"]["null_deviance"] == pytest.approx(
+        2.0 * np.sum(term - (y - mean)), rel=1e-9
+    )
+
+
+def test_array_offset_reaches_every_dataset_prediction_uses_it_on():
+    df = frame(1500, seed=35)
+    model = _fit(df, "poisson", offset=np.log(df["exp"].to_numpy()))
+    report = model.validation_report(df, df)
+    first, second = (d["metrics"] for d in report["datasets"])
+    assert first["null_deviance"] == pytest.approx(second["null_deviance"], rel=1e-12)
+    assert first["deviance"] == pytest.approx(second["deviance"], rel=1e-12)
+
+
+def test_small_scale_factor_keeps_its_bands():
+    rng = np.random.default_rng(36)
+    n = 1000
+    df = pl.DataFrame(
+        {
+            "x": rng.normal(size=n),
+            "tiny": rng.permutation(np.linspace(1e-6, 4e-5, n)),
+            "y": rng.poisson(1.0, n).astype(float),
+        }
+    )
+    model = _fit(df, "poisson", terms={"x": {"type": "linear"}})
+    report = model.validation_report(df, continuous_factors=["tiny"])
+    tiny = next(f for f in report["features"] if f["feature"] == "tiny")
+    rows = [b["rows"] for b in tiny["bands"][0]]
+    assert len(rows) == 10 and all(90 <= r <= 110 for r in rows)
+    assert len(set(tiny["edges"])) == 11
+
+
+def test_tied_predictions_do_not_depend_on_row_order():
+    classes = ["a"] * 100 + ["b"] * 100 + ["c"] * 100
+    x = np.zeros(300)
+    forward = pl.DataFrame({"x": x, "tier": classes})
+    backward = pl.DataFrame({"x": x, "tier": classes[::-1]})
+    reports = [
+        rs.multinomial_dict(response="tier", terms={}, data=d, reference="a")
+        .fit()
+        .validation_report(d)
+        for d in (forward, backward)
+    ]
+    for label in ("b", "c"):
+        metrics = [_view(r, label)["datasets"][0]["metrics"] for r in reports]
+        assert metrics[0]["gini"] == pytest.approx(0.0, abs=1e-9)
+        assert metrics[0]["gini_normalised"] == pytest.approx(0.0, abs=1e-9)
+        assert metrics[1]["gini"] == pytest.approx(metrics[0]["gini"], abs=1e-9)
+    lorenz = _view(reports[0], "c")["datasets"][0]["lorenz"]
+    assert lorenz["y"] == pytest.approx(lorenz["x"], abs=1e-9)
+
+
+def test_psi_counts_levels_the_train_data_did_not_have():
+    rng = np.random.default_rng(37)
+    n = 2000
+    train = pl.DataFrame(
+        {
+            "x": rng.normal(size=n),
+            "c": rng.choice(["a", "b"], n),
+            "y": rng.poisson(1.0, n).astype(float),
+        }
+    )
+    new_levels = ["a"] * 50 + ["b"] * 50 + ["n"] * 900
+    test = pl.DataFrame(
+        {"x": rng.normal(size=1000), "c": new_levels, "y": rng.poisson(1.0, 1000).astype(float)}
+    )
+    model = _fit(train, "poisson", terms={"x": {"type": "linear"}})
+    report = model.validation_report(train, test, categorical_factors=["c"])
+    c = next(f for f in report["features"] if f["feature"] == "c")
+    assert c["psi"] > 1.0
+    assert any(
+        f["check"] == "psi" and f["feature"] == "c" and f["status"] == "critical"
+        for f in report["review"]
+    )
+
+
+def test_a_holdout_smaller_than_the_bands_renders():
+    df = frame(1005, seed=38)
+    train, test = df[:1000], df[1000:]
+    model = _fit(train, "poisson", exposure="exp")
+    _assert_page(model.validation_report(train, test))
+    choice = choice_frame(1005, seed=39)
+    fitted = rs.multinomial_dict(
+        response="tier", terms={"age": {"type": "linear"}}, data=choice[:1000], reference="basic"
+    ).fit()
+    _assert_page(fitted.validation_report(choice[:1000], choice[1000:]))

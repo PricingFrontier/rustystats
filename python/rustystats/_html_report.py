@@ -1141,7 +1141,8 @@ def variance_chart(r: dict[str, Any], w: float, h: float) -> str:
     """Dispersion by band of fitted value: flat near the overall value when V(μ) is right."""
     scored = _scored(r)
     bands = {i: d["fit_bands"] for i, d in enumerate(scored)}
-    n = max((len(v) for v in bands.values()), default=0)
+    longest = max(bands.values(), key=len, default=[])
+    n = len(longest)
     if n == 0:
         return _none()
     vals = _fv(b.get("dispersion") for v in bands.values() for b in v)
@@ -1176,7 +1177,7 @@ def variance_chart(r: dict[str, Any], w: float, h: float) -> str:
         svg.path(pts, f"dsl dsl-{i}")
     svg.hline(left, right, bottom, "ax")
     for j in range(0, n, max(1, n // 5)):
-        b = bands[max(bands)][j]
+        b = longest[j]
         svg.text(xs[j], bottom + 16, _num(b.get("fitted_mean"), 3), anchor="middle")
     svg.text(
         (left + right) / 2,
@@ -1202,7 +1203,8 @@ def fitted_ae_chart(r: dict[str, Any], w: float, h: float) -> str:
     """A/E by twenty bands of fitted value, for every dataset, ±2σ for the selected one."""
     scored = _scored(r)
     bands = {i: d["fit_bands"] for i, d in enumerate(scored)}
-    n = max((len(v) for v in bands.values()), default=0)
+    longest = max(bands.values(), key=len, default=[])
+    n = len(longest)
     if n == 0:
         return _none()
     aes = _fv(b.get("ae") for v in bands.values() for b in v)
@@ -1242,7 +1244,7 @@ def fitted_ae_chart(r: dict[str, Any], w: float, h: float) -> str:
         )
     svg.hline(left, right, bottom, "ax")
     for j in range(0, n, max(1, n // 5)):
-        b = bands[max(bands)][j]
+        b = longest[j]
         svg.text(xs[j], bottom + 16, _num(b.get("fitted_mean"), 3), anchor="middle")
     svg.text(
         (left + right) / 2,
@@ -3477,23 +3479,23 @@ def _smooth_card(r: dict[str, Any]) -> str:
     smooth = r["fit"].get("smooth_terms") or []
     if not smooth:
         return ""
-    rows = [
-        [
-            _e(s["variable"]),
-            _num(s["k"]),
-            _fixed(s["edf"], 2),
-            _num(s["lambda"], 3),
-            _num(s["gcv"], 3),
-            _num(s["chi2"], 3),
-            _p(s["p_value"]),
+    tested = any("chi2" in term for term in smooth)
+    head = ["term", "k", "edf", "λ", "GCV"] + (["χ²", "p"] if tested else [])
+    rows = []
+    for term in smooth:
+        row = [
+            _e(term["variable"]),
+            _num(term["k"]),
+            _fixed(term["edf"], 2),
+            _num(term["lambda"], 3),
+            _num(term["gcv"], 3),
         ]
-        for s in smooth
-    ]
+        if tested:
+            row += [_num(term.get("chi2"), 3), _p(term.get("p_value"))]
+        rows.append(row)
     return _card(
         "Smooth terms",
-        _table(
-            ["term", "k", "edf", "λ", "GCV", "χ²", "p"], rows, numeric=range(1, 7), scroll="short"
-        ),
+        _table(head, rows, numeric=range(1, len(head)), scroll="short"),
         what="Effective degrees of freedom and the smoothing the fit chose",
     )
 

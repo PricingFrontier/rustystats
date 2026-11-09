@@ -59,6 +59,7 @@ from rustystats._report import (
     _top_correlations,
     _total_z,
     _unit_deviance,
+    _unseen_mass,
     _variance,
     _version,
     check_arguments,
@@ -677,7 +678,10 @@ def build_multinomial_report(
                 )
             psi = None
             if len(frames) > 1:
-                psi = _psi([b["mass"] for b in bands[0]], [b["mass"] for b in bands[1]])
+                psi = _psi(
+                    [b["mass"] for b in bands[0]] + [_unseen_mass(codes[0][f], scored[0])],
+                    [b["mass"] for b in bands[1]] + [_unseen_mass(codes[1][f], scored[1])],
+                )
             cols = _main_columns(model, f)
             effect = None
             if beta is not None and cols and f in train_data.columns:
@@ -740,8 +744,11 @@ def build_multinomial_report(
     terms = [slot["term"] for slot in _terms(model) if slot["type"] != "intercept"]
     formula = f"{model.response} ~ {' + '.join(terms)}"
     fit = _fit_section(model, diag, cov, valid, formula)
-    fit["summary"]["null_deviance"] = model.null_deviance
-    null, deviance = diag.null_deviance, diag.deviance
+    datasets = [_dataset_summary(m, row, classes) for m, row in zip(frames, rows)]
+    datasets[0]["metrics"] |= {"aic": diag.aic, "bic": diag.bic}
+    # Both deviances from the rows and weights the report was given.
+    null, deviance = datasets[0]["metrics"]["null_deviance"], datasets[0]["metrics"]["deviance"]
+    fit["summary"]["null_deviance"] = null
     df = model.n_params - (len(classes) - 1)
     if null is not None and df > 0 and null >= deviance:
         fit["model_comparison"] = {
@@ -749,8 +756,6 @@ def build_multinomial_report(
             "likelihood_ratio_df": df,
             "likelihood_ratio_pvalue": max(0.0, 1.0 - float(_chi2_cdf(null - deviance, df))),
         }
-    datasets = [_dataset_summary(m, row, classes) for m, row in zip(frames, rows)]
-    datasets[0]["metrics"] |= {"aic": diag.aic, "bic": diag.bic}
     report: dict[str, Any] = {
         "report_version": REPORT_VERSION,
         "name": name,
