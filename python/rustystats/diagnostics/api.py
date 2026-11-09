@@ -387,7 +387,9 @@ def _precompute_data_caches(
         if name not in data.columns:
             continue
 
-        values = data[name].cast(pl.Utf8)
+        # A null is the level "None", as in the explorer, pair diagnostics and the
+        # design matrix (and pl.Enum refuses null categories).
+        values = data[name].cast(pl.Utf8).fill_null("None")
         sorted_level_list = values.unique().sort().to_list()
         sorted_levels = np.array(sorted_level_list)
         enum_series = values.cast(pl.Enum(sorted_level_list))
