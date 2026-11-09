@@ -218,17 +218,32 @@ def _variance(kind: str, mu: np.ndarray, power: float, theta: float) -> np.ndarr
     return np.asarray(v, dtype=np.float64)
 
 
-def _offset(model: Any, data: pl.DataFrame) -> np.ndarray | None:
-    """What prediction adds to the linear predictor beyond exposure: offset and complement."""
-    from rustystats.formula import _resolve_predict_complement, _resolve_predict_offset
+def _offset(
+    model: Any, data: pl.DataFrame, *, exposure: Any = None, train: bool = False
+) -> np.ndarray | None:
+    """What prediction adds to the linear predictor beyond exposure: offset and complement.
 
-    spec, prior = model._offset_spec, model._complement_spec
-    needs_transform = any(isinstance(v, str) and v not in data.columns for v in (spec, prior))
-    frame = model.prepare_input(data) if needs_transform else data
-    _, offset, _ = _resolve_predict_offset(frame, None, spec)
-    _, complement = _resolve_predict_complement(
-        frame, None, prior, model._exposure_spec, model.link
+    An array complement is fit-time data that prediction does not reuse, so it applies to the
+    train rows only.
+    """
+    from rustystats.formula import (
+        _resolve_predict_complement,
+        _resolve_predict_offset,
+        apply_link,
     )
+
+    needs_prepared = model._prediction_aux_needs_prepared_data(
+        offset=None, exposure=exposure, complement=None
+    )
+    frame = model.prepare_input(data) if needs_prepared else data
+    _, offset, _ = _resolve_predict_offset(frame, None, model._offset_spec)
+    stored_exposure = exposure if exposure is not None else model._exposure_spec
+    _, complement = _resolve_predict_complement(
+        frame, None, model._complement_spec, stored_exposure, model.link
+    )
+    fitted = model._complement_values
+    if complement is None and train and fitted is not None and fitted.shape == (data.height,):
+        complement = apply_link(fitted, model.link)
     parts = [part for part in (offset, complement) if part is not None]
     return np.sum(parts, axis=0) if parts else None
 
@@ -467,7 +482,7 @@ def _dataset(
     actual, expected = float(np.sum(d.weight * d.y)), float(np.sum(d.weight * d.mu))
     safe = np.where(d.exposure > 0, d.exposure, 1.0)
     perfect = _gini(d.weight * d.y, d.y / safe, mass)
-    gini = float(diag_row.gini)
+    gini = _gini(d.weight * d.y, d.rate, mass)
     resid = np.sign(d.y - d.mu) * np.sqrt(unit)
     live = resid[np.isfinite(resid)]
     lo, hi = np.quantile(live, [0.005, 0.995]) if live.size else (-1.0, 1.0)
@@ -500,7 +515,7 @@ def _dataset(
             "null_deviance": null,
             "deviance_explained": 1.0 - deviance / null if null > 0 else None,
             "gini": gini,
-            "gini_normalised": gini / perfect if perfect else None,
+            "gini_normalised": gini / perfect if gini is not None and perfect else None,
             "auc": float(diag_row.auc),
             "log_likelihood": diag_row.log_likelihood,
             "log_likelihood_label": diag_row.log_likelihood_label,
@@ -1723,6 +1738,13 @@ def _summary_metrics(report: dict[str, Any]) -> dict[str, float]:
 # --------------------------------------------------------------------------- entry point -----
 
 
+def _for_rows(override: Any, data: pl.DataFrame) -> Any:
+    """An exposure override if it applies to ``data``: a column, or an array of its length."""
+    if override is None or isinstance(override, str):
+        return override
+    return override if np.shape(override) == (data.height,) else None
+
+
 def check_arguments(train_data: Any, test_data: Any, labels: tuple[str, str]) -> None:
     """Refuse what neither kind of report can use."""
     if len(labels) != 2 or len({str(label) for label in labels}) != 2:
@@ -1788,7 +1810,7 @@ def build_report(
             mu,
             exposure_arr if exposure_arr is not None else np.ones(n),
             train_weight if train_weight is not None else np.ones(n),
-            _offset(model, train_data),
+            _offset(model, train_data, exposure=exposure, train=True),
             has_exposure,
         )
     ]
@@ -1808,7 +1830,7 @@ def build_report(
                 mu_t,
                 exp_t,
                 wt if wt is not None else np.ones(y_t.shape[0]),
-                _offset(model, test_data),
+                _offset(model, test_data, exposure=_for_rows(exposure, test_data)),
                 has_exposure,
             )
         )

@@ -264,6 +264,8 @@ pub trait Family: Send + Sync {
 
     /// The power p used for the null model's constant under a log link and an offset:
     /// c = Σw·y·a^(1−p) / Σw·a^(2−p) with a = exp(offset), which is exact when V(μ) = μ^p.
+    /// A family whose variance is not a power (negative binomial, binomial) has no closed
+    /// form, and a single-pass fit cannot iterate for one, so it keeps the Poisson-form constant.
     fn null_variance_power(&self) -> f64 {
         1.0
     }

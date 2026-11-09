@@ -1283,3 +1283,97 @@ def test_a_holdout_smaller_than_the_bands_renders():
         response="tier", terms={"age": {"type": "linear"}}, data=choice[:1000], reference="basic"
     ).fit()
     _assert_page(fitted.validation_report(choice[:1000], choice[1000:]))
+
+
+def test_array_complement_reaches_the_train_null_deviance():
+    y = np.tile([1.0, 8.0], 100)
+    prior = np.tile([1.0, 4.0], 100)
+    df = pl.DataFrame({"y": y, "x": np.zeros(200)})
+    model = rs.glm_dict(response="y", terms={}, data=df, family="poisson", complement=prior).fit()
+    metrics = model.validation_report(df)["datasets"][0]["metrics"]
+    assert metrics["null_deviance"] == pytest.approx(model.null_deviance(), rel=1e-9)
+
+
+def test_model_complement_cancels_an_exposure_override():
+    y = np.tile([1.0, 3.0], 100)
+    df = pl.DataFrame(
+        {
+            "y": y,
+            "e": np.tile([1.0, 2.0], 100),
+            "alt": np.tile([2.0, 1.0], 100),
+            "o": np.tile([0.1, -0.2], 100),
+            "x": np.zeros(200),
+        }
+    )
+    prior = rs.glm_dict(response="y", terms={}, data=df, family="poisson", exposure="e").fit()
+    model = rs.glm_dict(
+        response="y",
+        terms={},
+        data=df,
+        family="poisson",
+        exposure="e",
+        offset="o",
+        complement=prior,
+    ).fit()
+    plain = model.validation_report(df)["datasets"][0]["metrics"]["null_deviance"]
+    overridden = model.validation_report(df, exposure="alt")["datasets"][0]["metrics"]
+    assert overridden["null_deviance"] == pytest.approx(plain, rel=1e-9)
+
+
+def test_exposure_from_an_input_transform_works_with_a_model_complement():
+    rng = np.random.default_rng(40)
+    n = 800
+    df = pl.DataFrame(
+        {
+            "x": rng.normal(size=n),
+            "raw_e": rng.uniform(0.2, 1.5, n),
+            "o": rng.normal(scale=0.1, size=n),
+            "y": rng.poisson(0.5, n).astype(float),
+        }
+    )
+    transforms = [
+        {
+            "type": "clip",
+            "name": "exposure_clip",
+            "sources": ["raw_e"],
+            "output": "e",
+            "lower": 0.25,
+            "upper": 1.0,
+        }
+    ]
+    prior = rs.glm_dict(
+        response="y",
+        terms={"x": {"type": "linear"}},
+        data=df,
+        family="poisson",
+        exposure="e",
+        input_transforms=transforms,
+    ).fit()
+    model = rs.glm_dict(
+        response="y",
+        terms={"x": {"type": "linear"}},
+        data=df,
+        family="poisson",
+        exposure="e",
+        offset="o",
+        complement=prior,
+        input_transforms=transforms,
+    ).fit()
+    report = model.validation_report(df)
+    assert report["datasets"][0]["metrics"]["null_deviance"] == pytest.approx(
+        model.null_deviance(), rel=1e-9
+    )
+
+
+def test_glm_gini_does_not_depend_on_row_order_when_predictions_tie():
+    y = np.array([0.0] * 100 + [1.0] * 100)
+    forward = pl.DataFrame({"y": y, "x": np.zeros(200)})
+    backward = pl.DataFrame({"y": y[::-1], "x": np.zeros(200)})
+    ginis = [
+        rs.glm_dict(response="y", terms={}, data=d, family="poisson")
+        .fit()
+        .validation_report(d)["datasets"][0]["metrics"]["gini"]
+        for d in (forward, backward)
+    ]
+    assert ginis[0] == pytest.approx(0.0, abs=1e-9)
+    assert ginis[1] == pytest.approx(0.0, abs=1e-9)

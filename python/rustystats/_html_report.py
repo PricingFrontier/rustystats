@@ -1141,7 +1141,7 @@ def variance_chart(r: dict[str, Any], w: float, h: float) -> str:
     """Dispersion by band of fitted value: flat near the overall value when V(μ) is right."""
     scored = _scored(r)
     bands = {i: d["fit_bands"] for i, d in enumerate(scored)}
-    longest = max(bands.values(), key=len, default=[])
+    longest: list[dict[str, Any]] = max(bands.values(), key=len, default=[])
     n = len(longest)
     if n == 0:
         return _none()
@@ -1203,7 +1203,7 @@ def fitted_ae_chart(r: dict[str, Any], w: float, h: float) -> str:
     """A/E by twenty bands of fitted value, for every dataset, ±2σ for the selected one."""
     scored = _scored(r)
     bands = {i: d["fit_bands"] for i, d in enumerate(scored)}
-    longest = max(bands.values(), key=len, default=[])
+    longest: list[dict[str, Any]] = max(bands.values(), key=len, default=[])
     n = len(longest)
     if n == 0:
         return _none()
@@ -3656,7 +3656,7 @@ def _how_card(r: dict[str, Any]) -> str:
         ),
         (
             "Gini",
-            "from the diagnostics: the Lorenz Gini of actual against predicted rate, exposure on the x-axis. Gini / perfect divides by the Gini of ranking by the actual rate.",
+            "the Lorenz Gini of actual against predicted rate, exposure on the x-axis; tied predictions form one segment, so row order cannot move it. Gini / perfect divides by the Gini of ranking by the actual rate.",
         ),
         (
             "A/E and z",

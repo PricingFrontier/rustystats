@@ -22,7 +22,8 @@ Notable changes in each RustyStats release. For releases before 0.10.0, see
   the constant that is optimal for the family's variance function. Null deviance, deviance
   explained and the likelihood-ratio test therefore change for a Gaussian, Gamma or Tweedie fit
   with an offset, and now match statsmodels. So does any fit whose link is not its family's
-  default. Fits with no offset, and Poisson-type fits with a log link, do not change.
+  default. Fits with no offset, and Poisson-type fits with a log link, do not change. Negative
+  binomial and logit fits with an offset have no closed-form constant, so they are unchanged.
 - **Continuous factor bands kept four decimal places**, which collapsed the bands of a factor on
   a small scale. Bands now keep their true edges; the JSON output still rounds them.
 - **`compute_null_deviance_py`** no longer treats exposure as a weight, which gave the wrong null
