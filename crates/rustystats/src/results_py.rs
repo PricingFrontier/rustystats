@@ -998,6 +998,7 @@ impl PyGLMResults {
         null_deviance_for_family(
             &self.y,
             family.as_ref(),
+            family.default_link().as_ref(),
             self.maybe_weights(),
             self.offset.as_ref(),
         )

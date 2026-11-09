@@ -17,12 +17,14 @@ use rustystats_core::diagnostics::{
     compute_family_loss, compute_lorenz_curve, compute_residual_pattern_continuous,
     compute_residual_pattern_continuous_batch, correlation_and_vif, correlation_moments,
     cramers_v_matrix_from_codes, detect_exploratory_interactions_from_codes, detect_interactions,
-    hosmer_lemeshow_test, interaction_strength_from_codes, mae, mse, null_deviance,
+    hosmer_lemeshow_test, interaction_strength_from_codes, mae, mse, null_deviance_for_family,
     partial_dependence_categorical_batch, resid_deviance, resid_pearson, rmse, ActualExpectedBin,
     DevianceByLevel, FactorData, FactorDevianceResult, InteractionConfig, ResidualPattern,
 };
 
-use crate::families_py::{family_from_name_with_tweedie_support, validate_tweedie_fit_response};
+use crate::families_py::{
+    family_from_name_with_tweedie_support, link_from_name, validate_tweedie_fit_response,
+};
 
 // =============================================================================
 // Dict construction helpers
@@ -1448,18 +1450,35 @@ pub fn compute_deviance_residuals_py<'py>(
     Ok(resid.into_pyarray(py).unbind())
 }
 
-/// Compute null deviance from Rust
+/// Compute null deviance from Rust.
+///
+/// `offset` is on the linear-predictor scale (log(exposure) for a rate model);
+/// `link` places it, and defaults to the family's own link.
 #[pyfunction]
-#[pyo3(signature = (y, family, exposure=None))]
+#[pyo3(signature = (y, family, weights=None, offset=None, link=None))]
 pub fn compute_null_deviance_py(
     y: PyReadonlyArray1<f64>,
     family: &str,
-    exposure: Option<PyReadonlyArray1<f64>>,
+    weights: Option<PyReadonlyArray1<f64>>,
+    offset: Option<PyReadonlyArray1<f64>>,
+    link: Option<&str>,
 ) -> PyResult<f64> {
     let y_arr = y.as_array().to_owned();
-    let exp_arr = exposure.map(|e| e.as_array().to_owned());
-
-    null_deviance(&y_arr, family, exp_arr.as_ref()).map_err(pyo3::exceptions::PyValueError::new_err)
+    let weights_arr = weights.map(|w| w.as_array().to_owned());
+    let offset_arr = offset.map(|o| o.as_array().to_owned());
+    validate_tweedie_fit_response(family, &y_arr, 1.5, true)?;
+    let fam = family_from_name_with_tweedie_support(family, 1.5, 1.0, true)?;
+    let link_box = match link {
+        Some(name) => link_from_name(name)?,
+        None => fam.default_link(),
+    };
+    Ok(null_deviance_for_family(
+        &y_arr,
+        fam.as_ref(),
+        link_box.as_ref(),
+        weights_arr.as_ref(),
+        offset_arr.as_ref(),
+    ))
 }
 
 /// Compute unit deviance from Rust

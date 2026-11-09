@@ -1328,7 +1328,9 @@ def compute_deviance_residuals_py(
 def compute_null_deviance_py(
     y: npt.NDArray[np.float64],
     family: str,
-    exposure: npt.NDArray[np.float64] | None = None,
+    weights: npt.NDArray[np.float64] | None = None,
+    offset: npt.NDArray[np.float64] | None = None,
+    link: str | None = None,
 ) -> float: ...
 def compute_unit_deviance_py(
     y: npt.NDArray[np.float64],

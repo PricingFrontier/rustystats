@@ -766,8 +766,8 @@ pub struct RowContext<'a> {
     /// the fit), for initializers that read it.
     pub y_mean: f64,
     pub min_weight: f64,
-    /// Whether the fit was given an offset (the null model then uses it under a
-    /// log-link default family, as `null_deviance_for_family` does).
+    /// Whether the fit was given an offset (the null model then places it by the
+    /// fitted link, as `null_deviance_for_family` does).
     pub has_offset: bool,
     /// Columns standardized per row before every kernel (§6.7): the fit runs in
     /// standardized coordinates without a standardized copy of X.
@@ -779,9 +779,9 @@ impl RowContext<'_> {
         self.family.use_true_hessian_weights() && self.link.name() == "log"
     }
 
-    /// Whether the null model scales by exp(offset).
-    pub fn null_log_offset(&self) -> bool {
-        self.has_offset && self.family.is_log_link_default()
+    /// How the offset enters the null model.
+    pub fn null_offset(&self) -> crate::diagnostics::NullOffset {
+        crate::diagnostics::NullOffset::for_link(self.has_offset, self.link)
     }
 }
 
@@ -1301,16 +1301,25 @@ pub fn process_rows<'r, F>(
                     if (wi - 1.0).abs() >= crate::constants::ZERO_TOL {
                         facts.non_unit_weights += 1.0;
                     }
-                    if ctx.null_log_offset() {
-                        let oi = ctx.offset[i];
-                        facts.null_sums_weighted[0] += oi.exp() * wi;
-                        facts.null_sums_weighted[1] += yi * wi;
-                        facts.null_sums_unweighted[0] += oi.exp();
-                        facts.null_sums_unweighted[1] += yi;
-                    } else {
-                        facts.null_sums_weighted[0] += yi * wi;
-                        facts.null_sums_weighted[1] += wi;
-                        facts.null_sums_unweighted[0] += yi;
+                    match ctx.null_offset() {
+                        crate::diagnostics::NullOffset::Log => {
+                            let oi = ctx.offset[i];
+                            facts.null_sums_weighted[0] += oi.exp() * wi;
+                            facts.null_sums_weighted[1] += yi * wi;
+                            facts.null_sums_unweighted[0] += oi.exp();
+                            facts.null_sums_unweighted[1] += yi;
+                        }
+                        crate::diagnostics::NullOffset::Identity => {
+                            let residual = yi - ctx.offset[i];
+                            facts.null_sums_weighted[0] += residual * wi;
+                            facts.null_sums_weighted[1] += wi;
+                            facts.null_sums_unweighted[0] += residual;
+                        }
+                        crate::diagnostics::NullOffset::Absent => {
+                            facts.null_sums_weighted[0] += yi * wi;
+                            facts.null_sums_weighted[1] += wi;
+                            facts.null_sums_unweighted[0] += yi;
+                        }
                     }
                     if yi.is_finite() {
                         facts.max_abs_y = facts.max_abs_y.max(yi.abs());
@@ -1364,8 +1373,9 @@ pub fn process_rows<'r, F>(
                     }
                 }
                 (Eval::NullDeviance { model, weighted }, EvalSum::Sum(total)) => {
-                    let offset = ctx.null_log_offset().then(|| ctx.offset[i]);
-                    let unit = ctx.family.unit_deviance_at(ctx.y[i], model.mean_at(offset));
+                    let unit = ctx
+                        .family
+                        .unit_deviance_at(ctx.y[i], model.mean_at(Some(ctx.offset[i])));
                     *total += if *weighted {
                         unit * ctx.prior_weights[i]
                     } else {

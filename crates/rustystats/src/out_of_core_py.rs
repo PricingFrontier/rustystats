@@ -568,7 +568,9 @@ pub fn fit_smooth_glm_batched_py<'py>(
         family_from_name_with_tweedie_support(family, var_power, theta, allow_extended_tweedie)?;
     let family_for_fit =
         family_from_name_with_tweedie_support(family, var_power, theta, allow_extended_tweedie)?;
-    let lnk = link_from_name(link.unwrap_or(default_link_name(family)))?;
+    let link_name = link.unwrap_or(default_link_name(family));
+    let lnk = link_from_name(link_name)?;
+    let link_for_fit = link_from_name(link_name)?;
     let mut executor = PyBatchExecutor::new(
         py, open_pass, n_rows, n_params, fam, lnk, y_mean, has_offset,
     )
@@ -580,6 +582,7 @@ pub fn fit_smooth_glm_batched_py<'py>(
         &mut executor,
         &specs,
         family_for_fit.as_ref(),
+        link_for_fit.as_ref(),
         &config,
         (!nonneg.is_empty()).then_some(nonneg.as_slice()),
         (!nonpos.is_empty()).then_some(nonpos.as_slice()),
