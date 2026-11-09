@@ -65,6 +65,7 @@ except Exception:
 # This contains the fast implementations
 # Import Python wrappers
 from rustystats import families, links
+from rustystats._html_report import report_html
 from rustystats._rustystats import (
     BinomialFamily,
     GammaFamily,
@@ -236,6 +237,8 @@ __all__ = [
     # Sub-modules
     "families",
     "links",
+    # Validation report
+    "report_html",
     # Model diagnostics
     "compute_diagnostics",
     "ModelDiagnostics",

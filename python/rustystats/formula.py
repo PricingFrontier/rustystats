@@ -2910,6 +2910,106 @@ class GLMModel:
             weights=weights,
         )
 
+    def validation_report(
+        self,
+        train_data: pl.DataFrame,
+        test_data: pl.DataFrame | None = None,
+        *,
+        name: str | None = None,
+        thresholds: dict[str, Any] | None = None,
+        categorical_factors: list[str] | None = None,
+        continuous_factors: list[str] | None = None,
+        interactions: list[Any] | None = None,
+        base_predictions: str | dict[str, str] | None = None,
+        n_factor_bins: int = 10,
+        exposure: str | np.ndarray | None = None,
+        weights: str | np.ndarray | None = None,
+        labels: tuple[str, str] = ("train", "test"),
+    ) -> dict[str, Any]:
+        """
+        Build the validation report: everything a reviewer needs to judge this GLM.
+
+        Returns one JSON-serializable dictionary with the fit in and out of sample, every
+        factor's fitted effect and A/E, the coefficients, the residual and variance checks and
+        a list of review flags. Log it next to the model; ``rs.report_html(report)`` draws it
+        as a page. ``summary_metrics`` holds flat metrics ready for ``mlflow.log_metrics``.
+
+        Parameters
+        ----------
+        train_data : pl.DataFrame
+            The data the model was fitted on.
+        test_data : pl.DataFrame, optional
+            Held-out data for the out-of-sample columns and charts.
+        name : str, optional
+            The heading of the report.
+        thresholds : dict, optional
+            Overrides of the review thresholds; ``None`` as a value turns a check off. The
+            names and defaults are in ``report["thresholds"]``.
+        categorical_factors, continuous_factors : list of str, optional
+            Further columns to review alongside the model's own factors; those not in the model
+            get a score test, for deciding whether to add them.
+        interactions : list, optional
+            Pairs of factors to draw as A/E grids, as ``(a, b)`` tuples, in addition to the
+            model's fitted interactions.
+        base_predictions : str or dict, optional
+            Predictions from another model, compared against this one (see ``diagnostics``).
+        n_factor_bins : int, default=10
+            Quantile bands for each continuous factor.
+        exposure, weights : str or array, optional
+            Overrides of the fitted exposure and weights (see ``diagnostics``).
+        labels : tuple of str, default=("train", "test")
+            The names of the two datasets on the page and in the metric keys.
+
+        Returns
+        -------
+        dict
+            The report; ``json.dumps(report, allow_nan=False)`` succeeds.
+
+        Notes
+        -----
+        Like ``diagnostics``, this writes ``analysis/diagnostics.json`` to the working directory.
+        """
+        from rustystats._report import build_report
+
+        return build_report(
+            self,
+            train_data,
+            test_data,
+            name=name,
+            thresholds=thresholds,
+            categorical_factors=categorical_factors,
+            continuous_factors=continuous_factors,
+            interactions=interactions,
+            base_predictions=base_predictions,
+            n_factor_bins=n_factor_bins,
+            exposure=exposure,
+            weights=weights,
+            labels=labels,
+        )
+
+    def html_report(
+        self,
+        train_data: pl.DataFrame,
+        test_data: pl.DataFrame | None = None,
+        **kwargs: Any,
+    ) -> str:
+        """
+        Validate this GLM and return the result as one self-contained HTML page.
+
+        Takes the arguments of ``validation_report``. The page has no scripts and loads nothing
+        from the network, so it can be written to a file, opened offline or logged as an
+        artifact.
+
+        Examples
+        --------
+        >>> html = result.html_report(train, test_data=test, name="Motor frequency v3")
+        >>> Path("report.html").write_text(html)
+        """
+        from rustystats._html_report import report_html
+
+        report = self.validation_report(train_data, test_data, **kwargs)
+        return report_html(report)
+
     def diagnostics_json(
         self,
         train_data: pl.DataFrame | None = None,
