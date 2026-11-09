@@ -920,6 +920,7 @@ pub fn fit_smooth_glm_with_executor(
     executor: &mut dyn PassExecutor,
     smooth_specs: &[SmoothTermSpec],
     family: &dyn Family,
+    link: &dyn Link,
     config: &SmoothGLMConfig,
     nonneg_indices: Option<&[usize]>,
     nonpos_indices: Option<&[usize]>,
@@ -938,7 +939,7 @@ pub fn fit_smooth_glm_with_executor(
             family,
             nonneg_indices,
             nonpos_indices,
-            null_log_offset: has_offset && family.is_log_link_default(),
+            null_offset: crate::diagnostics::NullOffset::for_fit(has_offset, link, family),
             robust: &config.robust,
         },
     )?;
@@ -1019,7 +1020,7 @@ fn fit_smooth_in_memory(
             family,
             nonneg_indices,
             nonpos_indices,
-            null_log_offset: offset.is_some() && family.is_log_link_default(),
+            null_offset: crate::diagnostics::NullOffset::for_fit(offset.is_some(), link, family),
             robust: &config.robust,
         },
     )?;
@@ -1097,7 +1098,7 @@ pub(crate) struct SmoothDriveSettings<'a> {
     pub nonneg_indices: Option<&'a [usize]>,
     pub nonpos_indices: Option<&'a [usize]>,
     /// Whether the null model scales by exp(offset) (`RowContext::null_log_offset`).
-    pub null_log_offset: bool,
+    pub null_offset: crate::diagnostics::NullOffset,
     pub robust: &'a [HCType],
 }
 
@@ -1410,7 +1411,7 @@ pub(crate) fn drive_smooth(
         let non_one = request.eval(Eval::NonOneCounts(intercept_candidates.clone()));
         let mut sums = executor.run(&request)?;
         (
-            FirstPassFacts::from_sums(sums[facts].facts(), n, settings.null_log_offset),
+            FirstPassFacts::from_sums(sums[facts].facts(), n, settings.null_offset),
             sums[non_one].sums().to_vec(),
             sums[deviance].deviance().0,
             take_gram_sum(&mut sums, gram),
@@ -3236,7 +3237,7 @@ mod tests {
                 family: &GaussianFamily,
                 nonneg_indices: None,
                 nonpos_indices: None,
-                null_log_offset: false,
+                null_offset: crate::diagnostics::NullOffset::Absent,
                 robust: &[],
             };
             let shape = SmoothShape {
@@ -3476,6 +3477,7 @@ mod tests {
                     executor,
                     &specs,
                     &PoissonFamily,
+                    &LogLink,
                     &config,
                     None,
                     None,

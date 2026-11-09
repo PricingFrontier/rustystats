@@ -91,6 +91,7 @@ nav:
     - Dict API: api/dict-api.md
     - Results Object: api/results.md
     - Diagnostics: api/diagnostics.md
+    - Validation Report: api/validation-report.md
     - Rate Tables: api/rate-tables.md
     - Working Response & Weights: api/working-response-weights.md
     - Model Serialization: api/serialization.md

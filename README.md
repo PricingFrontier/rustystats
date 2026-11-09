@@ -498,6 +498,18 @@ exploration = rs.explore_data(
 - **Warnings**: Auto-generated alerts for high dispersion, poor calibration, missing factors
 - **Base Model Comparison**: Compare new model against existing/benchmark predictions
 
+### Validation Report
+
+```python
+# One self-contained HTML page: fit, factors, coefficients, residuals and review flags
+html = result.html_report(train, test_data=test, name="Motor frequency v3")
+Path("report.html").write_text(html)
+```
+
+`result.validation_report(...)` returns the same content as a JSON-safe dictionary to keep beside
+the model, and `rs.report_html(report)` draws a saved one. See the
+[Validation Report](https://pricingfrontier.github.io/rustystats/api/validation-report/) docs.
+
 ### Diagnostics JSON Shape
 
 The `diagnostics.to_json()` output includes:

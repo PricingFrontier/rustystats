@@ -65,7 +65,7 @@ pub use model_fit::{
     aic, bic, combine_gaussian_log_likelihood, log_likelihood_binomial, log_likelihood_for_family,
     log_likelihood_gamma, log_likelihood_gaussian, log_likelihood_poisson, null_deviance,
     null_deviance_for_family, null_deviance_with_offset, null_model_from_sums, null_model_sums,
-    NullModel,
+    NullModel, NullOffset,
 };
 
 pub use negbinomial::{

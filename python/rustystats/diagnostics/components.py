@@ -81,7 +81,7 @@ class _ResidualComputer:
     @property
     def null_deviance(self) -> float:
         if self._null_dev is None:
-            self._null_dev = _rust_null_deviance(self.y, self.family, self.exposure)
+            self._null_dev = _rust_null_deviance(self.y, self.family, offset=np.log(self.exposure))
         return self._null_dev
 
     def unit_deviance(self, y: np.ndarray, mu: np.ndarray) -> np.ndarray:

@@ -775,7 +775,7 @@ fn fit_glm_core(
             init_coefficients,
             family_name: family.name(),
             family,
-            null_log_offset: offset.is_some() && family.is_log_link_default(),
+            null_offset: crate::diagnostics::NullOffset::for_fit(offset.is_some(), link, family),
             robust,
             statistics_without_covariance: false,
         },
@@ -1025,7 +1025,7 @@ pub(crate) fn drive_glm(
         .map(|standardization| standardization.scale.iter().map(|s| s * s).collect());
     let fit_intercept = config.regularization.fit_intercept;
     let irls_config = config.to_irls_config();
-    let null_log_offset = has_offset && family.is_log_link_default();
+    let null_offset = crate::diagnostics::NullOffset::for_fit(has_offset, link, family);
     if config.regularization.penalty.requires_coordinate_descent() {
         let outcome = super::coordinate_descent::drive_cd(
             executor,
@@ -1037,7 +1037,7 @@ pub(crate) fn drive_glm(
                 y_mean,
                 family,
                 link,
-                null_log_offset,
+                null_offset,
                 robust: &config.robust,
                 statistics_without_covariance,
             },
@@ -1069,7 +1069,7 @@ pub(crate) fn drive_glm(
                 init_coefficients: init,
                 family_name: family.name(),
                 family,
-                null_log_offset,
+                null_offset,
                 robust: &config.robust,
                 statistics_without_covariance,
             },
@@ -1104,8 +1104,8 @@ pub(crate) struct IrlsDriveSettings<'a> {
     pub family_name: &'a str,
     /// The family, for the final statistics' combination rules.
     pub family: &'a dyn Family,
-    /// Whether the null model scales by exp(offset) (`RowContext::null_log_offset`).
-    pub null_log_offset: bool,
+    /// How the offset enters the null model (`RowContext::null_offset`).
+    pub null_offset: crate::diagnostics::NullOffset,
     /// Robust covariance types for the final pass (`FitConfig::robust`).
     pub robust: &'a [HCType],
     /// Compute the final statistics even when covariance is skipped (pass A at
@@ -1216,7 +1216,11 @@ pub(crate) struct FirstPassFacts {
 }
 
 impl FirstPassFacts {
-    pub(crate) fn from_sums(facts: &super::passes::Facts, n: usize, null_log_offset: bool) -> Self {
+    pub(crate) fn from_sums(
+        facts: &super::passes::Facts,
+        n: usize,
+        null_offset: crate::diagnostics::NullOffset,
+    ) -> Self {
         let all_unit_weights = facts.non_unit_weights == 0.0;
         let sums = if all_unit_weights {
             &facts.null_sums_unweighted
@@ -1224,7 +1228,7 @@ impl FirstPassFacts {
             &facts.null_sums_weighted
         };
         let null_model =
-            crate::diagnostics::null_model_from_sums(sums, n, !all_unit_weights, null_log_offset);
+            crate::diagnostics::null_model_from_sums(sums, n, !all_unit_weights, null_offset);
         let response_scale =
             (facts.max_abs_y.is_finite() && facts.max_abs_y > 0.0).then_some(facts.max_abs_y);
         Self {
@@ -1614,7 +1618,7 @@ pub(crate) fn drive_irls(
             .as_ref()
             .expect("the first pass reads the facts"),
         executor.n_rows(),
-        settings.null_log_offset,
+        settings.null_offset,
     );
     let mut objective = penalized_irls_objective(
         deviance,
@@ -3072,7 +3076,7 @@ mod tests {
                     "{} llf",
                     family.name()
                 );
-                let null = null_deviance_for_family(y, family, maybe_w, o);
+                let null = null_deviance_for_family(y, family, link, maybe_w, o);
                 assert_eq!(
                     stats.null_deviance.to_bits(),
                     null.to_bits(),

@@ -96,6 +96,10 @@ impl Family for GaussianFamily {
     fn default_link(&self) -> Box<dyn Link> {
         Box::new(IdentityLink)
     }
+
+    fn null_variance_power(&self) -> f64 {
+        0.0
+    }
 }
 
 // =============================================================================

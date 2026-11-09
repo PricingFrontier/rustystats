@@ -324,6 +324,13 @@ pub fn null_deviance_with_offset(
             || family_lower.starts_with("negativebinomial")
             || family_lower.starts_with("gamma")
             || family_lower.starts_with("quasipoisson"));
+    let identity_offset = offset.filter(|_| matches!(family_lower.as_str(), "gaussian" | "normal"));
+    // c = Σw·y·a^(1−p) / Σw·a^(2−p), with p the family's variance power.
+    let power = if family_lower.starts_with("gamma") {
+        2.0
+    } else {
+        1.0
+    };
 
     // Closure: given a row index, return the null-model prediction `mu_i`.
     // Captures `mean_rate`/`y_mean` and `offset` by value/reference as needed.
@@ -331,17 +338,24 @@ pub fn null_deviance_with_offset(
     let (mean_rate, y_mean) = if is_log_link_with_offset {
         let off = offset.expect("offset checked above");
         let (sum_exp_off, sum_y) = match weights {
-            Some(w) => ndarray::Zip::from(off)
-                .and(y)
-                .and(w)
-                .fold((0.0_f64, 0.0_f64), |(se, sy), &oi, &yi, &wi| {
-                    (se + oi.exp() * wi, sy + yi * wi)
-                }),
-            None => ndarray::Zip::from(off)
-                .and(y)
-                .fold((0.0_f64, 0.0_f64), |(se, sy), &oi, &yi| {
-                    (se + oi.exp(), sy + yi)
-                }),
+            Some(w) => ndarray::Zip::from(off).and(y).and(w).fold(
+                (0.0_f64, 0.0_f64),
+                |(se, sy), &oi, &yi, &wi| {
+                    let a = oi.exp();
+                    (
+                        se + a.powf(2.0 - power) * wi,
+                        sy + yi * a.powf(1.0 - power) * wi,
+                    )
+                },
+            ),
+            None => {
+                ndarray::Zip::from(off)
+                    .and(y)
+                    .fold((0.0_f64, 0.0_f64), |(se, sy), &oi, &yi| {
+                        let a = oi.exp();
+                        (se + a.powf(2.0 - power), sy + yi * a.powf(1.0 - power))
+                    })
+            }
         };
         (sum_y / sum_exp_off, f64::NAN) // y_mean unused on this branch
     } else {
@@ -353,7 +367,12 @@ pub fn null_deviance_with_offset(
                 }),
             None => (y.sum(), n as f64),
         };
-        (f64::NAN, sum_y / sum_w) // mean_rate unused on this branch
+        // Under an identity link the constant is the mean of y − offset.
+        let sum_off = identity_offset.map_or(0.0, |off| match weights {
+            Some(w) => off.dot(w),
+            None => off.sum(),
+        });
+        (f64::NAN, (sum_y - sum_off) / sum_w) // mean_rate unused on this branch
     };
 
     // ---- Pass 2: fold the (weighted) unit deviance ----
@@ -372,6 +391,12 @@ pub fn null_deviance_with_offset(
             .fold(0.0, |a, &yi, &wi, &oi| {
                 a + family.unit_deviance_at(yi, mean_rate * oi.exp()) * wi
             }),
+        (Some(w), Some(off)) if identity_offset.is_some() => ndarray::Zip::from(y)
+            .and(w)
+            .and(off)
+            .fold(0.0, |a, &yi, &wi, &oi| {
+                a + family.unit_deviance_at(yi, y_mean + oi) * wi
+            }),
         (Some(w), _) => {
             // Constant mu_null = y_mean for all rows on the non-log-link path.
             let mu_const = y_mean;
@@ -382,6 +407,11 @@ pub fn null_deviance_with_offset(
         (None, Some(off)) if is_log_link_with_offset => {
             ndarray::Zip::from(y).and(off).fold(0.0, |a, &yi, &oi| {
                 a + family.unit_deviance_at(yi, mean_rate * oi.exp())
+            })
+        }
+        (None, Some(off)) if identity_offset.is_some() => {
+            ndarray::Zip::from(y).and(off).fold(0.0, |a, &yi, &oi| {
+                a + family.unit_deviance_at(yi, y_mean + oi)
             })
         }
         (None, _) => {
@@ -395,25 +425,24 @@ pub fn null_deviance_with_offset(
 
 /// Compute null deviance using a Family trait object instead of family name string.
 ///
-/// This is the trait-based replacement for `null_deviance_with_offset`.
-/// It uses `family.is_log_link_default()` for offset handling and
-/// `family.unit_deviance()` for deviance computation, eliminating all
-/// string-based dispatch.
+/// The null model uses `link` to place the offset (see [`NullOffset`]), and
+/// `family.unit_deviance_at` for the deviance, with no string dispatch.
 pub fn null_deviance_for_family(
     y: &Array1<f64>,
     family: &dyn crate::families::Family,
+    link: &dyn crate::links::Link,
     weights: Option<&Array1<f64>>,
     offset: Option<&Array1<f64>>,
 ) -> f64 {
     let n = y.len();
-    let log_offset = offset.filter(|_| family.is_log_link_default());
+    let form = NullOffset::for_fit(offset.is_some(), link, family);
     let sums = reduce_rows(vec![0.0; 2], n, |sums, rows| {
-        null_model_sums(sums, y, weights, log_offset, rows)
+        null_model_sums(sums, y, weights, offset, form, rows)
     });
-    let null = null_model_from_sums(&sums, n, weights.is_some(), log_offset.is_some());
+    let null = null_model_from_sums(&sums, n, weights.is_some(), form);
     reduce_rows(0.0f64, n, |total, rows| {
         for i in rows {
-            let mu = null.mean_at(log_offset.map(|o| o[i]));
+            let mu = null.mean_at(offset.map(|o| o[i]));
             let unit = family.unit_deviance_at(y[i], mu);
             *total += match weights {
                 Some(w) => unit * w[i],
@@ -423,69 +452,96 @@ pub fn null_deviance_for_family(
     })
 }
 
+/// How an offset enters the null (intercept-only) model.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum NullOffset {
+    /// No offset, or a link whose intercept has no closed form: μ_i = c.
+    Absent,
+    /// Log link: μ_i = c·a_i with a = exp(o) and c = Σw·y·a^(1−p) / Σw·a^(2−p). That is the
+    /// maximum-likelihood constant when V(μ) = μ^p; `power` is p.
+    Log { power: f64 },
+    /// Identity link: μ_i = c + o_i, with c = Σw·(y − o) / Σw.
+    Identity,
+}
+
+impl NullOffset {
+    /// The form for a fit with this link and family.
+    #[inline]
+    pub fn for_fit(
+        has_offset: bool,
+        link: &dyn crate::links::Link,
+        family: &dyn crate::families::Family,
+    ) -> Self {
+        match link.name() {
+            "log" if has_offset => Self::Log {
+                power: family.null_variance_power(),
+            },
+            "identity" if has_offset => Self::Identity,
+            _ => Self::Absent,
+        }
+    }
+}
+
 /// The scalar that parameterises the null (intercept-only) model.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NullModel {
-    /// Σw·y / Σw·exp(o) under a log-link default family with an offset;
-    /// otherwise the (weighted) mean response.
+    /// The constant c of the [`NullOffset`] form.
     pub value: f64,
-    /// Whether μ_i = value·exp(o_i) (log-link offset) rather than a constant.
-    pub log_offset: bool,
+    /// How the offset enters μ_i.
+    pub form: NullOffset,
 }
 
 impl NullModel {
     /// The null model's mean for one row (`offset` is that row's offset).
     #[inline]
     pub fn mean_at(&self, offset: Option<f64>) -> f64 {
-        match (self.log_offset, offset) {
-            (true, Some(o)) => self.value * o.exp(),
+        match (self.form, offset) {
+            (NullOffset::Log { .. }, Some(o)) => self.value * o.exp(),
+            (NullOffset::Identity, Some(o)) => self.value + o,
             _ => self.value,
         }
     }
 }
 
-/// Fold the null model's two sums over `rows`: (Σw·exp(o), Σw·y) under a log-link
-/// offset, else (Σw·y, Σw); unweighted when `weights` is None.
+/// Fold the null model's two sums over `rows`: (Σw·a^(2−p), Σw·y·a^(1−p)) under a
+/// log-link offset, (Σw·(y − o), Σw) under an identity-link offset, else (Σw·y, Σw).
 pub fn null_model_sums(
     sums: &mut [f64],
     y: &Array1<f64>,
     weights: Option<&Array1<f64>>,
-    log_offset: Option<&Array1<f64>>,
+    offset: Option<&Array1<f64>>,
+    form: NullOffset,
     rows: std::ops::Range<usize>,
 ) {
     for i in rows {
-        match (log_offset, weights) {
-            (Some(o), Some(w)) => {
-                sums[0] += o[i].exp() * w[i];
-                sums[1] += y[i] * w[i];
+        let wi = weights.map_or(1.0, |w| w[i]);
+        let oi = offset.map_or(0.0, |o| o[i]);
+        match form {
+            NullOffset::Log { power } => {
+                let a = oi.exp();
+                sums[0] += a.powf(2.0 - power) * wi;
+                sums[1] += y[i] * a.powf(1.0 - power) * wi;
             }
-            (Some(o), None) => {
-                sums[0] += o[i].exp();
-                sums[1] += y[i];
+            NullOffset::Identity => {
+                sums[0] += (y[i] - oi) * wi;
+                sums[1] += wi;
             }
-            (None, Some(w)) => {
-                sums[0] += y[i] * w[i];
-                sums[1] += w[i];
+            NullOffset::Absent => {
+                sums[0] += y[i] * wi;
+                sums[1] += wi;
             }
-            (None, None) => sums[0] += y[i],
         }
     }
 }
 
 /// The null model from its sums (`null_model_sums`).
-pub fn null_model_from_sums(sums: &[f64], n: usize, weighted: bool, log_offset: bool) -> NullModel {
-    if log_offset {
-        NullModel {
-            value: sums[1] / sums[0],
-            log_offset: true,
-        }
+pub fn null_model_from_sums(sums: &[f64], n: usize, weighted: bool, form: NullOffset) -> NullModel {
+    let value = if matches!(form, NullOffset::Log { .. }) {
+        sums[1] / sums[0]
     } else {
-        let total_weight = if weighted { sums[1] } else { n as f64 };
-        NullModel {
-            value: sums[0] / total_weight,
-            log_offset: false,
-        }
-    }
+        sums[0] / if weighted { sums[1] } else { n as f64 }
+    };
+    NullModel { value, form }
 }
 
 // =============================================================================
@@ -496,6 +552,7 @@ pub fn null_model_from_sums(sums: &[f64], n: usize, weighted: bool, log_offset: 
 mod tests {
     use super::*;
     use crate::families::{GammaFamily, GaussianFamily, NegativeBinomialFamily, PoissonFamily};
+    use crate::links::{IdentityLink, LogLink, LogitLink};
     use approx::assert_abs_diff_eq;
     use ndarray::array;
 
@@ -865,6 +922,81 @@ mod tests {
     }
 
     #[test]
+    fn identity_link_null_model_is_the_mean_of_y_minus_the_offset() {
+        let y = array![1.0, 2.0, 4.0, 9.0];
+        let offset = array![0.5, 1.5, -1.0, 3.0];
+        let by_name = null_deviance_with_offset(&y, "gaussian", None, Some(&offset))
+            .expect("test setup should be valid");
+        let by_trait =
+            null_deviance_for_family(&y, &GaussianFamily, &IdentityLink, None, Some(&offset));
+        // y - offset = [0.5, 0.5, 5, 6], whose mean is 3; the null means are 3 + offset.
+        let expected: f64 = (&y - &(&offset + 3.0)).mapv(|r| r * r).sum();
+        assert_abs_diff_eq!(by_name, expected, epsilon = 1e-12);
+        assert_abs_diff_eq!(by_trait, expected, epsilon = 1e-12);
+
+        let weights = array![1.0, 2.0, 0.5, 1.5];
+        let weighted = null_deviance_for_family(
+            &y,
+            &GaussianFamily,
+            &IdentityLink,
+            Some(&weights),
+            Some(&offset),
+        );
+        let c = (&(&y - &offset) * &weights).sum() / weights.sum();
+        let manual: f64 = (&(&y - &(&offset + c)).mapv(|r| r * r) * &weights).sum();
+        assert_abs_diff_eq!(weighted, manual, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn null_offset_follows_the_fitted_link() {
+        let poisson = PoissonFamily;
+        assert_eq!(
+            NullOffset::for_fit(true, &LogLink, &poisson),
+            NullOffset::Log { power: 1.0 }
+        );
+        assert_eq!(
+            NullOffset::for_fit(true, &LogLink, &GammaFamily),
+            NullOffset::Log { power: 2.0 }
+        );
+        assert_eq!(
+            NullOffset::for_fit(true, &IdentityLink, &GaussianFamily),
+            NullOffset::Identity
+        );
+        assert_eq!(
+            NullOffset::for_fit(true, &LogitLink, &poisson),
+            NullOffset::Absent
+        );
+        assert_eq!(
+            NullOffset::for_fit(false, &LogLink, &poisson),
+            NullOffset::Absent
+        );
+    }
+
+    #[test]
+    fn a_log_link_null_constant_is_the_familys_optimum() {
+        // Gaussian with a log link: c = Σa·y / Σa².
+        let y = array![1.0, 2.0, 4.0];
+        let a = array![1.0_f64, 2.0, 5.0];
+        let offset = a.mapv(f64::ln);
+        let got = null_deviance_for_family(&y, &GaussianFamily, &LogLink, None, Some(&offset));
+        let c = (&a * &y).sum() / (&a * &a).sum();
+        let expected: f64 = (&y - &(&a * c)).mapv(|r| r * r).sum();
+        assert_abs_diff_eq!(got, expected, epsilon = 1e-12);
+        // No other constant does better.
+        for nudge in [0.99, 1.01] {
+            let other: f64 = (&y - &(&a * (c * nudge))).mapv(|r| r * r).sum();
+            assert!(got < other);
+        }
+
+        // Gamma: c = Σ(y/a) / n.
+        let gamma = null_deviance_for_family(&y, &GammaFamily, &LogLink, None, Some(&offset));
+        let c = (&y / &a).sum() / 3.0;
+        let mu = &a * c;
+        let expected: f64 = GammaFamily.unit_deviance(&y, &mu).sum();
+        assert_abs_diff_eq!(gamma, expected, epsilon = 1e-12);
+    }
+
+    #[test]
     fn test_null_deviance_with_offset_gamma() {
         let y = array![1.0, 2.0, 3.0];
         let offset = array![0.0, 0.5, 1.0];
@@ -912,7 +1044,7 @@ mod tests {
             (None, Some(&offset)),
             (Some(&weights), Some(&offset)),
         ] {
-            let by_trait = null_deviance_for_family(&y_positive, &gaussian, w, off);
+            let by_trait = null_deviance_for_family(&y_positive, &gaussian, &IdentityLink, w, off);
             let by_name =
                 null_deviance_with_offset(&y_positive, "gaussian", w, off).expect("valid family");
             assert_abs_diff_eq!(by_trait, by_name, epsilon = 1e-12);
@@ -940,7 +1072,7 @@ mod tests {
                 (None, Some(&offset)),
                 (Some(&weights), Some(&offset)),
             ] {
-                let by_trait = null_deviance_for_family(y, family, w, off);
+                let by_trait = null_deviance_for_family(y, family, &LogLink, w, off);
                 let by_name =
                     null_deviance_with_offset(y, name, w, off).expect("valid family name");
                 assert_abs_diff_eq!(by_trait, by_name, epsilon = 1e-12);
@@ -970,31 +1102,35 @@ mod tests {
                     || family_lower.starts_with("quasipoisson");
                 if log_link {
                     let exp_off: Array1<f64> = off.mapv(|x| x.exp());
-                    let sum_exp_off: f64 = match weights {
-                        Some(w) => ndarray::Zip::from(&exp_off)
-                            .and(w)
-                            .fold(0.0, |a, &e, &wi| a + e * wi),
-                        None => exp_off.sum(),
+                    let power = if family_lower.starts_with("gamma") {
+                        2.0
+                    } else {
+                        1.0
                     };
-                    let sum_y: f64 = match weights {
-                        Some(w) => ndarray::Zip::from(y)
-                            .and(w)
-                            .fold(0.0, |a, &yi, &wi| a + yi * wi),
-                        None => y.sum(),
-                    };
+                    let unit_weights = Array1::ones(n);
+                    let w = weights.unwrap_or(&unit_weights);
+                    let sum_exp_off = ndarray::Zip::from(&exp_off)
+                        .and(w)
+                        .fold(0.0, |t, &e, &wi| t + e.powf(2.0 - power) * wi);
+                    let sum_y = ndarray::Zip::from(y)
+                        .and(&exp_off)
+                        .and(w)
+                        .fold(0.0, |t, &yi, &e, &wi| t + yi * e.powf(1.0 - power) * wi);
                     let mean_rate = sum_y / sum_exp_off;
                     exp_off.mapv(|e| mean_rate * e)
                 } else {
+                    let identity = matches!(family_lower.as_str(), "gaussian" | "normal");
+                    let target: Array1<f64> = if identity { y - off } else { y.clone() };
                     let (sy, sw) = match weights {
-                        Some(w) => (
-                            ndarray::Zip::from(y)
-                                .and(w)
-                                .fold(0.0, |a, &yi, &wi| a + yi * wi),
-                            w.sum(),
-                        ),
-                        None => (y.sum(), n as f64),
+                        Some(w) => ((&target * w).sum(), w.sum()),
+                        None => (target.sum(), n as f64),
                     };
-                    Array1::from_elem(n, sy / sw)
+                    let c = sy / sw;
+                    if identity {
+                        off.mapv(|o| c + o)
+                    } else {
+                        Array1::from_elem(n, c)
+                    }
                 }
             }
             None => {

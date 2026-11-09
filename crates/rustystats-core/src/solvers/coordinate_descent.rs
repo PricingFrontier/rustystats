@@ -142,7 +142,7 @@ pub(crate) fn fit_glm_coordinate_descent(
             y_mean,
             family,
             link,
-            null_log_offset: offset.is_some() && family.is_log_link_default(),
+            null_offset: crate::diagnostics::NullOffset::for_fit(offset.is_some(), link, family),
             robust,
             statistics_without_covariance: false,
         },
@@ -191,8 +191,8 @@ pub(crate) struct CdDriveSettings<'a> {
     pub y_mean: f64,
     pub family: &'a dyn Family,
     pub link: &'a dyn Link,
-    /// Whether the null model scales by exp(offset) (`RowContext::null_log_offset`).
-    pub null_log_offset: bool,
+    /// How the offset enters the null model (`RowContext::null_offset`).
+    pub null_offset: crate::diagnostics::NullOffset,
     pub robust: &'a [HCType],
     /// Compute the final statistics even when covariance is skipped (§8).
     pub statistics_without_covariance: bool,
@@ -307,7 +307,7 @@ pub(crate) fn drive_cd(
             .as_ref()
             .expect("the first pass reads the facts"),
         n,
-        settings.null_log_offset,
+        settings.null_offset,
     );
 
     // -------------------------------------------------------------------------

@@ -2227,9 +2227,9 @@ class DiagnosticsComputer:
                 metrics.append(
                     ContinuousBandMetrics(
                         band=i + 1,
-                        range_min=round(lower, 4),
-                        range_max=round(upper, 4),
-                        midpoint=round(midpoint, 4),
+                        range_min=float(lower),
+                        range_max=float(upper),
+                        midpoint=float(midpoint),
                         n=n,
                         exposure=round(exp_sum, 2),
                         actual=round(actual_freq, 6),

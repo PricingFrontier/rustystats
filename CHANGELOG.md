@@ -3,6 +3,34 @@
 Notable changes in each RustyStats release. For releases before 0.10.0, see
 [GitHub Releases](https://github.com/PricingFrontier/rustystats/releases).
 
+## 0.11.0
+
+### Added
+
+- **Validation report.** `result.html_report(train, test_data=test)` returns one self-contained
+  HTML page for reviewing a fitted GLM: performance in and out of sample, each factor's fitted
+  effect and A/E, interactions, coefficients, residual and variance checks, influence, and a
+  list of review flags. `result.validation_report(...)` returns the same content as a JSON-safe
+  dictionary and `rs.report_html(report)` draws a saved one. The page has no scripts and loads
+  nothing from the network. Multinomial models get the same page with a class switch. See
+  [Validation Report](https://pricingfrontier.github.io/rustystats/api/validation-report/).
+
+### Fixed
+
+- **Null deviance with an offset.** The null model now places the offset by the fitted link:
+  `c + offset` on an identity link and `c * exp(offset)` on a log link, in every fit path, with
+  the constant that is optimal for the family's variance function. Null deviance, deviance
+  explained and the likelihood-ratio test therefore change for a Gaussian, Gamma or Tweedie fit
+  with an offset, and now match statsmodels. So does any fit whose link is not its family's
+  default. Fits with no offset, and Poisson-type fits with a log link, do not change. Negative
+  binomial and logit fits with an offset have no closed-form constant, so they are unchanged.
+- **Continuous factor bands kept four decimal places**, which collapsed the bands of a factor on
+  a small scale. Bands now keep their true edges; the JSON output still rounds them.
+- **`compute_null_deviance_py`** no longer treats exposure as a weight, which gave the wrong null
+  deviance for a rated model. It now takes `weights`, `offset` and `link`.
+- **`diagnostics()` with null categorical values.** A null in a categorical factor raised a
+  `TypeError`. It is now the level `None`, as in the explorer and the design matrix.
+
 ## 0.10.0
 
 ### Upgrading

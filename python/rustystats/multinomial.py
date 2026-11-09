@@ -3687,6 +3687,83 @@ class MultinomialModel:
             warnings=self.warnings,
         )
 
+    def validation_report(
+        self,
+        train_data: Any,
+        test_data: Any | None = None,
+        *,
+        name: str | None = None,
+        thresholds: dict[str, Any] | None = None,
+        categorical_factors: list[str] | None = None,
+        continuous_factors: list[str] | None = None,
+        interactions: list[Any] | None = None,
+        n_factor_bins: int = 10,
+        weights: str | None = None,
+        labels: tuple[str, str] = ("train", "test"),
+    ) -> dict[str, Any]:
+        """
+        Build the validation report: everything a reviewer needs to judge this model.
+
+        Returns one JSON-serializable dictionary: the fit as a whole (deviance against the
+        class shares, accuracy, the confusion and expected-count matrices, the class mix) and,
+        for each class, a one-vs-rest view of calibration, every factor's fitted effect and
+        A/E, interactions and coefficients, with a list of review flags. Effects are odds
+        against the reference class. ``rs.report_html(report)`` draws it as a page.
+
+        Parameters
+        ----------
+        train_data : pl.DataFrame
+            The data the model was fitted on.
+        test_data : pl.DataFrame, optional
+            Held-out data for the out-of-sample columns and charts.
+        name : str, optional
+            The heading of the report.
+        thresholds : dict, optional
+            Overrides of the review thresholds; ``None`` as a value turns a check off.
+        categorical_factors, continuous_factors : list of str, optional
+            Further columns to review alongside the model's own factors.
+        interactions : list, optional
+            Pairs of factors to draw as A/E grids, as ``(a, b)`` tuples, in addition to the
+            model's fitted interactions.
+        n_factor_bins : int, default=10
+            Quantile bands for each continuous factor.
+        weights : str, optional
+            A column of weights, overriding the fitted weights.
+        labels : tuple of str, default=("train", "test")
+            The names of the two datasets on the page and in the metric keys.
+
+        Returns
+        -------
+        dict
+            The report; ``json.dumps(report, allow_nan=False)`` succeeds.
+        """
+        from rustystats._multinomial_report import build_multinomial_report
+
+        return build_multinomial_report(
+            self,
+            train_data,
+            test_data,
+            name=name,
+            thresholds=thresholds,
+            categorical_factors=categorical_factors,
+            continuous_factors=continuous_factors,
+            interactions=interactions,
+            n_factor_bins=n_factor_bins,
+            weights=weights,
+            labels=labels,
+        )
+
+    def html_report(self, train_data: Any, test_data: Any | None = None, **kwargs: Any) -> str:
+        """
+        Validate this model and return the result as one self-contained HTML page.
+
+        Takes the arguments of ``validation_report``. The page has no scripts and loads nothing
+        from the network, and has a class switch beside its dataset switch.
+        """
+        from rustystats._html_report import report_html
+
+        return report_html(self.validation_report(train_data, test_data, **kwargs))
+
     def diagnostics_json(
         self,
         train_data: Any | None = None,
