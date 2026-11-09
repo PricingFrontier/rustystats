@@ -939,7 +939,7 @@ pub fn fit_smooth_glm_with_executor(
             family,
             nonneg_indices,
             nonpos_indices,
-            null_offset: crate::diagnostics::NullOffset::for_link(has_offset, link),
+            null_offset: crate::diagnostics::NullOffset::for_fit(has_offset, link, family),
             robust: &config.robust,
         },
     )?;
@@ -1020,7 +1020,7 @@ fn fit_smooth_in_memory(
             family,
             nonneg_indices,
             nonpos_indices,
-            null_offset: crate::diagnostics::NullOffset::for_link(offset.is_some(), link),
+            null_offset: crate::diagnostics::NullOffset::for_fit(offset.is_some(), link, family),
             robust: &config.robust,
         },
     )?;

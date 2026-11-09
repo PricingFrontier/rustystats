@@ -152,6 +152,10 @@ impl Family for GammaFamily {
         true
     }
 
+    fn null_variance_power(&self) -> f64 {
+        2.0
+    }
+
     /// Whether to use true Hessian weights for IRLS.
     ///
     /// Note: While true Hessian can reduce IRLS iterations, it produces a different

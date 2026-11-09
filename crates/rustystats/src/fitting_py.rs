@@ -48,6 +48,7 @@ fn smooth_result_to_py<'py>(
 
     result.family_name = family_name;
     let glm_result = PyGLMResults {
+        link_name: None,
         coefficients: result.coefficients,
         fitted_values: result.fitted_values,
         linear_predictor: result.linear_predictor,
@@ -414,6 +415,7 @@ pub fn fit_glm_py(
     };
 
     Ok(PyGLMResults {
+        link_name: Some(link.unwrap_or(default_link_name(family)).to_string()),
         coefficients: result.coefficients,
         fitted_values: result.fitted_values,
         linear_predictor: result.linear_predictor,
@@ -568,6 +570,7 @@ pub fn fit_negbinomial_py<'py>(
     );
 
     let glm_result = PyGLMResults {
+        link_name: None,
         coefficients: result.coefficients,
         fitted_values: result.fitted_values,
         linear_predictor: result.linear_predictor,

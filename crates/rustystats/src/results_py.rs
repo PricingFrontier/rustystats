@@ -22,7 +22,7 @@ use rustystats_core::inference::{
 use rustystats_core::regularization::Penalty;
 use rustystats_core::solvers::passes::SolverStep;
 
-use crate::families_py::family_from_name_with_tweedie_support;
+use crate::families_py::{family_from_name_with_tweedie_support, link_from_name};
 
 /// Parse a fit's `robust=` list: HC type names, each once, in order. Robust
 /// covariances need the bread, so they are refused without covariance.
@@ -122,6 +122,9 @@ pub struct PyGLMResults {
     pub(crate) y: Array1<f64>,
     /// Family name (for diagnostics)
     pub(crate) family_name: String,
+    /// The fitted link, where the final statistics may be absent and the null model
+    /// must be recomputed (a fit that skipped its covariance).
+    pub(crate) link_name: Option<String>,
     /// Prior weights
     pub(crate) prior_weights: Array1<f64>,
     /// Regularization penalty applied (if any)
@@ -995,10 +998,14 @@ impl PyGLMResults {
             return statistics.null_deviance;
         }
         let family = self.get_family();
+        let link = match &self.link_name {
+            Some(name) => link_from_name(name).expect("the link was validated at fit"),
+            None => family.default_link(),
+        };
         null_deviance_for_family(
             &self.y,
             family.as_ref(),
-            family.default_link().as_ref(),
+            link.as_ref(),
             self.maybe_weights(),
             self.offset.as_ref(),
         )

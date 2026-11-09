@@ -142,7 +142,7 @@ pub(crate) fn fit_glm_coordinate_descent(
             y_mean,
             family,
             link,
-            null_offset: crate::diagnostics::NullOffset::for_link(offset.is_some(), link),
+            null_offset: crate::diagnostics::NullOffset::for_fit(offset.is_some(), link, family),
             robust,
             statistics_without_covariance: false,
         },

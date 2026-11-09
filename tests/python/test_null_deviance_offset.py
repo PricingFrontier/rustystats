@@ -63,7 +63,7 @@ def test_a_non_default_link_places_the_offset_by_that_link():
         offset="o",
     ).fit()
     a = np.exp(offset)
-    mean = a * y.sum() / a.sum()
+    mean = a * np.sum(a * y) / np.sum(a * a)
     assert model.null_deviance() == pytest.approx(np.sum((y - mean) ** 2), rel=1e-10)
 
 
@@ -115,3 +115,51 @@ def test_null_deviance_binding_honours_the_link_and_weights():
     assert compute_null_deviance_py(y, "gaussian", weights=weights, offset=offset) == pytest.approx(
         expected, rel=1e-12
     )
+
+
+@pytest.mark.parametrize(
+    ("family", "sm_family", "kwargs"),
+    [
+        ("gamma", "Gamma", {}),
+        ("tweedie", "Tweedie", {"var_power": 1.5}),
+        ("gaussian", "Gaussian", {"link": "log"}),
+    ],
+)
+def test_log_link_null_deviance_is_the_familys_optimum(family, sm_family, kwargs):
+    rng = np.random.default_rng(4)
+    n = 3000
+    x = rng.normal(size=n)
+    offset = rng.normal(scale=0.4, size=n)
+    mu = np.exp(0.3 + 0.2 * x + offset)
+    y = rng.gamma(2.0, mu / 2.0)
+    df = pl.DataFrame({"x": x, "o": offset, "y": y})
+    model = rs.glm_dict(
+        response="y", terms={"x": {"type": "linear"}}, data=df, family=family, offset="o", **kwargs
+    ).fit()
+    log = sm.families.links.Log()
+    sm_family_obj = (
+        sm.families.Tweedie(var_power=1.5, link=log)
+        if sm_family == "Tweedie"
+        else getattr(sm.families, sm_family)(link=log)
+    )
+    reference = sm.GLM(y, sm.add_constant(x), family=sm_family_obj, offset=offset).fit()
+    assert model.null_deviance() == pytest.approx(reference.null_deviance, rel=1e-6)
+
+
+def test_null_deviance_keeps_the_fitted_link_when_covariance_is_skipped():
+    rng = np.random.default_rng(5)
+    n = 2000
+    x = rng.normal(size=n)
+    offset = rng.normal(scale=0.3, size=n)
+    y = np.exp(0.5 + 0.2 * x + offset) + rng.normal(scale=0.2, size=n)
+    df = pl.DataFrame({"x": x, "o": offset, "y": y})
+    glm = {
+        "response": "y",
+        "terms": {"x": {"type": "linear"}},
+        "family": "gaussian",
+        "link": "log",
+        "offset": "o",
+    }
+    full = rs.glm_dict(data=df, **glm).fit()
+    skipped = rs.glm_dict(data=df, **glm).fit(compute_covariance=False)
+    assert skipped.null_deviance() == pytest.approx(full.null_deviance(), rel=1e-12)

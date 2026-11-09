@@ -262,6 +262,12 @@ pub trait Family: Send + Sync {
         false
     }
 
+    /// The power p used for the null model's constant under a log link and an offset:
+    /// c = Σw·y·a^(1−p) / Σw·a^(2−p) with a = exp(offset), which is exact when V(μ) = μ^p.
+    fn null_variance_power(&self) -> f64 {
+        1.0
+    }
+
     /// Whether this family supports true Hessian-based IRLS weights for the log link.
     ///
     /// For certain family/link combinations (Gamma, Tweedie with log link),

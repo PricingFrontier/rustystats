@@ -775,7 +775,7 @@ fn fit_glm_core(
             init_coefficients,
             family_name: family.name(),
             family,
-            null_offset: crate::diagnostics::NullOffset::for_link(offset.is_some(), link),
+            null_offset: crate::diagnostics::NullOffset::for_fit(offset.is_some(), link, family),
             robust,
             statistics_without_covariance: false,
         },
@@ -1025,7 +1025,7 @@ pub(crate) fn drive_glm(
         .map(|standardization| standardization.scale.iter().map(|s| s * s).collect());
     let fit_intercept = config.regularization.fit_intercept;
     let irls_config = config.to_irls_config();
-    let null_offset = crate::diagnostics::NullOffset::for_link(has_offset, link);
+    let null_offset = crate::diagnostics::NullOffset::for_fit(has_offset, link, family);
     if config.regularization.penalty.requires_coordinate_descent() {
         let outcome = super::coordinate_descent::drive_cd(
             executor,

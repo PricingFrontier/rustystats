@@ -218,6 +218,10 @@ impl Family for TweedieFamily {
         true
     }
 
+    fn null_variance_power(&self) -> f64 {
+        self.var_power
+    }
+
     /// Tweedie (1 < p < 2) with log link benefits from true Hessian weights.
     ///
     /// Using the observed Hessian can significantly reduce IRLS iterations.

@@ -781,7 +781,7 @@ impl RowContext<'_> {
 
     /// How the offset enters the null model.
     pub fn null_offset(&self) -> crate::diagnostics::NullOffset {
-        crate::diagnostics::NullOffset::for_link(self.has_offset, self.link)
+        crate::diagnostics::NullOffset::for_fit(self.has_offset, self.link, self.family)
     }
 }
 
@@ -1302,12 +1302,13 @@ pub fn process_rows<'r, F>(
                         facts.non_unit_weights += 1.0;
                     }
                     match ctx.null_offset() {
-                        crate::diagnostics::NullOffset::Log => {
-                            let oi = ctx.offset[i];
-                            facts.null_sums_weighted[0] += oi.exp() * wi;
-                            facts.null_sums_weighted[1] += yi * wi;
-                            facts.null_sums_unweighted[0] += oi.exp();
-                            facts.null_sums_unweighted[1] += yi;
+                        crate::diagnostics::NullOffset::Log { power } => {
+                            let a = ctx.offset[i].exp();
+                            let (mass, signal) = (a.powf(2.0 - power), a.powf(1.0 - power));
+                            facts.null_sums_weighted[0] += mass * wi;
+                            facts.null_sums_weighted[1] += yi * signal * wi;
+                            facts.null_sums_unweighted[0] += mass;
+                            facts.null_sums_unweighted[1] += yi * signal;
                         }
                         crate::diagnostics::NullOffset::Identity => {
                             let residual = yi - ctx.offset[i];

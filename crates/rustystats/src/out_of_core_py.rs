@@ -492,6 +492,7 @@ pub fn fit_glm_batched_py(
         .unwrap_or_default();
     let empty = || Array1::<f64>::zeros(0);
     Ok(PyGLMResults {
+        link_name: None,
         coefficients: fitted.coefficients,
         fitted_values: empty(),
         linear_predictor: empty(),
@@ -619,6 +620,7 @@ pub fn fit_smooth_glm_batched_py<'py>(
     let robust_covariances = std::mem::take(&mut fitted.statistics.robust);
     let empty = || Array1::<f64>::zeros(0);
     let result = PyGLMResults {
+        link_name: None,
         coefficients: fitted.coefficients,
         fitted_values: empty(),
         linear_predictor: empty(),
@@ -967,6 +969,7 @@ pub fn fit_negbinomial_batched_py<'py>(
     let fit = fitted.fit;
     let empty = || Array1::<f64>::zeros(0);
     let result = PyGLMResults {
+        link_name: None,
         coefficients: fit.coefficients,
         fitted_values: empty(),
         linear_predictor: empty(),
