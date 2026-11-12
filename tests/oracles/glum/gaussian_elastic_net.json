@@ -551,7 +551,7 @@
     }
   },
   "oracle": "glum",
-  "oracle_version": "3.1.2",
+  "oracle_version": "3.4.1",
   "schema_version": 1,
   "tolerances": {
     "kkt_atol": 2e-06,
