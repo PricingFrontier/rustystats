@@ -34,8 +34,9 @@ crate-type = ["cdylib"]
 # Our core statistics library
 rustystats-core = { path = "../rustystats-core" }
 
-# Python bindings framework
-pyo3 = { workspace = true, features = ["generate-import-lib"] }
+# Python bindings framework. abi3-py310 builds one wheel on CPython's stable ABI,
+# which installs on Python 3.10 and every later version.
+pyo3 = { workspace = true, features = ["abi3-py310"] }
 
 # NumPy support - converts between NumPy arrays and Rust arrays
 numpy = { workspace = true }

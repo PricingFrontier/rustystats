@@ -1,13 +1,16 @@
 # Installation
 
-RustyStats requires Python 3.9+ and a Rust toolchain for building from source.
+RustyStats requires Python 3.10 or later. `pip install rustystats` (or `uv add rustystats`)
+installs a ready-built wheel on Linux (x86_64 and aarch64), Windows (x64) and macOS (Intel and
+Apple silicon), so no Rust toolchain is needed. You only need Rust to build from source, as
+described below.
 
-## Prerequisites
+## Prerequisites for building from source
 
 ### Python
-Ensure you have Python 3.9 or later:
+Ensure you have Python 3.10 or later:
 ```bash
-python --version  # Should be 3.9+
+python --version  # Should be 3.10+
 ```
 
 ### Rust

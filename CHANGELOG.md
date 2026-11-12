@@ -3,6 +3,15 @@
 Notable changes in each RustyStats release. For releases before 0.10.0, see
 [GitHub Releases](https://github.com/PricingFrontier/rustystats/releases).
 
+## Unreleased
+
+### Changed
+
+- **Wheels for Python 3.14.** Each platform now has one wheel built on CPython's stable ABI
+  instead of one per Python version. It installs on Python 3.10 and later, so Python 3.14 no
+  longer compiles rustystats from source. PyO3 and rust-numpy move to 0.29, which clears
+  RUSTSEC-2026-0177.
+
 ## 0.11.0
 
 ### Added
