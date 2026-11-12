@@ -3,7 +3,7 @@
 Notable changes in each RustyStats release. For releases before 0.10.0, see
 [GitHub Releases](https://github.com/PricingFrontier/rustystats/releases).
 
-## Unreleased
+## 0.11.1
 
 ### Changed
 
