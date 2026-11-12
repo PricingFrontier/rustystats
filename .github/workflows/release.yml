@@ -1,5 +1,9 @@
 # Publishes the version the code declares on main to PyPI, then tags it.
 #
+# Builds one abi3 wheel per platform (cp310-abi3: CPython 3.10 and every later version)
+# for Linux x86_64 and aarch64, Windows x64, and macOS x86_64 and arm64, plus the sdist.
+# A new Python version needs no change here.
+#
 # Releasing: in a pull request, run `uv version --bump minor --no-sync` (or patch, or
 # major), set the same version in crates/rustystats/Cargo.toml and
 # crates/rustystats-core/Cargo.toml, and add the version's section to CHANGELOG.md.
@@ -122,7 +126,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist --interpreter 3.10 3.11 3.12 3.13
+          args: --release --out dist
           sccache: "true"
           manylinux: auto
 
@@ -151,7 +155,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: x86_64
-          args: --release --out dist --interpreter 3.10 3.11 3.12 3.13
+          args: --release --out dist
           sccache: "true"
 
       - name: Upload wheels
@@ -178,7 +182,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist --interpreter 3.10 3.11 3.12 3.13
+          args: --release --out dist
           sccache: "true"
 
       - name: Upload wheels
@@ -231,17 +235,29 @@ jobs:
         run: |
           ls -l dist
           test -f "dist/rustystats-${VERSION}.tar.gz"
-          test "$(ls dist/rustystats-${VERSION}-*.whl | wc -l)" -eq 20
-          test "$(ls dist | wc -l)" -eq 21
+          # Exactly one abi3 wheel per platform, and nothing else besides the sdist.
+          for platform in 'manylinux*_x86_64' 'manylinux*_aarch64' win_amd64 'macosx*_x86_64' 'macosx*_arm64'; do
+            matches=$(ls dist/rustystats-${VERSION}-cp310-abi3-${platform}.whl 2>/dev/null | wc -l)
+            if [ "$matches" -ne 1 ]; then
+              echo "::error::Expected one cp310-abi3 ${platform} wheel, found ${matches}."
+              exit 1
+            fi
+          done
+          test "$(ls dist | wc -l)" -eq 6
 
-      - name: Wheel install smoke
+      # The floor and the newest CPython the wheel is tested on. --no-build fails the
+      # step if the wheel or any dependency would compile from source.
+      - name: Wheel install smoke (Python 3.10 and 3.14)
         env:
           VERSION: ${{ needs.check.outputs.version }}
         run: |
-          uv venv .pkg-wheel --python 3.12
-          uv pip install --python .pkg-wheel/bin/python dist/*-cp312-*manylinux*x86_64*.whl
-          ./.pkg-wheel/bin/python scripts/package_smoke.py
-          test "$(./.pkg-wheel/bin/python -c 'import rustystats; print(rustystats.__version__)')" = "$VERSION"
+          for python in 3.10 3.14; do
+            venv=".pkg-wheel-${python}"
+            uv venv "$venv" --python "$python"
+            uv pip install --no-build --python "$venv/bin/python" dist/rustystats-${VERSION}-cp310-abi3-manylinux*_x86_64.whl
+            "./$venv/bin/python" scripts/package_smoke.py
+            test "$("./$venv/bin/python" -c 'import rustystats; print(rustystats.__version__)')" = "$VERSION"
+          done
 
       - name: Sdist install smoke
         run: |
@@ -249,11 +265,56 @@ jobs:
           uv pip install --python .pkg-sdist/bin/python dist/*.tar.gz
           ./.pkg-sdist/bin/python scripts/package_smoke.py
 
+  # ── Install the Windows and macOS wheels on their own platforms ─────────
+  # The runners have Rust installed, so --no-build is what proves nothing compiles.
+  smoke-native:
+    name: Wheel install smoke (${{ matrix.name }})
+    needs: [check, windows, macos]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - name: windows x64
+            os: windows-latest
+            artifact: wheels-windows-x64
+            platform: win_amd64
+            python: .pkg-wheel/Scripts/python.exe
+          - name: macos arm64
+            os: macos-latest
+            artifact: wheels-macos-aarch64
+            platform: "macosx*_arm64"
+            python: .pkg-wheel/bin/python
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v7
+
+      - name: Download the wheel
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist
+
+      - name: Install into Python 3.14 and smoke-test
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+          PLATFORM: ${{ matrix.platform }}
+          PY: ${{ matrix.python }}
+        run: |
+          uv venv .pkg-wheel --python 3.14
+          uv pip install --no-build --python "$PY" dist/rustystats-${VERSION}-cp310-abi3-${PLATFORM}.whl
+          "$PY" scripts/package_smoke.py
+          # No trailing newline: Windows would print "\r\n" and the "\r" would survive.
+          test "$("$PY" -c 'import sys, rustystats; sys.stdout.write(rustystats.__version__)')" = "$VERSION"
+
   # ── Publish to PyPI ──────────────────────────────────────────────────────
   publish:
     name: Publish to PyPI
     if: ${{ !inputs.dry_run }}
-    needs: [check, smoke]
+    needs: [check, smoke, smoke-native]
     runs-on: ubuntu-latest
     environment:
       name: pypi

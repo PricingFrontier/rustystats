@@ -20,7 +20,7 @@ build-backend = "maturin"
 
 [project]
 name = "rustystats"
-version = "0.11.0"
+version = "0.11.1"
 description = "Fast Generalized Linear Models with a Rust backend"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -33,6 +33,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Mathematics",
     "Intended Audience :: Financial and Insurance Industry",
     "Intended Audience :: Science/Research",
